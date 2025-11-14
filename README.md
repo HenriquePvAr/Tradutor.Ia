@@ -1,0 +1,2 @@
+Dependencias nacessarias
+pip install transformers sentencepiece langdetect torch
