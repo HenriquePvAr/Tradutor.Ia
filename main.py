@@ -1,41 +1,93 @@
-import os, tkinter as tk
+import os
+import tkinter as tk
 from tkinter import simpledialog, messagebox
-from config import TEMP_FOLDER, TEMP_OUT, FONT_PATH
-from down import download_images
-from ocr import ocr_translate_balloon
-from translator import get_translator
-from pdf import generate_pdf
+
+from config import FONT_PATH
+from manga_translation_pipeline import (
+    download_chapter_images,
+    translate_chapter_images,
+    export_pdf
+)
 from progress import ProgressWindow
+
 
 def main():
     root = tk.Tk()
     root.withdraw()
 
+    # === Entrada da URL ===
     url = simpledialog.askstring("Capítulo", "Cole a URL do capítulo:")
-    if not url: return
-    folder_name = simpledialog.askstring("Saída", "Nome da pasta/PDF de saída:") or "capitulo_traduzido"
-    output_folder = os.path.join(os.getcwd(), folder_name)
-    os.makedirs(output_folder, exist_ok=True)
-
-    lang_choice = simpledialog.askstring("Idioma", "1:Japonês 2:Coreano 3:Inglês")
-    translator, ocr_lang = get_translator(lang_choice)
-    prog_win = ProgressWindow("Baixando e traduzindo capítulo")
-
-    saved_files = download_images(url, progress_callback=lambda v,m,t: prog_win.update(v,m,t))
-    processed_files = []
-    for idx, img in enumerate(saved_files, start=1):
-        out = ocr_translate_balloon(img, ocr_lang, translator, FONT_PATH)
-        if out: processed_files.append(out)
-        prog_win.update(idx, len(saved_files), "Traduzindo imagens")
-
-    prog_win.close()
-    if not processed_files:
-        messagebox.showerror("Erro", "Nenhuma imagem processada!")
+    if not url or not url.strip():
+        messagebox.showerror("Erro", "Nenhuma URL fornecida!")
         return
 
-    pdf_path = os.path.join(output_folder, folder_name + ".pdf")
-    generate_pdf(processed_files, pdf_path)
-    messagebox.showinfo("Concluído", f"PDF gerado: {pdf_path}")
+    # === Nome do capítulo/PDF ===
+    chapter_name = simpledialog.askstring("Saída", "Nome da pasta/PDF de saída:")
+    if not chapter_name:
+        chapter_name = "capitulo_traduzido"
+
+    output_folder = os.path.join(os.getcwd(), chapter_name)
+    os.makedirs(output_folder, exist_ok=True)
+
+    # === Idioma original ===
+    lang_choice = simpledialog.askstring(
+        "Idioma",
+        "Escolha a língua original:\n1 = Japonês\n2 = Coreano\n3 = Inglês"
+    )
+
+    if lang_choice not in ("1", "2", "3"):
+        messagebox.showerror("Erro", "Idioma inválido!")
+        return
+
+    # ==============================
+    #       PROGRESSO 1
+    #     BAIXANDO IMAGENS
+    # ==============================
+    prog1 = ProgressWindow("Baixando páginas")
+
+    saved_images = download_chapter_images(
+        url,
+        callback=lambda cur, tot: prog1.update(cur, tot, "Baixando páginas")
+    )
+
+    prog1.close()
+
+    if not saved_images:
+        messagebox.showerror("Erro", "Nenhuma imagem encontrada!")
+        return
+
+    # ==============================
+    #       PROGRESSO 2
+    #     TRADUZINDO PÁGINAS
+    # ==============================
+    prog2 = ProgressWindow("Traduzindo páginas")
+
+    translated_images = translate_chapter_images(
+        saved_images,
+        lang_choice,
+        FONT_PATH,
+        callback=lambda cur, tot: prog2.update(cur, tot, "Traduzindo...")
+    )
+
+    prog2.close()
+
+    if not translated_images:
+        messagebox.showerror("Erro", "Falha ao traduzir imagens!")
+        return
+
+    # ==============================
+    #       PROGRESSO 3
+    #        GERANDO PDF
+    # ==============================
+    prog3 = ProgressWindow("Gerando PDF")
+
+    pdf_path = export_pdf(translated_images, output_folder, chapter_name)
+
+    prog3.update(1, 1, "Concluindo...")
+    prog3.close()
+
+    messagebox.showinfo("Concluído", f"PDF gerado com sucesso:\n{pdf_path}")
+
 
 if __name__ == "__main__":
     main()
