@@ -151,6 +151,29 @@ O modo `--full` nao limita downloads. Ele gera debug, compares e um PDF
 `debug\webtoon_full_NNN.pdf`. A interface normal tambem continua processando o
 capitulo completo com `python main.py`.
 
+O modo full pode demorar bastante. Para capitulos grandes, use modo fast e
+cache/resume:
+
+```powershell
+python test_pipeline_webtoon.py --full --fast
+```
+
+## Resultados de benchmark
+
+### Benchmark real — Webtoon Episode 1
+
+- 108 imagens validas
+- 108 paginas no PDF
+- 367 linhas OCR
+- 124 grupos formados
+- 104 grupos traduzidos
+- 14 SFX/decorative ignorados
+- 0 paginas com erro
+- Tempo total: 35min29s
+- Media: 19,72s por imagem
+- Gargalo: OCR, cerca de 20min14s
+- Traducao NVIDIA: cerca de 12min07s
+
 ## Como voltar para Google ou local
 
 Para Google:
