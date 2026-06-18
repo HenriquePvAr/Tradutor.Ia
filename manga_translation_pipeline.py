@@ -39,7 +39,6 @@ def translate_chapter_images(image_list, lang_choice, font_path, callback=None):
     Salva o resultado em TEMP_OUT
     """
     translator, ocr_lang = get_translator(lang_choice)
-    translate_fn = translator.translate
 
     if not os.path.exists(TEMP_OUT):
         os.makedirs(TEMP_OUT)
@@ -51,7 +50,7 @@ def translate_chapter_images(image_list, lang_choice, font_path, callback=None):
         out = process_image_file(
             img_path,
             ocr_lang,
-            translate_fn,
+            translator,
             font_path=font_path,
             save_out=True
         )

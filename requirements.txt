@@ -1,0 +1,17 @@
+numpy
+Pillow
+opencv-python
+selenium
+webdriver-manager
+python-dotenv
+openai
+requests
+tqdm
+deep-translator
+paddlepaddle==3.2.2
+paddleocr
+torch
+transformers
+sentencepiece
+accelerate
+pytesseract
