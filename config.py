@@ -85,5 +85,27 @@ TEST_URL = _env_str(
     "https://www.webtoons.com/en/romance/i-shall-conquer-the-unruly-beasts/episode-1/viewer?title_no=10299&episode_no=1",
 )
 TEST_MAX_IMAGES = _env_int("TEST_MAX_IMAGES", 20)
-DEBUG_VISUAL = _env_str("DEBUG_VISUAL", "True").lower() in ("1", "true", "yes", "on")
+DEBUG_VISUAL = _env_str("DEBUG_VISUAL", "False").lower() in ("1", "true", "yes", "on")
 DEBUG_FOLDER = _env_str("DEBUG_FOLDER", "debug")
+
+# Performance/caching settings. Conservative defaults keep visual behavior
+# unchanged while allowing expensive chapter runs to resume safely.
+FULL_FAST_MODE = _env_bool("FULL_FAST_MODE", True)
+ENABLE_OCR_CACHE = _env_bool("ENABLE_OCR_CACHE", True)
+ENABLE_TRANSLATION_CACHE = _env_bool("ENABLE_TRANSLATION_CACHE", True)
+ENABLE_IMAGE_PROCESS_CACHE = _env_bool("ENABLE_IMAGE_PROCESS_CACHE", True)
+ENABLE_DOWNLOAD_CACHE = _env_bool("ENABLE_DOWNLOAD_CACHE", True)
+CACHE_ROOT = _env_str("CACHE_ROOT", ".cache")
+
+OCR_PARALLEL = _env_bool("OCR_PARALLEL", True)
+OCR_WORKERS = max(1, _env_int("OCR_WORKERS", 2))
+
+TRANSLATION_PARALLEL = _env_bool("TRANSLATION_PARALLEL", True)
+TRANSLATION_WORKERS = max(1, _env_int("TRANSLATION_WORKERS", 2))
+
+SKIP_NO_TEXT_IMAGES = _env_bool("SKIP_NO_TEXT_IMAGES", True)
+NO_TEXT_SKIP_CONSERVATIVE = _env_bool("NO_TEXT_SKIP_CONSERVATIVE", True)
+
+SAVE_FULL_DEBUG = _env_bool("SAVE_FULL_DEBUG", False)
+SAVE_COMPARE_SAMPLES = _env_bool("SAVE_COMPARE_SAMPLES", True)
+SAVE_DEBUG_ONLY_ERRORS = _env_bool("SAVE_DEBUG_ONLY_ERRORS", True)

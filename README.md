@@ -151,28 +151,71 @@ O modo `--full` nao limita downloads. Ele gera debug, compares e um PDF
 `debug\webtoon_full_NNN.pdf`. A interface normal tambem continua processando o
 capitulo completo com `python main.py`.
 
-O modo full pode demorar bastante. Para capitulos grandes, use modo fast e
-cache/resume:
+## Performance e cache
 
-```powershell
-python test_pipeline_webtoon.py --full --fast
+O pipeline usa caches independentes para download, OCR, traducao e imagem
+processada. A primeira execucao ainda demora porque precisa executar PaddleOCR
+e chamar a NVIDIA. As execucoes seguintes podem reutilizar cada etapa e
+continuar um capitulo interrompido pelo `progress.json`.
+
+O modo `--fast` evita debug visual pesado. `TRANSLATE_SFX=False` preserva
+onomatopeias e efeitos sonoros por padrao. A traducao NVIDIA pode usar dois
+workers, com rate limit global e retry/backoff para erros temporarios.
+
+O OCR paralelo usa dois processos quando ha memoria suficiente. Em maquinas
+com pouca memoria, o pipeline faz fallback automatico para OCR sequencial,
+evitando falhas ou perda de qualidade. Para desativar o paralelismo
+manualmente, configure:
+
+```env
+OCR_PARALLEL=False
 ```
 
-## Resultados de benchmark
+Para medir o capitulo completo do zero, ignorando todos os caches:
 
-### Benchmark real — Webtoon Episode 1
+```powershell
+python test_pipeline_webtoon.py --full --fast --benchmark --force
+```
 
-- 108 imagens validas
-- 108 paginas no PDF
-- 367 linhas OCR
-- 124 grupos formados
-- 104 grupos traduzidos
-- 14 SFX/decorative ignorados
-- 0 paginas com erro
+Para reutilizar cache e resume:
+
+```powershell
+python test_pipeline_webtoon.py --full --fast --benchmark
+```
+
+Use `--force` somente quando quiser medir uma execucao limpa. Sem `--force`,
+downloads, OCRs, traducoes e paginas finais validas sao reaproveitados.
+
+### Benchmark real - Webtoon Episode 1
+
+- Imagens validas: 108
+- Paginas no PDF: 108
+- Linhas OCR: 367
+- Grupos formados: 124
+- Grupos traduzidos: 104
+- SFX/decorative ignorados: 14
+- Erros finais: 0
+
+Versao funcional anterior:
+
 - Tempo total: 35min29s
-- Media: 19,72s por imagem
-- Gargalo: OCR, cerca de 20min14s
-- Traducao NVIDIA: cerca de 12min07s
+- Media: 19,72s/imagem
+
+Versao otimizada:
+
+- Tempo total forcado: 25min32s
+- Media: 14,19s/imagem
+- Reducao: 28,05%
+- Gargalo: OCR
+- OCR: 1.188s
+- NVIDIA: 139,87s
+
+Execucao com cache:
+
+- Tempo total: 9,12s
+- Media: 0,084s/imagem
+- Chamadas NVIDIA: 0
+- Reducao: 99,57%
 
 ## Como voltar para Google ou local
 

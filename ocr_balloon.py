@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 
@@ -9,6 +10,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 import config
+from json_utils import dump_json
 from ocr_engine import OCREngine, OCRLine, clean_ocr_text
 
 try:
@@ -162,27 +164,73 @@ def process_image_array(
     original = original_bgr.copy()
     engine = OCREngine(ocr_lang)
     raw_lines = engine.detect_lines(original)
+    candidates, groups = analyze_image_array(original, raw_lines)
+    valid_groups = get_translatable_groups(groups)
+    translations = _translate_texts(translator, [group.text for group in valid_groups])
+    apply_group_translations(valid_groups, translations)
+    return render_analyzed_image(
+        original,
+        raw_lines,
+        candidates,
+        groups,
+        font_path=font_path,
+        debug_folder=debug_folder,
+        page_index=page_index,
+        image_path=image_path,
+    )
+
+
+def analyze_image_array(original_bgr, raw_lines):
+    original = original_bgr
     candidates = [_candidate_from_line(line, original.shape) for line in raw_lines]
     usable_lines = [candidate.line for candidate in candidates if not candidate.ignored]
     groups = _group_lines(usable_lines)
     _filter_groups(groups, original.shape)
     _classify_groups(groups, original)
+    return candidates, groups
 
-    valid_groups = [group for group in groups if _should_translate_group(group)]
-    translations = _translate_texts(translator, [group.text for group in valid_groups])
 
-    for group, translation in zip(valid_groups, translations):
+def get_translatable_groups(groups):
+    return [group for group in groups if _should_translate_group(group)]
+
+
+def apply_group_translations(groups, translations):
+    for group, translation in zip(groups, translations):
         translated = clean_ocr_text(translation) or group.text
         group.translation = _match_source_case(group.text, translated)
         group.sent_to_translation = True
 
+
+def render_analyzed_image(
+    original_bgr,
+    raw_lines,
+    candidates,
+    groups,
+    font_path=None,
+    debug_folder=None,
+    page_index=1,
+    image_path=None,
+    stage_timings=None,
+):
+    original = original_bgr.copy()
+    valid_groups = get_translatable_groups(groups)
+    inpaint_started = time.perf_counter()
     text_mask = _build_text_mask(original.shape, valid_groups)
     inpainted = _remove_text_with_mask(original, text_mask)
+    if stage_timings is not None:
+        stage_timings["inpainting"] = stage_timings.get("inpainting", 0.0) + (
+            time.perf_counter() - inpaint_started
+        )
     final = inpainted.copy()
 
+    redraw_started = time.perf_counter()
     for group in valid_groups:
         final = _draw_group_translation(final, group, font_path)
         group.redrawn = True
+    if stage_timings is not None:
+        stage_timings["redraw"] = stage_timings.get("redraw", 0.0) + (
+            time.perf_counter() - redraw_started
+        )
 
     debug_data = _debug_payload(image_path, raw_lines, candidates, groups)
 
@@ -986,7 +1034,7 @@ def _write_debug_images(
     cv2.imwrite(prefix + "_compare.png", _compare_image(original, final))
 
     with open(prefix + "_ocr.json", "w", encoding="utf-8") as file:
-        json.dump(debug_data, file, ensure_ascii=False, indent=2)
+        dump_json(debug_data, file, ensure_ascii=False, indent=2)
 
 
 def _draw_ocr_debug(original, raw_lines, candidates, groups):

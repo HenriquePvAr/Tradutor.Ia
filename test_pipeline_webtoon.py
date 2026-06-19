@@ -8,6 +8,7 @@ from PIL import Image, ImageStat
 
 import config
 from down import download_images, force_remove
+from json_utils import dump_json, dumps_json
 from ocr_balloon import process_image_file
 from pdf import generate_pdf
 from translator_nllb import get_translator
@@ -29,10 +30,31 @@ def main():
         action="store_true",
         help="Evita imagens de debug por pagina, mantendo OCR, traducao e PDF.",
     )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Usa cache, paralelismo, resume e relatorio detalhado de performance.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignora caches e reprocessa todas as etapas.",
+    )
+    parser.add_argument(
+        "--output-folder",
+        default=os.path.join("output", "full_chapter"),
+        help="Pasta dos artefatos de benchmark.",
+    )
     args = parser.parse_args()
 
     if not args.full and args.max_images <= 0:
         parser.error("--max-images deve ser maior que zero.")
+
+    if args.benchmark:
+        from benchmark_pipeline import run_benchmark
+
+        run_benchmark(args)
+        return
 
     started_at = time.perf_counter()
     debug_folder = os.path.abspath(args.debug_folder)
@@ -100,9 +122,9 @@ def main():
     )
     summary_path = os.path.join(debug_folder, "test_summary.json")
     with open(summary_path, "w", encoding="utf-8") as file:
-        json.dump(summary, file, ensure_ascii=False, indent=2)
+        dump_json(summary, file, ensure_ascii=False, indent=2)
 
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(dumps_json(summary, ensure_ascii=False, indent=2))
     print(f"Resumo salvo em: {summary_path}")
     _print_final_report(summary)
 

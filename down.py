@@ -15,6 +15,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
 from config import CHROMEDRIVER_PATH, MAX_RETRIES_DOWNLOAD, TEMP_FOLDER
+from json_utils import dump_json
 
 
 MIN_IMAGE_WIDTH = 480
@@ -39,13 +40,17 @@ def download_images(
     max_retries=None,
     max_images=None,
     debug_folder=None,
+    target_folder=None,
+    force=True,
 ):
     max_retries = max_retries or MAX_RETRIES_DOWNLOAD
+    target_folder = target_folder or TEMP_FOLDER
+    total_started = time.perf_counter()
 
-    if os.path.exists(TEMP_FOLDER):
-        force_remove(TEMP_FOLDER)
+    if force and os.path.exists(target_folder):
+        force_remove(target_folder)
 
-    os.makedirs(TEMP_FOLDER, exist_ok=True)
+    os.makedirs(target_folder, exist_ok=True)
     if debug_folder:
         os.makedirs(debug_folder, exist_ok=True)
 
@@ -58,14 +63,26 @@ def download_images(
         "total_ignored": 0,
         "ignored": [],
         "downloaded": [],
+        "target_folder": os.path.abspath(target_folder),
+        "timings": {
+            "collection_seconds": 0.0,
+            "download_seconds": 0.0,
+            "validation_seconds": 0.0,
+            "image_save_seconds": 0.0,
+            "total_seconds": 0.0,
+        },
     }
 
     driver = _create_driver()
     try:
+        collection_started = time.perf_counter()
         driver.get(url)
         time.sleep(4)
         _scroll_incrementally(driver)
         candidates = _collect_image_candidates(driver, url)
+        report["timings"]["collection_seconds"] = (
+            time.perf_counter() - collection_started
+        )
         report["total_dom_images"] = sum(1 for item in candidates if item.get("tag") == "img")
         report["total_candidates"] = len(candidates)
         unique_candidates = _dedupe_candidates(candidates)
@@ -79,11 +96,13 @@ def download_images(
             debug_folder,
             report,
             referer=url,
+            target_folder=target_folder,
         )
     finally:
         try:
             driver.quit()
         finally:
+            report["timings"]["total_seconds"] = time.perf_counter() - total_started
             if debug_folder:
                 _write_download_report(debug_folder, report)
 
@@ -266,6 +285,7 @@ def _download_candidates(
     debug_folder,
     report,
     referer,
+    target_folder,
 ):
     saved = []
     total = len(candidates)
@@ -280,22 +300,30 @@ def _download_candidates(
             _report_ignored(report, candidate, skip_reason)
             continue
 
+        download_started = time.perf_counter()
         data = _download_url(url, referer, max_retries)
         if not data:
             data = _fetch_with_browser(driver, url)
+        report["timings"]["download_seconds"] += time.perf_counter() - download_started
 
         if not data:
             _report_ignored(report, candidate, "download_failed")
             continue
 
+        validation_started = time.perf_counter()
         valid, info_or_reason, image = _validate_image_bytes(data)
+        report["timings"]["validation_seconds"] += (
+            time.perf_counter() - validation_started
+        )
         if not valid:
             _report_ignored(report, candidate, info_or_reason)
             continue
 
-        file_path = os.path.join(TEMP_FOLDER, f"{len(saved) + 1:03}.png")
+        file_path = os.path.join(target_folder, f"{len(saved) + 1:03}.png")
+        save_started = time.perf_counter()
         image.save(file_path, "PNG")
         image.close()
+        report["timings"]["image_save_seconds"] += time.perf_counter() - save_started
 
         item = {
             "url": url,
@@ -326,6 +354,9 @@ def _candidate_skip_reason(candidate):
 
     if not url.startswith(("http://", "https://")):
         return "not_http_url"
+
+    if ".gif" in url or "giphy.com" in url:
+        return "animated_or_external_asset"
 
     if any(token in url for token in ("spacer", "blank", "placeholder", "logo", "banner", "avatar")):
         return "asset_or_placeholder_url"
@@ -428,4 +459,4 @@ def _report_ignored(report, candidate, reason):
 def _write_download_report(debug_folder, report):
     path = os.path.join(debug_folder, "downloaded_images.json")
     with open(path, "w", encoding="utf-8") as file:
-        json.dump(report, file, ensure_ascii=False, indent=2)
+        dump_json(report, file, ensure_ascii=False, indent=2)
