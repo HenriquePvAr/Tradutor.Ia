@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import config
 from json_utils import dump_json
-from ocr_engine import OCREngine, OCRLine, clean_ocr_text
+from ocr_engine import OCREngine, OCRLine, clean_ocr_text, repair_ocr_text
 
 try:
     from config import FONT_PATH, TEMP_FOLDER, TEMP_OUT
@@ -100,6 +100,9 @@ class TextGroup:
     angle_degrees: float = 0.0
     near_image_edge: bool = False
     alignment_score: float = 0.0
+    original_text: str = ""
+    repaired_text: str = ""
+    repair_reason: str = ""
 
     @property
     def confidence(self):
@@ -185,6 +188,7 @@ def analyze_image_array(original_bgr, raw_lines):
     candidates = [_candidate_from_line(line, original.shape) for line in raw_lines]
     usable_lines = [candidate.line for candidate in candidates if not candidate.ignored]
     groups = _group_lines(usable_lines)
+    _repair_group_texts(groups)
     _filter_groups(groups, original.shape)
     _classify_groups(groups, original)
     return candidates, groups
@@ -372,6 +376,15 @@ def _group_lines(lines):
         target.text = clean_ocr_text(" ".join(item.text for item in target.lines))
 
     return groups
+
+
+def _repair_group_texts(groups):
+    for group in groups:
+        group.original_text = group.text
+        repaired, reason = repair_ocr_text(group.text)
+        group.text = repaired
+        group.repaired_text = repaired
+        group.repair_reason = reason
 
 
 def _line_belongs_to_group(line, group):
@@ -1127,6 +1140,12 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
             "translation": "",
             "bounding_box": list(candidate.line.box),
             "confidence": candidate.line.confidence,
+            "engine": candidate.line.engine,
+            "page": candidate.line.page,
+            "metadata": candidate.line.metadata or {},
+            "original_text": candidate.line.original_text or candidate.line.raw_text,
+            "repaired_text": candidate.line.repaired_text or candidate.line.text,
+            "repair_reason": candidate.line.repair_reason,
             "text_color": "",
             "classification": "unknown",
             "inside_balloon_like_region": False,
@@ -1151,6 +1170,21 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "translation": group.translation,
                 "bounding_box": list(group.box),
                 "confidence": group.confidence,
+                "engine": _group_engine(group),
+                "page": next(
+                    (line.page for line in group.lines if line.page is not None),
+                    None,
+                ),
+                "metadata": _group_ocr_metadata(group),
+                "original_text": group.original_text or " ".join(
+                    line.original_text or line.raw_text for line in group.lines
+                ),
+                "repaired_text": group.repaired_text or group.text,
+                "repair_reason": group.repair_reason or ";".join(
+                    dict.fromkeys(
+                        line.repair_reason for line in group.lines if line.repair_reason
+                    )
+                ),
                 "text_color": group.color_name,
                 "font_size": group.font_size,
                 "region_brightness": round(group.region_brightness, 2),
@@ -1188,6 +1222,22 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
         "classification_counts": classification_counts,
         "items": group_records + ignored_lines,
     }
+
+
+def _group_engine(group):
+    engines = [
+        line.engine
+        for line in group.lines
+        if line.engine
+    ]
+    return engines[0] if engines and len(set(engines)) == 1 else "mixed"
+
+
+def _group_ocr_metadata(group):
+    for line in group.lines:
+        if line.metadata:
+            return line.metadata
+    return {}
 
 
 def _union_boxes(boxes):

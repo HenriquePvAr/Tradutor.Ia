@@ -30,6 +30,16 @@ def _env_bool(name, default):
     return value.lower() in ("1", "true", "yes", "on")
 
 
+def _env_float(name, default):
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 # Optional external tools.
 TESSERACT_CMD = _env_str("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 CHROMEDRIVER_PATH = _env_str("CHROMEDRIVER_PATH", "")
@@ -56,7 +66,17 @@ TEMP_OUT = _env_str("TEMP_OUT", TEMP_FOLDER + "_out")
 MAX_RETRIES_DOWNLOAD = _env_int("MAX_RETRIES_DOWNLOAD", 5)
 OCR_CONF_THRESHOLD = _env_int("OCR_CONF_THRESHOLD", 15)
 OCR_ENGINE = _env_str("OCR_ENGINE", "paddle").lower()
-OCR_FALLBACK_ENGINE = _env_str("OCR_FALLBACK_ENGINE", "tesseract").lower()
+OCR_FALLBACK_ENGINE = _env_str("OCR_FALLBACK_ENGINE", "paddle").lower()
+OCR_HYBRID_FALLBACK = _env_bool("OCR_HYBRID_FALLBACK", True)
+RAPIDOCR_ENABLED = _env_bool("RAPIDOCR_ENABLED", False)
+RAPIDOCR_MIN_CONFIDENCE = _env_float("RAPIDOCR_MIN_CONFIDENCE", 0.55)
+RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK = _env_bool(
+    "RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK",
+    True,
+)
+RAPIDOCR_PAGE_FALLBACK = _env_bool("RAPIDOCR_PAGE_FALLBACK", True)
+OCR_TEXT_REPAIR = _env_bool("OCR_TEXT_REPAIR", True)
+OCR_TEXT_REPAIR_MODE = _env_str("OCR_TEXT_REPAIR_MODE", "conservative").lower()
 TRANSLATE_SFX = _env_bool("TRANSLATE_SFX", False)
 PRIORITIZE_ENCLOSED_TEXT = _env_bool("PRIORITIZE_ENCLOSED_TEXT", True)
 

@@ -15,7 +15,7 @@ from ocr_engine import OCRLine
 
 
 CACHE_FORMAT_VERSION = "perf-cache-v1"
-OCR_CACHE_VERSION = "paddle-ocr-v1"
+OCR_CACHE_VERSION = "multi-engine-ocr-v2"
 PROCESSED_CACHE_VERSION = "render-v1"
 PRECHECK_CACHE_VERSION = "no-text-v1"
 
@@ -130,6 +130,15 @@ def ocr_cache_key(image_hash, ocr_lang):
             "image_sha256": image_hash,
             "ocr_engine": config.OCR_ENGINE,
             "ocr_fallback": config.OCR_FALLBACK_ENGINE,
+            "ocr_hybrid_fallback": config.OCR_HYBRID_FALLBACK,
+            "rapidocr_enabled": config.RAPIDOCR_ENABLED,
+            "rapidocr_min_confidence": config.RAPIDOCR_MIN_CONFIDENCE,
+            "rapidocr_suspicious_text_fallback": (
+                config.RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK
+            ),
+            "rapidocr_page_fallback": config.RAPIDOCR_PAGE_FALLBACK,
+            "ocr_text_repair": config.OCR_TEXT_REPAIR,
+            "ocr_text_repair_mode": config.OCR_TEXT_REPAIR_MODE,
             "ocr_lang": ocr_lang,
         }
     )
@@ -147,6 +156,12 @@ def serialize_ocr_lines(lines):
             "polygon": np.asarray(line.polygon).astype(int).tolist(),
             "box": [int(value) for value in line.box],
             "raw_text": line.raw_text,
+            "engine": line.engine,
+            "page": line.page,
+            "metadata": line.metadata or {},
+            "original_text": line.original_text,
+            "repaired_text": line.repaired_text,
+            "repair_reason": line.repair_reason,
         }
         for line in lines
     ]
@@ -160,6 +175,15 @@ def deserialize_ocr_lines(records):
             polygon=np.asarray(record.get("polygon", []), dtype=np.int32),
             box=tuple(int(value) for value in record.get("box", (0, 0, 1, 1))),
             raw_text=record.get("raw_text", record.get("text", "")),
+            engine=record.get("engine", ""),
+            page=record.get("page"),
+            metadata=record.get("metadata", {}),
+            original_text=record.get(
+                "original_text",
+                record.get("raw_text", record.get("text", "")),
+            ),
+            repaired_text=record.get("repaired_text", record.get("text", "")),
+            repair_reason=record.get("repair_reason", ""),
         )
         for record in records
     ]
@@ -172,7 +196,15 @@ def load_ocr_cache(key):
     return deserialize_ocr_lines(payload.get("lines", [])), payload
 
 
-def save_ocr_cache(key, image_hash, ocr_lang, lines, elapsed_seconds, precheck):
+def save_ocr_cache(
+    key,
+    image_hash,
+    ocr_lang,
+    lines,
+    elapsed_seconds,
+    precheck,
+    ocr_metadata=None,
+):
     atomic_write_json(
         ocr_cache_path(key),
         {
@@ -181,6 +213,7 @@ def save_ocr_cache(key, image_hash, ocr_lang, lines, elapsed_seconds, precheck):
             "ocr_lang": ocr_lang,
             "elapsed_seconds": round(float(elapsed_seconds), 6),
             "precheck": precheck,
+            "ocr_metadata": ocr_metadata or {},
             "lines": serialize_ocr_lines(lines),
         },
     )

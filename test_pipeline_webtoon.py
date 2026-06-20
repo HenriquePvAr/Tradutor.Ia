@@ -45,7 +45,13 @@ def main():
         default=os.path.join("output", "full_chapter"),
         help="Pasta dos artefatos de benchmark.",
     )
+    parser.add_argument(
+        "--ocr-engine",
+        choices=("paddle", "rapidocr"),
+        help="Sobrescreve o motor OCR nesta execucao.",
+    )
     args = parser.parse_args()
+    _apply_ocr_cli_config(args.ocr_engine)
 
     if not args.full and args.max_images <= 0:
         parser.error("--max-images deve ser maior que zero.")
@@ -127,6 +133,20 @@ def main():
     print(dumps_json(summary, ensure_ascii=False, indent=2))
     print(f"Resumo salvo em: {summary_path}")
     _print_final_report(summary)
+
+
+def _apply_ocr_cli_config(engine):
+    if not engine:
+        return
+    os.environ["OCR_ENGINE"] = engine
+    config.OCR_ENGINE = engine
+    if engine == "rapidocr":
+        os.environ["RAPIDOCR_ENABLED"] = "True"
+        os.environ["OCR_FALLBACK_ENGINE"] = "paddle"
+        os.environ["OCR_HYBRID_FALLBACK"] = "True"
+        config.RAPIDOCR_ENABLED = True
+        config.OCR_FALLBACK_ENGINE = "paddle"
+        config.OCR_HYBRID_FALLBACK = True
 
 
 def _valid_pdf_image(path):

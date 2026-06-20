@@ -57,12 +57,13 @@ def _detect_in_worker(job):
         }
 
     try:
-        lines = _WORKER_ENGINE.detect_lines(image)
+        lines = _WORKER_ENGINE.detect_lines(image, page=job["index"])
         return {
             "index": job["index"],
             "error": None,
             "elapsed_seconds": time.perf_counter() - started,
             "lines": serialize_ocr_lines(lines),
+            "ocr_metadata": _WORKER_ENGINE.last_run_metadata,
             "pid": os.getpid(),
         }
     except Exception as exc:
@@ -92,12 +93,13 @@ def _detect_sequential(jobs, ocr_lang):
             continue
 
         try:
-            lines = engine.detect_lines(image)
+            lines = engine.detect_lines(image, page=job["index"])
             results[job["index"]] = {
                 "index": job["index"],
                 "error": None,
                 "elapsed_seconds": time.perf_counter() - started,
                 "lines": lines,
+                "ocr_metadata": engine.last_run_metadata,
                 "pid": os.getpid(),
             }
         except Exception as exc:

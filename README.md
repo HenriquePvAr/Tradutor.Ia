@@ -6,9 +6,9 @@ baloes e gera um PDF final.
 
 ## Principais modos
 
-- OCR principal: PaddleOCR.
-- OCR fallback opcional: Tesseract, somente se `pytesseract` e o Tesseract do
-  Windows estiverem configurados.
+- OCR principal e padrao seguro: PaddleOCR.
+- RapidOCR/ONNX opcional e experimental, com fallback hibrido para PaddleOCR.
+- Tesseract continua disponivel como fallback manual quando instalado.
 - Traducao padrao: NVIDIA API com `nvidia/nemotron-3-super-120b-a12b`.
 - Traducao em lote: ate 20 baloes por request.
 - Modos antigos preservados: Google (`deep-translator`) e HuggingFace/local.
@@ -56,7 +56,9 @@ NVIDIA_TRANSLATION_MODEL=nvidia/nemotron-3-super-120b-a12b
 NVIDIA_TRANSLATION_BATCH_SIZE=20
 NVIDIA_MAX_REQUESTS_PER_MINUTE=20
 OCR_ENGINE=paddle
-OCR_FALLBACK_ENGINE=tesseract
+OCR_FALLBACK_ENGINE=paddle
+OCR_HYBRID_FALLBACK=True
+RAPIDOCR_ENABLED=False
 TRANSLATE_SFX=False
 PRIORITIZE_ENCLOSED_TEXT=True
 TRANSLATION_MODE=nvidia
@@ -86,6 +88,92 @@ Para confirmar que o pacote esta funcionando:
 ```powershell
 python -c "from paddleocr import PaddleOCR; print('paddleocr ok')"
 ```
+
+## RapidOCR experimental
+
+RapidOCR e opcional e nao faz parte de `requirements.txt`. Instale-o somente
+quando quiser testar o motor ONNX:
+
+```powershell
+pip install -r requirements-rapidocr.txt
+```
+
+O padrao continua sendo PaddleOCR:
+
+```env
+OCR_ENGINE=paddle
+RAPIDOCR_ENABLED=False
+```
+
+Para ativar o modo hibrido experimental:
+
+```env
+OCR_ENGINE=rapidocr
+RAPIDOCR_ENABLED=True
+OCR_FALLBACK_ENGINE=paddle
+OCR_HYBRID_FALLBACK=True
+RAPIDOCR_MIN_CONFIDENCE=0.55
+RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK=True
+RAPIDOCR_PAGE_FALLBACK=True
+OCR_TEXT_REPAIR=True
+OCR_TEXT_REPAIR_MODE=conservative
+```
+
+O RapidOCR retorna os mesmos boxes e coordenadas usados pelo restante do
+pipeline. Paginas suspeitas passam primeiro pelo PaddleOCR mobile; somente
+grupos ainda suspeitos usam o PaddleOCR completo. O reparo de texto e
+conservador: ele corrige apenas repeticoes muito provaveis, como
+`REALLY RFALLY` para `REALLY REALLY`, e registra original, resultado e motivo
+nos JSONs.
+
+Tambem e possivel ativar apenas nesta execucao:
+
+```powershell
+python test_pipeline_webtoon.py --url "<URL>" --max-images 20 --fast --benchmark --force --ocr-engine rapidocr
+```
+
+Para executar o capitulo completo do zero:
+
+```powershell
+python test_pipeline_webtoon.py --full --fast --benchmark --force --ocr-engine rapidocr
+```
+
+Para executar o capitulo completo usando cache e resume:
+
+```powershell
+python test_pipeline_webtoon.py --full --fast --benchmark --ocr-engine rapidocr
+```
+
+### Benchmark RapidOCR hibrido
+
+Plus One, 9 paginas:
+
+- PaddleOCR: 516,76s
+- RapidOCR hibrido: 179,78s
+- Reducao total: 65,21%
+- Reducao OCR: 73,65%
+- Linhas OCR: 46 em ambos
+- Grupos traduzidos: 15 em ambos
+- Erros: 0
+
+Capitulo antigo, 20 paginas:
+
+- PaddleOCR: 1.030,86s
+- RapidOCR hibrido: 228,27s
+- Reducao total: 77,86%
+- Reducao OCR: 93,65%
+- Grupos traduzidos: 19 em ambos
+- Erros: 0
+
+Capitulo antigo, 50 paginas:
+
+- RapidOCR hibrido: 359,09s
+- OCR: 105,25s
+- PDF: 50 paginas
+- Erros: 0
+
+RapidOCR ainda e experimental. Para maxima qualidade e comportamento mais
+conservador, use PaddleOCR.
 
 ## Como ativar NVIDIA
 
@@ -275,6 +363,8 @@ TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
 ## Limitacoes conhecidas
 
 - A primeira execucao do PaddleOCR pode baixar modelos e demorar mais.
+- RapidOCR e experimental e pode exigir fallback para PaddleOCR em fontes
+  estilizadas, nomes proprios ou textos com baixa confianca.
 - A qualidade do OCR depende da resolucao, contraste, fonte e orientacao do
   texto original.
 - Textos sem balao, muito estilizados ou sobrepostos a desenhos podem ser

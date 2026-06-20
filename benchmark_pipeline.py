@@ -21,6 +21,7 @@ from ocr_balloon import (
     render_analyzed_image,
 )
 from ocr_parallel import detect_ocr_jobs
+from ocr_engine import OCREngine
 from pdf import generate_pdf
 from pipeline_cache import (
     atomic_copy,
@@ -79,6 +80,9 @@ def run_benchmark(args):
             "full": args.full,
             "fast": args.fast,
             "pipeline": "benchmark-v1",
+            "ocr_engine": config.OCR_ENGINE,
+            "ocr_fallback_engine": config.OCR_FALLBACK_ENGINE,
+            "ocr_hybrid_fallback": config.OCR_HYBRID_FALLBACK,
         }
     )
     pipeline_fingerprint = fingerprint_files(PIPELINE_FILES)
@@ -119,6 +123,8 @@ def run_benchmark(args):
         "images_skipped_by_no_text_precheck": 0,
         "ocr_runs": 0,
         "ocr_cache_hits": 0,
+        "ocr_page_fallbacks": 0,
+        "ocr_text_repairs": 0,
         "pages_with_error": 0,
     }
     validation_seconds = (
@@ -229,6 +235,7 @@ def run_benchmark(args):
         )
         if cached_ocr is not None:
             state["raw_lines"] = cached_ocr[0]
+            state["ocr_metadata"] = cached_ocr[1].get("ocr_metadata", {})
             state["ocr_source"] = "cache"
             state["timings"]["ocr"] = 0.0
             counters["ocr_cache_hits"] += 1
@@ -254,6 +261,7 @@ def run_benchmark(args):
         state["timings"]["ocr"] = elapsed
         stage_seconds["ocr_cpu"] += elapsed
         state["raw_lines"] = result.get("lines", [])
+        state["ocr_metadata"] = result.get("ocr_metadata", {})
         if result.get("error"):
             state["ocr_error"] = result["error"]
             continue
@@ -265,6 +273,7 @@ def run_benchmark(args):
                 state["raw_lines"],
                 elapsed,
                 state.get("precheck", {}),
+                ocr_metadata=state.get("ocr_metadata", {}),
             )
 
     translation_targets = []
@@ -303,6 +312,46 @@ def run_benchmark(args):
 
         classify_started = time.perf_counter()
         candidates, groups = analyze_image_array(original, state.get("raw_lines", []))
+        grouping_fallback_reason = _grouping_fallback_reason(state, groups)
+        if grouping_fallback_reason:
+            fallback_started = time.perf_counter()
+            paddle = OCREngine(
+                ocr_lang,
+                engine="paddle",
+                fallback_engine="",
+            )
+            fallback_lines = paddle.detect_lines(
+                original,
+                page=state["index"],
+            )
+            fallback_elapsed = time.perf_counter() - fallback_started
+            state["timings"]["ocr"] = (
+                float(state["timings"].get("ocr", 0.0))
+                + fallback_elapsed
+            )
+            stage_seconds["ocr"] += fallback_elapsed
+            stage_seconds["ocr_cpu"] += fallback_elapsed
+            state["raw_lines"] = fallback_lines
+            state["ocr_metadata"] = {
+                **state.get("ocr_metadata", {}),
+                "fallback_used": True,
+                "fallback_reason": grouping_fallback_reason,
+                "original_engine": "rapidocr",
+                "final_engine": "paddle",
+                "fallback_variant": "paddle_full",
+            }
+            candidates, groups = analyze_image_array(original, fallback_lines)
+            if config.ENABLE_OCR_CACHE:
+                save_ocr_cache(
+                    state["ocr_cache_key"],
+                    state["image_hash"],
+                    ocr_lang,
+                    fallback_lines,
+                    state["timings"]["ocr"],
+                    state.get("precheck", {}),
+                    ocr_metadata=state["ocr_metadata"],
+                )
+        state["group_text_repairs"] = _group_text_repairs(groups)
         classify_elapsed = time.perf_counter() - classify_started
         stage_seconds["classification_grouping"] += classify_elapsed
         state["timings"]["classification_grouping"] = classify_elapsed
@@ -356,6 +405,11 @@ def run_benchmark(args):
 
             state["status"] = "completed"
             state["cache_source"] = "fresh"
+            debug_data["ocr_metadata"] = state.get("ocr_metadata", {})
+            debug_data["text_repairs"] = (
+                _applied_text_repairs(state.get("ocr_metadata", {}))
+                + state.get("group_text_repairs", [])
+            )
             state["debug_data"] = debug_data
             _save_page_processed_cache(state)
             print(
@@ -421,6 +475,8 @@ def run_benchmark(args):
         full=args.full,
     )
     summary = _aggregate_debug_data(completed_states)
+    counters["ocr_page_fallbacks"] = summary["ocr_page_fallbacks"]
+    counters["ocr_text_repairs"] = summary["ocr_text_repairs"]
     total_seconds = time.perf_counter() - started
     translator_stats = getattr(translator, "stats", {})
     quality["translation_batches_succeeded"] = (
@@ -462,6 +518,8 @@ def run_benchmark(args):
         ],
         "ocr_runs": counters["ocr_runs"],
         "ocr_cache_hits": counters["ocr_cache_hits"],
+        "ocr_page_fallbacks": counters["ocr_page_fallbacks"],
+        "ocr_text_repairs": counters["ocr_text_repairs"],
         "translation_api_texts": translator_stats.get("api_texts", 0),
         "translation_cache_hits": translator_stats.get("cache_hits", 0),
         "translation_api_requests": translator_stats.get("api_requests", 0),
@@ -474,6 +532,8 @@ def run_benchmark(args):
             "groups_ignored_sfx_decorative"
         ],
         "classification_counts": summary["classification_counts"],
+        "ocr_engine": config.OCR_ENGINE,
+        "ocr_fallback_engine": config.OCR_FALLBACK_ENGINE,
         "download_cache_hit": download_cache_hit,
         "ocr_parallel": ocr_parallel_info,
         "translation_parallel_requested": translator_stats.get(
@@ -753,6 +813,7 @@ def _serializable_state(state):
         "ocr_source",
         "ocr_cache_key",
         "ocr_error",
+        "ocr_metadata",
         "precheck",
         "status",
         "cache_source",
@@ -763,12 +824,86 @@ def _serializable_state(state):
     return {key: value for key, value in state.items() if key in allowed}
 
 
+def _grouping_fallback_reason(state, groups):
+    if not (
+        config.OCR_ENGINE == "rapidocr"
+        and config.OCR_HYBRID_FALLBACK
+        and config.OCR_FALLBACK_ENGINE == "paddle"
+    ):
+        return ""
+
+    if (
+        state.get("raw_lines")
+        and not groups
+        and not state.get("ocr_metadata", {}).get("fallback_used")
+    ):
+        return "zero_groups_from_ocr_lines"
+
+    for group in groups:
+        words = re.findall(r"[A-Za-zÀ-ÿ]+", group.text)
+        useful_letters = re.sub(r"[^A-Za-zÀ-ÿ]", "", group.text)
+        if (
+            group.ignored
+            and len(words) >= 4
+            and len(useful_letters) >= 18
+        ):
+            return "high_content_group_ignored"
+        if (
+            group.classification == "sfx"
+            and len(words) >= 1
+            and len(useful_letters) >= 8
+            and group.text.upper().strip(" .!?") not in {
+                "BANG",
+                "BOOM",
+                "BUMP",
+                "CLANG",
+                "CRASH",
+                "GONG",
+                "GRR",
+                "GULP",
+                "HISS",
+                "KNOCK",
+                "SLAM",
+                "SNIFF",
+                "SNIFFLE",
+                "SOB",
+                "THUD",
+                "UGH",
+                "WHAM",
+                "WHOOSH",
+            }
+        ):
+            return "sentence_like_text_classified_as_sfx"
+    return ""
+
+
+def _applied_text_repairs(ocr_metadata):
+    if ocr_metadata.get("final_engine") != "rapidocr":
+        return []
+    return list(ocr_metadata.get("text_repairs", []))
+
+
+def _group_text_repairs(groups):
+    return [
+        {
+            "original_text": group.original_text,
+            "repaired_text": group.repaired_text,
+            "repair_reason": group.repair_reason,
+            "group_id": group.group_id,
+        }
+        for group in groups
+        if group.repair_reason and group.repaired_text != group.original_text
+    ]
+
+
 def _aggregate_debug_data(states):
     result = {
         "ocr_detected_lines": 0,
         "groups_formed": 0,
         "groups_translated": 0,
         "groups_ignored_sfx_decorative": 0,
+        "ocr_page_fallbacks": 0,
+        "ocr_text_repairs": 0,
         "classification_counts": {
             "speech": 0,
             "narration": 0,
@@ -792,6 +927,13 @@ def _aggregate_debug_data(states):
             if item.get("ignored")
             and item.get("classification") in {"sfx", "decorative"}
         )
+        ocr_metadata = debug_data.get("ocr_metadata", {})
+        result["ocr_page_fallbacks"] += int(
+            bool(ocr_metadata.get("fallback_used"))
+        )
+        result["ocr_text_repairs"] += len(
+            debug_data.get("text_repairs", [])
+        )
     return result
 
 
@@ -812,6 +954,8 @@ def _empty_debug_data(image_path, precheck_reason):
             "unknown": 0,
         },
         "items": [],
+        "ocr_metadata": {},
+        "text_repairs": [],
         "precheck_reason": precheck_reason,
     }
 
@@ -824,6 +968,15 @@ def _relevant_output_config(pipeline_fingerprint):
         "pipeline_fingerprint": pipeline_fingerprint,
         "ocr_engine": config.OCR_ENGINE,
         "ocr_fallback": config.OCR_FALLBACK_ENGINE,
+        "ocr_hybrid_fallback": config.OCR_HYBRID_FALLBACK,
+        "rapidocr_enabled": config.RAPIDOCR_ENABLED,
+        "rapidocr_min_confidence": config.RAPIDOCR_MIN_CONFIDENCE,
+        "rapidocr_page_fallback": config.RAPIDOCR_PAGE_FALLBACK,
+        "rapidocr_suspicious_text_fallback": (
+            config.RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK
+        ),
+        "ocr_text_repair": config.OCR_TEXT_REPAIR,
+        "ocr_text_repair_mode": config.OCR_TEXT_REPAIR_MODE,
         "translate_sfx": config.TRANSLATE_SFX,
         "prioritize_enclosed_text": config.PRIORITIZE_ENCLOSED_TEXT,
         "translation_model": config.NVIDIA_TRANSLATION_MODEL,
@@ -1102,6 +1255,8 @@ def _timing_report_text(report):
         ),
         f"OCR executados: {report['ocr_runs']}",
         f"OCR do cache: {report['ocr_cache_hits']}",
+        f"Fallbacks OCR para Paddle: {report['ocr_page_fallbacks']}",
+        f"Textos OCR reparados: {report['ocr_text_repairs']}",
         f"Textos enviados a NVIDIA: {report['translation_api_texts']}",
         f"Traducoes do cache: {report['translation_cache_hits']}",
         "",

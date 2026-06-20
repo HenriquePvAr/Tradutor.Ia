@@ -1,0 +1,2 @@
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.27.0
