@@ -41,6 +41,16 @@ def main():
         help="Ignora caches e reprocessa todas as etapas.",
     )
     parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help="Tambem ignora o cache de download. Por padrao, --force reprocessa OCR/traducao/render sem baixar tudo de novo.",
+    )
+    parser.add_argument(
+        "--page-indices",
+        default="",
+        help="Processa apenas paginas validas especificas do capitulo, ex: 20,28,32,48.",
+    )
+    parser.add_argument(
         "--output-folder",
         default=os.path.join("output", "full_chapter"),
         help="Pasta dos artefatos de benchmark.",

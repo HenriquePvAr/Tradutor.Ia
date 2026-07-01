@@ -19,19 +19,7 @@ Nao usar markdown.
 Usar portugues natural do Brasil.
 Preservar emocao, gritos, pausas e tom dramatico.
 Usar frases curtas para caber nos baloes.
-Exemplos de tom:
-THE BELFATOR EMPIRE'S CAPITAL: BRINSIA -> A CAPITAL DO IMPERIO BELFATOR: BRINSIA
-HIS MAJESTY HAS PERISHED! -> SUA MAJESTADE MORREU!
-ALERT THE GUARDS! -> AVISEM OS GUARDAS!
 Retornar somente JSON."""
-
-
-EXPECTED_TRANSLATIONS = {
-    "THE BELFATOR EMPIRE'S CAPITAL: BRINSIA": "A CAPITAL DO IMP\u00c9RIO BELFATOR: BRINSIA",
-    "HIS MAJESTY HAS PERISHED!": "SUA MAJESTADE MORREU!",
-    "ALERT THE GUARDS!": "AVISEM OS GUARDAS!",
-}
-
 
 class TranslatorNvidiaBatch:
     def __init__(
@@ -86,6 +74,56 @@ class TranslatorNvidiaBatch:
 
     def translate(self, text):
         return self.translate_many([text])[0]
+
+    def translate_strict(
+        self,
+        text,
+        previous_translation="",
+        validation_reason="",
+        force=False,
+    ):
+        if not str(text).strip():
+            return text
+        if not self.is_configured:
+            return text
+
+        self._increment_stat("api_texts", 1)
+        started = time.perf_counter()
+        try:
+            payload = {
+                "BALAO_1": str(text),
+                "traducao_rejeitada": str(previous_translation or ""),
+                "motivo_rejeicao": str(validation_reason or ""),
+            }
+            response_text = self._request_with_retry(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            SYSTEM_PROMPT_TEMPLATE.format(
+                                source_language=self.source_language
+                            )
+                            + "\nRevisao estrita: traduza TODO texto ingles para "
+                            "portugues do Brasil. Nao deixe palavras/frases em ingles, "
+                            "exceto nomes proprios. Se o texto for uma onomatopeia/SFX, "
+                            "preserve. Retorne somente JSON."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "A traducao anterior foi rejeitada por controle de qualidade. "
+                            "Refaca somente BALAO_1 em portugues natural e curto, sem "
+                            "misturar ingles e portugues:\n"
+                            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+                        ),
+                    },
+                ]
+            )
+            parsed = self._parse_json_response(response_text)
+            return parsed.get("BALAO_1", text) or text
+        finally:
+            self._increment_stat("api_seconds", time.perf_counter() - started)
 
     def translate_many(self, texts, force=None):
         if not texts:
@@ -366,5 +404,4 @@ class TranslatorNvidiaBatch:
 
     @staticmethod
     def _postprocess_translation(original_text, translated):
-        normalized = re.sub(r"\s+", " ", str(original_text or "").strip()).upper()
-        return EXPECTED_TRANSLATIONS.get(normalized, translated)
+        return translated

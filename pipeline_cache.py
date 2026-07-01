@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 import cv2
@@ -77,7 +78,20 @@ def atomic_write_json(path, payload):
                 ensure_ascii=False,
                 indent=2,
             )
-        os.replace(temp_name, path)
+        last_error = None
+        for attempt in range(8):
+            try:
+                os.replace(temp_name, path)
+                last_error = None
+                break
+            except PermissionError as exc:
+                # Antivirus, indexers and preview panes can briefly hold JSON
+                # files open on Windows.  Keep the atomic replacement, but
+                # tolerate that transient lock instead of aborting a chapter.
+                last_error = exc
+                time.sleep(min(1.0, 0.05 * (2**attempt)))
+        if last_error is not None:
+            raise last_error
     finally:
         if os.path.exists(temp_name):
             os.remove(temp_name)

@@ -392,6 +392,140 @@ COMMON_REPEATED_WORDS = {
 }
 
 
+COMMON_ENGLISH_WORD_SCORES = {
+    # Compact, generic vocabulary for OCR repair. Scores are relative
+    # preference weights, not chapter-specific rules.
+    "a": 1.8,
+    "about": 1.4,
+    "after": 1.5,
+    "again": 1.4,
+    "all": 1.5,
+    "already": 1.2,
+    "always": 1.2,
+    "am": 1.4,
+    "an": 1.4,
+    "and": 1.8,
+    "are": 1.8,
+    "as": 1.6,
+    "at": 1.4,
+    "back": 1.3,
+    "be": 1.5,
+    "because": 1.3,
+    "before": 1.3,
+    "better": 1.4,
+    "body": 1.2,
+    "but": 1.8,
+    "by": 1.4,
+    "can": 1.7,
+    "cannot": 1.2,
+    "changed": 1.1,
+    "clothes": 1.2,
+    "come": 1.5,
+    "could": 1.5,
+    "day": 1.2,
+    "defeat": 1.2,
+    "determination": 1.1,
+    "did": 1.5,
+    "dirty": 1.1,
+    "do": 1.6,
+    "dollars": 1.1,
+    "earthquakes": 1.0,
+    "eyes": 1.2,
+    "face": 1.1,
+    "faced": 1.0,
+    "fight": 1.3,
+    "find": 1.4,
+    "for": 1.8,
+    "friend": 1.3,
+    "from": 1.7,
+    "get": 1.6,
+    "gift": 1.2,
+    "go": 1.5,
+    "going": 1.3,
+    "gotta": 1.1,
+    "have": 1.7,
+    "he": 1.6,
+    "head": 1.2,
+    "heck": 1.1,
+    "her": 1.4,
+    "his": 1.6,
+    "hurt": 1.2,
+    "i": 1.9,
+    "if": 1.7,
+    "in": 1.6,
+    "is": 1.7,
+    "it": 1.7,
+    "just": 1.4,
+    "let": 1.3,
+    "like": 1.5,
+    "look": 1.4,
+    "me": 1.7,
+    "meaning": 1.1,
+    "met": 1.2,
+    "mom": 1.3,
+    "my": 1.8,
+    "myself": 1.3,
+    "natural": 1.1,
+    "not": 1.6,
+    "of": 1.8,
+    "on": 1.5,
+    "or": 1.5,
+    "out": 1.4,
+    "part": 1.2,
+    "pathetic": 1.1,
+    "plank": 1.0,
+    "planks": 1.0,
+    "promised": 1.1,
+    "really": 1.4,
+    "resolute": 1.0,
+    "resolve": 1.1,
+    "resonated": 1.0,
+    "right": 1.2,
+    "see": 1.2,
+    "she": 1.5,
+    "soon": 1.2,
+    "spent": 1.2,
+    "still": 1.3,
+    "such": 1.2,
+    "talking": 1.2,
+    "take": 1.3,
+    "that": 1.7,
+    "the": 1.9,
+    "their": 1.4,
+    "them": 1.5,
+    "there": 1.3,
+    "these": 1.6,
+    "they": 1.5,
+    "think": 1.2,
+    "this": 1.7,
+    "to": 1.8,
+    "today": 1.2,
+    "too": 1.4,
+    "two": 1.4,
+    "up": 1.5,
+    "voice": 1.1,
+    "wake": 1.2,
+    "was": 1.6,
+    "wash": 1.2,
+    "we": 1.6,
+    "what": 1.6,
+    "when": 1.4,
+    "where": 1.4,
+    "who": 1.5,
+    "why": 1.5,
+    "will": 1.7,
+    "with": 1.6,
+    "you": 1.8,
+    "your": 1.6,
+    "yeah": 1.2,
+}
+
+COMMON_ENGLISH_WORDS = set(COMMON_ENGLISH_WORD_SCORES)
+_WORDS_BY_LENGTH = {}
+for _word in COMMON_ENGLISH_WORDS:
+    _WORDS_BY_LENGTH.setdefault(len(_word), []).append(_word)
+
+
 def _repair_ocr_lines(lines):
     repairs = []
     if (
@@ -403,18 +537,37 @@ def _repair_ocr_lines(lines):
     for line in lines:
         original = line.text
         repaired, reason = repair_ocr_text(original)
+        assessment = assess_ocr_repair(
+            original,
+            repaired,
+            reason,
+            confidence=line.confidence,
+            source_engine="rapidocr",
+        )
         line.original_text = original
-        line.repaired_text = repaired
-        line.repair_reason = reason
+        line.repaired_text = repaired if assessment["accepted"] else original
+        line.repair_reason = reason if assessment["accepted"] else ""
         if repaired != original:
-            line.text = repaired
             repair = {
                 "original_text": original,
                 "repaired_text": repaired,
                 "repair_reason": reason,
+                **assessment,
             }
             repairs.append(repair)
-            line.metadata = {**(line.metadata or {}), **repair}
+            line.metadata = {
+                **(line.metadata or {}),
+                "repair_candidate": repair,
+                "repair_accepted": bool(assessment["accepted"]),
+            }
+        if repaired != original and assessment["accepted"]:
+            line.text = repaired
+            line.metadata = {
+                **(line.metadata or {}),
+                "original_text": original,
+                "repaired_text": repaired,
+                "repair_reason": reason,
+            }
     return lines, repairs
 
 
@@ -435,31 +588,17 @@ def repair_ocr_text(text):
 
 
 def _repair_compact_age(text):
+    if re.fullmatch(r"[.·•]\s*A", str(text or "").strip(), flags=re.IGNORECASE):
+        return "A", "strip_leading_dot_from_article"
+
+    original_text = str(text or "")
+    text = _normalize_ocr_punctuation(original_text)
     repaired = re.sub(
         r"\b(age)(\d{1,3})\b",
         lambda match: f"{match.group(1)} {match.group(2)}",
         text,
         flags=re.IGNORECASE,
     )
-    replacements = {
-        "THATWAS": "THAT WAS",
-        "PURPOSEIN": "PURPOSE IN",
-        "THATISUNTIL": "THAT IS UNTIL",
-        "THELETTER": "THE LETTER",
-        "FROMTHE": "FROM THE",
-        "EMPIRE'SCAPITAL": "EMPIRE'S CAPITAL",
-        "MAJESTYHAS": "MAJESTY HAS",
-    }
-    replacement_applied = False
-    for source, target in replacements.items():
-        updated = re.sub(
-            rf"\b{re.escape(source)}\b",
-            target,
-            repaired,
-            flags=re.IGNORECASE,
-        )
-        replacement_applied = replacement_applied or updated != repaired
-        repaired = updated
     reasons = []
     if re.search(r"\b(age)\s+\d{1,3}\b", repaired, re.IGNORECASE) and re.search(
         r"\b(age)\d{1,3}\b",
@@ -467,9 +606,340 @@ def _repair_compact_age(text):
         re.IGNORECASE,
     ):
         reasons.append("separate_age_number")
-    if replacement_applied:
-        reasons.append("split_known_glued_words")
+    generic_repaired, generic_reasons = _repair_tokens_with_generic_vocabulary(repaired)
+    if generic_repaired != repaired:
+        repaired = generic_repaired
+        reasons.extend(generic_reasons)
+    if text != original_text:
+        reasons.insert(0, "normalize_ocr_punctuation")
     return repaired, ";".join(reasons)
+
+
+def assess_ocr_repair(
+    original,
+    repaired,
+    reason,
+    confidence=0.0,
+    source_engine="",
+    agreeing_engines=None,
+):
+    """Decide whether a generic OCR repair is safe enough for runtime use.
+
+    The repair generator may propose useful candidates aggressively so they can
+    trigger selective OCR fallback. Runtime mutation is deliberately stricter:
+    spelling changes require agreement from another engine, while punctuation,
+    repeated-word context and segmentation that only inserts spaces are allowed.
+    """
+    original = str(original or "")
+    repaired = str(repaired or "")
+    reasons = [item for item in str(reason or "").split(";") if item]
+    agreeing_engines = sorted(set(agreeing_engines or []))
+    original_letters = re.sub(r"[^A-Za-z]", "", original).upper()
+    repaired_letters = re.sub(r"[^A-Za-z]", "", repaired).upper()
+    edit_distance = _edit_distance(original_letters, repaired_letters)
+    normalized_distance = edit_distance / max(1, len(original_letters), len(repaired_letters))
+    score_before = _generic_text_plausibility(original)
+    score_after = _generic_text_plausibility(repaired)
+    improvement = score_after - score_before
+
+    accepted = repaired != original
+    rejection_reason = ""
+    if not accepted:
+        rejection_reason = "no_change"
+    elif normalized_distance > 0.22:
+        accepted = False
+        rejection_reason = "edit_distance_too_large"
+    elif any(_looks_like_proper_name(token) for token in re.findall(r"[A-Za-z]+", original)):
+        if original_letters != repaired_letters:
+            accepted = False
+            rejection_reason = "possible_proper_name"
+    elif "dictionary_edit_distance_repair" in reasons and not agreeing_engines:
+        accepted = False
+        rejection_reason = "dictionary_change_requires_engine_agreement"
+    elif "segment_compact_english_word" in reasons and edit_distance > 0 and not agreeing_engines:
+        accepted = False
+        rejection_reason = "segmentation_spelling_change_requires_engine_agreement"
+    elif "adjacent_common_word_ocr_typo" in reasons:
+        accepted = edit_distance <= 2 and improvement >= -0.01
+        if not accepted:
+            rejection_reason = "repeated_word_context_not_strong_enough"
+    elif set(reasons).issubset(
+        {
+            "normalize_ocr_punctuation",
+            "strip_leading_dot_from_article",
+            "separate_age_number",
+            "normalize_confused_exclamation_marks",
+            "segment_compact_english_word",
+        }
+    ):
+        accepted = edit_distance == 0 or bool(agreeing_engines)
+        if not accepted:
+            rejection_reason = "structural_repair_changed_letters"
+    elif improvement < 0.08 and not agreeing_engines:
+        accepted = False
+        rejection_reason = "quality_improvement_too_small"
+
+    return {
+        "accepted": bool(accepted),
+        "rejection_reason": rejection_reason,
+        "score_before": round(float(score_before), 4),
+        "score_after": round(float(score_after), 4),
+        "score_improvement": round(float(improvement), 4),
+        "edit_distance": int(edit_distance),
+        "normalized_edit_distance": round(float(normalized_distance), 4),
+        "ocr_confidence": round(float(confidence or 0.0), 4),
+        "source_engine": source_engine or "",
+        "agreeing_engines": agreeing_engines,
+    }
+
+
+def _generic_text_plausibility(text):
+    tokens = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", str(text or ""))
+    if not tokens:
+        return 0.0
+    points = 0.0
+    for token in tokens:
+        lower = token.lower().replace("'", "")
+        if lower in COMMON_ENGLISH_WORDS:
+            points += 1.0
+        elif _looks_like_proper_name(token):
+            points += 0.72
+        elif len(lower) <= 2:
+            points += 0.45
+        elif _low_vowel_signal(token):
+            points += 0.05
+        else:
+            points += 0.32
+    spacing_bonus = min(0.12, max(0, len(tokens) - 1) * 0.025)
+    return min(1.0, points / len(tokens) + spacing_bonus)
+
+
+def _normalize_ocr_punctuation(text):
+    normalized = unicodedata.normalize("NFKC", str(text or ""))
+    replacements = {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u00b4": "'",
+        "\u02bc": "'",
+        "\u2026": "...",
+        "\u00a0": " ",
+    }
+    for source, target in replacements.items():
+        normalized = normalized.replace(source, target)
+    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = re.sub(r"\s+([?!.,:;])", r"\1", normalized)
+    normalized = re.sub(r"([(\[{])\s+", r"\1", normalized)
+    normalized = re.sub(r"\s+([)\]}])", r"\1", normalized)
+    return normalized.strip()
+
+
+def _looks_like_proper_name(token):
+    token = str(token or "")
+    alpha = re.sub(r"[^A-Za-z]", "", token)
+    if len(alpha) < 3:
+        return False
+    return token[:1].isupper() and token[1:].islower() and alpha.lower() not in COMMON_ENGLISH_WORDS
+
+
+def _match_phrase_case(source, phrase):
+    if str(source).islower():
+        return phrase.lower()
+    if str(source).istitle():
+        return phrase.title()
+    return phrase.upper()
+
+
+def _low_vowel_signal(token):
+    letters = re.sub(r"[^A-Za-z]", "", str(token or "")).upper()
+    if len(letters) < 3:
+        return False
+    vowels = sum(char in "AEIOUY" for char in letters)
+    consonant_run = bool(re.search(r"[BCDFGHJKLMNPQRSTVWXYZ]{3,}", letters))
+    return vowels <= max(0, len(letters) // 5) or consonant_run
+
+
+def _word_candidates(piece, allow_fuzzy=True):
+    piece_lower = re.sub(r"[^a-z]", "", str(piece or "").lower())
+    if not piece_lower:
+        return []
+    candidates = []
+    if piece_lower in COMMON_ENGLISH_WORDS:
+        candidates.append((piece_lower, 0, 1.0))
+
+    if not allow_fuzzy:
+        candidates.sort(
+            key=lambda item: (
+                item[2] + COMMON_ENGLISH_WORD_SCORES.get(item[0], 0.0) * 0.08,
+                -item[1],
+                len(item[0]),
+            ),
+            reverse=True,
+        )
+        return candidates[:8]
+
+    max_distance = 1 if len(piece_lower) <= 5 else 2
+    for length in range(
+        max(1, len(piece_lower) - max_distance),
+        len(piece_lower) + max_distance + 1,
+    ):
+        for word in _WORDS_BY_LENGTH.get(length, []):
+            if word == piece_lower:
+                continue
+            distance = _edit_distance(piece_lower, word)
+            if distance > max_distance:
+                continue
+            similarity = 1.0 - distance / max(len(piece_lower), len(word))
+            if similarity < 0.66:
+                continue
+            confidence = max(0.0, similarity - 0.08 * distance)
+            candidates.append((word, distance, confidence))
+    candidates.sort(
+        key=lambda item: (
+            item[2] + COMMON_ENGLISH_WORD_SCORES.get(item[0], 0.0) * 0.08,
+            -item[1],
+            len(item[0]),
+        ),
+        reverse=True,
+    )
+    return candidates[:8]
+
+
+def suggest_english_word(token):
+    token_text = str(token or "")
+    if "'" in token_text:
+        return "", 0.0
+    alpha = re.sub(r"[^A-Za-z]", "", token_text)
+    if len(alpha) < 3:
+        return "", 0.0
+    if _looks_like_proper_name(token_text):
+        return "", 0.0
+    lower = alpha.lower()
+    if lower in COMMON_ENGLISH_WORDS:
+        return "", 0.0
+
+    best_word = ""
+    best_score = 0.0
+    for word, distance, confidence in _word_candidates(lower):
+        if distance == 0:
+            continue
+        if len(alpha) <= 3 and not _low_vowel_signal(alpha):
+            continue
+        if distance >= 2 and not (
+            len(alpha) >= 6
+            and confidence >= 0.66
+            and (alpha.isupper() or _low_vowel_signal(alpha))
+        ):
+            continue
+        frequency_bonus = min(0.18, COMMON_ENGLISH_WORD_SCORES.get(word, 0.0) * 0.08)
+        score = confidence + frequency_bonus
+        if score > best_score:
+            best_word = word
+            best_score = score
+    return best_word, min(1.0, best_score)
+
+
+def segment_compact_english_word(token):
+    token_text = str(token or "")
+    alpha = re.sub(r"[^A-Za-z]", "", token_text)
+    if len(alpha) < 4 or _looks_like_proper_name(token_text):
+        return "", 0.0
+    lower = alpha.lower()
+    if lower in COMMON_ENGLISH_WORDS:
+        return "", 0.0
+
+    max_word_len = max(_WORDS_BY_LENGTH) if _WORDS_BY_LENGTH else 16
+    n = len(lower)
+    dp = [None] * (n + 1)
+    dp[0] = (0.0, [])
+    for start in range(n):
+        if dp[start] is None:
+            continue
+        base_score, base_words = dp[start]
+        for end in range(start + 1, min(n, start + max_word_len + 2) + 1):
+            piece = lower[start:end]
+            if len(piece) == 1 and piece not in {"a", "i"}:
+                continue
+            allow_fuzzy = _low_vowel_signal(piece) or len(piece) >= 7
+            for word, distance, confidence in _word_candidates(piece, allow_fuzzy=allow_fuzzy):
+                if distance > 0 and len(piece) < 4:
+                    continue
+                if distance > 0 and not _low_vowel_signal(piece):
+                    continue
+                word_score = (
+                    COMMON_ENGLISH_WORD_SCORES.get(word, 0.8)
+                    + len(word) * 0.035
+                    + confidence * 0.55
+                    - distance * 0.62
+                    - 0.08
+                )
+                if len(word) == 1:
+                    word_score -= 0.45
+                if distance and word_score < 0.55:
+                    continue
+                next_score = base_score + word_score
+                current = dp[end]
+                if current is None or next_score > current[0]:
+                    dp[end] = (next_score, base_words + [word])
+
+    if not dp[n]:
+        return "", 0.0
+    score, words = dp[n]
+    if len(words) < 2:
+        return "", 0.0
+    average_len = sum(len(word) for word in words) / len(words)
+    single_positions = [index for index, word in enumerate(words) if len(word) == 1]
+    if len(single_positions) > 1:
+        return "", 0.0
+    if single_positions:
+        pos = single_positions[0]
+        single = words[pos]
+        if not (single == "a" or (single == "i" and pos in {0, len(words) - 1})):
+            return "", 0.0
+    if average_len < 2.2 and not single_positions:
+        return "", 0.0
+    confidence = min(1.0, score / max(1.0, len(words) * 1.45))
+    return " ".join(words), confidence
+
+
+def _repair_tokens_with_generic_vocabulary(text):
+    parts = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+|[^A-Za-z\d]+", str(text or ""))
+    reasons = []
+    changed = False
+    for index, part in enumerate(parts):
+        if not re.fullmatch(r"[A-Za-z]+(?:'[A-Za-z]+)?", part):
+            continue
+        if "'" in part:
+            continue
+        if _looks_like_proper_name(part):
+            continue
+
+        segmented, segment_score = segment_compact_english_word(part)
+        if segmented and segmented.upper() != part.upper() and segment_score >= 0.58:
+            parts[index] = _match_phrase_case(part, segmented)
+            reasons.append("segment_compact_english_word")
+            changed = True
+            continue
+
+        suggestion, suggestion_score = suggest_english_word(part)
+        if suggestion and suggestion.upper() != part.upper() and suggestion_score >= 0.62:
+            parts[index] = _match_word_case(part, suggestion.upper())
+            reasons.append("dictionary_edit_distance_repair")
+            changed = True
+
+    repaired = "".join(parts)
+    if re.search(r"\b1{2,}\s*[?!]*\b", repaired):
+        updated = re.sub(
+            r"\b1{2,}\s*([?!]*)\b",
+            lambda match: "!" + (match.group(1) or "!"),
+            repaired,
+        )
+        if updated != repaired:
+            repaired = updated
+            reasons.append("normalize_confused_exclamation_marks")
+            changed = True
+    return (repaired if changed else text), reasons
 
 
 def _repair_repeated_word(text):

@@ -175,6 +175,52 @@ Capitulo antigo, 50 paginas:
 RapidOCR ainda e experimental. Para maxima qualidade e comportamento mais
 conservador, use PaddleOCR.
 
+## Camada de qualidade do RapidOCR
+
+RapidOCR continua sendo um motor opcional e experimental; PaddleOCR permanece
+o padrao mais seguro. No modo rapido, o pipeline tenta RapidOCR primeiro. Se o
+texto ou os boxes parecerem suspeitos, somente a regiao afetada passa pelo
+PaddleOCR Mobile. Se a qualidade ainda for insuficiente, a mesma regiao usa o
+PaddleOCR completo.
+
+Os reparos OCR sao genericos e conservadores. Eles usam confianca, distancia
+de edicao, vocabulario, contexto e concordancia entre motores, sem traducoes
+prontas ou regras de frases especificas. A resposta da NVIDIA tambem e
+validada para impedir texto vazio ou mistura indevida de portugues e ingles.
+
+Antes de aceitar uma pagina, o pipeline valida a mascara, a area segura e a
+imagem renderizada. Alteracoes fora da regiao permitida, manchas, borroes,
+dano ao contorno do balao e texto fora do balao causam rollback seletivo do
+grupo. SFX e textos decorativos continuam preservados com
+`TRANSLATE_SFX=False`.
+
+Grupos que nao podem ser redesenhados com seguranca sao enviados para a
+auditoria Categoria A/B:
+
+- Categoria A: SFX, decorativo, nome proprio ou texto cuja remocao danificaria
+  a arte; pode permanecer original.
+- Categoria B: fala, pensamento ou narracao importante; deve ser corrigido
+  antes da aprovacao do gate.
+
+Comando recomendado para um capitulo completo em modo rapido:
+
+```powershell
+python test_pipeline_webtoon.py --url "URL_DO_CAPITULO" --full --fast --benchmark --force --ocr-engine rapidocr
+```
+
+### Benchmark Lookism EP 50
+
+- Paginas processadas/PDF: 81/81
+- Tempo total: 8min11s
+- Media: 6,06s/pagina
+- Grupos traduzidos: 185
+- SFX preservados: 25
+- Paginas vazias ou corrompidas: 0
+- Falhas visuais graves: 0
+- Texto misturado ou fora da regiao: 0
+- Gate global: aprovado
+- Testes de regressao: 19 aprovados
+
 ## Como ativar NVIDIA
 
 No `.env`:

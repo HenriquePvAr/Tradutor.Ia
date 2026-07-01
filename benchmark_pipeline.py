@@ -16,9 +16,11 @@ from down import download_images, force_remove
 from json_utils import dumps_json
 from ocr_balloon import (
     analyze_image_array,
+    apply_selective_ocr_fallbacks,
     apply_group_translations,
     get_translatable_groups,
     render_analyzed_image,
+    validate_and_retry_translations,
 )
 from ocr_parallel import detect_ocr_jobs
 from ocr_engine import OCREngine
@@ -41,7 +43,7 @@ from pipeline_cache import (
     valid_image,
 )
 from translator_nllb import get_translator
-from translator_nvidia import EXPECTED_TRANSLATIONS, PROMPT_VERSION
+from translator_nvidia import PROMPT_VERSION
 
 
 BASELINE_SECONDS = 2129.41
@@ -59,26 +61,53 @@ def run_benchmark(args):
     output_folder = Path(getattr(args, "output_folder", OUTPUT_FOLDER)).resolve()
     pages_folder = output_folder / "pages"
     errors_folder = output_folder / "errors"
+    diagnostic_folder = output_folder / "debug"
     progress_path = output_folder / "progress.json"
     timing_json_path = output_folder / "timing_report.json"
     timing_txt_path = output_folder / "timing_report.txt"
-    contact_sheet_path = output_folder / "preview_contact_sheet.jpg"
-    compare_sheet_path = output_folder / "preview_compare_sheet.jpg"
+    selected_page_indices = _parse_page_indices(getattr(args, "page_indices", ""))
+    targeted_regression = bool(selected_page_indices)
+    contact_sheet_path = (
+        output_folder / "regression_contact_sheet.jpg"
+        if targeted_regression
+        else output_folder / "preview_contact_sheet.jpg"
+    )
+    compare_sheet_path = (
+        output_folder / "regression_compare_sheet.jpg"
+        if targeted_regression
+        else output_folder / "preview_compare_sheet.jpg"
+    )
+    quality_json_path = (
+        output_folder / "regression_report.json"
+        if targeted_regression
+        else output_folder / "quality_report.json"
+    )
+    quality_html_path = (
+        output_folder / "regression_report.html"
+        if targeted_regression
+        else output_folder / "quality_report.html"
+    )
 
     output_folder.mkdir(parents=True, exist_ok=True)
     if args.force:
         _reset_generated_folders(pages_folder, errors_folder)
+        if targeted_regression:
+            _reset_generated_folders(diagnostic_folder)
     pages_folder.mkdir(parents=True, exist_ok=True)
     errors_folder.mkdir(parents=True, exist_ok=True)
 
     effective_debug = bool(config.DEBUG_VISUAL and not args.fast)
     max_images = None if args.full else args.max_images
+    download_max_images = max_images
+    if selected_page_indices and not args.full:
+        download_max_images = max(max(selected_page_indices), max_images or 0)
     run_signature = stable_hash(
         {
             "url": args.url,
             "max_images": max_images,
             "full": args.full,
             "fast": args.fast,
+            "page_indices": selected_page_indices,
             "pipeline": "benchmark-v1",
             "ocr_engine": config.OCR_ENGINE,
             "ocr_fallback_engine": config.OCR_FALLBACK_ENGINE,
@@ -90,20 +119,35 @@ def run_benchmark(args):
 
     print(f"Benchmark: {args.url}", flush=True)
     print(f"Imagens: {'capitulo completo' if args.full else max_images}", flush=True)
+    if selected_page_indices:
+        print(f"Paginas selecionadas: {selected_page_indices}", flush=True)
     print(f"Fast: {'sim' if args.fast else 'nao'}", flush=True)
     print(f"Force: {'sim' if args.force else 'nao'}", flush=True)
     print(f"Saida: {output_folder}", flush=True)
 
     download_started = time.perf_counter()
-    image_paths, download_report, download_cache_hit = _download_with_cache(
+    all_image_paths, download_report, download_cache_hit = _download_with_cache(
         args.url,
-        max_images,
+        download_max_images,
         output_folder,
-        force=args.force,
+        force=bool(getattr(args, "force_download", False)),
     )
     download_wall_seconds = time.perf_counter() - download_started
-    if not image_paths:
+    if not all_image_paths:
         raise RuntimeError("Nenhuma imagem valida encontrada para o benchmark.")
+    image_entries, missing_page_indices = _select_image_entries(
+        all_image_paths,
+        selected_page_indices,
+    )
+    if missing_page_indices:
+        print(
+            "Aviso: paginas selecionadas indisponiveis apos download: "
+            + ",".join(str(item) for item in missing_page_indices),
+            flush=True,
+        )
+    if not image_entries:
+        raise RuntimeError("Nenhuma pagina selecionada estava disponivel para processar.")
+    image_paths = [entry["path"] for entry in image_entries]
 
     previous_progress = load_json(progress_path, default={})
     previous_records = {}
@@ -124,7 +168,11 @@ def run_benchmark(args):
         "ocr_runs": 0,
         "ocr_cache_hits": 0,
         "ocr_page_fallbacks": 0,
+        "ocr_region_fallbacks": 0,
         "ocr_text_repairs": 0,
+        "translation_retries": 0,
+        "translation_rejections": 0,
+        "visual_validation_failures": 0,
         "pages_with_error": 0,
     }
     validation_seconds = (
@@ -138,6 +186,7 @@ def run_benchmark(args):
         "no_text_precheck": 0.0,
         "ocr": 0.0,
         "ocr_cpu": 0.0,
+        "ocr_selective_fallback": 0.0,
         "classification_grouping": 0.0,
         "translation": 0.0,
         "inpainting": 0.0,
@@ -149,7 +198,9 @@ def run_benchmark(args):
 
     page_states = []
     ocr_jobs = []
-    for index, image_path in enumerate(image_paths, start=1):
+    for entry in image_entries:
+        index = int(entry["index"])
+        image_path = entry["path"]
         image_hash = file_sha256(image_path)
         process_key = processed_cache_key(
             image_hash,
@@ -159,6 +210,8 @@ def run_benchmark(args):
         output_path = pages_folder / f"page_{index:03}.png"
         state = {
             "index": index,
+            "sequence_index": int(entry.get("sequence_index", index)),
+            "original_index": int(entry.get("original_index", index)),
             "image_path": str(image_path),
             "image_hash": image_hash,
             "process_key": process_key,
@@ -312,6 +365,29 @@ def run_benchmark(args):
 
         classify_started = time.perf_counter()
         candidates, groups = analyze_image_array(original, state.get("raw_lines", []))
+        selective_started = time.perf_counter()
+        fallback_lines, selective_records = apply_selective_ocr_fallbacks(
+            original,
+            state.get("raw_lines", []),
+            groups,
+            ocr_lang,
+            state["index"],
+        )
+        selective_elapsed = time.perf_counter() - selective_started
+        if selective_records:
+            state["selective_ocr_fallbacks"] = selective_records
+            stage_seconds["ocr_selective_fallback"] += selective_elapsed
+            state["timings"]["ocr_selective_fallback"] = selective_elapsed
+            used_records = [
+                record for record in selective_records if record.get("fallback_used")
+            ]
+            if used_records:
+                state["raw_lines"] = fallback_lines
+                candidates, groups = analyze_image_array(original, fallback_lines)
+                state["ocr_metadata"] = {
+                    **state.get("ocr_metadata", {}),
+                    "selective_fallbacks": selective_records,
+                }
         grouping_fallback_reason = _grouping_fallback_reason(state, groups)
         if grouping_fallback_reason:
             fallback_started = time.perf_counter()
@@ -370,19 +446,31 @@ def run_benchmark(args):
     )
     stage_seconds["translation"] = time.perf_counter() - translation_started
     apply_group_translations(translation_targets, translations)
+    retry_started = time.perf_counter()
+    translation_retry_records = validate_and_retry_translations(
+        translation_targets,
+        translator,
+        force=args.force,
+    )
+    stage_seconds["translation"] += time.perf_counter() - retry_started
 
     for state in analyzable_states:
         if state.get("status") == "completed":
             continue
         try:
             render_timings = {}
+            page_debug_folder = None
+            if targeted_regression:
+                page_debug_folder = str(
+                    diagnostic_folder / f"page_{state['index']:03}"
+                )
             final, debug_data = render_analyzed_image(
                 state["original_bgr"],
                 state.get("raw_lines", []),
                 state["candidates"],
                 state["groups"],
                 font_path=config.FONT_PATH,
-                debug_folder=None,
+                debug_folder=page_debug_folder,
                 page_index=state["index"],
                 image_path=state["image_path"],
                 stage_timings=render_timings,
@@ -406,9 +494,16 @@ def run_benchmark(args):
             state["status"] = "completed"
             state["cache_source"] = "fresh"
             debug_data["ocr_metadata"] = state.get("ocr_metadata", {})
+            debug_data["selective_ocr_fallbacks"] = state.get(
+                "selective_ocr_fallbacks",
+                [],
+            )
             debug_data["text_repairs"] = (
                 _applied_text_repairs(state.get("ocr_metadata", {}))
                 + state.get("group_text_repairs", [])
+            )
+            debug_data["rejected_text_repairs"] = _rejected_text_repairs(
+                state.get("ocr_metadata", {})
             )
             state["debug_data"] = debug_data
             _save_page_processed_cache(state)
@@ -452,9 +547,13 @@ def run_benchmark(args):
         raise RuntimeError("Nenhuma pagina valida foi produzida.")
 
     pdf_path = (
-        output_folder / "capitulo_completo_traduzido.pdf"
-        if args.full
-        else output_folder / f"benchmark_{args.max_images:03}.pdf"
+        output_folder / "regression.pdf"
+        if targeted_regression
+        else (
+            output_folder / "capitulo_completo_traduzido.pdf"
+            if args.full
+            else output_folder / f"benchmark_{args.max_images:03}.pdf"
+        )
     )
     pdf_started = time.perf_counter()
     generate_pdf([state["output_path"] for state in completed_states], str(pdf_path))
@@ -476,7 +575,11 @@ def run_benchmark(args):
     )
     summary = _aggregate_debug_data(completed_states)
     counters["ocr_page_fallbacks"] = summary["ocr_page_fallbacks"]
+    counters["ocr_region_fallbacks"] = summary["ocr_region_fallbacks"]
     counters["ocr_text_repairs"] = summary["ocr_text_repairs"]
+    counters["translation_retries"] = summary["translation_retries"]
+    counters["translation_rejections"] = summary["translation_rejections"]
+    counters["visual_validation_failures"] = summary["visual_validation_failures"]
     total_seconds = time.perf_counter() - started
     translator_stats = getattr(translator, "stats", {})
     quality["translation_batches_succeeded"] = (
@@ -510,6 +613,9 @@ def run_benchmark(args):
         "run_signature": run_signature,
         "total_dom_images": download_report.get("total_dom_images", 0),
         "total_unique_urls": download_report.get("total_unique_urls", 0),
+        "available_valid_images": len(all_image_paths),
+        "selected_page_indices": selected_page_indices,
+        "missing_page_indices": missing_page_indices,
         "total_images": len(image_paths),
         "processed_images": len(completed_states),
         "images_skipped_by_cache": counters["images_skipped_by_cache"],
@@ -519,7 +625,23 @@ def run_benchmark(args):
         "ocr_runs": counters["ocr_runs"],
         "ocr_cache_hits": counters["ocr_cache_hits"],
         "ocr_page_fallbacks": counters["ocr_page_fallbacks"],
+        "ocr_region_fallbacks": counters["ocr_region_fallbacks"],
+        "ocr_region_fallback_attempts": summary["ocr_region_fallback_attempts"],
+        "paddle_mobile_region_fallbacks": summary[
+            "paddle_mobile_region_fallbacks"
+        ],
+        "paddle_full_region_fallbacks": summary["paddle_full_region_fallbacks"],
         "ocr_text_repairs": counters["ocr_text_repairs"],
+        "ocr_text_repairs_rejected": summary["ocr_text_repairs_rejected"],
+        "groups_reverted_for_visual_safety": summary[
+            "groups_reverted_for_visual_safety"
+        ],
+        "manual_review_required_groups": summary["manual_review_required_groups"],
+        "translation_retries": counters["translation_retries"],
+        "translation_rejections": counters["translation_rejections"],
+        "mixed_language_items": summary["mixed_language_items"],
+        "text_overflow_items": summary["text_overflow_items"],
+        "visual_validation_failures": counters["visual_validation_failures"],
         "translation_api_texts": translator_stats.get("api_texts", 0),
         "translation_cache_hits": translator_stats.get("cache_hits", 0),
         "translation_api_requests": translator_stats.get("api_requests", 0),
@@ -568,8 +690,27 @@ def run_benchmark(args):
         "timing_report_txt": str(timing_txt_path),
         "preview_contact_sheet": str(contact_sheet_path),
         "preview_compare_sheet": str(compare_sheet_path),
+        "quality_report_json": str(quality_json_path),
+        "quality_report_html": str(quality_html_path),
         "quality_validation": quality,
     }
+    quality_report = _build_quality_report(
+        report,
+        completed_states,
+        translation_retry_records,
+    )
+    atomic_write_json(quality_json_path, quality_report)
+    quality_html_path.write_text(
+        _quality_report_html(quality_report),
+        encoding="utf-8",
+    )
+    _write_requested_artifact_aliases(
+        output_folder,
+        pdf_path,
+        contact_sheet_path,
+        compare_sheet_path,
+        args,
+    )
     atomic_write_json(timing_json_path, report)
     timing_txt_path.write_text(_timing_report_text(report), encoding="utf-8")
     _write_progress(
@@ -660,6 +801,360 @@ def _download_with_cache(url, max_images, output_folder, force):
     atomic_write_json(manifest_path, cache_manifest)
     atomic_write_json(output_report_path, manifest)
     return paths, manifest, False
+
+
+def _parse_page_indices(raw):
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        values = re.split(r"[,;\s]+", str(raw))
+    indices = []
+    seen = set()
+    for value in values:
+        if value in (None, ""):
+            continue
+        try:
+            index = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"Indice de pagina invalido: {value!r}") from None
+        if index <= 0:
+            raise ValueError(f"Indice de pagina deve ser positivo: {index}")
+        if index not in seen:
+            indices.append(index)
+            seen.add(index)
+    return indices
+
+
+def _select_image_entries(image_paths, selected_page_indices):
+    if not selected_page_indices:
+        return [
+            {
+                "index": index,
+                "original_index": index,
+                "sequence_index": index,
+                "path": path,
+            }
+            for index, path in enumerate(image_paths, start=1)
+        ], []
+
+    entries = []
+    missing = []
+    for sequence_index, original_index in enumerate(selected_page_indices, start=1):
+        if original_index > len(image_paths):
+            missing.append(original_index)
+            continue
+        entries.append(
+            {
+                "index": original_index,
+                "original_index": original_index,
+                "sequence_index": sequence_index,
+                "path": image_paths[original_index - 1],
+            }
+        )
+    return entries, missing
+
+
+def _write_requested_artifact_aliases(
+    output_folder,
+    pdf_path,
+    contact_sheet_path,
+    compare_sheet_path,
+    args,
+):
+    aliases = [
+        (contact_sheet_path, output_folder / "contact_sheet.jpg"),
+        (compare_sheet_path, output_folder / "compare_sheet.jpg"),
+    ]
+    if not args.full:
+        aliases.append((pdf_path, output_folder / f"pdf_{args.max_images}_pages.pdf"))
+    for source, target in aliases:
+        try:
+            if Path(source).exists() and Path(source).resolve() != Path(target).resolve():
+                shutil.copyfile(source, target)
+        except OSError:
+            pass
+
+
+def _build_quality_report(report, states, translation_retry_records):
+    pages = []
+    totals = {
+        "groups_detected": 0,
+        "groups_suspicious": 0,
+        "selective_fallback_attempts": 0,
+        "selective_fallbacks_used": 0,
+        "fallbacks_to_paddle_mobile": 0,
+        "fallbacks_to_paddle_full": 0,
+        "ocr_repairs": 0,
+        "ocr_repairs_rejected": 0,
+        "groups_reverted_for_visual_safety": 0,
+        "manual_review_required_groups": 0,
+        "translations_retried": len(translation_retry_records),
+        "translations_rejected": 0,
+        "external_narrations_translated": 0,
+        "sfx_preserved": 0,
+        "pages_reprocessed": 0,
+        "pages_visual_validation_failed": 0,
+        "mixed_language_items": 0,
+        "text_overflow_items": 0,
+        "white_patch_rejections": 0,
+        "broad_mask_rejections": 0,
+        "background_type_counts": {},
+    }
+
+    for state in sorted(states, key=lambda item: item["index"]):
+        debug = state.get("debug_data", {})
+        items = debug.get("items", [])
+        fallback_records = debug.get("selective_ocr_fallbacks", [])
+        suspicious = [
+            item
+            for item in items
+            if item.get("quality_reasons")
+            or float(item.get("quality_score") or 1.0) < config.OCR_GROUP_MIN_QUALITY_SCORE
+        ]
+        mixed = [
+            item
+            for item in items
+            if str(item.get("translation_validation_reason") or "").startswith(
+                ("mixed_language", "english_phrase")
+            )
+        ]
+        visual_failures = [
+            item
+            for item in items
+            if (item.get("visual_validation") or {})
+            and not (item.get("visual_validation") or {}).get(
+                "visual_validation_passed",
+                True,
+            )
+        ]
+        overflow = [
+            item
+            for item in items
+            if float(item.get("text_overflow_ratio") or 0.0)
+            > config.MAX_TEXT_OVERFLOW_RATIO
+        ]
+        narrations = [
+            item
+            for item in items
+            if item.get("classification") == "narration"
+            and item.get("sent_to_nvidia")
+        ]
+        sfx = [
+            item
+            for item in items
+            if item.get("classification") == "sfx"
+            and item.get("ignored")
+            and not item.get("sent_to_nvidia")
+        ]
+
+        totals["groups_detected"] += debug.get("group_count", 0)
+        totals["groups_suspicious"] += len(suspicious)
+        totals["selective_fallback_attempts"] += len(fallback_records)
+        totals["selective_fallbacks_used"] += sum(
+            1 for record in fallback_records if record.get("fallback_used")
+        )
+        totals["fallbacks_to_paddle_mobile"] += sum(
+            1
+            for record in fallback_records
+            if record.get("fallback_used")
+            and record.get("fallback_variant") == "paddle_mobile"
+        )
+        totals["fallbacks_to_paddle_full"] += sum(
+            1
+            for record in fallback_records
+            if record.get("fallback_used")
+            and record.get("fallback_variant") == "paddle_full"
+        )
+        totals["ocr_repairs"] += len(debug.get("text_repairs", []))
+        totals["ocr_repairs_rejected"] += len(
+            debug.get("rejected_text_repairs", [])
+        )
+        totals["groups_reverted_for_visual_safety"] += sum(
+            1
+            for item in items
+            if item.get("sent_to_nvidia") and not item.get("redrawn")
+        )
+        totals["manual_review_required_groups"] += sum(
+            1 for item in items if item.get("manual_review_required")
+        )
+        totals["white_patch_rejections"] += sum(
+            1
+            for item in items
+            if (item.get("mask_metrics") or {}).get("white_patch_rejected")
+        )
+        totals["broad_mask_rejections"] += sum(
+            1
+            for item in items
+            if (item.get("mask_metrics") or {}).get("broad_rectangular_mask")
+            and item.get("background_type") not in {"white_balloon", "narration_box"}
+        )
+        for item in items:
+            background_type = item.get("background_type")
+            if background_type:
+                totals["background_type_counts"][background_type] = (
+                    totals["background_type_counts"].get(background_type, 0) + 1
+                )
+        totals["translations_rejected"] += sum(
+            1 for item in items if item.get("rejected_translation")
+        )
+        totals["external_narrations_translated"] += len(narrations)
+        totals["sfx_preserved"] += len(sfx)
+        totals["pages_reprocessed"] += int(any(record.get("fallback_used") for record in fallback_records))
+        totals["pages_visual_validation_failed"] += int(bool(visual_failures))
+        totals["mixed_language_items"] += len(mixed)
+        totals["text_overflow_items"] += len(overflow)
+
+        pages.append(
+            {
+                "index": state["index"],
+                "sequence_index": state.get("sequence_index"),
+                "original_index": state.get("original_index", state["index"]),
+                "status": state.get("status"),
+                "output_path": state.get("output_path"),
+                "image_path": state.get("image_path"),
+                "groups": debug.get("group_count", 0),
+                "translated": debug.get("translated_group_count", 0),
+                "suspicious_groups": [
+                    _quality_item_summary(item) for item in suspicious[:12]
+                ],
+                "selective_ocr_fallbacks": fallback_records,
+                "text_repairs": debug.get("text_repairs", []),
+                "rejected_text_repairs": debug.get("rejected_text_repairs", []),
+                "translation_retries": [
+                    record
+                    for record in translation_retry_records
+                    if record.get("group_id")
+                    in {item.get("id") for item in items}
+                ],
+                "mixed_language_items": [_quality_item_summary(item) for item in mixed],
+                "text_overflow_items": [_quality_item_summary(item) for item in overflow],
+                "narrations_translated": [_quality_item_summary(item) for item in narrations],
+                "sfx_preserved": [_quality_item_summary(item) for item in sfx],
+                "visual_validation_failures": [
+                    _quality_item_summary(item) for item in visual_failures
+                ],
+                "timings": state.get("timings", {}),
+            }
+        )
+
+    return {
+        "summary": {
+            "url": report.get("url"),
+            "mode": report.get("mode"),
+            "ocr_engine": report.get("ocr_engine"),
+            "ocr_fallback_engine": report.get("ocr_fallback_engine"),
+            "processed_images": report.get("processed_images"),
+            "available_valid_images": report.get("available_valid_images"),
+            "selected_page_indices": report.get("selected_page_indices"),
+            "missing_page_indices": report.get("missing_page_indices"),
+            "total_seconds": report.get("total_seconds"),
+            "stage_seconds": report.get("stage_seconds"),
+            "pdf_path": report.get("pdf_path"),
+            "preview_contact_sheet": report.get("preview_contact_sheet"),
+            "preview_compare_sheet": report.get("preview_compare_sheet"),
+            "quality_validation": report.get("quality_validation"),
+        },
+        "totals": totals,
+        "translation_retry_records": translation_retry_records,
+        "pages": pages,
+    }
+
+
+def _quality_item_summary(item):
+    return {
+        "id": item.get("id"),
+        "region_id": item.get("region_id"),
+        "classification": item.get("classification"),
+        "background_type": item.get("background_type"),
+        "background_metrics": item.get("background_metrics"),
+        "source_engine": item.get("source_engine") or item.get("engine"),
+        "text": item.get("clean_text"),
+        "translation": item.get("translation"),
+        "confidence": item.get("confidence"),
+        "quality_score": item.get("quality_score"),
+        "quality_reasons": item.get("quality_reasons"),
+        "fallback_used": item.get("fallback_used"),
+        "translation_valid": item.get("translation_valid"),
+        "translation_validation_reason": item.get("translation_validation_reason"),
+        "translation_retry_count": item.get("translation_retry_count"),
+        "text_overflow_ratio": item.get("text_overflow_ratio"),
+        "visual_validation": item.get("visual_validation"),
+        "visual_attempts": item.get("visual_attempts"),
+        "mask_metrics": item.get("mask_metrics"),
+        "manual_review_required": item.get("manual_review_required"),
+        "safe_area": item.get("safe_area"),
+        "translation_box": item.get("translation_box"),
+        "bounding_box": item.get("bounding_box"),
+    }
+
+
+def _quality_report_html(report):
+    summary = report["summary"]
+    totals = report["totals"]
+    rows = []
+    for page in report["pages"]:
+        rows.append(
+            "<tr>"
+            f"<td>{page['index']:03}</td>"
+            f"<td>{page['groups']}</td>"
+            f"<td>{page['translated']}</td>"
+            f"<td>{len(page['suspicious_groups'])}</td>"
+            f"<td>{sum(1 for r in page['selective_ocr_fallbacks'] if r.get('fallback_used'))}</td>"
+            f"<td>{len(page['mixed_language_items'])}</td>"
+            f"<td>{len(page['text_overflow_items'])}</td>"
+            f"<td>{len(page['visual_validation_failures'])}</td>"
+            f"<td><a href=\"pages/{Path(page['output_path']).name}\">final</a></td>"
+            "</tr>"
+        )
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tradutor.Ia - Quality Report</title>
+<style>
+body {{ font-family: Segoe UI, Arial, sans-serif; background:#15171c; color:#eee; margin:24px; }}
+a {{ color:#ff9b6b; }}
+.card {{ background:#22252d; border:1px solid #343946; border-radius:12px; padding:16px; margin:16px 0; }}
+table {{ border-collapse:collapse; width:100%; font-size:14px; }}
+th,td {{ border-bottom:1px solid #343946; padding:8px; text-align:left; vertical-align:top; }}
+th {{ color:#ffb088; }}
+.preview {{ max-width:100%; border-radius:10px; border:1px solid #343946; }}
+code {{ color:#ffd1bd; }}
+</style>
+</head>
+<body>
+<h1>Tradutor.Ia — Quality Report</h1>
+<div class="card">
+<p><strong>URL:</strong> {summary.get('url')}</p>
+<p><strong>OCR:</strong> {summary.get('ocr_engine')} → fallback {summary.get('ocr_fallback_engine')}</p>
+<p><strong>Páginas:</strong> {summary.get('processed_images')} &nbsp; <strong>Tempo:</strong> {summary.get('total_seconds')}s</p>
+<p><strong>PDF:</strong> <a href="{Path(summary.get('pdf_path', '')).name}">{summary.get('pdf_path')}</a></p>
+</div>
+<div class="card">
+<h2>Totais</h2>
+<pre>{json.dumps(totals, ensure_ascii=False, indent=2)}</pre>
+</div>
+<div class="card">
+<h2>Contact sheet</h2>
+<img class="preview" src="contact_sheet.jpg" alt="contact sheet">
+</div>
+<div class="card">
+<h2>Compare sheet</h2>
+<img class="preview" src="compare_sheet.jpg" alt="compare sheet">
+</div>
+<div class="card">
+<h2>Páginas</h2>
+<table>
+<thead><tr><th>Página</th><th>Grupos</th><th>Trad.</th><th>Suspeitos</th><th>Fallbacks</th><th>Misto</th><th>Overflow</th><th>Visual fail</th><th>Link</th></tr></thead>
+<tbody>{''.join(rows)}</tbody>
+</table>
+</div>
+</body>
+</html>
+"""
 
 
 def _chapter_download_items(manifest):
@@ -787,6 +1282,7 @@ def _write_progress(
             "full": bool(args.full),
             "fast": bool(args.fast),
             "force": bool(args.force),
+            "page_indices": _parse_page_indices(getattr(args, "page_indices", "")),
             "total_images": total_images,
             "completed_images": sum(
                 state.get("status") in {"completed", "completed_with_error"}
@@ -805,6 +1301,8 @@ def _write_progress(
 def _serializable_state(state):
     allowed = {
         "index",
+        "sequence_index",
+        "original_index",
         "image_path",
         "image_hash",
         "process_key",
@@ -818,6 +1316,7 @@ def _serializable_state(state):
         "status",
         "cache_source",
         "debug_data",
+        "selective_ocr_fallbacks",
         "timings",
         "error",
     }
@@ -842,6 +1341,12 @@ def _grouping_fallback_reason(state, groups):
     for group in groups:
         words = re.findall(r"[A-Za-zÀ-ÿ]+", group.text)
         useful_letters = re.sub(r"[^A-Za-zÀ-ÿ]", "", group.text)
+        if (
+            group.classification in {"speech", "narration"}
+            and group.quality_score < 0.35
+            and group.cleanup_lines
+        ):
+            return "incomplete_group_after_selective_fallback"
         if (
             group.ignored
             and len(words) >= 4
@@ -880,20 +1385,44 @@ def _grouping_fallback_reason(state, groups):
 def _applied_text_repairs(ocr_metadata):
     if ocr_metadata.get("final_engine") != "rapidocr":
         return []
-    return list(ocr_metadata.get("text_repairs", []))
+    return [
+        repair
+        for repair in ocr_metadata.get("text_repairs", [])
+        if repair.get("accepted", True)
+    ]
+
+
+def _rejected_text_repairs(ocr_metadata):
+    return [
+        repair
+        for repair in ocr_metadata.get("text_repairs", [])
+        if not repair.get("accepted", True)
+    ]
 
 
 def _group_text_repairs(groups):
-    return [
-        {
-            "original_text": group.original_text,
-            "repaired_text": group.repaired_text,
-            "repair_reason": group.repair_reason,
-            "group_id": group.group_id,
-        }
-        for group in groups
-        if group.repair_reason and group.repaired_text != group.original_text
-    ]
+    records = []
+    for group in groups:
+        if not group.repair_reason or group.repaired_text == group.original_text:
+            continue
+        candidate = next(
+            (
+                (line.metadata or {}).get("group_repair_candidate")
+                for line in group.lines
+                if (line.metadata or {}).get("group_repair_candidate")
+            ),
+            {},
+        )
+        records.append(
+            {
+                "original_text": group.original_text,
+                "repaired_text": group.repaired_text,
+                "repair_reason": group.repair_reason,
+                "group_id": group.group_id,
+                **candidate,
+            }
+        )
+    return records
 
 
 def _aggregate_debug_data(states):
@@ -903,7 +1432,19 @@ def _aggregate_debug_data(states):
         "groups_translated": 0,
         "groups_ignored_sfx_decorative": 0,
         "ocr_page_fallbacks": 0,
+        "ocr_region_fallbacks": 0,
+        "ocr_region_fallback_attempts": 0,
+        "paddle_mobile_region_fallbacks": 0,
+        "paddle_full_region_fallbacks": 0,
         "ocr_text_repairs": 0,
+        "ocr_text_repairs_rejected": 0,
+        "groups_reverted_for_visual_safety": 0,
+        "manual_review_required_groups": 0,
+        "translation_retries": 0,
+        "translation_rejections": 0,
+        "mixed_language_items": 0,
+        "text_overflow_items": 0,
+        "visual_validation_failures": 0,
         "classification_counts": {
             "speech": 0,
             "narration": 0,
@@ -931,9 +1472,39 @@ def _aggregate_debug_data(states):
         result["ocr_page_fallbacks"] += int(
             bool(ocr_metadata.get("fallback_used"))
         )
+        fallback_records = debug_data.get("selective_ocr_fallbacks", [])
+        result["ocr_region_fallback_attempts"] += len(fallback_records)
+        for record in fallback_records:
+            if not record.get("fallback_used"):
+                continue
+            result["ocr_region_fallbacks"] += 1
+            if record.get("fallback_variant") == "paddle_mobile":
+                result["paddle_mobile_region_fallbacks"] += 1
+            elif record.get("fallback_variant") == "paddle_full":
+                result["paddle_full_region_fallbacks"] += 1
         result["ocr_text_repairs"] += len(
             debug_data.get("text_repairs", [])
         )
+        result["ocr_text_repairs_rejected"] += len(
+            debug_data.get("rejected_text_repairs", [])
+        )
+        for item in debug_data.get("items", []):
+            retry_count = int(item.get("translation_retry_count") or 0)
+            result["translation_retries"] += retry_count
+            if item.get("rejected_translation"):
+                result["translation_rejections"] += 1
+            reason = str(item.get("translation_validation_reason") or "")
+            if reason.startswith("mixed_language") or reason.startswith("english_phrase"):
+                result["mixed_language_items"] += 1
+            if float(item.get("text_overflow_ratio") or 0.0) > config.MAX_TEXT_OVERFLOW_RATIO:
+                result["text_overflow_items"] += 1
+            visual = item.get("visual_validation") or {}
+            if visual and not visual.get("visual_validation_passed", True):
+                result["visual_validation_failures"] += 1
+            if item.get("manual_review_required"):
+                result["manual_review_required_groups"] += 1
+            if item.get("sent_to_nvidia") and not item.get("redrawn"):
+                result["groups_reverted_for_visual_safety"] += 1
     return result
 
 
@@ -956,6 +1527,7 @@ def _empty_debug_data(image_path, precheck_reason):
         "items": [],
         "ocr_metadata": {},
         "text_repairs": [],
+        "rejected_text_repairs": [],
         "precheck_reason": precheck_reason,
     }
 
@@ -977,6 +1549,42 @@ def _relevant_output_config(pipeline_fingerprint):
         ),
         "ocr_text_repair": config.OCR_TEXT_REPAIR,
         "ocr_text_repair_mode": config.OCR_TEXT_REPAIR_MODE,
+        "ocr_quality_control": config.OCR_QUALITY_CONTROL,
+        "ocr_region_selective_fallback": config.OCR_REGION_SELECTIVE_FALLBACK,
+        "ocr_group_min_quality_score": config.OCR_GROUP_MIN_QUALITY_SCORE,
+        "translation_validation": config.TRANSLATION_VALIDATION,
+        "text_mask_padding": config.TEXT_MASK_PADDING,
+        "max_mask_expansion": config.MAX_MASK_EXPANSION,
+        "strict_mask_bounds": config.STRICT_MASK_BOUNDS,
+        "mask_component_based": config.MASK_COMPONENT_BASED,
+        "allow_large_rectangle_mask": config.ALLOW_LARGE_RECTANGLE_MASK,
+        "white_balloon_flat_fill": config.WHITE_BALLOON_FLAT_FILL,
+        "text_safe_padding": config.TEXT_SAFE_PADDING,
+        "visual_diff_validation": config.VISUAL_DIFF_VALIDATION,
+        "visual_qa_strict": config.VISUAL_QA_STRICT,
+        "max_outside_change_ratio": config.MAX_OUTSIDE_CHANGE_RATIO,
+        "max_outside_component_area": config.MAX_OUTSIDE_COMPONENT_AREA,
+        "max_mask_to_text_area_ratio": config.MAX_MASK_TO_TEXT_AREA_RATIO,
+        "reject_balloon_border_damage": config.REJECT_BALLOON_BORDER_DAMAGE,
+        "reject_text_overflow": config.REJECT_TEXT_OVERFLOW,
+        "white_background_min_brightness": config.WHITE_BACKGROUND_MIN_BRIGHTNESS,
+        "white_background_max_std": config.WHITE_BACKGROUND_MAX_STD,
+        "white_background_max_saturation": config.WHITE_BACKGROUND_MAX_SATURATION,
+        "white_background_min_ratio": config.WHITE_BACKGROUND_MIN_RATIO,
+        "white_background_max_texture": config.WHITE_BACKGROUND_MAX_TEXTURE,
+        "white_background_max_edge_density": config.WHITE_BACKGROUND_MAX_EDGE_DENSITY,
+        "white_background_max_diagonal_lines": config.WHITE_BACKGROUND_MAX_DIAGONAL_LINES,
+        "white_enclosure_min_brightness": config.WHITE_ENCLOSURE_MIN_BRIGHTNESS,
+        "white_enclosure_min_ratio": config.WHITE_ENCLOSURE_MIN_RATIO,
+        "white_enclosure_max_dark_ratio": config.WHITE_ENCLOSURE_MAX_DARK_RATIO,
+        "white_enclosure_max_saturation": config.WHITE_ENCLOSURE_MAX_SATURATION,
+        "white_stylized_enclosure_min_brightness": config.WHITE_STYLIZED_ENCLOSURE_MIN_BRIGHTNESS,
+        "white_stylized_enclosure_min_ratio": config.WHITE_STYLIZED_ENCLOSURE_MIN_RATIO,
+        "white_stylized_enclosure_max_dark_ratio": config.WHITE_STYLIZED_ENCLOSURE_MAX_DARK_RATIO,
+        "white_stylized_enclosure_max_saturation": config.WHITE_STYLIZED_ENCLOSURE_MAX_SATURATION,
+        "max_textured_mask_group_ratio": config.MAX_TEXTURED_MASK_GROUP_RATIO,
+        "max_textured_mask_component_ratio": config.MAX_TEXTURED_MASK_COMPONENT_RATIO,
+        "reject_white_patch_outside_balloon": config.REJECT_WHITE_PATCH_OUTSIDE_BALLOON,
         "translate_sfx": config.TRANSLATE_SFX,
         "prioritize_enclosed_text": config.PRIORITIZE_ENCLOSED_TEXT,
         "translation_model": config.NVIDIA_TRANSLATION_MODEL,
@@ -1177,31 +1785,28 @@ def _validate_quality(states, pdf_path, expected_page_count, full=False):
         for item in sniffle_items
     )
 
-    expected_checks = {}
-    for source, expected in EXPECTED_TRANSLATIONS.items():
-        matches = [
-            item
-            for item in all_items
-            if str(item.get("clean_text", "")).strip().upper() == source.upper()
-        ]
-        expected_checks[source] = {
-            "present": bool(matches),
-            "passed": all(
-                str(item.get("translation", "")).strip().upper()
-                == expected.strip().upper()
-                for item in matches
-            )
-            if matches
-            else None,
-        }
-
     reference_presence_ok = (
         not full
-        or (
-            bool(sniffle_items)
-            and all(check["present"] for check in expected_checks.values())
-        )
+        or bool(sniffle_items)
     )
+    visual_failures = [
+        item
+        for item in all_items
+        if (item.get("visual_validation") or {})
+        and not (item.get("visual_validation") or {}).get(
+            "visual_validation_passed",
+            True,
+        )
+    ]
+    manual_review_items = [
+        item for item in all_items if item.get("manual_review_required")
+    ]
+    overflow_items = [
+        item
+        for item in all_items
+        if float(item.get("text_overflow_ratio") or 0.0)
+        > config.MAX_TEXT_OVERFLOW_RATIO
+    ]
     return {
         "passed": (
             not invalid_pages
@@ -1210,9 +1815,9 @@ def _validate_quality(states, pdf_path, expected_page_count, full=False):
             and config.TRANSLATE_SFX is False
             and sniffle_ok
             and reference_presence_ok
-            and all(
-                check["passed"] is not False for check in expected_checks.values()
-            )
+            and not visual_failures
+            and not manual_review_items
+            and not overflow_items
         ),
         "pdf_pages": pdf_pages,
         "expected_pdf_pages": expected_page_count,
@@ -1222,7 +1827,9 @@ def _validate_quality(states, pdf_path, expected_page_count, full=False):
         "sniffle_present": bool(sniffle_items),
         "sniffle_sfx_not_translated": sniffle_ok,
         "reference_texts_present_when_required": reference_presence_ok,
-        "expected_translation_checks": expected_checks,
+        "visual_validation_failures": len(visual_failures),
+        "manual_review_required_groups": len(manual_review_items),
+        "text_overflow_groups": len(overflow_items),
     }
 
 
@@ -1256,7 +1863,12 @@ def _timing_report_text(report):
         f"OCR executados: {report['ocr_runs']}",
         f"OCR do cache: {report['ocr_cache_hits']}",
         f"Fallbacks OCR para Paddle: {report['ocr_page_fallbacks']}",
+        f"Fallbacks OCR por regiao: {report.get('ocr_region_fallbacks', 0)}",
         f"Textos OCR reparados: {report['ocr_text_repairs']}",
+        f"Retries de traducao: {report.get('translation_retries', 0)}",
+        f"Traducoes rejeitadas: {report.get('translation_rejections', 0)}",
+        f"Itens com texto misturado: {report.get('mixed_language_items', 0)}",
+        f"Falhas de validacao visual: {report.get('visual_validation_failures', 0)}",
         f"Textos enviados a NVIDIA: {report['translation_api_texts']}",
         f"Traducoes do cache: {report['translation_cache_hits']}",
         "",
@@ -1266,6 +1878,7 @@ def _timing_report_text(report):
         f"No-text precheck: {stage['no_text_precheck']:.2f}s",
         f"OCR (parede): {stage['ocr']:.2f}s",
         f"OCR (soma por pagina): {stage['ocr_cpu']:.2f}s",
+        f"OCR fallback seletivo: {stage.get('ocr_selective_fallback', 0.0):.2f}s",
         (
             "Classificacao/filtro/agrupamento: "
             f"{stage['classification_grouping']:.2f}s"
