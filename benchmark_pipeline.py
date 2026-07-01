@@ -42,6 +42,7 @@ from pipeline_cache import (
     stable_hash,
     valid_image,
 )
+from session_context import SessionContextStore
 from translator_nllb import get_translator
 from translator_nvidia import PROMPT_VERSION
 
@@ -86,6 +87,15 @@ def run_benchmark(args):
         output_folder / "regression_report.html"
         if targeted_regression
         else output_folder / "quality_report.html"
+    )
+    context_enabled = bool(getattr(args, "use_context", False))
+    session_context_path = Path(
+        getattr(args, "session_context_path", output_folder / "session_context.json")
+    ).resolve()
+    session_context = (
+        SessionContextStore(session_context_path, args.url)
+        if context_enabled
+        else None
     )
 
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -440,6 +450,15 @@ def run_benchmark(args):
             translation_targets.append(group)
 
     translation_started = time.perf_counter()
+    if session_context is not None:
+        all_groups = [
+            group
+            for state in analyzable_states
+            for group in state.get("groups", [])
+        ]
+        session_context.prepare(all_groups)
+        if hasattr(translator, "set_session_context"):
+            translator.set_session_context(session_context)
     translations = translator.translate_many(
         [group.text for group in translation_targets],
         force=args.force,
@@ -452,6 +471,8 @@ def run_benchmark(args):
         translator,
         force=args.force,
     )
+    if session_context is not None:
+        session_context.record_translations(translation_targets)
     stage_seconds["translation"] += time.perf_counter() - retry_started
 
     for state in analyzable_states:
@@ -693,6 +714,10 @@ def run_benchmark(args):
         "quality_report_json": str(quality_json_path),
         "quality_report_html": str(quality_html_path),
         "quality_validation": quality,
+        "session_context": {
+            "enabled": bool(session_context is not None),
+            **(session_context.summary() if session_context is not None else {}),
+        },
     }
     quality_report = _build_quality_report(
         report,

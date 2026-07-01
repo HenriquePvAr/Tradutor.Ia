@@ -52,6 +52,8 @@ class TranslatorNvidiaBatch:
             int(config.TRANSLATION_WORKERS if workers is None else workers),
         )
         self.force_cache = bool(force_cache)
+        self.session_context_prompt = ""
+        self.session_context_signature = ""
         self._thread_local = threading.local()
         self._request_times = deque()
         self._rate_lock = threading.Lock()
@@ -66,6 +68,7 @@ class TranslatorNvidiaBatch:
             "parallel_used": False,
             "workers": self.workers,
             "api_seconds": 0.0,
+            "context_enabled": False,
         }
 
     @property
@@ -74,6 +77,15 @@ class TranslatorNvidiaBatch:
 
     def translate(self, text):
         return self.translate_many([text])[0]
+
+    def set_session_context(self, context_store):
+        if context_store is None:
+            self.session_context_prompt = ""
+            self.session_context_signature = ""
+        else:
+            self.session_context_prompt = str(context_store.prompt_fragment() or "").strip()
+            self.session_context_signature = str(context_store.signature() or "")
+        self.stats["context_enabled"] = bool(self.session_context_prompt)
 
     def translate_strict(
         self,
@@ -100,9 +112,7 @@ class TranslatorNvidiaBatch:
                     {
                         "role": "system",
                         "content": (
-                            SYSTEM_PROMPT_TEMPLATE.format(
-                                source_language=self.source_language
-                            )
+                            self._system_prompt()
                             + "\nRevisao estrita: traduza TODO texto ingles para "
                             "portugues do Brasil. Nao deixe palavras/frases em ingles, "
                             "exceto nomes proprios. Se o texto for uma onomatopeia/SFX, "
@@ -213,7 +223,7 @@ class TranslatorNvidiaBatch:
             [
                 {
                     "role": "system",
-                    "content": SYSTEM_PROMPT_TEMPLATE.format(source_language=self.source_language),
+                    "content": self._system_prompt(),
                 },
                 {
                     "role": "user",
@@ -287,8 +297,15 @@ class TranslatorNvidiaBatch:
                 "text": str(text),
                 "model": self.model,
                 "source_language": self.source_language,
+                "session_context": self.session_context_signature,
             }
         )
+
+    def _system_prompt(self):
+        prompt = SYSTEM_PROMPT_TEMPLATE.format(source_language=self.source_language)
+        if self.session_context_prompt:
+            prompt += "\n\n" + self.session_context_prompt
+        return prompt
 
     def _translation_cache_path(self, text):
         folder = Path(config.CACHE_ROOT).resolve() / "translations"

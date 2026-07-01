@@ -13,6 +13,55 @@ baloes e gera um PDF final.
 - Traducao em lote: ate 20 baloes por request.
 - Modos antigos preservados: Google (`deep-translator`) e HuggingFace/local.
 
+## Comando simples para capitulos
+
+`run_webtoon.py` executa o pipeline completo sem exigir os argumentos internos
+do benchmark. O modo `fast` usa RapidOCR hibrido, fallback regional para
+PaddleOCR e todas as validacoes de qualidade. O modo `quality` usa PaddleOCR,
+que continua sendo o motor padrao e mais conservador.
+
+```powershell
+python run_webtoon.py "URL_DO_CAPITULO" --mode fast
+python run_webtoon.py "URL_DO_CAPITULO" --mode quality
+```
+
+Para ignorar os caches de download, OCR, traducao e renderizacao:
+
+```powershell
+python run_webtoon.py "URL_DO_CAPITULO" --mode fast --force
+```
+
+Para reutilizar cache/resume ou escolher a pasta de saida:
+
+```powershell
+python run_webtoon.py "URL_DO_CAPITULO" --mode fast --cache
+python run_webtoon.py "URL_DO_CAPITULO" --mode quality --output "meu_capitulo"
+```
+
+Sem argumentos, o script abre um modo interativo e pergunta URL, modo,
+cache/force e nome da pasta. `--open-output` abre a pasta ao terminar. Para um
+teste curto, use `--max-images 5`.
+
+### Contexto temporario por capitulo
+
+Por padrao, o runner cria:
+
+```text
+output/<nome_do_capitulo>/session_context.json
+```
+
+O arquivo e gerado dinamicamente a partir do OCR do capitulo e guarda possiveis
+nomes proprios/personagens, termos recorrentes, traducoes ja usadas, regras de
+preservacao e o estilo de portugues brasileiro natural para webtoon/manhwa.
+Esse contexto compacto e enviado nos prompts da NVIDIA para manter nomes e
+termos consistentes, sem hardcode de obras ou personagens.
+
+- `--no-context`: nao cria nem usa contexto.
+- `--keep-context`: mantem o JSON explicitamente (comportamento padrao).
+- `--delete-context-after`: remove o JSON depois que o PDF for gerado.
+
+Todo o contexto fica dentro de `output/`, que e ignorado pelo Git.
+
 ## Instalacao no Windows
 
 Crie ou entre na pasta do projeto:
