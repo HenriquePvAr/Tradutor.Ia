@@ -62,6 +62,51 @@ termos consistentes, sem hardcode de obras ou personagens.
 
 Todo o contexto fica dentro de `output/`, que e ignorado pelo Git.
 
+## Interface local
+
+O Tradutor.Ia inclui uma interface web local para quem prefere processar
+capitulos sem montar comandos no PowerShell. Ela usa `run_webtoon.py` por
+baixo: OCR, traducao, cache, contexto e validacoes continuam no pipeline
+existente.
+
+Instale somente as dependencias da interface:
+
+```powershell
+pip install -r requirements-ui.txt
+```
+
+Inicie o aplicativo:
+
+```powershell
+python app_ui.py
+```
+
+Depois abra [http://localhost:8080](http://localhost:8080). A interface tambem
+escuta na rede local, portanto pode ser acessada pelo celular usando o IP do
+computador e a porta `8080`, desde que o firewall permita a conexao.
+
+Na aba **Nova traducao**:
+
+- cole a URL; nome do capitulo e pasta de saida sao sugeridos automaticamente;
+- escolha **Rapido** para RapidOCR hibrido com fallback Paddle e gate de
+  qualidade;
+- escolha **Qualidade** para usar PaddleOCR;
+- selecione capitulo completo ou teste parcial com `3`, `5`, `20`, `50` ou
+  outra quantidade de paginas;
+- **Usar cache** reaproveita resultados validos e **Forcar reprocessamento**
+  executa as etapas novamente;
+- o contexto temporario fica ativado por padrao.
+
+A aba **Capitulos traduzidos** usa o historico local
+`.cache/ui_history.json` e permite abrir PDF, pasta, relatorio, compare sheet e
+`session_context.json`, alem de preparar uma nova execucao com cache ou do
+zero. A aba **Configuracoes** informa apenas se a chave NVIDIA esta
+configurada; o valor nunca e exibido. A aba **Logs** mascara tokens e mostra a
+saida do processo em tempo real.
+
+Os capitulos permanecem em `output/<nome_do_capitulo>/`. Tanto `output/`
+quanto `.cache/` sao ignorados pelo Git.
+
 ## Instalacao no Windows
 
 Crie ou entre na pasta do projeto:

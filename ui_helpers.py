@@ -1,0 +1,256 @@
+"""Pure helpers used by the local NiceGUI runner.
+
+This module intentionally has no NiceGUI dependency.  Keeping command building,
+URL parsing and log parsing here makes the desktop UI small and testable.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlparse
+
+
+REPO_ROOT = Path(__file__).resolve().parent
+OUTPUT_ROOT = REPO_ROOT / "output"
+HISTORY_PATH = REPO_ROOT / ".cache" / "ui_history.json"
+
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)(NVIDIA_API_KEY\s*[=:]\s*)([^\s'\"]+)"),
+    re.compile(r"(?i)(Authorization\s*:\s*Bearer\s+)([^\s,;]+)"),
+    re.compile(r"\b(nvapi-[A-Za-z0-9_-]{12,})\b"),
+    re.compile(r"\b(sk-[A-Za-z0-9_-]{12,})\b"),
+)
+
+
+def clean_url(value: str) -> str:
+    match = re.search(r"https?://[^\s\])]+", str(value or ""))
+    return match.group(0) if match else str(value or "").strip()
+
+
+def sanitize_output_name(value: str) -> str:
+    value = unquote(str(value or "")).strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value[:80] or "webtoon_chapter"
+
+
+def suggest_chapter_details(url: str) -> dict[str, str]:
+    """Infer a human label and safe folder name from a Webtoon URL."""
+
+    parsed = urlparse(clean_url(url))
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if parts and parts[-1].casefold() == "viewer":
+        parts.pop()
+
+    work = parts[-2] if len(parts) >= 2 else "Webtoon"
+    chapter = parts[-1] if parts else "chapter"
+
+    work_label = re.sub(r"[-_]+", " ", work).strip().title() or "Webtoon"
+    chapter_label = re.sub(r"[-_]+", " ", chapter).strip()
+    chapter_label = re.sub(
+        r"\b(ep|episode|chapter|ch)\s*(\d+)\b",
+        lambda match: f"{match.group(1).upper()} {match.group(2)}",
+        chapter_label,
+        flags=re.IGNORECASE,
+    )
+    chapter_label = chapter_label.title()
+    chapter_label = re.sub(r"\b(Ep|Ch)\b", lambda match: match.group(0).upper(), chapter_label)
+    title = f"{work_label} - {chapter_label}" if chapter_label else work_label
+    return {"title": title, "slug": sanitize_output_name(f"{work}_{chapter}")}
+
+
+def build_run_command(
+    *,
+    url: str,
+    mode: str,
+    output: str,
+    full: bool,
+    max_images: int | None,
+    use_cache: bool,
+    force: bool,
+    use_context: bool,
+    open_output: bool = False,
+    python_executable: str | None = None,
+) -> list[str]:
+    cleaned_url = clean_url(url)
+    if not cleaned_url.startswith(("http://", "https://")):
+        raise ValueError("A URL precisa começar com http:// ou https://.")
+    if mode not in {"fast", "quality"}:
+        raise ValueError("O modo precisa ser fast ou quality.")
+    if use_cache and force:
+        raise ValueError("Cache e reprocessamento forçado são mutuamente exclusivos.")
+    if not full and (max_images is None or int(max_images) <= 0):
+        raise ValueError("Informe uma quantidade positiva de páginas para o teste parcial.")
+
+    command = [
+        python_executable or sys.executable,
+        str(REPO_ROOT / "run_webtoon.py"),
+        cleaned_url,
+        "--mode",
+        mode,
+        "--output",
+        sanitize_output_name(output),
+    ]
+    if force:
+        command.append("--force")
+    elif use_cache:
+        command.append("--cache")
+    if not full:
+        command.extend(["--max-images", str(int(max_images))])
+    if not use_context:
+        command.append("--no-context")
+    if open_output:
+        command.append("--open-output")
+    return command
+
+
+def mask_secrets(text: str) -> str:
+    masked = str(text or "")
+    for index, pattern in enumerate(_SECRET_PATTERNS):
+        if index < 2:
+            masked = pattern.sub(r"\1[SEGREDO MASCARADO]", masked)
+        else:
+            masked = pattern.sub("[SEGREDO MASCARADO]", masked)
+    return masked
+
+
+def env_status(env_path: Path | None = None) -> dict[str, bool]:
+    path = env_path or REPO_ROOT / ".env"
+    configured = bool(os.getenv("NVIDIA_API_KEY", "").strip())
+    if path.is_file() and not configured:
+        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if raw_line.lstrip().startswith("#") or "=" not in raw_line:
+                continue
+            key, value = raw_line.split("=", 1)
+            if key.strip() == "NVIDIA_API_KEY":
+                value = value.strip().strip("'\"")
+                configured = bool(value and value != "sua_chave_aqui")
+                break
+    return {"env_exists": path.is_file(), "nvidia_configured": configured}
+
+
+@dataclass
+class ProgressSnapshot:
+    stage: str = "Preparando"
+    current: int = 0
+    total: int = 0
+    percent: float = 0.0
+    pages: int = 0
+    groups: int = 0
+    errors: int = 0
+    last_message: str = "Aguardando início"
+    important_lines: list[str] = field(default_factory=list)
+
+
+_STAGES = (
+    (("selenium", "coleta", "baixando", "download"), "Baixando imagens", 0.08),
+    (("validando", "validação", "validacao"), "Validando imagens", 0.18),
+    (("rapidocr", "paddleocr", " ocr", "ocr "), "OCR", 0.28),
+    (("classifica", "agrup"), "Classificação", 0.48),
+    (("nvidia", "tradução nvidia", "traducao nvidia", "traduzindo"), "Tradução NVIDIA", 0.58),
+    (("inpaint", "render", "redesen", "salvando página", "pagina ", "página "), "Renderização", 0.78),
+    (("gerando pdf", "pdf:"), "Geração de PDF", 0.9),
+    (("relatório", "relatorio", "quality_report", "compare sheet"), "Relatórios", 0.95),
+    (("execução concluída", "execucao concluida", "finalizado"), "Finalizado", 1.0),
+)
+_STAGE_RANK = {stage: index for index, (_, stage, _) in enumerate(_STAGES)}
+
+
+def parse_progress_line(line: str, snapshot: ProgressSnapshot) -> ProgressSnapshot:
+    clean = mask_secrets(line).strip()
+    if not clean:
+        return snapshot
+    lowered = clean.casefold()
+    fraction = re.search(
+        r"(?P<label>[A-Za-zÀ-ÿ _-]{2,35})\s*[:#-]?\s*(?P<current>\d+)\s*/\s*(?P<total>\d+)",
+        clean,
+    )
+    for needles, stage, base in _STAGES:
+        if any(needle in lowered for needle in needles):
+            if _STAGE_RANK.get(stage, 0) >= _STAGE_RANK.get(snapshot.stage, 0):
+                snapshot.stage = stage
+                snapshot.percent = max(snapshot.percent, base)
+            break
+
+    if fraction:
+        current = int(fraction.group("current"))
+        total = max(1, int(fraction.group("total")))
+        snapshot.current, snapshot.total = current, total
+        local = min(1.0, current / total)
+        if snapshot.stage == "Baixando imagens":
+            snapshot.percent = max(snapshot.percent, 0.08 + local * 0.1)
+        elif snapshot.stage in {"OCR", "Classificação", "Tradução NVIDIA", "Renderização"}:
+            snapshot.percent = max(snapshot.percent, 0.25 + local * 0.58)
+        else:
+            snapshot.percent = max(snapshot.percent, local * 0.85)
+
+    page_match = re.search(r"(?:página|pagina)\s+(\d+)\s*/\s*(\d+)", lowered)
+    if page_match:
+        snapshot.pages = max(snapshot.pages, int(page_match.group(1)))
+    groups_match = re.search(r"grupos?\s+traduzidos?\s*[:=]\s*(\d+)", lowered)
+    if groups_match:
+        snapshot.groups = int(groups_match.group(1))
+    errors_match = re.search(r"(?:erros?|páginas? com erro)\s*[:=]\s*(\d+)", lowered)
+    if errors_match:
+        snapshot.errors = int(errors_match.group(1))
+
+    important = fraction or any(
+        token in lowered
+        for token in (
+            "erro",
+            "fallback",
+            "pdf",
+            "conclu",
+            "página",
+            "pagina",
+            "baixando",
+            "validando",
+            "nvidia",
+            "relatorio",
+            "relatório",
+        )
+    )
+    if important:
+        snapshot.last_message = clean[-260:]
+        snapshot.important_lines = (snapshot.important_lines + [clean])[-30:]
+    snapshot.percent = min(1.0, max(0.0, snapshot.percent))
+    return snapshot
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def find_output_artifacts(output_folder: Path) -> dict[str, str]:
+    folder = Path(output_folder).resolve()
+    report = load_json(folder / "timing_report.json")
+
+    def first_existing(*candidates: Any) -> str:
+        for candidate in candidates:
+            if not candidate:
+                continue
+            path = Path(candidate)
+            if not path.is_absolute():
+                path = folder / path
+            if path.is_file():
+                return str(path.resolve())
+        return ""
+
+    return {
+        "pdf_path": first_existing(report.get("pdf_path"), *folder.glob("*.pdf")),
+        "quality_report_path": first_existing(report.get("quality_report_html"), folder / "quality_report.html"),
+        "compare_sheet_path": first_existing(report.get("preview_compare_sheet"), folder / "compare_sheet.jpg"),
+        "contact_sheet_path": first_existing(report.get("preview_contact_sheet"), folder / "contact_sheet.jpg"),
+        "session_context_path": first_existing(folder / "session_context.json"),
+        "timing_report_path": first_existing(folder / "timing_report.txt"),
+    }
