@@ -65,9 +65,10 @@ Todo o contexto fica dentro de `output/`, que e ignorado pelo Git.
 ## Interface local
 
 O Tradutor.Ia inclui uma interface web local para quem prefere processar
-capitulos sem montar comandos no PowerShell. Ela usa `run_webtoon.py` por
-baixo: OCR, traducao, cache, contexto e validacoes continuam no pipeline
-existente.
+capitulos sem montar comandos no PowerShell. O frontend preserva o layout e as
+animacoes da identidade visual oficial, enquanto o backend NiceGUI usa
+`run_webtoon.py` por baixo: OCR, traducao, cache, contexto e validacoes
+continuam no pipeline existente.
 
 Instale somente as dependencias da interface:
 
@@ -97,12 +98,24 @@ Na aba **Nova traducao**:
   executa as etapas novamente;
 - o contexto temporario fica ativado por padrao.
 
-A aba **Capitulos traduzidos** usa o historico local
-`.cache/ui_history.json` e permite abrir PDF, pasta, relatorio, compare sheet e
-`session_context.json`, alem de preparar uma nova execucao com cache ou do
-zero. A aba **Configuracoes** informa apenas se a chave NVIDIA esta
-configurada; o valor nunca e exibido. A aba **Logs** mascara tokens e mostra a
-saida do processo em tempo real.
+A aba **Fila** processa URLs reais em sequencia, uma por vez. A aba **Capitulos
+traduzidos** usa o historico local `.cache/ui_history.json` e permite abrir PDF,
+pasta, relatorio, compare sheet e `session_context.json`, alem de preparar uma
+nova execucao. **Inicio** resume somente dados reais; **Comunidade** permanece
+como area visual "em breve", sem postagens simuladas. **Configuracoes** mostra
+versoes e disponibilidade reais sem revelar a chave NVIDIA. **Logs** recebe
+stdout/stderr do subprocesso em tempo real e mascara tokens. O perfil local e
+salvo em `.cache/ui_profile.json`. Avatar e banner aceitam PNG, JPG, WEBP, GIF,
+MP4 e WEBM; os arquivos ficam somente em `.cache/ui_profile/`, nunca no Git.
+
+Na tela inicial, traducoes tecnicas da mesma obra sao agrupadas pela URL real
+em uma unica serie. A biblioteca de series oferece busca e ordenacao, e a
+atividade recente usa exclusivamente o historico local real.
+
+O HTML visual fica em `ui/ui_shell.html`, com CSS e JavaScript em `static/`.
+`ui_bridge.py` faz a comunicacao entre o navegador e o Python por endpoints
+locais. Nenhum progresso e inventado: quando o pipeline nao fornece contador,
+a etapa aparece como indeterminada ate surgir um valor real.
 
 Os capitulos permanecem em `output/<nome_do_capitulo>/`. Tanto `output/`
 quanto `.cache/` sao ignorados pelo Git.

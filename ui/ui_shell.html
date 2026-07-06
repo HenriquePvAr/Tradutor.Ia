@@ -1,0 +1,675 @@
+<svg width="0" height="0" style="position:absolute;">
+  <filter id="inkRough" x="-30%" y="-30%" width="160%" height="160%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.045" numOctaves="2" seed="7" result="noise"/>
+    <feDisplacementMap in="SourceGraphic" in2="noise" scale="7"/>
+  </filter>
+</svg>
+
+<canvas id="bgCanvas"></canvas>
+<div class="grain"></div>
+<div id="ambientGlow"></div>
+<div id="vignette"></div>
+<div class="toast-stack" id="toastStack"></div>
+<div class="modal-overlay" id="visitorModalOverlay">
+  <div class="modal-card">
+    <button type="button" class="modal-close" id="visitorModalClose" aria-label="fechar">✕</button>
+    <div id="visitorModalContent"></div>
+  </div>
+</div>
+
+<div id="boot" title="clique para pular">
+  <div class="boot-lines"></div>
+  <div class="boot-mark">翻訳<span>.</span>IA</div>
+  <div class="boot-sub">carregando pipeline local…</div>
+  <div class="boot-bar"></div>
+</div>
+
+<div class="shell">
+  <header class="masthead">
+    <div class="mh-left">
+      <div class="mh-brandwrap">
+        <span class="mh-furigana">ほんやく</span>
+        <span class="mh-brand">翻訳<span class="mh-dot">.</span>IA</span>
+      </div>
+      <span class="mh-tag">painel local</span>
+    </div>
+    <div class="mh-right">
+      <span class="mh-version" id="appStatus">pronto</span>
+      <span class="mh-sep">·</span>
+      <span class="mh-sep">criado por</span>
+      <span class="mh-author">Henrique Paiva Araújo</span>
+    </div>
+  </header>
+
+  <div class="app">
+  <!-- RAIL -->
+  <aside class="rail">
+    <ul class="rail-tabs">
+      <div class="rail-indicator" id="railIndicator"></div>
+      <li class="rail-tab active" data-tab="inicio">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>
+        Início
+      </li>
+      <li class="rail-tab" data-tab="nova">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4v16m8-8H4"/></svg>
+        Nova tradução
+      </li>
+      <li class="rail-tab" data-tab="queue">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        Fila
+      </li>
+      <li class="rail-tab" data-tab="hist">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+        Capítulos traduzidos
+      </li>
+      <li class="rail-tab" data-tab="community">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Comunidade
+      </li>
+      <li class="rail-tab" data-tab="cfg">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Configurações
+      </li>
+      <li class="rail-tab" data-tab="logs">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4h16v16H4z"/><path d="M8 9l3 3-3 3M13 15h4"/></svg>
+        Logs
+      </li>
+      <li class="rail-tab" data-tab="profile">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.5-7 8-7s8 3 8 7"/></svg>
+        Perfil
+      </li>
+    </ul>
+    <div class="rail-foot">
+      <div id="railApiStatus"><span class="dot"></span>verificando ambiente…</div>
+    </div>
+    <div class="rail-profile" id="railProfile" tabindex="0" role="button" aria-label="Abrir seu perfil">
+      <span class="rp-avatar" id="rpAvatar">?</span>
+      <div class="rp-info">
+        <span class="rp-name" id="rpName">você</span>
+        <span class="rp-status"><span class="rp-dot online" id="rpStatusDot"></span><span id="rpStatusLabel">online</span></span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main>
+
+    <!-- INÍCIO -->
+    <section class="panel-view active" id="view-inicio">
+      <div class="page-head">
+        <span class="ph-kanji">始</span>
+        <span class="ph-burst"></span>
+        <div>
+          <div class="page-title" data-text="Início">Início</div>
+          <div class="page-desc" id="dashGreeting">Bem-vindo de volta.</div>
+          <div class="dash-streak" id="dashStreak"></div>
+        </div>
+        <div class="page-headright">
+          <span class="page-ep">話 <b>01</b></span>
+          <div class="page-tag">painel geral</div>
+        </div>
+      </div>
+
+      <div class="dash-stats" id="dashStats">
+        <div class="dash-stat-card">
+          <span class="dsc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z"/></svg></span>
+          <span class="dsc-num" id="dashChapters">0</span>
+          <span class="dsc-label">capítulos traduzidos</span>
+        </div>
+        <div class="dash-stat-card">
+          <span class="dsc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 7h6l2 2h10v10H3z"/><path d="M3 7V5h7l2 2"/></svg></span>
+          <span class="dsc-num" id="dashSeries">0</span>
+          <span class="dsc-label">séries em andamento</span>
+        </div>
+        <div class="dash-stat-card">
+          <span class="dsc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span>
+          <span class="dsc-num" id="dashPages">0</span>
+          <span class="dsc-label">páginas processadas</span>
+        </div>
+        <div class="dash-stat-card">
+          <span class="dsc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.3 3 7.7 7.5 9.5 4.5-1.8 7.5-5.2 7.5-9.5V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg></span>
+          <span class="dsc-num" id="dashApproved">0</span>
+          <span class="dsc-label">gates aprovados</span>
+        </div>
+      </div>
+
+      <div class="nt-grid">
+        <div class="panel">
+          <div class="panel-label">Séries em andamento</div>
+          <div class="series-toolbar">
+            <label class="series-search" aria-label="Buscar série">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+              <input type="search" id="seriesSearch" placeholder="Buscar série..." />
+            </label>
+            <select id="seriesSort" aria-label="Ordenar séries">
+              <option value="recent">Mais recentes</option>
+              <option value="chapters">Mais capítulos</option>
+              <option value="az">A–Z</option>
+            </select>
+          </div>
+          <div class="series-meta"><span id="seriesCount">0 séries</span></div>
+          <div id="dashSeriesList"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-label">Atividade recente</div>
+          <div id="dashActivityList"></div>
+          <button class="btn-ghost" id="dashGotoHistory">abrir biblioteca</button>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:22px;">
+        <div class="panel-label">Ações rápidas</div>
+        <div class="dash-actions">
+          <button type="button" class="dash-action-btn" data-goto="nova">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4v16m8-8H4"/></svg>
+            <span>Nova tradução</span>
+          </button>
+          <button type="button" class="dash-action-btn" data-goto="queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+            <span>Processar em fila</span>
+          </button>
+          <button type="button" class="dash-action-btn" data-goto="community">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+            <span>Postar no mural</span>
+          </button>
+          <button type="button" class="dash-action-btn" data-goto="profile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.5-7 8-7s8 3 8 7"/></svg>
+            <span>Editar perfil</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- NOVA TRADUÇÃO -->
+    <section class="panel-view" id="view-nova">
+      <div class="page-head">
+        <span class="ph-kanji">訳</span>
+        <span class="ph-burst"></span>
+        <div>
+          <div class="page-title" data-text="Nova tradução">Nova <span class="accent">tradução</span></div>
+          <div class="page-desc">Baixa as páginas, detecta os balões, lê o texto, traduz para português do Brasil e redesenha o capítulo mantendo a arte original.</div>
+        </div>
+        <div class="page-headright">
+          <span class="page-ep">話 <b>02</b></span>
+          <div class="page-tag">nova tradução</div>
+        </div>
+      </div>
+
+      <div class="nt-grid">
+        <!-- form -->
+        <div class="panel">
+          <div class="panel-label">Origem do capítulo</div>
+
+          <div class="field">
+            <label>URL do capítulo</label>
+            <input type="text" id="urlInput" placeholder="https://exemplo.com/manhwa/capitulo-142" />
+            <div class="field-error" id="urlError">informe a URL do capítulo antes de iniciar</div>
+          </div>
+
+          <div class="field">
+            <label>Nome do capítulo <span class="hint">— sugerido automaticamente</span></label>
+            <input type="text" id="nameInput" placeholder="Nome humano do capítulo" />
+          </div>
+
+          <div class="field">
+            <label>Pasta de saída <span class="hint">— nome seguro dentro de output/</span></label>
+            <input type="text" id="outputInput" placeholder="nome_seguro_do_capitulo" />
+          </div>
+
+          <div class="field">
+            <label>Idioma original</label>
+            <select id="langSelect" disabled>
+              <option>3 · Inglês (pipeline atual)</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Modo de processamento</label>
+            <div class="choice-row">
+              <div class="choice-card selected" data-mode="fast">
+                <div class="ct-title">Rápido</div>
+                <div class="ct-desc">Processa o capítulo com otimizações automáticas e validação de qualidade.</div>
+              </div>
+              <div class="choice-card" data-mode="quality">
+                <div class="ct-title">Qualidade</div>
+                <div class="ct-desc">Usa processamento mais conservador para páginas e fontes difíceis.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Escopo</label>
+            <div class="scope-grid" id="scopeChips">
+              <div class="scope-card selected" data-scope="full">
+                <svg class="sc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                <span class="sc-label">completo</span>
+              </div>
+              <div class="scope-card" data-scope="3"><span class="sc-num">3</span><span class="sc-label">páginas</span></div>
+              <div class="scope-card" data-scope="5"><span class="sc-num">5</span><span class="sc-label">páginas</span></div>
+              <div class="scope-card" data-scope="20"><span class="sc-num">20</span><span class="sc-label">páginas</span></div>
+              <div class="scope-card" data-scope="50"><span class="sc-num">50</span><span class="sc-label">páginas</span></div>
+              <div class="scope-card" data-scope="custom">
+                <svg class="sc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 5v14M5 12h14"/></svg>
+                <span class="sc-label">outro</span>
+              </div>
+            </div>
+            <div class="scope-custom" id="scopeCustom">
+              <input type="number" id="scopeCustomInput" min="1" max="999" placeholder="ex: 12" />
+              <span>páginas</span>
+            </div>
+          </div>
+
+          <div class="field" style="margin-top:22px;">
+            <div class="toggle-row">
+              <div class="toggle-copy"><div class="tt">Usar cache</div><div class="td">Reaproveita download, OCR e tradução já validados</div></div>
+              <label class="switch"><input type="checkbox" id="cacheToggle" checked><span class="slider"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="toggle-copy"><div class="tt">Forçar reprocessamento</div><div class="td">Ignora cache de OCR, tradução e renderização</div></div>
+              <label class="switch"><input type="checkbox" id="forceToggle"><span class="slider"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="toggle-copy"><div class="tt">Contexto temporário do capítulo</div><div class="td">Mantém nomes e termos consistentes entre os balões</div></div>
+              <label class="switch"><input type="checkbox" id="ctxToggle" checked><span class="slider"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="toggle-copy"><div class="tt">Abrir pasta ao terminar</div><div class="td">Mostra os arquivos assim que o capítulo estiver pronto</div></div>
+              <label class="switch"><input type="checkbox" id="openToggle"><span class="slider"></span></label>
+            </div>
+          </div>
+
+          <div class="cta-row">
+            <button class="btn-primary" id="startBtn">Iniciar tradução</button>
+            <button class="btn-ghost" id="cancelBtn">Cancelar</button>
+          </div>
+          <div class="community-notice">atalhos: <b style="color:var(--paper)">enter</b> na URL inicia · <b style="color:var(--paper)">1–8</b> troca de aba</div>
+        </div>
+
+        <!-- pipeline preview -->
+        <div>
+          <div class="panel" style="margin-bottom:20px;">
+            <div class="panel-label">Pré-visualização do balão</div>
+            <div class="balloon-stage" id="balloonStage">
+              <div class="scanline" id="scanline"></div>
+              <div class="balloon"><div class="balloon-text" id="balloonText">aguardando início…</div></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-label">Pipeline</div>
+            <div class="stage-list" id="stageList">
+              <div class="stage-item" data-stage="download"><div class="stage-fill"></div><span class="stage-dot"></span><span>Download das páginas</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="validation"><div class="stage-fill"></div><span class="stage-dot"></span><span>Detecção de balões</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="ocr"><div class="stage-fill"></div><span class="stage-dot"></span><span>Leitura do texto</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="translate"><div class="stage-fill"></div><span class="stage-dot"></span><span>Tradução</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="render"><div class="stage-fill"></div><span class="stage-dot"></span><span>Redesenho dos balões</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="pdf"><div class="stage-fill"></div><span class="stage-dot"></span><span>Geração do PDF</span><span class="stage-pct">—</span></div>
+            </div>
+            <div class="run-summary" id="runSummary" hidden></div>
+            <div class="artifact-actions" id="artifactActions"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FILA -->
+    <section class="panel-view" id="view-queue">
+      <div class="page-head">
+        <span class="ph-kanji">列</span>
+        <span class="ph-burst"></span>
+        <div>
+          <div class="page-title" data-text="Fila de processamento">Fila de <span class="accent">processamento</span></div>
+          <div class="page-desc">Adicione várias URLs e processe tudo em sequência — ideal pra jogar um monte de capítulos da mesma série de uma vez.</div>
+        </div>
+        <div class="page-headright">
+          <span class="page-ep">話 <b>03</b></span>
+          <div class="page-tag">lote</div>
+        </div>
+      </div>
+
+      <div class="nt-grid">
+        <div class="panel">
+          <div class="panel-label">Adicionar à fila</div>
+          <div class="field">
+            <label>URL do capítulo</label>
+            <input type="text" id="queueUrlInput" placeholder="https://exemplo.com/manhwa/capitulo-143" />
+          </div>
+          <button class="btn-primary" id="queueAddBtn">Adicionar à fila</button>
+          <div class="community-notice">cole uma URL, adiciona, cola a próxima — repete quantas vezes quiser antes de iniciar · <b style="color:var(--paper)">enter</b> também adiciona</div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-label">Fila</div>
+          <div class="community-toolbar">
+            <span class="community-count" id="queueCount">fila vazia</span>
+            <button class="btn-ghost" id="queueClearBtn">limpar</button>
+          </div>
+          <div class="queue-progress-track" id="queueProgressTrack">
+            <div class="queue-progress-fill" id="queueProgressFill"></div>
+          </div>
+          <div id="queueList"></div>
+          <div class="cta-row" style="margin-top:16px;">
+            <button class="btn-primary" id="queueStartBtn">Iniciar fila</button>
+            <button class="btn-ghost" id="queueCancelBtn">Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CAPÍTULOS TRADUZIDOS -->
+    <section class="panel-view" id="view-hist">
+      <div class="page-head">
+        <span class="ph-kanji">話</span>
+        <span class="ph-burst"></span>
+        <div>
+          <div class="page-title" data-text="Capítulos traduzidos">Capítulos <span class="accent">traduzidos</span></div>
+          <div class="page-desc">Sua biblioteca local de capítulos. Abra o PDF, a pasta ou os relatórios de qualquer tradução anterior.</div>
+        </div>
+        <div class="page-headright">
+          <span class="page-ep">話 <b>04</b></span>
+          <div class="page-tag">biblioteca</div>
+        </div>
+      </div>
+      <div class="hist-toolbar">
+        <div class="hist-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input type="text" id="histSearch" placeholder="buscar capítulo…" />
+        </div>
+        <span class="hist-count" id="histCount">0 capítulos</span>
+      </div>
+      <div class="hist-list" id="histList"></div>
+    </section>
+
+    <!-- COMUNIDADE -->
+    <section class="panel-view" id="view-community">
+      <div class="page-head">
+        <span class="ph-kanji">共</span>
+        <span class="ph-burst"></span>
+        <div>
+          <div class="page-title" data-text="Comunidade">Comunidade</div>
+          <div class="page-desc">Descubra traduções, acompanhe obras e compartilhe projetos.</div>
+        </div>
+        <div class="page-headright">
+          <span class="page-ep">話 <b>05</b></span>
+          <div class="page-tag">em breve</div>
+        </div>
+      </div>
+
+      <div class="panel community-coming-soon">
+        <div class="coming-soon-mark">共</div>
+        <div>
+          <div class="panel-label">Comunidade — em breve</div>
+          <h3>Um espaço para quem ama histórias.</h3>
+          <p>Em breve você poderá acompanhar obras, compartilhar projetos e descobrir novas traduções.</p>
+          <button class="btn-ghost" disabled>em breve</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- CONFIGURAÇÕES -->
+    <section class="panel-view" id="view-cfg">
+      <div class="page-head">
+        <span class="ph-kanji">設</span>
+        <span class="ph-burst"></span>
+        <div>
+          <div class="page-title" data-text="Configurações">Configurações</div>
+          <div class="page-desc">Preferências principais do aplicativo e informações avançadas quando você precisar.</div>
+        </div>
+        <div class="page-headright">
+          <span class="page-ep">話 <b>06</b></span>
+          <div class="page-tag">preferências</div>
+        </div>
+      </div>
+
+      <div class="settings-friendly-grid">
+        <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Serviço de tradução</span><strong id="settingServiceFriendly">verificando…</strong></div></div>
+        <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Modo padrão</span><strong id="settingModeFriendly">Rápido</strong></div></div>
+        <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Leitura de texto</span><strong id="settingReadingFriendly">verificando…</strong></div></div>
+        <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Processamento paralelo</span><strong id="settingParallelFriendly">verificando…</strong></div></div>
+        <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Contexto de capítulo</span><strong id="settingContextFriendly">Ativo</strong></div></div>
+      </div>
+
+      <details class="advanced-details">
+        <summary>Detalhes avançados <span>configuração técnica</span></summary>
+        <div class="cfg-grid advanced-grid">
+        <div class="panel">
+          <div class="panel-label">Tradução</div>
+          <div class="kv-row"><span class="kv-key">TRANSLATION_MODE</span><span class="kv-val" id="settingTranslationMode">—</span></div>
+          <div class="kv-row"><span class="kv-key">NVIDIA_API_KEY</span><span class="kv-val" id="settingApiKey">verificando…</span></div>
+          <div class="kv-row"><span class="kv-key">NVIDIA_TRANSLATION_MODEL</span><span class="kv-val" id="settingModel">—</span></div>
+          <div class="kv-row"><span class="kv-key">NVIDIA_TRANSLATION_BATCH_SIZE <span class="tip" tabindex="0" data-tip="Quantos balões vão juntos em cada request pra NVIDIA, mantendo os IDs pra não misturar tradução de um balão com outro.">?</span></span><span class="kv-val" id="settingBatch">—</span></div>
+          <div class="kv-row"><span class="kv-key">NVIDIA_MAX_REQUESTS_PER_MINUTE</span><span class="kv-val" id="settingRate">—</span></div>
+
+          <div class="panel-label" style="margin-top:22px;">Preferências de tradução</div>
+          <div class="toggle-row">
+            <div class="toggle-copy"><div class="tt">Traduzir SFX</div><div class="td">TRANSLATE_SFX — onomatopeias ficam fora por padrão</div></div>
+            <label class="switch"><input type="checkbox" id="settingTranslateSfx" disabled><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div class="toggle-copy"><div class="tt">Priorizar texto dentro do balão</div><div class="td">PRIORITIZE_ENCLOSED_TEXT</div></div>
+            <label class="switch"><input type="checkbox" id="settingPrioritize" disabled><span class="slider"></span></label>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-label">Motor de OCR</div>
+          <label class="radio-opt"><input type="radio" name="ocr" checked disabled>
+            <div><div class="ro-title">PaddleOCR <span class="badge paddle" style="margin-left:6px;">padrão seguro</span></div><div class="ro-desc" id="settingPaddle">verificando instalação…</div></div>
+          </label>
+          <label class="radio-opt"><input type="radio" name="ocr" disabled>
+            <div><div class="ro-title">RapidOCR híbrido <span class="badge rapid" style="margin-left:6px;">experimental</span></div><div class="ro-desc" id="settingRapid">verificando instalação…</div></div>
+          </label>
+          <label class="radio-opt"><input type="radio" name="ocr" disabled>
+            <div><div class="ro-title">Tesseract</div><div class="ro-desc">Fallback manual — exige instalação separada no Windows</div></div>
+          </label>
+
+          <div class="range-wrap">
+            <div class="kv-row" style="border:none; padding-bottom:4px;"><span class="kv-key">RAPIDOCR_MIN_CONFIDENCE <span class="tip" tabindex="0" data-tip="Confiança mínima pra aceitar um resultado do RapidOCR. Abaixo disso, a região passa pro PaddleOCR mobile e, se ainda ficar ruim, pro PaddleOCR completo.">?</span></span><span class="kv-val" id="confVal">0.55</span></div>
+            <input type="range" min="0" max="1" step="0.01" value="0.55" id="confRange" disabled>
+          </div>
+
+          <div class="panel-label" style="margin-top:22px;">Desempenho</div>
+          <div class="kv-row"><span class="kv-key">OCR_PARALLEL <span class="tip" tabindex="0" data-tip="Roda o OCR em processos paralelos quando há memória suficiente. Se a máquina tiver pouca RAM, cai sozinho pro modo sequencial.">?</span></span><span class="kv-val" id="settingParallel">—</span></div>
+          <div class="kv-row"><span class="kv-key">OCR_TEXT_REPAIR_MODE <span class="tip" tabindex="0" data-tip="Aplica somente reparos genéricos e conservadores; cada decisão fica registrada nos relatórios.">?</span></span><span class="kv-val warn" id="settingRepair">—</span></div>
+        </div>
+
+        <div class="panel" style="grid-column:1/-1;">
+          <div class="panel-label">Sobre · créditos</div>
+          <div class="about-grid">
+            <div class="about-stamp">
+              <div class="stamp-ring">
+                <span class="stamp-kanji">版</span>
+                <span class="stamp-version" id="settingBuild">local</span>
+              </div>
+              <span class="stamp-caption">build local</span>
+            </div>
+            <div class="about-meta">
+              <div class="kv-row"><span class="kv-key">Aplicativo</span><span class="kv-val">Tradutor.IA</span></div>
+              <div class="kv-row"><span class="kv-key">Criador</span><span class="kv-val">Henrique Paiva Araújo <span style="color:var(--muted)">· @HenriquePvAr</span></span></div>
+              <div class="kv-row"><span class="kv-key">Repositório</span><span class="kv-val copyable" id="copyRepo" data-copy="HenriquePvAr/Tradutor.Ia" tabindex="0">HenriquePvAr/Tradutor.Ia <svg class="copy-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="1.5"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg></span></div>
+              <div class="kv-row"><span class="kv-key">Release no GitHub</span><span class="kv-val warn">nenhum publicado ainda</span></div>
+              <div class="kv-row"><span class="kv-key">Python</span><span class="kv-val" id="settingPython">—</span></div>
+              <div class="kv-row"><span class="kv-key">NiceGUI</span><span class="kv-val" id="settingNicegui">—</span></div>
+              <div class="kv-row"><span class="kv-key">Licença</span><span class="kv-val">não especificada</span></div>
+              <div class="kv-row"><span class="kv-key">Stack</span><span class="kv-val">Selenium · OpenCV · PaddleOCR/RapidOCR · Tesseract · NLLB-200 · Pillow · NVIDIA API</span></div>
+            </div>
+
+            <div class="scan-credits">
+              <div class="sc-title">staff deste capítulo</div>
+              <div class="sc-row"><span class="sc-role">Raw / OCR</span><span class="sc-name">PaddleOCR · RapidOCR híbrido</span></div>
+              <div class="sc-row"><span class="sc-role">Tradução</span><span class="sc-name">NVIDIA · nemotron-3-super-120b</span></div>
+              <div class="sc-row"><span class="sc-role">Clean & Typesetting</span><span class="sc-name">redesenho automático dos balões</span></div>
+              <div class="sc-row"><span class="sc-role">Quality Check</span><span class="sc-name">gate de validação · rollback seletivo</span></div>
+              <div class="sc-row"><span class="sc-role">Editor-chefe</span><span class="sc-name">Henrique Paiva Araújo</span></div>
+            </div>
+            <div class="about-foot">feito para a comunidade de scanlation · balões traduzidos, arte preservada</div>
+          </div>
+        </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- LOGS -->
+    <section class="panel-view" id="view-logs">
+      <div class="page-head">
+        <span class="ph-kanji">録</span>
+        <span class="ph-burst"></span>
+        <div>
+          <div class="page-title" data-text="Logs">Logs</div>
+          <div class="page-desc">Saída do processo em tempo real. Tokens e chaves são sempre mascarados.</div>
+        </div>
+        <div class="page-headright">
+          <span class="page-ep">話 <b>07</b></span>
+          <div class="page-tag">live</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="terminal-toolbar">
+          <span class="panel-label">stdout / stderr real</span>
+          <div><button class="btn-ghost" id="copyLogsBtn">copiar</button><button class="btn-ghost" id="clearLogsBtn">limpar visual</button></div>
+        </div>
+        <div class="terminal" id="terminal"></div>
+      </div>
+    </section>
+
+    <!-- PERFIL -->
+    <section class="panel-view" id="view-profile">
+      <div class="page-head">
+        <span class="ph-kanji">私</span>
+        <span class="ph-burst"></span>
+        <div>
+          <div class="page-title" data-text="Seu perfil">Seu <span class="accent">perfil</span></div>
+          <div class="page-desc">Banner, avatar, status, bio, cargo — personalize como você aparece pra você e pro mural da comunidade.</div>
+        </div>
+        <div class="page-headright">
+          <span class="page-ep">話 <b>08</b></span>
+          <div class="page-tag">local</div>
+        </div>
+      </div>
+
+      <div class="nt-grid">
+        <div class="panel">
+          <div class="panel-label">Editar perfil</div>
+
+          <div class="field">
+            <label>Nome de exibição</label>
+            <input type="text" id="profileName" placeholder="seu nome ou apelido" maxlength="40" />
+          </div>
+
+          <div class="field">
+            <label>Cargo <span class="hint">— aparece do lado do nome</span></label>
+            <select id="profileTitle">
+              <option value="">nenhum</option>
+              <option value="Tradutor(a)">Tradutor(a)</option>
+              <option value="Scanlator">Scanlator</option>
+              <option value="Cleaner">Cleaner</option>
+              <option value="Typesetter">Typesetter</option>
+              <option value="Leitor(a) de plantão">Leitor(a) de plantão</option>
+              <option value="Fã de webtoon">Fã de webtoon</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Pronomes <span class="hint">— opcional</span></label>
+            <input type="text" id="profilePronouns" placeholder="ex: ele/dele" maxlength="30" />
+          </div>
+
+          <div class="field">
+            <label>Status</label>
+            <div class="chip-row" id="profileStatusChips">
+              <div class="chip selected" data-status="online"><span class="status-choice-dot online"></span>online</div>
+              <div class="chip" data-status="away"><span class="status-choice-dot away"></span>ausente</div>
+              <div class="chip" data-status="busy"><span class="status-choice-dot busy"></span>ocupado</div>
+              <div class="chip" data-status="offline"><span class="status-choice-dot offline"></span>offline</div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Mensagem de status <span class="hint">— opcional</span></label>
+            <input type="text" id="profileStatusText" placeholder="ex: traduzindo um capítulo agora..." maxlength="60" />
+          </div>
+
+          <div class="field">
+            <label>Bio <span class="hint">— opcional</span></label>
+            <textarea id="profileBio" maxlength="190" rows="3" placeholder="conta um pouco sobre você, seus projetos, o que você traduz..."></textarea>
+            <div class="char-count" id="profileBioCount">0/190</div>
+          </div>
+
+          <div class="field">
+            <label>Avatar</label>
+            <div class="chip-row" id="profileAvatarMode">
+              <div class="chip selected" data-mode="letter">inicial + cor</div>
+              <div class="chip" data-mode="image">enviar mídia</div>
+            </div>
+            <div class="media-dropzone" id="avatarImagePicker" tabindex="0">
+              <input type="file" id="avatarImageInput" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.webm" />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
+              <strong>Enviar imagem, GIF ou vídeo</strong>
+              <span>arraste aqui ou clique para selecionar · até 12 MB</span>
+              <div class="field-error" id="avatarImageError">esse arquivo é grande demais — tenta um menor ou mais comprimido</div>
+            </div>
+            <div class="media-file-card" id="avatarMediaCard" hidden><div class="media-thumb" id="avatarMediaPreview"></div><div><strong id="avatarMediaName"></strong><span id="avatarMediaMeta"></span></div><button type="button" class="media-action" id="avatarMediaReplace">substituir</button><button type="button" class="media-action danger" id="avatarMediaRemove">remover</button></div>
+          </div>
+
+          <div class="field">
+            <label>Cor de destaque</label>
+            <div class="color-swatch-row" id="profileColorRow">
+              <button type="button" class="color-swatch selected" data-color="#c5372c" style="background:#c5372c;" aria-label="cor vermelha"></button>
+              <button type="button" class="color-swatch" data-color="#2f7a6b" style="background:#2f7a6b;" aria-label="cor verde"></button>
+              <button type="button" class="color-swatch" data-color="#c9a227" style="background:#c9a227;" aria-label="cor dourada"></button>
+              <button type="button" class="color-swatch" data-color="#b8557a" style="background:#b8557a;" aria-label="cor rosa"></button>
+              <button type="button" class="color-swatch" data-color="#8a5fa3" style="background:#8a5fa3;" aria-label="cor roxa"></button>
+              <button type="button" class="color-swatch" data-color="#4a7fb5" style="background:#4a7fb5;" aria-label="cor azul"></button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Banner</label>
+            <div class="banner-preset-row" id="profileBannerRow">
+              <button type="button" class="banner-swatch banner-ink selected" data-banner="ink" aria-label="banner tinta" title="tinta"></button>
+              <button type="button" class="banner-swatch banner-scan" data-banner="scan" aria-label="banner scan" title="scan"></button>
+              <button type="button" class="banner-swatch banner-gold" data-banner="gold" aria-label="banner ouro" title="ouro"></button>
+              <button type="button" class="banner-swatch banner-rose" data-banner="rose" aria-label="banner rosa" title="rosa"></button>
+              <button type="button" class="banner-swatch banner-mono" data-banner="mono" aria-label="banner mono" title="mono"></button>
+            </div>
+            <button type="button" class="btn-ghost media-trigger" id="bannerMediaTrigger">Enviar mídia personalizada</button>
+            <div class="media-dropzone" id="bannerImagePicker" tabindex="0">
+              <input type="file" id="bannerImageInput" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.webm" />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h16v14H4z"/><path d="m4 16 4.5-4.5 3 3L15 11l5 5"/><circle cx="9" cy="9" r="1.5"/></svg>
+              <strong>Imagem, GIF ou vídeo para o banner</strong>
+              <span>arraste aqui ou clique para selecionar · até 12 MB</span>
+              <div class="field-error" id="bannerImageError">esse arquivo é grande demais — tenta um menor ou mais comprimido</div>
+            </div>
+            <div class="media-file-card" id="bannerMediaCard" hidden><div class="media-thumb wide" id="bannerMediaPreview"></div><div><strong id="bannerMediaName"></strong><span id="bannerMediaMeta"></span></div><button type="button" class="media-action" id="bannerMediaReplace">substituir</button><button type="button" class="media-action danger" id="bannerMediaRemove">remover</button></div>
+          </div>
+
+          <button class="btn-primary" id="profileSave">Salvar perfil</button>
+        </div>
+
+        <div class="panel profile-preview-panel">
+          <div class="panel-label">Pré-visualização</div>
+          <div class="profile-card">
+            <div class="pc-banner banner-ink" id="pcBanner"></div>
+            <div class="pc-body">
+              <div class="pc-avatar-wrap">
+                <span class="pc-avatar" id="pcAvatar">?</span>
+                <span class="pc-status-dot online" id="pcStatusDot"></span>
+              </div>
+              <div class="pc-title-role" id="pcTitleRole"></div>
+              <div class="pc-name" id="pcName">você</div>
+              <div class="pc-pronouns" id="pcPronouns"></div>
+              <div class="pc-status-line" id="pcStatusLine">online</div>
+              <div class="pc-divider"></div>
+              <div class="pc-bio-label">sobre mim</div>
+              <div class="pc-bio" id="pcBio">conta um pouco sobre você…</div>
+              <div class="pc-badges" id="pcBadges"></div>
+              <div class="pc-since" id="pcSince">membro desde hoje</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+  </div>
+</div>

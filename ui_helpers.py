@@ -10,15 +10,43 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parent
 OUTPUT_ROOT = REPO_ROOT / "output"
 HISTORY_PATH = REPO_ROOT / ".cache" / "ui_history.json"
+
+_TECHNICAL_OUTPUT_MARKERS = {
+    "benchmark",
+    "cache",
+    "cli",
+    "debug",
+    "fast",
+    "final",
+    "fix",
+    "force",
+    "forced",
+    "full",
+    "output",
+    "preview",
+    "quality",
+    "recovery",
+    "region",
+    "regression",
+    "rerun",
+    "slice",
+    "temp",
+    "test",
+}
+_CHAPTER_OUTPUT_PATTERN = re.compile(
+    r"^(?:ep|episode|chapter|ch|cap|capitulo|page|pages|pag|pagina)\d*$",
+    re.IGNORECASE,
+)
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(NVIDIA_API_KEY\s*[=:]\s*)([^\s'\"]+)"),
@@ -34,14 +62,16 @@ def clean_url(value: str) -> str:
 
 
 def sanitize_output_name(value: str) -> str:
-    value = unquote(str(value or "")).strip().lower()
+    value = unicodedata.normalize("NFKD", unquote(str(value or "")))
+    value = "".join(character for character in value if not unicodedata.combining(character))
+    value = value.strip().lower()
     value = re.sub(r"[^a-z0-9]+", "_", value)
     value = re.sub(r"_+", "_", value).strip("_")
     return value[:80] or "webtoon_chapter"
 
 
 def suggest_chapter_details(url: str) -> dict[str, str]:
-    """Infer a human label and safe folder name from a Webtoon URL."""
+    """Infer editable human and filesystem labels from a chapter-like URL."""
 
     parsed = urlparse(clean_url(url))
     parts = [unquote(part) for part in parsed.path.split("/") if part]
@@ -50,19 +80,86 @@ def suggest_chapter_details(url: str) -> dict[str, str]:
 
     work = parts[-2] if len(parts) >= 2 else "Webtoon"
     chapter = parts[-1] if parts else "chapter"
+    query = parse_qs(parsed.query)
+    episode_number = next(
+        (
+            str(query[key][0]).strip()
+            for key in ("episode_no", "episode", "chapter_no", "chapter", "ep", "cap", "capitulo")
+            if query.get(key) and str(query[key][0]).strip()
+        ),
+        "",
+    )
 
     work_label = re.sub(r"[-_]+", " ", work).strip().title() or "Webtoon"
     chapter_label = re.sub(r"[-_]+", " ", chapter).strip()
-    chapter_label = re.sub(
-        r"\b(ep|episode|chapter|ch)\s*(\d+)\b",
-        lambda match: f"{match.group(1).upper()} {match.group(2)}",
+    chapter_match = re.search(
+        r"\b(episode|chapter|capitulo|cap|ep|ch)\s*(\d+)\b",
         chapter_label,
         flags=re.IGNORECASE,
     )
-    chapter_label = chapter_label.title()
-    chapter_label = re.sub(r"\b(Ep|Ch)\b", lambda match: match.group(0).upper(), chapter_label)
+    if chapter_match:
+        prefix = chapter_match.group(1).casefold()
+        normalized_prefix = {
+            "episode": "Episode",
+            "chapter": "Chapter",
+            "capitulo": "Capitulo",
+            "cap": "CAP",
+            "ep": "EP",
+            "ch": "CH",
+        }[prefix]
+        chapter_label = f"{normalized_prefix} {chapter_match.group(2)}"
+    elif episode_number:
+        chapter_label = f"Episode {episode_number}"
+    else:
+        chapter_label = chapter_label.title()
     title = f"{work_label} - {chapter_label}" if chapter_label else work_label
     return {"title": title, "slug": sanitize_output_name(f"{work}_{chapter}")}
+
+
+def infer_series_details(
+    *,
+    url: str = "",
+    chapter_name: str = "",
+    output_slug: str = "",
+) -> dict[str, str]:
+    """Infer a work identity without treating technical output names as works."""
+
+    cleaned_url = clean_url(url)
+    if cleaned_url.startswith(("http://", "https://")):
+        parsed = urlparse(cleaned_url)
+        parts = [unquote(part) for part in parsed.path.split("/") if part]
+        if parts and parts[-1].casefold() == "viewer":
+            parts.pop()
+        if len(parts) >= 2:
+            slug = sanitize_output_name(parts[-2])
+            return {
+                "name": re.sub(r"[-_]+", " ", parts[-2]).strip().title(),
+                "slug": slug,
+            }
+
+    human_name = str(chapter_name or "").strip()
+    human_parts = re.split(r"\s(?:-|\u2014)\s", human_name, maxsplit=1)
+    if len(human_parts) > 1 and human_parts[0].strip():
+        series_name = human_parts[0].strip()
+        return {"name": series_name, "slug": sanitize_output_name(series_name)}
+    if re.search(r"\s[-—]\s", human_name):
+        series_name = re.split(r"\s[-—]\s", human_name, maxsplit=1)[0].strip()
+        if series_name:
+            return {"name": series_name, "slug": sanitize_output_name(series_name)}
+
+    tokens = [token for token in sanitize_output_name(output_slug or human_name).split("_") if token]
+    cutoff = len(tokens)
+    for index, token in enumerate(tokens):
+        if (
+            token in _TECHNICAL_OUTPUT_MARKERS
+            or token.isdigit()
+            or _CHAPTER_OUTPUT_PATTERN.fullmatch(token)
+        ):
+            cutoff = index
+            break
+    useful_tokens = tokens[:cutoff] or tokens
+    slug = "_".join(useful_tokens) or "serie_sem_nome"
+    return {"name": slug.replace("_", " ").title(), "slug": slug}
 
 
 def build_run_command(

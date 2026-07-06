@@ -5,6 +5,7 @@ from pathlib import Path
 from ui_helpers import (
     ProgressSnapshot,
     build_run_command,
+    infer_series_details,
     mask_secrets,
     parse_progress_line,
     sanitize_output_name,
@@ -17,6 +18,10 @@ LOOKISM_URL = (
     "https://m.webtoons.com/en/drama/lookism/ep-50/viewer"
     "?title_no=1049&episode_no=50"
 )
+JUNGLE_URL = (
+    "https://www.webtoons.com/en/action/jungle-juice/episode-1/viewer"
+    "?title_no=2480&episode_no=1"
+)
 
 
 class UIHelpersTests(unittest.TestCase):
@@ -24,6 +29,11 @@ class UIHelpersTests(unittest.TestCase):
         details = suggest_chapter_details(LOOKISM_URL)
         self.assertEqual(details["title"], "Lookism - EP 50")
         self.assertEqual(details["slug"], "lookism_ep_50")
+
+    def test_jungle_juice_url_suggestion(self):
+        details = suggest_chapter_details(JUNGLE_URL)
+        self.assertEqual(details["title"], "Jungle Juice - Episode 1")
+        self.assertEqual(details["slug"], "jungle_juice_episode_1")
 
     def test_command_is_a_shell_free_argument_list(self):
         command = build_run_command(
@@ -56,9 +66,9 @@ class UIHelpersTests(unittest.TestCase):
             )
 
     def test_secret_masking(self):
-        text = "NVIDIA_API_KEY=nvapi-this-should-never-appear"
+        text = "NVIDIA_API_KEY=valor_de_teste_nao_secreto"
         masked = mask_secrets(text)
-        self.assertNotIn("this-should-never-appear", masked)
+        self.assertNotIn("valor_de_teste_nao_secreto", masked)
         self.assertIn("MASCARADO", masked)
 
     def test_progress_parser_extracts_stage_and_fraction(self):
@@ -101,7 +111,16 @@ class UIHelpersTests(unittest.TestCase):
             self.assertEqual(record["id"], "one")
 
     def test_output_name_is_sanitized(self):
-        self.assertEqual(sanitize_output_name("  Olá / Capítulo 01  "), "ol_cap_tulo_01")
+        self.assertEqual(sanitize_output_name("  Olá / Capítulo 01  "), "ola_capitulo_01")
+
+    def test_series_grouping_prefers_url_over_technical_output_name(self):
+        details = infer_series_details(
+            url=JUNGLE_URL,
+            chapter_name="Jungle Juice Quality Page4 Recovery",
+            output_slug="jungle_juice_quality_page4_recovery",
+        )
+        self.assertEqual(details["name"], "Jungle Juice")
+        self.assertEqual(details["slug"], "jungle_juice")
 
 
 if __name__ == "__main__":

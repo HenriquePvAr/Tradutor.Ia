@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ui_helpers import HISTORY_PATH, OUTPUT_ROOT, find_output_artifacts, load_json
+from ui_helpers import (
+    HISTORY_PATH,
+    OUTPUT_ROOT,
+    find_output_artifacts,
+    infer_series_details,
+    load_json,
+)
 
 
 def utc_now() -> str:
@@ -31,14 +37,14 @@ class UIHistoryStore:
         )
 
     def upsert(self, record: dict[str, Any]) -> dict[str, Any]:
-        safe_record = self._safe_record(record)
+        safe_record = self._enrich_record(record)
         records = [item for item in self.load() if item.get("id") != safe_record.get("id")]
         records.insert(0, safe_record)
         self._write(records[:300])
         return safe_record
 
     def discover_outputs(self) -> list[dict[str, Any]]:
-        records = self.load()
+        records = [self._enrich_record(record) for record in self.load()]
         known = {str(Path(item.get("output_folder") or "").resolve()) for item in records}
         if not OUTPUT_ROOT.is_dir():
             return records
@@ -49,7 +55,7 @@ class UIHistoryStore:
             report = load_json(timing_path)
             artifacts = find_output_artifacts(folder)
             records.append(
-                self._safe_record(
+                self._enrich_record(
                     {
                         "id": f"discovered-{folder.name}",
                         "chapter_name": folder.name.replace("_", " ").title(),
@@ -114,8 +120,22 @@ class UIHistoryStore:
             "errors",
             "quality_gate",
             "last_message",
+            "series_name",
+            "series_slug",
         }
         result = {key: value for key, value in record.items() if key in allowed}
         result.setdefault("status", "unknown")
         return result
+
+    @classmethod
+    def _enrich_record(cls, record: dict[str, Any]) -> dict[str, Any]:
+        safe = cls._safe_record(record)
+        series = infer_series_details(
+            url=str(safe.get("url") or ""),
+            chapter_name=str(safe.get("chapter_name") or ""),
+            output_slug=str(safe.get("slug") or ""),
+        )
+        safe["series_name"] = str(safe.get("series_name") or series["name"])
+        safe["series_slug"] = str(safe.get("series_slug") or series["slug"])
+        return safe
 
