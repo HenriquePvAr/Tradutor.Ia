@@ -1,4 +1,5 @@
 import json
+import hashlib
 import math
 import os
 import re
@@ -1708,6 +1709,46 @@ def group_needs_selective_fallback(group):
     )
 
 
+def _should_skip_paddle_full_for_ignored_decorative(group):
+    return bool(
+        group.ignored
+        and group.classification == "decorative"
+        and group.ignore_reason == "decorative_text"
+    )
+
+
+def _ocr_crop_fingerprint(crop):
+    """Return a non-reversible fingerprint for regional OCR diagnostics."""
+    if crop is None or getattr(crop, "size", 0) == 0:
+        return ""
+    digest = hashlib.sha256()
+    digest.update(str(tuple(int(v) for v in crop.shape)).encode("ascii", "ignore"))
+    digest.update(crop.tobytes())
+    return digest.hexdigest()
+
+
+def _classify_paddle_full_call(call):
+    """Classify a regional Paddle full call without changing OCR decisions."""
+    if call.get("duplicate_region"):
+        return "FULL_DUPLICATE"
+    if call.get("full_accepted"):
+        mobile_exists = bool(call.get("mobile_candidate_exists"))
+        mobile_score = float(call.get("mobile_selection_score") or 0.0)
+        pre_full_score = float(call.get("pre_full_best_selection_score") or 0.0)
+        if not mobile_exists or mobile_score <= pre_full_score + 0.03:
+            return "FULL_REQUIRED"
+        return "FULL_USEFUL"
+    full_score = float(
+        call.get("full_adjusted_selection_score")
+        or call.get("full_selection_score")
+        or 0.0
+    )
+    pre_full_score = float(call.get("pre_full_best_selection_score") or 0.0)
+    if call.get("full_candidate_exists") and full_score < pre_full_score:
+        return "FULL_WORSE"
+    return "FULL_NO_CHANGE"
+
+
 def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, page_index):
     if not (
         config.OCR_QUALITY_CONTROL
@@ -1731,6 +1772,7 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
     records = []
     consumed_line_ids = set()
     regional_engines = {}
+    full_region_fingerprints = {}
     for group in suspects:
         group_started = time.perf_counter()
         current_quality = group.quality_score
@@ -1747,6 +1789,15 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
         best_engine = ""
         attempts = []
         candidate_options = []
+        paddle_full_calls = []
+        mobile_summary = {
+            "attempted": False,
+            "candidate_exists": False,
+            "candidate_sufficient": False,
+            "quality_score": 0.0,
+            "selection_score": 0.0,
+            "rejection_reasons": ["mobile_not_attempted"],
+        }
         repair_proposal_tokens = _repair_proposal_tokens(group)
         context_text = " ".join(
             [group.text]
@@ -1760,8 +1811,69 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
             "",
             _ascii_fold(context_text).upper(),
         )
+        crop_fingerprint = _ocr_crop_fingerprint(crop)
         for engine_name, variant in (("paddle_mobile", "paddle_mobile"), ("paddle", "paddle_full")):
             started = time.perf_counter()
+            pre_attempt_best_engine = best_engine
+            pre_attempt_best_quality = best_quality
+            pre_attempt_best_selection_score = best_selection_score
+            full_call_record = None
+            if variant == "paddle_full":
+                duplicate_source = full_region_fingerprints.get(crop_fingerprint)
+                duplicate_region = duplicate_source is not None
+                if duplicate_source is None:
+                    full_region_fingerprints[crop_fingerprint] = {
+                        "group_id": group.group_id,
+                        "crop_box": list(crop_box),
+                    }
+                full_call_record = {
+                    "page_index": page_index,
+                    "group_id": group.group_id,
+                    "region_id": group.region_id or group.group_id,
+                    "crop_fingerprint": crop_fingerprint,
+                    "crop_box": list(crop_box),
+                    "crop_width": int(w),
+                    "crop_height": int(h),
+                    "classification_before": group.classification,
+                    "fallback_reason": ";".join(group.quality_reasons),
+                    "previous_engine": "paddle_mobile" if mobile_summary.get("attempted") else "rapidocr",
+                    "previous_quality_score": round(float(current_quality or 0.0), 4),
+                    "mobile_candidate_exists": bool(mobile_summary.get("candidate_exists")),
+                    "mobile_quality_score": round(float(mobile_summary.get("quality_score") or 0.0), 4),
+                    "mobile_selection_score": round(float(mobile_summary.get("selection_score") or 0.0), 4),
+                    "mobile_candidate_sufficient": bool(mobile_summary.get("candidate_sufficient")),
+                    "mobile_rejection_reasons": list(mobile_summary.get("rejection_reasons") or []),
+                    "pre_full_best_engine": pre_attempt_best_engine,
+                    "pre_full_best_quality": round(float(pre_attempt_best_quality or 0.0), 4),
+                    "pre_full_best_selection_score": round(float(pre_attempt_best_selection_score or 0.0), 4),
+                    "duplicate_region": duplicate_region,
+                    "duplicate_of": duplicate_source,
+                    "full_candidate_exists": False,
+                    "full_quality_score": 0.0,
+                    "full_selection_score": 0.0,
+                    "full_adjusted_selection_score": 0.0,
+                    "full_accepted": False,
+                    "full_rejected": False,
+                    "result_changed": False,
+                    "call_classification": "",
+                    "final_engine": "",
+                    "final_selection_score": 0.0,
+                    "group_translated_or_ignored": "ignored" if group.ignored else "candidate",
+                    "classification_final": group.classification,
+                }
+                record_count("selective_fallback.paddle_full_calls", page_index=page_index)
+                record_count(
+                    f"selective_fallback.paddle_full_for_{group.classification or 'unknown'}",
+                    page_index=page_index,
+                )
+                if duplicate_region:
+                    record_count("selective_fallback.paddle_full_duplicate_region", page_index=page_index)
+                if mobile_summary.get("candidate_exists"):
+                    record_count("selective_fallback.paddle_full_after_mobile_candidate", page_index=page_index)
+                if mobile_summary.get("candidate_sufficient"):
+                    record_count("selective_fallback.paddle_full_after_mobile_sufficient", page_index=page_index)
+                if mobile_summary.get("attempted") and not mobile_summary.get("candidate_exists"):
+                    record_count("selective_fallback.paddle_full_after_mobile_failure", page_index=page_index)
             try:
                 with profile_step(
                     f"selective_fallback.ocr.{variant}",
@@ -1827,22 +1939,21 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                         - shrink_penalty
                         - expansion_penalty
                     )
-                attempts.append(
-                    {
-                        "engine": variant,
-                        "detected_line_count": len(crop_lines),
-                        "selected_line_count": len(candidate_lines),
-                        "elapsed_seconds": round(elapsed, 6),
-                        "quality_score": round(candidate_quality, 4),
-                        "selection_score": round(selection_score, 4),
-                        "repair_proposal_token_support": proposal_support,
-                        "context_token_coverage": round(context_coverage, 4),
-                        "content_retention": round(content_retention, 4),
-                        "shrink_penalty": round(shrink_penalty, 4),
-                        "expansion_penalty": round(expansion_penalty, 4),
-                        "text": candidate_text,
-                    }
-                )
+                attempt = {
+                    "engine": variant,
+                    "detected_line_count": len(crop_lines),
+                    "selected_line_count": len(candidate_lines),
+                    "elapsed_seconds": round(elapsed, 6),
+                    "quality_score": round(candidate_quality, 4),
+                    "selection_score": round(selection_score, 4),
+                    "repair_proposal_token_support": proposal_support,
+                    "context_token_coverage": round(context_coverage, 4),
+                    "content_retention": round(content_retention, 4),
+                    "shrink_penalty": round(shrink_penalty, 4),
+                    "expansion_penalty": round(expansion_penalty, 4),
+                    "text": candidate_text,
+                }
+                attempts.append(attempt)
                 if candidate_lines:
                     candidate_options.append(
                         {
@@ -1851,7 +1962,7 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                             "selection_score": selection_score,
                             "engine": variant,
                             "text": candidate_text,
-                            "attempt": attempts[-1],
+                            "attempt": attempt,
                         }
                     )
                 if candidate_lines and selection_score > best_selection_score + 0.03:
@@ -1867,18 +1978,86 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                         or best_candidate.quality_reasons
                     )
                 )
+                candidate_sufficient = bool(
+                    best_quality >= 0.82
+                    and not (
+                        variant == "paddle_mobile"
+                        and (severe_original_suspicion or candidate_still_suspicious)
+                    )
+                )
+                if variant == "paddle_mobile":
+                    rejection_reasons = []
+                    if not candidate_lines:
+                        rejection_reasons.append("mobile_no_candidate")
+                    if best_quality < 0.82:
+                        rejection_reasons.append("best_quality_below_acceptance")
+                    if severe_original_suspicion:
+                        rejection_reasons.append("original_severe_suspicion")
+                    if candidate_still_suspicious:
+                        rejection_reasons.append("mobile_candidate_still_suspicious")
+                    if not rejection_reasons and not candidate_sufficient:
+                        rejection_reasons.append("mobile_not_sufficient")
+                    mobile_summary = {
+                        "attempted": True,
+                        "candidate_exists": bool(candidate_lines),
+                        "candidate_sufficient": candidate_sufficient,
+                        "quality_score": candidate_quality,
+                        "selection_score": selection_score,
+                        "rejection_reasons": rejection_reasons,
+                    }
+                    attempt.update(
+                        {
+                            "candidate_sufficient": candidate_sufficient,
+                            "escalation_reasons": rejection_reasons,
+                        }
+                    )
+                    if _should_skip_paddle_full_for_ignored_decorative(group):
+                        attempt["paddle_full_skipped_reason"] = "ignored_decorative"
+                        record_count(
+                            "selective_fallback.paddle_full_skipped_ignored_decorative",
+                            page_index=page_index,
+                        )
+                        break
+                elif full_call_record is not None:
+                    full_call_record.update(
+                        {
+                            "elapsed_seconds": round(elapsed, 6),
+                            "full_candidate_exists": bool(candidate_lines),
+                            "full_quality_score": round(float(candidate_quality or 0.0), 4),
+                            "full_selection_score": round(float(selection_score or 0.0), 4),
+                            "detected_line_count": len(crop_lines),
+                            "selected_line_count": len(candidate_lines),
+                        }
+                    )
+                    attempt["paddle_full_call"] = full_call_record
                 if best_quality >= 0.82 and not (
                     variant == "paddle_mobile"
                     and (severe_original_suspicion or candidate_still_suspicious)
                 ):
                     break
             except Exception as exc:
-                attempts.append(
-                    {
-                        "engine": variant,
-                        "error": f"{type(exc).__name__}: {exc}",
+                error_attempt = {
+                    "engine": variant,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                if variant == "paddle_mobile":
+                    mobile_summary = {
+                        "attempted": True,
+                        "candidate_exists": False,
+                        "candidate_sufficient": False,
+                        "quality_score": 0.0,
+                        "selection_score": 0.0,
+                        "rejection_reasons": ["mobile_error"],
                     }
-                )
+                elif full_call_record is not None:
+                    full_call_record.update(
+                        {
+                            "elapsed_seconds": round(time.perf_counter() - started, 6),
+                            "error": error_attempt["error"],
+                        }
+                    )
+                    error_attempt["paddle_full_call"] = full_call_record
+                attempts.append(error_attempt)
 
         with profile_step(
             "selective_fallback.candidate_agreement_scoring",
@@ -1919,11 +2098,37 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                         "adjusted_selection_score": round(adjusted_score, 4),
                     }
                 )
+                if option["engine"] == "paddle_full":
+                    full_call = option["attempt"].get("paddle_full_call")
+                    if full_call is not None:
+                        full_call["full_adjusted_selection_score"] = round(adjusted_score, 4)
                 if adjusted_score > best_selection_score + 0.03:
                     best_lines = option["lines"]
                     best_quality = option["quality"]
                     best_selection_score = adjusted_score
                     best_engine = option["engine"]
+
+        for attempt in attempts:
+            full_call = attempt.get("paddle_full_call")
+            if not full_call:
+                continue
+            full_call["final_engine"] = best_engine
+            full_call["final_selection_score"] = round(float(best_selection_score or 0.0), 4)
+            full_call["full_accepted"] = bool(best_engine == "paddle_full" and best_lines)
+            full_call["full_rejected"] = not full_call["full_accepted"]
+            full_call["result_changed"] = full_call["full_accepted"]
+            full_call["classification_final"] = group.classification
+            full_call["group_translated_or_ignored"] = "ignored" if group.ignored else "candidate"
+            full_call["call_classification"] = _classify_paddle_full_call(full_call)
+            paddle_full_calls.append(full_call)
+            record_count(
+                f"selective_fallback.paddle_full_{full_call['call_classification'].lower()}",
+                page_index=page_index,
+            )
+            if full_call["full_accepted"]:
+                record_count("selective_fallback.paddle_full_accepted", page_index=page_index)
+            else:
+                record_count("selective_fallback.paddle_full_rejected", page_index=page_index)
 
         record = {
             "group_id": group.group_id,
@@ -1932,7 +2137,9 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
             "original_quality_score": round(current_quality, 4),
             "quality_reasons": list(group.quality_reasons),
             "crop_box": list(crop_box),
+            "crop_fingerprint": crop_fingerprint,
             "attempts": attempts,
+            "paddle_full_calls": paddle_full_calls,
             "fallback_used": bool(best_lines),
             "fallback_variant": best_engine,
         }

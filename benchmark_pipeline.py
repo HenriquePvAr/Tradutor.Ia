@@ -924,6 +924,29 @@ def run_benchmark(args):
             "paddle_mobile_region_fallbacks"
         ],
         "paddle_full_region_fallbacks": summary["paddle_full_region_fallbacks"],
+        "paddle_full_calls": summary["paddle_full_calls"],
+        "paddle_full_total_seconds": round(summary["paddle_full_total_seconds"], 6),
+        "paddle_full_accepted": summary["paddle_full_accepted"],
+        "paddle_full_rejected": summary["paddle_full_rejected"],
+        "paddle_full_no_change": summary["paddle_full_no_change"],
+        "paddle_full_worse": summary["paddle_full_worse"],
+        "paddle_full_duplicate": summary["paddle_full_duplicate"],
+        "paddle_full_required": summary["paddle_full_required"],
+        "paddle_full_useful": summary["paddle_full_useful"],
+        "paddle_full_after_mobile_candidate": summary[
+            "paddle_full_after_mobile_candidate"
+        ],
+        "paddle_full_after_mobile_sufficient": summary[
+            "paddle_full_after_mobile_sufficient"
+        ],
+        "paddle_full_after_mobile_failure": summary[
+            "paddle_full_after_mobile_failure"
+        ],
+        "paddle_full_for_speech": summary["paddle_full_for_speech"],
+        "paddle_full_for_narration": summary["paddle_full_for_narration"],
+        "paddle_full_for_sfx": summary["paddle_full_for_sfx"],
+        "paddle_full_for_decorative": summary["paddle_full_for_decorative"],
+        "paddle_full_for_unknown": summary["paddle_full_for_unknown"],
         "ocr_text_repairs": counters["ocr_text_repairs"],
         "ocr_text_repairs_rejected": summary["ocr_text_repairs_rejected"],
         "groups_reverted_for_visual_safety": summary[
@@ -1937,6 +1960,23 @@ def _aggregate_debug_data(states):
         "ocr_region_fallback_attempts": 0,
         "paddle_mobile_region_fallbacks": 0,
         "paddle_full_region_fallbacks": 0,
+        "paddle_full_calls": 0,
+        "paddle_full_total_seconds": 0.0,
+        "paddle_full_accepted": 0,
+        "paddle_full_rejected": 0,
+        "paddle_full_no_change": 0,
+        "paddle_full_worse": 0,
+        "paddle_full_duplicate": 0,
+        "paddle_full_required": 0,
+        "paddle_full_useful": 0,
+        "paddle_full_after_mobile_candidate": 0,
+        "paddle_full_after_mobile_sufficient": 0,
+        "paddle_full_after_mobile_failure": 0,
+        "paddle_full_for_speech": 0,
+        "paddle_full_for_narration": 0,
+        "paddle_full_for_sfx": 0,
+        "paddle_full_for_decorative": 0,
+        "paddle_full_for_unknown": 0,
         "ocr_text_repairs": 0,
         "ocr_text_repairs_rejected": 0,
         "groups_reverted_for_visual_safety": 0,
@@ -1976,6 +2016,39 @@ def _aggregate_debug_data(states):
         fallback_records = debug_data.get("selective_ocr_fallbacks", [])
         result["ocr_region_fallback_attempts"] += len(fallback_records)
         for record in fallback_records:
+            for full_call in record.get("paddle_full_calls", []) or []:
+                result["paddle_full_calls"] += 1
+                result["paddle_full_total_seconds"] += float(
+                    full_call.get("elapsed_seconds") or 0.0
+                )
+                if full_call.get("full_accepted"):
+                    result["paddle_full_accepted"] += 1
+                else:
+                    result["paddle_full_rejected"] += 1
+                classification = str(full_call.get("call_classification") or "")
+                if classification == "FULL_NO_CHANGE":
+                    result["paddle_full_no_change"] += 1
+                elif classification == "FULL_WORSE":
+                    result["paddle_full_worse"] += 1
+                elif classification == "FULL_DUPLICATE":
+                    result["paddle_full_duplicate"] += 1
+                elif classification == "FULL_REQUIRED":
+                    result["paddle_full_required"] += 1
+                elif classification == "FULL_USEFUL":
+                    result["paddle_full_useful"] += 1
+                if full_call.get("mobile_candidate_exists"):
+                    result["paddle_full_after_mobile_candidate"] += 1
+                if full_call.get("mobile_candidate_sufficient"):
+                    result["paddle_full_after_mobile_sufficient"] += 1
+                reasons = set(full_call.get("mobile_rejection_reasons") or [])
+                if "mobile_no_candidate" in reasons or "mobile_error" in reasons:
+                    result["paddle_full_after_mobile_failure"] += 1
+                group_classification = str(
+                    full_call.get("classification_before") or "unknown"
+                )
+                key = f"paddle_full_for_{group_classification}"
+                if key in result:
+                    result[key] += 1
             if not record.get("fallback_used"):
                 continue
             result["ocr_region_fallbacks"] += 1

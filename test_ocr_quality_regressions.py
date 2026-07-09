@@ -28,6 +28,7 @@ from ocr_balloon import (
     _split_groups_at_sentence_boundaries,
     _mask_shape_metrics,
     _white_patch_artifact_metrics,
+    _should_skip_paddle_full_for_ignored_decorative,
     group_needs_selective_fallback,
     normalize_recurring_compact_names,
     score_group_ocr_quality,
@@ -108,6 +109,33 @@ class OCRQualityRegressionTests(unittest.TestCase):
         group = _scored_group("SURE!! INIOF 77,I")
         self.assertIn("improbable_number_token", group.quality_reasons)
         self.assertTrue(group_needs_selective_fallback(group))
+
+    def test_ignored_decorative_group_still_allows_mobile_fallback(self):
+        group = _scored_group("SURE!! INIOF 77,I")
+        group.classification = "decorative"
+        group.ignored = True
+        group.ignore_reason = "decorative_text"
+
+        self.assertTrue(group_needs_selective_fallback(group))
+        self.assertTrue(_should_skip_paddle_full_for_ignored_decorative(group))
+
+    def test_ignored_sfx_group_can_still_receive_selective_fallback(self):
+        group = _scored_group("SURE!! INIOF 77,I")
+        group.classification = "sfx"
+        group.ignored = True
+        group.ignore_reason = "sfx_translation_disabled"
+
+        self.assertTrue(group_needs_selective_fallback(group))
+        self.assertFalse(_should_skip_paddle_full_for_ignored_decorative(group))
+
+    def test_ignored_translatable_group_can_still_receive_selective_fallback(self):
+        group = _scored_group("SURE!! INIOF 77,I")
+        group.classification = "narration"
+        group.ignored = True
+        group.ignore_reason = "layout_safety"
+
+        self.assertTrue(group_needs_selective_fallback(group))
+        self.assertFalse(_should_skip_paddle_full_for_ignored_decorative(group))
 
     def test_improbable_apostrophe_pattern_requests_regional_fallback(self):
         group = _scored_group("'SSIW'ON NO ONE CAN ENTER")
