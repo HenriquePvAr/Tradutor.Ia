@@ -405,6 +405,7 @@ COMMON_ENGLISH_WORD_SCORES = {
     "am": 1.4,
     "an": 1.4,
     "and": 1.8,
+    "anyone": 1.3,
     "are": 1.8,
     "as": 1.6,
     "at": 1.4,
@@ -417,6 +418,7 @@ COMMON_ENGLISH_WORD_SCORES = {
     "but": 1.8,
     "by": 1.4,
     "can": 1.7,
+    "cant": 1.4,
     "cannot": 1.2,
     "changed": 1.1,
     "clothes": 1.2,
@@ -514,6 +516,7 @@ COMMON_ENGLISH_WORD_SCORES = {
     "who": 1.5,
     "why": 1.5,
     "will": 1.7,
+    "wings": 1.0,
     "with": 1.6,
     "you": 1.8,
     "your": 1.6,
@@ -606,6 +609,12 @@ def _repair_compact_age(text):
         re.IGNORECASE,
     ):
         reasons.append("separate_age_number")
+    contraction_repaired, contraction_reasons = _repair_attached_pronoun_contractions(
+        repaired
+    )
+    if contraction_repaired != repaired:
+        repaired = contraction_repaired
+        reasons.extend(contraction_reasons)
     generic_repaired, generic_reasons = _repair_tokens_with_generic_vocabulary(repaired)
     if generic_repaired != repaired:
         repaired = generic_repaired
@@ -668,6 +677,7 @@ def assess_ocr_repair(
             "normalize_ocr_punctuation",
             "strip_leading_dot_from_article",
             "separate_age_number",
+            "split_attached_pronoun_contraction",
             "normalize_confused_exclamation_marks",
             "segment_compact_english_word",
         }
@@ -733,6 +743,37 @@ def _normalize_ocr_punctuation(text):
     normalized = re.sub(r"([(\[{])\s+", r"\1", normalized)
     normalized = re.sub(r"\s+([)\]}])", r"\1", normalized)
     return normalized.strip()
+
+
+def _repair_attached_pronoun_contractions(text):
+    """Split compact OCR tokens where a pronoun is glued to a contraction.
+
+    This stays generic: it only handles common auxiliary contractions and
+    inserts missing whitespace. It does not translate or special-case any
+    chapter phrase.
+    """
+
+    reasons = []
+
+    def split_i(match):
+        suffix = match.group(1)
+        reasons.append("split_attached_pronoun_contraction")
+        if match.group(0).islower():
+            return f"i {suffix.lower()}"
+        if match.group(0).istitle():
+            return f"I {suffix.title()}"
+        return f"I {suffix.upper()}"
+
+    pattern_i = re.compile(
+        r"\bI("
+        r"CAN['’]?T|CANT|WON['’]?T|WONT|DON['’]?T|DONT|DIDN['’]?T|DIDNT|"
+        r"COULDN['’]?T|COULDNT|WOULDN['’]?T|WOULDNT|SHOULDN['’]?T|SHOULDNT|"
+        r"HAVEN['’]?T|HAVENT|HADN['’]?T|HADNT|AM|M|LL|VE|D"
+        r")\b",
+        flags=re.IGNORECASE,
+    )
+    repaired = pattern_i.sub(split_i, str(text or ""))
+    return repaired, reasons
 
 
 def _looks_like_proper_name(token):
@@ -904,13 +945,17 @@ def segment_compact_english_word(token):
 
 
 def _repair_tokens_with_generic_vocabulary(text):
-    parts = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+|[^A-Za-z\d]+", str(text or ""))
+    source_text = str(text or "")
+    parts = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+|[^A-Za-z\d]+", source_text)
+    protected_vocatives = _potential_vocative_tokens(source_text)
     reasons = []
     changed = False
     for index, part in enumerate(parts):
         if not re.fullmatch(r"[A-Za-z]+(?:'[A-Za-z]+)?", part):
             continue
         if "'" in part:
+            continue
+        if part.upper() in protected_vocatives:
             continue
         if _looks_like_proper_name(part):
             continue
@@ -940,6 +985,26 @@ def _repair_tokens_with_generic_vocabulary(text):
             reasons.append("normalize_confused_exclamation_marks")
             changed = True
     return (repaired if changed else text), reasons
+
+
+def _potential_vocative_tokens(text):
+    """Return tokens in address positions where names must be preserved.
+
+    Compact-word segmentation is useful for OCR, but a token directly before
+    terminal punctuation after a comma (or directly before a leading comma)
+    is commonly a person's name. Without cross-engine evidence, preserving it
+    is safer than splitting it into dictionary words.
+    """
+    patterns = (
+        r",\s*([A-Za-z]{3,})\s*[.!?]*\s*$",
+        r"^\s*([A-Za-z]{3,})\s*,",
+        r"^\s*([A-Za-z]{4,})\s*[!?]+\s*$",
+    )
+    return {
+        match.group(1).upper()
+        for pattern in patterns
+        for match in re.finditer(pattern, str(text or ""))
+    }
 
 
 def _repair_repeated_word(text):

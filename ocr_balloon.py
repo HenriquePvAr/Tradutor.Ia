@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 import time
@@ -259,6 +260,8 @@ class TextGroup:
     visual_attempts: list[dict] = field(default_factory=list)
     mask_metrics: dict = field(default_factory=dict)
     manual_review_required: bool = False
+    detected_proper_names: list[str] = field(default_factory=list)
+    preserve_as_name: bool = False
 
     @property
     def confidence(self):
@@ -359,12 +362,251 @@ def get_translatable_groups(groups):
     return [group for group in groups if _should_translate_group(group)]
 
 
+def normalize_recurring_compact_names(groups):
+    """Recover split proper names using chapter-level OCR consensus.
+
+    Some names are also valid sequences of common English words when split.
+    We only join such a phrase when the compact form is observed in a strong
+    vocative/name position and the spaced form recurs elsewhere in the same
+    chapter. This keeps the rule dynamic and avoids a title-specific glossary.
+    """
+    groups = list(groups or [])
+    compact_evidence = {}
+    group_texts = [clean_ocr_text(group.text) for group in groups]
+    for group, text in zip(groups, group_texts):
+        for token in re.findall(r"[A-Za-z]{5,}", text):
+            compact = token.upper()
+            if compact in COMMON_ENGLISH_WORDS or compact in SFX_WORDS:
+                continue
+            segmented, confidence = segment_compact_english_word(compact)
+            words = segmented.upper().split()
+            if confidence < 0.58 or len(words) != 2:
+                continue
+            if not _compact_token_has_name_context(text, token):
+                continue
+            compact_evidence.setdefault(
+                compact,
+                {
+                    "canonical": token,
+                    "words": words,
+                    "context_groups": set(),
+                },
+            )["context_groups"].add(group.group_id)
+
+    repairs = []
+    for compact, evidence in compact_evidence.items():
+        phrase_pattern = re.compile(
+            rf"\b{re.escape(evidence['words'][0])}\s+{re.escape(evidence['words'][1])}\b",
+            flags=re.IGNORECASE,
+        )
+        matching_groups = [
+            group
+            for group in groups
+            if phrase_pattern.search(clean_ocr_text(group.text))
+        ]
+        compact_context_count = len(evidence.get("context_groups") or [])
+        if len(matching_groups) < 2 and compact_context_count < 2:
+            continue
+
+        canonical = evidence["canonical"]
+        compact_pattern = re.compile(rf"\b{re.escape(compact)}\b", re.IGNORECASE)
+        for group in groups:
+            if compact_pattern.search(clean_ocr_text(group.text)):
+                if compact not in group.detected_proper_names:
+                    group.detected_proper_names.append(compact)
+                if re.fullmatch(
+                    rf"\s*{re.escape(compact)}\s*[.!?â€¦]*\s*",
+                    clean_ocr_text(group.text),
+                    flags=re.IGNORECASE,
+                ):
+                    group.preserve_as_name = True
+        for group in matching_groups:
+            original = group.text
+            replacement = _match_compact_name_case(
+                phrase_pattern.search(original).group(0),
+                compact,
+            )
+            updated = phrase_pattern.sub(replacement, original)
+            if updated == original:
+                continue
+            group.original_text = group.original_text or original
+            group.text = updated
+            group.repaired_text = updated
+            group.repair_reason = ";".join(
+                part
+                for part in (
+                    group.repair_reason,
+                    "chapter_consensus_compact_name",
+                )
+                if part
+            )
+            if compact not in group.detected_proper_names:
+                group.detected_proper_names.append(compact)
+            if re.fullmatch(
+                rf"\s*{re.escape(compact)}\s*[.!?â€¦]*\s*",
+                clean_ocr_text(updated),
+                flags=re.IGNORECASE,
+            ):
+                group.preserve_as_name = True
+            repairs.append(
+                {
+                    "group_id": group.group_id,
+                    "original_text": original,
+                    "repaired_text": updated,
+                    "repair_reason": "chapter_consensus_compact_name",
+                    "compact_evidence": canonical,
+                    "spaced_evidence_count": len(matching_groups),
+                    "compact_context_count": compact_context_count,
+                }
+            )
+    repairs.extend(_normalize_vocative_name_variants(groups))
+    return repairs
+
+
+def _normalize_vocative_name_variants(groups):
+    observations = []
+    for group in groups:
+        text = clean_ocr_text(group.text)
+        matches = [
+            *re.finditer(r"^\s*([A-Za-z]{4,20})\s*,", text),
+            *re.finditer(r",\s*([A-Za-z]{4,20})\s*[.!?â€¦]*\s*$", text),
+        ]
+        for match in matches:
+            token = match.group(1).upper()
+            if token in COMMON_ENGLISH_WORDS or token in SFX_WORDS:
+                continue
+            observations.append(
+                {
+                    "token": token,
+                    "group": group,
+                    "confidence": float(group.confidence),
+                }
+            )
+
+    repairs = []
+    handled = set()
+    for observation in observations:
+        token = observation["token"]
+        if token in handled:
+            continue
+        cluster = [
+            item
+            for item in observations
+            if abs(len(item["token"]) - len(token)) <= 1
+            and _token_edit_distance(item["token"], token) <= 1
+        ]
+        variants = {item["token"] for item in cluster}
+        group_ids = {id(item["group"]) for item in cluster}
+        if len(variants) < 2 or len(group_ids) < 2:
+            continue
+        handled.update(variants)
+        variant_scores = {}
+        for variant in variants:
+            matching = [item for item in cluster if item["token"] == variant]
+            variant_scores[variant] = (
+                len(matching),
+                sum(item["confidence"] for item in matching) / len(matching),
+            )
+        canonical = max(
+            variants,
+            key=lambda variant: (
+                variant_scores[variant][0],
+                variant_scores[variant][1],
+                variant,
+            ),
+        )
+        variant_pattern = re.compile(
+            r"\b(?:" + "|".join(re.escape(item) for item in variants) + r")\b",
+            flags=re.IGNORECASE,
+        )
+        for group in groups:
+            original = group.text
+            if not variant_pattern.search(original):
+                continue
+            updated = variant_pattern.sub(
+                lambda match: _match_compact_name_case(match.group(0), canonical),
+                original,
+            )
+            if canonical not in group.detected_proper_names:
+                group.detected_proper_names.append(canonical)
+            if re.fullmatch(
+                rf"\s*{re.escape(canonical)}\s*[.!?â€¦]*\s*",
+                clean_ocr_text(updated),
+                flags=re.IGNORECASE,
+            ):
+                group.preserve_as_name = True
+            if updated == original:
+                continue
+            group.original_text = group.original_text or original
+            group.text = updated
+            group.repaired_text = updated
+            group.repair_reason = ";".join(
+                part
+                for part in (
+                    group.repair_reason,
+                    "chapter_consensus_name_variant",
+                )
+                if part
+            )
+            repairs.append(
+                {
+                    "group_id": group.group_id,
+                    "original_text": original,
+                    "repaired_text": updated,
+                    "repair_reason": "chapter_consensus_name_variant",
+                    "variants": sorted(variants),
+                    "canonical": canonical,
+                }
+            )
+    return repairs
+
+
+def _token_edit_distance(left, right):
+    previous = list(range(len(right) + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_char in enumerate(right, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1] + (left_char != right_char),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def _compact_token_has_name_context(text, token):
+    escaped = re.escape(token)
+    patterns = (
+        rf",\s*{escaped}\s*[.!?â€¦]*\s*$",
+        rf"^\s*{escaped}\s*[,!?â€¦]",
+        rf"\b(?:WITH|TO|FOR|DEAR)\s+{escaped}\s*[.!?â€¦]",
+        rf"^\s*{escaped}\s+(?:IS|WAS|HAS|WILL|CAN)\b",
+    )
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _match_compact_name_case(source_phrase, compact):
+    if source_phrase.islower():
+        return compact.lower()
+    if source_phrase.istitle():
+        return compact.title()
+    return compact.upper()
+
+
 def apply_group_translations(groups, translations):
     for group, translation in zip(groups, translations):
         translated = clean_ocr_text(translation) or group.text
         group.translation = _match_source_case(group.text, translated)
         group.sent_to_translation = True
-        valid, reason = validate_translation_text(group.text, group.translation, group.classification)
+        valid, reason = validate_translation_text(
+            group.text,
+            group.translation,
+            group.classification,
+            group.detected_proper_names,
+        )
         group.translation_valid = valid
         group.translation_validation_reason = reason
 
@@ -398,7 +640,12 @@ def render_analyzed_image(
         accepted_strategy = ""
         accepted_allowed_mask = None
 
-        for strategy in ("primary", "conservative"):
+        for strategy in (
+            "primary",
+            "conservative",
+            "glyph_overlay",
+            "caption_overlay",
+        ):
             inpaint_started = time.perf_counter()
             cleaned, cleanup_mask, mask_metrics = _remove_text_for_group(
                 before_group,
@@ -420,7 +667,12 @@ def render_analyzed_image(
                 continue
 
             redraw_started = time.perf_counter()
-            rendered = _draw_group_translation(cleaned, group, font_path)
+            rendered = _draw_group_translation(
+                cleaned,
+                group,
+                font_path,
+                strategy=strategy,
+            )
             redraw_seconds += time.perf_counter() - redraw_started
             group_allowed = _draw_allowed_group_mask(
                 original.shape,
@@ -434,6 +686,20 @@ def render_analyzed_image(
                 group=group,
                 mask_metrics=mask_metrics,
             )
+            if (
+                visual_summary.get("visual_validation_passed")
+                and config.POST_RENDER_OCR_VALIDATION
+                and config.OCR_ENGINE == "rapidocr"
+            ):
+                residual_summary = _post_render_source_text_check(
+                    rendered,
+                    group,
+                    page_index,
+                )
+                visual_summary["post_render_ocr"] = residual_summary
+                if not residual_summary.get("passed", True):
+                    visual_summary["visual_validation_passed"] = False
+                    visual_summary["reason"] = "residual_source_english_after_render"
             visual_summary["strategy"] = strategy
             group.visual_attempts.append(visual_summary)
             if (
@@ -834,6 +1100,26 @@ def _classify_groups(groups, image_bgr):
         group.main_text_score = max(0.0, min(1.0, score))
 
         is_known_sfx = normalized in SFX_WORDS
+        elongated_vocal_sfx = bool(
+            one_short_word
+            and 3 <= len(normalized) <= 14
+            and re.search(r"(.)\1{1,}", normalized)
+            and len(set(normalized)) <= max(4, int(len(normalized) * 0.6))
+            and re.search(r"[!?]", group.text)
+            and normalized not in COMMON_ENGLISH_WORDS
+        )
+        compact_consonant_sfx = bool(
+            one_short_word
+            and 2 <= len(normalized) <= 4
+            and not re.search(r"[AEIOUY]", normalized)
+            and normalized not in COMMON_ENGLISH_WORDS
+        )
+        production_credit = bool(
+            re.match(
+                r"^(?:ART|STORY|SCRIPT|WRITTEN|CREATED|PRODUCED|ILLUSTRATED|ILLUSTRATION|COLORS?|LETTERING)\s*BY\b",
+                _ascii_fold(group.text).upper().strip(),
+            )
+        )
         diagonal = abs(group.angle_degrees) >= 12
         strongly_styled = diagonal or group.near_image_edge
         region_area_ratio = (w * h) / max(1, w_img * h_img)
@@ -851,7 +1137,11 @@ def _classify_groups(groups, image_bgr):
             and not (balloon_like or narration_like or external_narration)
         )
 
-        if oversized_short_graphic:
+        if production_credit:
+            group.inside_balloon_like_region = False
+            group.inside_narration_box_like_region = False
+            group.classification = "decorative"
+        elif oversized_short_graphic or elongated_vocal_sfx or compact_consonant_sfx:
             group.inside_balloon_like_region = False
             group.inside_narration_box_like_region = False
             group.classification = "sfx"
@@ -895,12 +1185,18 @@ def _refine_classification_with_background(group):
     metrics = group.background_metrics or {}
     if (
         group.background_type == "narration_box"
-        and metrics.get("open_white_narration")
+        and (
+            metrics.get("open_white_narration")
+            or metrics.get("open_dark_narration")
+        )
         and group.classification in {"speech", "narration", "unknown"}
     ):
-        group.classification = "narration"
-        group.region_type = "narration"
-        group.inside_narration_box_like_region = True
+        words = re.findall(r"[A-Z0-9']+", _ascii_fold(group.text).upper())
+        short_spoken_phrase = len(group.lines) <= 2 and len(words) <= 3
+        group.classification = "speech" if short_spoken_phrase else "narration"
+        group.region_type = group.classification
+        group.inside_balloon_like_region = short_spoken_phrase
+        group.inside_narration_box_like_region = not short_spoken_phrase
         group.ignored = False
         group.ignore_reason = ""
         return
@@ -917,6 +1213,88 @@ def _refine_classification_with_background(group):
     folded = _ascii_fold(group.text).upper()
     words = re.findall(r"[A-Z0-9']+", folded)
     compact = re.sub(r"[^A-Z0-9]", "", folded)
+    group_area_ratio = (group.box[2] * group.box[3]) / max(
+        1,
+        int(metrics.get("image_width") or group.box[2])
+        * int(metrics.get("image_height") or group.box[3]),
+    )
+    dialogue_markers = {
+        "I",
+        "I'M",
+        "IM",
+        "ME",
+        "MY",
+        "WE",
+        "US",
+        "OUR",
+        "YOU",
+        "YOUR",
+        "HE",
+        "HIS",
+        "SHE",
+        "HER",
+        "THEY",
+        "THEIR",
+        "WHAT",
+        "WHY",
+        "HOW",
+        "WHEN",
+        "WHERE",
+        "WHO",
+    }
+    lacks_dialogue_markers = not any(word in dialogue_markers for word in words)
+    short_embedded_label = (
+        group.background_type in {"speed_lines", "textured_art"}
+        and 4 <= len(words) <= 8
+        and len(compact) <= 36
+        and len(group.lines) <= 4
+        and group_area_ratio <= 0.05
+        and lacks_dialogue_markers
+        and not re.search(r"[!?]", group.text)
+        and not (
+            metrics.get("open_white_narration")
+            or metrics.get("open_dark_narration")
+        )
+        and (
+            abs(group.angle_degrees) >= 4
+            or edge_density >= 0.035
+            or local_texture >= 6.0
+            or white_ratio < 0.75
+            or saturation >= 18.0
+        )
+    )
+    small_embedded_interface_text = (
+        (
+            group.background_type == "speed_lines"
+            and len(words) >= 6
+            and len(group.lines) >= 3
+        )
+        or short_embedded_label
+    )
+    small_embedded_interface_text = (
+        small_embedded_interface_text
+        and group_area_ratio <= 0.05
+    )
+    if small_embedded_interface_text:
+        group.classification = "decorative"
+        group.region_type = "decorative"
+        group.parent_balloon_id = ""
+        _apply_classification_policy(group)
+        return
+    metadata_overlay_on_art = (
+        group.background_type == "textured_art"
+        and 2 <= len(words) <= 8
+        and group_area_ratio <= 0.05
+        and bool(re.search(r"\d", group.text))
+        and "(" in group.text
+        and ")" in group.text
+    )
+    if metadata_overlay_on_art:
+        group.classification = "decorative"
+        group.region_type = "decorative"
+        group.parent_balloon_id = ""
+        _apply_classification_policy(group)
+        return
     colored_sign_or_label = (
         1 <= len(words) <= 3
         and 1 <= len(compact) <= 24
@@ -927,7 +1305,11 @@ def _refine_classification_with_background(group):
         len(words) == 1
         and 1 <= len(compact) <= 10
         and compact not in COMMON_ENGLISH_WORDS
-        and white_ratio < 0.25
+        and (
+            white_ratio < 0.25
+            or group.background_type == "speed_lines"
+            or edge_density >= 0.05
+        )
         and (edge_density >= 0.05 or local_texture >= 6.0)
     )
     embedded_in_art = colored_sign_or_label or compact_graphic
@@ -998,6 +1380,13 @@ def _apply_classification_policy(group):
 def _should_translate_group(group):
     if group.ignored:
         return False
+    if group.preserve_as_name:
+        return False
+    # Translation validation runs after the initial target list is built. If a
+    # retry still fails, keep the untouched source region instead of erasing it
+    # and drawing broken/mixed text back onto the page.
+    if group.sent_to_translation and not group.translation_valid:
+        return False
     if group.classification in ("speech", "narration"):
         return True
     if group.classification == "sfx":
@@ -1033,10 +1422,35 @@ def score_group_ocr_quality(group):
         reasons.append("ignored_line_inside_text_region")
         score -= min(0.45, 0.22 + len(group.cleanup_lines) * 0.1)
 
+    non_ascii_letters = [
+        char
+        for char in text
+        if char.isalpha() and not ("A" <= char.upper() <= "Z")
+    ]
+    if non_ascii_letters:
+        reasons.append("non_ascii_ocr_artifact")
+        score -= min(0.42, 0.18 + len(non_ascii_letters) * 0.06)
+
+    raw_case_tokens = re.findall(r"[A-Za-z]{5,}", text)
+    if any(_case_transition_count(token) >= 3 for token in raw_case_tokens):
+        reasons.append("mixed_case_ocr_artifact")
+        score -= 0.2
+
     folded = _ascii_fold(text).upper()
     compact = re.sub(r"[^A-Z0-9]", "", folded)
     tokens = re.findall(r"[A-Za-z0-9']+", folded)
     token_letters = [re.sub(r"[^A-Z]", "", token) for token in tokens]
+
+    apostrophe_tokens = re.findall(r"'?[A-Z]+(?:'[A-Z]+)+'?", folded)
+    valid_contraction = re.compile(
+        r"^[A-Z]+(?:'S|'T|'RE|'VE|'LL|'D|'M)$"
+    )
+    if any(
+        token.count("'") > 1 or not valid_contraction.fullmatch(token.strip("'"))
+        for token in apostrophe_tokens
+    ):
+        reasons.append("improbable_apostrophe_pattern")
+        score -= 0.45
 
     repair_candidate, repair_reason = repair_ocr_text(text)
     if repair_reason:
@@ -1155,6 +1569,14 @@ def score_group_ocr_quality(group):
     return max(0.0, min(1.0, score)), reasons
 
 
+def _case_transition_count(token):
+    case_pattern = ["U" if char.isupper() else "L" for char in token if char.isalpha()]
+    return sum(
+        case_pattern[index] != case_pattern[index - 1]
+        for index in range(1, len(case_pattern))
+    )
+
+
 def _group_seems_cross_region(group):
     if len(group.lines) < 2:
         return False
@@ -1195,6 +1617,9 @@ def group_needs_selective_fallback(group):
                 "ignored_high_content_text",
                 "ignored_line_inside_text_region",
                 "unknown_short_token_in_phrase",
+                "improbable_number_token",
+                "non_ascii_ocr_artifact",
+                "mixed_case_ocr_artifact",
             }
             for reason in group.quality_reasons
         )
@@ -1235,6 +1660,7 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
         best_selection_score = current_quality
         best_engine = ""
         attempts = []
+        candidate_options = []
         repair_proposal_tokens = _repair_proposal_tokens(group)
         context_text = " ".join(
             [group.text]
@@ -1315,6 +1741,17 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                         "text": candidate_text,
                     }
                 )
+                if candidate_lines:
+                    candidate_options.append(
+                        {
+                            "lines": candidate_lines,
+                            "quality": candidate_quality,
+                            "selection_score": selection_score,
+                            "engine": variant,
+                            "text": candidate_text,
+                            "attempt": attempts[-1],
+                        }
+                    )
                 if candidate_lines and selection_score > best_selection_score + 0.03:
                     best_lines = candidate_lines
                     best_quality = candidate_quality
@@ -1340,6 +1777,46 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 )
+
+        normalized_original = _normalized_ocr_candidate_text(group.text)
+        normalized_options = [
+            _normalized_ocr_candidate_text(option["text"])
+            for option in candidate_options
+        ]
+        for option_index, option in enumerate(candidate_options):
+            normalized = normalized_options[option_index]
+            original_agreement_bonus = (
+                0.22
+                if normalized and normalized == normalized_original
+                else 0.0
+            )
+            peer_agreement_bonus = (
+                0.28
+                if normalized
+                and any(
+                    normalized == peer
+                    for peer_index, peer in enumerate(normalized_options)
+                    if peer_index != option_index
+                )
+                else 0.0
+            )
+            adjusted_score = (
+                option["selection_score"]
+                + original_agreement_bonus
+                + peer_agreement_bonus
+            )
+            option["attempt"].update(
+                {
+                    "original_engine_agreement_bonus": original_agreement_bonus,
+                    "peer_engine_agreement_bonus": peer_agreement_bonus,
+                    "adjusted_selection_score": round(adjusted_score, 4),
+                }
+            )
+            if adjusted_score > best_selection_score + 0.03:
+                best_lines = option["lines"]
+                best_quality = option["quality"]
+                best_selection_score = adjusted_score
+                best_engine = option["engine"]
 
         record = {
             "group_id": group.group_id,
@@ -1381,6 +1858,10 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
     if consumed_line_ids:
         updated_lines.sort(key=lambda line: (line.box[1], line.box[0]))
     return updated_lines, records
+
+
+def _normalized_ocr_candidate_text(text):
+    return re.sub(r"[^A-Z0-9']", "", _ascii_fold(text).upper())
 
 
 def _fallback_crop_box(group, image_shape):
@@ -1484,7 +1965,7 @@ def _split_groups_at_sentence_boundaries(groups):
             for start, end in zip(boundaries, boundaries[1:])
             if end > start
         ]
-        if len(chunks) <= 1 or any(len(chunk) == 1 for chunk in chunks):
+        if len(chunks) <= 1:
             result.append(group)
             continue
         for chunk in chunks:
@@ -1688,7 +2169,12 @@ def _center_inside(inner, outer):
     return ox <= cx <= ox + ow and oy <= cy <= oy + oh
 
 
-def validate_translation_text(source_text, translation, classification="speech"):
+def validate_translation_text(
+    source_text,
+    translation,
+    classification="speech",
+    allowed_proper_names=None,
+):
     translated = clean_ocr_text(translation)
     if classification == "sfx" and not config.TRANSLATE_SFX:
         return True, "sfx_preserved"
@@ -1698,6 +2184,10 @@ def validate_translation_text(source_text, translation, classification="speech")
     source_tokens = set(re.findall(r"[A-Za-z']+", _ascii_fold(source_text).upper()))
     translated_folded = _ascii_fold(translated).upper()
     translated_tokens = re.findall(r"[A-Za-z']+", translated_folded)
+    allowed_names = {
+        re.sub(r"[^A-Z]", "", _ascii_fold(name).upper())
+        for name in (allowed_proper_names or [])
+    }
     portuguese_hits = sum(token in PORTUGUESE_MARKERS for token in translated_tokens)
     forbidden = []
     for token in translated_tokens:
@@ -1722,6 +2212,23 @@ def validate_translation_text(source_text, translation, classification="speech")
     ):
         return False, "mixed_language_tokens:" + ",".join(sorted(set(forbidden))[:6])
 
+    residual_inflected_english = sorted(
+        {
+            token
+            for token in translated_tokens
+            if token in source_tokens
+            and token not in allowed_names
+            and token not in PORTUGUESE_MARKERS
+            and _looks_like_inflected_english_token(token)
+        }
+    )
+    if residual_inflected_english and portuguese_hits:
+        return (
+            False,
+            "residual_inflected_english:"
+            + ",".join(residual_inflected_english[:6]),
+        )
+
     source_english_tokens = [
         token
         for token in source_tokens
@@ -1743,7 +2250,43 @@ def validate_translation_text(source_text, translation, classification="speech")
     if len(translated_tokens) == 1 and translated_tokens[0] in COMMON_ENGLISH_WORDS:
         return False, "untranslated_single_english_token"
 
+    repeated_fragment = _translation_repeated_fragment(
+        translated_tokens,
+        allowed_names,
+    )
+    if repeated_fragment:
+        return False, "repeated_translation_fragment:" + repeated_fragment
+
     return True, "ok"
+
+
+def _translation_repeated_fragment(tokens, allowed_names=None):
+    """Detect a malformed token followed shortly by a longer near-duplicate."""
+    allowed = set(allowed_names or [])
+    for index, left in enumerate(tokens):
+        if len(left) < 5 or left in allowed:
+            continue
+        for right in tokens[index + 1 : index + 4]:
+            if len(right) < 5 or right in allowed or left == right:
+                continue
+            shorter, longer = sorted((left, right), key=len)
+            prefix = 0
+            for lchar, rchar in zip(shorter, longer):
+                if lchar != rchar:
+                    break
+                prefix += 1
+            if prefix >= 4 and prefix / len(shorter) >= 0.6:
+                return f"{left}->{right}"
+    return ""
+
+
+def _looks_like_inflected_english_token(token):
+    token = str(token or "").upper().strip("'")
+    if len(token) < 5:
+        return False
+    return bool(
+        re.search(r"(?:ING|ED|LY|TION|NESS|MENT|ERS|IES|S)$", token)
+    )
 
 
 def validate_and_retry_translations(groups, translator, force=False):
@@ -1753,7 +2296,12 @@ def validate_and_retry_translations(groups, translator, force=False):
     for group in groups:
         if not group.sent_to_translation:
             continue
-        valid, reason = validate_translation_text(group.text, group.translation, group.classification)
+        valid, reason = validate_translation_text(
+            group.text,
+            group.translation,
+            group.classification,
+            group.detected_proper_names,
+        )
         group.translation_valid = valid
         group.translation_validation_reason = reason
         if valid or not config.TRANSLATION_RETRY_ON_MIXED_LANGUAGE:
@@ -1779,6 +2327,7 @@ def validate_and_retry_translations(groups, translator, force=False):
                 group.text,
                 candidate,
                 group.classification,
+                group.detected_proper_names,
             )
             retry_records.append(
                 {
@@ -1804,6 +2353,7 @@ def validate_and_retry_translations(groups, translator, force=False):
                 group.text,
                 original_translation,
                 group.classification,
+                group.detected_proper_names,
             )
             if initial_valid:
                 group.translation = original_translation
@@ -1815,6 +2365,7 @@ def validate_and_retry_translations(groups, translator, force=False):
                 group.rejected_translation = original_translation
                 group.translation = group.text
                 group.translation_validation_reason = reason
+                group.manual_review_required = True
     return retry_records
 
 
@@ -2218,6 +2769,8 @@ def _classify_background_region(img_bgr, group):
 
     metrics = {
         "draw_box": list(draw_box),
+        "image_width": int(image_w),
+        "image_height": int(image_h),
         "brightness_mean": round(brightness, 3),
         "brightness_std": round(brightness_std, 3),
         "saturation_mean": round(saturation_mean, 3),
@@ -2272,10 +2825,34 @@ def _classify_background_region(img_bgr, group):
         and context_dark_ratio <= 0.03
         and context_saturation_mean <= 8.0
     )
+    relaxed_white_context = (
+        context_brightness >= 248.0
+        and context_white_ratio >= 0.975
+        and context_dark_ratio <= 0.015
+        and context_saturation_mean <= 5.0
+    )
+    short_text_white_context = (
+        group.classification in {"narration", "unknown"}
+        and 3 <= len(compact_text) <= 14
+        and w >= max(38, int(h * 1.0))
+        and h <= 96
+        and context_brightness >= 242.0
+        and context_white_ratio >= 0.94
+        and context_dark_ratio <= 0.04
+        and context_saturation_mean <= 8.0
+        and long_lines == 0
+        and diagonal_lines <= 1
+    )
     open_white_narration = (
         group.classification in {"narration", "unknown"}
         and w >= max(50, int(h * 1.5))
-        and (len(compact_text) >= 8 or semantic_short_narration)
+        and (
+            len(compact_text) >= 8
+            or semantic_short_narration
+            or short_text_white_context
+            or (white_context and len(compact_text) >= 3)
+            or (relaxed_white_context and len(compact_text) >= 5)
+        )
         and (
             (
                 brightness >= 190.0
@@ -2283,8 +2860,21 @@ def _classify_background_region(img_bgr, group):
                 and dark_ratio <= 0.21
                 and saturation_mean <= 8.0
             )
+            or short_text_white_context
             or white_context
         )
+    )
+    dark_context = (
+        context_brightness <= 32.0
+        and context_dark_ratio >= 0.96
+        and context_white_ratio <= 0.02
+        and context_saturation_mean <= 12.0
+    )
+    open_dark_narration = (
+        group.classification in {"narration", "unknown"}
+        and w >= max(80, int(h * 1.8))
+        and len(compact_text) >= 8
+        and dark_context
     )
     strict_uniform_light = (
         brightness >= config.WHITE_BACKGROUND_MIN_BRIGHTNESS
@@ -2331,15 +2921,21 @@ def _classify_background_region(img_bgr, group):
         or gradient_strength >= 58
     )
 
-    if open_white_narration:
+    if open_white_narration or open_dark_narration:
         background_type = "narration_box"
+    elif strongly_uniform_white:
+        background_type = (
+            "white_balloon"
+            if group.classification == "speech"
+            else "narration_box"
+        )
     elif uniform_light and group.inside_balloon_like_region:
         background_type = "white_balloon"
     elif uniform_light and group.inside_narration_box_like_region:
         background_type = "narration_box"
     elif speed_lines:
         background_type = "speed_lines"
-    elif uniform_dark and group.inside_balloon_like_region:
+    elif (uniform_dark or dark_context) and group.inside_balloon_like_region:
         background_type = "dark_balloon"
     elif textured:
         background_type = "textured_art"
@@ -2352,6 +2948,10 @@ def _classify_background_region(img_bgr, group):
     metrics["dominant_white_enclosure"] = bool(dominant_white_enclosure)
     metrics["stylized_white_enclosure"] = bool(stylized_white_enclosure)
     metrics["open_white_narration"] = bool(open_white_narration)
+    metrics["open_dark_narration"] = bool(open_dark_narration)
+    metrics["dark_context"] = bool(dark_context)
+    metrics["relaxed_white_context"] = bool(relaxed_white_context)
+    metrics["short_text_white_context"] = bool(short_text_white_context)
     metrics["background_edge_density"] = round(float(np.mean(background_edges > 0)), 4)
     return background_type, metrics
 
@@ -2369,6 +2969,16 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
         "sfx_area",
         "unknown",
     }
+    if strategy in {"glyph_overlay", "caption_overlay"} and not tight_background:
+        return current_bgr.copy(), np.zeros(original_bgr.shape[:2], dtype=np.uint8), {
+            "mask_valid": False,
+            "reason": f"{strategy}_not_needed_on_uniform_background",
+        }
+    if strategy == "caption_overlay" and not config.TEXTURED_CAPTION_OVERLAY:
+        return current_bgr.copy(), np.zeros(original_bgr.shape[:2], dtype=np.uint8), {
+            "mask_valid": False,
+            "reason": "textured_caption_overlay_disabled",
+        }
     base_mask = _build_text_mask(original_bgr.shape, [group], padding=0)
     if not np.any(base_mask):
         return current_bgr.copy(), base_mask, {
@@ -2376,10 +2986,13 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
             "reason": "empty_source_polygon",
         }
 
-    limit_padding = 1 if (strategy == "conservative" or tight_background) else min(
-        config.MAX_MASK_EXPANSION,
-        config.TEXT_MASK_PADDING + 1,
-    )
+    if strategy == "caption_overlay":
+        limit_padding = min(3, config.MAX_MASK_EXPANSION)
+    else:
+        limit_padding = 1 if (strategy == "conservative" or tight_background) else min(
+            config.MAX_MASK_EXPANSION,
+            config.TEXT_MASK_PADDING + 1,
+        )
     maximum_mask = base_mask.copy()
     if limit_padding > 0:
         maximum_mask = cv2.dilate(
@@ -2388,13 +3001,78 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
             iterations=1,
         )
     mask_strategy = "conservative" if tight_background else strategy
-    component_mask, component_metrics = _component_text_mask(
+    if strategy == "caption_overlay":
+        component_mask, component_metrics = _caption_overlay_mask(
+            original_bgr,
+            group,
+            maximum_mask=maximum_mask,
+        )
+    elif strategy == "glyph_overlay":
+        component_mask, component_metrics = _outlined_light_text_mask(
+            original_bgr,
+            group,
+            maximum_mask=maximum_mask,
+        )
+    else:
+        component_mask, component_metrics = _component_text_mask(
+            original_bgr,
+            group,
+            maximum_mask=maximum_mask,
+            strategy=mask_strategy,
+        )
+    cleanup_mask = component_mask
+    dark_line_mask, dark_line_metrics = _uniform_dark_line_text_mask(
         original_bgr,
         group,
-        maximum_mask=maximum_mask,
-        strategy=mask_strategy,
     )
-    cleanup_mask = component_mask
+    if np.any(dark_line_mask):
+        new_dark_line_pixels = int(
+            np.count_nonzero((dark_line_mask > 0) & (cleanup_mask == 0))
+        )
+        cleanup_mask = cv2.bitwise_or(cleanup_mask, dark_line_mask)
+        component_metrics["text_component_pixels"] = int(
+            component_metrics.get("text_component_pixels", 0)
+            + new_dark_line_pixels
+        )
+    component_metrics.update(dark_line_metrics)
+    light_line_mask, light_line_metrics = _uniform_light_line_text_mask(
+        original_bgr,
+        group,
+    )
+    if np.any(light_line_mask):
+        new_light_line_pixels = int(
+            np.count_nonzero((light_line_mask > 0) & (cleanup_mask == 0))
+        )
+        cleanup_mask = cv2.bitwise_or(cleanup_mask, light_line_mask)
+        component_metrics["text_component_pixels"] = int(
+            component_metrics.get("text_component_pixels", 0)
+            + new_light_line_pixels
+        )
+    component_metrics.update(light_line_metrics)
+    detached_dark_mask, detached_dark_metrics = _detached_dark_text_components_mask(
+        original_bgr,
+        group,
+        cleanup_mask,
+    )
+    if np.any(detached_dark_mask):
+        cleanup_mask = cv2.bitwise_or(cleanup_mask, detached_dark_mask)
+        component_metrics["text_component_pixels"] = int(
+            component_metrics.get("text_component_pixels", 0)
+            + detached_dark_metrics["detached_dark_text_pixels"]
+        )
+    component_metrics.update(detached_dark_metrics)
+    detached_mask, detached_metrics = _detached_light_text_components_mask(
+        original_bgr,
+        group,
+        cleanup_mask,
+    )
+    if np.any(detached_mask):
+        cleanup_mask = cv2.bitwise_or(cleanup_mask, detached_mask)
+        component_metrics["text_component_pixels"] = int(
+            component_metrics.get("text_component_pixels", 0)
+            + detached_metrics["detached_text_pixels"]
+        )
+    component_metrics.update(detached_metrics)
     if not np.any(cleanup_mask):
         return current_bgr.copy(), cleanup_mask, {
             **component_metrics,
@@ -2420,12 +3098,28 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
         metrics["reason"] = "mask_too_large_for_detected_characters"
         return current_bgr.copy(), cleanup_mask, metrics
 
+    textured_group_ratio_limit = (
+        1.15
+        if strategy == "caption_overlay"
+        else
+        min(0.30, config.MAX_TEXTURED_MASK_GROUP_RATIO + 0.12)
+        if strategy == "glyph_overlay"
+        else config.MAX_TEXTURED_MASK_GROUP_RATIO
+    )
+    textured_component_ratio_limit = (
+        1.15
+        if strategy == "caption_overlay"
+        else config.MAX_TEXTURED_MASK_COMPONENT_RATIO
+    )
     if tight_background and (
         shape_metrics["mask_to_group_area_ratio"]
-        > config.MAX_TEXTURED_MASK_GROUP_RATIO
+        > textured_group_ratio_limit
         or shape_metrics["largest_mask_component_to_group_ratio"]
-        > config.MAX_TEXTURED_MASK_COMPONENT_RATIO
-        or shape_metrics["broad_rectangular_mask"]
+        > textured_component_ratio_limit
+        or (
+            shape_metrics["broad_rectangular_mask"]
+            and strategy != "caption_overlay"
+        )
     ):
         metrics["mask_valid"] = False
         metrics["reason"] = "broad_mask_rejected_on_nonuniform_background"
@@ -2449,6 +3143,19 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
     if white_patch_metrics.get("white_patch_rejected"):
         metrics["mask_valid"] = False
         metrics["reason"] = "large_white_patch_on_nonwhite_background"
+        return current_bgr.copy(), cleanup_mask, metrics
+    dark_patch_metrics = _dark_blotch_artifact_metrics(
+        original_bgr,
+        cleaned,
+        group,
+        cleanup_mask,
+        background_type,
+        strategy,
+    )
+    metrics.update(dark_patch_metrics)
+    if dark_patch_metrics.get("dark_blotch_rejected"):
+        metrics["mask_valid"] = False
+        metrics["reason"] = "dark_blotch_created_on_textured_art"
         return current_bgr.copy(), cleanup_mask, metrics
     residual_mask, residual_metrics = _component_text_mask(
         cleaned,
@@ -2491,9 +3198,14 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
     metrics["residual_component_count"] = int(
         residual_metrics.get("accepted_text_components", 0)
     )
-    if residual_pixels > residual_limit:
+    if residual_pixels > residual_limit and strategy not in {
+        "glyph_overlay",
+        "caption_overlay",
+    }:
         metrics["mask_valid"] = False
         metrics["reason"] = "residual_source_text_after_cleanup"
+    elif strategy in {"glyph_overlay", "caption_overlay"}:
+        metrics["residual_validation_deferred_to_post_render_ocr"] = True
     return cleaned, cleanup_mask, metrics
 
 
@@ -2579,6 +3291,58 @@ def _white_patch_artifact_metrics(
         "largest_new_white_component_area": int(largest),
         "new_white_patch_to_group_ratio": round(float(pixels / group_area), 6),
         "white_patch_rejected": rejected,
+    }
+
+
+def _dark_blotch_artifact_metrics(
+    original_bgr,
+    cleaned_bgr,
+    group,
+    cleanup_mask,
+    background_type,
+    strategy,
+):
+    """Reject new opaque dark islands created while cleaning textured artwork."""
+    if (
+        strategy == "caption_overlay"
+        or background_type not in {"textured_art", "speed_lines", "unknown"}
+    ):
+        return {
+            "new_dark_patch_pixels": 0,
+            "largest_new_dark_component_area": 0,
+            "new_dark_patch_to_group_ratio": 0.0,
+            "dark_blotch_rejected": False,
+        }
+
+    original_gray = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY)
+    cleaned_gray = cv2.cvtColor(cleaned_bgr, cv2.COLOR_BGR2GRAY)
+    new_dark = (
+        (cleanup_mask > 0)
+        & (original_gray >= 90)
+        & (cleaned_gray <= 35)
+        & ((original_gray.astype(np.int16) - cleaned_gray.astype(np.int16)) >= 55)
+    )
+    new_dark_u8 = new_dark.astype(np.uint8) * 255
+    count, _, stats, _ = cv2.connectedComponentsWithStats(new_dark_u8, 8)
+    largest = max(
+        (int(stats[label, cv2.CC_STAT_AREA]) for label in range(1, count)),
+        default=0,
+    )
+    pixels = int(np.count_nonzero(new_dark))
+    group_area = max(1, int(group.box[2] * group.box[3]))
+    ratio = pixels / group_area
+    rejected = bool(
+        config.REJECT_DARK_BLOTCH_ON_TEXTURED_ART
+        and (
+            largest > config.MAX_NEW_DARK_COMPONENT_AREA
+            or ratio > config.MAX_NEW_DARK_PIXEL_RATIO
+        )
+    )
+    return {
+        "new_dark_patch_pixels": pixels,
+        "largest_new_dark_component_area": int(largest),
+        "new_dark_patch_to_group_ratio": round(float(ratio), 6),
+        "dark_blotch_rejected": rejected,
     }
 
 
@@ -2703,18 +3467,321 @@ def _component_text_mask(img_bgr, group, maximum_mask, strategy="primary"):
     }
 
 
+def _outlined_light_text_mask(img_bgr, group, maximum_mask):
+    """Build a tight mask for white outlined lettering over artwork."""
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    result = np.zeros(gray.shape, dtype=np.uint8)
+    raw = np.zeros(gray.shape, dtype=np.uint8)
+    accepted = 0
+    for line in _cleanup_lines_for_group(group):
+        polygon = np.zeros(gray.shape, dtype=np.uint8)
+        cv2.fillPoly(polygon, [np.asarray(line.polygon, dtype=np.int32)], 255)
+        line_limit = cv2.dilate(polygon, np.ones((3, 3), np.uint8), iterations=1)
+        line_limit = cv2.bitwise_and(line_limit, maximum_mask)
+        x, y, w, h = line.box
+        x1, y1 = max(0, x - 1), max(0, y - 1)
+        x2 = min(gray.shape[1], x + w + 1)
+        y2 = min(gray.shape[0], y + h + 1)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        roi_gray = gray[y1:y2, x1:x2]
+        roi_sat = hsv[y1:y2, x1:x2, 1]
+        roi_limit = line_limit[y1:y2, x1:x2] > 0
+        bright = ((roi_gray >= 238) & (roi_sat <= 55) & roi_limit).astype(np.uint8) * 255
+        nearby_dark = cv2.dilate(
+            ((roi_gray <= 95) & roi_limit).astype(np.uint8) * 255,
+            np.ones((5, 5), np.uint8),
+            iterations=1,
+        )
+        bright = cv2.bitwise_and(bright, nearby_dark)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(bright, 8)
+        selected = np.zeros_like(bright)
+        line_area = max(1, w * h)
+        for label in range(1, count):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            cw = int(stats[label, cv2.CC_STAT_WIDTH])
+            ch = int(stats[label, cv2.CC_STAT_HEIGHT])
+            if not 2 <= area <= line_area * 0.16:
+                continue
+            if cw > w * 0.48 or ch > h * 0.95:
+                continue
+            selected[labels == label] = 255
+            accepted += 1
+        if not np.any(selected):
+            continue
+        raw[y1:y2, x1:x2] = cv2.bitwise_or(raw[y1:y2, x1:x2], selected)
+        halo = cv2.dilate(selected, np.ones((3, 3), np.uint8), iterations=1)
+        halo = cv2.bitwise_and(halo, line_limit[y1:y2, x1:x2])
+        result[y1:y2, x1:x2] = cv2.bitwise_or(result[y1:y2, x1:x2], halo)
+    result = cv2.bitwise_and(result, maximum_mask)
+    return result, {
+        "text_component_pixels": int(np.count_nonzero(raw)),
+        "accepted_text_components": int(accepted),
+        "component_based": True,
+        "outlined_glyph_mask": True,
+    }
+
+
+def _caption_overlay_mask(img_bgr, group, maximum_mask):
+    """Build separate OCR-line backings, never a single group rectangle."""
+    del img_bgr
+    result = np.zeros_like(maximum_mask)
+    line_areas = []
+    for line in _cleanup_lines_for_group(group):
+        polygon = np.asarray(line.polygon, dtype=np.int32)
+        if polygon.shape[0] < 3:
+            continue
+        line_mask = np.zeros_like(maximum_mask)
+        cv2.fillPoly(line_mask, [polygon], 255)
+        line_mask = cv2.dilate(line_mask, np.ones((3, 3), np.uint8), iterations=1)
+        line_mask = cv2.bitwise_and(line_mask, maximum_mask)
+        area = int(np.count_nonzero(line_mask))
+        if area <= 0:
+            continue
+        line_areas.append(area)
+        result = cv2.bitwise_or(result, line_mask)
+    pixels = int(np.count_nonzero(result))
+    return result, {
+        "text_component_pixels": max(1, pixels),
+        "accepted_text_components": len(line_areas),
+        "component_based": True,
+        "caption_overlay_mask": True,
+        "caption_overlay_line_count": len(line_areas),
+        "caption_overlay_largest_line_area": max(line_areas, default=0),
+    }
+
+
+def _detached_light_text_components_mask(img_bgr, group, source_mask):
+    """Recover isolated bright glyphs beside OCR lines on a uniform dark region."""
+    metrics = getattr(group, "background_metrics", {}) or {}
+    dark_context = bool(
+        metrics.get("dark_context")
+        or (
+            float(metrics.get("context_dark_pixel_ratio", 0.0)) >= 0.90
+            and float(metrics.get("context_saturation_mean", 255.0)) <= 18.0
+        )
+    )
+    empty = np.zeros(source_mask.shape, dtype=np.uint8)
+    if not dark_context or not np.any(source_mask):
+        return empty, {
+            "detached_text_components": 0,
+            "detached_text_pixels": 0,
+        }
+
+    line_heights = [line.box[3] for line in group.lines if line.box[3] > 0]
+    median_height = float(np.median(line_heights)) if line_heights else group.box[3]
+    horizontal_radius = max(16, min(64, int(median_height * 1.25)))
+    vertical_radius = max(3, min(10, int(median_height * 0.18)))
+    near = cv2.dilate(
+        source_mask,
+        np.ones(
+            (vertical_radius * 2 + 1, horizontal_radius * 2 + 1),
+            np.uint8,
+        ),
+        iterations=1,
+    )
+
+    x, y, w, h = _safe_draw_box(group.box, img_bgr.shape, group)
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    bright = np.zeros_like(source_mask)
+    bright[y : y + h, x : x + w] = (
+        gray[y : y + h, x : x + w] >= 178
+    ).astype(np.uint8) * 255
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(bright, 8)
+    selected = np.zeros_like(source_mask)
+    components = 0
+    for label in range(1, count):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        component = labels == label
+        if not np.any(component & (near > 0)):
+            continue
+        missing_component = component & (source_mask == 0)
+        if not np.any(missing_component):
+            continue
+        if not (
+            2 <= area <= max(1600, int(group.box[2] * group.box[3] * 0.08))
+            and 1 <= width <= max(18, int(median_height * 1.2))
+            and 3 <= height <= max(24, int(median_height * 1.35))
+        ):
+            continue
+        selected[missing_component] = 255
+        components += 1
+    if np.any(selected):
+        selected = cv2.dilate(selected, np.ones((3, 3), np.uint8), iterations=1)
+    return selected, {
+        "detached_text_components": int(components),
+        "detached_text_pixels": int(np.count_nonzero(selected)),
+    }
+
+
+def _uniform_dark_line_text_mask(img_bgr, group):
+    """Cover each OCR line polygon on a proven uniform dark region."""
+    metrics = getattr(group, "background_metrics", {}) or {}
+    dark_context = bool(
+        metrics.get("dark_context")
+        or (
+            float(metrics.get("context_dark_pixel_ratio", 0.0)) >= 0.90
+            and float(metrics.get("context_saturation_mean", 255.0)) <= 18.0
+        )
+    )
+    result = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
+    if not dark_context:
+        return result, {
+            "uniform_dark_line_pixels": 0,
+            "uniform_dark_line_count": 0,
+        }
+
+    line_count = 0
+    for line in _cleanup_lines_for_group(group):
+        polygon = np.asarray(line.polygon, dtype=np.int32)
+        if polygon.shape[0] < 3:
+            continue
+        line_limit = np.zeros_like(result)
+        cv2.fillPoly(line_limit, [polygon], 255)
+        # Filling one OCR-line quadrilateral is safe here because the sampled
+        # context is almost entirely dark and low-saturation.  It also covers
+        # anti-alias pixels that threshold-based masks can leave behind.
+        selected = cv2.dilate(
+            line_limit,
+            np.ones((3, 3), np.uint8),
+            iterations=1,
+        )
+        result = cv2.bitwise_or(result, selected)
+        line_count += 1
+    return result, {
+        "uniform_dark_line_pixels": int(np.count_nonzero(result)),
+        "uniform_dark_line_count": int(line_count),
+    }
+
+
+def _uniform_light_line_text_mask(img_bgr, group):
+    """Cover each OCR line polygon only on a proven uniform light region."""
+    metrics = getattr(group, "background_metrics", {}) or {}
+    uniform_light = bool(
+        metrics.get("strongly_uniform_white")
+        or (
+            metrics.get("uniform_light")
+            and float(metrics.get("white_pixel_ratio", 0.0)) >= 0.88
+            and float(metrics.get("saturation_mean", 255.0)) <= 14.0
+        )
+    )
+    result = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
+    if (
+        not uniform_light
+        or getattr(group, "background_type", "")
+        not in {"white_balloon", "narration_box"}
+    ):
+        return result, {
+            "uniform_light_line_pixels": 0,
+            "uniform_light_line_count": 0,
+        }
+
+    line_count = 0
+    for line in _cleanup_lines_for_group(group):
+        polygon = np.asarray(line.polygon, dtype=np.int32)
+        if polygon.shape[0] < 3:
+            continue
+        line_mask = np.zeros_like(result)
+        cv2.fillPoly(line_mask, [polygon], 255)
+        line_mask = cv2.dilate(line_mask, np.ones((3, 3), np.uint8), iterations=1)
+        result = cv2.bitwise_or(result, line_mask)
+        line_count += 1
+    return result, {
+        "uniform_light_line_pixels": int(np.count_nonzero(result)),
+        "uniform_light_line_count": int(line_count),
+    }
+
+
+def _detached_dark_text_components_mask(img_bgr, group, source_mask):
+    """Recover dark glyph edges omitted by OCR polygons on uniform white regions."""
+    metrics = getattr(group, "background_metrics", {}) or {}
+    uniform_light = bool(metrics.get("strongly_uniform_white"))
+    empty = np.zeros(source_mask.shape, dtype=np.uint8)
+    if not uniform_light or not np.any(source_mask):
+        return empty, {
+            "detached_dark_text_components": 0,
+            "detached_dark_text_pixels": 0,
+        }
+
+    line_heights = [line.box[3] for line in group.lines if line.box[3] > 0]
+    median_height = float(np.median(line_heights)) if line_heights else group.box[3]
+    horizontal_radius = max(12, min(48, int(median_height * 0.8)))
+    vertical_radius = max(3, min(12, int(median_height * 0.22)))
+    near = cv2.dilate(
+        source_mask,
+        np.ones(
+            (vertical_radius * 2 + 1, horizontal_radius * 2 + 1),
+            np.uint8,
+        ),
+        iterations=1,
+    )
+    x, y, w, h = _safe_draw_box(group.box, img_bgr.shape, group)
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    dark = np.zeros_like(source_mask)
+    dark[y : y + h, x : x + w] = (
+        (gray[y : y + h, x : x + w] <= 190)
+        & (hsv[y : y + h, x : x + w, 1] <= 80)
+    ).astype(np.uint8) * 255
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(dark, 8)
+    selected = np.zeros_like(source_mask)
+    components = 0
+    max_area = max(1800, int(group.box[2] * group.box[3] * 0.08))
+    for label in range(1, count):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        component = labels == label
+        missing_component = component & (source_mask == 0)
+        if not np.any(missing_component & (near > 0)):
+            continue
+        if not (
+            2 <= area <= max_area
+            and 1 <= width <= max(24, int(median_height * 1.6))
+            and 3 <= height <= max(28, int(median_height * 1.5))
+        ):
+            continue
+        selected[missing_component] = 255
+        components += 1
+    if np.any(selected):
+        selected = cv2.dilate(selected, np.ones((3, 3), np.uint8), iterations=1)
+    return selected, {
+        "detached_dark_text_components": int(components),
+        "detached_dark_text_pixels": int(np.count_nonzero(selected)),
+    }
+
+
 def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy="primary"):
     result = current_bgr.copy()
     if cleanup_mask is None or not np.any(cleanup_mask):
         return result
+    if strategy == "caption_overlay":
+        return _apply_textured_caption_overlay(result, cleanup_mask)
     draw_box = _safe_draw_box(group.box, original_bgr.shape, group)
     white_region = (
         config.WHITE_BALLOON_FLAT_FILL
         and group.background_type in {"white_balloon", "narration_box"}
         and bool(group.background_metrics.get("uniform_light"))
     )
+    dark_region = bool(
+        group.background_type in {"dark_balloon", "narration_box"}
+        and (
+            group.background_metrics.get("open_dark_narration")
+            or group.background_metrics.get("dark_context")
+        )
+    )
     if white_region:
         fill_color = _estimated_white_region_fill_color(
+            original_bgr,
+            cleanup_mask,
+            draw_box,
+        )
+        result[cleanup_mask > 0] = fill_color
+    elif dark_region:
+        fill_color = _estimated_background_color(
             original_bgr,
             cleanup_mask,
             draw_box,
@@ -2724,6 +3791,16 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
         radius = 1 if strategy == "conservative" else 2
         local = cv2.inpaint(result, cleanup_mask, radius, cv2.INPAINT_TELEA)
         result[cleanup_mask > 0] = local[cleanup_mask > 0]
+    return result
+
+
+def _apply_textured_caption_overlay(img_bgr, mask):
+    """Suppress source lettering without synthesizing or flat-filling the artwork."""
+    result = img_bgr.copy()
+    blurred = cv2.GaussianBlur(result, (41, 41), 0)
+    dark_scale = max(0.10, (1.0 - config.CAPTION_OVERLAY_OPACITY) * 2.0)
+    backing = np.clip(blurred.astype(np.float32) * dark_scale, 10, 48).astype(np.uint8)
+    result[mask > 0] = backing[mask > 0]
     return result
 
 
@@ -2773,14 +3850,20 @@ def _estimated_white_region_fill_color(img_bgr, mask, box):
     return np.clip(color, 0, 255).astype(np.uint8)
 
 
-def _draw_group_translation(img_bgr, group, font_path):
+def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
     text = group.translation or group.text
     if not text:
         return img_bgr
+    if strategy == "caption_overlay":
+        return _draw_rotated_caption_translation(img_bgr, group, font_path, text)
 
     draw_box = _safe_draw_box(group.box, img_bgr.shape, group)
     group.safe_area = tuple(draw_box)
-    style = _text_style_for_region(img_bgr, draw_box)
+    style = (
+        _caption_overlay_text_style(img_bgr, draw_box)
+        if strategy == "caption_overlay"
+        else _text_style_for_region(img_bgr, draw_box)
+    )
     group.color_name = style.name
     group.region_brightness = style.brightness
     group.region_saturation = style.saturation
@@ -2912,6 +3995,168 @@ def _draw_group_translation(img_bgr, group, font_path):
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 
+def _draw_rotated_caption_translation(img_bgr, group, font_path, text):
+    """Render translated caption lines along the original OCR line geometry."""
+    source_lines = sorted(
+        group.lines,
+        key=lambda line: float(np.mean(np.asarray(line.polygon)[:, 1])),
+    )
+    words = str(text).split()
+    if not source_lines or not words:
+        group.text_overflow_ratio = 1.0
+        group.translation_box = None
+        return img_bgr
+
+    region_count = min(len(source_lines), len(words))
+    source_lines = source_lines[:region_count]
+    geometries = [_caption_line_geometry(line) for line in source_lines]
+    role = "shout" if "!" in group.text or "?" in group.text else "regular"
+    fitted = _fit_caption_lines(words, geometries, font_path, role)
+    if not fitted:
+        group.text_overflow_ratio = 1.0
+        group.translation_box = None
+        return img_bgr
+
+    caption_lines, font, font_size = fitted
+    canvas = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)).convert("RGBA")
+    paste_boxes = []
+    for caption, geometry in zip(caption_lines, geometries):
+        probe = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+        probe_draw = ImageDraw.Draw(probe)
+        bbox = probe_draw.textbbox(
+            (0, 0),
+            caption,
+            font=font,
+            stroke_width=2,
+        )
+        tw = max(1, bbox[2] - bbox[0])
+        th = max(1, bbox[3] - bbox[1])
+        pad = 4
+        tile = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
+        tile_draw = ImageDraw.Draw(tile)
+        tile_draw.text(
+            (pad - bbox[0], pad - bbox[1]),
+            caption,
+            font=font,
+            fill=(255, 255, 255, 255),
+            stroke_width=2,
+            stroke_fill=(10, 10, 16, 255),
+        )
+        rotated = tile.rotate(
+            geometry["pillow_angle"],
+            resample=Image.Resampling.BICUBIC,
+            expand=True,
+        )
+        cx, cy = geometry["center"]
+        px = int(round(cx - rotated.width / 2))
+        py = int(round(cy - rotated.height / 2))
+        canvas.alpha_composite(rotated, (px, py))
+        paste_boxes.append((px, py, rotated.width, rotated.height))
+
+    translation_box = _union_boxes(paste_boxes)
+    safe_area = _safe_draw_box(group.box, img_bgr.shape, group)
+    overflow = _box_overflow_ratio(translation_box, safe_area)
+    group.safe_area = tuple(safe_area)
+    group.draw_box = tuple(safe_area)
+    group.translation_box = tuple(translation_box)
+    group.font_size = int(font_size)
+    group.text_overflow_ratio = float(overflow)
+    group.color_name = "caption_overlay"
+    group.region_brightness = float(np.mean(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)))
+    group.region_saturation = 0.0
+    group.region_hue = 0.0
+    if config.REJECT_TEXT_OVERFLOW and overflow > config.MAX_TEXT_OVERFLOW_RATIO:
+        group.translation_valid = False
+        group.translation_validation_reason = "caption_translation_outside_safe_area"
+        return img_bgr
+    return cv2.cvtColor(np.asarray(canvas.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+
+def _caption_line_geometry(line):
+    polygon = np.asarray(line.polygon, dtype=np.float32)
+    center = tuple(np.mean(polygon, axis=0).tolist())
+    if polygon.shape[0] >= 4:
+        top = float(np.linalg.norm(polygon[1] - polygon[0]))
+        bottom = float(np.linalg.norm(polygon[2] - polygon[3]))
+        left = float(np.linalg.norm(polygon[3] - polygon[0]))
+        right = float(np.linalg.norm(polygon[2] - polygon[1]))
+        width = max(top, bottom)
+        height = max(left, right)
+        dx, dy = polygon[1] - polygon[0]
+        pillow_angle = -math.degrees(math.atan2(float(dy), float(dx)))
+    else:
+        _, _, width, height = line.box
+        pillow_angle = 0.0
+    return {
+        "center": center,
+        "width": max(12.0, width - 8.0),
+        "height": max(10.0, height - 6.0),
+        "pillow_angle": pillow_angle,
+    }
+
+
+def _fit_caption_lines(words, geometries, font_path, role):
+    line_count = min(len(words), len(geometries))
+    geometries = geometries[:line_count]
+    max_size = min(
+        config.MAX_FONT_SIZE,
+        max(
+            config.MIN_FONT_SIZE,
+            int(np.median([item["height"] for item in geometries]) * 0.72),
+        ),
+    )
+    probe = ImageDraw.Draw(Image.new("RGB", (8, 8), "white"))
+    for size in range(max_size, config.MIN_FONT_SIZE - 1, -1):
+        font = get_font(font_path, size, role=role)
+        partition = _partition_caption_words(
+            probe,
+            words,
+            font,
+            [item["width"] for item in geometries],
+        )
+        if not partition:
+            continue
+        fits = True
+        for caption, geometry in zip(partition, geometries):
+            bbox = probe.textbbox((0, 0), caption, font=font, stroke_width=2)
+            if (
+                bbox[2] - bbox[0] > geometry["width"]
+                or bbox[3] - bbox[1] > geometry["height"]
+            ):
+                fits = False
+                break
+        if fits:
+            return partition, font, size
+    return None
+
+
+def _partition_caption_words(draw, words, font, widths):
+    line_count = min(len(words), len(widths))
+    if line_count <= 0:
+        return None
+    states = {(0, 0): (0.0, [])}
+    for line_index in range(line_count):
+        next_states = {}
+        remaining_lines = line_count - line_index - 1
+        for (used_lines, start), (score, parts) in states.items():
+            if used_lines != line_index:
+                continue
+            max_end = len(words) - remaining_lines
+            for end in range(start + 1, max_end + 1):
+                caption = " ".join(words[start:end])
+                measured = _text_width(draw, caption, font)
+                ratio = measured / max(1.0, widths[line_index])
+                overflow_penalty = max(0.0, ratio - 1.0) * 100.0
+                candidate_score = score + (ratio - 0.82) ** 2 + overflow_penalty
+                key = (line_index + 1, end)
+                existing = next_states.get(key)
+                if existing is None or candidate_score < existing[0]:
+                    next_states[key] = (candidate_score, parts + [caption])
+        states = next_states
+    final = states.get((line_count, len(words)))
+    return final[1] if final else None
+
+
 def _expanded_draw_box(box, image_shape):
     x, y, w, h = box
     h_img, w_img = image_shape[:2]
@@ -2927,7 +4172,37 @@ def _expanded_draw_box(box, image_shape):
 def _safe_draw_box(box, image_shape, group=None):
     x, y, w, h = box
     h_img, w_img = image_shape[:2]
-    if group and group.inside_balloon_like_region:
+    background_metrics = (
+        getattr(group, "background_metrics", {}) or {}
+        if group is not None
+        else {}
+    )
+    dark_context = bool(
+        background_metrics.get("dark_context")
+        or (
+            float(background_metrics.get("context_dark_pixel_ratio", 0.0)) >= 0.90
+            and float(background_metrics.get("context_saturation_mean", 255.0)) <= 18.0
+        )
+    )
+    uniform_light = bool(
+        background_metrics.get("strongly_uniform_white")
+        or (
+            background_metrics.get("uniform_light")
+            and float(background_metrics.get("white_pixel_ratio", 0.0)) >= 0.88
+            and float(background_metrics.get("saturation_mean", 255.0)) <= 14.0
+        )
+    )
+    if group and dark_context:
+        # A detector can omit a narrow detached glyph (for example a leading
+        # pronoun) while still locating the rest of a light-on-dark line.  The
+        # larger horizontal search window is used only to find components; the
+        # cleanup mask remains component-based and tightly bounded.
+        pad_x = max(12, min(28, int(w * 0.12)))
+        pad_y = max(4, min(10, int(h * 0.08)))
+    elif group and uniform_light:
+        pad_x = max(12, min(28, int(w * 0.12)))
+        pad_y = max(4, min(10, int(h * 0.08)))
+    elif group and group.inside_balloon_like_region:
         pad_x = max(3, min(8, int(w * 0.08)))
         pad_y = max(2, min(6, int(h * 0.1)))
     elif group and group.inside_narration_box_like_region:
@@ -2970,6 +4245,76 @@ def _box_overflow_ratio(inner, outer):
     y2 = min(iy + ih, oy + oh)
     intersection = max(0, x2 - x1) * max(0, y2 - y1)
     return max(0.0, 1.0 - intersection / max(1, iw * ih))
+
+
+def _post_render_source_text_check(rendered_bgr, group, page_index=None):
+    """Use lightweight OCR to catch source English still visible after cleanup."""
+
+    preserved_names = {
+        token
+        for name in group.detected_proper_names
+        for token in re.findall(r"[A-Z']+", _ascii_fold(name).upper())
+    }
+    intended_translation_tokens = set(
+        re.findall(
+            r"[A-Z']+",
+            _ascii_fold(group.translation or "").upper(),
+        )
+    )
+    source_tokens = {
+        token
+        for token in re.findall(r"[A-Z']+", _ascii_fold(group.text).upper())
+        if len(token) >= 3
+        and token not in preserved_names
+        and token not in SFX_WORDS
+        and token not in intended_translation_tokens
+    }
+    if not source_tokens:
+        return {
+            "checked": False,
+            "passed": True,
+            "reason": "no_source_english_tokens_to_check",
+        }
+
+    x, y, w, h = group.safe_area or group.draw_box or group.box
+    pad = min(8, config.MAX_MASK_EXPANSION + 2)
+    x1 = max(0, int(x) - pad)
+    y1 = max(0, int(y) - pad)
+    x2 = min(rendered_bgr.shape[1], int(x + w) + pad)
+    y2 = min(rendered_bgr.shape[0], int(y + h) + pad)
+    crop = rendered_bgr[y1:y2, x1:x2]
+    if crop.size == 0:
+        return {
+            "checked": False,
+            "passed": True,
+            "reason": "empty_post_render_crop",
+        }
+
+    try:
+        engine = OCREngine("en", engine="rapidocr", fallback_engine="")
+        lines = engine._detect_with_rapidocr(crop)
+    except Exception as exc:
+        return {
+            "checked": False,
+            "passed": True,
+            "reason": f"post_render_ocr_unavailable:{type(exc).__name__}",
+        }
+
+    final_text = clean_ocr_text(" ".join(line.text for line in lines))
+    final_tokens = set(
+        re.findall(r"[A-Z']+", _ascii_fold(final_text).upper())
+    )
+    residual = sorted(source_tokens & final_tokens)
+    passed = not residual
+    return {
+        "checked": True,
+        "passed": passed,
+        "reason": "ok" if passed else "source_tokens_detected_after_render",
+        "source_tokens_checked": sorted(source_tokens),
+        "detected_text": final_text,
+        "residual_source_tokens": residual,
+        "page": page_index,
+    }
 
 
 def _enforce_visual_bounds(
@@ -3015,22 +4360,64 @@ def _enforce_visual_bounds(
         distance_to_allowed = round(float(np.max(distance[outside])), 3)
 
     border_change_ratio = 0.0
+    largest_changed_border_component = 0
     if group is not None and group.safe_area:
-        x, y, w, h = group.safe_area
-        safe_mask = np.zeros_like(allowed_mask)
-        cv2.rectangle(safe_mask, (x, y), (x + w, y + h), 255, -1)
-        inner = cv2.erode(safe_mask, np.ones((5, 5), np.uint8), iterations=1)
-        border_ring = (safe_mask > 0) & (inner == 0)
         original_gray = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY)
         original_edges = cv2.Canny(original_gray, 55, 155) > 0
         text_exclusion = _build_text_mask(
             original_bgr.shape,
             [group],
-            padding=2,
+            padding=max(
+                6,
+                min(
+                    12,
+                    int(config.MAX_MASK_EXPANSION) + 2,
+                ),
+            ),
         ) > 0
-        protected_border_edges = border_ring & original_edges & ~text_exclusion
+        # A text safe-area is not a balloon contour.  Protect real structural
+        # edges that were changed inside the allowed mask, excluding source
+        # glyphs and their anti-alias halo.  Only the perimeter band of the
+        # safe area is treated as balloon/box border; large hand-drawn letters
+        # or tiny character icons inside a balloon must not be mistaken for the
+        # outer contour.
+        sx, sy, sw, sh = [int(value) for value in group.safe_area]
+        safe_band = np.zeros(original_bgr.shape[:2], dtype=np.uint8)
+        sx1 = max(0, sx)
+        sy1 = max(0, sy)
+        sx2 = min(original_bgr.shape[1], sx + max(1, sw))
+        sy2 = min(original_bgr.shape[0], sy + max(1, sh))
+        if sx2 > sx1 and sy2 > sy1:
+            safe_band[sy1:sy2, sx1:sx2] = 255
+            band_width = max(8, min(18, int(min(sw, sh) * 0.06)))
+            kernel_size = max(3, band_width * 2 + 1)
+            inner = cv2.erode(
+                safe_band,
+                np.ones((kernel_size, kernel_size), dtype=np.uint8),
+                iterations=1,
+            )
+            perimeter_band = (safe_band > 0) & ~(inner > 0)
+        else:
+            perimeter_band = allowed
+        protected_border_edges = (
+            allowed & perimeter_band & original_edges & ~text_exclusion
+        )
         if np.any(protected_border_edges):
             border_change_ratio = float(np.mean(changed[protected_border_edges]))
+            changed_border = (
+                protected_border_edges & changed
+            ).astype(np.uint8) * 255
+            border_count, _, border_stats, _ = cv2.connectedComponentsWithStats(
+                changed_border,
+                8,
+            )
+            largest_changed_border_component = max(
+                (
+                    int(border_stats[label, cv2.CC_STAT_AREA])
+                    for label in range(1, border_count)
+                ),
+                default=0,
+            )
 
     metrics = mask_metrics or {}
     mask_ratio = float(metrics.get("mask_to_text_area_ratio", 0.0) or 0.0)
@@ -3046,15 +4433,24 @@ def _enforce_visual_bounds(
         reasons.append("mask_area_exceeds_text_area_limit")
     if (
         metrics.get("broad_rectangular_mask")
+        and not metrics.get("caption_overlay_mask")
         and metrics.get("background_type")
-        not in {"white_balloon", "narration_box"}
+        not in {"white_balloon", "dark_balloon", "narration_box"}
     ):
         reasons.append("broad_rectangular_or_polygonal_mask")
     if metrics.get("white_patch_rejected"):
         reasons.append("large_white_patch_on_nonwhite_background")
     if config.REJECT_TEXT_OVERFLOW and overflow_ratio > config.MAX_TEXT_OVERFLOW_RATIO:
         reasons.append("translation_outside_safe_area")
-    if config.REJECT_BALLOON_BORDER_DAMAGE and border_change_ratio > 0.12:
+    structural_border_threshold = max(
+        72,
+        int(min(group.box[2], group.box[3]) * 0.35) if group is not None else 72,
+    )
+    if (
+        config.REJECT_BALLOON_BORDER_DAMAGE
+        and border_change_ratio > 0.12
+        and largest_changed_border_component > structural_border_threshold
+    ):
         reasons.append("possible_balloon_border_damage")
     passed = not reasons
 
@@ -3066,6 +4462,9 @@ def _enforce_visual_bounds(
         "max_outside_distance_from_allowed_mask": distance_to_allowed,
         "unexpected_streak": bool(unexpected_streak),
         "balloon_border_change_ratio": round(border_change_ratio, 6),
+        "largest_changed_balloon_border_component_area": int(
+            largest_changed_border_component
+        ),
         "mask_to_text_area_ratio": round(mask_ratio, 4),
         "text_overflow_ratio": round(overflow_ratio, 6),
         "visual_validation_passed": bool(passed),
@@ -3137,6 +4536,31 @@ def _text_style_for_region(img_bgr, box):
         stroke_width=1,
         shadow_fill=(220, 215, 226) if saturation >= 42 else None,
         shadow_offset=(1, 1) if saturation >= 42 else (0, 0),
+        brightness=brightness,
+        saturation=saturation,
+        hue=hue,
+    )
+
+
+def _caption_overlay_text_style(img_bgr, box):
+    """High-contrast style used only on the non-destructive artwork overlay."""
+    x, y, w, h = box
+    roi = img_bgr[y : y + h, x : x + w]
+    if roi.size:
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        brightness = float(np.mean(gray))
+        saturation = float(np.mean(hsv[:, :, 1]))
+        hue = float(np.median(hsv[:, :, 0]))
+    else:
+        brightness, saturation, hue = 0.0, 0.0, 0.0
+    return TextStyle(
+        name="caption_overlay",
+        fill=(255, 255, 255),
+        stroke_fill=(12, 12, 18),
+        stroke_width=2,
+        shadow_fill=(10, 10, 16),
+        shadow_offset=(2, 2),
         brightness=brightness,
         saturation=saturation,
         hue=hue,

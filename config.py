@@ -130,6 +130,17 @@ SAVE_FULL_DEBUG = _env_bool("SAVE_FULL_DEBUG", False)
 SAVE_COMPARE_SAMPLES = _env_bool("SAVE_COMPARE_SAMPLES", True)
 SAVE_DEBUG_ONLY_ERRORS = _env_bool("SAVE_DEBUG_ONLY_ERRORS", True)
 
+# Official Webtoon assets are arbitrary transport slices. Rebuild a continuous
+# chapter into logical pages before OCR so balloons and narration are not cut at
+# source-file boundaries.
+SMART_WEBTOON_PDF_SPLIT = _env_bool("SMART_WEBTOON_PDF_SPLIT", True)
+SMART_PDF_TARGET_HEIGHT = max(800, _env_int("SMART_PDF_TARGET_HEIGHT", 1800))
+SMART_PDF_MIN_HEIGHT = max(600, _env_int("SMART_PDF_MIN_HEIGHT", 1050))
+SMART_PDF_MAX_HEIGHT = max(
+    SMART_PDF_TARGET_HEIGHT,
+    _env_int("SMART_PDF_MAX_HEIGHT", 2400),
+)
+
 # Experimental RapidOCR quality guardrails. These defaults favor visual safety
 # over speed whenever RapidOCR is selected from the CLI/env.
 OCR_QUALITY_CONTROL = _env_bool("OCR_QUALITY_CONTROL", True)
@@ -205,5 +216,16 @@ MAX_TEXTURED_MASK_COMPONENT_RATIO = _env_float(
 REJECT_WHITE_PATCH_OUTSIDE_BALLOON = _env_bool(
     "REJECT_WHITE_PATCH_OUTSIDE_BALLOON",
     True,
+)
+REJECT_DARK_BLOTCH_ON_TEXTURED_ART = _env_bool(
+    "REJECT_DARK_BLOTCH_ON_TEXTURED_ART",
+    True,
+)
+MAX_NEW_DARK_COMPONENT_AREA = max(1, _env_int("MAX_NEW_DARK_COMPONENT_AREA", 120))
+MAX_NEW_DARK_PIXEL_RATIO = _env_float("MAX_NEW_DARK_PIXEL_RATIO", 0.04)
+TEXTURED_CAPTION_OVERLAY = _env_bool("TEXTURED_CAPTION_OVERLAY", True)
+CAPTION_OVERLAY_OPACITY = min(
+    0.95,
+    max(0.35, _env_float("CAPTION_OVERLAY_OPACITY", 0.94)),
 )
 POST_RENDER_OCR_VALIDATION = _env_bool("POST_RENDER_OCR_VALIDATION", False)

@@ -36,6 +36,11 @@ def main():
         help="Usa cache, paralelismo, resume e relatorio detalhado de performance.",
     )
     parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help="Coleta, valida e audita as imagens sem executar OCR, traducao ou PDF.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Ignora caches e reprocessa todas as etapas.",
@@ -65,6 +70,10 @@ def main():
 
     if not args.full and args.max_images <= 0:
         parser.error("--max-images deve ser maior que zero.")
+
+    if args.download_only:
+        _run_download_only(args)
+        return
 
     if args.benchmark:
         from benchmark_pipeline import run_benchmark
@@ -145,6 +154,46 @@ def main():
     _print_final_report(summary)
 
 
+def _run_download_only(args):
+    output_folder = os.path.abspath(args.output_folder)
+    input_folder = os.path.join(output_folder, "input")
+    os.makedirs(output_folder, exist_ok=True)
+    max_images = None if args.full else args.max_images
+    print(f"Download-only: {args.url}", flush=True)
+    print(
+        f"Escopo: {'capitulo completo' if args.full else f'{max_images} imagens'}",
+        flush=True,
+    )
+    image_paths = download_images(
+        args.url,
+        max_images=max_images,
+        debug_folder=output_folder,
+        target_folder=input_folder,
+        force=bool(args.force or args.force_download),
+        progress_callback=lambda current, total, message: print(
+            f"{message}: {current}/{total}", flush=True
+        ),
+    )
+    report_path = os.path.join(output_folder, "downloaded_images.json")
+    with open(report_path, "r", encoding="utf-8") as file:
+        report = json.load(file)
+    gate = report.get("download_gate") or {}
+    print(f"Imagens validas: {len(image_paths)}", flush=True)
+    print(
+        f"Download gate: {'aprovado' if gate.get('passed') else 'reprovado'}",
+        flush=True,
+    )
+    print(f"Relatorio: {os.path.join(output_folder, 'download_report.txt')}", flush=True)
+    print(
+        f"Contact sheet: {os.path.join(output_folder, 'download_contact_sheet.jpg')}",
+        flush=True,
+    )
+    if not gate.get("passed"):
+        raise RuntimeError(
+            "Download gate reprovado: " + ", ".join(gate.get("reasons") or [])
+        )
+
+
 def _apply_ocr_cli_config(engine):
     if not engine:
         return
@@ -157,6 +206,7 @@ def _apply_ocr_cli_config(engine):
         config.RAPIDOCR_ENABLED = True
         config.OCR_FALLBACK_ENGINE = "paddle"
         config.OCR_HYBRID_FALLBACK = True
+        config.POST_RENDER_OCR_VALIDATION = True
 
 
 def _valid_pdf_image(path):

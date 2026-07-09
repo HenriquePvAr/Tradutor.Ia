@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import re
 import sys
@@ -55,6 +56,11 @@ def build_parser():
         type=int,
         help="Limita paginas para teste; sem esta opcao processa o capitulo completo.",
     )
+    parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help="Coleta, valida e audita imagens sem executar OCR, traducao ou PDF.",
+    )
     return parser
 
 
@@ -80,6 +86,9 @@ def main(argv=None):
 
     output_folder = _resolve_output_folder(args.output, args.url)
     context_path = output_folder / "session_context.json"
+    if args.download_only:
+        return _run_download_only(args, output_folder)
+
     engine = _configure_mode(args.mode)
     full = args.max_images is None
 
@@ -125,6 +134,45 @@ def main(argv=None):
     return report
 
 
+def _run_download_only(args, output_folder):
+    from down import download_images
+
+    input_folder = output_folder / "input"
+    output_folder.mkdir(parents=True, exist_ok=True)
+    max_images = args.max_images
+    print(f"Download-only: {args.url}")
+    print(f"Escopo: {'capitulo completo' if max_images is None else f'{max_images} imagens'}")
+    print(f"Saida: {output_folder}")
+    image_paths = download_images(
+        args.url,
+        max_images=max_images,
+        debug_folder=str(output_folder),
+        target_folder=str(input_folder),
+        force=bool(args.force),
+        progress_callback=lambda current, total, message: print(
+            f"{message}: {current}/{total}",
+            flush=True,
+        ),
+    )
+    report_path = output_folder / "downloaded_images.json"
+    with report_path.open("r", encoding="utf-8") as file:
+        report = json.load(file)
+    gate = report.get("download_gate") or {}
+    print(f"Imagens validas: {len(image_paths)}")
+    print(f"Download gate: {'aprovado' if gate.get('passed') else 'reprovado'}")
+    print(f"Relatorio JSON: {output_folder / 'download_report.json'}")
+    print(f"Relatorio HTML: {output_folder / 'download_report.html'}")
+    print(f"Downloaded images: {report_path}")
+    print(f"Contact sheet: {output_folder / 'download_contact_sheet.jpg'}")
+    if args.open_output:
+        _open_folder(output_folder)
+    if not gate.get("passed"):
+        raise RuntimeError(
+            "Download gate reprovado: " + ", ".join(gate.get("reasons") or [])
+        )
+    return report
+
+
 def _interactive_args(parser):
     print("Tradutor.Ia - modo interativo")
     url = input("URL do capitulo: ").strip()
@@ -153,6 +201,8 @@ def _configure_mode(mode):
     config.OCR_FALLBACK_ENGINE = "paddle"
     config.OCR_HYBRID_FALLBACK = True
     config.RAPIDOCR_ENABLED = engine == "rapidocr"
+    if engine == "rapidocr":
+        config.POST_RENDER_OCR_VALIDATION = True
     return engine
 
 

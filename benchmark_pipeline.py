@@ -19,12 +19,17 @@ from ocr_balloon import (
     apply_selective_ocr_fallbacks,
     apply_group_translations,
     get_translatable_groups,
+    normalize_recurring_compact_names,
     render_analyzed_image,
     validate_and_retry_translations,
 )
 from ocr_parallel import detect_ocr_jobs
 from ocr_engine import OCREngine
-from pdf import generate_pdf
+from pdf import (
+    create_split_boundary_contact_sheet,
+    generate_pdf,
+    prepare_smart_webtoon_pages,
+)
 from pipeline_cache import (
     atomic_copy,
     atomic_write_json,
@@ -108,8 +113,8 @@ def run_benchmark(args):
 
     effective_debug = bool(config.DEBUG_VISUAL and not args.fast)
     max_images = None if args.full else args.max_images
-    download_max_images = max_images
-    if selected_page_indices and not args.full:
+    download_max_images = None if config.SMART_WEBTOON_PDF_SPLIT else max_images
+    if selected_page_indices and not args.full and not config.SMART_WEBTOON_PDF_SPLIT:
         download_max_images = max(max(selected_page_indices), max_images or 0)
     run_signature = stable_hash(
         {
@@ -118,10 +123,14 @@ def run_benchmark(args):
             "full": args.full,
             "fast": args.fast,
             "page_indices": selected_page_indices,
-            "pipeline": "benchmark-v1",
+            "pipeline": "benchmark-v2-smart-pages",
             "ocr_engine": config.OCR_ENGINE,
             "ocr_fallback_engine": config.OCR_FALLBACK_ENGINE,
             "ocr_hybrid_fallback": config.OCR_HYBRID_FALLBACK,
+            "smart_webtoon_pdf_split": config.SMART_WEBTOON_PDF_SPLIT,
+            "smart_pdf_target_height": config.SMART_PDF_TARGET_HEIGHT,
+            "smart_pdf_min_height": config.SMART_PDF_MIN_HEIGHT,
+            "smart_pdf_max_height": config.SMART_PDF_MAX_HEIGHT,
         }
     )
     pipeline_fingerprint = fingerprint_files(PIPELINE_FILES)
@@ -145,9 +154,16 @@ def run_benchmark(args):
     download_wall_seconds = time.perf_counter() - download_started
     if not all_image_paths:
         raise RuntimeError("Nenhuma imagem valida encontrada para o benchmark.")
-    image_entries, missing_page_indices = _select_image_entries(
+    download_gate = download_report.get("download_gate") or {}
+    if download_gate and not download_gate.get("passed", False):
+        raise RuntimeError(
+            "Download gate reprovado: "
+            + ", ".join(download_gate.get("reasons") or ["motivo desconhecido"])
+        )
+    source_selection = [] if config.SMART_WEBTOON_PDF_SPLIT else selected_page_indices
+    source_entries, missing_page_indices = _select_image_entries(
         all_image_paths,
-        selected_page_indices,
+        source_selection,
     )
     if missing_page_indices:
         print(
@@ -155,8 +171,61 @@ def run_benchmark(args):
             + ",".join(str(item) for item in missing_page_indices),
             flush=True,
         )
-    if not image_entries:
+    if not source_entries:
         raise RuntimeError("Nenhuma pagina selecionada estava disponivel para processar.")
+    source_image_paths = [entry["path"] for entry in source_entries]
+    smart_split_report = {
+        "enabled": False,
+        "reason": "disabled",
+        "source_images": len(source_image_paths),
+        "pdf_pages": len(source_image_paths),
+        "unsafe_split_count": 0,
+    }
+    smart_split_seconds = 0.0
+    smart_split_contact_sheet = output_folder / "smart_split_contact_sheet.jpg"
+    should_rebuild_pages = bool(
+        config.SMART_WEBTOON_PDF_SPLIT
+        and download_report.get("viewer_image_count")
+    )
+    if should_rebuild_pages:
+        split_started = time.perf_counter()
+        smart_paths, smart_split_report = prepare_smart_webtoon_pages(
+            source_image_paths,
+            output_folder / "smart_input_pages",
+            target_height=config.SMART_PDF_TARGET_HEIGHT,
+            min_height=config.SMART_PDF_MIN_HEIGHT,
+            max_height=config.SMART_PDF_MAX_HEIGHT,
+        )
+        smart_split_seconds = time.perf_counter() - split_started
+        smart_split_report = {"enabled": True, **smart_split_report}
+        create_split_boundary_contact_sheet(
+            smart_paths,
+            smart_split_report,
+            smart_split_contact_sheet,
+        )
+        if selected_page_indices:
+            image_entries, missing_page_indices = _select_image_entries(
+                smart_paths,
+                selected_page_indices,
+            )
+            selected_smart_paths = [entry["path"] for entry in image_entries]
+        else:
+            selected_smart_paths = (
+                smart_paths if args.full else smart_paths[: max(0, int(max_images or 0))]
+            )
+            image_entries, _ = _select_image_entries(selected_smart_paths, [])
+        print(
+            "Smart split: "
+            f"{len(source_image_paths)} fatias -> {len(smart_paths)} paginas logicas "
+            f"({len(selected_smart_paths)} selecionadas; "
+            f"{smart_split_report.get('unsafe_split_count', 0)} cortes de baixo risco)",
+            flush=True,
+        )
+    else:
+        smart_split_report["reason"] = (
+            "targeted_page_selection" if selected_page_indices else "disabled"
+        )
+        image_entries = source_entries
     image_paths = [entry["path"] for entry in image_entries]
 
     previous_progress = load_json(progress_path, default={})
@@ -193,6 +262,7 @@ def run_benchmark(args):
     stage_seconds = {
         "download_collection": max(0.0, download_wall_seconds - validation_seconds),
         "image_validation": validation_seconds,
+        "smart_pdf_split": smart_split_seconds,
         "no_text_precheck": 0.0,
         "ocr": 0.0,
         "ocr_cpu": 0.0,
@@ -410,6 +480,12 @@ def run_benchmark(args):
                 original,
                 page=state["index"],
             )
+            fallback_lines, preserved_regional_count = (
+                _preserve_selected_regional_ocr(
+                    fallback_lines,
+                    state.get("raw_lines", []),
+                )
+            )
             fallback_elapsed = time.perf_counter() - fallback_started
             state["timings"]["ocr"] = (
                 float(state["timings"].get("ocr", 0.0))
@@ -423,8 +499,11 @@ def run_benchmark(args):
                 "fallback_used": True,
                 "fallback_reason": grouping_fallback_reason,
                 "original_engine": "rapidocr",
-                "final_engine": "paddle",
+                "final_engine": (
+                    "hybrid" if preserved_regional_count else "paddle"
+                ),
                 "fallback_variant": "paddle_full",
+                "preserved_regional_line_count": preserved_regional_count,
             }
             candidates, groups = analyze_image_array(original, fallback_lines)
             if config.ENABLE_OCR_CACHE:
@@ -449,14 +528,36 @@ def run_benchmark(args):
         for group in state["translatable_groups"]:
             translation_targets.append(group)
 
+    all_analyzed_groups = [
+        group
+        for state in analyzable_states
+        for group in state.get("groups", [])
+    ]
+    chapter_name_repairs = normalize_recurring_compact_names(all_analyzed_groups)
+    if chapter_name_repairs:
+        for state in analyzable_states:
+            state["group_text_repairs"] = _group_text_repairs(
+                state.get("groups", [])
+            )
+    detected_names = sorted(
+        {
+            name
+            for group in all_analyzed_groups
+            for name in getattr(group, "detected_proper_names", [])
+        }
+    )
+    if hasattr(translator, "set_detected_names"):
+        translator.set_detected_names(detected_names)
+    translation_targets = []
+    for state in analyzable_states:
+        state["translatable_groups"] = get_translatable_groups(
+            state.get("groups", [])
+        )
+        translation_targets.extend(state["translatable_groups"])
+
     translation_started = time.perf_counter()
     if session_context is not None:
-        all_groups = [
-            group
-            for state in analyzable_states
-            for group in state.get("groups", [])
-        ]
-        session_context.prepare(all_groups)
+        session_context.prepare(all_analyzed_groups)
         if hasattr(translator, "set_session_context"):
             translator.set_session_context(session_context)
     translations = translator.translate_many(
@@ -485,17 +586,44 @@ def run_benchmark(args):
                 page_debug_folder = str(
                     diagnostic_folder / f"page_{state['index']:03}"
                 )
-            final, debug_data = render_analyzed_image(
-                state["original_bgr"],
-                state.get("raw_lines", []),
-                state["candidates"],
-                state["groups"],
-                font_path=config.FONT_PATH,
-                debug_folder=page_debug_folder,
-                page_index=state["index"],
-                image_path=state["image_path"],
-                stage_timings=render_timings,
-            )
+            layout_retry_attempt = 0
+            while True:
+                final, debug_data = render_analyzed_image(
+                    state["original_bgr"],
+                    state.get("raw_lines", []),
+                    state["candidates"],
+                    state["groups"],
+                    font_path=config.FONT_PATH,
+                    debug_folder=page_debug_folder,
+                    page_index=state["index"],
+                    image_path=state["image_path"],
+                    stage_timings=render_timings,
+                )
+                overflow_groups = [
+                    group
+                    for group in state["groups"]
+                    if group.sent_to_translation
+                    and float(group.text_overflow_ratio or 0.0)
+                    > config.MAX_TEXT_OVERFLOW_RATIO
+                ]
+                if (
+                    not overflow_groups
+                    or layout_retry_attempt >= config.TRANSLATION_MAX_RETRIES
+                    or not hasattr(translator, "translate_strict")
+                ):
+                    break
+                retry_started = time.perf_counter()
+                retried = _retry_layout_overflow_translations(
+                    overflow_groups,
+                    translator,
+                    translation_retry_records,
+                    force=args.force,
+                    attempt=layout_retry_attempt + 1,
+                )
+                stage_seconds["translation"] += time.perf_counter() - retry_started
+                if not retried:
+                    break
+                layout_retry_attempt += 1
             for name in ("inpainting", "redraw"):
                 elapsed = float(render_timings.get(name, 0.0))
                 state["timings"][name] = elapsed
@@ -594,6 +722,15 @@ def run_benchmark(args):
         expected_page_count=len(completed_states),
         full=args.full,
     )
+    quality["smart_split_unsafe_count"] = int(
+        smart_split_report.get("unsafe_split_count", 0)
+    )
+    quality["smart_split_safe"] = (
+        quality["smart_split_unsafe_count"] == 0
+    )
+    quality["passed"] = bool(
+        quality.get("passed") and quality["smart_split_safe"]
+    )
     summary = _aggregate_debug_data(completed_states)
     counters["ocr_page_fallbacks"] = summary["ocr_page_fallbacks"]
     counters["ocr_region_fallbacks"] = summary["ocr_region_fallbacks"]
@@ -601,6 +738,11 @@ def run_benchmark(args):
     counters["translation_retries"] = summary["translation_retries"]
     counters["translation_rejections"] = summary["translation_rejections"]
     counters["visual_validation_failures"] = summary["visual_validation_failures"]
+    quality["mixed_language_items"] = summary["mixed_language_items"]
+    quality["no_mixed_language_items"] = summary["mixed_language_items"] == 0
+    quality["passed"] = bool(
+        quality.get("passed") and quality["no_mixed_language_items"]
+    )
     total_seconds = time.perf_counter() - started
     translator_stats = getattr(translator, "stats", {})
     quality["translation_batches_succeeded"] = (
@@ -634,7 +776,15 @@ def run_benchmark(args):
         "run_signature": run_signature,
         "total_dom_images": download_report.get("total_dom_images", 0),
         "total_unique_urls": download_report.get("total_unique_urls", 0),
+        "viewer_image_count": download_report.get("viewer_image_count", 0),
+        "collection_strategy": download_report.get("collection_strategy", ""),
+        "download_gate": download_report.get("download_gate", {}),
         "available_valid_images": len(all_image_paths),
+        "selected_source_images": len(source_image_paths),
+        "smart_pdf_split": smart_split_report,
+        "smart_split_contact_sheet": (
+            str(smart_split_contact_sheet) if smart_split_report.get("enabled") else ""
+        ),
         "selected_page_indices": selected_page_indices,
         "missing_page_indices": missing_page_indices,
         "total_images": len(image_paths),
@@ -667,6 +817,12 @@ def run_benchmark(args):
         "translation_cache_hits": translator_stats.get("cache_hits", 0),
         "translation_api_requests": translator_stats.get("api_requests", 0),
         "translation_failed_batches": translator_stats.get("failed_batches", 0),
+        "translation_invalid_json_retries": translator_stats.get(
+            "invalid_json_retries", 0
+        ),
+        "translation_invalid_json_failures": translator_stats.get(
+            "invalid_json_failures", 0
+        ),
         "pages_with_error": counters["pages_with_error"],
         "ocr_detected_lines": summary["ocr_detected_lines"],
         "groups_formed": summary["groups_formed"],
@@ -748,8 +904,84 @@ def run_benchmark(args):
         pdf_path=str(pdf_path),
     )
 
-    print(dumps_json(report, ensure_ascii=False, indent=2), flush=True)
+    console_report = {
+        **report,
+        "smart_pdf_split": {
+            key: value
+            for key, value in (report.get("smart_pdf_split") or {}).items()
+            if key != "splits"
+        },
+    }
+    print(dumps_json(console_report, ensure_ascii=False, indent=2), flush=True)
     return report
+
+
+def _retry_layout_overflow_translations(
+    groups,
+    translator,
+    retry_records,
+    force=False,
+    attempt=1,
+):
+    retried = 0
+    for group in groups:
+        previous = str(group.translation or "").strip()
+        try:
+            candidate = translator.translate_strict(
+                group.text,
+                previous_translation=previous,
+                validation_reason=(
+                    "layout_overflow: a traducao nao cabe na regiao original; "
+                    "use uma versao substancialmente mais curta sem perder o sentido"
+                ),
+                force=force,
+            )
+        except Exception as exc:
+            retry_records.append(
+                {
+                    "group_id": group.group_id,
+                    "source": group.text,
+                    "previous_translation": previous,
+                    "candidate_translation": "",
+                    "attempt": attempt,
+                    "valid": False,
+                    "reason": f"layout_retry_error:{type(exc).__name__}",
+                    "retry_type": "layout_overflow",
+                }
+            )
+            continue
+
+        candidate = str(candidate or "").strip()
+        if not candidate:
+            continue
+        apply_group_translations([group], [candidate])
+        shorter = len(group.translation) <= max(1, len(previous))
+        accepted = bool(group.translation_valid and shorter)
+        retry_records.append(
+            {
+                "group_id": group.group_id,
+                "source": group.text,
+                "previous_translation": previous,
+                "candidate_translation": group.translation,
+                "attempt": attempt,
+                "valid": accepted,
+                "reason": (
+                    "layout_retry_shorter"
+                    if accepted
+                    else "layout_retry_not_shorter_or_invalid"
+                ),
+                "retry_type": "layout_overflow",
+            }
+        )
+        if accepted:
+            group.translation_retry_count += 1
+            group.translation_validation_reason = "layout_retry_ok"
+            retried += 1
+        else:
+            group.translation = previous
+            group.translation_valid = True
+            group.translation_validation_reason = "layout_retry_rejected"
+    return retried
 
 
 def _download_with_cache(url, max_images, output_folder, force):
@@ -757,7 +989,7 @@ def _download_with_cache(url, max_images, output_folder, force):
         {
             "url": url,
             "max_images": max_images,
-            "download_rules": "webtoon-download-v2",
+            "download_rules": "webtoon-download-v3",
         }
     )
     download_folder = cache_folder("downloads") / key
@@ -808,7 +1040,7 @@ def _download_with_cache(url, max_images, output_folder, force):
     cache_items = []
     for item in valid_items:
         path = item.get("path")
-        if valid_image(path, 480, 220):
+        if _valid_download_item(item, path):
             file_hash = file_sha256(path)
             cache_path = download_folder / Path(path).name
             atomic_copy(path, cache_path)
@@ -819,7 +1051,11 @@ def _download_with_cache(url, max_images, output_folder, force):
             cache_items.append(cache_item)
     manifest["downloaded"] = valid_items
     manifest["total_downloaded"] = len(valid_items)
-    paths = [item["path"] for item in valid_items if valid_image(item.get("path"), 480, 220)]
+    paths = [
+        item["path"]
+        for item in valid_items
+        if _valid_download_item(item, item.get("path"))
+    ]
     cache_manifest = dict(manifest)
     cache_manifest["downloaded"] = cache_items
     cache_manifest["total_downloaded"] = len(cache_items)
@@ -1202,12 +1438,25 @@ def _valid_download_paths(manifest):
     if not paths:
         return []
     for item, path in zip(items, paths):
-        if not valid_image(path, 480, 220):
+        if not _valid_download_item(item, path):
             return []
         expected_hash = item.get("sha256")
         if not expected_hash or file_sha256(path) != expected_hash:
             return []
     return paths
+
+
+def _valid_download_item(item, path):
+    if not path or not os.path.isfile(path):
+        return False
+    if not item.get("is_chapter_candidate"):
+        return valid_image(path, 480, 220)
+    try:
+        with Image.open(path) as image:
+            image.load()
+            return image.width >= 480 and image.height >= 1
+    except Exception:
+        return False
 
 
 def _reuse_completed_page(state, previous, force):
@@ -1405,6 +1654,47 @@ def _grouping_fallback_reason(state, groups):
         ):
             return "sentence_like_text_classified_as_sfx"
     return ""
+
+
+def _preserve_selected_regional_ocr(page_lines, selected_lines):
+    """Keep regional OCR winners when a later page fallback is required.
+
+    A full-page fallback may be needed for an unrelated group. It must not
+    overwrite a regional candidate that already won the multi-engine quality
+    comparison. Only page lines that substantially overlap those selected
+    regional lines are replaced.
+    """
+    regional_lines = [
+        line
+        for line in selected_lines
+        if (line.metadata or {}).get("selective_fallback_used")
+    ]
+    if not regional_lines:
+        return list(page_lines), 0
+
+    merged = [
+        line
+        for line in page_lines
+        if not any(
+            _boxes_substantially_overlap(line.box, regional.box)
+            for regional in regional_lines
+        )
+    ]
+    merged.extend(regional_lines)
+    merged.sort(key=lambda line: (line.box[1], line.box[0]))
+    return merged, len(regional_lines)
+
+
+def _boxes_substantially_overlap(left, right):
+    lx, ly, lw, lh = left
+    rx, ry, rw, rh = right
+    intersection_width = max(0, min(lx + lw, rx + rw) - max(lx, rx))
+    intersection_height = max(0, min(ly + lh, ry + rh) - max(ly, ry))
+    intersection = intersection_width * intersection_height
+    if intersection <= 0:
+        return False
+    smaller_area = max(1, min(lw * lh, rw * rh))
+    return intersection / smaller_area >= 0.35
 
 
 def _applied_text_repairs(ocr_metadata):
@@ -1616,6 +1906,10 @@ def _relevant_output_config(pipeline_fingerprint):
         "translation_prompt_version": PROMPT_VERSION,
         "font_signature": font_signature,
         "no_text_conservative": config.NO_TEXT_SKIP_CONSERVATIVE,
+        "smart_webtoon_pdf_split": config.SMART_WEBTOON_PDF_SPLIT,
+        "smart_pdf_target_height": config.SMART_PDF_TARGET_HEIGHT,
+        "smart_pdf_min_height": config.SMART_PDF_MIN_HEIGHT,
+        "smart_pdf_max_height": config.SMART_PDF_MAX_HEIGHT,
     }
 
 
@@ -1798,21 +2092,16 @@ def _validate_quality(states, pdf_path, expected_page_count, full=False):
         for state in states
         for item in state.get("debug_data", {}).get("items", [])
     ]
-    sniffle_items = [
+    preserved_sfx_items = [
         item
         for item in all_items
-        if str(item.get("clean_text", "")).strip().upper() == "SNIFFLE"
+        if item.get("classification") == "sfx"
     ]
-    sniffle_ok = all(
+    sfx_policy_ok = all(
         item.get("classification") == "sfx"
         and item.get("ignored")
         and not item.get("sent_to_nvidia")
-        for item in sniffle_items
-    )
-
-    reference_presence_ok = (
-        not full
-        or bool(sniffle_items)
+        for item in preserved_sfx_items
     )
     visual_failures = [
         item
@@ -1838,8 +2127,7 @@ def _validate_quality(states, pdf_path, expected_page_count, full=False):
             and pdf_pages == expected_page_count
             and high_translation_valid
             and config.TRANSLATE_SFX is False
-            and sniffle_ok
-            and reference_presence_ok
+            and sfx_policy_ok
             and not visual_failures
             and not manual_review_items
             and not overflow_items
@@ -1849,9 +2137,8 @@ def _validate_quality(states, pdf_path, expected_page_count, full=False):
         "invalid_or_blank_pages": invalid_pages,
         "high_translation_pages_valid": high_translation_valid,
         "translate_sfx_disabled": config.TRANSLATE_SFX is False,
-        "sniffle_present": bool(sniffle_items),
-        "sniffle_sfx_not_translated": sniffle_ok,
-        "reference_texts_present_when_required": reference_presence_ok,
+        "preserved_sfx_groups": len(preserved_sfx_items),
+        "sfx_policy_valid": sfx_policy_ok,
         "visual_validation_failures": len(visual_failures),
         "manual_review_required_groups": len(manual_review_items),
         "text_overflow_groups": len(overflow_items),
@@ -1892,6 +2179,10 @@ def _timing_report_text(report):
         f"Textos OCR reparados: {report['ocr_text_repairs']}",
         f"Retries de traducao: {report.get('translation_retries', 0)}",
         f"Traducoes rejeitadas: {report.get('translation_rejections', 0)}",
+        (
+            "Retries por JSON NVIDIA invalido: "
+            f"{report.get('translation_invalid_json_retries', 0)}"
+        ),
         f"Itens com texto misturado: {report.get('mixed_language_items', 0)}",
         f"Falhas de validacao visual: {report.get('visual_validation_failures', 0)}",
         f"Textos enviados a NVIDIA: {report['translation_api_texts']}",
@@ -1900,6 +2191,7 @@ def _timing_report_text(report):
         f"Tempo total: {report['total_seconds']:.2f}s",
         f"Download/coleta: {stage['download_collection']:.2f}s",
         f"Validacao: {stage['image_validation']:.2f}s",
+        f"Reconstrucao/smart split: {stage.get('smart_pdf_split', 0.0):.2f}s",
         f"No-text precheck: {stage['no_text_precheck']:.2f}s",
         f"OCR (parede): {stage['ocr']:.2f}s",
         f"OCR (soma por pagina): {stage['ocr_cpu']:.2f}s",

@@ -10,7 +10,7 @@ import config
 from pipeline_cache import atomic_write_json, load_json, stable_hash
 
 
-PROMPT_VERSION = "nvidia-manga-ptbr-v1"
+PROMPT_VERSION = "nvidia-manga-ptbr-v2-json-qa"
 SYSTEM_PROMPT_TEMPLATE = """Traduzir textos de baloes de manga/manhwa de {source_language} para portugues do Brasil.
 Manter IDs iguais.
 Nao juntar baloes.
@@ -54,6 +54,8 @@ class TranslatorNvidiaBatch:
         self.force_cache = bool(force_cache)
         self.session_context_prompt = ""
         self.session_context_signature = ""
+        self.detected_names_prompt = ""
+        self.detected_names_signature = ""
         self._thread_local = threading.local()
         self._request_times = deque()
         self._rate_lock = threading.Lock()
@@ -69,6 +71,9 @@ class TranslatorNvidiaBatch:
             "workers": self.workers,
             "api_seconds": 0.0,
             "context_enabled": False,
+            "invalid_json_retries": 0,
+            "invalid_json_failures": 0,
+            "detected_name_count": 0,
         }
 
     @property
@@ -86,6 +91,24 @@ class TranslatorNvidiaBatch:
             self.session_context_prompt = str(context_store.prompt_fragment() or "").strip()
             self.session_context_signature = str(context_store.signature() or "")
         self.stats["context_enabled"] = bool(self.session_context_prompt)
+
+    def set_detected_names(self, names):
+        normalized = sorted(
+            {
+                str(name or "").strip()
+                for name in (names or [])
+                if str(name or "").strip()
+            },
+            key=str.casefold,
+        )
+        self.detected_names_prompt = (
+            "Nomes proprios detectados dinamicamente neste capitulo; "
+            "preserve exatamente a grafia: " + ", ".join(normalized) + "."
+            if normalized
+            else ""
+        )
+        self.detected_names_signature = stable_hash(normalized) if normalized else ""
+        self.stats["detected_name_count"] = len(normalized)
 
     def translate_strict(
         self,
@@ -107,7 +130,7 @@ class TranslatorNvidiaBatch:
                 "traducao_rejeitada": str(previous_translation or ""),
                 "motivo_rejeicao": str(validation_reason or ""),
             }
-            response_text = self._request_with_retry(
+            parsed = self._request_json_with_retry(
                 [
                     {
                         "role": "system",
@@ -128,9 +151,9 @@ class TranslatorNvidiaBatch:
                             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
                         ),
                     },
-                ]
+                ],
+                expected_ids=["BALAO_1"],
             )
-            parsed = self._parse_json_response(response_text)
             return parsed.get("BALAO_1", text) or text
         finally:
             self._increment_stat("api_seconds", time.perf_counter() - started)
@@ -219,7 +242,7 @@ class TranslatorNvidiaBatch:
         payload = dict(zip(ids, texts))
         content = json.dumps(payload, ensure_ascii=False, indent=2)
 
-        response_text = self._request_with_retry(
+        parsed = self._request_json_with_retry(
             [
                 {
                     "role": "system",
@@ -232,11 +255,50 @@ class TranslatorNvidiaBatch:
                         f"somente JSON com os mesmos IDs:\n{content}"
                     ),
                 },
-            ]
+            ],
+            expected_ids=ids,
         )
-
-        parsed = self._parse_json_response(response_text)
         return [parsed.get(text_id, original) or original for text_id, original in zip(ids, texts)]
+
+    def _request_json_with_retry(self, messages, expected_ids, attempts=3):
+        """Retry model-format failures separately from HTTP/transport retries."""
+
+        expected_ids = [str(item) for item in expected_ids]
+        base_messages = [dict(message) for message in messages]
+        request_messages = list(base_messages)
+        last_error = None
+        for attempt in range(1, max(1, int(attempts)) + 1):
+            response_text = self._request_with_retry(request_messages)
+            try:
+                parsed = self._parse_json_response(response_text)
+                missing = [text_id for text_id in expected_ids if not parsed.get(text_id)]
+                if missing:
+                    raise ValueError(
+                        "Resposta JSON sem IDs obrigatorios: " + ", ".join(missing)
+                    )
+                return parsed
+            except (TypeError, ValueError) as exc:
+                last_error = exc
+                if attempt >= attempts:
+                    self._increment_stat("invalid_json_failures")
+                    raise
+                self._increment_stat("invalid_json_retries")
+                request_messages = base_messages + [
+                    {
+                        "role": "assistant",
+                        "content": str(response_text or "")[:2000],
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "A resposta anterior nao era um objeto JSON valido com "
+                            "todos os IDs solicitados. Responda novamente somente com "
+                            "JSON, sem markdown ou explicacoes. IDs obrigatorios: "
+                            + ", ".join(expected_ids)
+                        ),
+                    },
+                ]
+        raise last_error or ValueError("Resposta JSON invalida.")
 
     def _request_with_retry(self, messages):
         retry_statuses = {429, 500, 502, 503, 504}
@@ -298,6 +360,7 @@ class TranslatorNvidiaBatch:
                 "model": self.model,
                 "source_language": self.source_language,
                 "session_context": self.session_context_signature,
+                "detected_names": self.detected_names_signature,
             }
         )
 
@@ -305,6 +368,8 @@ class TranslatorNvidiaBatch:
         prompt = SYSTEM_PROMPT_TEMPLATE.format(source_language=self.source_language)
         if self.session_context_prompt:
             prompt += "\n\n" + self.session_context_prompt
+        if self.detected_names_prompt:
+            prompt += "\n\n" + self.detected_names_prompt
         return prompt
 
     def _translation_cache_path(self, text):
