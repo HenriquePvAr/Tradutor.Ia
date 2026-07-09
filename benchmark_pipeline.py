@@ -12,6 +12,11 @@ import cv2
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import config
+from classification_profiler import (
+    ClassificationProfiler,
+    profile_step,
+    set_active_profiler,
+)
 from down import download_images, force_remove
 from json_utils import dumps_json
 from ocr_balloon import (
@@ -110,6 +115,10 @@ def run_benchmark(args):
         enabled=config.RESOURCE_MONITORING,
         interval_seconds=config.RESOURCE_MONITOR_INTERVAL_SECONDS,
     )
+    classification_profiler = ClassificationProfiler(
+        enabled=config.CLASSIFICATION_PROFILING,
+    )
+    set_active_profiler(classification_profiler)
     resource_monitor.start()
     resource_monitor.set_stage("preparing")
     if args.force:
@@ -464,16 +473,34 @@ def run_benchmark(args):
             counters["pages_with_error"] += 1
             continue
 
-        classify_started = time.perf_counter()
-        candidates, groups = analyze_image_array(original, state.get("raw_lines", []))
-        selective_started = time.perf_counter()
-        fallback_lines, selective_records = apply_selective_ocr_fallbacks(
-            original,
-            state.get("raw_lines", []),
-            groups,
-            ocr_lang,
+        classification_profiler.start_page(
             state["index"],
+            raw_line_count=len(state.get("raw_lines", []) or []),
         )
+        classify_started = time.perf_counter()
+        with profile_step(
+            "pipeline.analyze_initial",
+            page_index=state["index"],
+            items=len(state.get("raw_lines", []) or []),
+        ):
+            candidates, groups = analyze_image_array(
+                original,
+                state.get("raw_lines", []),
+                page_index=state["index"],
+            )
+        selective_started = time.perf_counter()
+        with profile_step(
+            "pipeline.selective_ocr_fallbacks",
+            page_index=state["index"],
+            items=len(groups),
+        ):
+            fallback_lines, selective_records = apply_selective_ocr_fallbacks(
+                original,
+                state.get("raw_lines", []),
+                groups,
+                ocr_lang,
+                state["index"],
+            )
         selective_elapsed = time.perf_counter() - selective_started
         if selective_records:
             state["selective_ocr_fallbacks"] = selective_records
@@ -484,7 +511,16 @@ def run_benchmark(args):
             ]
             if used_records:
                 state["raw_lines"] = fallback_lines
-                candidates, groups = analyze_image_array(original, fallback_lines)
+                with profile_step(
+                    "pipeline.analyze_after_selective_fallback",
+                    page_index=state["index"],
+                    items=len(fallback_lines),
+                ):
+                    candidates, groups = analyze_image_array(
+                        original,
+                        fallback_lines,
+                        page_index=state["index"],
+                    )
                 state["ocr_metadata"] = {
                     **state.get("ocr_metadata", {}),
                     "selective_fallbacks": selective_records,
@@ -492,21 +528,26 @@ def run_benchmark(args):
         grouping_fallback_reason = _grouping_fallback_reason(state, groups)
         if grouping_fallback_reason:
             fallback_started = time.perf_counter()
-            paddle = OCREngine(
-                ocr_lang,
-                engine="paddle",
-                fallback_engine="",
-            )
-            fallback_lines = paddle.detect_lines(
-                original,
-                page=state["index"],
-            )
-            fallback_lines, preserved_regional_count = (
-                _preserve_selected_regional_ocr(
-                    fallback_lines,
-                    state.get("raw_lines", []),
+            with profile_step(
+                "pipeline.full_page_paddle_fallback",
+                page_index=state["index"],
+                metadata={"reason": grouping_fallback_reason},
+            ):
+                paddle = OCREngine(
+                    ocr_lang,
+                    engine="paddle",
+                    fallback_engine="",
                 )
-            )
+                fallback_lines = paddle.detect_lines(
+                    original,
+                    page=state["index"],
+                )
+                fallback_lines, preserved_regional_count = (
+                    _preserve_selected_regional_ocr(
+                        fallback_lines,
+                        state.get("raw_lines", []),
+                    )
+                )
             fallback_elapsed = time.perf_counter() - fallback_started
             state["timings"]["ocr"] = (
                 float(state["timings"].get("ocr", 0.0))
@@ -526,7 +567,16 @@ def run_benchmark(args):
                 "fallback_variant": "paddle_full",
                 "preserved_regional_line_count": preserved_regional_count,
             }
-            candidates, groups = analyze_image_array(original, fallback_lines)
+            with profile_step(
+                "pipeline.analyze_after_full_page_fallback",
+                page_index=state["index"],
+                items=len(fallback_lines),
+            ):
+                candidates, groups = analyze_image_array(
+                    original,
+                    fallback_lines,
+                    page_index=state["index"],
+                )
             if config.ENABLE_OCR_CACHE:
                 save_ocr_cache(
                     state["ocr_cache_key"],
@@ -537,14 +587,42 @@ def run_benchmark(args):
                     state.get("precheck", {}),
                     ocr_metadata=state["ocr_metadata"],
                 )
-        state["group_text_repairs"] = _group_text_repairs(groups)
+        with profile_step(
+            "pipeline.collect_group_text_repairs",
+            page_index=state["index"],
+            items=len(groups),
+        ):
+            state["group_text_repairs"] = _group_text_repairs(groups)
         classify_elapsed = time.perf_counter() - classify_started
+        classification_profiler.record_step(
+            "classification_grouping.page_total",
+            classify_elapsed,
+            page_index=state["index"],
+            items=len(groups),
+        )
         stage_seconds["classification_grouping"] += classify_elapsed
         state["timings"]["classification_grouping"] = classify_elapsed
         state["original_bgr"] = original
         state["candidates"] = candidates
         state["groups"] = groups
-        state["translatable_groups"] = get_translatable_groups(groups)
+        with profile_step(
+            "pipeline.get_translatable_groups",
+            page_index=state["index"],
+            items=len(groups),
+        ):
+            state["translatable_groups"] = get_translatable_groups(groups)
+        state["structural_snapshot"] = _structural_page_snapshot(state, groups)
+        classification_profiler.finish_page(
+            state["index"],
+            group_count=len(groups),
+            translatable_groups=len(state["translatable_groups"]),
+            fallback_count=sum(
+                1 for record in state.get("selective_ocr_fallbacks", []) if record.get("fallback_used")
+            )
+            + (1 if grouping_fallback_reason else 0),
+            repair_count=len(state.get("group_text_repairs", []) or []),
+            classification_grouping_seconds=classify_elapsed,
+        )
         analyzable_states.append(state)
         for group in state["translatable_groups"]:
             translation_targets.append(group)
@@ -803,6 +881,14 @@ def run_benchmark(args):
 
     resource_summary = resource_monitor.stop()
     gpu_diagnostics = detect_gpu_basic()
+    classification_profile_paths = classification_profiler.write_reports(output_folder)
+    classification_profile_summary = (
+        classification_profiler.summary()
+        if config.CLASSIFICATION_PROFILING
+        else {"enabled": False}
+    )
+    structural_fingerprint = _structural_fingerprint(completed_states)
+    set_active_profiler(None)
 
     report = {
         "url": args.url,
@@ -914,6 +1000,14 @@ def run_benchmark(args):
         "quality_report_html": str(quality_html_path),
         "quality_validation": quality,
         "resource_monitoring": resource_summary,
+        "classification_profiling": {
+            "enabled": bool(config.CLASSIFICATION_PROFILING),
+            **classification_profile_paths,
+            "top_steps": classification_profile_summary.get("top_steps", [])[:10],
+            "slowest_pages": classification_profile_summary.get("slowest_pages", [])[:10],
+            "slowest_groups": classification_profile_summary.get("slowest_groups", [])[:10],
+        },
+        "structural_fingerprint": structural_fingerprint,
         "gpu_diagnostics": gpu_diagnostics,
         "session_context": {
             "enabled": bool(session_context is not None),
@@ -959,6 +1053,48 @@ def run_benchmark(args):
     }
     print(dumps_json(console_report, ensure_ascii=False, indent=2), flush=True)
     return report
+
+
+def _structural_fingerprint(page_states):
+    records = []
+    for state in page_states:
+        snapshot = state.get("structural_snapshot")
+        if snapshot:
+            records.append(snapshot)
+            continue
+        records.append(_structural_page_snapshot(state, state.get("groups", []) or []))
+    payload = {"pages": records}
+    return {
+        "hash": stable_hash(payload),
+        "page_count": len(records),
+        "group_count": sum(len(page["groups"]) for page in records),
+    }
+
+
+def _structural_page_snapshot(state, groups):
+    group_records = []
+    for group in groups or []:
+        group_records.append(
+            {
+                "id": group.group_id,
+                "box": [int(value) for value in group.box],
+                "line_count": len(group.lines),
+                "cleanup_line_count": len(group.cleanup_lines),
+                "classification": group.classification,
+                "ignored": bool(group.ignored),
+                "ignore_reason": group.ignore_reason,
+                "sent_to_translation": bool(group.sent_to_translation),
+                "manual_review_required": bool(group.manual_review_required),
+                "fallback_used": bool(group.fallback_used),
+                "quality_reason_count": len(group.quality_reasons),
+                "background_type": group.background_type,
+            }
+        )
+    return {
+        "page_index": int(state.get("index") or 0),
+        "raw_lines": len(state.get("raw_lines", []) or []),
+        "groups": group_records,
+    }
 
 
 def _retry_layout_overflow_translations(
@@ -1670,6 +1806,11 @@ def _grouping_fallback_reason(state, groups):
             group.ignored
             and len(words) >= 4
             and len(useful_letters) >= 18
+            and group.classification not in {"decorative", "sfx"}
+            and group.ignore_reason not in {
+                "decorative_text",
+                "sfx_translation_disabled",
+            }
         ):
             return "high_content_group_ignored"
         if (

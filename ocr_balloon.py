@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 import config
+from classification_profiler import profile_step, record_count, record_group
 from json_utils import dump_json
 from ocr_engine import (
     OCREngine,
@@ -342,19 +343,71 @@ def process_image_array(
     )
 
 
-def analyze_image_array(original_bgr, raw_lines):
+def analyze_image_array(original_bgr, raw_lines, page_index=None):
     original = original_bgr
-    _assign_visual_white_regions(original, raw_lines)
-    candidates = [_candidate_from_line(line, original.shape) for line in raw_lines]
+    with profile_step(
+        "analyze.assign_visual_white_regions",
+        page_index=page_index,
+        items=len(raw_lines or []),
+    ):
+        _assign_visual_white_regions(original, raw_lines)
+    with profile_step(
+        "analyze.candidate_from_line",
+        page_index=page_index,
+        items=len(raw_lines or []),
+    ):
+        candidates = [_candidate_from_line(line, original.shape) for line in raw_lines]
     usable_lines = [candidate.line for candidate in candidates if not candidate.ignored]
-    groups = _group_lines(usable_lines)
-    groups = _split_groups_at_sentence_boundaries(groups)
-    _associate_ignored_cleanup_lines(groups, candidates, original.shape)
-    _repair_group_texts(groups)
-    _filter_groups(groups, original.shape)
-    _classify_groups(groups, original)
-    _score_group_quality(groups)
-    _assign_region_metadata(groups)
+    record_count("lines.usable", len(usable_lines), page_index=page_index)
+    record_count("lines.ignored", len(candidates) - len(usable_lines), page_index=page_index)
+    with profile_step(
+        "analyze.group_lines",
+        page_index=page_index,
+        items=len(usable_lines),
+    ):
+        groups = _group_lines(usable_lines, page_index=page_index)
+    with profile_step(
+        "analyze.split_sentence_boundaries",
+        page_index=page_index,
+        items=len(groups),
+    ):
+        groups = _split_groups_at_sentence_boundaries(groups)
+    with profile_step(
+        "analyze.associate_ignored_cleanup_lines",
+        page_index=page_index,
+        items=len(candidates),
+    ):
+        _associate_ignored_cleanup_lines(groups, candidates, original.shape, page_index=page_index)
+    with profile_step(
+        "analyze.repair_group_texts",
+        page_index=page_index,
+        items=len(groups),
+    ):
+        _repair_group_texts(groups)
+    with profile_step(
+        "analyze.filter_groups",
+        page_index=page_index,
+        items=len(groups),
+    ):
+        _filter_groups(groups, original.shape)
+    with profile_step(
+        "analyze.classify_groups",
+        page_index=page_index,
+        items=len(groups),
+    ):
+        _classify_groups(groups, original, page_index=page_index)
+    with profile_step(
+        "analyze.score_group_quality",
+        page_index=page_index,
+        items=len(groups),
+    ):
+        _score_group_quality(groups)
+    with profile_step(
+        "analyze.assign_region_metadata",
+        page_index=page_index,
+        items=len(groups),
+    ):
+        _assign_region_metadata(groups)
     return candidates, groups
 
 
@@ -922,13 +975,16 @@ def _looks_like_noise(text):
     return False
 
 
-def _group_lines(lines):
+def _group_lines(lines, page_index=None):
     groups = []
 
     for line in sorted(lines, key=lambda item: (item.box[1], item.box[0])):
         target = None
         for group in groups:
-            if _line_belongs_to_group(line, group):
+            record_count("group_lines.pair_checks", 1, page_index=page_index)
+            with profile_step("group_lines.line_belongs_to_group", page_index=page_index):
+                belongs = _line_belongs_to_group(line, group)
+            if belongs:
                 target = group
                 break
 
@@ -1046,10 +1102,11 @@ def _filter_groups(groups, image_shape):
             group.ignore_reason = "noise_like_group"
 
 
-def _classify_groups(groups, image_bgr):
+def _classify_groups(groups, image_bgr, page_index=None):
     h_img, w_img = image_bgr.shape[:2]
 
     for group in groups:
+        group_started = time.perf_counter()
         if group.ignored:
             group.classification = "unknown"
             continue
@@ -1065,24 +1122,32 @@ def _classify_groups(groups, image_bgr):
             and abs(_group_angle_degrees(group)) < 7
         )
 
-        group.angle_degrees = _group_angle_degrees(group)
+        with profile_step("classify.group_geometry", page_index=page_index):
+            group.angle_degrees = _group_angle_degrees(group)
+            group.alignment_score = _group_alignment_score(group)
         group.near_image_edge = (
             x <= w_img * 0.035
             or y <= h_img * 0.025
             or x + w >= w_img * 0.965
             or y + h >= h_img * 0.975
         )
-        group.alignment_score = _group_alignment_score(group)
 
-        balloon_like, narration_like = _enclosure_evidence(image_bgr, group.box)
+        with profile_step("classify.enclosure_evidence", page_index=page_index):
+            balloon_like, narration_like = _enclosure_evidence(
+                image_bgr,
+                group.box,
+                page_index=page_index,
+            )
         group.inside_balloon_like_region = balloon_like
         group.inside_narration_box_like_region = narration_like
-        external_narration = _external_narration_evidence(
-            group,
-            image_bgr,
-            words,
-            reading_phrase,
-        )
+        with profile_step("classify.external_narration_evidence", page_index=page_index):
+            external_narration = _external_narration_evidence(
+                group,
+                image_bgr,
+                words,
+                reading_phrase,
+                page_index=page_index,
+            )
 
         score = 0.0
         score += 0.38 if narration_like else 0.0
@@ -1173,12 +1238,29 @@ def _classify_groups(groups, image_bgr):
         else:
             group.classification = "unknown"
 
-        _apply_classification_policy(group)
-        group.background_type, group.background_metrics = _classify_background_region(
-            image_bgr,
-            group,
+        with profile_step("classify.apply_policy", page_index=page_index):
+            _apply_classification_policy(group)
+        with profile_step(
+            "classify.background_region",
+            page_index=page_index,
+            metadata={"group_id": group.group_id, "classification": group.classification},
+        ):
+            group.background_type, group.background_metrics = _classify_background_region(
+                image_bgr,
+                group,
+                page_index=page_index,
+            )
+        with profile_step("classify.refine_background", page_index=page_index):
+            _refine_classification_with_background(group)
+        record_group(
+            page_index=page_index,
+            group_id=group.group_id,
+            elapsed_seconds=time.perf_counter() - group_started,
+            line_count=len(group.lines),
+            classification=group.classification,
+            fallback_used=bool(group.fallback_used),
+            dominant_step="classification",
         )
-        _refine_classification_with_background(group)
 
 
 def _refine_classification_with_background(group):
@@ -1641,15 +1723,19 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
         for group in groups
         if group_needs_selective_fallback(group)
     ][: config.OCR_GROUP_FALLBACK_MAX_GROUPS]
+    record_count("selective_fallback.suspect_groups", len(suspects), page_index=page_index)
     if not suspects:
         return raw_lines, []
 
     updated_lines = list(raw_lines)
     records = []
     consumed_line_ids = set()
+    regional_engines = {}
     for group in suspects:
+        group_started = time.perf_counter()
         current_quality = group.quality_score
-        crop_box = _fallback_crop_box(group, original_bgr.shape)
+        with profile_step("selective_fallback.crop_box", page_index=page_index):
+            crop_box = _fallback_crop_box(group, original_bgr.shape)
         x, y, w, h = crop_box
         crop = original_bgr[y : y + h, x : x + w]
         if crop.size == 0:
@@ -1677,54 +1763,70 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
         for engine_name, variant in (("paddle_mobile", "paddle_mobile"), ("paddle", "paddle_full")):
             started = time.perf_counter()
             try:
-                engine = OCREngine(ocr_lang, engine=engine_name, fallback_engine="")
-                crop_lines = engine.detect_lines(crop, page=page_index)
+                with profile_step(
+                    f"selective_fallback.ocr.{variant}",
+                    page_index=page_index,
+                    metadata={"group_id": group.group_id},
+                ):
+                    engine = regional_engines.get(engine_name)
+                    if engine is None:
+                        engine = OCREngine(ocr_lang, engine=engine_name, fallback_engine="")
+                        regional_engines[engine_name] = engine
+                    crop_lines = engine.detect_lines(crop, page=page_index)
                 elapsed = time.perf_counter() - started
-                crop_lines = [_offset_line(line, x, y, variant, group.group_id) for line in crop_lines]
-                candidate_groups = _candidate_groups_for_fallback(original_bgr, crop_lines)
-                best_candidate = _best_candidate_group(candidate_groups, group.box)
+                with profile_step("selective_fallback.offset_lines", page_index=page_index, items=len(crop_lines)):
+                    crop_lines = [_offset_line(line, x, y, variant, group.group_id) for line in crop_lines]
+                with profile_step("selective_fallback.candidate_groups_for_fallback", page_index=page_index, items=len(crop_lines)):
+                    candidate_groups = _candidate_groups_for_fallback(
+                        original_bgr,
+                        crop_lines,
+                        page_index=page_index,
+                    )
+                with profile_step("selective_fallback.best_candidate_group", page_index=page_index, items=len(candidate_groups)):
+                    best_candidate = _best_candidate_group(candidate_groups, group.box)
                 candidate_lines = (
                     _cleanup_lines_for_group(best_candidate)
                     if best_candidate
                     else []
                 )
-                candidate_quality = _candidate_quality(best_candidate)
-                candidate_text = best_candidate.text if best_candidate else ""
-                candidate_tokens = set(
-                    re.findall(r"[A-Z]+", _ascii_fold(candidate_text).upper())
-                )
-                proposal_support = len(candidate_tokens & repair_proposal_tokens)
-                context_coverage = (
-                    len(candidate_tokens & context_tokens) / max(1, len(context_tokens))
-                )
-                candidate_compact = re.sub(
-                    r"[^A-Z0-9]",
-                    "",
-                    _ascii_fold(candidate_text).upper(),
-                )
-                content_retention = min(
-                    1.0,
-                    len(candidate_compact) / max(1, len(context_compact)),
-                )
-                shrink_penalty = (
-                    0.75
-                    if len(context_tokens) >= 2 and content_retention < 0.55
-                    else 0.0
-                )
-                expansion_penalty = (
-                    0.35
-                    if len(context_compact) >= 8
-                    and len(candidate_compact) > len(context_compact) * 1.8
-                    else 0.0
-                )
-                selection_score = (
-                    candidate_quality
-                    + min(0.12, proposal_support * 0.06)
-                    + context_coverage * 0.35
-                    + content_retention * 0.35
-                    - shrink_penalty
-                    - expansion_penalty
-                )
+                with profile_step("selective_fallback.candidate_scoring", page_index=page_index):
+                    candidate_quality = _candidate_quality(best_candidate)
+                    candidate_text = best_candidate.text if best_candidate else ""
+                    candidate_tokens = set(
+                        re.findall(r"[A-Z]+", _ascii_fold(candidate_text).upper())
+                    )
+                    proposal_support = len(candidate_tokens & repair_proposal_tokens)
+                    context_coverage = (
+                        len(candidate_tokens & context_tokens) / max(1, len(context_tokens))
+                    )
+                    candidate_compact = re.sub(
+                        r"[^A-Z0-9]",
+                        "",
+                        _ascii_fold(candidate_text).upper(),
+                    )
+                    content_retention = min(
+                        1.0,
+                        len(candidate_compact) / max(1, len(context_compact)),
+                    )
+                    shrink_penalty = (
+                        0.75
+                        if len(context_tokens) >= 2 and content_retention < 0.55
+                        else 0.0
+                    )
+                    expansion_penalty = (
+                        0.35
+                        if len(context_compact) >= 8
+                        and len(candidate_compact) > len(context_compact) * 1.8
+                        else 0.0
+                    )
+                    selection_score = (
+                        candidate_quality
+                        + min(0.12, proposal_support * 0.06)
+                        + context_coverage * 0.35
+                        + content_retention * 0.35
+                        - shrink_penalty
+                        - expansion_penalty
+                    )
                 attempts.append(
                     {
                         "engine": variant,
@@ -1778,45 +1880,50 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                     }
                 )
 
-        normalized_original = _normalized_ocr_candidate_text(group.text)
-        normalized_options = [
-            _normalized_ocr_candidate_text(option["text"])
-            for option in candidate_options
-        ]
-        for option_index, option in enumerate(candidate_options):
-            normalized = normalized_options[option_index]
-            original_agreement_bonus = (
-                0.22
-                if normalized and normalized == normalized_original
-                else 0.0
-            )
-            peer_agreement_bonus = (
-                0.28
-                if normalized
-                and any(
-                    normalized == peer
-                    for peer_index, peer in enumerate(normalized_options)
-                    if peer_index != option_index
+        with profile_step(
+            "selective_fallback.candidate_agreement_scoring",
+            page_index=page_index,
+            items=len(candidate_options),
+        ):
+            normalized_original = _normalized_ocr_candidate_text(group.text)
+            normalized_options = [
+                _normalized_ocr_candidate_text(option["text"])
+                for option in candidate_options
+            ]
+            for option_index, option in enumerate(candidate_options):
+                normalized = normalized_options[option_index]
+                original_agreement_bonus = (
+                    0.22
+                    if normalized and normalized == normalized_original
+                    else 0.0
                 )
-                else 0.0
-            )
-            adjusted_score = (
-                option["selection_score"]
-                + original_agreement_bonus
-                + peer_agreement_bonus
-            )
-            option["attempt"].update(
-                {
-                    "original_engine_agreement_bonus": original_agreement_bonus,
-                    "peer_engine_agreement_bonus": peer_agreement_bonus,
-                    "adjusted_selection_score": round(adjusted_score, 4),
-                }
-            )
-            if adjusted_score > best_selection_score + 0.03:
-                best_lines = option["lines"]
-                best_quality = option["quality"]
-                best_selection_score = adjusted_score
-                best_engine = option["engine"]
+                peer_agreement_bonus = (
+                    0.28
+                    if normalized
+                    and any(
+                        normalized == peer
+                        for peer_index, peer in enumerate(normalized_options)
+                        if peer_index != option_index
+                    )
+                    else 0.0
+                )
+                adjusted_score = (
+                    option["selection_score"]
+                    + original_agreement_bonus
+                    + peer_agreement_bonus
+                )
+                option["attempt"].update(
+                    {
+                        "original_engine_agreement_bonus": original_agreement_bonus,
+                        "peer_engine_agreement_bonus": peer_agreement_bonus,
+                        "adjusted_selection_score": round(adjusted_score, 4),
+                    }
+                )
+                if adjusted_score > best_selection_score + 0.03:
+                    best_lines = option["lines"]
+                    best_quality = option["quality"]
+                    best_selection_score = adjusted_score
+                    best_engine = option["engine"]
 
         record = {
             "group_id": group.group_id,
@@ -1830,6 +1937,15 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
             "fallback_variant": best_engine,
         }
         records.append(record)
+        record_group(
+            page_index=page_index,
+            group_id=group.group_id,
+            elapsed_seconds=time.perf_counter() - group_started,
+            line_count=len(group.lines),
+            classification=group.classification,
+            fallback_used=bool(best_lines),
+            dominant_step="selective_fallback",
+        )
         if not best_lines:
             continue
 
@@ -1917,20 +2033,42 @@ def _offset_line(line, dx, dy, engine_name, source_group_id):
     )
 
 
-def _candidate_groups_for_fallback(original_bgr, crop_lines):
+def _candidate_groups_for_fallback(original_bgr, crop_lines, page_index=None):
     if not crop_lines:
         return []
-    _assign_visual_white_regions(original_bgr, crop_lines)
-    candidates = [_candidate_from_line(line, original_bgr.shape) for line in crop_lines]
+    with profile_step(
+        "fallback_candidate_groups.assign_visual_white_regions",
+        page_index=page_index,
+        items=len(crop_lines),
+    ):
+        _assign_visual_white_regions(original_bgr, crop_lines)
+    with profile_step(
+        "fallback_candidate_groups.candidate_from_line",
+        page_index=page_index,
+        items=len(crop_lines),
+    ):
+        candidates = [_candidate_from_line(line, original_bgr.shape) for line in crop_lines]
     usable_lines = [candidate.line for candidate in candidates if not candidate.ignored]
-    groups = _group_lines(usable_lines)
-    groups = _split_groups_at_sentence_boundaries(groups)
-    _associate_ignored_cleanup_lines(groups, candidates, original_bgr.shape)
-    _repair_group_texts(groups)
-    _filter_groups(groups, original_bgr.shape)
-    _classify_groups(groups, original_bgr)
-    _score_group_quality(groups)
-    _assign_region_metadata(groups)
+    with profile_step(
+        "fallback_candidate_groups.group_lines",
+        page_index=page_index,
+        items=len(usable_lines),
+    ):
+        groups = _group_lines(usable_lines, page_index=page_index)
+    with profile_step("fallback_candidate_groups.split_sentence_boundaries", page_index=page_index, items=len(groups)):
+        groups = _split_groups_at_sentence_boundaries(groups)
+    with profile_step("fallback_candidate_groups.associate_ignored_cleanup_lines", page_index=page_index, items=len(candidates)):
+        _associate_ignored_cleanup_lines(groups, candidates, original_bgr.shape, page_index=page_index)
+    with profile_step("fallback_candidate_groups.repair_group_texts", page_index=page_index, items=len(groups)):
+        _repair_group_texts(groups)
+    with profile_step("fallback_candidate_groups.filter_groups", page_index=page_index, items=len(groups)):
+        _filter_groups(groups, original_bgr.shape)
+    with profile_step("fallback_candidate_groups.classify_groups", page_index=page_index, items=len(groups)):
+        _classify_groups(groups, original_bgr, page_index=page_index)
+    with profile_step("fallback_candidate_groups.score_group_quality", page_index=page_index, items=len(groups)):
+        _score_group_quality(groups)
+    with profile_step("fallback_candidate_groups.assign_region_metadata", page_index=page_index, items=len(groups)):
+        _assign_region_metadata(groups)
     return groups
 
 
@@ -2039,7 +2177,7 @@ def _assign_visual_white_regions(image_bgr, lines):
         }
 
 
-def _associate_ignored_cleanup_lines(groups, candidates, image_shape):
+def _associate_ignored_cleanup_lines(groups, candidates, image_shape, page_index=None):
     """Attach ignored OCR geometry to the surrounding text region for cleanup.
 
     Recognition may collapse an otherwise valid visual line to one character.
@@ -2054,7 +2192,9 @@ def _associate_ignored_cleanup_lines(groups, candidates, image_shape):
             continue
         possible = []
         for group in groups:
-            safe_box = _safe_draw_box(group.box, image_shape, group)
+            record_count("associate_ignored.group_checks", 1, page_index=page_index)
+            with profile_step("associate_ignored.safe_draw_box", page_index=page_index):
+                safe_box = _safe_draw_box(group.box, image_shape, group)
             if not (
                 _center_inside(line.box, safe_box)
                 or _box_iou(line.box, group.box) >= 0.08
@@ -2401,7 +2541,7 @@ def _group_alignment_score(group):
     return max(0.0, max(center_score, left_score))
 
 
-def _external_narration_evidence(group, image_bgr, words, reading_phrase):
+def _external_narration_evidence(group, image_bgr, words, reading_phrase, page_index=None):
     if group.ignored:
         return False
     if not reading_phrase or len(words) < 3:
@@ -2418,14 +2558,17 @@ def _external_narration_evidence(group, image_bgr, words, reading_phrase):
     if w > w_img * 0.82 or h > h_img * 0.22:
         return False
 
-    roi, _ = _classification_roi(image_bgr, group.box)
+    with profile_step("external_narration.classification_roi", page_index=page_index):
+        roi, _ = _classification_roi(image_bgr, group.box)
     if roi.size == 0:
         return False
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    local_std = float(np.std(gray))
-    local_mean = float(np.mean(gray))
+    with profile_step("external_narration.gray_stats", page_index=page_index):
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        local_std = float(np.std(gray))
+        local_mean = float(np.mean(gray))
     uniform_background = local_std <= 58 or local_mean >= 168 or local_mean <= 88
-    between_panels_or_top = y <= h_img * 0.2 or _horizontal_whitespace_band(image_bgr, y, h)
+    with profile_step("external_narration.horizontal_whitespace_band", page_index=page_index):
+        between_panels_or_top = y <= h_img * 0.2 or _horizontal_whitespace_band(image_bgr, y, h)
     return bool(uniform_background and between_panels_or_top)
 
 
@@ -2444,13 +2587,16 @@ def _horizontal_whitespace_band(image_bgr, y, h):
     return float(np.mean(quiet_rows)) >= 0.28
 
 
-def _enclosure_evidence(image_bgr, group_box):
-    roi, local_box = _classification_roi(image_bgr, group_box)
+def _enclosure_evidence(image_bgr, group_box, page_index=None):
+    with profile_step("enclosure.classification_roi", page_index=page_index):
+        roi, local_box = _classification_roi(image_bgr, group_box)
     if roi.size == 0:
         return False, False
 
-    component = _uniform_container_evidence(roi, local_box)
-    contour = _contour_container_evidence(roi, local_box)
+    with profile_step("enclosure.uniform_container_evidence", page_index=page_index):
+        component = _uniform_container_evidence(roi, local_box)
+    with profile_step("enclosure.contour_container_evidence", page_index=page_index):
+        contour = _contour_container_evidence(roi, local_box)
     narration_like = component["rectangular"] or contour["rectangular"]
     balloon_like = narration_like or component["enclosed"] or contour["enclosed"]
     return balloon_like, narration_like
@@ -2664,30 +2810,32 @@ def _safe_white_text_cleanup_mask(img_bgr, group, group_mask, draw_box):
     return component_mask
 
 
-def _classify_background_region(img_bgr, group):
+def _classify_background_region(img_bgr, group, page_index=None):
     if group.classification == "sfx":
         return "sfx_area", {"reason": "group_classified_as_sfx"}
 
-    draw_box = _safe_draw_box(group.box, img_bgr.shape, group)
+    with profile_step("background.safe_draw_box", page_index=page_index):
+        draw_box = _safe_draw_box(group.box, img_bgr.shape, group)
     x, y, w, h = draw_box
     roi = img_bgr[y : y + h, x : x + w]
     if roi.size == 0:
         return "unknown", {"reason": "empty_region"}
 
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    source_mask = _build_text_mask(img_bgr.shape, [group], padding=2)[y : y + h, x : x + w]
-    background_pixels = source_mask == 0
-    if np.count_nonzero(background_pixels) < max(32, int(gray.size * 0.18)):
-        background_pixels = np.ones(gray.shape, dtype=bool)
+    with profile_step("background.color_and_text_mask", page_index=page_index):
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        source_mask = _build_text_mask(img_bgr.shape, [group], padding=2)[y : y + h, x : x + w]
+        background_pixels = source_mask == 0
+        if np.count_nonzero(background_pixels) < max(32, int(gray.size * 0.18)):
+            background_pixels = np.ones(gray.shape, dtype=bool)
 
-    values = gray[background_pixels]
-    saturation = hsv[:, :, 1][background_pixels]
-    brightness = float(np.mean(values))
-    brightness_std = float(np.std(values))
-    saturation_mean = float(np.mean(saturation))
-    white_ratio = float(np.mean((values >= 220) & (saturation <= 45)))
-    dark_ratio = float(np.mean(values <= 75))
+        values = gray[background_pixels]
+        saturation = hsv[:, :, 1][background_pixels]
+        brightness = float(np.mean(values))
+        brightness_std = float(np.std(values))
+        saturation_mean = float(np.mean(saturation))
+        white_ratio = float(np.mean((values >= 220) & (saturation <= 45)))
+        dark_ratio = float(np.mean(values <= 75))
 
     # Text polygons from OCR can occupy nearly the whole tight draw box.  In
     # that case the glyphs themselves make a clean white page look textured.
@@ -2700,72 +2848,75 @@ def _classify_background_region(img_bgr, group):
     context_y1 = max(0, y - context_pad_y)
     context_x2 = min(image_w, x + w + context_pad_x)
     context_y2 = min(image_h, y + h + context_pad_y)
-    context_roi = img_bgr[context_y1:context_y2, context_x1:context_x2]
-    context_gray = cv2.cvtColor(context_roi, cv2.COLOR_BGR2GRAY)
-    context_hsv = cv2.cvtColor(context_roi, cv2.COLOR_BGR2HSV)
-    context_background = np.ones(context_gray.shape, dtype=bool)
-    inner_x1 = max(0, x - context_x1)
-    inner_y1 = max(0, y - context_y1)
-    inner_x2 = min(context_gray.shape[1], x + w - context_x1)
-    inner_y2 = min(context_gray.shape[0], y + h - context_y1)
-    context_background[inner_y1:inner_y2, inner_x1:inner_x2] = False
-    context_values = context_gray[context_background]
-    context_saturation = context_hsv[:, :, 1][context_background]
-    context_brightness = float(np.mean(context_values)) if context_values.size else brightness
-    context_white_ratio = (
-        float(np.mean((context_values >= 220) & (context_saturation <= 45)))
-        if context_values.size
-        else white_ratio
-    )
-    context_dark_ratio = (
-        float(np.mean(context_values <= 75)) if context_values.size else dark_ratio
-    )
-    context_saturation_mean = (
-        float(np.mean(context_saturation)) if context_saturation.size else saturation_mean
-    )
+    with profile_step("background.context_sampling", page_index=page_index):
+        context_roi = img_bgr[context_y1:context_y2, context_x1:context_x2]
+        context_gray = cv2.cvtColor(context_roi, cv2.COLOR_BGR2GRAY)
+        context_hsv = cv2.cvtColor(context_roi, cv2.COLOR_BGR2HSV)
+        context_background = np.ones(context_gray.shape, dtype=bool)
+        inner_x1 = max(0, x - context_x1)
+        inner_y1 = max(0, y - context_y1)
+        inner_x2 = min(context_gray.shape[1], x + w - context_x1)
+        inner_y2 = min(context_gray.shape[0], y + h - context_y1)
+        context_background[inner_y1:inner_y2, inner_x1:inner_x2] = False
+        context_values = context_gray[context_background]
+        context_saturation = context_hsv[:, :, 1][context_background]
+        context_brightness = float(np.mean(context_values)) if context_values.size else brightness
+        context_white_ratio = (
+            float(np.mean((context_values >= 220) & (context_saturation <= 45)))
+            if context_values.size
+            else white_ratio
+        )
+        context_dark_ratio = (
+            float(np.mean(context_values <= 75)) if context_values.size else dark_ratio
+        )
+        context_saturation_mean = (
+            float(np.mean(context_saturation)) if context_saturation.size else saturation_mean
+        )
 
-    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-    local_texture = cv2.absdiff(gray, blurred)
-    local_texture_mean = float(np.mean(local_texture[background_pixels]))
-    edges = cv2.Canny(gray, 55, 155)
-    edge_density = float(np.mean((edges > 0)[background_pixels]))
-    sobel_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    gradient_strength = float(np.mean(cv2.magnitude(sobel_x, sobel_y)[background_pixels]))
+    with profile_step("background.texture_edges_gradients", page_index=page_index):
+        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        local_texture = cv2.absdiff(gray, blurred)
+        local_texture_mean = float(np.mean(local_texture[background_pixels]))
+        edges = cv2.Canny(gray, 55, 155)
+        edge_density = float(np.mean((edges > 0)[background_pixels]))
+        sobel_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        gradient_strength = float(np.mean(cv2.magnitude(sobel_x, sobel_y)[background_pixels]))
 
     # Hough must inspect the background, not strokes from the OCR text itself.
     # Otherwise ordinary letters inside a clean white balloon look like dozens
     # of diagonal/action lines and incorrectly disable flat-fill cleanup.
-    text_exclusion = cv2.dilate(
-        source_mask,
-        np.ones((5, 5), dtype=np.uint8),
-        iterations=1,
-    )
-    background_edges = edges.copy()
-    background_edges[text_exclusion > 0] = 0
+    with profile_step("background.hough_lines", page_index=page_index):
+        text_exclusion = cv2.dilate(
+            source_mask,
+            np.ones((5, 5), dtype=np.uint8),
+            iterations=1,
+        )
+        background_edges = edges.copy()
+        background_edges[text_exclusion > 0] = 0
 
-    minimum_line = max(12, int(min(w, h) * 0.16))
-    hough = cv2.HoughLinesP(
-        background_edges,
-        1,
-        np.pi / 180,
-        threshold=max(12, minimum_line // 2),
-        minLineLength=minimum_line,
-        maxLineGap=5,
-    )
-    diagonal_lines = 0
-    long_lines = 0
-    if hough is not None:
-        for entry in hough[:, 0]:
-            x1, y1, x2, y2 = (int(value) for value in entry)
-            length = float(np.hypot(x2 - x1, y2 - y1))
-            if length < minimum_line:
-                continue
-            long_lines += 1
-            angle = abs(float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))) % 180
-            acute = min(angle, 180 - angle)
-            if 12 <= acute <= 78:
-                diagonal_lines += 1
+        minimum_line = max(12, int(min(w, h) * 0.16))
+        hough = cv2.HoughLinesP(
+            background_edges,
+            1,
+            np.pi / 180,
+            threshold=max(12, minimum_line // 2),
+            minLineLength=minimum_line,
+            maxLineGap=5,
+        )
+        diagonal_lines = 0
+        long_lines = 0
+        if hough is not None:
+            for entry in hough[:, 0]:
+                x1, y1, x2, y2 = (int(value) for value in entry)
+                length = float(np.hypot(x2 - x1, y2 - y1))
+                if length < minimum_line:
+                    continue
+                long_lines += 1
+                angle = abs(float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))) % 180
+                acute = min(angle, 180 - angle)
+                if 12 <= acute <= 78:
+                    diagonal_lines += 1
 
     metrics = {
         "draw_box": list(draw_box),
