@@ -1342,6 +1342,20 @@ def _write_requested_artifact_aliases(
             pass
 
 
+MIXED_LANGUAGE_VALIDATION_REASON_PREFIXES = (
+    "mixed_language",
+    "english_phrase",
+    "residual_english",
+    "residual_inflected_english",
+    "untranslated_english",
+    "untranslated_single_english",
+)
+
+
+def _is_mixed_language_validation_reason(reason):
+    return str(reason or "").startswith(MIXED_LANGUAGE_VALIDATION_REASON_PREFIXES)
+
+
 def _build_quality_report(report, states, translation_retry_records):
     pages = []
     totals = {
@@ -1381,8 +1395,8 @@ def _build_quality_report(report, states, translation_retry_records):
         mixed = [
             item
             for item in items
-            if str(item.get("translation_validation_reason") or "").startswith(
-                ("mixed_language", "english_phrase")
+            if _is_mixed_language_validation_reason(
+                item.get("translation_validation_reason")
             )
         ]
         visual_failures = [
@@ -2068,7 +2082,7 @@ def _aggregate_debug_data(states):
             if item.get("rejected_translation"):
                 result["translation_rejections"] += 1
             reason = str(item.get("translation_validation_reason") or "")
-            if reason.startswith("mixed_language") or reason.startswith("english_phrase"):
+            if _is_mixed_language_validation_reason(reason):
                 result["mixed_language_items"] += 1
             if float(item.get("text_overflow_ratio") or 0.0) > config.MAX_TEXT_OVERFLOW_RATIO:
                 result["text_overflow_items"] += 1

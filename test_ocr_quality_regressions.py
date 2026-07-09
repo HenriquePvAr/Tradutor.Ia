@@ -36,6 +36,8 @@ from ocr_balloon import (
     validate_and_retry_translations,
 )
 from benchmark_pipeline import (
+    _aggregate_debug_data,
+    _build_quality_report,
     _grouping_fallback_reason,
     _preserve_selected_regional_ocr,
     _retry_layout_overflow_translations,
@@ -288,6 +290,120 @@ class OCRQualityRegressionTests(unittest.TestCase):
             "EU VOU FAZER MELHOR PELA MINHA MAE",
         )
         self.assertTrue(valid, reason)
+
+    def test_residual_pdf_mixed_pt_en_translations_are_rejected(self):
+        cases = [
+            ("I DON'T REMEMBER GETTING OFF THE TRAIN.", "EU NÃO LEMBRO DE TER DESCIDO DO TRAIN."),
+            ("I DON'T THINK I TOOK THE WRONG ONE...", "EU NÃO ACHO QUE TENHA PEGADO O ERRADO ONE..."),
+            ("WHY ARE ALL THE SCREENS OFF HERE?", "E POR QUE TODAS AS TELAS ESTÃO DESLIGADAS HERE?"),
+            ("I MISSED THE LAST TRAIN!", "EU PERDI O ÚLTIMO TRAIN!"),
+            ("MY TRAIN CARD WON'T READ.", "MEU CARTÃO DO TRAIN NÃO LÊ."),
+            ("HELLO! ANYONE HERE?", "ALÔ! ALGUÉM HERE?"),
+            ("I'VE NEVER SEEN RED FOG BEFORE...", "NUNCA VI VERMELHO FOG ANTES..."),
+            ("IT'S A PERSON!!", "É UMA PERSON!!"),
+            ("A C-CORPSE...", "UM C-CORPSE..."),
+            ("SH-SHE'S COMING!", "Sh-She's VINDO!"),
+            ("A DOOR!!", "UM DOOR!!"),
+            ("LET'S GO THE OTHER WAY!!", "VAMOS PELO OUTRO WAY!!"),
+            ("THIS PLACE IS HELL!!", "ESTE LUGAR É HELL!!"),
+        ]
+        for source, translation in cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    source,
+                    translation,
+                    "speech",
+                )
+                self.assertFalse(valid)
+                self.assertTrue(reason)
+
+    def test_full_english_speech_or_narration_translation_is_rejected(self):
+        cases = [
+            ("WHERE THE HELL IS SHIHAE STATION, ANYWAY?!", "speech"),
+            ("RUN!!", "speech"),
+            ("RUN, RUN!!", "speech"),
+            ("BLOOD...!", "narration"),
+        ]
+        for translation, classification in cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    translation,
+                    translation,
+                    classification,
+                )
+                self.assertFalse(valid)
+                self.assertTrue(reason)
+
+    def test_common_short_english_words_are_rejected_in_translatable_context(self):
+        cases = [
+            ("FOG?", "speech"),
+            ("HEY...", "speech"),
+            ("WHOA!!!", "speech"),
+            ("EEK!", "speech"),
+        ]
+        for translation, classification in cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    translation,
+                    translation,
+                    classification,
+                )
+                self.assertFalse(valid)
+                self.assertTrue(reason)
+
+    def test_residual_pdf_lexical_garbage_is_flagged_as_suspicious_ocr(self):
+        cases = [
+            "iiON",
+            "ENO DNIOD",
+            "SÓ O QUE NA TERRA É ENO DNIOD",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                group = _scored_group(text)
+                self.assertTrue(
+                    group_needs_selective_fallback(group),
+                    group.quality_reasons,
+                )
+
+    def test_residual_english_validation_reasons_are_reported_as_mixed_items(self):
+        reasons = [
+            "mixed_language_tokens:HERE",
+            "residual_english_token:TRAIN",
+            "residual_inflected_english:DRINKS",
+            "untranslated_english_text:RUN",
+            "untranslated_single_english_token:FOG",
+        ]
+        items = [
+            {
+                "id": f"T{index}",
+                "translation_validation_reason": reason,
+            }
+            for index, reason in enumerate(reasons, start=1)
+        ]
+        states = [
+            {
+                "index": 1,
+                "status": "processed",
+                "output_path": "",
+                "image_path": "",
+                "timings": {},
+                "debug_data": {
+                    "items": items,
+                    "selective_ocr_fallbacks": [],
+                    "classification_counts": {},
+                },
+            }
+        ]
+
+        quality_report = _build_quality_report({}, states, [])
+        aggregate = _aggregate_debug_data(states)
+
+        self.assertEqual(quality_report["totals"]["mixed_language_items"], len(reasons))
+        self.assertEqual(
+            len(quality_report["pages"][0]["mixed_language_items"]),
+            len(reasons),
+        )
+        self.assertEqual(aggregate["mixed_language_items"], len(reasons))
 
     def test_spelling_repair_requires_engine_agreement_at_runtime(self):
         assessment = assess_ocr_repair(

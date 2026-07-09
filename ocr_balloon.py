@@ -134,6 +134,31 @@ COMMON_ENGLISH_WORDS = {
     "YOU",
 }
 
+RESIDUAL_TRANSLATION_ENGLISH_WORDS = COMMON_ENGLISH_WORDS | {
+    # Generic residual English vocabulary used only to validate final
+    # speech/narration translations.  SFX/decorative preservation is decided
+    # before this stage by classification policy.
+    "ANYWAY",
+    "BLOOD",
+    "CORPSE",
+    "DOOR",
+    "EEK",
+    "FOG",
+    "HELL",
+    "HERE",
+    "HEY",
+    "IS",
+    "ONE",
+    "PERSON",
+    "RUN",
+    "SHE'S",
+    "STATION",
+    "TRAIN",
+    "WAY",
+    "WHERE",
+    "WHOA",
+}
+
 PORTUGUESE_MARKERS = {
     "A",
     "AS",
@@ -1518,6 +1543,13 @@ def score_group_ocr_quality(group):
     if any(_case_transition_count(token) >= 3 for token in raw_case_tokens):
         reasons.append("mixed_case_ocr_artifact")
         score -= 0.2
+    short_case_tokens = re.findall(r"[A-Za-z]{3,5}", text)
+    if any(
+        re.fullmatch(r"[a-z]{2,}[A-Z]{2,}", token)
+        for token in short_case_tokens
+    ):
+        reasons.append("short_malformed_case_ocr_artifact")
+        score -= 0.24
 
     folded = _ascii_fold(text).upper()
     compact = re.sub(r"[^A-Z0-9]", "", folded)
@@ -1703,6 +1735,7 @@ def group_needs_selective_fallback(group):
                 "improbable_number_token",
                 "non_ascii_ocr_artifact",
                 "mixed_case_ocr_artifact",
+                "short_malformed_case_ocr_artifact",
             }
             for reason in group.quality_reasons
         )
@@ -2558,6 +2591,33 @@ def validate_translation_text(
         or longest_english_run >= 2
     ):
         return False, "mixed_language_tokens:" + ",".join(sorted(set(forbidden))[:6])
+
+    translatable_context = classification in {"speech", "thought", "narration", "unknown"}
+    residual_english_tokens = [
+        token
+        for token in translated_tokens
+        if token not in {"A", "O", "E", "I"}
+        and token not in allowed_names
+        and token not in PORTUGUESE_MARKERS
+        and token in RESIDUAL_TRANSLATION_ENGLISH_WORDS
+    ]
+    residual_unique = sorted(set(residual_english_tokens))
+    if translatable_context and residual_unique:
+        if portuguese_hits or len(translated_tokens) >= 4:
+            return (
+                False,
+                "residual_english_token:" + ",".join(residual_unique[:6]),
+            )
+        if len(residual_english_tokens) >= 2:
+            return (
+                False,
+                "untranslated_english_text:" + ",".join(residual_unique[:6]),
+            )
+        if len(translated_tokens) <= 3:
+            return (
+                False,
+                "untranslated_single_english_token:" + residual_unique[0],
+            )
 
     residual_inflected_english = sorted(
         {
