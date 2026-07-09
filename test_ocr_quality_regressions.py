@@ -29,6 +29,7 @@ from ocr_balloon import (
     _mask_shape_metrics,
     _white_patch_artifact_metrics,
     _should_skip_paddle_full_for_ignored_decorative,
+    apply_group_translations,
     group_needs_selective_fallback,
     normalize_recurring_compact_names,
     score_group_ocr_quality,
@@ -78,6 +79,31 @@ def _scored_group(text, confidence=0.92):
     group.quality_score = score
     group.quality_reasons = reasons
     return group
+
+
+class _StrictRetryTranslator:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def translate_strict(
+        self,
+        text,
+        previous_translation="",
+        validation_reason="",
+        force=False,
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "previous_translation": previous_translation,
+                "validation_reason": validation_reason,
+                "force": force,
+            }
+        )
+        if self.responses:
+            return self.responses.pop(0)
+        return previous_translation
 
 
 class OCRQualityRegressionTests(unittest.TestCase):
@@ -404,6 +430,133 @@ class OCRQualityRegressionTests(unittest.TestCase):
             len(reasons),
         )
         self.assertEqual(aggregate["mixed_language_items"], len(reasons))
+
+    def test_runtime_retry_corrects_residual_english_token_translation(self):
+        group = _scored_group("I MISSED THE LAST TRAIN!")
+        apply_group_translations([group], ["EU PERDI O ULTIMO TRAIN!"])
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(
+            group.translation_validation_reason.startswith("residual_english_token"),
+            group.translation_validation_reason,
+        )
+
+        translator = _StrictRetryTranslator("EU PERDI O ULTIMO TREM!")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 2):
+            records = validate_and_retry_translations([group], translator, force=True)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(translator.calls[0]["previous_translation"], "EU PERDI O ULTIMO TRAIN!")
+        self.assertTrue(
+            translator.calls[0]["validation_reason"].startswith("residual_english_token"),
+            translator.calls[0]["validation_reason"],
+        )
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["valid"], records)
+        self.assertEqual(records[0]["reason"], "ok")
+        self.assertEqual(group.translation_retry_count, 1)
+        self.assertTrue(group.translation_valid)
+        self.assertEqual(group.translation_validation_reason, "retry_ok")
+        self.assertEqual(group.translation, "EU PERDI O ULTIMO TREM!")
+        self.assertFalse(group.manual_review_required)
+        self.assertFalse(group.rejected_translation)
+
+    def test_runtime_retry_corrects_mixed_language_translation(self):
+        group = _scored_group("SH-SHE'S COMING!")
+        apply_group_translations([group], ["Sh-She's VINDO!"])
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(group.translation_validation_reason)
+
+        translator = _StrictRetryTranslator("ELA ESTA VINDO!")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 2):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(translator.calls[0]["previous_translation"], "SH-SHE'S VINDO!")
+        self.assertTrue(translator.calls[0]["validation_reason"])
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["valid"], records)
+        self.assertEqual(group.translation_retry_count, 1)
+        self.assertTrue(group.translation_valid)
+        self.assertEqual(group.translation_validation_reason, "retry_ok")
+        self.assertEqual(group.translation, "ELA ESTA VINDO!")
+        self.assertFalse(group.manual_review_required)
+
+    def test_runtime_failed_retry_preserves_original_and_reports_manual_review(self):
+        group = _scored_group("THIS PLACE IS HELL!!")
+        apply_group_translations([group], ["ESTE LUGAR E HELL!!"])
+        self.assertFalse(group.translation_valid)
+        initial_reason = group.translation_validation_reason
+        self.assertTrue(initial_reason)
+
+        translator = _StrictRetryTranslator("THIS PLACE E HELL!!")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(translator.calls[0]["validation_reason"], initial_reason)
+        self.assertEqual(len(records), 1)
+        self.assertFalse(records[0]["valid"], records)
+        self.assertTrue(records[0]["reason"])
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(group.manual_review_required)
+        self.assertEqual(group.rejected_translation, "ESTE LUGAR E HELL!!")
+        self.assertEqual(group.translation, group.text)
+        self.assertFalse(_should_translate_group(group))
+
+        item = {
+            "id": group.group_id,
+            "translation_validation_reason": group.translation_validation_reason,
+            "manual_review_required": group.manual_review_required,
+            "rejected_translation": group.rejected_translation,
+        }
+        states = [
+            {
+                "index": 1,
+                "status": "processed",
+                "output_path": "",
+                "image_path": "",
+                "timings": {},
+                "debug_data": {
+                    "items": [item],
+                    "selective_ocr_fallbacks": [],
+                    "classification_counts": {},
+                },
+            }
+        ]
+        quality_report = _build_quality_report({}, states, records)
+        aggregate = _aggregate_debug_data(states)
+        self.assertEqual(quality_report["totals"]["manual_review_required_groups"], 1)
+        self.assertEqual(quality_report["totals"]["translations_rejected"], 1)
+        self.assertEqual(quality_report["totals"]["mixed_language_items"], 1)
+        self.assertEqual(len(quality_report["pages"][0]["mixed_language_items"]), 1)
+        self.assertEqual(aggregate["manual_review_required_groups"], 1)
+        self.assertEqual(aggregate["translation_rejections"], 1)
+        self.assertEqual(aggregate["mixed_language_items"], 1)
+
+    def test_single_english_token_rejected_only_in_translatable_context(self):
+        valid, reason = validate_translation_text("TRAIN", "TRAIN", "speech")
+        self.assertFalse(valid)
+        self.assertTrue(
+            reason.startswith("untranslated_single_english_token"),
+            reason,
+        )
+
+        sfx_valid, sfx_reason = validate_translation_text("BOOM", "BOOM", "sfx")
+        self.assertTrue(sfx_valid, sfx_reason)
+        self.assertEqual(sfx_reason, "sfx_preserved")
+
+        decorative_valid, decorative_reason = validate_translation_text(
+            "TRAIN",
+            "TRAIN",
+            "decorative",
+        )
+        self.assertTrue(decorative_valid, decorative_reason)
+
+    def test_short_malformed_case_ocr_artifact_requests_runtime_fallback(self):
+        group = _scored_group("iiON")
+
+        self.assertIn("short_malformed_case_ocr_artifact", group.quality_reasons)
+        self.assertTrue(group_needs_selective_fallback(group))
 
     def test_spelling_repair_requires_engine_agreement_at_runtime(self):
         assessment = assess_ocr_repair(
