@@ -50,6 +50,7 @@ from pipeline_cache import (
 from session_context import SessionContextStore
 from translator_nllb import get_translator
 from translator_nvidia import PROMPT_VERSION
+from resource_monitor import ResourceMonitor, detect_gpu_basic
 
 
 BASELINE_SECONDS = 2129.41
@@ -104,6 +105,13 @@ def run_benchmark(args):
     )
 
     output_folder.mkdir(parents=True, exist_ok=True)
+    resource_monitor = ResourceMonitor(
+        output_folder,
+        enabled=config.RESOURCE_MONITORING,
+        interval_seconds=config.RESOURCE_MONITOR_INTERVAL_SECONDS,
+    )
+    resource_monitor.start()
+    resource_monitor.set_stage("preparing")
     if args.force:
         _reset_generated_folders(pages_folder, errors_folder)
         if targeted_regression:
@@ -144,6 +152,7 @@ def run_benchmark(args):
     print(f"Force: {'sim' if args.force else 'nao'}", flush=True)
     print(f"Saida: {output_folder}", flush=True)
 
+    resource_monitor.set_stage("downloading")
     download_started = time.perf_counter()
     all_image_paths, download_report, download_cache_hit = _download_with_cache(
         args.url,
@@ -160,6 +169,7 @@ def run_benchmark(args):
             "Download gate reprovado: "
             + ", ".join(download_gate.get("reasons") or ["motivo desconhecido"])
         )
+    resource_monitor.set_stage("validation")
     source_selection = [] if config.SMART_WEBTOON_PDF_SPLIT else selected_page_indices
     source_entries, missing_page_indices = _select_image_entries(
         all_image_paths,
@@ -188,6 +198,7 @@ def run_benchmark(args):
         and download_report.get("viewer_image_count")
     )
     if should_rebuild_pages:
+        resource_monitor.set_stage("smart_split")
         split_started = time.perf_counter()
         smart_paths, smart_split_report = prepare_smart_webtoon_pages(
             source_image_paths,
@@ -227,6 +238,7 @@ def run_benchmark(args):
         )
         image_entries = source_entries
     image_paths = [entry["path"] for entry in image_entries]
+    resource_monitor.set_progress(pages_done=0, pages_total=len(image_paths))
 
     previous_progress = load_json(progress_path, default={})
     previous_records = {}
@@ -278,6 +290,7 @@ def run_benchmark(args):
 
     page_states = []
     ocr_jobs = []
+    resource_monitor.set_stage("precheck")
     for entry in image_entries:
         index = int(entry["index"])
         image_path = entry["path"]
@@ -377,6 +390,8 @@ def run_benchmark(args):
             state["ocr_source"] = "run"
         page_states.append(state)
 
+    resource_monitor.set_stage("ocr")
+    resource_monitor.set_progress(queue_depth=len(ocr_jobs), active_workers=config.OCR_WORKERS)
     ocr_wall_started = time.perf_counter()
     ocr_results, ocr_parallel_info = detect_ocr_jobs(
         ocr_jobs,
@@ -386,6 +401,11 @@ def run_benchmark(args):
     )
     stage_seconds["ocr"] = time.perf_counter() - ocr_wall_started
     counters["ocr_runs"] = len(ocr_jobs)
+    resource_monitor.register_worker_roles(
+        ocr_parallel_info.get("worker_pids", []),
+        "ocr-worker",
+    )
+    resource_monitor.set_progress(queue_depth=0, active_workers=0)
 
     state_by_index = {state["index"]: state for state in page_states}
     for index, result in ocr_results.items():
@@ -411,6 +431,7 @@ def run_benchmark(args):
 
     translation_targets = []
     analyzable_states = []
+    resource_monitor.set_stage("classification")
     for state in page_states:
         if state.get("status") == "completed":
             continue
@@ -555,6 +576,7 @@ def run_benchmark(args):
         )
         translation_targets.extend(state["translatable_groups"])
 
+    resource_monitor.set_stage("translation")
     translation_started = time.perf_counter()
     if session_context is not None:
         session_context.prepare(all_analyzed_groups)
@@ -576,6 +598,7 @@ def run_benchmark(args):
         session_context.record_translations(translation_targets)
     stage_seconds["translation"] += time.perf_counter() - retry_started
 
+    resource_monitor.set_stage("rendering")
     for state in analyzable_states:
         if state.get("status") == "completed":
             continue
@@ -656,6 +679,14 @@ def run_benchmark(args):
             )
             state["debug_data"] = debug_data
             _save_page_processed_cache(state)
+            resource_monitor.set_progress(
+                pages_done=sum(
+                    1
+                    for item in page_states
+                    if item.get("status") in {"completed", "completed_with_error"}
+                ),
+                pages_total=len(image_paths),
+            )
             print(
                 f"Pagina {state['index']}/{len(image_paths)}: concluida",
                 flush=True,
@@ -704,10 +735,12 @@ def run_benchmark(args):
             else output_folder / f"benchmark_{args.max_images:03}.pdf"
         )
     )
+    resource_monitor.set_stage("pdf")
     pdf_started = time.perf_counter()
     generate_pdf([state["output_path"] for state in completed_states], str(pdf_path))
     stage_seconds["pdf"] = time.perf_counter() - pdf_started
 
+    resource_monitor.set_stage("reports")
     preview_started = time.perf_counter()
     selected_states = _create_preview_contact_sheet(
         completed_states,
@@ -767,6 +800,9 @@ def run_benchmark(args):
         if key not in {"ocr_cpu", "cache_load"}
     }
     slowest_stage = max(comparable_stages, key=comparable_stages.get)
+
+    resource_summary = resource_monitor.stop()
+    gpu_diagnostics = detect_gpu_basic()
 
     report = {
         "url": args.url,
@@ -835,6 +871,13 @@ def run_benchmark(args):
         "ocr_fallback_engine": config.OCR_FALLBACK_ENGINE,
         "download_cache_hit": download_cache_hit,
         "ocr_parallel": ocr_parallel_info,
+        "adaptive_parallelism": {
+            "enabled": bool(config.ADAPTIVE_PARALLELISM),
+            "min_ocr_workers": config.MIN_OCR_WORKERS,
+            "max_ocr_workers": config.MAX_OCR_WORKERS,
+            "queue_multiplier": config.OCR_QUEUE_MULTIPLIER,
+            "decisions": ocr_parallel_info.get("adaptive_decisions", []),
+        },
         "translation_parallel_requested": translator_stats.get(
             "parallel_requested", config.TRANSLATION_PARALLEL
         ),
@@ -870,6 +913,8 @@ def run_benchmark(args):
         "quality_report_json": str(quality_json_path),
         "quality_report_html": str(quality_html_path),
         "quality_validation": quality,
+        "resource_monitoring": resource_summary,
+        "gpu_diagnostics": gpu_diagnostics,
         "session_context": {
             "enabled": bool(session_context is not None),
             **(session_context.summary() if session_context is not None else {}),

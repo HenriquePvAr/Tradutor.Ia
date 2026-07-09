@@ -5,6 +5,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
 
+import config
+from adaptive_scheduler import (
+    AdaptiveResourceScheduler,
+    config_from_module,
+    snapshot_from_psutil,
+)
 from ocr_engine import OCREngine
 from pipeline_cache import deserialize_ocr_lines, serialize_ocr_lines
 
@@ -36,6 +42,15 @@ def _available_memory_gb():
     return status.available_physical / (1024**3)
 
 
+def _process_rss_mb():
+    try:
+        import psutil  # type: ignore
+
+        return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    except Exception:
+        return 0.0
+
+
 def _initialize_worker(ocr_lang):
     global _WORKER_ENGINE
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -65,6 +80,7 @@ def _detect_in_worker(job):
             "lines": serialize_ocr_lines(lines),
             "ocr_metadata": _WORKER_ENGINE.last_run_metadata,
             "pid": os.getpid(),
+            "worker_rss_mb": _process_rss_mb(),
         }
     except Exception as exc:
         return {
@@ -73,6 +89,7 @@ def _detect_in_worker(job):
             "elapsed_seconds": time.perf_counter() - started,
             "lines": [],
             "pid": os.getpid(),
+            "worker_rss_mb": _process_rss_mb(),
         }
 
 
@@ -163,17 +180,55 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2):
     results = {}
     worker_pids = set()
     fallback_reasons = []
-    # PaddleOCR retains native memory while processing. Recycling the pool
-    # avoids long-chapter worker termination on Windows without lowering
-    # the requested two-worker concurrency.
-    chunk_size = max(workers, workers * 10)
+    worker_peak_rss = {}
+    adaptive_decisions = []
+    scheduler = (
+        AdaptiveResourceScheduler(config_from_module(config))
+        if getattr(config, "ADAPTIVE_PARALLELISM", False)
+        else None
+    )
+    current_workers = max(
+        int(getattr(config, "MIN_OCR_WORKERS", 1)),
+        min(workers, int(getattr(config, "MAX_OCR_WORKERS", workers))),
+    )
 
-    for start in range(0, len(jobs), chunk_size):
+    start = 0
+    while start < len(jobs):
+        remaining = len(jobs) - start
+        chunk_workers = current_workers
+        decision_payload = None
+        if scheduler is not None:
+            snapshot = snapshot_from_psutil()
+            if snapshot is None:
+                fallback_reasons.append("adaptive_metrics_unavailable")
+                chunk_workers = max(1, min(workers, current_workers))
+            else:
+                decision = scheduler.decide(
+                    snapshot,
+                    current_workers=current_workers,
+                    pending_jobs=remaining,
+                )
+                chunk_workers = max(1, min(workers, decision.target_workers))
+                current_workers = chunk_workers
+                decision_payload = {
+                    "start_index": start,
+                    "pending_jobs": remaining,
+                    "target_workers": chunk_workers,
+                    "pressure": decision.pressure,
+                    "reason": decision.reason,
+                    "safe_memory_budget_mb": decision.safe_memory_budget_mb,
+                    "estimated_worker_peak_mb": decision.estimated_worker_peak_mb,
+                }
+                adaptive_decisions.append(decision_payload)
+        # PaddleOCR retains native memory while processing. Recycling the pool
+        # avoids long-chapter worker termination on Windows, and the bounded
+        # chunk keeps futures/results from accumulating without limit.
+        chunk_size = max(chunk_workers, chunk_workers * config.OCR_QUEUE_MULTIPLIER)
         chunk = jobs[start : start + chunk_size]
         unresolved = []
         try:
             with ProcessPoolExecutor(
-                max_workers=workers,
+                max_workers=chunk_workers,
                 initializer=_initialize_worker,
                 initargs=(ocr_lang,),
             ) as executor:
@@ -193,6 +248,14 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2):
                     results[job["index"]] = payload
                     if payload.get("pid") is not None:
                         worker_pids.add(payload["pid"])
+                        rss = float(payload.get("worker_rss_mb") or 0.0)
+                        if rss:
+                            worker_peak_rss[payload["pid"]] = max(
+                                worker_peak_rss.get(payload["pid"], 0.0),
+                                rss,
+                            )
+                            if scheduler is not None:
+                                scheduler.update_worker_observation(rss)
         except Exception as exc:
             fallback_reasons.append(str(exc))
             unresolved = [
@@ -206,6 +269,7 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2):
             )
             sequential = _detect_sequential(unresolved, ocr_lang)
             results.update(sequential)
+        start += len(chunk)
 
     missing = [job for job in jobs if job["index"] not in results]
     if missing:
@@ -220,7 +284,14 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2):
         "parallel_used": len(worker_pids) > 1,
         "workers_requested": workers,
         "worker_pids": sorted(worker_pids),
-        "pool_chunk_size": chunk_size,
+        "pool_chunk_size": max(1, current_workers * config.OCR_QUEUE_MULTIPLIER),
+        "bounded_queue_multiplier": config.OCR_QUEUE_MULTIPLIER,
+        "adaptive_enabled": bool(scheduler is not None),
+        "adaptive_decisions": adaptive_decisions,
+        "worker_peak_rss_mb": {
+            str(pid): round(value, 3)
+            for pid, value in sorted(worker_peak_rss.items())
+        },
         "available_memory_gb": (
             round(available_memory_gb, 3)
             if available_memory_gb is not None
