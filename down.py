@@ -2,12 +2,15 @@ import base64
 import html
 import io
 import json
+import math
 import os
 import re
 import shutil
 import stat
+import threading
 import time
 from collections import Counter
+from pathlib import Path
 from urllib.parse import urljoin
 
 import requests
@@ -16,8 +19,19 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
-from config import CHROMEDRIVER_PATH, MAX_RETRIES_DOWNLOAD, TEMP_FOLDER
-from json_utils import dump_json
+from config import (
+    CHROMEDRIVER_PATH,
+    MAX_RETRIES_DOWNLOAD,
+    SELENIUM_CLEANUP_TIMEOUT_SECONDS,
+    SELENIUM_QUIT_TIMEOUT_SECONDS,
+    TEMP_FOLDER,
+)
+from pipeline_cache import atomic_write_json
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - safe degraded path.
+    psutil = None
 
 
 MIN_IMAGE_WIDTH = 480
@@ -82,6 +96,7 @@ def download_images(
     }
 
     driver = _create_driver()
+    ownership = _capture_driver_ownership(driver)
     try:
         collection_started = time.perf_counter()
         driver.get(url)
@@ -116,7 +131,7 @@ def download_images(
         report["total_candidates"] = len(candidates)
         unique_candidates = _dedupe_candidates(candidates)
         report["total_unique_urls"] = len(unique_candidates)
-        return _download_candidates(
+        paths = _download_candidates(
             driver,
             unique_candidates,
             progress_callback,
@@ -127,13 +142,24 @@ def download_images(
             referer=url,
             target_folder=target_folder,
         )
+        report["teardown"] = _pending_teardown_diagnostic(ownership)
+        report["timings"]["total_seconds"] = time.perf_counter() - total_started
+        if debug_folder:
+            _persist_download_metadata(debug_folder, report)
+        return paths
     finally:
-        try:
-            driver.quit()
-        finally:
-            report["timings"]["total_seconds"] = time.perf_counter() - total_started
-            if debug_folder:
-                _write_download_report(debug_folder, report)
+        _refresh_driver_ownership(ownership)
+        report["teardown"] = _bounded_driver_teardown(driver, ownership)
+        if report["teardown"].get("status") != "success":
+            print(
+                "Aviso: teardown Selenium concluido com diagnostico "
+                f"{report['teardown'].get('status')} "
+                f"(fallback={report['teardown'].get('fallback_status')}).",
+                flush=True,
+            )
+        report["timings"]["total_seconds"] = time.perf_counter() - total_started
+        if debug_folder:
+            _write_download_report(debug_folder, report)
 
 
 def _create_driver():
@@ -166,6 +192,405 @@ def _create_driver():
             "Nao foi possivel iniciar o ChromeDriver automaticamente. "
             "Defina CHROMEDRIVER_PATH no .env se necessario."
         ) from (manager_error or selenium_error)
+
+
+def _pending_teardown_diagnostic(ownership):
+    return {
+        "status": "pending",
+        "duration_seconds": 0.0,
+        "timeout_seconds": float(SELENIUM_QUIT_TIMEOUT_SECONDS),
+        "timeout_occurred": False,
+        "thread_daemon": True,
+        "thread_alive_after_cleanup": False,
+        "fallback_attempted": False,
+        "fallback_status": "not_needed",
+        "matched_count": 0,
+        "terminated_count": 0,
+        "killed_count": 0,
+        "skipped_ownership_unproven_count": 0,
+        "remaining_count": 0,
+        "exception_type": "",
+        "fallback_exception_type": "",
+        "service_pid": ownership.get("service_pid"),
+        "profile_detected": bool(ownership.get("profile_path")),
+    }
+
+
+def _bounded_driver_teardown(
+    driver,
+    ownership,
+    timeout_seconds=None,
+    cleanup_timeout_seconds=None,
+    cleanup_callback=None,
+):
+    timeout_seconds = _finite_timeout(
+        SELENIUM_QUIT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds,
+        default=SELENIUM_QUIT_TIMEOUT_SECONDS,
+        minimum=0.001,
+        maximum=300.0,
+    )
+    cleanup_timeout_seconds = _finite_timeout(
+        (
+            SELENIUM_CLEANUP_TIMEOUT_SECONDS
+            if cleanup_timeout_seconds is None
+            else cleanup_timeout_seconds
+        ),
+        default=SELENIUM_CLEANUP_TIMEOUT_SECONDS,
+        minimum=0.001,
+        maximum=30.0,
+    )
+    cleanup_callback = cleanup_callback or _cleanup_owned_processes
+    result = _pending_teardown_diagnostic(ownership)
+    result["timeout_seconds"] = timeout_seconds
+    started = time.perf_counter()
+    completed = threading.Event()
+    worker_result = {}
+
+    def run_quit():
+        try:
+            driver.quit()
+        except BaseException as exc:  # noqa: BLE001 - thread must always signal completion.
+            worker_result["exception_type"] = type(exc).__name__
+        finally:
+            completed.set()
+
+    worker = threading.Thread(
+        target=run_quit,
+        name="selenium-driver-quit",
+        daemon=True,
+    )
+    worker.start()
+    if completed.wait(timeout_seconds):
+        result["status"] = (
+            "exception" if worker_result.get("exception_type") else "success"
+        )
+        result["exception_type"] = worker_result.get("exception_type", "")
+    else:
+        result["status"] = "timeout"
+        result["timeout_occurred"] = True
+        result["fallback_attempted"] = True
+        try:
+            fallback = cleanup_callback(
+                ownership,
+                timeout_seconds=cleanup_timeout_seconds,
+            ) or {}
+            for key in (
+                "matched_count",
+                "terminated_count",
+                "killed_count",
+                "skipped_ownership_unproven_count",
+                "remaining_count",
+            ):
+                result[key] = int(fallback.get(key, 0) or 0)
+            result["fallback_status"] = str(
+                fallback.get("status") or "failed"
+            )
+        except BaseException as exc:  # noqa: BLE001 - preserve caller on cleanup failure.
+            result["fallback_status"] = "failed"
+            result["fallback_exception_type"] = type(exc).__name__
+        completed.wait(min(cleanup_timeout_seconds, 0.25))
+
+    result["thread_alive_after_cleanup"] = worker.is_alive()
+    result["duration_seconds"] = round(time.perf_counter() - started, 6)
+    return result
+
+
+def _capture_driver_ownership(driver, process_api=None):
+    process_api = psutil if process_api is None else process_api
+    ownership = {
+        "service_pid": None,
+        "service_create_time": None,
+        "service_executable": "",
+        "profile_path": "",
+        "known_processes": {},
+    }
+    service_process = getattr(getattr(driver, "service", None), "process", None)
+    service_pid = getattr(service_process, "pid", None)
+    if not service_pid or process_api is None:
+        return ownership
+    try:
+        process = process_api.Process(int(service_pid))
+        snapshot = _process_snapshot(process)
+    except Exception:
+        return ownership
+    if not snapshot:
+        return ownership
+    ownership["service_pid"] = snapshot["pid"]
+    ownership["service_create_time"] = snapshot["create_time"]
+    ownership["service_executable"] = snapshot.get("executable", "")
+    ownership["known_processes"][snapshot["pid"]] = {
+        "create_time": snapshot["create_time"],
+        "name": snapshot.get("name", ""),
+        "executable": snapshot.get("executable", ""),
+        "profile_path": snapshot.get("profile_path", ""),
+    }
+    _refresh_driver_ownership(ownership, process_api=process_api)
+    return ownership
+
+
+def _refresh_driver_ownership(ownership, process_api=None):
+    process_api = psutil if process_api is None else process_api
+    service_pid = ownership.get("service_pid")
+    service_created = ownership.get("service_create_time")
+    if process_api is None or not service_pid or service_created is None:
+        return ownership
+    try:
+        service = process_api.Process(int(service_pid))
+        service_snapshot = _process_snapshot(service)
+        if not service_snapshot or not _same_create_time(
+            service_snapshot.get("create_time"), service_created
+        ):
+            return ownership
+        descendants = service.children(recursive=True)
+    except Exception:
+        return ownership
+
+    snapshots = [service_snapshot]
+    for process in descendants:
+        snapshot = _process_snapshot(process)
+        if snapshot:
+            snapshots.append(snapshot)
+    profile_path = ownership.get("profile_path", "")
+    if not profile_path:
+        profile_path = next(
+            (
+                snapshot.get("profile_path", "")
+                for snapshot in snapshots
+                if snapshot.get("profile_path")
+            ),
+            "",
+        )
+        ownership["profile_path"] = profile_path
+    known = ownership.setdefault("known_processes", {})
+    for snapshot in snapshots:
+        known[snapshot["pid"]] = {
+            "create_time": snapshot["create_time"],
+            "name": snapshot.get("name", ""),
+            "executable": snapshot.get("executable", ""),
+            "profile_path": snapshot.get("profile_path", ""),
+        }
+    return ownership
+
+
+def _process_snapshot(process):
+    try:
+        pid = int(process.pid)
+        created = float(process.create_time())
+    except Exception:
+        return None
+    try:
+        ppid = int(process.ppid())
+    except Exception:
+        ppid = 0
+    try:
+        name = str(process.name() or "")
+    except Exception:
+        name = ""
+    try:
+        executable = str(process.exe() or "")
+    except Exception:
+        executable = ""
+    try:
+        command_line = process.cmdline()
+    except Exception:
+        command_line = []
+    return {
+        "pid": pid,
+        "ppid": ppid,
+        "create_time": created,
+        "name": name,
+        "executable": executable,
+        "profile_path": _extract_user_data_dir(command_line),
+    }
+
+
+def _extract_user_data_dir(command_line):
+    values = list(command_line or [])
+    for index, value in enumerate(values):
+        token = str(value or "").strip()
+        if token.startswith("--user-data-dir="):
+            return _normalize_profile_path(token.split("=", 1)[1])
+        if token == "--user-data-dir" and index + 1 < len(values):
+            return _normalize_profile_path(values[index + 1])
+    return ""
+
+
+def _normalize_profile_path(value):
+    text = str(value or "").strip().strip("\"'")
+    return os.path.normcase(os.path.normpath(text)) if text else ""
+
+
+def _same_create_time(left, right):
+    try:
+        return abs(float(left) - float(right)) <= 0.01
+    except (TypeError, ValueError):
+        return False
+
+
+def _finite_timeout(value, default, minimum, maximum):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    if not math.isfinite(parsed):
+        parsed = float(default)
+    return min(float(maximum), max(float(minimum), parsed))
+
+
+def _process_matches_ownership(snapshot, ownership, descendant_pids=None):
+    if not snapshot or not ownership:
+        return False
+    service_pid = ownership.get("service_pid")
+    service_created = ownership.get("service_create_time")
+    if not service_pid or service_created is None:
+        return False
+    pid = int(snapshot.get("pid") or 0)
+    created = snapshot.get("create_time")
+    known = ownership.get("known_processes") or {}
+    expected = known.get(pid)
+    if pid == int(service_pid) and not expected:
+        return False
+    if expected and not _same_create_time(created, expected.get("create_time")):
+        return False
+    if expected:
+        expected_name = str(expected.get("name") or "")
+        if expected_name and expected_name.casefold() != str(
+            snapshot.get("name") or ""
+        ).casefold():
+            return False
+        expected_executable = str(expected.get("executable") or "")
+        current_executable = str(snapshot.get("executable") or "")
+        if (
+            expected_executable
+            and os.path.normcase(expected_executable)
+            != os.path.normcase(current_executable)
+        ):
+            return False
+
+    if pid == int(service_pid):
+        return _same_create_time(created, service_created)
+
+    if pid in set(descendant_pids or ()):
+        return float(created or 0.0) >= float(service_created) - 0.01
+
+    owned_profile = _normalize_profile_path(ownership.get("profile_path"))
+    current_profile = _normalize_profile_path(snapshot.get("profile_path"))
+    return bool(expected and owned_profile and current_profile == owned_profile)
+
+
+def _cleanup_owned_processes(ownership, timeout_seconds=None, process_api=None):
+    process_api = psutil if process_api is None else process_api
+    timeout_seconds = _finite_timeout(
+        SELENIUM_CLEANUP_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds,
+        default=SELENIUM_CLEANUP_TIMEOUT_SECONDS,
+        minimum=0.001,
+        maximum=30.0,
+    )
+    result = {
+        "status": "skipped",
+        "matched_count": 0,
+        "terminated_count": 0,
+        "killed_count": 0,
+        "skipped_ownership_unproven_count": 0,
+        "remaining_count": 0,
+    }
+    if process_api is None or not ownership.get("service_pid"):
+        result["skipped_ownership_unproven_count"] = 1
+        return result
+
+    processes, descendant_pids, skipped = _collect_owned_processes(
+        ownership,
+        process_api,
+    )
+    result["matched_count"] = len(processes)
+    result["skipped_ownership_unproven_count"] = skipped
+    if not processes:
+        return result
+
+    terminate_requested = []
+    service_pid = int(ownership["service_pid"])
+    for process in sorted(processes, key=lambda item: item.pid == service_pid):
+        snapshot = _process_snapshot(process)
+        if not _process_matches_ownership(snapshot, ownership, descendant_pids):
+            result["skipped_ownership_unproven_count"] += 1
+            continue
+        try:
+            process.terminate()
+            terminate_requested.append(process)
+        except Exception:
+            result["skipped_ownership_unproven_count"] += 1
+
+    gone, alive = process_api.wait_procs(
+        terminate_requested,
+        timeout=timeout_seconds,
+    )
+    result["terminated_count"] = len(gone)
+    kill_requested = []
+    for process in alive:
+        snapshot = _process_snapshot(process)
+        if not _process_matches_ownership(snapshot, ownership, descendant_pids):
+            result["skipped_ownership_unproven_count"] += 1
+            continue
+        try:
+            process.kill()
+            kill_requested.append(process)
+        except Exception:
+            result["skipped_ownership_unproven_count"] += 1
+    result["killed_count"] = len(kill_requested)
+    _, still_alive = process_api.wait_procs(
+        kill_requested,
+        timeout=timeout_seconds,
+    )
+    result["remaining_count"] = len(still_alive)
+    result["status"] = (
+        "completed"
+        if not still_alive and not result["skipped_ownership_unproven_count"]
+        else "partial"
+    )
+    return result
+
+
+def _collect_owned_processes(ownership, process_api):
+    service_pid = int(ownership["service_pid"])
+    descendant_pids = set()
+    descendants = []
+    candidate_ids = set(int(pid) for pid in (ownership.get("known_processes") or {}))
+    candidate_ids.add(service_pid)
+    try:
+        service = process_api.Process(service_pid)
+        service_snapshot = _process_snapshot(service)
+        if _process_matches_ownership(service_snapshot, ownership):
+            descendants = service.children(recursive=True)
+            descendant_pids = {int(process.pid) for process in descendants}
+            candidate_ids.update(descendant_pids)
+    except Exception:
+        pass
+
+    known = ownership.setdefault("known_processes", {})
+    for process in descendants:
+        snapshot = _process_snapshot(process)
+        if not snapshot:
+            continue
+        known[snapshot["pid"]] = {
+            "create_time": snapshot["create_time"],
+            "name": snapshot.get("name", ""),
+            "executable": snapshot.get("executable", ""),
+            "profile_path": snapshot.get("profile_path", ""),
+        }
+
+    matched = []
+    skipped = 0
+    for pid in candidate_ids:
+        try:
+            process = process_api.Process(pid)
+        except Exception:
+            continue
+        snapshot = _process_snapshot(process)
+        if _process_matches_ownership(snapshot, ownership, descendant_pids):
+            matched.append(process)
+        else:
+            skipped += 1
+    return matched, descendant_pids, skipped
 
 
 def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5):
@@ -437,6 +862,7 @@ def _download_candidates(
 
     report["total_ignored"] = len(report["ignored"])
     report["download_gate"] = _build_download_gate(report)
+    report["download_valid"] = bool(report["download_gate"].get("passed"))
     return saved
 
 
@@ -572,10 +998,15 @@ def _report_ignored(report, candidate, reason):
     report["total_ignored"] = len(report["ignored"])
 
 
+def _persist_download_metadata(debug_folder, report):
+    folder = Path(debug_folder).resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(folder / "downloaded_images.json", report)
+    atomic_write_json(folder / "download_report.json", report)
+
+
 def _write_download_report(debug_folder, report):
-    path = os.path.join(debug_folder, "downloaded_images.json")
-    with open(path, "w", encoding="utf-8") as file:
-        dump_json(report, file, ensure_ascii=False, indent=2)
+    _persist_download_metadata(debug_folder, report)
     _write_download_artifacts(
         debug_folder,
         report,
@@ -616,9 +1047,6 @@ def _build_download_gate(report):
 def _write_download_artifacts(debug_folder, report, image_paths):
     folder = os.path.abspath(debug_folder)
     os.makedirs(folder, exist_ok=True)
-    report_path = os.path.join(folder, "download_report.json")
-    with open(report_path, "w", encoding="utf-8") as file:
-        dump_json(report, file, ensure_ascii=False, indent=2)
     gate = report.get("download_gate") or {}
     lines = [
         "Tradutor.Ia - relatorio de download",

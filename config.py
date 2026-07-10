@@ -64,6 +64,14 @@ TEMP_OUT = _env_str("TEMP_OUT", TEMP_FOLDER + "_out")
 
 # Download/OCR parameters.
 MAX_RETRIES_DOWNLOAD = _env_int("MAX_RETRIES_DOWNLOAD", 5)
+SELENIUM_QUIT_TIMEOUT_SECONDS = min(
+    300.0,
+    max(1.0, _env_float("SELENIUM_QUIT_TIMEOUT_SECONDS", 20.0)),
+)
+SELENIUM_CLEANUP_TIMEOUT_SECONDS = min(
+    30.0,
+    max(0.25, _env_float("SELENIUM_CLEANUP_TIMEOUT_SECONDS", 3.0)),
+)
 OCR_CONF_THRESHOLD = _env_int("OCR_CONF_THRESHOLD", 15)
 OCR_ENGINE = _env_str("OCR_ENGINE", "paddle").lower()
 OCR_FALLBACK_ENGINE = _env_str("OCR_FALLBACK_ENGINE", "paddle").lower()
