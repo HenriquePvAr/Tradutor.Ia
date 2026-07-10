@@ -2549,6 +2549,61 @@ def _center_inside(inner, outer):
     return ox <= cx <= ox + ow and oy <= cy <= oy + oh
 
 
+PORTUGUESE_ACCENTED_FOLD_TOKENS = {"SO"}
+PORTUGUESE_FOR_PREVIOUS_CONTEXT = {"COMO", "ONDE", "QUANDO", "QUE", "QUEM", "SE"}
+
+
+def _has_diacritic(text):
+    return any(unicodedata.combining(char) for char in unicodedata.normalize("NFKD", text))
+
+
+def _translation_token_infos(text):
+    infos = []
+    for raw in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ\u0300-\u036f']+", str(text or "")):
+        token = re.sub(r"[^A-Z']", "", _ascii_fold(raw).upper())
+        if not token:
+            continue
+        infos.append(
+            {
+                "raw": raw,
+                "token": token,
+                "has_diacritic": _has_diacritic(raw),
+            }
+        )
+    return infos
+
+
+def _is_accented_portuguese_fold_token(info):
+    return info["has_diacritic"] and info["token"] in PORTUGUESE_ACCENTED_FOLD_TOKENS
+
+
+def _is_portuguese_folded_token(token_infos, index):
+    info = token_infos[index]
+    token = info["token"]
+    if _is_accented_portuguese_fold_token(info):
+        return True
+    if token != "FOR":
+        return False
+
+    tokens = [item["token"] for item in token_infos]
+    previous_token = tokens[index - 1] if index > 0 else ""
+    next_token = tokens[index + 1] if index + 1 < len(tokens) else ""
+    next_next_token = tokens[index + 2] if index + 2 < len(tokens) else ""
+
+    if previous_token in PORTUGUESE_FOR_PREVIOUS_CONTEXT:
+        return True
+    if next_token == "O" and next_next_token == "QUE":
+        return True
+    return False
+
+
+def _is_english_residual_candidate(token_infos, index, vocabulary):
+    token = token_infos[index]["token"]
+    if token not in vocabulary:
+        return False
+    return not _is_portuguese_folded_token(token_infos, index)
+
+
 def validate_translation_text(
     source_text,
     translation,
@@ -2561,25 +2616,34 @@ def validate_translation_text(
     if not translated:
         return False, "empty_translation"
 
-    source_tokens = set(re.findall(r"[A-Za-z']+", _ascii_fold(source_text).upper()))
-    translated_folded = _ascii_fold(translated).upper()
-    translated_tokens = re.findall(r"[A-Za-z']+", translated_folded)
+    source_infos = _translation_token_infos(source_text)
+    translated_infos = _translation_token_infos(translated)
+    source_tokens = {info["token"] for info in source_infos}
+    translated_tokens = [info["token"] for info in translated_infos]
     allowed_names = {
         re.sub(r"[^A-Z]", "", _ascii_fold(name).upper())
         for name in (allowed_proper_names or [])
     }
     portuguese_hits = sum(token in PORTUGUESE_MARKERS for token in translated_tokens)
     forbidden = []
-    for token in translated_tokens:
+    for index, token in enumerate(translated_tokens):
         if token in {"A", "O", "E"}:
             continue
-        if token in COMMON_ENGLISH_WORDS and token in source_tokens:
+        if (
+            token in COMMON_ENGLISH_WORDS
+            and token in source_tokens
+            and not _is_portuguese_folded_token(translated_infos, index)
+        ):
             forbidden.append(token)
 
     longest_english_run = 0
     current_run = 0
-    for token in translated_tokens:
-        if token in COMMON_ENGLISH_WORDS and token not in {"A", "I", "O", "E"}:
+    for index, token in enumerate(translated_tokens):
+        if (
+            token in COMMON_ENGLISH_WORDS
+            and token not in {"A", "I", "O", "E"}
+            and not _is_portuguese_folded_token(translated_infos, index)
+        ):
             current_run += 1
             longest_english_run = max(longest_english_run, current_run)
         else:
@@ -2595,11 +2659,15 @@ def validate_translation_text(
     translatable_context = classification in {"speech", "thought", "narration", "unknown"}
     residual_english_tokens = [
         token
-        for token in translated_tokens
+        for index, token in enumerate(translated_tokens)
         if token not in {"A", "O", "E", "I"}
         and token not in allowed_names
         and token not in PORTUGUESE_MARKERS
-        and token in RESIDUAL_TRANSLATION_ENGLISH_WORDS
+        and _is_english_residual_candidate(
+            translated_infos,
+            index,
+            RESIDUAL_TRANSLATION_ENGLISH_WORDS,
+        )
     ]
     residual_unique = sorted(set(residual_english_tokens))
     if translatable_context and residual_unique:
@@ -2622,10 +2690,11 @@ def validate_translation_text(
     residual_inflected_english = sorted(
         {
             token
-            for token in translated_tokens
+            for index, token in enumerate(translated_tokens)
             if token in source_tokens
             and token not in allowed_names
             and token not in PORTUGUESE_MARKERS
+            and not _is_portuguese_folded_token(translated_infos, index)
             and _looks_like_inflected_english_token(token)
         }
     )
@@ -2643,8 +2712,10 @@ def validate_translation_text(
     ]
     translated_english_tokens = [
         token
-        for token in translated_tokens
-        if token in COMMON_ENGLISH_WORDS and token not in {"I"}
+        for index, token in enumerate(translated_tokens)
+        if token in COMMON_ENGLISH_WORDS
+        and token not in {"I"}
+        and not _is_portuguese_folded_token(translated_infos, index)
     ]
     if (
         source_english_tokens
@@ -2654,7 +2725,11 @@ def validate_translation_text(
     ):
         return False, "untranslated_english_text"
 
-    if len(translated_tokens) == 1 and translated_tokens[0] in COMMON_ENGLISH_WORDS:
+    if (
+        len(translated_tokens) == 1
+        and translated_tokens[0] in COMMON_ENGLISH_WORDS
+        and not _is_portuguese_folded_token(translated_infos, 0)
+    ):
         return False, "untranslated_single_english_token"
 
     repeated_fragment = _translation_repeated_fragment(

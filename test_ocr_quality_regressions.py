@@ -317,6 +317,71 @@ class OCRQualityRegressionTests(unittest.TestCase):
         )
         self.assertTrue(valid, reason)
 
+    def test_portuguese_for_and_accented_so_are_not_residual_english(self):
+        cases = [
+            "SEJA O QUE FOR. VAMOS SÓ SAIR.",
+            "SÓ CORRA.",
+            "Só corra.",
+            "SE FOR PRECISO, EU VOU.",
+            "ISSO É SÓ O COMEÇO.",
+            "ISSO E\u0301 SO\u0301 O COMEÇO.",
+            "FOR O QUE FOR, CONTINUE.",
+            "QUANDO FOR A HORA, AVISE.",
+            "QUEM FOR PRIMEIRO, ESPERE.",
+            "ONDE FOR NECESSÁRIO, CORRIJA.",
+            "COMO FOR MELHOR PARA VOCÊ.",
+            "O QUE FOR PRECISO, EU FAREI.",
+            "SE FOR POSSÍVEL, VOLTE.",
+            "NÃO IMPORTA QUEM FOR.",
+            "VÁ ONDE FOR MAIS SEGURO.",
+            "ESCOLHA COMO FOR MELHOR.",
+            "EU SÓ QUERO IR EMBORA.",
+            "SÓ VOCÊ PODE FAZER ISSO.",
+            "FIQUE SÓ MAIS UM POUCO.",
+        ]
+        for translation in cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    "Portuguese sentence",
+                    translation,
+                    "speech",
+                )
+                self.assertTrue(valid, reason)
+
+    def test_real_so_and_for_english_residuals_still_fail(self):
+        cases = [
+            ("THIS IS SO WRONG.", "THIS IS SO WRONG."),
+            ("I AM SO TIRED.", "EU ESTOU SO TIRED."),
+            ("FOR REAL, I DON'T KNOW.", "FOR REAL, EU NÃO SEI."),
+            ("I WILL GO HOME.", "EU VOU FOR HOME."),
+            ("SO, WHAT DO WE DO NOW?", "SO, O QUE FAZEMOS AGORA?"),
+            ("I'M HERE FOR YOU.", "I'M HERE FOR YOU."),
+            ("I DID THIS FOR YOU.", "EU FIZ ISSO FOR YOU."),
+            ("FOR NOW, WAIT.", "FOR NOW, ESPERE."),
+            ("THIS IS FOR REAL.", "THIS IS FOR REAL."),
+            ("I AM HERE FOR YOU.", "EU ESTOU AQUI FOR YOU."),
+            ("WHAT FOR?", "WHAT FOR?"),
+            ("FOR ME, IT DOESN'T MATTER.", "FOR ME, ISSO NÃO IMPORTA."),
+            ("I DID IT FOR HER.", "I DID IT FOR HER."),
+            ("I DID THIS FOR YOU.", "EU FIZ ISSO FOR VOCÊ."),
+            ("I AM HERE FOR HER.", "EU ESTOU AQUI FOR ELA."),
+            ("I CAME BACK FOR YOU.", "EU VOLTEI FOR YOU."),
+            ("THIS IS FOR REAL.", "ISSO É FOR REAL."),
+            ("THIS IS SO WRONG.", "SO WHAT?"),
+            ("I'M SO SORRY.", "I'M SO SORRY."),
+            ("I AM SO CONFUSED.", "EU ESTOU SO CONFUSED."),
+            ("HELL", "HÉLL"),
+        ]
+        for source, translation in cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    source,
+                    translation,
+                    "speech",
+                )
+                self.assertFalse(valid)
+                self.assertTrue(reason)
+
     def test_residual_pdf_mixed_pt_en_translations_are_rejected(self):
         cases = [
             ("I DON'T REMEMBER GETTING OFF THE TRAIN.", "EU NÃO LEMBRO DE TER DESCIDO DO TRAIN."),
