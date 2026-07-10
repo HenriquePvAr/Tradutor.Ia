@@ -161,6 +161,10 @@ RESIDUAL_TRANSLATION_ENGLISH_WORDS = COMMON_ENGLISH_WORDS | {
 
 PORTUGUESE_MARKERS = {
     "A",
+    "ALGUM",
+    "ALGUMA",
+    "ALGUNS",
+    "ALGUMAS",
     "AS",
     "AO",
     "AOS",
@@ -2551,6 +2555,20 @@ def _center_inside(inner, outer):
 
 PORTUGUESE_ACCENTED_FOLD_TOKENS = {"SO"}
 PORTUGUESE_FOR_PREVIOUS_CONTEXT = {"COMO", "ONDE", "QUANDO", "QUE", "QUEM", "SE"}
+HIGH_CONFIDENCE_RESIDUAL_SPANISH_MARKERS = {
+    "AHORA",
+    "AUNQUE",
+    "ENTONCES",
+    "GRACIAS",
+    "HOLA",
+    "MUY",
+    "PERO",
+    "QUIZA",
+    "QUIZAS",
+    "USTED",
+    "USTEDES",
+}
+HIGH_CONFIDENCE_RESIDUAL_SPANISH_FORMS = {"QUÉ"}
 
 
 def _has_diacritic(text):
@@ -2558,8 +2576,20 @@ def _has_diacritic(text):
 
 
 def _translation_token_infos(text):
+    value = str(text or "")
+    quoted_spans = [
+        match.span()
+        for match in re.finditer(
+            r'"[^"\r\n]*"|“[^”\r\n]*”|«[^»\r\n]*»',
+            value,
+        )
+    ]
     infos = []
-    for raw in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ\u0300-\u036f']+", str(text or "")):
+    for match in re.finditer(
+        r"[A-Za-zÀ-ÖØ-öø-ÿ\u0300-\u036f']+",
+        value,
+    ):
+        raw = match.group(0)
         token = re.sub(r"[^A-Z']", "", _ascii_fold(raw).upper())
         if not token:
             continue
@@ -2568,6 +2598,11 @@ def _translation_token_infos(text):
                 "raw": raw,
                 "token": token,
                 "has_diacritic": _has_diacritic(raw),
+                "normalized": unicodedata.normalize("NFC", raw).upper(),
+                "quoted": any(
+                    start <= match.start() and match.end() <= end
+                    for start, end in quoted_spans
+                ),
             }
         )
     return infos
@@ -2602,6 +2637,45 @@ def _is_english_residual_candidate(token_infos, index, vocabulary):
     if token not in vocabulary:
         return False
     return not _is_portuguese_folded_token(token_infos, index)
+
+
+def _leading_hyphenated_fragment(text):
+    match = re.match(
+        r"^\s*([A-Za-zÀ-ÖØ-öø-ÿ\u0300-\u036f]{1,4})-"
+        r"([A-Za-zÀ-ÖØ-öø-ÿ\u0300-\u036f']+)",
+        str(text or ""),
+    )
+    if not match:
+        return None
+    return tuple(
+        re.sub(r"[^A-Z']", "", _ascii_fold(part).upper())
+        for part in match.groups()
+    )
+
+
+def _residual_source_hyphen_fragment(source_text, translation, allowed_names):
+    source = _leading_hyphenated_fragment(source_text)
+    translated = _leading_hyphenated_fragment(translation)
+    if not source or not translated:
+        return ""
+
+    source_prefix, source_word = source
+    translated_prefix, translated_word = translated
+    if (
+        source_prefix != translated_prefix
+        or source_word == translated_word
+        or not source_word.startswith(source_prefix)
+    ):
+        return ""
+    if {
+        source_prefix,
+        source_word,
+        translated_word,
+    } & set(allowed_names or []):
+        return ""
+    if source_word not in RESIDUAL_TRANSLATION_ENGLISH_WORDS:
+        return ""
+    return source_prefix
 
 
 def validate_translation_text(
@@ -2657,6 +2731,38 @@ def validate_translation_text(
         return False, "mixed_language_tokens:" + ",".join(sorted(set(forbidden))[:6])
 
     translatable_context = classification in {"speech", "thought", "narration", "unknown"}
+    partial_source_fragment = _residual_source_hyphen_fragment(
+        source_text,
+        translated,
+        allowed_names,
+    )
+    if translatable_context and partial_source_fragment:
+        return (
+            False,
+            "multilingual_partial_translation:" + partial_source_fragment,
+        )
+
+    residual_spanish_tokens = sorted(
+        {
+            info["token"]
+            for info in translated_infos
+            if (
+                info["token"] in HIGH_CONFIDENCE_RESIDUAL_SPANISH_MARKERS
+                or info["normalized"]
+                in HIGH_CONFIDENCE_RESIDUAL_SPANISH_FORMS
+            )
+            and info["token"] not in allowed_names
+            and not info["quoted"]
+        }
+    )
+    if translatable_context and residual_spanish_tokens and (
+        portuguese_hits or len(residual_spanish_tokens) >= 2
+    ):
+        return (
+            False,
+            "residual_spanish_token:" + ",".join(residual_spanish_tokens[:6]),
+        )
+
     residual_english_tokens = [
         token
         for index, token in enumerate(translated_tokens)

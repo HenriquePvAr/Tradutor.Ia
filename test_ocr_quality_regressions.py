@@ -408,6 +408,339 @@ class OCRQualityRegressionTests(unittest.TestCase):
                 self.assertFalse(valid)
                 self.assertTrue(reason)
 
+    def test_residual_spanish_leakage_is_rejected_without_harming_ptbr_controls(self):
+        invalid_cases = [
+            ("MAYBE IT'S THIS WAY.", "QUIZÁS SEJA POR AQUI."),
+            ("MAYBE IT'S THIS WAY.", "QUIZA\u0301S SEJA POR AQUI."),
+            (
+                "MAYBE THERE WAS SOME SORT OF DISASTER.",
+                "QUIZÁS TIVOU ALGUM DESASTRE E ELES EVACUARAM TUDO.",
+            ),
+        ]
+        for source, translation in invalid_cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    source,
+                    translation,
+                    "speech",
+                )
+                self.assertFalse(valid)
+                self.assertTrue(
+                    reason.startswith("residual_spanish_token"),
+                    reason,
+                )
+
+        valid_cases = [
+            ("I MUST'VE FALLEN ASLEEP.", "DEVO TER ADORMIDO."),
+            ("OW, MY BUTT...", "AI, MEU BUMBUM.."),
+            ("MAYBE IT'S THIS WAY.", "TALVEZ SEJA POR AQUI."),
+            ("HE ANSWERED IN SPANISH.", "QUIZÁS MAÑANA."),
+        ]
+        for source, translation in valid_cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    source,
+                    translation,
+                    "speech",
+                )
+                self.assertTrue(valid, reason)
+
+        name_valid, name_reason = validate_translation_text(
+            "WAIT FOR QUIZAS.",
+            "ESPERE POR QUIZÁS.",
+            "speech",
+            ["QUIZÁS"],
+        )
+        self.assertTrue(name_valid, name_reason)
+
+        censorship_valid, censorship_reason = validate_translation_text(
+            "S***!",
+            "S***!",
+            "sfx",
+        )
+        self.assertTrue(censorship_valid, censorship_reason)
+        self.assertEqual(censorship_reason, "sfx_preserved")
+
+        decorative_valid, decorative_reason = validate_translation_text(
+            "QUIZAS",
+            "QUIZÁS",
+            "decorative",
+        )
+        self.assertTrue(decorative_valid, decorative_reason)
+
+        localized_stutter_valid, localized_stutter_reason = validate_translation_text(
+            "Sh-She'S COMING!",
+            "E-Ela está vindo!",
+            "speech",
+        )
+        self.assertTrue(localized_stutter_valid, localized_stutter_reason)
+
+        proper_name_stutter_valid, proper_name_stutter_reason = (
+            validate_translation_text(
+                "Sh-Shihae is here!",
+                "Sh-Shihae está aqui!",
+                "speech",
+                ["SHIHAE"],
+            )
+        )
+        self.assertTrue(proper_name_stutter_valid, proper_name_stutter_reason)
+
+    def test_runtime_retry_corrects_residual_spanish_translation(self):
+        group = _scored_group("MAYBE IT'S THIS WAY.")
+        apply_group_translations([group], ["QUIZÁS SEJA POR AQUI."])
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(
+            group.translation_validation_reason.startswith("residual_spanish_token"),
+            group.translation_validation_reason,
+        )
+
+        translator = _StrictRetryTranslator("TALVEZ SEJA POR AQUI.")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["valid"], records)
+        self.assertEqual(records[0]["reason"], "ok")
+        self.assertTrue(group.translation_valid)
+        self.assertEqual(group.translation_validation_reason, "retry_ok")
+        self.assertEqual(group.translation, "TALVEZ SEJA POR AQUI.")
+        self.assertFalse(group.manual_review_required)
+
+    def test_runtime_failed_spanish_retry_requires_manual_review(self):
+        group = _scored_group("MAYBE IT'S THIS WAY.")
+        apply_group_translations([group], ["QUIZÁS SEJA POR AQUI."])
+        self.assertFalse(group.translation_valid)
+
+        translator = _StrictRetryTranslator("QUIZÁS TALVEZ SEJA POR AQUI.")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(records), 1)
+        self.assertFalse(records[0]["valid"], records)
+        self.assertTrue(
+            records[0]["reason"].startswith("residual_spanish_token"),
+            records,
+        )
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(group.manual_review_required)
+        self.assertEqual(group.rejected_translation, "QUIZÁS SEJA POR AQUI.")
+        self.assertEqual(group.translation, group.text)
+
+    def test_partial_source_language_retry_is_rejected_and_reported(self):
+        valid, reason = validate_translation_text(
+            "Sh-She'S COMING!",
+            "Sh-Ela está vindo!",
+            "speech",
+        )
+        self.assertFalse(valid)
+        self.assertTrue(
+            reason.startswith("multilingual_partial_translation"),
+            reason,
+        )
+
+        group = _scored_group("Sh-She'S COMING!")
+        apply_group_translations([group], ["Sh-She'S VINDO!"])
+        self.assertFalse(group.translation_valid)
+
+        translator = _StrictRetryTranslator("Sh-Ela está vindo!")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(len(records), 1)
+        self.assertFalse(records[0]["valid"], records)
+        self.assertTrue(
+            records[0]["reason"].startswith(
+                "multilingual_partial_translation"
+            ),
+            records,
+        )
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(group.manual_review_required)
+        self.assertEqual(group.rejected_translation, "Sh-She'S VINDO!")
+        self.assertEqual(group.translation, group.text)
+
+        item = {
+            "id": group.group_id,
+            "translation_validation_reason": group.translation_validation_reason,
+            "manual_review_required": group.manual_review_required,
+            "rejected_translation": group.rejected_translation,
+        }
+        states = [
+            {
+                "index": 1,
+                "status": "processed",
+                "output_path": "",
+                "image_path": "",
+                "timings": {},
+                "debug_data": {
+                    "items": [item],
+                    "selective_ocr_fallbacks": [],
+                    "classification_counts": {},
+                },
+            }
+        ]
+        quality_report = _build_quality_report({}, states, records)
+        aggregate = _aggregate_debug_data(states)
+        self.assertEqual(quality_report["totals"]["mixed_language_items"], 1)
+        self.assertEqual(aggregate["mixed_language_items"], 1)
+
+    def test_residual_spanish_reason_is_reported_as_mixed_language(self):
+        states = [
+            {
+                "index": 1,
+                "status": "processed",
+                "output_path": "",
+                "image_path": "",
+                "timings": {},
+                "debug_data": {
+                    "items": [
+                        {
+                            "id": "T1",
+                            "translation_validation_reason": (
+                                "residual_spanish_token:QUIZAS"
+                            ),
+                        }
+                    ],
+                    "selective_ocr_fallbacks": [],
+                    "classification_counts": {},
+                },
+            }
+        ]
+
+        quality_report = _build_quality_report({}, states, [])
+        aggregate = _aggregate_debug_data(states)
+        self.assertEqual(quality_report["totals"]["mixed_language_items"], 1)
+        self.assertEqual(aggregate["mixed_language_items"], 1)
+
+    def test_adversarial_spanish_leakage_and_legitimate_foreign_controls(self):
+        invalid_cases = [
+            ("MAYBE IT'S THIS WAY.", "QUIZÁS SEJA POR AQUI."),
+            (
+                "MAYBE THERE WAS A DISASTER.",
+                "QUIZÁS TIVOU ALGUM DESASTRE.",
+            ),
+            ("MAYBE, BUT I DON'T KNOW.", "TALVEZ, PERO EU NÃO SEI."),
+            (
+                "I DON'T KNOW WHY THIS HAPPENED.",
+                "EU NÃO SEI POR QUÉ ISSO ACONTECEU.",
+            ),
+            ("SHE IS VERY FAR AWAY.", "ELA ESTÁ MUY LONGE."),
+            ("I WILL LEAVE, THEN.", "EU VOU EMBORA, ENTONCES."),
+        ]
+        for source, translation in invalid_cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    source,
+                    translation,
+                    "speech",
+                )
+                self.assertFalse(valid)
+                self.assertTrue(reason)
+
+        legitimate_cases = [
+            "MEU NOME É DIEGO.",
+            "ELA FALOU “HOLA” E FOI EMBORA.",
+            "A PLACA DIZIA “SALIDA”.",
+            "VAMOS AO EL DORADO.",
+            "ELE ESTÁ LENDO DON QUIXOTE.",
+            "O RESTAURANTE SE CHAMA CASA DEL SOL.",
+            "“BUENOS DÍAS”, DISSE O TURISTA.",
+            "A MÚSICA SE CHAMA HASTA SIEMPRE.",
+            "SAN MARTÍN CHEGOU CEDO.",
+            "MIGUEL DE CERVANTES ESCREVEU O LIVRO.",
+            "EU NÃO SEI POR QUÊ.",
+        ]
+        for translation in legitimate_cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    "Portuguese sentence with a deliberate foreign term.",
+                    translation,
+                    "speech",
+                )
+                self.assertTrue(valid, reason)
+
+        full_spanish_valid, full_spanish_reason = validate_translation_text(
+            "MAYBE WE SHOULD LEAVE NOW.",
+            "QUIZÁS DEBERÍAMOS IRNOS AHORA.",
+            "speech",
+        )
+        self.assertFalse(full_spanish_valid)
+        self.assertTrue(
+            full_spanish_reason.startswith("residual_spanish_token"),
+            full_spanish_reason,
+        )
+
+    def test_adversarial_partial_fragments_preserve_valid_ptbr_hyphenation(self):
+        invalid_cases = [
+            ("Sh-She'S COMING!", "Sh-Ela está vindo!"),
+            ("Th-The answer is wrong!", "Th-Eu não sei!"),
+            ("Wh-What do you want?", "Wh-O que você quer?"),
+            ("I-I need to leave.", "I-Eu preciso sair."),
+            ("She-She came back.", "She-Ela voltou."),
+            ("Ru-Run now!", "Ru-Corra agora!"),
+        ]
+        for source, translation in invalid_cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    source,
+                    translation,
+                    "speech",
+                )
+                self.assertFalse(valid)
+                self.assertTrue(reason)
+
+        valid_stutters = [
+            "N-NÃO!",
+            "E-EU NÃO SEI...",
+            "A-AQUELE HOMEM!",
+            "P-POR FAVOR...",
+            "M-MAS EU VI!",
+            "V-VOCÊ ESTÁ BEM?",
+            "M-MARIA?",
+            "J-JOÃO!",
+            "S-SHIHAE?",
+            "D-DIEGO!",
+            "M-MIGUEL...",
+        ]
+        for translation in valid_stutters:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    translation,
+                    translation,
+                    "speech",
+                )
+                self.assertTrue(valid, reason)
+
+        valid_hyphenation = [
+            "GUARDA-CHUVA",
+            "EX-NAMORADO",
+            "BEM-VINDO",
+            "RECÉM-CHEGADO",
+            "SEGUNDA-FEIRA",
+            "EU DISSE: NÃO-ME-TOQUE.",
+        ]
+        for translation in valid_hyphenation:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    "Portuguese compound expression.",
+                    translation,
+                    "speech",
+                )
+                self.assertTrue(valid, reason)
+
+    def test_adversarial_censorship_tokens_remain_preservable(self):
+        for text in ("S***!", "F***!", "SH**!"):
+            with self.subTest(text=text):
+                valid, reason = validate_translation_text(
+                    text,
+                    text,
+                    "sfx",
+                )
+                self.assertTrue(valid, reason)
+                self.assertEqual(reason, "sfx_preserved")
+
     def test_full_english_speech_or_narration_translation_is_rejected(self):
         cases = [
             ("WHERE THE HELL IS SHIHAE STATION, ANYWAY?!", "speech"),

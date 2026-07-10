@@ -1353,6 +1353,8 @@ MIXED_LANGUAGE_VALIDATION_REASON_PREFIXES = (
     "english_phrase",
     "residual_english",
     "residual_inflected_english",
+    "residual_spanish",
+    "multilingual_partial",
     "untranslated_english",
     "untranslated_single_english",
 )
