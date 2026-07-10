@@ -1,13 +1,17 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ui_helpers import (
     ProgressSnapshot,
     build_run_command,
+    derive_final_run_status,
     infer_series_details,
     mask_secrets,
     parse_progress_line,
+    quality_requires_review,
     sanitize_output_name,
     suggest_chapter_details,
 )
@@ -109,6 +113,135 @@ class UIHelpersTests(unittest.TestCase):
             record = store.load()[0]
             self.assertNotIn("secret", record)
             self.assertEqual(record["id"], "one")
+
+    def test_final_status_distinguishes_quality_review_from_technical_success(self):
+        self.assertEqual(
+            derive_final_run_status(
+                technical_success=True,
+                quality_validation={"passed": True, "manual_review_required_groups": 0},
+            ),
+            "finished",
+        )
+        self.assertEqual(
+            derive_final_run_status(
+                technical_success=True,
+                quality_validation={"passed": False, "manual_review_required_groups": 1},
+            ),
+            "review_required",
+        )
+        self.assertEqual(
+            derive_final_run_status(
+                technical_success=True,
+                quality_validation={"passed": False, "manual_review_required_groups": 0},
+            ),
+            "review_required",
+        )
+        self.assertEqual(
+            derive_final_run_status(technical_success=False, quality_validation={"passed": True}),
+            "error",
+        )
+        self.assertEqual(
+            derive_final_run_status(
+                technical_success=True,
+                cancelled=True,
+                quality_validation={"passed": False, "manual_review_required_groups": 1},
+            ),
+            "cancelled",
+        )
+        self.assertEqual(
+            derive_final_run_status(
+                technical_success=True,
+                quality_validation={"passed": None},
+            ),
+            "finished",
+        )
+        self.assertEqual(
+            derive_final_run_status(technical_success=True, quality_validation={}),
+            "finished",
+        )
+
+    def test_quality_review_bool_coercion_is_conservative(self):
+        clean_values = [True, 1, "true", "True", "1", "yes"]
+        for value in clean_values:
+            with self.subTest(value=value):
+                self.assertFalse(quality_requires_review({"passed": value}))
+
+        failed_values = [False, 0, "false", "False", "0", "no"]
+        for value in failed_values:
+            with self.subTest(value=value):
+                self.assertTrue(quality_requires_review({"passed": value}))
+
+        unknown_values = [None, "", "maybe", [], {}]
+        for value in unknown_values:
+            with self.subTest(value=value):
+                self.assertFalse(quality_requires_review({"passed": value}))
+
+        self.assertTrue(quality_requires_review({"passed": True}, manual_review_count=1))
+        self.assertTrue(quality_requires_review({"passed": True}, manual_review_count="1"))
+
+    def test_discovered_history_marks_gate_failure_as_review_required(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            chapter = output_root / "chapter"
+            chapter.mkdir(parents=True)
+            pdf_path = chapter / "chapter.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+            timing = {
+                "url": LOOKISM_URL,
+                "ocr_engine": "rapidocr",
+                "force": False,
+                "total_seconds": 3.5,
+                "processed_images": 2,
+                "groups_translated": 1,
+                "pages_with_error": 0,
+                "pdf_path": str(pdf_path),
+                "quality_validation": {
+                    "passed": False,
+                    "manual_review_required_groups": 1,
+                },
+            }
+            (chapter / "timing_report.json").write_text(
+                json.dumps(timing),
+                encoding="utf-8",
+            )
+            store = UIHistoryStore(root / "history.json")
+            with patch("ui_history.OUTPUT_ROOT", output_root):
+                records = store.discover_outputs()
+
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record["status"], "review_required")
+            self.assertFalse(record["quality_gate"])
+            self.assertEqual(record["pdf_path"], str(pdf_path.resolve()))
+
+    def test_saved_history_with_failed_quality_gate_is_not_clean_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = UIHistoryStore(Path(folder) / "history.json")
+            store.upsert(
+                {
+                    "id": "needs-review",
+                    "status": "finished",
+                    "quality_gate": False,
+                    "pdf_path": str(Path(folder) / "chapter.pdf"),
+                }
+            )
+            record = store.load()[0]
+            self.assertEqual(record["status"], "review_required")
+
+    def test_saved_history_with_string_false_gate_is_not_clean_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = UIHistoryStore(Path(folder) / "history.json")
+            store.upsert(
+                {
+                    "id": "needs-review",
+                    "status": "finished",
+                    "quality_gate": "false",
+                    "pdf_path": str(Path(folder) / "chapter.pdf"),
+                }
+            )
+            record = store.load()[0]
+            self.assertEqual(record["status"], "review_required")
 
     def test_output_name_is_sanitized(self):
         self.assertEqual(sanitize_output_name("  Olá / Capítulo 01  "), "ola_capitulo_01")

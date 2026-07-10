@@ -32,6 +32,19 @@
     seriesQuery: '',
     seriesSort: 'recent',
   };
+  const runStatusLabels = {ready: 'pronto', running: 'rodando', finished: 'finalizado', review_required: 'revisão necessária', error: 'erro', cancelled: 'cancelado'};
+  const terminalRunStatuses = new Set(['finished', 'review_required']);
+  const boolish = value => {
+    if (value === true || value === false) return value;
+    if (value === 1 || value === '1') return true;
+    if (value === 0 || value === '0') return false;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (['true', 'yes'].includes(normalized)) return true;
+      if (['false', 'no'].includes(normalized)) return false;
+    }
+    return null;
+  };
 
   async function api(path, options = {}) {
     const init = {headers: {'Content-Type': 'application/json'}, ...options};
@@ -377,18 +390,17 @@
     const running = appState.status === 'running';
     setRunControls(running);
     const status = $('#appStatus');
-    const labels = {ready: 'pronto', running: 'rodando', finished: 'finalizado', error: 'erro'};
-    status.textContent = labels[appState.status] || appState.status;
+    status.textContent = runStatusLabels[appState.status] || appState.status;
     status.dataset.state = appState.status;
     renderProgress(runtime.progress || {});
     renderQueue();
     appendLogs(runtime.logs || []);
     if (runtime.latest) renderResult(runtime.latest);
     if (runtime.history_revision !== appState.historyRevision) refreshBootstrap();
-    if (appState.status === 'finished' && runtime.latest?.id && runtime.latest.id !== appState.lastFinishedId) {
+    if (terminalRunStatuses.has(appState.status) && runtime.latest?.id && runtime.latest.id !== appState.lastFinishedId) {
       appState.lastFinishedId = runtime.latest.id;
       flashFrame();
-      showToast('PDF finalizado e registrado no histórico.', 'ok');
+      showToast(appState.status === 'review_required' ? 'PDF gerado, mas requer revisão de qualidade.' : 'PDF finalizado e registrado no histórico.', appState.status === 'review_required' ? 'warn' : 'ok');
     }
   }
   function renderProgress(progress) {
@@ -427,7 +439,8 @@
     const summary = $('#runSummary');
     if (!record || record.status === 'running') return;
     summary.hidden = false;
-    const gate = record.quality_gate === true ? 'aprovado' : record.quality_gate === false ? 'reprovado' : 'não informado';
+    const gateValue = boolish(record.quality_gate);
+    const gate = gateValue === true ? 'aprovado' : gateValue === false ? 'reprovado' : 'não informado';
     summary.innerHTML = `<strong>${escapeHtml(record.chapter_name || record.slug || 'Capítulo')}</strong><br>${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)}<br>${Number(record.errors || 0)} erros · gate ${gate}`;
     renderArtifactButtons($('#artifactActions'), record);
   }
@@ -481,12 +494,13 @@
   function renderHistoryCard(record) {
     const title = record.chapter_name || record.slug || 'Capítulo';
     const engine = record.mode === 'fast' ? 'rapid' : 'paddle';
-    const gate = record.quality_gate === true ? 'gate aprovado' : record.quality_gate === false ? 'gate reprovado' : 'gate pendente';
+    const gateValue = boolish(record.quality_gate);
+    const gate = gateValue === true ? 'gate aprovado' : gateValue === false ? 'gate reprovado' : 'gate pendente';
     const meta = `${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)} · ${gate}`;
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
-      <div class="hm-badges"><span class="badge ep">${escapeHtml(record.status || 'local')}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
+      <div class="hm-badges"><span class="badge ep">${escapeHtml(runStatusLabels[record.status] || record.status || 'local')}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
       <div class="hm-actions">${actionButton('Abrir PDF', 'open', record.pdf_path)}${actionButton('Pasta', 'open', record.output_folder)}${actionButton('Relatório', 'open', record.quality_report_path)}${actionButton('Compare', 'open', record.compare_sheet_path)}${actionButton('Contexto', 'open', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}</div>
     </div>`;
   }
@@ -594,13 +608,13 @@
     const list = $('#queueList');
     if (!list) return;
     const items = appState.queue || [];
-    const completed = items.filter(item => item.status === 'finished').length;
+    const completed = items.filter(item => terminalRunStatuses.has(item.status)).length;
     $('#queueCount').textContent = items.length ? `${completed} de ${items.length} concluídos` : 'fila vazia';
     $('#queueProgressFill').style.width = items.length ? `${Math.round((completed / items.length) * 100)}%` : '0%';
-    const labels = {waiting: 'aguardando', processing: 'processando…', finished: 'concluído', error: 'erro', cancelled: 'cancelado'};
     const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 12 4 4 8-9"/></svg>';
     const closeIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m6 6 12 12M18 6 6 18"/></svg>';
-    list.innerHTML = items.length ? items.map((item, index) => `<div class="queue-item status-${item.status === 'finished' ? 'done' : escapeAttr(item.status)}" data-id="${escapeAttr(item.id)}"><span class="qi-num">${item.status === 'finished' ? checkIcon : index + 1}</span><span class="qi-url">${escapeHtml(item.chapter_name || item.url)}</span><span class="qi-status">${labels[item.status] || item.status}</span>${item.status === 'waiting' ? `<button class="qi-remove" data-id="${escapeAttr(item.id)}" aria-label="Remover da fila">${closeIcon}</button>` : ''}</div>`).join('') : '<div class="empty-real-state">fila vazia · adicione uma URL acima</div>';
+    const queueClass = status => status === 'finished' ? 'done' : status === 'review_required' ? 'review_required' : escapeAttr(status);
+    list.innerHTML = items.length ? items.map((item, index) => `<div class="queue-item status-${queueClass(item.status)}" data-id="${escapeAttr(item.id)}"><span class="qi-num">${terminalRunStatuses.has(item.status) ? checkIcon : index + 1}</span><span class="qi-url">${escapeHtml(item.chapter_name || item.url)}</span><span class="qi-status">${runStatusLabels[item.status] || item.status}</span>${item.status === 'waiting' ? `<button class="qi-remove" data-id="${escapeAttr(item.id)}" aria-label="Remover da fila">${closeIcon}</button>` : ''}</div>`).join('') : '<div class="empty-real-state">fila vazia · adicione uma URL acima</div>';
   }
   $('#queueAddBtn')?.addEventListener('click', addQueueItem);
   $('#queueUrlInput')?.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); addQueueItem(); } });
@@ -643,7 +657,7 @@
     animateCount($('#dashChapters'), appState.history.length);
     animateCount($('#dashSeries'), series.size);
     animateCount($('#dashPages'), appState.history.reduce((total, record) => total + Number(record.pages_processed || 0), 0));
-    animateCount($('#dashApproved'), appState.history.filter(record => record.quality_gate === true).length);
+    animateCount($('#dashApproved'), appState.history.filter(record => boolish(record.quality_gate) === true).length);
     const list = $('#dashSeriesList');
     const query = appState.seriesQuery.toLowerCase();
     const entries = Array.from(series.values()).map(group => {
@@ -667,7 +681,7 @@
     const activity = $('#dashActivityList');
     activity.className = 'activity-list';
     activity.innerHTML = appState.history.length ? appState.history.slice(0, 7).map(record => {
-      const status = record.status === 'error' ? 'erro no processamento' : record.quality_gate === false ? 'revisão necessária' : record.pdf_path ? 'PDF gerado' : 'tradução concluída';
+      const status = record.status === 'error' ? 'erro no processamento' : record.status === 'review_required' || boolish(record.quality_gate) === false ? 'revisão necessária' : record.pdf_path ? 'PDF gerado' : 'tradução concluída';
       const date = record.finished_at || record.started_at;
       const when = date ? new Date(date).toLocaleDateString('pt-BR', {day:'2-digit', month:'short'}) : 'local';
       return `<div class="activity-item"><span class="activity-mark"></span><span class="activity-copy"><strong>${escapeHtml(record.chapter_name || record.slug || 'Capítulo')}</strong><span>${escapeHtml(status)}</span></span><span class="activity-time">${escapeHtml(when)}</span></div>`;

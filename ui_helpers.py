@@ -232,6 +232,66 @@ def env_status(env_path: Path | None = None) -> dict[str, bool]:
     return {"env_exists": path.is_file(), "nvidia_configured": configured}
 
 
+def quality_requires_review(
+    quality_validation: dict[str, Any] | None = None,
+    *,
+    manual_review_count: int | None = None,
+) -> bool:
+    """Return whether a technically completed run needs quality review."""
+
+    quality = quality_validation if isinstance(quality_validation, dict) else {}
+    if manual_review_count is None:
+        manual_review_count = quality.get("manual_review_required_groups", 0)
+    try:
+        manual_count = int(manual_review_count or 0)
+    except (TypeError, ValueError):
+        manual_count = 0
+    passed = _coerce_optional_bool(quality.get("passed"))
+    return manual_count > 0 or passed is False
+
+
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return None
+
+
+def derive_final_run_status(
+    *,
+    technical_success: bool,
+    cancelled: bool = False,
+    quality_validation: dict[str, Any] | None = None,
+    manual_review_count: int | None = None,
+) -> str:
+    """Map technical completion and quality gate into a terminal status.
+
+    A PDF may still be generated for inspection, but a failed quality gate or
+    explicit manual-review items must not be represented as a clean success.
+    Missing quality data remains compatible with older history records.
+    """
+
+    if cancelled:
+        return "cancelled"
+    if not technical_success:
+        return "error"
+    if quality_requires_review(
+        quality_validation,
+        manual_review_count=manual_review_count,
+    ):
+        return "review_required"
+    return "finished"
+
+
 @dataclass
 class ProgressSnapshot:
     stage: str = "Preparando"

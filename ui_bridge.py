@@ -27,6 +27,7 @@ from ui_helpers import (
     ProgressSnapshot,
     build_run_command,
     clean_url,
+    derive_final_run_status,
     env_status,
     find_output_artifacts,
     load_json,
@@ -384,33 +385,42 @@ class UiBridge:
         report = load_json(output_folder / "timing_report.json")
         artifacts = find_output_artifacts(output_folder)
         quality = report.get("quality_validation") or {}
-        finished = return_code == 0 and bool(artifacts.get("pdf_path")) and not cancelled
+        technical_finished = return_code == 0 and bool(artifacts.get("pdf_path")) and not cancelled
+        final_status = derive_final_run_status(
+            technical_success=technical_finished,
+            cancelled=cancelled,
+            quality_validation=quality,
+        )
         record.update(
             {
                 "finished_at": utc_now(),
                 "total_seconds": float(report.get("total_seconds") or elapsed),
-                "status": "finished" if finished else "cancelled" if cancelled else "error",
+                "status": final_status,
                 **artifacts,
                 "pages_processed": int(report.get("processed_images") or self.progress.pages or 0),
                 "groups_translated": int(report.get("groups_translated") or self.progress.groups or 0),
                 "sfx_preserved": int(report.get("groups_ignored_sfx_decorative") or 0),
-                "errors": int(report.get("pages_with_error") or (0 if finished else 1)),
+                "errors": int(report.get("pages_with_error") or (0 if technical_finished else 1)),
                 "quality_gate": quality.get("passed", ""),
                 "last_message": error_message or self.progress.last_message,
             }
         )
         self.latest_record = self.history_store.upsert(record)
         self.active_record = None
-        self.status = "finished" if finished else "ready" if cancelled else "error"
-        if finished:
-            self.progress.stage = "Finalizado"
+        self.status = final_status if final_status in {"finished", "review_required", "error"} else "ready"
+        if final_status in {"finished", "review_required"}:
+            self.progress.stage = "Revisão necessária" if final_status == "review_required" else "Finalizado"
             self.progress.current = record["pages_processed"]
             self.progress.total = record["pages_processed"]
             self.progress.pages = record["pages_processed"]
             self.progress.groups = record["groups_translated"]
             self.progress.errors = record["errors"]
-            self.progress.last_message = f"PDF pronto: {record.get('pdf_path', '')}"
-            self._append_log("Execução finalizada com artefatos reais.", "success")
+            if final_status == "review_required":
+                self.progress.last_message = f"PDF gerado para revisão: {record.get('pdf_path', '')}"
+                self._append_log("Execução finalizada com revisão de qualidade pendente.", "warn")
+            else:
+                self.progress.last_message = f"PDF pronto: {record.get('pdf_path', '')}"
+                self._append_log("Execução finalizada com artefatos reais.", "success")
         elif cancelled:
             self.progress.last_message = "Execução cancelada pelo usuário."
         self._refresh_history()

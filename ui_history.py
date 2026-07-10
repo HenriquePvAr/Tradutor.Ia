@@ -10,9 +10,11 @@ from typing import Any
 from ui_helpers import (
     HISTORY_PATH,
     OUTPUT_ROOT,
+    derive_final_run_status,
     find_output_artifacts,
     infer_series_details,
     load_json,
+    quality_requires_review,
 )
 
 
@@ -54,6 +56,7 @@ class UIHistoryStore:
                 continue
             report = load_json(timing_path)
             artifacts = find_output_artifacts(folder)
+            quality = report.get("quality_validation") or {}
             records.append(
                 self._enrich_record(
                     {
@@ -71,13 +74,16 @@ class UIHistoryStore:
                             timing_path.stat().st_mtime, timezone.utc
                         ).isoformat(timespec="seconds"),
                         "total_seconds": report.get("total_seconds", 0),
-                        "status": "finished",
+                        "status": derive_final_run_status(
+                            technical_success=bool(artifacts.get("pdf_path")),
+                            quality_validation=quality,
+                        ),
                         "output_folder": str(folder),
                         **artifacts,
                         "pages_processed": report.get("processed_images", 0),
                         "groups_translated": report.get("groups_translated", 0),
                         "errors": report.get("pages_with_error", 0),
-                        "quality_gate": (report.get("quality_validation") or {}).get("passed", ""),
+                        "quality_gate": quality.get("passed", ""),
                     }
                 )
             )
@@ -130,6 +136,10 @@ class UIHistoryStore:
     @classmethod
     def _enrich_record(cls, record: dict[str, Any]) -> dict[str, Any]:
         safe = cls._safe_record(record)
+        if safe.get("status") == "finished" and quality_requires_review(
+            {"passed": safe.get("quality_gate")}
+        ):
+            safe["status"] = "review_required"
         series = infer_series_details(
             url=str(safe.get("url") or ""),
             chapter_name=str(safe.get("chapter_name") or ""),

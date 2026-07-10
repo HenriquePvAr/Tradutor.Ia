@@ -67,6 +67,11 @@ class UiIntegrationTests(unittest.TestCase):
         for marker in forbidden:
             self.assertNotIn(marker, source)
 
+    def test_frontend_labels_review_required_status(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("review_required", source)
+        self.assertIn("revisão necessária", source)
+
     def test_shell_contains_no_seed_chapter(self):
         source = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
         for marker in ("Lookism", "Jungle Juice", "Plus One"):

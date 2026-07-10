@@ -123,7 +123,16 @@ def main(argv=None):
         context_path.unlink()
         print(f"Contexto temporario removido: {context_path}")
 
-    print("\nExecucao concluida")
+    from ui_helpers import derive_final_run_status
+
+    final_status = derive_final_run_status(
+        technical_success=bool(report.get("pdf_path")),
+        quality_validation=report.get("quality_validation") or {},
+    )
+    if final_status == "review_required":
+        print("\nExecucao concluida, mas requer revisao de qualidade")
+    else:
+        print("\nExecucao concluida")
     print(f"PDF: {pdf_path if pdf_path else 'nao gerado'}")
     if context_path.exists():
         print(f"Contexto: {context_path}")

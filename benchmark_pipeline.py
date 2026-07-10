@@ -56,6 +56,7 @@ from session_context import SessionContextStore
 from translator_nllb import get_translator
 from translator_nvidia import PROMPT_VERSION
 from resource_monitor import ResourceMonitor, detect_gpu_basic
+from ui_helpers import derive_final_run_status
 
 
 BASELINE_SECONDS = 2129.41
@@ -889,6 +890,10 @@ def run_benchmark(args):
     )
     structural_fingerprint = _structural_fingerprint(completed_states)
     set_active_profiler(None)
+    final_status = derive_final_run_status(
+        technical_success=True,
+        quality_validation=quality,
+    )
 
     report = {
         "url": args.url,
@@ -903,6 +908,7 @@ def run_benchmark(args):
         "download_gate": download_report.get("download_gate", {}),
         "available_valid_images": len(all_image_paths),
         "selected_source_images": len(source_image_paths),
+        "status": final_status,
         "smart_pdf_split": smart_split_report,
         "smart_split_contact_sheet": (
             str(smart_split_contact_sheet) if smart_split_report.get("enabled") else ""
@@ -1062,7 +1068,7 @@ def run_benchmark(args):
         args,
         len(image_paths),
         page_states,
-        status="completed",
+        status=final_status,
         pdf_path=str(pdf_path),
     )
 

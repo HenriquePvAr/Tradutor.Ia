@@ -376,12 +376,14 @@
   }
   .queue-item.status-processing .qi-num{border-color:var(--sky); color:var(--sky); animation:pulse 1.2s infinite;}
   .queue-item.status-done .qi-num{background:var(--teal); border-color:var(--teal); color:var(--paper);}
+  .queue-item.status-review_required .qi-num{background:var(--gold); border-color:var(--gold); color:var(--ink);}
   .queue-item.status-error .qi-num{background:var(--vermillion); border-color:var(--vermillion); color:var(--paper);}
   .qi-num svg{width:14px; height:14px;}
   .qi-remove svg{width:15px; height:15px; display:block;}
   .qi-url{flex:1; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--paper); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; position:relative; z-index:1;}
   .qi-status{font-family:'JetBrains Mono',monospace; font-size:9.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; position:relative; z-index:1;}
   .queue-item.status-done .qi-status{color:var(--teal);}
+  .queue-item.status-review_required .qi-status{color:var(--gold);}
   .queue-item.status-processing .qi-status{color:var(--sky);}
   .queue-item.status-error .qi-status{color:var(--vermillion);}
   .qi-remove{
@@ -1148,6 +1150,7 @@
   body > #app{display:none !important;}
   .mh-version[data-state="running"]{color:var(--gold);}
   .mh-version[data-state="finished"]{color:#72b9a9;}
+  .mh-version[data-state="review_required"]{color:var(--gold);}
   .mh-version[data-state="error"]{color:#ef766d;}
   .rail-foot.is-error .dot{background:var(--vermillion); box-shadow:0 0 7px var(--vermillion);}
   .stage-item.indeterminate .stage-fill{
