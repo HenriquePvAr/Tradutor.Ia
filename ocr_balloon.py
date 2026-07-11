@@ -260,6 +260,9 @@ class TextGroup:
     background_type: str = "unknown"
     background_metrics: dict = field(default_factory=dict)
     classification: str = "unknown"
+    classification_reason: str = ""
+    classification_confidence: float = 0.0
+    classification_evidence: dict = field(default_factory=dict)
     inside_balloon_like_region: bool = False
     inside_narration_box_like_region: bool = False
     main_text_score: float = 0.0
@@ -1132,8 +1135,188 @@ def _filter_groups(groups, image_shape):
             group.ignore_reason = "noise_like_group"
 
 
+def _visual_white_container_evidence(group):
+    """Recover compact closed containers missed by contour-based enclosure."""
+    records = []
+    for line in group.lines:
+        metadata = line.metadata or {}
+        region_id = int(metadata.get("visual_white_region_id") or 0)
+        if not region_id:
+            continue
+        records.append(
+            (
+                region_id,
+                float(metadata.get("visual_white_region_coverage") or 0.0),
+                bool(metadata.get("visual_white_region_enclosed")),
+            )
+        )
+    if not records or len({region_id for region_id, _, _ in records}) != 1:
+        return {}
+    supported = [
+        (region_id, coverage)
+        for region_id, coverage, enclosed in records
+        if coverage >= 0.5 and enclosed
+    ]
+    if not supported:
+        return {}
+    region_id, coverage = max(supported, key=lambda item: item[1])
+    return {
+        "reason": "enclosed_visual_region",
+        "confidence": round(coverage, 4),
+        "visual_white_region_id": region_id,
+        "visual_white_region_coverage": round(coverage, 4),
+    }
+
+
+def _editorial_graphic_evidence(groups, image_bgr):
+    """Find compact title/logo layouts using position, geometry, and styling."""
+    if image_bgr is None or image_bgr.size == 0:
+        return {}
+    image_height, image_width = image_bgr.shape[:2]
+    image_area = max(1, image_width * image_height)
+
+    def candidate(group):
+        if group.ignored or len(group.lines) > 2:
+            return False
+        folded = _ascii_fold(group.text).upper()
+        tokens = re.findall(r"[A-Z0-9]+", folded)
+        compact = "".join(tokens)
+        if not 1 <= len(tokens) <= 3 or not 1 <= len(compact) <= 36:
+            return False
+        if re.search(r"[!?]", group.text):
+            return False
+        if any(
+            int((line.metadata or {}).get("visual_white_region_id") or 0)
+            for line in group.lines
+        ):
+            return False
+        x, y, width, height = group.box
+        center_y = y + height / 2
+        in_editorial_band = (
+            center_y <= image_height * 0.22
+            or center_y >= image_height * 0.78
+        )
+        return bool(
+            in_editorial_band
+            and (width * height) / image_area <= 0.08
+        )
+
+    def styled_region(box):
+        x, y, width, height = box
+        roi = image_bgr[
+            max(0, y) : min(image_height, y + height),
+            max(0, x) : min(image_width, x + width),
+        ]
+        if roi.size == 0:
+            return {}
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        saturation = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)[:, :, 1]
+        edge_density = float(np.mean(cv2.Canny(gray, 55, 155) > 0))
+        mean_saturation = float(np.mean(saturation))
+        grayscale_std = float(np.std(gray))
+        if not (
+            mean_saturation >= 45.0
+            or (
+                grayscale_std >= 22.0
+                and edge_density >= 0.08
+            )
+        ):
+            return {}
+        style_score = max(
+            min(1.0, mean_saturation / 255.0),
+            min(1.0, grayscale_std / 64.0)
+            * min(1.0, edge_density / 0.2),
+        )
+        return {
+            "mean_saturation": round(mean_saturation, 3),
+            "grayscale_std": round(grayscale_std, 3),
+            "edge_density": round(edge_density, 4),
+            "style_score": round(style_score, 4),
+        }
+
+    candidates = [group for group in groups if candidate(group)]
+    evidence_by_group = {}
+
+    def record(group, layout, span_ratio, style):
+        confidence = round(
+            min(
+                1.0,
+                float(style["style_score"]) * 0.5
+                + min(1.0, span_ratio / 0.6) * 0.5,
+            ),
+            4,
+        )
+        evidence = {
+            "reason": "editorial_graphic_layout",
+            "confidence": confidence,
+            "layout": layout,
+            "span_ratio": round(span_ratio, 4),
+            **style,
+        }
+        current = evidence_by_group.get(group.group_id, {})
+        if confidence >= float(current.get("confidence") or 0.0):
+            evidence_by_group[group.group_id] = evidence
+
+    for group in candidates:
+        folded_tokens = re.findall(r"[A-Z0-9]+", _ascii_fold(group.text).upper())
+        x, y, width, height = group.box
+        style = styled_region((x, y, width, height))
+        if (
+            len(folded_tokens) >= 2
+            and width >= image_width * 0.36
+            and style
+        ):
+            record(group, "single_wide_group", width / image_width, style)
+
+    for index, first in enumerate(candidates):
+        for second in candidates[index + 1 :]:
+            first_x, first_y, first_width, first_height = first.box
+            second_x, second_y, second_width, second_height = second.box
+            first_center_y = first_y + first_height / 2
+            second_center_y = second_y + second_height / 2
+            if abs(first_center_y - second_center_y) > max(
+                first_height,
+                second_height,
+            ) * 0.7:
+                continue
+            left, right = sorted(
+                (first, second),
+                key=lambda group: group.box[0],
+            )
+            gap = right.box[0] - (left.box[0] + left.box[2])
+            if gap > max(48, max(first_height, second_height) * 1.5):
+                continue
+            x1 = min(first_x, second_x)
+            y1 = min(first_y, second_y)
+            x2 = max(first_x + first_width, second_x + second_width)
+            y2 = max(first_y + first_height, second_y + second_height)
+            union_box = (x1, y1, x2 - x1, y2 - y1)
+            style = styled_region(union_box)
+            if union_box[2] < image_width * 0.35 or not style:
+                continue
+            span_ratio = union_box[2] / image_width
+            record(first, "aligned_group_cluster", span_ratio, style)
+            record(second, "aligned_group_cluster", span_ratio, style)
+    return evidence_by_group
+
+
+def _set_group_classification(
+    group,
+    classification,
+    reason,
+    *,
+    confidence=0.0,
+    evidence=None,
+):
+    group.classification = classification
+    group.classification_reason = reason
+    group.classification_confidence = round(float(confidence or 0.0), 4)
+    group.classification_evidence = dict(evidence or {})
+
+
 def _classify_groups(groups, image_bgr, page_index=None):
     h_img, w_img = image_bgr.shape[:2]
+    editorial_evidence_by_group = _editorial_graphic_evidence(groups, image_bgr)
 
     for group in groups:
         group_started = time.perf_counter()
@@ -1168,6 +1351,9 @@ def _classify_groups(groups, image_bgr, page_index=None):
                 group.box,
                 page_index=page_index,
             )
+        contour_balloon_like = bool(balloon_like)
+        visual_white_evidence = _visual_white_container_evidence(group)
+        balloon_like = bool(balloon_like or visual_white_evidence)
         group.inside_balloon_like_region = balloon_like
         group.inside_narration_box_like_region = narration_like
         with profile_step("classify.external_narration_evidence", page_index=page_index):
@@ -1198,7 +1384,7 @@ def _classify_groups(groups, image_bgr, page_index=None):
         elongated_vocal_sfx = bool(
             one_short_word
             and 3 <= len(normalized) <= 14
-            and re.search(r"(.)\1{1,}", normalized)
+            and re.search(r"(.)\1{2,}", normalized)
             and len(set(normalized)) <= max(4, int(len(normalized) * 0.6))
             and re.search(r"[!?]", group.text)
             and normalized not in COMMON_ENGLISH_WORDS
@@ -1231,8 +1417,21 @@ def _classify_groups(groups, image_bgr, page_index=None):
             and len(words[0]) <= 8
             and not (balloon_like or narration_like or external_narration)
         )
+        repeated_short_shape = (
+            len(words) in {2, 3}
+            and len(set(words)) == 1
+            and len(words[0]) <= 8
+        )
+        weak_double_repeat_shape = bool(
+            one_short_word
+            and re.search(r"(.)\1{1,}", normalized)
+            and not elongated_vocal_sfx
+            and re.search(r"[!?]", group.text)
+            and normalized not in COMMON_ENGLISH_WORDS
+        )
+        editorial_evidence = editorial_evidence_by_group.get(group.group_id)
 
-        if production_credit:
+        if production_credit or editorial_evidence:
             group.inside_balloon_like_region = False
             group.inside_narration_box_like_region = False
             group.classification = "decorative"
@@ -1240,7 +1439,11 @@ def _classify_groups(groups, image_bgr, page_index=None):
             group.inside_balloon_like_region = False
             group.inside_narration_box_like_region = False
             group.classification = "sfx"
-        elif is_known_sfx and len(words) <= 2 and not narration_like:
+        elif (
+            is_known_sfx
+            and len(words) <= 2
+            and not (balloon_like or narration_like)
+        ):
             group.inside_balloon_like_region = False
             group.inside_narration_box_like_region = False
             group.classification = "sfx"
@@ -1248,7 +1451,11 @@ def _classify_groups(groups, image_bgr, page_index=None):
             group.inside_balloon_like_region = False
             group.inside_narration_box_like_region = False
             group.classification = "sfx"
-        elif is_known_sfx and strongly_styled and not narration_like:
+        elif (
+            is_known_sfx
+            and strongly_styled
+            and not (balloon_like or narration_like)
+        ):
             group.inside_balloon_like_region = False
             group.inside_narration_box_like_region = False
             group.classification = "sfx"
@@ -1267,6 +1474,54 @@ def _classify_groups(groups, image_bgr, page_index=None):
             group.classification = "decorative"
         else:
             group.classification = "unknown"
+
+        if editorial_evidence and group.classification == "decorative":
+            _set_group_classification(
+                group,
+                "decorative",
+                "editorial_graphic_layout",
+                confidence=editorial_evidence["confidence"],
+                evidence=editorial_evidence,
+            )
+        elif (
+            group.classification == "speech"
+            and visual_white_evidence
+            and not contour_balloon_like
+        ):
+            sfx_conflict = bool(
+                is_known_sfx
+                or oversized_short_graphic
+                or elongated_vocal_sfx
+                or compact_consonant_sfx
+                or repeated_short_shape
+            )
+            _set_group_classification(
+                group,
+                "speech",
+                (
+                    "enclosed_visual_region_over_sfx_shape"
+                    if sfx_conflict
+                    else "enclosed_visual_region_over_weak_text"
+                ),
+                confidence=visual_white_evidence["confidence"],
+                evidence={
+                    **visual_white_evidence,
+                    "conflict_resolved": "sfx" if sfx_conflict else "unknown_weak",
+                },
+            )
+        elif group.classification == "speech" and weak_double_repeat_shape:
+            _set_group_classification(
+                group,
+                "speech",
+                "container_over_weak_double_character_repeat",
+                confidence=(
+                    visual_white_evidence.get("confidence", group.main_text_score)
+                ),
+                evidence={
+                    **visual_white_evidence,
+                    "conflict_resolved": "weak_double_character_repeat",
+                },
+            )
 
         with profile_step("classify.apply_policy", page_index=page_index):
             _apply_classification_policy(group)
@@ -2414,10 +2669,52 @@ def _assign_visual_white_regions(image_bgr, lines):
         coverage = frequency / max(1, region.size)
         if coverage < 0.12:
             continue
+        region_x, region_y, region_width, region_height, region_area = (
+            int(value) for value in stats[label]
+        )
+        touches_edge = sum(
+            (
+                region_x <= 1,
+                region_y <= 1,
+                region_x + region_width >= image_width - 1,
+                region_y + region_height >= image_height - 1,
+            )
+        )
+        width_ratio = region_width / max(1, box_width)
+        height_ratio = region_height / max(1, box_height)
+        region_box_area_ratio = (
+            region_width * region_height
+        ) / max(1, image_width * image_height)
+        # This supplements contour detection only for compact containers.
+        # Large white components remain under the existing narration rules.
+        enclosed = bool(
+            touches_edge == 0
+            and region_width >= max(box_width + 8, box_width * 1.15)
+            and region_height >= max(box_height + 10, box_height * 1.35)
+            and region_box_area_ratio <= 0.18
+        )
         line.metadata = {
             **(line.metadata or {}),
             "visual_white_region_id": label,
             "visual_white_region_coverage": round(coverage, 4),
+            "visual_white_region_box": [
+                region_x,
+                region_y,
+                region_width,
+                region_height,
+            ],
+            "visual_white_region_area_ratio": round(
+                region_area / max(1, image_width * image_height),
+                6,
+            ),
+            "visual_white_region_rectangularity": round(
+                region_area / max(1, region_width * region_height),
+                4,
+            ),
+            "visual_white_region_width_ratio": round(width_ratio, 4),
+            "visual_white_region_height_ratio": round(height_ratio, 4),
+            "visual_white_region_touches_edge": int(touches_edge),
+            "visual_white_region_enclosed": enclosed,
         }
 
 
@@ -5407,8 +5704,11 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
             "original_text": candidate.line.original_text or candidate.line.raw_text,
             "repaired_text": candidate.line.repaired_text or candidate.line.text,
             "repair_reason": candidate.line.repair_reason,
-            "text_color": "",
+                "text_color": "",
                 "classification": "unknown",
+                "classification_reason": "line_ignored_before_grouping",
+                "classification_confidence": 0.0,
+                "classification_evidence": {},
                 "region_id": "",
                 "region_type": "unknown",
                 "parent_balloon_id": "",
@@ -5465,6 +5765,12 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "background_type": group.background_type,
                 "background_metrics": dict(group.background_metrics),
                 "classification": group.classification,
+                "classification_reason": group.classification_reason,
+                "classification_confidence": round(
+                    group.classification_confidence,
+                    4,
+                ),
+                "classification_evidence": dict(group.classification_evidence),
                 "region_id": group.region_id,
                 "region_type": group.region_type,
                 "parent_balloon_id": group.parent_balloon_id,

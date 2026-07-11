@@ -12,10 +12,12 @@ from ocr_balloon import (
     _classify_groups,
     _caption_overlay_mask,
     _dark_blotch_artifact_metrics,
+    _debug_payload,
     _detached_light_text_components_mask,
     _detached_dark_text_components_mask,
     _enforce_visual_bounds,
     _line_belongs_to_group,
+    _line_ignore_reason,
     _group_lines,
     _post_render_source_text_check,
     _normalized_ocr_candidate_text,
@@ -64,6 +66,58 @@ def _line(text, confidence=0.92):
         engine="rapidocr",
         page=1,
     )
+
+
+def _boxed_line(text, box, confidence=0.92, *, slant=0):
+    x, y, width, height = box
+    polygon = np.array(
+        [
+            [x, y + max(0, slant)],
+            [x + width, y],
+            [x + width, y + height - max(0, slant)],
+            [x, y + height],
+        ],
+        dtype=np.int32,
+    )
+    return OCRLine(
+        text=text,
+        confidence=confidence,
+        polygon=polygon,
+        box=box,
+        raw_text=text,
+        engine="rapidocr",
+        page=1,
+    )
+
+
+def _white_balloon_fixture(text):
+    image = np.zeros((320, 420, 3), dtype=np.uint8)
+    cv2.ellipse(
+        image,
+        (210, 150),
+        (100, 55),
+        0,
+        0,
+        360,
+        (255, 255, 255),
+        -1,
+    )
+    line = _boxed_line(text, (165, 132, 90, 36), confidence=0.95)
+    _assign_visual_white_regions(image, [line])
+    return image, line, TextGroup(group_id="T", lines=[line], text=text)
+
+
+def _editorial_art_fixture():
+    image = np.full((400, 600, 3), (8, 8, 58), dtype=np.uint8)
+    for offset in range(0, 600, 35):
+        cv2.line(
+            image,
+            (offset, 300),
+            (min(599, offset + 100), 399),
+            (12, 12, 115),
+            2,
+        )
+    return image
 
 
 def _scored_group(text, confidence=0.92):
@@ -1503,6 +1557,251 @@ class OCRQualityRegressionTests(unittest.TestCase):
         _classify_groups([group], image)
         self.assertEqual(group.classification, "decorative")
         self.assertTrue(group.ignored)
+
+    def test_short_speech_uses_enclosed_visual_region_when_contour_is_weak(self):
+        cases = (
+            "HI...",
+            "BLOOD...!",
+            "RUN, RUN!!",
+            "HELP!",
+            "NO!",
+            "WAIT!",
+            "MOM...",
+            "WHY?",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                image, _, group = _white_balloon_fixture(text)
+
+                with patch(
+                    "ocr_balloon._enclosure_evidence",
+                    return_value=(False, False),
+                ):
+                    _classify_groups([group], image)
+
+                self.assertEqual(group.classification, "speech")
+                self.assertFalse(group.ignored)
+                self.assertTrue(_should_translate_group(group))
+                self.assertTrue(
+                    group.classification_reason.startswith(
+                        "enclosed_visual_region_over_"
+                    )
+                )
+                self.assertGreaterEqual(group.classification_confidence, 0.5)
+
+    def test_visual_white_region_records_closed_container_geometry(self):
+        _, line, _ = _white_balloon_fixture("WAIT!")
+
+        self.assertTrue(line.metadata["visual_white_region_enclosed"])
+        self.assertEqual(line.metadata["visual_white_region_touches_edge"], 0)
+        self.assertGreater(line.metadata["visual_white_region_coverage"], 0.5)
+        self.assertGreater(line.metadata["visual_white_region_height_ratio"], 1.5)
+
+    def test_white_region_touching_page_edge_is_not_strong_container_evidence(self):
+        image = np.zeros((320, 420, 3), dtype=np.uint8)
+        cv2.rectangle(image, (0, 70), (260, 235), (255, 255, 255), -1)
+        line = _boxed_line("WAIT!", (85, 132, 90, 36), confidence=0.95)
+
+        _assign_visual_white_regions(image, [line])
+
+        self.assertGreater(line.metadata["visual_white_region_touches_edge"], 0)
+        self.assertFalse(line.metadata["visual_white_region_enclosed"])
+
+    def test_stylized_short_text_outside_balloon_remains_sfx(self):
+        cases = (
+            "CRUNCH",
+            "WHAM",
+            "WHOOSH",
+            "STEP",
+            "CREAK",
+            "SCREECH",
+            "SHWOOMP",
+            "SPLAT",
+            "JOLT",
+            "SHUDDER",
+            "SQUEAK",
+            "GRIND",
+            "THWACK",
+            "SLAM",
+            "DASH",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                image = np.full((320, 420, 3), 96, dtype=np.uint8)
+                line = _boxed_line(text, (2, 120, 155, 50), confidence=0.95, slant=12)
+                group = TextGroup(group_id="T", lines=[line], text=text)
+
+                with patch(
+                    "ocr_balloon._enclosure_evidence",
+                    return_value=(False, False),
+                ):
+                    _classify_groups([group], image)
+
+                self.assertEqual(group.classification, "sfx")
+                self.assertTrue(group.ignored)
+                self.assertEqual(group.ignore_reason, "sfx_translation_disabled")
+
+    def test_nonlexical_vocalization_inside_white_region_remains_sfx(self):
+        for text in ("AAAAAH!!", "SKR!!"):
+            with self.subTest(text=text):
+                image, _, group = _white_balloon_fixture(text)
+
+                with patch(
+                    "ocr_balloon._enclosure_evidence",
+                    return_value=(False, False),
+                ):
+                    _classify_groups([group], image)
+
+                self.assertEqual(group.classification, "sfx")
+                self.assertTrue(group.ignored)
+                self.assertEqual(group.ignore_reason, "sfx_translation_disabled")
+
+    def test_same_token_changes_classification_with_container_geometry(self):
+        balloon_image, _, balloon_group = _white_balloon_fixture("RUN!!")
+
+        effect_image = np.full((320, 420, 3), 96, dtype=np.uint8)
+        effect_line = _boxed_line(
+            "RUN!!",
+            (2, 120, 155, 50),
+            confidence=0.95,
+            slant=12,
+        )
+        effect_group = TextGroup(group_id="EFFECT", lines=[effect_line], text="RUN!!")
+
+        with patch("ocr_balloon._enclosure_evidence", return_value=(False, False)):
+            _classify_groups([balloon_group], balloon_image)
+            _classify_groups([effect_group], effect_image)
+
+        self.assertEqual(balloon_group.classification, "speech")
+        self.assertEqual(effect_group.classification, "sfx")
+
+    def test_deliberate_censorship_remains_filtered_before_translation(self):
+        line = _boxed_line("S***!", (135, 126, 150, 48), confidence=0.95)
+        self.assertEqual(
+            _line_ignore_reason(line, (320, 420, 3)),
+            "too_few_useful_chars",
+        )
+
+    def test_saturated_editorial_graphic_is_decorative_despite_false_enclosure(self):
+        fixtures = (
+            "PLATFORM ZERO",
+            "SERIES TITLE",
+            "EPISODE 1",
+            "CHAPTER TITLE",
+        )
+        for text in fixtures:
+            with self.subTest(text=text):
+                image = _editorial_art_fixture()
+                line = _boxed_line(text, (150, 330, 300, 46), confidence=0.95)
+                group = TextGroup(group_id="T", lines=[line], text=text)
+
+                with patch(
+                    "ocr_balloon._enclosure_evidence",
+                    return_value=(True, False),
+                ):
+                    _classify_groups([group], image)
+
+                self.assertEqual(group.classification, "decorative")
+                self.assertTrue(group.ignored)
+                self.assertEqual(group.ignore_reason, "decorative_text")
+                self.assertEqual(
+                    group.classification_reason,
+                    "editorial_graphic_layout",
+                )
+                self.assertGreater(group.classification_confidence, 0.5)
+
+    def test_split_editorial_graphic_cluster_is_preserved_as_decorative(self):
+        image = _editorial_art_fixture()
+        first_line = _boxed_line("SERIES", (95, 330, 245, 46), confidence=0.95)
+        second_line = _boxed_line("TITLE", (360, 332, 145, 44), confidence=0.95)
+        groups = [
+            TextGroup(group_id="LEFT", lines=[first_line], text="SERIES"),
+            TextGroup(group_id="RIGHT", lines=[second_line], text="TITLE"),
+        ]
+
+        with patch(
+            "ocr_balloon._enclosure_evidence",
+            side_effect=((True, False), (False, False)),
+        ):
+            _classify_groups(groups, image)
+
+        self.assertEqual(
+            [group.classification for group in groups],
+            ["decorative", "decorative"],
+        )
+        self.assertTrue(all(group.ignored for group in groups))
+        self.assertTrue(
+            all(group.ignore_reason == "decorative_text" for group in groups)
+        )
+        self.assertTrue(
+            all(
+                group.classification_reason == "editorial_graphic_layout"
+                for group in groups
+            )
+        )
+
+    def test_midpage_relevant_signage_is_not_preserved_as_editorial_branding(self):
+        image = _editorial_art_fixture()
+        line = _boxed_line("DANGER KEEP OUT", (150, 175, 300, 46), confidence=0.95)
+        group = TextGroup(group_id="T", lines=[line], text=line.text)
+
+        with patch("ocr_balloon._enclosure_evidence", return_value=(True, False)):
+            _classify_groups([group], image)
+
+        self.assertIn(group.classification, {"speech", "narration"})
+        self.assertFalse(group.ignored)
+        self.assertTrue(_should_translate_group(group))
+
+    def test_short_text_without_container_or_styling_remains_weak_unknown(self):
+        image = np.full((320, 420, 3), 150, dtype=np.uint8)
+        line = _boxed_line("HELP!", (165, 132, 90, 36), confidence=0.95)
+        group = TextGroup(group_id="T", lines=[line], text=line.text)
+
+        with patch("ocr_balloon._enclosure_evidence", return_value=(False, False)):
+            _classify_groups([group], image)
+
+        self.assertEqual(group.classification, "unknown")
+        self.assertTrue(group.ignored)
+        self.assertEqual(group.ignore_reason, "weak_unknown_text")
+
+    def test_rectangular_narration_remains_translatable(self):
+        image = np.zeros((400, 600, 3), dtype=np.uint8)
+        cv2.rectangle(image, (90, 80), (510, 250), (255, 255, 255), -1)
+        lines = [
+            _boxed_line("THE NIGHT WAS", (170, 115, 260, 35), confidence=0.95),
+            _boxed_line("VERY QUIET.", (185, 165, 230, 35), confidence=0.95),
+        ]
+        _assign_visual_white_regions(image, lines)
+        group = TextGroup(
+            group_id="T",
+            lines=lines,
+            text="THE NIGHT WAS VERY QUIET.",
+        )
+
+        with patch("ocr_balloon._enclosure_evidence", return_value=(True, True)):
+            _classify_groups([group], image)
+
+        self.assertEqual(group.classification, "narration")
+        self.assertFalse(group.ignored)
+        self.assertTrue(_should_translate_group(group))
+
+    def test_contextual_classification_evidence_is_persisted_in_debug_payload(self):
+        image, line, group = _white_balloon_fixture("WAIT!")
+        with patch("ocr_balloon._enclosure_evidence", return_value=(False, False)):
+            _classify_groups([group], image)
+
+        item = _debug_payload("fixture.png", [line], [], [group])["items"][0]
+
+        self.assertEqual(item["classification"], "speech")
+        self.assertEqual(
+            item["classification_reason"],
+            "enclosed_visual_region_over_weak_text",
+        )
+        self.assertGreaterEqual(item["classification_confidence"], 0.5)
+        self.assertEqual(
+            item["classification_evidence"]["conflict_resolved"],
+            "unknown_weak",
+        )
 
     def test_elongated_vocalization_with_punctuation_is_sfx(self):
         image = np.full((300, 400, 3), 180, dtype=np.uint8)
