@@ -1040,6 +1040,40 @@ class OCRQualityRegressionTests(unittest.TestCase):
             with self.subTest(unsupported_hyphen=candidate):
                 self.assertIsNone(_leading_hyphenated_fragment(candidate))
 
+    def test_hyphen_fragment_accepts_explicit_horizontal_unicode_whitespace(self):
+        horizontal_whitespace = [
+            " ",
+            "\t",
+            "\u00a0",
+            "\u1680",
+            *(chr(codepoint) for codepoint in range(0x2000, 0x200B)),
+            "\u202f",
+            "\u205f",
+            "\u3000",
+        ]
+        for separator in horizontal_whitespace:
+            candidate = f"Sh{separator}-{separator}Ela está vindo!"
+            with self.subTest(separator=ascii(separator)):
+                self.assertEqual(
+                    _leading_hyphenated_fragment(candidate),
+                    ("SH", "ELA"),
+                )
+
+    def test_hyphen_fragment_does_not_cross_vertical_separators(self):
+        vertical_separators = [
+            "\v",
+            "\f",
+            "\u0085",
+            "\u2028",
+            "\u2029",
+            "\n",
+            "\r",
+        ]
+        for separator in vertical_separators:
+            candidate = f"Sh{separator}-{separator}Ela está vindo!"
+            with self.subTest(separator=ascii(separator)):
+                self.assertIsNone(_leading_hyphenated_fragment(candidate))
+
     def test_spaced_partial_source_fragments_are_rejected(self):
         sources = [
             "Sh-She'S COMING!",
