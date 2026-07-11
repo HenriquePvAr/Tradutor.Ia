@@ -15,6 +15,7 @@ import config
 from classification_profiler import profile_step, record_count, record_group
 from json_utils import dump_json
 from ocr_engine import (
+    COMMON_ENGLISH_WORDS as OCR_REPAIR_ENGLISH_WORDS,
     OCREngine,
     OCRLine,
     assess_ocr_repair,
@@ -157,6 +158,16 @@ RESIDUAL_TRANSLATION_ENGLISH_WORDS = COMMON_ENGLISH_WORDS | {
     "WAY",
     "WHERE",
     "WHOA",
+}
+
+OCR_LEXICAL_REFERENCE_WORDS = {
+    re.sub(r"[^A-Z]", "", word.upper())
+    for word in (
+        COMMON_ENGLISH_WORDS
+        | RESIDUAL_TRANSLATION_ENGLISH_WORDS
+        | SFX_WORDS
+        | {word.upper() for word in OCR_REPAIR_ENGLISH_WORDS}
+    )
 }
 
 PORTUGUESE_MARKERS = {
@@ -1815,6 +1826,10 @@ def score_group_ocr_quality(group):
     tokens = re.findall(r"[A-Za-z0-9']+", folded)
     token_letters = [re.sub(r"[^A-Z]", "", token) for token in tokens]
 
+    if _has_cross_line_lexical_confidence_disagreement(group):
+        reasons.append("cross_line_lexical_confidence_disagreement")
+        score -= 0.42
+
     apostrophe_tokens = re.findall(r"'?[A-Z]+(?:'[A-Z]+)+'?", folded)
     valid_contraction = re.compile(
         r"^[A-Z]+(?:'S|'T|'RE|'VE|'LL|'D|'M)$"
@@ -1995,10 +2010,77 @@ def group_needs_selective_fallback(group):
                 "non_ascii_ocr_artifact",
                 "mixed_case_ocr_artifact",
                 "short_malformed_case_ocr_artifact",
+                "cross_line_lexical_confidence_disagreement",
             }
             for reason in group.quality_reasons
         )
     )
+
+
+def _has_cross_line_lexical_confidence_disagreement(group):
+    """Flag a weak OCR line only when stronger neighboring text supports it.
+
+    Unknown vocabulary alone is not enough: names, acronyms and stylized text
+    are common in comics.  This signal requires a multi-token line whose words
+    are all outside the generic OCR vocabulary, a material confidence drop
+    against another line in the same group, and at least two recognized words
+    in the neighboring lines.  The result only requests multi-engine fallback;
+    it never rewrites the text itself.
+    """
+    if (
+        group.classification not in {"speech", "narration", "unknown"}
+        or len(group.lines) < 2
+    ):
+        return False
+
+    protected_names = {
+        re.sub(r"[^A-Z]", "", _ascii_fold(name).upper())
+        for name in group.detected_proper_names
+        if name
+    }
+    line_tokens = []
+    for line in group.lines:
+        tokens = [
+            re.sub(r"[^A-Z]", "", token.upper())
+            for token in re.findall(
+                r"[A-Za-z]+(?:'[A-Za-z]+)?",
+                _ascii_fold(line.text),
+            )
+        ]
+        line_tokens.append([token for token in tokens if token])
+
+    for index, (line, tokens) in enumerate(zip(group.lines, line_tokens)):
+        if len(tokens) < 2 or max(map(len, tokens)) < 5:
+            continue
+        if any(
+            token in OCR_LEXICAL_REFERENCE_WORDS or token in protected_names
+            for token in tokens
+        ):
+            continue
+
+        peers = [
+            peer
+            for peer_index, peer in enumerate(group.lines)
+            if peer_index != index
+        ]
+        confidence_gap = max(peer.confidence for peer in peers) - line.confidence
+        if confidence_gap < 0.05:
+            continue
+
+        peer_tokens = [
+            token
+            for peer_index, tokens_for_peer in enumerate(line_tokens)
+            if peer_index != index
+            for token in tokens_for_peer
+        ]
+        recognized_peer_tokens = sum(
+            token in OCR_LEXICAL_REFERENCE_WORDS or token in protected_names
+            for token in peer_tokens
+        )
+        if recognized_peer_tokens >= 2:
+            return True
+
+    return False
 
 
 def _should_skip_paddle_full_for_ignored_decorative(group):

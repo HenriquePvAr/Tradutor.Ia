@@ -31,6 +31,7 @@ from ocr_balloon import (
     _mask_shape_metrics,
     _white_patch_artifact_metrics,
     _should_skip_paddle_full_for_ignored_decorative,
+    apply_selective_ocr_fallbacks,
     apply_group_translations,
     group_needs_selective_fallback,
     normalize_recurring_compact_names,
@@ -133,6 +134,65 @@ def _scored_group(text, confidence=0.92):
     group.quality_score = score
     group.quality_reasons = reasons
     return group
+
+
+def _lexically_corrupted_multiline_group():
+    lines = [
+        _boxed_line("JUST WHAT", (80, 80, 210, 36), confidence=0.987),
+        _boxed_line("ON EARTH IS", (80, 125, 220, 36), confidence=0.985),
+        _boxed_line("ENO DNIOD", (80, 170, 205, 36), confidence=0.907),
+    ]
+    group = TextGroup(
+        group_id="T",
+        lines=lines,
+        text="JUST WHAT ON EARTH IS ENO DNIOD",
+        classification="narration",
+        inside_narration_box_like_region=True,
+        source_engine="rapidocr",
+    )
+    group.quality_score, group.quality_reasons = score_group_ocr_quality(group)
+    return group
+
+
+def _regional_candidate(text, engine, confidence):
+    line = _boxed_line(text, (80, 80, 230, 126), confidence=confidence)
+    line.engine = engine
+    group = TextGroup(
+        group_id=engine,
+        lines=[line],
+        text=text,
+        classification="narration",
+        inside_narration_box_like_region=True,
+        source_engine=engine,
+    )
+    group.quality_score, group.quality_reasons = score_group_ocr_quality(group)
+    return group
+
+
+def _run_fake_selective_fallback(original, candidates):
+    image = np.full((360, 420, 3), 255, dtype=np.uint8)
+    with (
+        patch.object(config, "OCR_QUALITY_CONTROL", True),
+        patch.object(config, "OCR_REGION_SELECTIVE_FALLBACK", True),
+        patch.object(config, "OCR_ENGINE", "rapidocr"),
+        patch.object(config, "OCR_HYBRID_FALLBACK", True),
+        patch.object(config, "OCR_FALLBACK_ENGINE", "paddle"),
+        patch("ocr_balloon.OCREngine") as engine_cls,
+        patch(
+            "ocr_balloon._candidate_groups_for_fallback",
+            side_effect=[[candidate] for candidate in candidates],
+        ),
+    ):
+        engine_cls.return_value.detect_lines.side_effect = [
+            candidate.lines for candidate in candidates
+        ]
+        return apply_selective_ocr_fallbacks(
+            image,
+            original.lines,
+            [original],
+            "eng",
+            1,
+        )
 
 
 class _StrictRetryTranslator:
@@ -340,6 +400,176 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertTrue(group_needs_selective_fallback(bad))
         self.assertGreater(good.quality_score, bad.quality_score)
         self.assertEqual(repair_ocr_text("BLT")[0], "BUT")
+
+    def test_multiline_lexical_confidence_disagreement_requests_fallback(self):
+        group = _lexically_corrupted_multiline_group()
+
+        self.assertIn(
+            "cross_line_lexical_confidence_disagreement",
+            group.quality_reasons,
+        )
+        self.assertTrue(group_needs_selective_fallback(group))
+        self.assertEqual([line.text for line in group.lines], [
+            "JUST WHAT",
+            "ON EARTH IS",
+            "ENO DNIOD",
+        ])
+
+    def test_lexical_disagreement_guard_preserves_special_text_contexts(self):
+        controls = []
+
+        named_lines = [
+            _boxed_line("WAIT FOR", (20, 20, 180, 36), confidence=0.99),
+            _boxed_line("EXAMPLE SURNAME", (20, 65, 220, 36), confidence=0.90),
+        ]
+        named = TextGroup(
+            group_id="NAME",
+            lines=named_lines,
+            text="WAIT FOR EXAMPLE SURNAME",
+            classification="speech",
+            inside_balloon_like_region=True,
+            source_engine="rapidocr",
+            detected_proper_names=["EXAMPLE", "SURNAME"],
+        )
+        controls.append(named)
+
+        sfx = TextGroup(
+            group_id="SFX",
+            lines=[
+                _boxed_line("LOUD IMPACT", (20, 20, 180, 36), confidence=0.99),
+                _boxed_line("SHWOOMP", (20, 65, 180, 36), confidence=0.88),
+            ],
+            text="LOUD IMPACT SHWOOMP",
+            classification="sfx",
+            source_engine="rapidocr",
+        )
+        controls.append(sfx)
+
+        for text in (
+            "S***!",
+            "F***!",
+            "SH**!",
+            "DNA GPS CPU",
+            "Wi-Fi X-23",
+            "SHIHAE STATION",
+        ):
+            controls.append(
+                TextGroup(
+                    group_id="SPECIAL",
+                    lines=[
+                        _boxed_line("WAIT FOR", (20, 20, 180, 36), confidence=0.99),
+                        _boxed_line(text, (20, 65, 180, 36), confidence=0.88),
+                    ],
+                    text=f"WAIT FOR {text}",
+                    classification="speech",
+                    inside_balloon_like_region=True,
+                    source_engine="rapidocr",
+                )
+            )
+
+        for group in controls:
+            with self.subTest(text=group.text, classification=group.classification):
+                _, reasons = score_group_ocr_quality(group)
+                self.assertNotIn(
+                    "cross_line_lexical_confidence_disagreement",
+                    reasons,
+                )
+
+    def test_coherent_lower_confidence_regional_candidate_replaces_bad_span(self):
+        original = _lexically_corrupted_multiline_group()
+        regional = _regional_candidate(
+            "JUST WHAT ON EARTH IS GOING ON?",
+            "paddle_mobile",
+            0.86,
+        )
+        selected_lines, records = _run_fake_selective_fallback(original, [regional])
+
+        self.assertEqual(
+            " ".join(line.text for line in selected_lines),
+            "JUST WHAT ON EARTH IS GOING ON?",
+        )
+        self.assertEqual(records[0]["fallback_variant"], "paddle_mobile")
+        self.assertTrue(records[0]["fallback_used"])
+        self.assertGreater(
+            records[0]["attempts"][0]["selection_score"],
+            records[0]["original_quality_score"],
+        )
+
+    def test_disagreeing_regional_engines_are_observable_before_full_wins(self):
+        original = _lexically_corrupted_multiline_group()
+        mobile = _regional_candidate("iiON", "paddle_mobile", 0.93)
+        full = _regional_candidate(
+            "JUST WHAT ON EARTH IS GOING ON?",
+            "paddle_full",
+            0.89,
+        )
+        selected_lines, records = _run_fake_selective_fallback(
+            original,
+            [mobile, full],
+        )
+
+        self.assertEqual(
+            " ".join(line.text for line in selected_lines),
+            "JUST WHAT ON EARTH IS GOING ON?",
+        )
+        self.assertEqual(records[0]["fallback_variant"], "paddle_full")
+        self.assertEqual([attempt["engine"] for attempt in records[0]["attempts"]], [
+            "paddle_mobile",
+            "paddle_full",
+        ])
+        self.assertEqual(
+            records[0]["attempts"][0]["peer_engine_agreement_bonus"],
+            0.0,
+        )
+        self.assertEqual(
+            records[0]["attempts"][1]["peer_engine_agreement_bonus"],
+            0.0,
+        )
+
+    def test_grouping_preserves_vertical_line_order(self):
+        cases = (
+            (
+                [
+                    _boxed_line("IS GOING ON?", (20, 65, 220, 36)),
+                    _boxed_line("WHAT ON EARTH", (20, 20, 220, 36)),
+                ],
+                "WHAT ON EARTH IS GOING ON?",
+            ),
+            (
+                [
+                    _boxed_line("SECOND LINE", (20, 65, 220, 36)),
+                    _boxed_line("FIRST LINE", (20, 20, 220, 36)),
+                ],
+                "FIRST LINE SECOND LINE",
+            ),
+        )
+        for lines, expected in cases:
+            with self.subTest(expected=expected):
+                groups = _group_lines(lines)
+                self.assertEqual(len(groups), 1)
+                self.assertEqual(groups[0].text, expected)
+
+    def test_cross_engine_repair_acceptance_does_not_fabricate_text(self):
+        improved = assess_ocr_repair(
+            "PLNKS",
+            "PLANKS",
+            "dictionary_edit_distance_repair",
+            confidence=0.90,
+            source_engine="rapidocr",
+            agreeing_engines=["paddle_mobile"],
+        )
+        degraded = assess_ocr_repair(
+            "GOING ON",
+            "ENO DNIOD",
+            "dictionary_edit_distance_repair",
+            confidence=0.99,
+            source_engine="rapidocr",
+            agreeing_engines=["paddle_mobile"],
+        )
+
+        self.assertTrue(improved["accepted"])
+        self.assertFalse(degraded["accepted"])
+        self.assertEqual(degraded["rejection_reason"], "edit_distance_too_large")
 
     def test_planks_repair_is_not_phrase_specific(self):
         repaired, reason = repair_ocr_text("PLNKS")
