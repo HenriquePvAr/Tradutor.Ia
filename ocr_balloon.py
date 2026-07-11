@@ -3020,7 +3020,8 @@ def _is_english_residual_candidate(token_infos, index, vocabulary):
 
 def _leading_hyphenated_fragment(text):
     match = re.match(
-        r"^\s*([A-Za-zÀ-ÖØ-öø-ÿ\u0300-\u036f]{1,4})-"
+        r"^\s*([A-Za-zÀ-ÖØ-öø-ÿ\u0300-\u036f]{1,4})"
+        r"[^\S\r\n]*-[^\S\r\n]*"
         r"([A-Za-zÀ-ÖØ-öø-ÿ\u0300-\u036f']+)",
         str(text or ""),
     )

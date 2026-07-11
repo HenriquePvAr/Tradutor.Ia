@@ -18,6 +18,7 @@ from ocr_balloon import (
     _enforce_visual_bounds,
     _line_belongs_to_group,
     _line_ignore_reason,
+    _leading_hyphenated_fragment,
     _group_lines,
     _post_render_source_text_check,
     _normalized_ocr_candidate_text,
@@ -1013,6 +1014,253 @@ class OCRQualityRegressionTests(unittest.TestCase):
                     "speech",
                 )
                 self.assertTrue(valid, reason)
+
+    def test_leading_hyphenated_fragment_accepts_optional_whitespace(self):
+        cases = [
+            "Sh-Ela está vindo!",
+            "Sh- Ela está vindo!",
+            "Sh -Ela está vindo!",
+            "Sh - Ela está vindo!",
+            "Sh-\tEla está vindo!",
+            "Sh-\u00a0Ela está vindo!",
+            "Sh-\u2009Ela está vindo!",
+        ]
+        for candidate in cases:
+            with self.subTest(candidate=candidate):
+                self.assertEqual(
+                    _leading_hyphenated_fragment(candidate),
+                    ("SH", "ELA"),
+                )
+
+        for candidate in (
+            "Sh\u2011Ela está vindo!",
+            "Sh–Ela está vindo!",
+            "Sh—Ela está vindo!",
+        ):
+            with self.subTest(unsupported_hyphen=candidate):
+                self.assertIsNone(_leading_hyphenated_fragment(candidate))
+
+    def test_spaced_partial_source_fragments_are_rejected(self):
+        sources = [
+            "Sh-She'S COMING!",
+            "Sh - She'S COMING!",
+            "Sh-\tShe'S COMING!",
+            "Sh-\u00a0She'S COMING!",
+        ]
+        candidates = [
+            "Sh-Ela está vindo!",
+            "Sh- Ela está vindo!",
+            "Sh -Ela está vindo!",
+            "Sh - Ela está vindo!",
+            "Sh-\tEla está vindo!",
+            "Sh-\u00a0Ela está vindo!",
+            "Sh-\u2009Ela está vindo!",
+        ]
+        for source in sources:
+            for candidate in candidates:
+                with self.subTest(source=source, candidate=candidate):
+                    valid, reason = validate_translation_text(
+                        source,
+                        candidate,
+                        "speech",
+                    )
+                    self.assertFalse(valid)
+                    self.assertTrue(
+                        reason.startswith("multilingual_partial_translation"),
+                        reason,
+                    )
+
+    def test_spaced_partial_fragment_retry_accepts_fully_localized_candidate(self):
+        group = _scored_group("Sh-She'S COMING!")
+        apply_group_translations([group], ["Sh- Ela tá vindo!"])
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(
+            group.translation_validation_reason.startswith(
+                "multilingual_partial_translation"
+            )
+        )
+
+        translator = _StrictRetryTranslator("Ela está vindo!")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["valid"], records)
+        self.assertEqual(records[0]["reason"], "ok")
+        self.assertTrue(group.translation_valid)
+        self.assertEqual(group.translation_validation_reason, "retry_ok")
+        self.assertEqual(group.translation, "Ela está vindo!")
+        self.assertFalse(group.manual_review_required)
+
+    def test_spaced_partial_fragment_failed_retries_require_manual_review(self):
+        retry_candidates = [
+            "Sh - Ela está vindo!",
+            "Sh-Ela está vindo!",
+        ]
+        for retry_candidate in retry_candidates:
+            with self.subTest(retry_candidate=retry_candidate):
+                group = _scored_group("Sh-She'S COMING!")
+                apply_group_translations([group], ["Sh- Ela tá vindo!"])
+                translator = _StrictRetryTranslator(retry_candidate)
+                with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+                    records = validate_and_retry_translations([group], translator)
+
+                self.assertEqual(len(records), 1)
+                self.assertFalse(records[0]["valid"], records)
+                self.assertTrue(
+                    records[0]["reason"].startswith(
+                        "multilingual_partial_translation"
+                    ),
+                    records,
+                )
+                self.assertFalse(group.translation_valid)
+                self.assertTrue(group.manual_review_required)
+                self.assertEqual(group.rejected_translation, "Sh- Ela tá vindo!")
+                self.assertEqual(group.translation, group.text)
+
+        debug_data = _debug_payload("", group.lines, [], [group])
+        item = debug_data["items"][0]
+        self.assertTrue(
+            item["translation_validation_reason"].startswith(
+                "multilingual_partial_translation"
+            )
+        )
+        self.assertTrue(item["manual_review_required"])
+        self.assertEqual(item["rejected_translation"], "Sh- Ela tá vindo!")
+        states = [
+            {
+                "index": 1,
+                "status": "processed",
+                "output_path": "",
+                "image_path": "",
+                "timings": {},
+                "debug_data": debug_data,
+            }
+        ]
+        quality_report = _build_quality_report({}, states, records)
+        aggregate = _aggregate_debug_data(states)
+        self.assertEqual(quality_report["totals"]["mixed_language_items"], 1)
+        self.assertEqual(aggregate["mixed_language_items"], 1)
+
+    def test_spaced_ptbr_stutters_names_and_compounds_remain_valid(self):
+        valid_stutters_and_names = [
+            "N-Não!",
+            "N- Não!",
+            "N -Não!",
+            "N - Não!",
+            "E-Eu não sei...",
+            "E- Eu não sei...",
+            "A-Aquele homem!",
+            "P- Por favor...",
+            "M - Mas eu vi!",
+            "V - Você está bem?",
+            "M-Maria?",
+            "M- Maria?",
+            "M - Maria?",
+            "J-João!",
+            "S-Shihae?",
+            "S- Shihae?",
+            "D- Diego!",
+            "M - Miguel...",
+        ]
+        for candidate in valid_stutters_and_names:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    candidate,
+                    candidate,
+                    "speech",
+                    ["MARIA", "JOÃO", "SHIHAE", "DIEGO", "MIGUEL"],
+                )
+                self.assertTrue(valid, reason)
+
+        valid_compounds = [
+            "GUARDA-CHUVA",
+            "GUARDA - CHUVA",
+            "EX-NAMORADO",
+            "EX - NAMORADO",
+            "BEM-VINDO",
+            "BEM - VINDO",
+            "RECÉM-CHEGADO",
+            "SEGUNDA-FEIRA",
+            "NÃO-ME-TOQUE",
+        ]
+        for candidate in valid_compounds:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    "Portuguese compound expression.",
+                    candidate,
+                    "speech",
+                )
+                self.assertTrue(valid, reason)
+
+    def test_dialogue_dashes_terms_and_censorship_remain_valid(self):
+        for candidate in (
+            "— Ela está vindo!",
+            "– Ela está vindo!",
+            "X-23",
+            "X - 23",
+            "Wi-Fi",
+            "Wi - Fi",
+            "COVID-19",
+            "T-800",
+            "B-52",
+        ):
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    "Localized dialogue or technical term.",
+                    candidate,
+                    "speech",
+                )
+                self.assertTrue(valid, reason)
+
+        for candidate in ("S***!", "F***!", "SH**!", "S-***!"):
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    candidate,
+                    candidate,
+                    "sfx",
+                )
+                self.assertTrue(valid, reason)
+                self.assertEqual(reason, "sfx_preserved")
+
+    def test_hyphen_whitespace_change_does_not_affect_other_validators(self):
+        controls = [
+            (
+                "MAYBE IT'S THIS WAY.",
+                "QUIZÁS SEJA POR AQUI.",
+                False,
+                "residual_spanish_token",
+            ),
+            (
+                "MAYBE THERE WAS SOME SORT OF DISASTER.",
+                "QUIZÁS TIVOU ALGUM DESASTRE.",
+                False,
+                "residual_spanish_token",
+            ),
+            ("I MUST'VE FALLEN ASLEEP.", "DEVO TER ADORMIDO.", True, "ok"),
+            ("OW, MY BUTT...", "AI, MEU BUMBUM..", True, "ok"),
+            ("RUN!", "SÓ CORRA.", True, "ok"),
+            ("IF NECESSARY, I WILL GO.", "SE FOR PRECISO, EU VOU.", True, "ok"),
+            (
+                "JESus... IS THAT ALL BLOOD?!",
+                "JESUS... É TODO SANGUE?!",
+                False,
+                "residual_inflected_english:JESUS",
+            ),
+        ]
+        for source, candidate, expected_valid, expected_reason in controls:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    source,
+                    candidate,
+                    "speech",
+                )
+                self.assertEqual(valid, expected_valid, reason)
+                if expected_reason == "ok":
+                    self.assertEqual(reason, expected_reason)
+                else:
+                    self.assertTrue(reason.startswith(expected_reason), reason)
 
     def test_adversarial_censorship_tokens_remain_preservable(self):
         for text in ("S***!", "F***!", "SH**!"):
