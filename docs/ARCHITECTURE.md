@@ -20,7 +20,7 @@ Este documento descreve a arquitetura implementada no repositório. Ideias futur
 O Tradutor.IA é um pipeline orientado a artefatos. Cada etapa recebe dados verificáveis, registra decisões relevantes e entrega sua saída à etapa seguinte. A execução não se resume à tradução textual: ela também controla download, OCR, classificação, reconstrução, PDF e quality gate.
 
 ```mermaid
-flowchart TD
+flowchart LR
     UI[app_ui.py] --> Bridge[ui_bridge.py]
     CLI[run_webtoon.py] --> Orchestrator[benchmark_pipeline.py]
     Bridge --> CLI

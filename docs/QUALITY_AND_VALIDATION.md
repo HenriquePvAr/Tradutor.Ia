@@ -23,7 +23,7 @@ O objetivo é tornar incertezas observáveis. Nenhuma dessas verificações gara
 - [Relatórios úteis](#relatórios-úteis)
 
 ```mermaid
-flowchart TD
+flowchart LR
     A[Entrada] --> B{Download válido?}
     B -->|Não| X[error]
     B -->|Sim| C[OCR e candidatos]
