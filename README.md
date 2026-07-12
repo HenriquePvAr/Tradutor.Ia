@@ -1,529 +1,168 @@
-# Tradutor.Ia
+# Tradutor.IA
 
-Tradutor.Ia baixa imagens de paginas de manga, HQ ou webtoon, detecta baloes,
-faz OCR, traduz o texto para portugues do Brasil, redesenha a traducao nos
-baloes e gera um PDF final.
+**Pipeline local para transformar capítulos ilustrados em versões traduzidas para PT-BR, com OCR híbrido, validação de qualidade e geração de PDF.**
 
-## Principais modos
+![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![Plataforma auditada: Windows](https://img.shields.io/badge/plataforma%20auditada-Windows-0078D4?logo=windows11&logoColor=white)
+![Status: beta técnica](https://img.shields.io/badge/status-beta%20t%C3%A9cnica-D97706)
 
-- OCR principal e padrao seguro: PaddleOCR.
-- RapidOCR/ONNX opcional e experimental, com fallback hibrido para PaddleOCR.
-- Tesseract continua disponivel como fallback manual quando instalado.
-- Traducao padrao: NVIDIA API com `nvidia/nemotron-3-super-120b-a12b`.
-- Traducao em lote: ate 20 baloes por request.
-- Modos antigos preservados: Google (`deep-translator`) e HuggingFace/local.
+Tradutor.IA organiza em um único fluxo a coleta de páginas, o reconhecimento de texto, a classificação semântica, a tradução, a reconstrução visual e a geração do PDF. O projeto foi desenhado para preservar evidências de cada etapa e encaminhar resultados duvidosos para revisão, em vez de tratá-los silenciosamente como corretos.
 
-## Comando simples para capitulos
+O fluxo principal atual é voltado a capítulos web com texto-fonte em inglês e tradução para português brasileiro. Ele pode ser operado por uma interface local ou pela linha de comando.
 
-`run_webtoon.py` executa o pipeline completo sem exigir os argumentos internos
-do benchmark. O modo `fast` usa RapidOCR hibrido, fallback regional para
-PaddleOCR e todas as validacoes de qualidade. O modo `quality` usa PaddleOCR,
-que continua sendo o motor padrao e mais conservador.
+## Demonstração visual
 
-```powershell
-python run_webtoon.py "URL_DO_CAPITULO" --mode fast
-python run_webtoon.py "URL_DO_CAPITULO" --mode quality
+> Uma demonstração pública ainda não está versionada no repositório. Isso evita publicar páginas de terceiros ou artefatos de usuários. Uma futura demonstração deverá usar somente material próprio ou autorizado.
+
+## Principais recursos
+
+- **Aquisição auditável:** coleta páginas com Selenium, valida quantidade, integridade e ordem e registra o teardown do navegador.
+- **OCR híbrido:** o modo rápido combina RapidOCR com análise de qualidade e fallbacks seletivos para PaddleOCR Mobile e PaddleOCR completo.
+- **Classificação contextual:** diferencia fala, narração, SFX e elementos decorativos antes de decidir o que deve ser traduzido.
+- **Tradução em lote:** usa por padrão uma API compatível com OpenAI hospedada pela NVIDIA, com cache, controle de requisições e retries.
+- **Validação multilíngue:** procura texto-fonte residual, traduções parciais e outros sinais de mistura de idiomas sem reescrever a resposta do modelo.
+- **Reconstrução protegida:** aplica máscaras, inpainting, ajuste de fonte e verificações visuais para limitar alterações fora da área de texto.
+- **Artefatos de revisão:** produz PDF, relatórios JSON/HTML, progresso persistido, métricas e um quality gate com estados explícitos.
+- **Execução supervisionada:** inclui um launcher que persiste o exit code real e controla a árvore de processos no Windows.
+
+## Como funciona
+
+```mermaid
+flowchart LR
+    A[URL do capítulo] --> B[Download e validação]
+    B --> C[OCR híbrido]
+    C --> D[Classificação]
+    D --> E[Tradução em lote]
+    E --> F[Validação]
+    F --> G[Reconstrução visual]
+    G --> H[PDF e relatórios]
+    H --> I{Quality gate}
+    I -->|Aprovado| J[finished]
+    I -->|Revisão necessária| K[review_required]
 ```
 
-Para ignorar os caches de download, OCR, traducao e renderizacao:
+O pipeline mantém o texto reconhecido, os candidatos de OCR, as decisões de fallback, os motivos de validação e as métricas visuais nos artefatos de execução. Assim, uma conclusão técnica pode gerar um PDF e ainda terminar como `review_required` quando houver itens que mereçam inspeção humana.
+
+## Início rápido
+
+O ambiente auditado usa **Windows 64 bits e Python 3.11**. É necessário ter Git, Google Chrome e uma chave da NVIDIA para o provedor de tradução padrão.
 
 ```powershell
-python run_webtoon.py "URL_DO_CAPITULO" --mode fast --force
-```
+git clone https://github.com/HenriquePvAr/Tradutor.Ia.git
+cd Tradutor.Ia
 
-Para reutilizar cache/resume ou escolher a pasta de saida:
-
-```powershell
-python run_webtoon.py "URL_DO_CAPITULO" --mode fast --cache
-python run_webtoon.py "URL_DO_CAPITULO" --mode quality --output "meu_capitulo"
-```
-
-Sem argumentos, o script abre um modo interativo e pergunta URL, modo,
-cache/force e nome da pasta. `--open-output` abre a pasta ao terminar. Para um
-teste curto, use `--max-images 5`.
-
-### Contexto temporario por capitulo
-
-Por padrao, o runner cria:
-
-```text
-output/<nome_do_capitulo>/session_context.json
-```
-
-O arquivo e gerado dinamicamente a partir do OCR do capitulo e guarda possiveis
-nomes proprios/personagens, termos recorrentes, traducoes ja usadas, regras de
-preservacao e o estilo de portugues brasileiro natural para webtoon/manhwa.
-Esse contexto compacto e enviado nos prompts da NVIDIA para manter nomes e
-termos consistentes, sem hardcode de obras ou personagens.
-
-- `--no-context`: nao cria nem usa contexto.
-- `--keep-context`: mantem o JSON explicitamente (comportamento padrao).
-- `--delete-context-after`: remove o JSON depois que o PDF for gerado.
-
-Todo o contexto fica dentro de `output/`, que e ignorado pelo Git.
-
-## Interface local
-
-O Tradutor.Ia inclui uma interface web local para quem prefere processar
-capitulos sem montar comandos no PowerShell. O frontend preserva o layout e as
-animacoes da identidade visual oficial, enquanto o backend NiceGUI usa
-`run_webtoon.py` por baixo: OCR, traducao, cache, contexto e validacoes
-continuam no pipeline existente.
-
-Instale somente as dependencias da interface:
-
-```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install -r requirements-rapidocr.txt
 pip install -r requirements-ui.txt
+
+Copy-Item .env.example .env
 ```
 
-Inicie o aplicativo:
+Edite `.env` e substitua o valor de `NVIDIA_API_KEY`. As demais opções possuem defaults conservadores e podem ser ajustadas depois.
+
+Para abrir a interface local:
 
 ```powershell
 python app_ui.py
 ```
 
-Depois abra [http://localhost:8080](http://localhost:8080). A interface tambem
-escuta na rede local, portanto pode ser acessada pelo celular usando o IP do
-computador e a porta `8080`, desde que o firewall permita a conexao.
+A aplicação escuta por padrão em `http://127.0.0.1:8080`.
 
-Na aba **Nova traducao**:
-
-- cole a URL; nome do capitulo e pasta de saida sao sugeridos automaticamente;
-- escolha **Rapido** para RapidOCR hibrido com fallback Paddle e gate de
-  qualidade;
-- escolha **Qualidade** para usar PaddleOCR;
-- selecione capitulo completo ou teste parcial com `3`, `5`, `20`, `50` ou
-  outra quantidade de paginas;
-- **Usar cache** reaproveita resultados validos e **Forcar reprocessamento**
-  executa as etapas novamente;
-- o contexto temporario fica ativado por padrao.
-
-A aba **Fila** processa URLs reais em sequencia, uma por vez. A aba **Capitulos
-traduzidos** usa o historico local `.cache/ui_history.json` e permite abrir PDF,
-pasta, relatorio, compare sheet e `session_context.json`, alem de preparar uma
-nova execucao. **Inicio** resume somente dados reais; **Comunidade** permanece
-como area visual "em breve", sem postagens simuladas. **Configuracoes** mostra
-versoes e disponibilidade reais sem revelar a chave NVIDIA. **Logs** recebe
-stdout/stderr do subprocesso em tempo real e mascara tokens. O perfil local e
-salvo em `.cache/ui_profile.json`. Avatar e banner aceitam PNG, JPG, WEBP, GIF,
-MP4 e WEBM; os arquivos ficam somente em `.cache/ui_profile/`, nunca no Git.
-
-Na tela inicial, traducoes tecnicas da mesma obra sao agrupadas pela URL real
-em uma unica serie. A biblioteca de series oferece busca e ordenacao, e a
-atividade recente usa exclusivamente o historico local real.
-
-O HTML visual fica em `ui/ui_shell.html`, com CSS e JavaScript em `static/`.
-`ui_bridge.py` faz a comunicacao entre o navegador e o Python por endpoints
-locais. Nenhum progresso e inventado: quando o pipeline nao fornece contador,
-a etapa aparece como indeterminada ate surgir um valor real.
-
-Os capitulos permanecem em `output/<nome_do_capitulo>/`. Tanto `output/`
-quanto `.cache/` sao ignorados pelo Git.
-
-## Instalacao no Windows
-
-Crie ou entre na pasta do projeto:
+Para executar pela CLI:
 
 ```powershell
-cd C:\Users\henrique.araujo\Projetos\Tradutor.Ia
+python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast --no-context
 ```
 
-Crie o ambiente virtual com Python 3.11:
+O cache é reutilizado por padrão. Use `--force` somente quando quiser reprocessar download, OCR, tradução e renderização. Consulte o [guia de instalação](docs/INSTALLATION.md) antes da primeira execução completa e a [referência de configuração](docs/CONFIGURATION.md) para ajustar recursos e qualidade.
+
+## Modos de execução
+
+| Modo | Estratégia de OCR | Indicação |
+| --- | --- | --- |
+| `fast` | RapidOCR, salvaguardas de qualidade e fallback Paddle seletivo | Uso geral e iteração mais rápida |
+| `quality` | PaddleOCR como engine inicial | Comparações conservadoras e diagnóstico |
+
+Exemplos:
 
 ```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip setuptools wheel
+# Execução rápida com cache
+python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast
+
+# OCR inicial com PaddleOCR e saída nomeada
+python run_webtoon.py "<URL_DO_CAPITULO>" --mode quality --output "meu_capitulo"
+
+# Apenas coleta e auditoria do download
+python run_webtoon.py "<URL_DO_CAPITULO>" --download-only
 ```
 
-Instale as dependencias principais:
+A referência completa das flags está disponível em `python run_webtoon.py --help`.
 
-```powershell
-pip install -r requirements.txt
-```
+## Arquitetura em poucas linhas
 
-O arquivo inclui PaddleOCR, PaddlePaddle 3.2.2, o cliente da NVIDIA e as
-dependencias dos modos Google e HuggingFace/local.
+| Área | Responsabilidade principal |
+| --- | --- |
+| `app_ui.py` e `ui_bridge.py` | Interface local, fila, progresso e histórico |
+| `run_webtoon.py` | Entrada simplificada da CLI e seleção de modo |
+| `benchmark_pipeline.py` | Orquestração do fluxo ponta a ponta e relatórios |
+| `down.py` | Coleta, validação e teardown do navegador |
+| `ocr_engine.py` e `ocr_balloon.py` | OCR, fallback, agrupamento, classificação, validação e reconstrução |
+| `translator_nvidia.py` | Tradução em lote, rate limit, retries e cache |
+| `pipeline_cache.py`, `resource_monitor.py` | Cache versionado, persistência atômica e métricas de recursos |
+| `pdf.py` | Divisão em páginas lógicas e geração do PDF |
+| `process_launcher.py` | Supervisão de processos e persistência do exit code |
 
-## Configuracao do .env
+O desenho completo, inclusive os fluxos separados da UI, CLI e launcher, está em [Arquitetura](docs/ARCHITECTURE.md).
 
-Copie `.env.example` para `.env` e preencha sua chave:
+## Qualidade e execução segura
 
-```powershell
-Copy-Item .env.example .env
-notepad .env
-```
+O sistema combina verificações em vários níveis:
 
-Exemplo:
+- score de qualidade do OCR e comparação entre engines para regiões suspeitas;
+- preservação de SFX por padrão e decisão de tradução baseada em classificação;
+- validação de resíduos em inglês ou espanhol e de fragmentos parcialmente traduzidos;
+- retries controlados, rejeição do candidato inválido e marcação para revisão manual;
+- validação de overflow, bordas, mudanças fora da máscara e páginas inválidas;
+- escrita atômica dos principais JSONs e do exit code do launcher;
+- teardown limitado do Selenium e controle da árvore de processos no Windows.
 
-```env
-NVIDIA_API_KEY=sua_chave_aqui
-NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_TRANSLATION_MODEL=nvidia/nemotron-3-super-120b-a12b
-NVIDIA_TRANSLATION_BATCH_SIZE=20
-NVIDIA_MAX_REQUESTS_PER_MINUTE=20
-OCR_ENGINE=paddle
-OCR_FALLBACK_ENGINE=paddle
-OCR_HYBRID_FALLBACK=True
-RAPIDOCR_ENABLED=False
-TRANSLATE_SFX=False
-PRIORITIZE_ENCLOSED_TEXT=True
-TRANSLATION_MODE=nvidia
-```
+Os estados terminais têm significados distintos:
 
-`.env` esta no `.gitignore` e nao deve ser commitado.
+| Estado | Significado |
+| --- | --- |
+| `finished` | Execução técnica concluída e quality gate aprovado |
+| `review_required` | Execução concluída, com PDF disponível, mas há revisão de qualidade pendente |
+| `error` | Falha técnica ou artefato essencial ausente |
+| `cancelled` | Cancelamento explícito |
 
-## Como usar PaddleOCR
+Esses mecanismos reduzem falsos positivos, mas não garantem tradução perfeita. Veja [Qualidade e validação](docs/QUALITY_AND_VALIDATION.md) para o contrato completo.
 
-PaddleOCR e o OCR principal quando:
+## Estado atual
 
-```env
-OCR_ENGINE=paddle
-```
+O Tradutor.IA está em **beta técnica e desenvolvimento ativo**. O pipeline ponta a ponta, a UI local, a CLI, o PDF, os caches, os relatórios e o quality gate são funcionais e cobertos por suítes de regressão locais.
 
-Use `paddlepaddle==3.2.2`. A versao `3.3.1` pode falhar durante o OCR com
-erro interno de atributo PIR em algumas instalacoes Windows.
+Ainda assim, a revisão humana continua importante. SFX com tipografia complexa, texto decorativo, naturalidade do PT-BR, fontes incomuns e páginas visualmente densas podem exigir ajuste ou inspeção. O suporte end-to-end foi auditado no Windows; outros sistemas não fazem parte do contrato validado atual. Use apenas conteúdo que você tenha autorização para processar.
 
-O idioma original escolhido no programa e mapeado assim:
+## Documentação
 
-- `1` = japones -> PaddleOCR `japan`
-- `2` = coreano -> PaddleOCR `korean`
-- `3` = ingles -> PaddleOCR `en`
+- [Instalação](docs/INSTALLATION.md) — ambiente, dependências, modelos e primeiro teste.
+- [Configuração](docs/CONFIGURATION.md) — variáveis do `.env.example`, defaults e ajustes avançados.
+- [Arquitetura](docs/ARCHITECTURE.md) — módulos, fluxos, cache, launcher e artefatos.
+- [Qualidade e validação](docs/QUALITY_AND_VALIDATION.md) — fallbacks, retries, quality gate e estados.
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — diagnóstico seguro para falhas conhecidas.
 
-Para confirmar que o pacote esta funcionando:
+## Roadmap
 
-```powershell
-python -c "from paddleocr import PaddleOCR; print('paddleocr ok')"
-```
+- aprimorar a classificação de SFX e elementos decorativos;
+- melhorar naturalidade e consistência da tradução PT-BR;
+- ampliar a validação visual e os relatórios de revisão;
+- simplificar a instalação e o gerenciamento de modelos;
+- evoluir os testes end-to-end automatizados com material autorizado;
+- adicionar uma demonstração pública reproduzível.
 
-## RapidOCR experimental
+## Autor
 
-RapidOCR e opcional e nao faz parte de `requirements.txt`. Instale-o somente
-quando quiser testar o motor ONNX:
-
-```powershell
-pip install -r requirements-rapidocr.txt
-```
-
-O padrao continua sendo PaddleOCR:
-
-```env
-OCR_ENGINE=paddle
-RAPIDOCR_ENABLED=False
-```
-
-Para ativar o modo hibrido experimental:
-
-```env
-OCR_ENGINE=rapidocr
-RAPIDOCR_ENABLED=True
-OCR_FALLBACK_ENGINE=paddle
-OCR_HYBRID_FALLBACK=True
-RAPIDOCR_MIN_CONFIDENCE=0.55
-RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK=True
-RAPIDOCR_PAGE_FALLBACK=True
-OCR_TEXT_REPAIR=True
-OCR_TEXT_REPAIR_MODE=conservative
-```
-
-O RapidOCR retorna os mesmos boxes e coordenadas usados pelo restante do
-pipeline. Paginas suspeitas passam primeiro pelo PaddleOCR mobile; somente
-grupos ainda suspeitos usam o PaddleOCR completo. O reparo de texto e
-conservador: ele corrige apenas repeticoes muito provaveis, como
-`REALLY RFALLY` para `REALLY REALLY`, e registra original, resultado e motivo
-nos JSONs.
-
-Tambem e possivel ativar apenas nesta execucao:
-
-```powershell
-python test_pipeline_webtoon.py --url "<URL>" --max-images 20 --fast --benchmark --force --ocr-engine rapidocr
-```
-
-Para executar o capitulo completo do zero:
-
-```powershell
-python test_pipeline_webtoon.py --full --fast --benchmark --force --ocr-engine rapidocr
-```
-
-Para executar o capitulo completo usando cache e resume:
-
-```powershell
-python test_pipeline_webtoon.py --full --fast --benchmark --ocr-engine rapidocr
-```
-
-### Benchmark RapidOCR hibrido
-
-Plus One, 9 paginas:
-
-- PaddleOCR: 516,76s
-- RapidOCR hibrido: 179,78s
-- Reducao total: 65,21%
-- Reducao OCR: 73,65%
-- Linhas OCR: 46 em ambos
-- Grupos traduzidos: 15 em ambos
-- Erros: 0
-
-Capitulo antigo, 20 paginas:
-
-- PaddleOCR: 1.030,86s
-- RapidOCR hibrido: 228,27s
-- Reducao total: 77,86%
-- Reducao OCR: 93,65%
-- Grupos traduzidos: 19 em ambos
-- Erros: 0
-
-Capitulo antigo, 50 paginas:
-
-- RapidOCR hibrido: 359,09s
-- OCR: 105,25s
-- PDF: 50 paginas
-- Erros: 0
-
-RapidOCR ainda e experimental. Para maxima qualidade e comportamento mais
-conservador, use PaddleOCR.
-
-## Camada de qualidade do RapidOCR
-
-RapidOCR continua sendo um motor opcional e experimental; PaddleOCR permanece
-o padrao mais seguro. No modo rapido, o pipeline tenta RapidOCR primeiro. Se o
-texto ou os boxes parecerem suspeitos, somente a regiao afetada passa pelo
-PaddleOCR Mobile. Se a qualidade ainda for insuficiente, a mesma regiao usa o
-PaddleOCR completo.
-
-Os reparos OCR sao genericos e conservadores. Eles usam confianca, distancia
-de edicao, vocabulario, contexto e concordancia entre motores, sem traducoes
-prontas ou regras de frases especificas. A resposta da NVIDIA tambem e
-validada para impedir texto vazio ou mistura indevida de portugues e ingles.
-
-Antes de aceitar uma pagina, o pipeline valida a mascara, a area segura e a
-imagem renderizada. Alteracoes fora da regiao permitida, manchas, borroes,
-dano ao contorno do balao e texto fora do balao causam rollback seletivo do
-grupo. SFX e textos decorativos continuam preservados com
-`TRANSLATE_SFX=False`.
-
-Grupos que nao podem ser redesenhados com seguranca sao enviados para a
-auditoria Categoria A/B:
-
-- Categoria A: SFX, decorativo, nome proprio ou texto cuja remocao danificaria
-  a arte; pode permanecer original.
-- Categoria B: fala, pensamento ou narracao importante; deve ser corrigido
-  antes da aprovacao do gate.
-
-Comando recomendado para um capitulo completo em modo rapido:
-
-```powershell
-python test_pipeline_webtoon.py --url "URL_DO_CAPITULO" --full --fast --benchmark --force --ocr-engine rapidocr
-```
-
-### Benchmark Lookism EP 50
-
-- Paginas processadas/PDF: 81/81
-- Tempo total: 8min11s
-- Media: 6,06s/pagina
-- Grupos traduzidos: 185
-- SFX preservados: 25
-- Paginas vazias ou corrompidas: 0
-- Falhas visuais graves: 0
-- Texto misturado ou fora da regiao: 0
-- Gate global: aprovado
-- Testes de regressao: 19 aprovados
-
-## Como ativar NVIDIA
-
-No `.env`:
-
-```env
-TRANSLATION_MODE=nvidia
-NVIDIA_API_KEY=sua_chave_aqui
-```
-
-O tradutor NVIDIA usa a API compativel com OpenAI em:
-
-```env
-NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_TRANSLATION_MODEL=nvidia/nemotron-3-super-120b-a12b
-```
-
-Ele envia os baloes em lotes de ate `NVIDIA_TRANSLATION_BATCH_SIZE` textos,
-mantem os IDs e espera JSON. Se a API falhar, o projeto mantem os textos
-originais para nao quebrar a geracao do PDF.
-
-Por padrao, efeitos sonoros e textos decorativos isolados ficam fora da
-traducao. Esse comportamento pode ser ajustado no `.env`:
-
-```env
-TRANSLATE_SFX=False
-PRIORITIZE_ENCLOSED_TEXT=True
-```
-
-Com `TRANSLATE_SFX=True`, onomatopeias classificadas como `sfx` tambem podem
-ser enviadas para traducao. A deteccao de baloes e caixas continua sendo
-apenas apoio heuristico; a fonte principal permanece OCR-first.
-
-Cada bloco reconhecido e classificado antes da traducao como `speech`,
-`narration`, `sfx`, `decorative` ou `unknown`.
-
-Para testar somente a traducao NVIDIA:
-
-```powershell
-python test_nvidia_translation.py
-```
-
-Para executar o teste visual controlado com 20 imagens:
-
-```powershell
-python test_pipeline_webtoon.py --max-images 20
-```
-
-Para uma verificacao mais rapida:
-
-```powershell
-python test_pipeline_webtoon.py --max-images 5 --fast
-```
-
-Depois de validar o teste controlado, o mesmo script pode processar todas as
-imagens validas do capitulo:
-
-```powershell
-python test_pipeline_webtoon.py --full
-```
-
-O modo `--full` nao limita downloads. Ele gera debug, compares e um PDF
-`debug\webtoon_full_NNN.pdf`. A interface normal tambem continua processando o
-capitulo completo com `python main.py`.
-
-## Performance e cache
-
-O pipeline usa caches independentes para download, OCR, traducao e imagem
-processada. A primeira execucao ainda demora porque precisa executar PaddleOCR
-e chamar a NVIDIA. As execucoes seguintes podem reutilizar cada etapa e
-continuar um capitulo interrompido pelo `progress.json`.
-
-O modo `--fast` evita debug visual pesado. `TRANSLATE_SFX=False` preserva
-onomatopeias e efeitos sonoros por padrao. A traducao NVIDIA pode usar dois
-workers, com rate limit global e retry/backoff para erros temporarios.
-
-O OCR paralelo usa dois processos quando ha memoria suficiente. Em maquinas
-com pouca memoria, o pipeline faz fallback automatico para OCR sequencial,
-evitando falhas ou perda de qualidade. Para desativar o paralelismo
-manualmente, configure:
-
-```env
-OCR_PARALLEL=False
-```
-
-Para medir o capitulo completo do zero, ignorando todos os caches:
-
-```powershell
-python test_pipeline_webtoon.py --full --fast --benchmark --force
-```
-
-Para reutilizar cache e resume:
-
-```powershell
-python test_pipeline_webtoon.py --full --fast --benchmark
-```
-
-Use `--force` somente quando quiser medir uma execucao limpa. Sem `--force`,
-downloads, OCRs, traducoes e paginas finais validas sao reaproveitados.
-
-### Benchmark real - Webtoon Episode 1
-
-- Imagens validas: 108
-- Paginas no PDF: 108
-- Linhas OCR: 367
-- Grupos formados: 124
-- Grupos traduzidos: 104
-- SFX/decorative ignorados: 14
-- Erros finais: 0
-
-Versao funcional anterior:
-
-- Tempo total: 35min29s
-- Media: 19,72s/imagem
-
-Versao otimizada:
-
-- Tempo total forcado: 25min32s
-- Media: 14,19s/imagem
-- Reducao: 28,05%
-- Gargalo: OCR
-- OCR: 1.188s
-- NVIDIA: 139,87s
-
-Execucao com cache:
-
-- Tempo total: 9,12s
-- Media: 0,084s/imagem
-- Chamadas NVIDIA: 0
-- Reducao: 99,57%
-
-## Como voltar para Google ou local
-
-Para Google:
-
-```env
-TRANSLATION_MODE=google
-```
-
-Para HuggingFace/local:
-
-```env
-TRANSLATION_MODE=huggingface
-NLLB_MODEL_DIR=C:\caminho\para\NLLB_200
-```
-
-O modo local precisa dos arquivos do modelo no caminho configurado.
-
-## Como rodar
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python main.py
-```
-
-O programa pedira:
-
-- URL do capitulo.
-- Nome da pasta/PDF de saida.
-- Idioma original: `1` japones, `2` coreano, `3` ingles.
-- Motor de traducao: NVIDIA, Google ou IA local.
-
-## ChromeDriver no Windows
-
-O downloader tenta:
-
-1. Usar `CHROMEDRIVER_PATH` do `.env`, se existir e for valido.
-2. Baixar/configurar via `webdriver-manager`.
-3. Usar Selenium Manager automaticamente.
-
-Se isso falhar, defina manualmente no `.env`:
-
-```env
-CHROMEDRIVER_PATH=C:\caminho\para\chromedriver.exe
-```
-
-## Tesseract opcional
-
-Tesseract nao e mais o OCR principal. Para usa-lo como fallback, instale o
-software do Tesseract no Windows, instale `pytesseract` no venv e configure:
-
-```env
-OCR_FALLBACK_ENGINE=tesseract
-TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-```
-
-## Limitacoes conhecidas
-
-- A primeira execucao do PaddleOCR pode baixar modelos e demorar mais.
-- RapidOCR e experimental e pode exigir fallback para PaddleOCR em fontes
-  estilizadas, nomes proprios ou textos com baixa confianca.
-- A qualidade do OCR depende da resolucao, contraste, fonte e orientacao do
-  texto original.
-- Textos sem balao, muito estilizados ou sobrepostos a desenhos podem ser
-  classificados como `decorative`, `sfx` ou `unknown` e ficar sem traducao.
-- O fallback Tesseract exige o executavel do Tesseract instalado no Windows.
-- A traducao NVIDIA exige internet, uma chave valida e respeita os limites da
-  conta e de requisicoes por minuto.
-- Sites podem alterar o HTML ou bloquear automacao, exigindo ajustes no
-  downloader ou no ChromeDriver.
+Desenvolvido por [Henrique Araujo](https://github.com/HenriquePvAr).
