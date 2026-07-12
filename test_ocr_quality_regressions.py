@@ -16,6 +16,7 @@ from ocr_balloon import (
     _detached_light_text_components_mask,
     _detached_dark_text_components_mask,
     _enforce_visual_bounds,
+    _enclosure_evidence,
     _english_inflection_base,
     _line_belongs_to_group,
     _line_ignore_reason,
@@ -2376,6 +2377,30 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
         self.assertGreater(line.metadata["visual_white_region_touches_edge"], 0)
         self.assertFalse(line.metadata["visual_white_region_enclosed"])
+
+    def test_edge_connected_dark_art_is_not_container_evidence(self):
+        image = np.full((360, 500, 3), 255, dtype=np.uint8)
+        cv2.rectangle(image, (0, 100), (400, 300), (0, 0, 0), -1)
+
+        balloon_like, narration_like = _enclosure_evidence(
+            image,
+            (230, 150, 120, 50),
+        )
+
+        self.assertFalse(balloon_like)
+        self.assertFalse(narration_like)
+
+    def test_internal_dark_container_remains_enclosure_evidence(self):
+        image = np.full((360, 500, 3), 255, dtype=np.uint8)
+        cv2.ellipse(image, (250, 180), (150, 85), 0, 0, 360, (0, 0, 0), -1)
+
+        balloon_like, narration_like = _enclosure_evidence(
+            image,
+            (210, 155, 100, 45),
+        )
+
+        self.assertTrue(balloon_like)
+        self.assertTrue(narration_like)
 
     def test_stylized_short_text_outside_balloon_remains_sfx(self):
         cases = (

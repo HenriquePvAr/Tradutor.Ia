@@ -3552,7 +3552,10 @@ def _uniform_container_evidence(roi, group_box):
                     cy + ch >= roi.shape[0] - 1,
                 )
             )
-            if touches >= 3:
+            # A component that reaches the analysis ROI boundary is not a
+            # complete enclosure. Treating the surrounding art field as a
+            # balloon here makes embedded sound effects look like dialogue.
+            if touches:
                 continue
 
             rectangularity = float(area) / max(1, cw * ch)
@@ -3589,6 +3592,16 @@ def _contour_container_evidence(roi, group_box):
         if w < gw * 1.1 or h < gh * 1.1:
             continue
         if w >= roi.shape[1] * 0.98 and h >= roi.shape[0] * 0.98:
+            continue
+        touches = sum(
+            (
+                x <= 1,
+                y <= 1,
+                x + w >= roi.shape[1] - 1,
+                y + h >= roi.shape[0] - 1,
+            )
+        )
+        if touches:
             continue
 
         perimeter = cv2.arcLength(contour, True)
