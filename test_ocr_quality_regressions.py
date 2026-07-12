@@ -16,6 +16,7 @@ from ocr_balloon import (
     _detached_light_text_components_mask,
     _detached_dark_text_components_mask,
     _enforce_visual_bounds,
+    _english_inflection_base,
     _line_belongs_to_group,
     _line_ignore_reason,
     _leading_hyphenated_fragment,
@@ -394,6 +395,263 @@ class OCRQualityRegressionTests(unittest.TestCase):
             ["EXAMPLENAME"],
         )
         self.assertTrue(name_valid)
+
+    def test_portuguese_s_final_tokens_are_not_inflected_english(self):
+        cases = [
+            (
+                "JESus... IS THAT ALL BLOOD?!",
+                "JESUS... É TODO SANGUE?!",
+                [],
+            ),
+            ("MY GOD!", "MEU DEUS!", []),
+            ("MAY GOD HELP US.", "DEUS NOS AJUDE.", []),
+            ("HE USES A PENCIL.", "ELE USA LÁPIS.", []),
+            ("THE BUS ARRIVED.", "O ÔNIBUS CHEGOU.", []),
+            ("WE ARE HERE.", "NÓS ESTAMOS AQUI.", []),
+            ("THIS IS TOO MUCH.", "ISSO É DEMAIS.", []),
+            ("HE STAYED BEHIND.", "ELE FICOU PARA TRÁS.", []),
+            ("THE COUNTRY IS IN DANGER.", "O PAÍS ESTÁ EM PERIGO.", []),
+            ("AFTER THE RAIN, WE LEFT.", "APÓS A CHUVA, SAÍMOS.", []),
+            ("CARLOS IS HERE.", "CARLOS ESTÁ AQUI.", ["CARLOS"]),
+            ("MARCOS RETURNED.", "MARCOS VOLTOU.", ["MARCOS"]),
+            ("LUCAS ARRIVED.", "LUCAS CHEGOU.", ["LUCAS"]),
+        ]
+        for source, candidate, allowed_names in cases:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    source,
+                    candidate,
+                    "speech",
+                    allowed_names,
+                )
+                self.assertTrue(valid, reason)
+
+    def test_real_english_inflections_still_require_translation(self):
+        cases = [
+            ("I SAW TWO TRAINS.", "EU VI DOIS TRAINS."),
+            ("HE RUNS VERY FAST.", "ELE RUNS MUITO RÁPIDO."),
+            ("THE DOORS ARE CLOSED.", "AS DOORS ESTÃO FECHADAS."),
+            ("HE WALKED HERE.", "ELE WALKED ATÉ AQUI."),
+            ("SHE IS CRYING.", "ELA ESTÁ CRYING."),
+            ("WE ARE WAITING.", "NÓS ESTAMOS WAITING."),
+            ("HE LOOKS TIRED.", "ELE LOOKS CANSADO."),
+            ("THE LIGHTS WENT OUT.", "AS LIGHTS APAGARAM."),
+            ("THE MONSTERS ARE COMING.", "OS MONSTERS ESTÃO VINDO."),
+            ("THE BARS ARE CLOSED.", "OS BARS ESTÃO FECHADOS."),
+            ("THE MAPS ARE HERE.", "OS MAPS ESTÃO AQUI."),
+        ]
+        for source, candidate in cases:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    source,
+                    candidate,
+                    "speech",
+                )
+                self.assertFalse(valid)
+                self.assertTrue(
+                    reason.startswith("residual_inflected_english"),
+                    reason,
+                )
+
+    def test_inflected_english_requires_lexical_base_evidence(self):
+        expected_bases = {
+            "JESUS": "",
+            "TRAINS": "TRAIN",
+            "RUNS": "RUN",
+            "DOORS": "DOOR",
+            "DRINKS": "DRINK",
+            "WALKED": "WALK",
+            "CRYING": "CRY",
+            "WAITING": "WAIT",
+            "LOOKS": "LOOK",
+            "LIGHTS": "LIGHT",
+            "MONSTERS": "MONSTER",
+            "BARS": "BAR",
+            "MAPS": "MAP",
+        }
+        for token, expected in expected_bases.items():
+            with self.subTest(token=token):
+                self.assertEqual(_english_inflection_base(token), expected)
+
+    def test_ambiguous_short_tokens_and_names_remain_contextual(self):
+        valid_cases = [
+            ("THE SIGLA IS US.", "A SIGLA US ESTÁ AQUI.", ["US"]),
+            ("THE DOORS ARE CLOSED.", "AS PORTAS ESTÃO FECHADAS.", []),
+            ("THE ANSWER IS NO.", "A RESPOSTA ESTÁ NO PAPEL.", []),
+            ("THIS IS SO SIMPLE.", "ISSO É SÓ O COMEÇO.", []),
+            ("IF NEEDED, I WILL GO.", "SE FOR PRECISO, EU VOU.", []),
+            ("MILES IS HERE.", "MILES ESTÁ COM ELA.", ["MILES"]),
+            ("JAMES IS HERE.", "JAMES ESTÁ COM ELA.", ["JAMES"]),
+            ("WELLS IS HERE.", "WELLS ESTÁ COM ELA.", ["WELLS"]),
+            ("TAKE THE BUS.", "O TERMO BUS É VÁLIDO.", ["BUS"]),
+            ("USE PLUS.", "O TERMO PLUS É VÁLIDO.", ["PLUS"]),
+        ]
+        for source, candidate, allowed_names in valid_cases:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    source,
+                    candidate,
+                    "speech",
+                    allowed_names,
+                )
+                self.assertTrue(valid, reason)
+
+        invalid_cases = [
+            ("HE IS HERE.", "ELE IS AQUI."),
+            ("THIS IS SO WRONG.", "EU ESTOU SO TIRED."),
+            ("FOR REAL, I DO NOT KNOW.", "FOR REAL, EU NÃO SEI."),
+        ]
+        for source, candidate in invalid_cases:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    source,
+                    candidate,
+                    "speech",
+                )
+                self.assertFalse(valid)
+                self.assertTrue(reason)
+
+    def test_source_comparison_preserves_names_without_hiding_english(self):
+        valid_cases = [
+            (
+                "JESus... IS THAT ALL BLOOD?!",
+                "JESUS... É TODO SANGUE?!",
+                [],
+            ),
+            ("JAMES IS HERE.", "JAMES ESTÁ COM ELA.", ["JAMES"]),
+            ("WHAT HAPPENED?", "JESUS... O QUE ACONTECEU?!", []),
+        ]
+        for source, candidate, allowed_names in valid_cases:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    source,
+                    candidate,
+                    "speech",
+                    allowed_names,
+                )
+                self.assertTrue(valid, reason)
+
+        valid, reason = validate_translation_text(
+            "THE MONSTERS ARE COMING.",
+            "OS MONSTERS ESTÃO VINDO.",
+            "speech",
+        )
+        self.assertFalse(valid)
+        self.assertTrue(reason.startswith("residual_inflected_english"), reason)
+
+    def test_valid_portuguese_jesus_candidate_skips_retry_and_review(self):
+        group = _scored_group("JESus... IS THAT ALL BLOOD?!")
+        apply_group_translations([group], ["JESUS... É TODO SANGUE?!"])
+        self.assertTrue(group.translation_valid)
+        self.assertEqual(group.translation_validation_reason, "ok")
+
+        translator = _StrictRetryTranslator("UNUSED")
+        records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(translator.calls, [])
+        self.assertEqual(records, [])
+        self.assertFalse(group.manual_review_required)
+        self.assertFalse(group.rejected_translation)
+
+        debug_data = _debug_payload("", group.lines, [], [group])
+        states = [
+            {
+                "index": 1,
+                "status": "processed",
+                "output_path": "",
+                "image_path": "",
+                "timings": {},
+                "debug_data": debug_data,
+            }
+        ]
+        quality_report = _build_quality_report({}, states, records)
+        aggregate = _aggregate_debug_data(states)
+        self.assertEqual(quality_report["totals"]["mixed_language_items"], 0)
+        self.assertEqual(quality_report["totals"]["translations_rejected"], 0)
+        self.assertEqual(quality_report["totals"]["manual_review_required_groups"], 0)
+        self.assertEqual(aggregate["mixed_language_items"], 0)
+
+    def test_english_jesus_candidate_retries_to_valid_portuguese(self):
+        group = _scored_group("JESus... IS THAT ALL BLOOD?!")
+        apply_group_translations([group], ["JESUS... HE IS ALL BLOOD?!"])
+        self.assertFalse(group.translation_valid)
+
+        translator = _StrictRetryTranslator(
+            "JESUS... ELE ESTÁ COBERTO DE SANGUE?!"
+        )
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["valid"], records)
+        self.assertTrue(group.translation_valid)
+        self.assertEqual(group.translation_validation_reason, "retry_ok")
+        self.assertFalse(group.manual_review_required)
+
+    def test_english_jesus_retry_still_invalid_requires_manual_review(self):
+        group = _scored_group("JESus... IS THAT ALL BLOOD?!")
+        apply_group_translations([group], ["JESUS... HE IS ALL BLOOD?!"])
+        initial_translation = group.translation
+        translator = _StrictRetryTranslator(
+            "JESUS... ELE IS COBERTO DE SANGUE?!"
+        )
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(records), 1)
+        self.assertFalse(records[0]["valid"], records)
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(group.manual_review_required)
+        self.assertEqual(group.rejected_translation, initial_translation)
+        self.assertEqual(group.translation, group.text)
+
+    def test_portuguese_ambiguity_fix_preserves_multilingual_and_sfx_controls(self):
+        invalid_cases = [
+            ("MAYBE IT IS THIS WAY.", "QUIZÁS SEJA POR AQUI.", "speech"),
+            ("Sh-She'S COMING!", "Sh- Ela está vindo!", "speech"),
+            ("Sh-She'S COMING!", "Sh - Ela está vindo!", "speech"),
+            ("I AM SO TIRED.", "EU ESTOU SO TIRED.", "speech"),
+            ("FOR REAL, I DO NOT KNOW.", "FOR REAL, EU NÃO SEI.", "speech"),
+        ]
+        for source, candidate, classification in invalid_cases:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    source,
+                    candidate,
+                    classification,
+                )
+                self.assertFalse(valid)
+                self.assertTrue(reason)
+
+        valid_cases = [
+            ("I MUST'VE FALLEN ASLEEP.", "DEVO TER ADORMIDO.", "speech"),
+            ("OW, MY BUTT...", "AI, MEU BUMBUM..", "speech"),
+            ("RUN!", "SÓ CORRA.", "speech"),
+            ("IF NEEDED, I WILL GO.", "SE FOR PRECISO, EU VOU.", "speech"),
+        ]
+        for source, candidate, classification in valid_cases:
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    source,
+                    candidate,
+                    classification,
+                )
+                self.assertTrue(valid, reason)
+
+        for text in (
+            "S***!",
+            "F***!",
+            "SH**!",
+            "SHWOOMP",
+            "THWACK",
+            "SPLAT",
+            "CREAK",
+        ):
+            with self.subTest(sfx=text):
+                valid, reason = validate_translation_text(text, text, "sfx")
+                self.assertTrue(valid, reason)
+                self.assertEqual(reason, "sfx_preserved")
 
     def test_short_ocr_typo_is_suspicious_and_better_candidate_wins(self):
         bad = _scored_group("BLT")
@@ -1279,8 +1537,8 @@ class OCRQualityRegressionTests(unittest.TestCase):
             (
                 "JESus... IS THAT ALL BLOOD?!",
                 "JESUS... É TODO SANGUE?!",
-                False,
-                "residual_inflected_english:JESUS",
+                True,
+                "ok",
             ),
         ]
         for source, candidate, expected_valid, expected_reason in controls:

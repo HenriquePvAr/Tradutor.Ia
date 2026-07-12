@@ -170,6 +170,24 @@ OCR_LEXICAL_REFERENCE_WORDS = {
     )
 }
 
+ENGLISH_INFLECTION_BASE_WORDS = frozenset(
+    re.sub(r"[^A-Z]", "", word.upper())
+    for word in (
+        RESIDUAL_TRANSLATION_ENGLISH_WORDS
+        | {word.upper() for word in OCR_REPAIR_ENGLISH_WORDS}
+    )
+) | {
+    # Common inflectable dialogue roots absent from the compact OCR lexicon.
+    "BAR",
+    "CRY",
+    "DRINK",
+    "LIGHT",
+    "MAP",
+    "MONSTER",
+    "WAIT",
+    "WALK",
+}
+
 PORTUGUESE_MARKERS = {
     "A",
     "ALGUM",
@@ -3254,13 +3272,63 @@ def _translation_repeated_fragment(tokens, allowed_names=None):
     return ""
 
 
-def _looks_like_inflected_english_token(token):
+def _english_inflection_base(token):
     token = str(token or "").upper().strip("'")
-    if len(token) < 5:
-        return False
-    return bool(
-        re.search(r"(?:ING|ED|LY|TION|NESS|MENT|ERS|IES|S)$", token)
+    if len(token) < 4 or not re.search(
+        r"(?:ING|ED|LY|TION|NESS|MENT|ERS|IES|S)$",
+        token,
+    ):
+        return ""
+
+    candidates = []
+
+    def add(candidate):
+        if len(candidate) >= 3 and candidate not in candidates:
+            candidates.append(candidate)
+
+    if token.endswith("IES") and len(token) > 4:
+        add(token[:-3] + "Y")
+    if token.endswith("IED") and len(token) > 4:
+        add(token[:-3] + "Y")
+    if token.endswith("ING") and len(token) > 5:
+        stem = token[:-3]
+        add(stem)
+        add(stem + "E")
+        if len(stem) >= 2 and stem[-1] == stem[-2]:
+            add(stem[:-1])
+    if token.endswith("ED") and len(token) > 4:
+        stem = token[:-2]
+        add(stem)
+        add(stem + "E")
+        if len(stem) >= 2 and stem[-1] == stem[-2]:
+            add(stem[:-1])
+    if token.endswith("ERS") and len(token) > 4:
+        stem = token[:-3]
+        add(token[:-1])
+        add(stem)
+        if len(stem) >= 2 and stem[-1] == stem[-2]:
+            add(stem[:-1])
+    for suffix in ("TION", "NESS", "MENT", "LY"):
+        if token.endswith(suffix) and len(token) > len(suffix) + 2:
+            add(token[: -len(suffix)])
+    if token.endswith("ES") and len(token) > 4:
+        add(token[:-2])
+    if token.endswith("S"):
+        add(token[:-1])
+    add(token)
+
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate in ENGLISH_INFLECTION_BASE_WORDS
+        ),
+        "",
     )
+
+
+def _looks_like_inflected_english_token(token):
+    return bool(_english_inflection_base(token))
 
 
 def validate_and_retry_translations(groups, translator, force=False):
