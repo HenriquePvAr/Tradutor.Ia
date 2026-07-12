@@ -3552,10 +3552,10 @@ def _uniform_container_evidence(roi, group_box):
                     cy + ch >= roi.shape[0] - 1,
                 )
             )
-            # A component that reaches the analysis ROI boundary is not a
-            # complete enclosure. Treating the surrounding art field as a
-            # balloon here makes embedded sound effects look like dialogue.
-            if touches:
+            # A dense component clipped by one or two ROI edges can still be
+            # a real container. A component spanning three or more edges is
+            # connected to the exterior field and cannot establish enclosure.
+            if touches >= 3:
                 continue
 
             rectangularity = float(area) / max(1, cw * ch)
@@ -3601,12 +3601,15 @@ def _contour_container_evidence(roi, group_box):
                 y + h >= roi.shape[0] - 1,
             )
         )
-        if touches:
-            continue
-
         perimeter = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.025 * perimeter, True)
         rectangularity = area / max(1, w * h)
+        # A contour may meet one or two ROI edges simply because the crop is
+        # tight. Treat it as external art only when it spans at least three
+        # borders *and* has too little filled area to describe a closed
+        # container. Edge contact is therefore evidence, not a sole verdict.
+        if touches >= 3 and rectangularity < 0.45:
+            continue
         rectangular = 4 <= len(approx) <= 10 and rectangularity >= 0.62
         score = min(1.0, area / max(group_area * 3.0, 1.0))
         if score > best["score"]:

@@ -26,6 +26,7 @@ from ocr_balloon import (
     _normalized_ocr_candidate_text,
     _outlined_light_text_mask,
     _uniform_dark_line_text_mask,
+    _uniform_container_evidence,
     _uniform_light_line_text_mask,
     _apply_textured_caption_overlay,
     _refine_classification_with_background,
@@ -2378,9 +2379,8 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertGreater(line.metadata["visual_white_region_touches_edge"], 0)
         self.assertFalse(line.metadata["visual_white_region_enclosed"])
 
-    def test_edge_connected_dark_art_is_not_container_evidence(self):
-        image = np.full((360, 500, 3), 255, dtype=np.uint8)
-        cv2.rectangle(image, (0, 100), (400, 300), (0, 0, 0), -1)
+    def test_exterior_dark_field_spanning_roi_is_not_container_evidence(self):
+        image = np.zeros((360, 500, 3), dtype=np.uint8)
 
         balloon_like, narration_like = _enclosure_evidence(
             image,
@@ -2389,6 +2389,14 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
         self.assertFalse(balloon_like)
         self.assertFalse(narration_like)
+
+    def test_dense_component_touching_roi_edge_remains_container_evidence(self):
+        image = np.full((300, 360, 3), 255, dtype=np.uint8)
+        cv2.rectangle(image, (0, 80), (250, 220), (0, 0, 0), -1)
+
+        evidence = _uniform_container_evidence(image, (80, 120, 100, 40))
+
+        self.assertTrue(evidence["enclosed"])
 
     def test_internal_dark_container_remains_enclosure_evidence(self):
         image = np.full((360, 500, 3), 255, dtype=np.uint8)
