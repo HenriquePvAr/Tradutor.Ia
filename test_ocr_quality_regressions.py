@@ -45,6 +45,8 @@ from ocr_balloon import (
     _should_skip_paddle_full_for_ignored_decorative,
     apply_selective_ocr_fallbacks,
     apply_group_translations,
+    get_translatable_groups,
+    render_analyzed_image,
     group_needs_selective_fallback,
     normalize_recurring_compact_names,
     score_group_ocr_quality,
@@ -1861,6 +1863,60 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertTrue(group.manual_review_required)
         self.assertTrue(group.preserved_original)
         self.assertEqual(group.translation, group.text)
+
+    def test_source_echo_translation_preserves_original_art_without_redraw(self):
+        # A group whose accepted translation only echoes the source (e.g. a
+        # stylized vocalization or a branding token kept as a name) must not be
+        # redrawn: redrawing identical glyphs erases the original art for no
+        # benefit and risks corrupting logos/titles.
+        group = _scored_group("AGH...")
+        group.bounding_box = [40, 80, 200, 80]
+        apply_group_translations([group], ["AGH..."])
+        self.assertTrue(group.translation_valid, group.translation_validation_reason)
+        self.assertIn(group, get_translatable_groups([group]))
+
+        image = np.full((220, 420, 3), 255, dtype=np.uint8)
+        cv2.putText(image, "AGH", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 2,
+                    (0, 0, 0), 4)
+        original = image.copy()
+        final, _ = render_analyzed_image(original, [], [], [group])
+
+        self.assertFalse(group.redrawn)
+        self.assertTrue(group.preserved_original)
+        self.assertEqual(group.translation_final_state, "preserved_original")
+        self.assertTrue(np.array_equal(final, original))
+
+    def test_real_translation_is_still_redrawn(self):
+        # Guard against over-preserving: a genuine translation (different from
+        # the source once folded) must still be redrawn.
+        group = _scored_group("GET UP!")
+        group.bounding_box = [40, 80, 200, 80]
+        apply_group_translations([group], ["LEVANTA!"])
+        self.assertTrue(group.translation_valid, group.translation_validation_reason)
+
+        image = np.full((220, 420, 3), 255, dtype=np.uint8)
+        cv2.putText(image, "GET UP", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 2,
+                    (0, 0, 0), 4)
+        original = image.copy()
+        render_analyzed_image(original, [], [], [group])
+
+        self.assertTrue(group.redrawn)
+        self.assertFalse(group.preserved_original)
+        self.assertEqual(group.translation_final_state, "translated")
+
+    def test_accented_translation_is_not_treated_as_source_echo(self):
+        # 'No...' -> 'Não...' is a real translation; ascii-folding must keep the
+        # base letters so it is not mistaken for an untouched source echo.
+        group = _scored_group("No...")
+        group.bounding_box = [40, 80, 200, 80]
+        apply_group_translations([group], ["Não..."])
+        self.assertTrue(group.translation_valid, group.translation_validation_reason)
+
+        image = np.full((220, 420, 3), 255, dtype=np.uint8)
+        cv2.putText(image, "No", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 2,
+                    (0, 0, 0), 4)
+        render_analyzed_image(image.copy(), [], [], [group])
+        self.assertTrue(group.redrawn)
 
     def test_unknown_source_echo_is_rejected_before_retry(self):
         valid, reason = validate_translation_text("QELON", "QELON", "speech")

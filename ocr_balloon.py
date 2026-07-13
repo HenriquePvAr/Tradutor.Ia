@@ -819,6 +819,27 @@ def _normalized_translation_text(text):
     return re.sub(r"[^a-z0-9]+", "", folded)
 
 
+def _translation_echoes_source(group):
+    """True when rendering the group would only echo its source text.
+
+    Some groups are validated as translatable while keeping the source verbatim
+    (stylized vocalizations, branding/logo tokens preserved as names). Redrawing
+    such a group erases the original art and repaints identical (often
+    OCR-corrupted) glyphs for no benefit, which is how a stylized title becomes a
+    garbled overlay. These are preserved as original pixels instead. The
+    comparison is accent-folded so a real translation such as 'No' -> 'Nao/Não'
+    is never treated as an echo.
+    """
+    translation = getattr(group, "translation", "") or ""
+    if not translation:
+        return False
+    source = getattr(group, "text", "") or ""
+    normalized_source = _normalized_translation_text(source)
+    if not normalized_source:
+        return False
+    return _normalized_translation_text(translation) == normalized_source
+
+
 def _terminal_translation_failure_reason(group, validation_reason, candidate):
     candidate_text = clean_ocr_text(candidate)
     if not candidate_text:
@@ -965,6 +986,20 @@ def render_analyzed_image(
         accepted_cleanup_mask = None
         accepted_strategy = ""
         accepted_allowed_mask = None
+
+        if _translation_echoes_source(group):
+            group.redrawn = False
+            group.visual_validation = {
+                "visual_validation_passed": True,
+                "reason": "source_echo_preserved_original",
+            }
+            _set_translation_terminal_state(
+                group,
+                "preserved_original",
+                "source_echo_preserved_original",
+                preserved_original=True,
+            )
+            continue
 
         for strategy in (
             "primary",
