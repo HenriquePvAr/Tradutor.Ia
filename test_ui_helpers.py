@@ -1,9 +1,11 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from output_manifest import build_run_manifest, load_verified_run_manifest
 from ui_helpers import (
     ProgressSnapshot,
     build_run_command,
@@ -214,6 +216,124 @@ class UIHelpersTests(unittest.TestCase):
             self.assertEqual(record["status"], "review_required")
             self.assertFalse(record["quality_gate"])
             self.assertEqual(record["pdf_path"], str(pdf_path.resolve()))
+
+    def test_discovery_prioritizes_verified_manifest_and_separates_legacy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            verified = output_root / "verified_run"
+            legacy = output_root / "legacy_run"
+            verified.mkdir(parents=True)
+            legacy.mkdir(parents=True)
+
+            def write_output(directory, *, manifest=False):
+                pdf_path = directory / "chapter.pdf"
+                pdf_path.write_bytes(b"%PDF-1.4\n")
+                (directory / "timing_report.json").write_text(
+                    json.dumps(
+                        {
+                            "ocr_engine": "rapidocr",
+                            "processed_images": 2,
+                            "pdf_path": str(pdf_path),
+                            "quality_validation": {"passed": True},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                if manifest:
+                    (directory / "run_manifest.json").write_text(
+                        json.dumps(
+                            {
+                                "manifest_version": 1,
+                                "run_id": "run-safe-id",
+                                "created_at": "2026-01-01T00:00:00+00:00",
+                                "source_url": "https://example.test/chapter",
+                                "commit_hash": "abc123",
+                                "branch": "feature",
+                                "pipeline_version": "pipeline-v1",
+                                "model": "model-id",
+                                "final_status": "finished",
+                                "quality_passed": True,
+                                "manual_review_count": 0,
+                                "rejected_count": 0,
+                                "pdf_path": str(pdf_path),
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+
+            write_output(verified, manifest=True)
+            write_output(legacy)
+            os.utime(legacy / "timing_report.json", (2_000_000_000, 2_000_000_000))
+
+            store = UIHistoryStore(root / "history.json")
+            with patch("ui_history.OUTPUT_ROOT", output_root):
+                records = store.discover_outputs()
+
+            self.assertEqual(records[0]["slug"], "verified_run")
+            self.assertEqual(records[0]["output_verification"], "manifest_verified")
+            self.assertEqual(records[1]["slug"], "legacy_run")
+            self.assertEqual(records[1]["status"], "finished")
+            self.assertEqual(records[1]["output_verification"], "legacy_unverified")
+
+    def test_discovery_recognizes_generic_e2e_runtime_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            chapter = output_root / "e2e_run"
+            chapter.mkdir(parents=True)
+            pdf_path = chapter / "chapter.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+            (chapter / "timing_report.json").write_text(
+                json.dumps(
+                    {
+                        "ocr_engine": "rapidocr",
+                        "pdf_path": str(pdf_path),
+                        "quality_validation": {"passed": True},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime = root / ".cache" / "e2e_runtime" / chapter.name
+            runtime.mkdir(parents=True)
+            (runtime / "exit_code.txt").write_text("0\n", encoding="utf-8")
+            (runtime / "end_time.txt").write_text("2026-01-01T00:00:00+00:00\n", encoding="utf-8")
+
+            store = UIHistoryStore(root / "history.json")
+            with patch("ui_history.OUTPUT_ROOT", output_root), patch("ui_history.REPO_ROOT", root):
+                records = store.discover_outputs()
+
+            self.assertEqual(records[0]["output_verification"], "e2e_evidence")
+            self.assertEqual(records[0]["status"], "finished")
+
+    def test_manifest_schema_sanitizes_source_url(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output_folder = Path(folder)
+            manifest = build_run_manifest(
+                run_id="safe-run-id",
+                created_at="2026-01-01T00:00:00+00:00",
+                source_url="https://example.test/series/chapter?token=secret",
+                commit_hash="abc123",
+                branch="feature",
+                pipeline_version="pipeline-v1",
+                model="model-id",
+                final_status="finished",
+                quality_passed=True,
+                manual_review_count=0,
+                rejected_count=0,
+                pdf_path=str(output_folder / "chapter.pdf"),
+            )
+            (output_folder / "run_manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+
+            loaded = load_verified_run_manifest(output_folder)
+
+            self.assertEqual(
+                loaded["source_url"],
+                "https://example.test/series/chapter",
+            )
+            self.assertTrue(loaded["quality_passed"])
 
     def test_saved_history_with_failed_quality_gate_is_not_clean_success(self):
         with tempfile.TemporaryDirectory() as folder:

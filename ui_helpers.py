@@ -410,4 +410,5 @@ def find_output_artifacts(output_folder: Path) -> dict[str, str]:
         "contact_sheet_path": first_existing(report.get("preview_contact_sheet"), folder / "contact_sheet.jpg"),
         "session_context_path": first_existing(folder / "session_context.json"),
         "timing_report_path": first_existing(folder / "timing_report.txt"),
+        "manifest_path": first_existing(folder / "run_manifest.json"),
     }

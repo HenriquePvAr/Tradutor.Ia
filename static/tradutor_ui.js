@@ -32,7 +32,7 @@
     seriesQuery: '',
     seriesSort: 'recent',
   };
-  const runStatusLabels = {ready: 'pronto', running: 'rodando', finished: 'finalizado', review_required: 'revisão necessária', error: 'erro', cancelled: 'cancelado'};
+  const runStatusLabels = {ready: 'pronto', running: 'rodando', finished: 'finalizado', review_required: 'revisão necessária', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required']);
   const boolish = value => {
     if (value === true || value === false) return value;
@@ -496,7 +496,8 @@
     const engine = record.mode === 'fast' ? 'rapid' : 'paddle';
     const gateValue = boolish(record.quality_gate);
     const gate = gateValue === true ? 'gate aprovado' : gateValue === false ? 'gate reprovado' : 'gate pendente';
-    const meta = `${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)} · ${gate}`;
+    const provenance = record.output_verification === 'legacy_unverified' ? 'origem não verificada' : record.output_verification === 'e2e_evidence' ? 'evidência E2E' : record.output_verification === 'manifest_verified' ? 'manifest verificado' : 'origem não informada';
+    const meta = `${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)} · ${gate} · ${provenance}`;
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>

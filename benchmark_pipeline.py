@@ -4,7 +4,9 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -54,6 +56,7 @@ from pipeline_cache import (
     valid_image,
 )
 from session_context import SessionContextStore
+from output_manifest import build_run_manifest
 from translator_nllb import get_translator
 from translator_nvidia import PROMPT_VERSION
 from resource_monitor import ResourceMonitor, detect_gpu_basic
@@ -68,6 +71,54 @@ PIPELINE_FILES = (
     "translator_nvidia.py",
     "pdf.py",
 )
+PIPELINE_MANIFEST_VERSION = "benchmark-pipeline-v1"
+
+
+def _git_metadata():
+    def resolve(*args):
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=Path(__file__).resolve().parent,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return ""
+        return completed.stdout.strip() if completed.returncode == 0 else ""
+
+    return {
+        "commit_hash": resolve("rev-parse", "HEAD"),
+        "branch": resolve("branch", "--show-current"),
+    }
+
+
+def _output_run_manifest(output_folder, report, translator):
+    created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    git = _git_metadata()
+    run_id = stable_hash(
+        {
+            "run_signature": report.get("run_signature"),
+            "output_folder": str(output_folder),
+            "created_at": created_at,
+        }
+    )[:24]
+    quality = report.get("quality_validation") or {}
+    return build_run_manifest(
+        run_id=run_id,
+        created_at=created_at,
+        source_url=str(report.get("url") or ""),
+        commit_hash=git["commit_hash"],
+        branch=git["branch"],
+        pipeline_version=PIPELINE_MANIFEST_VERSION,
+        model=str(getattr(translator, "model", "") or "unknown"),
+        final_status=str(report.get("status") or ""),
+        quality_passed=bool(quality.get("passed")),
+        manual_review_count=int(quality.get("manual_review_required_groups") or 0),
+        rejected_count=int(report.get("translation_rejections") or 0),
+        pdf_path=str(report.get("pdf_path") or ""),
+    )
 
 
 def run_benchmark(args):
@@ -1062,6 +1113,12 @@ def run_benchmark(args):
             **(session_context.summary() if session_context is not None else {}),
         },
     }
+    run_manifest_path = output_folder / "run_manifest.json"
+    report["run_manifest_path"] = str(run_manifest_path)
+    atomic_write_json(
+        run_manifest_path,
+        _output_run_manifest(output_folder, report, translator),
+    )
     quality_report = _build_quality_report(
         report,
         completed_states,
