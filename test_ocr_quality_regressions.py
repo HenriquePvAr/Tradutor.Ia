@@ -398,6 +398,30 @@ class OCRQualityRegressionTests(unittest.TestCase):
         )
         self.assertTrue(name_valid)
 
+    def test_short_stem_english_gerund_is_rejected_and_retried(self):
+        group = _scored_group("THEY KEEP DOING THIS.")
+        apply_group_translations([group], ["ELES CONTINUAM DOING ISSO."])
+
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(
+            group.translation_validation_reason.startswith(
+                "residual_inflected_english:DOING"
+            ),
+            group.translation_validation_reason,
+        )
+
+        translator = _StrictRetryTranslator("ELES CONTINUAM FAZENDO ISSO.")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["valid"], records)
+        self.assertTrue(group.translation_valid)
+        self.assertEqual(group.translation_validation_reason, "retry_ok")
+        self.assertEqual(group.translation, "ELES CONTINUAM FAZENDO ISSO.")
+        self.assertFalse(group.manual_review_required)
+        self.assertFalse(group.rejected_translation)
+
     def test_portuguese_s_final_tokens_are_not_inflected_english(self):
         cases = [
             (

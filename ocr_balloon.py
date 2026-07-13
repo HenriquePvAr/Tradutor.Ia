@@ -3208,7 +3208,9 @@ def validate_translation_text(
             and _looks_like_inflected_english_token(token)
         }
     )
-    if residual_inflected_english and portuguese_hits:
+    if residual_inflected_english and (
+        portuguese_hits or len(translated_tokens) >= 4
+    ):
         return (
             False,
             "residual_inflected_english:"
@@ -3283,14 +3285,17 @@ def _english_inflection_base(token):
     candidates = []
 
     def add(candidate):
-        if len(candidate) >= 3 and candidate not in candidates:
+        # Some common English verbs have a two-character base.  Keep those
+        # candidates and let the fixed lexical reference set decide whether
+        # they are actual English bases.
+        if len(candidate) >= 2 and candidate not in candidates:
             candidates.append(candidate)
 
     if token.endswith("IES") and len(token) > 4:
         add(token[:-3] + "Y")
     if token.endswith("IED") and len(token) > 4:
         add(token[:-3] + "Y")
-    if token.endswith("ING") and len(token) > 5:
+    if token.endswith("ING") and len(token) > 4:
         stem = token[:-3]
         add(stem)
         add(stem + "E")
