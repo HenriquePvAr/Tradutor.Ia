@@ -27,6 +27,7 @@ from ocr_balloon import (
     _english_inflection_base,
     _line_belongs_to_group,
     _line_ignore_reason,
+    _looks_like_noise,
     _leading_hyphenated_fragment,
     _group_lines,
     _post_render_source_text_check,
@@ -2836,6 +2837,17 @@ class OCRQualityRegressionTests(unittest.TestCase):
             _line_ignore_reason(line, (320, 420, 3)),
             "too_few_useful_chars",
         )
+
+    def test_censored_word_beside_real_words_survives_noise_filter(self):
+        # A masked expletive next to real words is translatable speech; the
+        # censorship marks must not push the line into the noise filter and
+        # block the translation entirely.
+        line = _boxed_line("DAMN H***!", (120, 120, 200, 48), confidence=0.95)
+        self.assertEqual(_line_ignore_reason(line, (320, 420, 3)), "")
+        self.assertFalse(_looks_like_noise("DAMN H***!"))
+
+    def test_symbol_soup_without_words_is_still_noise(self):
+        self.assertTrue(_looks_like_noise("@#%^~<>|"))
 
     def test_saturated_editorial_graphic_is_decorative_despite_false_enclosure(self):
         fixtures = (

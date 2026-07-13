@@ -1281,12 +1281,20 @@ def _looks_like_noise(text):
     if len(compact) <= 2 and compact.upper() not in SHORT_REAL_TEXTS:
         return True
 
+    # Censorship masks (a letter followed by * or #, e.g. "D***", "H#**") are
+    # legitimate placeholders inside real speech, not noise. Neutralize them so
+    # they do not inflate the odd-character ratio and drop translatable dialogue.
+    sanitized = re.sub(
+        r"(?<=[A-Za-z])[*#]+",
+        lambda match: "." * len(match.group()),
+        text,
+    )
     odd = sum(
         1
-        for char in text
+        for char in sanitized
         if not (char.isalnum() or char in "'!?.,:; -")
     )
-    if odd / max(1, len(text)) > 0.28:
+    if odd / max(1, len(sanitized)) > 0.28:
         return True
 
     letters = _letters(text)
