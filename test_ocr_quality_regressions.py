@@ -1,3 +1,5 @@
+import json
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -363,6 +365,41 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertNotEqual(before, after)
         self.assertIn("EXAMPLENAME", translator._system_prompt())
         self.assertNotIn("test", translator._system_prompt())
+
+    def test_translation_cache_rejects_legacy_schema_and_separates_target(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(config, "CACHE_ROOT", folder):
+                translator = TranslatorNvidiaBatch(api_key="test", enable_cache=True)
+                text = "THE SIGNAL IS CLEAR."
+                cache_path = translator._translation_cache_path(text)
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    json.dumps(
+                        {
+                            "key": translator._translation_cache_key(text),
+                            "translation": "O SINAL ESTÁ LIMPO.",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                self.assertIsNone(translator._load_translation_cache(text))
+
+                translator._save_translation_cache(text, "O SINAL ESTÁ LIMPO.")
+                self.assertEqual(
+                    translator._load_translation_cache(text),
+                    "O SINAL ESTÁ LIMPO.",
+                )
+
+                alternate_target = TranslatorNvidiaBatch(
+                    api_key="test",
+                    enable_cache=True,
+                    target_language="es-ES",
+                )
+                self.assertNotEqual(
+                    translator._translation_cache_key(text),
+                    alternate_target._translation_cache_key(text),
+                )
 
     def test_vocative_name_variants_use_higher_confidence_consensus(self):
         uncertain = _scored_group("MIHUL, DO YOU WANT TO COME?")

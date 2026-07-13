@@ -2,6 +2,7 @@ import json
 import re
 import threading
 import time
+import unicodedata
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,13 +11,14 @@ import config
 from pipeline_cache import atomic_write_json, load_json, stable_hash
 
 
-PROMPT_VERSION = "nvidia-manga-ptbr-v2-json-qa"
-SYSTEM_PROMPT_TEMPLATE = """Traduzir textos de baloes de manga/manhwa de {source_language} para portugues do Brasil.
+PROMPT_VERSION = "nvidia-manga-v3-json-qa"
+TRANSLATION_CACHE_SCHEMA_VERSION = 2
+SYSTEM_PROMPT_TEMPLATE = """Traduzir textos de baloes de manga/manhwa de {source_language} para {target_language}.
 Manter IDs iguais.
 Nao juntar baloes.
 Nao explicar.
 Nao usar markdown.
-Usar portugues natural do Brasil.
+Usar linguagem natural no idioma de destino.
 Preservar emocao, gritos, pausas e tom dramatico.
 Usar frases curtas para caber nos baloes.
 Retornar somente JSON."""
@@ -30,6 +32,7 @@ class TranslatorNvidiaBatch:
         batch_size=None,
         max_requests_per_minute=None,
         source_language="ingles",
+        target_language="pt-BR",
         enable_cache=None,
         parallel=None,
         workers=None,
@@ -43,6 +46,7 @@ class TranslatorNvidiaBatch:
             max_requests_per_minute or config.NVIDIA_MAX_REQUESTS_PER_MINUTE or 20
         )
         self.source_language = source_language
+        self.target_language = str(target_language or "pt-BR")
         self.enable_cache = (
             config.ENABLE_TRANSLATION_CACHE if enable_cache is None else bool(enable_cache)
         )
@@ -136,8 +140,9 @@ class TranslatorNvidiaBatch:
                         "role": "system",
                         "content": (
                             self._system_prompt()
-                            + "\nRevisao estrita: traduza TODO texto ingles para "
-                            "portugues do Brasil. Nao deixe palavras/frases em ingles, "
+                            + "\nRevisao estrita: traduza TODO texto de "
+                            f"{self.source_language} para {self._target_language_name()}. "
+                            "Nao deixe palavras/frases no idioma de origem, "
                             "exceto nomes proprios. Se o texto for uma onomatopeia/SFX, "
                             "preserve. Retorne somente JSON."
                         ),
@@ -251,7 +256,7 @@ class TranslatorNvidiaBatch:
                 {
                     "role": "user",
                     "content": (
-                        "Traduza estes textos para portugues do Brasil e retorne "
+                        f"Traduza estes textos para {self._target_language_name()} e retorne "
                         f"somente JSON com os mesmos IDs:\n{content}"
                     ),
                 },
@@ -355,17 +360,22 @@ class TranslatorNvidiaBatch:
     def _translation_cache_key(self, text):
         return stable_hash(
             {
+                "cache_schema_version": TRANSLATION_CACHE_SCHEMA_VERSION,
                 "prompt_version": PROMPT_VERSION,
-                "text": str(text),
+                "text": self._normalized_cache_source(text),
                 "model": self.model,
                 "source_language": self.source_language,
+                "target_language": self.target_language,
                 "session_context": self.session_context_signature,
                 "detected_names": self.detected_names_signature,
             }
         )
 
     def _system_prompt(self):
-        prompt = SYSTEM_PROMPT_TEMPLATE.format(source_language=self.source_language)
+        prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            source_language=self.source_language,
+            target_language=self._target_language_name(),
+        )
         if self.session_context_prompt:
             prompt += "\n\n" + self.session_context_prompt
         if self.detected_names_prompt:
@@ -382,7 +392,17 @@ class TranslatorNvidiaBatch:
             return None
         key = self._translation_cache_key(text)
         payload = load_json(self._translation_cache_path(text))
-        if payload.get("key") != key:
+        if (
+            payload.get("key") != key
+            or payload.get("cache_schema_version")
+            != TRANSLATION_CACHE_SCHEMA_VERSION
+            or payload.get("prompt_version") != PROMPT_VERSION
+            or payload.get("model") != self.model
+            or payload.get("source_language") != self.source_language
+            or payload.get("target_language") != self.target_language
+            or payload.get("normalized_source")
+            != self._normalized_cache_source(text)
+        ):
             return None
         translation = payload.get("translation")
         return str(translation).strip() if translation else None
@@ -395,13 +415,26 @@ class TranslatorNvidiaBatch:
             self._translation_cache_path(text),
             {
                 "key": key,
+                "cache_schema_version": TRANSLATION_CACHE_SCHEMA_VERSION,
                 "prompt_version": PROMPT_VERSION,
                 "model": self.model,
                 "source_language": self.source_language,
+                "target_language": self.target_language,
+                "normalized_source": self._normalized_cache_source(text),
                 "text": str(text),
                 "translation": str(translation),
             },
         )
+
+    def _target_language_name(self):
+        if self.target_language.casefold() in {"pt-br", "pt_br", "português", "portugues"}:
+            return "portugues do Brasil"
+        return self.target_language
+
+    @staticmethod
+    def _normalized_cache_source(text):
+        normalized = unicodedata.normalize("NFC", str(text or ""))
+        return re.sub(r"\s+", " ", normalized).strip()
 
     def _increment_stat(self, name, value=1):
         with self._stats_lock:
