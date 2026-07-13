@@ -1820,6 +1820,23 @@ def _classify_groups(groups, image_bgr, page_index=None):
                     "conflict_resolved": "weak_double_character_repeat",
                 },
             )
+        elif group.classification == "narration" and repeated_short_shape:
+            # A "narration" whose entire content is one short token repeated
+            # (e.g. footsteps "STEP STEP") is a sound effect lettered on the art
+            # that a stylized bright region (or floor edges read as a box) was
+            # mistaken for a caption box. Real narration is prose, never a lone
+            # repeated word; a genuine repeated exclamation in a real balloon is
+            # classified speech, not narration, so it is unaffected. Keep it a
+            # sound effect instead of translating and redrawing over the art.
+            group.inside_balloon_like_region = False
+            group.inside_narration_box_like_region = False
+            _set_group_classification(
+                group,
+                "sfx",
+                "repeated_onomatopoeia_over_false_enclosure",
+                confidence=group.main_text_score,
+                evidence={"conflict_resolved": "repeated_onomatopoeia"},
+            )
 
         with profile_step("classify.apply_policy", page_index=page_index):
             _apply_classification_policy(group)

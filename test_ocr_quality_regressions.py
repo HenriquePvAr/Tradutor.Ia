@@ -2831,6 +2831,36 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(balloon_group.classification, "speech")
         self.assertEqual(effect_group.classification, "sfx")
 
+    def test_repeated_onomatopoeia_in_false_enclosure_stays_sfx(self):
+        # A sound effect lettered on bright art (e.g. footsteps "STEP STEP") can
+        # trip a false narration/white-region enclosure. A caption/balloon whose
+        # entire content is one short token repeated is never real prose, so it
+        # must stay a sound effect: not translated, not redrawn over the art.
+        image = np.full((400, 420, 3), 210, dtype=np.uint8)
+        lines = [
+            _boxed_line("STEP", (120, 120, 150, 60), confidence=0.90),
+            _boxed_line("Step", (200, 240, 150, 60), confidence=0.75),
+        ]
+        group = TextGroup(group_id="SFX", lines=lines, text="STEP Step")
+
+        with patch("ocr_balloon._enclosure_evidence", return_value=(False, True)), \
+                patch("ocr_balloon._visual_white_container_evidence", return_value={}):
+            _classify_groups([group], image)
+
+        self.assertEqual(group.classification, "sfx")
+        self.assertTrue(group.ignored)
+        self.assertEqual(group.ignore_reason, "sfx_translation_disabled")
+
+    def test_repeated_word_inside_real_balloon_stays_speech(self):
+        # Guard: a genuine repeated exclamation inside a real balloon contour is
+        # speech, not a sound effect.
+        image, _, group = _white_balloon_fixture("RUN RUN")
+
+        with patch("ocr_balloon._enclosure_evidence", return_value=(True, False)):
+            _classify_groups([group], image)
+
+        self.assertEqual(group.classification, "speech")
+
     def test_deliberate_censorship_remains_filtered_before_translation(self):
         line = _boxed_line("S***!", (135, 126, 150, 48), confidence=0.95)
         self.assertEqual(
