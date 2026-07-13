@@ -3414,7 +3414,12 @@ def _residual_source_hyphen_fragment(source_text, translation, allowed_names):
         translated_word,
     } & set(allowed_names or []):
         return ""
-    if source_word not in RESIDUAL_TRANSLATION_ENGLISH_WORDS:
+    # A well-formed stutter repeats the initial of its OWN word. When the kept
+    # prefix no longer matches the translated word (e.g. "S-STOP" -> "S-PARA"
+    # instead of "P-PARA"), the stutter letter was carried over from the source
+    # regardless of whether the source word is a known English term.
+    malformed_prefix = not translated_word.startswith(translated_prefix)
+    if source_word not in RESIDUAL_TRANSLATION_ENGLISH_WORDS and not malformed_prefix:
         return ""
     return source_prefix
 

@@ -1201,6 +1201,34 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(quality_report["totals"]["mixed_language_items"], 1)
         self.assertEqual(aggregate["mixed_language_items"], 1)
 
+    def test_stutter_prefix_must_match_its_own_translated_word(self):
+        # A stutter repeats the translated word's own initial. Keeping the
+        # source word's stutter letter ("S-STOP" -> "S-PARA" instead of
+        # "P-PARA") is a residual source-language artifact. This must not depend
+        # on any specific source word.
+        for source, candidate in (
+            ("S-STOP!!", "S-PARA!!"),
+            ("K-KILL!", "K-MATAR!"),
+        ):
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(source, candidate, "speech")
+                self.assertFalse(valid, candidate)
+                self.assertTrue(
+                    reason.startswith("multilingual_partial_translation"), reason
+                )
+
+    def test_wellformed_translated_stutter_is_accepted(self):
+        # The stutter letter re-derived from the translated word is valid, and a
+        # dropped/consistent stutter must not be flagged.
+        for source, candidate in (
+            ("S-STOP!!", "P-PARA!!"),
+            ("K-KILL!", "M-MATAR!"),
+            ("P-PLEASE!", "P-POR FAVOR!"),
+        ):
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(source, candidate, "speech")
+                self.assertTrue(valid, f"{candidate}: {reason}")
+
     def test_residual_spanish_reason_is_reported_as_mixed_language(self):
         states = [
             {
