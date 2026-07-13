@@ -1,3 +1,7 @@
+from offline_test_guard import install_offline_network_guard
+
+install_offline_network_guard()
+
 import io
 import hashlib
 import json

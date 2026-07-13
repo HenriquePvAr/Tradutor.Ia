@@ -154,6 +154,11 @@ Ainda assim, a revisão humana continua importante. SFX com tipografia complexa,
 - [Qualidade e validação](docs/QUALITY_AND_VALIDATION.md) — fallbacks, retries, quality gate e estados.
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — diagnóstico seguro para falhas conhecidas.
 
+## Testes
+
+Os testes padrão são offline. Smokes que acessam rede ficam em `scripts/`,
+exigem opt-in explícito e estão documentados em [Testes](docs/TESTING.md).
+
 ## Roadmap
 
 - aprimorar a classificação de SFX e elementos decorativos;

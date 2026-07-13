@@ -2,29 +2,89 @@ import argparse
 import json
 import os
 import shutil
+import tempfile
 import time
+from pathlib import Path
 
-from PIL import Image, ImageStat
-
-import config
-from down import download_images, force_remove
-from json_utils import dump_json, dumps_json
-from ocr_balloon import process_image_file
-from pdf import generate_pdf
-from translator_nllb import get_translator
+from scripts.manual_network import NetworkSmokeNotAuthorized, require_network_smoke
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Teste controlado do pipeline Webtoon.")
-    parser.add_argument("--url", default=config.TEST_URL)
-    parser.add_argument("--max-images", type=int, default=config.TEST_MAX_IMAGES)
+WEBTOON_SMOKE_OPT_IN = "ALLOW_WEBTOON_SMOKE"
+
+
+def _load_pipeline_dependencies():
+    """Import operational dependencies only after explicit authorization."""
+
+    global Image, ImageStat, config, download_images, dump_json, dumps_json
+    global process_image_file, generate_pdf, get_translator
+
+    from PIL import Image as pillow_image
+    from PIL import ImageStat as pillow_image_stat
+
+    import config as runtime_config
+    from down import download_images as runtime_download_images
+    from json_utils import dump_json as runtime_dump_json
+    from json_utils import dumps_json as runtime_dumps_json
+    from ocr_balloon import process_image_file as runtime_process_image_file
+    from pdf import generate_pdf as runtime_generate_pdf
+    from translator_nllb import get_translator as runtime_get_translator
+
+    Image = pillow_image
+    ImageStat = pillow_image_stat
+    config = runtime_config
+    download_images = runtime_download_images
+    dump_json = runtime_dump_json
+    dumps_json = runtime_dumps_json
+    process_image_file = runtime_process_image_file
+    generate_pdf = runtime_generate_pdf
+    get_translator = runtime_get_translator
+
+
+def _prepare_smoke_output(value: str) -> Path:
+    """Reserve a new, explicitly named temporary folder without cleanup."""
+
+    folder = Path(value).expanduser().resolve()
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    if not folder.name.startswith("smoke_"):
+        raise ValueError("--output-dir deve terminar em um nome iniciado por smoke_.")
+    try:
+        folder.relative_to(temporary_root)
+    except ValueError as exc:
+        raise ValueError("--output-dir deve ficar dentro do diretório temporário.") from exc
+    if folder.exists():
+        raise FileExistsError("--output-dir já existe; smoke não sobrescreve artefatos.")
+    folder.mkdir(parents=True)
+    return folder
+
+
+def _configure_isolated_smoke_environment(output_folder: Path) -> None:
+    """Keep every cache and intermediate path inside the approved smoke folder."""
+
+    os.environ["CACHE_ROOT"] = str(output_folder / "smoke_cache")
+    os.environ["TEMP_FOLDER"] = str(output_folder / "input")
+    os.environ["TEMP_OUT"] = str(output_folder / "rendered")
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        require_network_smoke(WEBTOON_SMOKE_OPT_IN)
+    except NetworkSmokeNotAuthorized as exc:
+        print(exc)
+        return 2
+
+    parser = argparse.ArgumentParser(description="Smoke Webtoon manual e opt-in.")
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--max-images", type=int, default=1)
     parser.add_argument(
         "--full",
         action="store_true",
         help="Processa todas as imagens validas do capitulo.",
     )
-    parser.add_argument("--debug-folder", default=config.DEBUG_FOLDER)
-    parser.add_argument("--keep-debug", action="store_true")
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Pasta nova smoke_* dentro do diretório temporário; nunca é limpa automaticamente.",
+    )
     parser.add_argument(
         "--fast",
         action="store_true",
@@ -56,36 +116,40 @@ def main():
         help="Processa apenas paginas validas especificas do capitulo, ex: 20,28,32,48.",
     )
     parser.add_argument(
-        "--output-folder",
-        default=os.path.join("output", "full_chapter"),
-        help="Pasta dos artefatos de benchmark.",
-    )
-    parser.add_argument(
         "--ocr-engine",
         choices=("paddle", "rapidocr"),
         help="Sobrescreve o motor OCR nesta execucao.",
     )
-    args = parser.parse_args()
-    _apply_ocr_cli_config(args.ocr_engine)
+    args = parser.parse_args(argv)
 
     if not args.full and args.max_images <= 0:
         parser.error("--max-images deve ser maior que zero.")
+    output_folder = _prepare_smoke_output(args.output_dir)
+    args.output_folder = str(output_folder)
+    args.debug_folder = str(output_folder)
+    return run_smoke(args, output_folder)
+
+
+def run_smoke(args, output_folder: Path) -> int:
+    """Run only after ``main`` has fail-closed authorized the network operation."""
+
+    require_network_smoke(WEBTOON_SMOKE_OPT_IN)
+    _configure_isolated_smoke_environment(output_folder)
+    _load_pipeline_dependencies()
+    _apply_ocr_cli_config(args.ocr_engine)
 
     if args.download_only:
-        _run_download_only(args)
-        return
+        _run_download_only(args, str(output_folder))
+        return 0
 
     if args.benchmark:
         from benchmark_pipeline import run_benchmark
 
         run_benchmark(args)
-        return
+        return 0
 
     started_at = time.perf_counter()
-    debug_folder = os.path.abspath(args.debug_folder)
-    if os.path.exists(debug_folder) and not args.keep_debug:
-        force_remove(debug_folder)
-    os.makedirs(debug_folder, exist_ok=True)
+    debug_folder = str(output_folder)
 
     print(f"Teste Webtoon: {args.url}")
     print(f"Limite de imagens: {'capitulo completo' if args.full else args.max_images}")
@@ -152,10 +216,10 @@ def main():
     print(dumps_json(summary, ensure_ascii=False, indent=2))
     print(f"Resumo salvo em: {summary_path}")
     _print_final_report(summary)
+    return 0
 
 
-def _run_download_only(args):
-    output_folder = os.path.abspath(args.output_folder)
+def _run_download_only(args, output_folder):
     input_folder = os.path.join(output_folder, "input")
     os.makedirs(output_folder, exist_ok=True)
     max_images = None if args.full else args.max_images
@@ -342,4 +406,4 @@ def _print_final_report(summary):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
