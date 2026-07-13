@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 
-from scripts.manual_network import NetworkSmokeNotAuthorized, require_network_smoke
+if __package__:
+    from scripts.manual_network import NetworkSmokeNotAuthorized, require_network_smoke
+else:  # Supports the documented ``python scripts\\...`` invocation.
+    from manual_network import NetworkSmokeNotAuthorized, require_network_smoke
 
 
 NVIDIA_SMOKE_OPT_IN = "ALLOW_NVIDIA_SMOKE"

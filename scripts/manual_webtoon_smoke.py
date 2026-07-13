@@ -6,7 +6,10 @@ import tempfile
 import time
 from pathlib import Path
 
-from scripts.manual_network import NetworkSmokeNotAuthorized, require_network_smoke
+if __package__:
+    from scripts.manual_network import NetworkSmokeNotAuthorized, require_network_smoke
+else:  # Supports the documented ``python scripts\\...`` invocation.
+    from manual_network import NetworkSmokeNotAuthorized, require_network_smoke
 
 
 WEBTOON_SMOKE_OPT_IN = "ALLOW_WEBTOON_SMOKE"
