@@ -1818,6 +1818,108 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(aggregate["translation_rejections"], 1)
         self.assertEqual(aggregate["mixed_language_items"], 1)
 
+    def test_missing_translation_candidate_is_explicit_manual_review(self):
+        group = _scored_group("THE SIGNAL IS CLEAR.")
+
+        apply_group_translations([group], [])
+
+        self.assertTrue(group.sent_to_translation)
+        self.assertFalse(group.translation_valid)
+        self.assertEqual(group.translation_validation_reason, "missing_translation_candidate")
+        self.assertEqual(group.translation_candidate, "")
+        self.assertEqual(group.translation_final_state, "manual_review")
+        self.assertTrue(group.manual_review_required)
+        self.assertTrue(group.preserved_original)
+        self.assertEqual(group.translation, group.text)
+        debug_data = _debug_payload("", group.lines, [], [group])
+        self.assertEqual(debug_data["translated_group_count"], 0)
+        self.assertFalse(debug_data["items"][0]["translated"])
+
+    def test_source_echo_after_retries_has_explicit_terminal_reason(self):
+        group = _scored_group("THE SIGNAL IS CLEAR.")
+        apply_group_translations([group], [group.text])
+
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            records = validate_and_retry_translations(
+                [group],
+                _StrictRetryTranslator(group.text),
+            )
+
+        self.assertEqual(len(records), 1)
+        self.assertFalse(group.translation_valid)
+        self.assertEqual(
+            group.translation_final_reason,
+            "untranslated_source_after_retries",
+        )
+        self.assertEqual(group.translation_final_state, "manual_review")
+        self.assertTrue(group.manual_review_required)
+        self.assertTrue(group.preserved_original)
+        self.assertEqual(group.translation, group.text)
+
+    def test_quality_report_accounts_for_every_translatable_terminal_state(self):
+        states = [
+            {
+                "index": 1,
+                "status": "completed",
+                "output_path": "",
+                "image_path": "",
+                "timings": {},
+                "debug_data": {
+                    "group_count": 3,
+                    "items": [
+                        {
+                            "id": "T1",
+                            "classification": "speech",
+                            "sent_to_nvidia": True,
+                            "translation_candidate": "SINAL LIMPO.",
+                            "translation_final_state": "translated",
+                            "translation_final_reason": "ok",
+                            "translation_valid": True,
+                            "redrawn": True,
+                            "preserved_original": False,
+                            "manual_review_required": False,
+                        },
+                        {
+                            "id": "T2",
+                            "classification": "narration",
+                            "sent_to_nvidia": True,
+                            "translation_candidate": "THE SIGNAL IS CLEAR.",
+                            "translation_final_state": "manual_review",
+                            "translation_final_reason": "untranslated_source_after_retries",
+                            "translation_valid": False,
+                            "redrawn": False,
+                            "preserved_original": True,
+                            "manual_review_required": True,
+                        },
+                        {
+                            "id": "T3",
+                            "classification": "sfx",
+                            "sent_to_nvidia": False,
+                            "translation_final_state": "skipped_with_reason",
+                            "translation_final_reason": "sfx_preserved",
+                            "translation_valid": True,
+                            "redrawn": False,
+                            "preserved_original": True,
+                            "manual_review_required": False,
+                        },
+                    ],
+                },
+            }
+        ]
+
+        quality_report = _build_quality_report(
+            {"quality_validation": {"passed": False}}, states, []
+        )
+        accounting = quality_report["totals"]["translation_accounting"]
+
+        self.assertEqual(accounting["detected_translatable"], 2)
+        self.assertEqual(accounting["sent_to_translation"], 2)
+        self.assertEqual(accounting["translated"], 1)
+        self.assertEqual(accounting["manual_review"], 1)
+        self.assertEqual(accounting["missing_terminal_state"], 0)
+        self.assertTrue(accounting["accounting_closed"])
+        self.assertTrue(accounting["requires_review"])
+
     def test_single_english_token_rejected_only_in_translatable_context(self):
         valid, reason = validate_translation_text("TRAIN", "TRAIN", "speech")
         self.assertFalse(valid)

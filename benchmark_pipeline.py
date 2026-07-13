@@ -20,6 +20,7 @@ from classification_profiler import (
 from down import download_images, force_remove
 from json_utils import dumps_json
 from ocr_balloon import (
+    TRANSLATION_TERMINAL_STATES,
     analyze_image_array,
     apply_selective_ocr_fallbacks,
     apply_group_translations,
@@ -844,6 +845,23 @@ def run_benchmark(args):
         quality.get("passed") and quality["smart_split_safe"]
     )
     summary = _aggregate_debug_data(completed_states)
+    translation_accounting = _translation_quality_accounting(completed_states)
+    quality["translation_accounting"] = translation_accounting
+    quality["translation_terminal_states_complete"] = translation_accounting[
+        "accounting_closed"
+    ]
+    quality["translation_not_applied"] = translation_accounting[
+        "translation_not_applied"
+    ]
+    quality["missing_translation_candidate"] = translation_accounting[
+        "missing_candidate"
+    ]
+    quality["source_language_residual_groups"] = translation_accounting[
+        "source_language_residual"
+    ]
+    quality["passed"] = bool(
+        quality.get("passed") and translation_accounting["quality_passed"]
+    )
     counters["ocr_page_fallbacks"] = summary["ocr_page_fallbacks"]
     counters["ocr_region_fallbacks"] = summary["ocr_region_fallbacks"]
     counters["ocr_text_repairs"] = summary["ocr_text_repairs"]
@@ -866,6 +884,7 @@ def run_benchmark(args):
         and counters["pages_with_error"] == 0
     )
     quality["zero_processing_errors"] = counters["pages_with_error"] == 0
+    quality["status"] = "passed" if quality["passed"] else "review_required"
     new_images = len(completed_states) - counters["images_skipped_by_cache"]
     cache_average = (
         stage_seconds["cache_load"] / counters["images_skipped_by_cache"]
@@ -1357,15 +1376,112 @@ MIXED_LANGUAGE_VALIDATION_REASON_PREFIXES = (
     "multilingual_partial",
     "untranslated_english",
     "untranslated_single_english",
+    "untranslated_source",
+    "residual_source",
+    "missing_translation",
+    "invalid_translation",
 )
-
-
 def _is_mixed_language_validation_reason(reason):
     return str(reason or "").startswith(MIXED_LANGUAGE_VALIDATION_REASON_PREFIXES)
 
 
+def _translation_quality_accounting(states):
+    terminal_counts = {
+        state: 0 for state in sorted(TRANSLATION_TERMINAL_STATES)
+    }
+    result = {
+        "detected_translatable": 0,
+        "sent_to_translation": 0,
+        "translated": 0,
+        "translated_rendered": 0,
+        "rejected": 0,
+        "manual_review": 0,
+        "preserved_original": 0,
+        "translation_failed": 0,
+        "skipped_with_reason": 0,
+        "source_language_residual": 0,
+        "missing_candidate": 0,
+        "candidate_equals_source": 0,
+        "invalid_candidate": 0,
+        "translation_not_applied": 0,
+        "missing_terminal_state": 0,
+        "terminal_state_counts": terminal_counts,
+        "accounting_closed": False,
+        "requires_review": False,
+        "quality_passed": False,
+    }
+    translatable_items = [
+        item
+        for state in states
+        for item in state.get("debug_data", {}).get("items", [])
+        if item.get("classification") in {"speech", "narration"}
+    ]
+    result["detected_translatable"] = len(translatable_items)
+    for item in translatable_items:
+        state = str(item.get("translation_final_state") or "")
+        reason = str(
+            item.get("translation_final_reason")
+            or item.get("translation_validation_reason")
+            or ""
+        )
+        source = re.sub(r"\s+", " ", str(item.get("clean_text") or "")).strip()
+        candidate = re.sub(
+            r"\s+", " ", str(item.get("translation_candidate") or "")
+        ).strip()
+        if item.get("sent_to_nvidia"):
+            result["sent_to_translation"] += 1
+        if state not in terminal_counts:
+            result["missing_terminal_state"] += 1
+            continue
+        terminal_counts[state] += 1
+        if state != "preserved_original":
+            result[state] += 1
+        if state == "translated" and item.get("redrawn"):
+            result["translated_rendered"] += 1
+        if item.get("preserved_original"):
+            result["preserved_original"] += 1
+        if not candidate:
+            result["missing_candidate"] += 1
+        if source and candidate and source.casefold() == candidate.casefold():
+            result["candidate_equals_source"] += 1
+        if not item.get("translation_valid", False):
+            result["invalid_candidate"] += 1
+        if reason.startswith(
+            (
+                "residual_source_language",
+                "untranslated_source",
+                "missing_translation_candidate",
+            )
+        ) or _is_mixed_language_validation_reason(reason):
+            result["source_language_residual"] += 1
+
+    result["translation_not_applied"] = (
+        result["detected_translatable"] - result["translated_rendered"]
+    )
+    terminal_total = sum(terminal_counts.values())
+    result["accounting_closed"] = bool(
+        result["missing_terminal_state"] == 0
+        and terminal_total == result["detected_translatable"]
+    )
+    result["requires_review"] = bool(
+        result["manual_review"]
+        or result["rejected"]
+        or result["translation_failed"]
+        or result["missing_candidate"]
+        or result["candidate_equals_source"]
+        or result["source_language_residual"]
+        or result["invalid_candidate"]
+        or not result["accounting_closed"]
+    )
+    result["quality_passed"] = bool(
+        result["accounting_closed"] and not result["requires_review"]
+    )
+    return result
+
+
 def _build_quality_report(report, states, translation_retry_records):
     pages = []
+    translation_accounting = _translation_quality_accounting(states)
     totals = {
         "groups_detected": 0,
         "groups_suspicious": 0,
@@ -1388,6 +1504,7 @@ def _build_quality_report(report, states, translation_retry_records):
         "white_patch_rejections": 0,
         "broad_mask_rejections": 0,
         "background_type_counts": {},
+        "translation_accounting": translation_accounting,
     }
 
     for state in sorted(states, key=lambda item: item["index"]):
@@ -1426,7 +1543,7 @@ def _build_quality_report(report, states, translation_retry_records):
             item
             for item in items
             if item.get("classification") == "narration"
-            and item.get("sent_to_nvidia")
+            and item.get("translation_final_state") == "translated"
         ]
         sfx = [
             item
@@ -1515,6 +1632,11 @@ def _build_quality_report(report, states, translation_retry_records):
                     if record.get("group_id")
                     in {item.get("id") for item in items}
                 ],
+                "translation_terminal_items": [
+                    _quality_item_summary(item)
+                    for item in items
+                    if item.get("classification") in {"speech", "narration"}
+                ],
                 "mixed_language_items": [_quality_item_summary(item) for item in mixed],
                 "text_overflow_items": [_quality_item_summary(item) for item in overflow],
                 "narrations_translated": [_quality_item_summary(item) for item in narrations],
@@ -1566,6 +1688,11 @@ def _quality_item_summary(item):
         "translation_valid": item.get("translation_valid"),
         "translation_validation_reason": item.get("translation_validation_reason"),
         "translation_retry_count": item.get("translation_retry_count"),
+        "translation_candidate": item.get("translation_candidate"),
+        "translation_final_state": item.get("translation_final_state"),
+        "translation_final_reason": item.get("translation_final_reason"),
+        "translation_quality_impact": item.get("translation_quality_impact"),
+        "preserved_original": item.get("preserved_original"),
         "text_overflow_ratio": item.get("text_overflow_ratio"),
         "visual_validation": item.get("visual_validation"),
         "visual_attempts": item.get("visual_attempts"),

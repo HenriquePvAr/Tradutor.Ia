@@ -81,6 +81,17 @@ SFX_WORDS = {
     "WHOOSH",
 }
 
+TRANSLATION_TERMINAL_STATES = frozenset(
+    {
+        "translated",
+        "rejected",
+        "manual_review",
+        "preserved_original",
+        "translation_failed",
+        "skipped_with_reason",
+    }
+)
+
 COMMON_ENGLISH_WORDS = {
     "ABOUT",
     "AFTER",
@@ -314,6 +325,11 @@ class TextGroup:
     translation_retry_count: int = 0
     translation_validation_reason: str = ""
     rejected_translation: str = ""
+    translation_candidate: str = ""
+    translation_final_state: str = ""
+    translation_final_reason: str = ""
+    translation_quality_impact: str = ""
+    preserved_original: bool = False
     text_overflow_ratio: float = 0.0
     draw_box: tuple | None = None
     safe_area: tuple | None = None
@@ -712,10 +728,23 @@ def _match_compact_name_case(source_phrase, compact):
 
 
 def apply_group_translations(groups, translations):
-    for group, translation in zip(groups, translations):
-        translated = clean_ocr_text(translation) or group.text
-        group.translation = _match_source_case(group.text, translated)
+    translations = list(translations or [])
+    for index, group in enumerate(groups):
         group.sent_to_translation = True
+        translated = clean_ocr_text(
+            translations[index] if index < len(translations) else ""
+        )
+        if not translated:
+            group.translation_candidate = ""
+            _finalize_translation_failure(
+                group,
+                "missing_translation_candidate",
+                candidate="",
+            )
+            continue
+
+        group.translation_candidate = _match_source_case(group.text, translated)
+        group.translation = group.translation_candidate
         valid, reason = validate_translation_text(
             group.text,
             group.translation,
@@ -724,6 +753,146 @@ def apply_group_translations(groups, translations):
         )
         group.translation_valid = valid
         group.translation_validation_reason = reason
+        if valid:
+            _set_translation_terminal_state(group, "translated", reason)
+        else:
+            _set_translation_terminal_state(group, "rejected", reason)
+
+
+def _set_translation_terminal_state(
+    group,
+    state,
+    reason="",
+    *,
+    preserved_original=None,
+):
+    if state not in TRANSLATION_TERMINAL_STATES:
+        raise ValueError(f"estado terminal de traducao invalido: {state}")
+    group.translation_final_state = state
+    group.translation_final_reason = str(
+        reason or group.translation_validation_reason or ""
+    )
+    if preserved_original is not None:
+        group.preserved_original = bool(preserved_original)
+    group.translation_quality_impact = (
+        "review_required"
+        if state in {"rejected", "manual_review", "translation_failed"}
+        else "none"
+    )
+
+
+def _normalized_translation_text(text):
+    return re.sub(r"\s+", " ", clean_ocr_text(text)).strip().casefold()
+
+
+def _terminal_translation_failure_reason(group, validation_reason, candidate):
+    candidate_text = clean_ocr_text(candidate)
+    if not candidate_text:
+        return "missing_translation_candidate"
+    if _normalized_translation_text(candidate_text) == _normalized_translation_text(
+        group.text
+    ):
+        return "untranslated_source_after_retries"
+    if str(validation_reason or "").startswith(
+        (
+            "mixed_language",
+            "english_phrase",
+            "residual_english",
+            "residual_inflected_english",
+            "residual_spanish",
+            "multilingual_partial",
+            "untranslated_english",
+            "untranslated_single_english",
+        )
+    ):
+        return "residual_source_language_after_retries"
+    if str(validation_reason or "").startswith("strict_retry_error"):
+        return "translation_failed_after_retries"
+    return "invalid_translation_after_retries"
+
+
+def _finalize_translation_failure(
+    group,
+    reason,
+    *,
+    candidate="",
+    rejected_candidate=None,
+    validator_reason="",
+):
+    candidate = clean_ocr_text(candidate)
+    rejected_candidate = clean_ocr_text(
+        candidate if rejected_candidate is None else rejected_candidate
+    )
+    if candidate:
+        group.translation_candidate = _match_source_case(group.text, candidate)
+    if rejected_candidate:
+        group.rejected_translation = _match_source_case(
+            group.text,
+            rejected_candidate,
+        )
+    group.translation = group.text
+    group.translation_valid = False
+    group.translation_validation_reason = str(
+        validator_reason or group.translation_validation_reason or reason
+    )
+    group.manual_review_required = True
+    state = (
+        "translation_failed"
+        if str(reason).startswith("translation_failed")
+        else "manual_review"
+    )
+    _set_translation_terminal_state(
+        group,
+        state,
+        reason,
+        preserved_original=True,
+    )
+
+
+def _ensure_translation_terminal_state(group):
+    if group.translation_final_state in TRANSLATION_TERMINAL_STATES:
+        return
+    if group.ignored or group.preserve_as_name:
+        _set_translation_terminal_state(
+            group,
+            "skipped_with_reason",
+            group.ignore_reason or "translation_not_required",
+            preserved_original=True,
+        )
+        return
+    if not group.sent_to_translation:
+        _set_translation_terminal_state(
+            group,
+            "skipped_with_reason",
+            "translation_not_selected",
+            preserved_original=True,
+        )
+        return
+    if not group.translation_valid:
+        _finalize_translation_failure(
+            group,
+            _terminal_translation_failure_reason(
+                group,
+                group.translation_validation_reason,
+                group.translation_candidate or group.translation,
+            ),
+            candidate=group.translation_candidate,
+            validator_reason=group.translation_validation_reason,
+        )
+        return
+    if group.visual_attempts and not group.redrawn:
+        _finalize_translation_failure(
+            group,
+            "translation_not_rendered_after_validation",
+            candidate=group.translation_candidate or group.translation,
+        )
+        return
+    _set_translation_terminal_state(
+        group,
+        "translated",
+        group.translation_validation_reason or "ok",
+        preserved_original=False,
+    )
 
 
 def render_analyzed_image(
@@ -828,6 +997,12 @@ def render_analyzed_image(
                 accepted_allowed_mask = group_allowed
                 group.visual_validation = visual_summary
                 group.redrawn = True
+                _set_translation_terminal_state(
+                    group,
+                    "translated",
+                    group.translation_validation_reason or "ok",
+                    preserved_original=False,
+                )
                 break
 
         if accepted:
@@ -852,6 +1027,11 @@ def render_analyzed_image(
                     "reason": "no_safe_render_attempt",
                 }
             )
+            _finalize_translation_failure(
+                group,
+                "translation_not_rendered_after_validation",
+                candidate=group.translation_candidate or group.translation,
+            )
 
     if stage_timings is not None:
         stage_timings["inpainting"] = stage_timings.get("inpainting", 0.0) + inpaint_seconds
@@ -869,12 +1049,16 @@ def render_analyzed_image(
             for group in valid_groups:
                 if group.redrawn:
                     group.redrawn = False
-                    group.manual_review_required = True
                     group.visual_validation = {
                         **group.visual_validation,
                         "visual_validation_passed": False,
                         "reason": "page_level_visual_guard_rollback",
                     }
+                    _finalize_translation_failure(
+                        group,
+                        "translation_not_rendered_after_validation",
+                        candidate=group.translation_candidate or group.translation,
+                    )
         else:
             final = validated
 
@@ -3337,8 +3521,6 @@ def _looks_like_inflected_english_token(token):
 
 
 def validate_and_retry_translations(groups, translator, force=False):
-    if not config.TRANSLATION_VALIDATION:
-        return []
     retry_records = []
     for group in groups:
         if not group.sent_to_translation:
@@ -3351,68 +3533,79 @@ def validate_and_retry_translations(groups, translator, force=False):
         )
         group.translation_valid = valid
         group.translation_validation_reason = reason
-        if valid or not config.TRANSLATION_RETRY_ON_MIXED_LANGUAGE:
+        if valid:
+            _set_translation_terminal_state(group, "translated", reason)
             continue
-        if not hasattr(translator, "translate_strict"):
-            group.rejected_translation = group.translation
-            group.translation = group.text
-            continue
-        original_translation = group.translation
-        for attempt in range(1, config.TRANSLATION_MAX_RETRIES + 1):
-            try:
-                candidate = translator.translate_strict(
+        original_candidate = group.translation_candidate or clean_ocr_text(
+            group.translation
+        )
+        latest_candidate = original_candidate
+        had_retry_error = False
+        retry_enabled = bool(
+            config.TRANSLATION_VALIDATION
+            and config.TRANSLATION_RETRY_ON_MIXED_LANGUAGE
+            and hasattr(translator, "translate_strict")
+        )
+        if retry_enabled:
+            for attempt in range(1, config.TRANSLATION_MAX_RETRIES + 1):
+                try:
+                    candidate = translator.translate_strict(
+                        group.text,
+                        previous_translation=latest_candidate,
+                        validation_reason=reason,
+                        force=force,
+                    )
+                except Exception as exc:
+                    candidate = ""
+                    reason = f"strict_retry_error:{type(exc).__name__}"
+                    had_retry_error = True
+                candidate = _match_source_case(group.text, clean_ocr_text(candidate))
+                latest_candidate = candidate or latest_candidate
+                if candidate:
+                    group.translation_candidate = candidate
+                valid, new_reason = validate_translation_text(
                     group.text,
-                    previous_translation=group.translation,
-                    validation_reason=reason,
-                    force=force,
+                    candidate,
+                    group.classification,
+                    group.detected_proper_names,
                 )
-            except Exception as exc:
-                candidate = ""
-                reason = f"strict_retry_error:{type(exc).__name__}"
-            candidate = _match_source_case(group.text, clean_ocr_text(candidate))
-            valid, new_reason = validate_translation_text(
-                group.text,
-                candidate,
-                group.classification,
-                group.detected_proper_names,
-            )
-            retry_records.append(
-                {
-                    "group_id": group.group_id,
-                    "source": group.text,
-                    "previous_translation": group.translation,
-                    "candidate_translation": candidate,
-                    "attempt": attempt,
-                    "valid": valid,
-                    "reason": new_reason,
-                }
-            )
-            group.translation_retry_count = attempt
-            if valid:
-                group.translation = candidate
-                group.translation_valid = True
-                group.translation_validation_reason = "retry_ok"
-                break
-            reason = new_reason
-            group.translation = candidate or group.translation
-        if not group.translation_valid:
-            initial_valid, initial_reason = validate_translation_text(
-                group.text,
-                original_translation,
-                group.classification,
-                group.detected_proper_names,
-            )
-            if initial_valid:
-                group.translation = original_translation
-                group.translation_valid = True
-                group.translation_validation_reason = (
-                    "kept_initial_translation_after_failed_retry"
+                retry_records.append(
+                    {
+                        "group_id": group.group_id,
+                        "source": group.text,
+                        "previous_translation": group.translation,
+                        "candidate_translation": candidate,
+                        "attempt": attempt,
+                        "valid": valid,
+                        "reason": new_reason,
+                    }
                 )
-            else:
-                group.rejected_translation = original_translation
-                group.translation = group.text
-                group.translation_validation_reason = reason
-                group.manual_review_required = True
+                group.translation_retry_count = attempt
+                if valid:
+                    group.translation = candidate
+                    group.translation_candidate = candidate
+                    group.translation_valid = True
+                    group.translation_validation_reason = "retry_ok"
+                    group.rejected_translation = ""
+                    group.manual_review_required = False
+                    _set_translation_terminal_state(group, "translated", "retry_ok")
+                    break
+                reason = new_reason
+
+        if group.translation_valid:
+            continue
+        failure_reason = _terminal_translation_failure_reason(
+            group,
+            "strict_retry_error" if had_retry_error and not latest_candidate else reason,
+            latest_candidate,
+        )
+        _finalize_translation_failure(
+            group,
+            failure_reason,
+            candidate=latest_candidate,
+            rejected_candidate=original_candidate,
+            validator_reason=reason,
+        )
     return retry_records
 
 
@@ -5911,6 +6104,7 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
 
     group_records = []
     for group in groups:
+        _ensure_translation_terminal_state(group)
         group_records.append(
             {
                 "id": group.group_id,
@@ -5968,6 +6162,11 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "translation_retry_count": group.translation_retry_count,
                 "translation_validation_reason": group.translation_validation_reason,
                 "rejected_translation": group.rejected_translation,
+                "translation_candidate": group.translation_candidate,
+                "translation_final_state": group.translation_final_state,
+                "translation_final_reason": group.translation_final_reason,
+                "translation_quality_impact": group.translation_quality_impact,
+                "preserved_original": bool(group.preserved_original),
                 "text_overflow_ratio": round(group.text_overflow_ratio, 6),
                 "draw_box": list(group.draw_box) if group.draw_box else None,
                 "safe_area": list(group.safe_area) if group.safe_area else None,
@@ -5983,7 +6182,7 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "visual_attempts": list(group.visual_attempts),
                 "mask_metrics": dict(group.mask_metrics),
                 "manual_review_required": bool(group.manual_review_required),
-                "translated": group.sent_to_translation,
+                "translated": group.translation_final_state == "translated",
                 "ignored": group.ignored,
                 "ignore_reason": group.ignore_reason,
                 "sent_to_nvidia": group.sent_to_translation,
@@ -6007,7 +6206,11 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
         "ignored_line_count": len(ignored_lines),
         "ignored_group_count": sum(1 for group in groups if group.ignored),
         "group_count": len(groups),
-        "translated_group_count": sum(1 for group in groups if group.sent_to_translation),
+        "translated_group_count": sum(
+            1
+            for group in groups
+            if group.translation_final_state == "translated"
+        ),
         "redrawn_group_count": sum(1 for group in groups if group.redrawn),
         "classification_counts": classification_counts,
         "items": group_records + ignored_lines,
