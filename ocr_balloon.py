@@ -727,6 +727,39 @@ def _match_compact_name_case(source_phrase, compact):
     return compact.upper()
 
 
+def _group_has_mixed_case_name_evidence(group):
+    if group.classification not in {"speech", "thought", "narration", "unknown"}:
+        return False
+    source_tokens = re.findall(r"[A-Z]{3,}", _ascii_fold(group.text).upper())
+    if not 2 <= len(source_tokens) <= 4:
+        return False
+    if any(
+        token in RESIDUAL_TRANSLATION_ENGLISH_WORDS
+        or _looks_like_inflected_english_token(token)
+        for token in source_tokens
+    ):
+        return False
+    raw_text = " ".join(
+        str(
+            line.original_text
+            or (line.metadata or {}).get("original_text")
+            or line.raw_text
+            or line.text
+            or ""
+        )
+        for line in group.lines
+    )
+    raw_tokens = re.findall(r"[A-Za-z]{3,}", raw_text)
+    return any(token.isalpha() and not token.isupper() for token in raw_tokens)
+
+
+def _group_validation_allowed_proper_names(group):
+    names = list(group.detected_proper_names or [])
+    if _group_has_mixed_case_name_evidence(group):
+        names.append(group.text)
+    return names
+
+
 def apply_group_translations(groups, translations):
     translations = list(translations or [])
     for index, group in enumerate(groups):
@@ -749,7 +782,7 @@ def apply_group_translations(groups, translations):
             group.text,
             group.translation,
             group.classification,
-            group.detected_proper_names,
+            _group_validation_allowed_proper_names(group),
         )
         group.translation_valid = valid
         group.translation_validation_reason = reason
@@ -782,7 +815,8 @@ def _set_translation_terminal_state(
 
 
 def _normalized_translation_text(text):
-    return re.sub(r"\s+", " ", clean_ocr_text(text)).strip().casefold()
+    folded = _ascii_fold(clean_ocr_text(text)).casefold()
+    return re.sub(r"[^a-z0-9]+", "", folded)
 
 
 def _terminal_translation_failure_reason(group, validation_reason, candidate):
@@ -3351,6 +3385,21 @@ def _is_stuttered_name_fragment(text):
     )
 
 
+def _is_nonlexical_vocalization_token(source_tokens):
+    if len(source_tokens) != 1:
+        return False
+    token = next(iter(source_tokens))
+    if not 3 <= len(token) <= 4:
+        return False
+    if token in RESIDUAL_TRANSLATION_ENGLISH_WORDS or _looks_like_inflected_english_token(
+        token
+    ):
+        return False
+    return bool(
+        re.fullmatch(r"[AEIOU][A-Z]{1,3}H|H[AEIOU]H|[A-Z]*([AEIOU])\1+[A-Z]*", token)
+    )
+
+
 def validate_translation_text(
     source_text,
     translation,
@@ -3391,6 +3440,7 @@ def validate_translation_text(
         and not source_has_known_english
         and not source_has_name_like_token
         and not _is_stuttered_name_fragment(source_text)
+        and not _is_nonlexical_vocalization_token(source_tokens)
     ):
         if not (
             len(source_tokens) == 1
@@ -3641,7 +3691,7 @@ def validate_and_retry_translations(groups, translator, force=False):
             group.text,
             group.translation,
             group.classification,
-            group.detected_proper_names,
+            _group_validation_allowed_proper_names(group),
         )
         group.translation_valid = valid
         group.translation_validation_reason = reason
@@ -3679,7 +3729,7 @@ def validate_and_retry_translations(groups, translator, force=False):
                     group.text,
                     candidate,
                     group.classification,
-                    group.detected_proper_names,
+                    _group_validation_allowed_proper_names(group),
                 )
                 retry_records.append(
                     {
@@ -6294,6 +6344,8 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "visual_attempts": list(group.visual_attempts),
                 "mask_metrics": dict(group.mask_metrics),
                 "manual_review_required": bool(group.manual_review_required),
+                "detected_proper_names": list(group.detected_proper_names),
+                "preserve_as_name": bool(group.preserve_as_name),
                 "translated": group.translation_final_state == "translated",
                 "ignored": group.ignored,
                 "ignore_reason": group.ignore_reason,

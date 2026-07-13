@@ -1868,6 +1868,21 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertEqual(reason, "candidate_equals_source")
 
+    def test_unknown_source_echo_normalizes_case_spacing_punctuation_and_quotes(self):
+        for candidate in (
+            "qelon",
+            " QELON ",
+            '"QELON"',
+            "\u201cQELON\u201d",
+            "QELON!",
+        ):
+            with self.subTest(candidate=candidate):
+                valid, reason = validate_translation_text(
+                    "QELON", candidate, "speech"
+                )
+                self.assertFalse(valid)
+                self.assertEqual(reason, "candidate_equals_source")
+
     def test_explicit_proper_name_tokens_are_allowed_in_translation(self):
         valid, reason = validate_translation_text(
             "ASTRA VALE ARRIVED.",
@@ -1877,6 +1892,27 @@ class OCRQualityRegressionTests(unittest.TestCase):
         )
 
         self.assertTrue(valid, reason)
+
+    def test_mixed_case_ocr_name_evidence_preserves_matching_candidate(self):
+        line = _line("ORION VaLE")
+        line.metadata = {"original_text": "ORION VaLE"}
+        group = TextGroup(
+            group_id="T",
+            lines=[line],
+            text="ORION VALE",
+            classification="speech",
+        )
+
+        apply_group_translations([group], ["ORION VALE"])
+
+        self.assertTrue(group.translation_valid)
+        self.assertEqual(group.translation_validation_reason, "ok")
+
+    def test_nonlexical_vocalization_is_preserved_without_a_translation_retry(self):
+        valid, reason = validate_translation_text("OOH!", "OOH!", "speech")
+
+        self.assertTrue(valid, reason)
+        self.assertEqual(reason, "ok")
 
     def test_linguistic_decorative_text_requires_manual_review(self):
         group = TextGroup(
@@ -1907,6 +1943,10 @@ class OCRQualityRegressionTests(unittest.TestCase):
             _cross_region_resolution_bonus(original, clean, 0.75),
             0.0,
         )
+        clean.quality_score = 0.81
+        self.assertEqual(_cross_region_resolution_bonus(original, clean, 0.75), 0.0)
+        clean.quality_score = 0.90
+        self.assertEqual(_cross_region_resolution_bonus(original, clean, 0.69), 0.0)
         clean.quality_reasons = ["possible_cross_region_group"]
         self.assertEqual(_cross_region_resolution_bonus(original, clean, 0.75), 0.0)
 

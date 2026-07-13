@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from run_webtoon import _chapter_slug, _clean_url, _resolve_output_folder
-from session_context import SessionContextStore
+from session_context import CONTEXT_VERSION, SessionContextStore
 from translator_nvidia import TranslatorNvidiaBatch
 
 
@@ -78,6 +78,56 @@ class RunWebtoonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             store = SessionContextStore(Path(folder) / "session_context.json", "https://example.com/chapter")
             data = store.prepare(groups)
+        self.assertEqual(data["proper_names"], [])
+
+    def test_legacy_context_is_fully_discarded_before_preparation(self):
+        legacy = {
+            "version": "chapter-session-v1",
+            "proper_names": [{"text": "LEGACY", "mentions": 9, "preserve": True}],
+            "recurring_terms": [{"text": "legacy-term", "mentions": 9}],
+            "translations_used": [{"source": "OLD", "translation": "ANTIGO"}],
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session_context.json"
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            data = SessionContextStore(path, "https://example.com/chapter").prepare([])
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(data["version"], CONTEXT_VERSION)
+        self.assertEqual(data["proper_names"], [])
+        self.assertEqual(data["recurring_terms"], [])
+        self.assertEqual(data["translations_used"], [])
+        self.assertEqual(persisted, data)
+
+    def test_v2_context_reuses_structural_name_and_translation_entries(self):
+        groups = [
+            SimpleNamespace(
+                classification="speech",
+                text="ORION RETURNS.",
+                translation="ORION VOLTOU.",
+                detected_proper_names=["ORION", "ORION"],
+            )
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session_context.json"
+            first = SessionContextStore(path, "https://example.com/chapter")
+            first.prepare(groups)
+            first.record_translations(groups)
+            data = SessionContextStore(path, "https://example.com/chapter").prepare([])
+
+        self.assertEqual(data["version"], CONTEXT_VERSION)
+        self.assertEqual(len(data["proper_names"]), 1)
+        self.assertEqual(data["proper_names"][0]["text"], "Orion")
+        self.assertEqual(data["proper_names"][0]["mentions"], 2)
+        self.assertEqual(len(data["translations_used"]), 1)
+
+    def test_corrupted_context_is_replaced_with_new_v2_context(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session_context.json"
+            path.write_text("{not-json", encoding="utf-8")
+            data = SessionContextStore(path, "https://example.com/chapter").prepare([])
+
+        self.assertEqual(data["version"], CONTEXT_VERSION)
         self.assertEqual(data["proper_names"], [])
 
 

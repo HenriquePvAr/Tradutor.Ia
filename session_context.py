@@ -53,6 +53,9 @@ class SessionContextStore:
         self.data = load_json(self.path, default={})
 
     def prepare(self, groups):
+        compatible_data = (
+            self.data if self.data.get("version") == CONTEXT_VERSION else {}
+        )
         token_counts = Counter()
         speech_counts = Counter()
         explicit_name_counts = Counter()
@@ -76,11 +79,7 @@ class SessionContextStore:
                 explicit_name_counts[normalized_name] += 1
                 explicit_name_text.setdefault(normalized_name, name_text)
 
-        existing_names = (
-            _entry_map(self.data.get("proper_names"))
-            if self.data.get("version") == CONTEXT_VERSION
-            else {}
-        )
+        existing_names = _entry_map(compatible_data.get("proper_names"))
         name_candidates = {}
         for token, count in explicit_name_counts.items():
             previous = existing_names.get(token, {})
@@ -102,7 +101,9 @@ class SessionContextStore:
 
         existing_terms = {
             token: entry
-            for token, entry in _entry_map(self.data.get("recurring_terms")).items()
+            for token, entry in _entry_map(
+                compatible_data.get("recurring_terms")
+            ).items()
             if not _is_known_english_word(token)
         }
         term_candidates = dict(existing_terms)
@@ -140,14 +141,16 @@ class SessionContextStore:
         self.data = {
             "version": CONTEXT_VERSION,
             "chapter_url": self.chapter_url,
-            "created_at": self.data.get("created_at") or now,
+            "created_at": compatible_data.get("created_at") or now,
             "updated_at": now,
             "translation_style": TRANSLATION_STYLE,
             "preservation_rules": list(PRESERVATION_RULES),
             "proper_names": names,
             "possible_characters": possible_characters,
             "recurring_terms": recurring_terms,
-            "translations_used": list(self.data.get("translations_used") or [])[-250:],
+            "translations_used": list(
+                compatible_data.get("translations_used") or []
+            )[-250:],
         }
         self.save()
         return self.data
