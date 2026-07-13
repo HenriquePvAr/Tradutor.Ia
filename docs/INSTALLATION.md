@@ -49,6 +49,7 @@ O projeto separa o núcleo das dependências de RapidOCR e da interface:
 pip install -r requirements.txt
 pip install -r requirements-rapidocr.txt
 pip install -r requirements-ui.txt
+pip install -r requirements-dev.txt
 ```
 
 Os arquivos têm responsabilidades diferentes:

@@ -6,6 +6,12 @@ Os arquivos `test_*.py` são testes unitários ou integrações offline. A prote
 central bloqueia conexões de socket antes de qualquer request; use fakes e
 mocks locais para exercitar clientes externos.
 
+Instale a dependência de desenvolvimento antes de usar pytest:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+```
+
 Os comandos padrão não executam smokes de rede:
 
 ```powershell
