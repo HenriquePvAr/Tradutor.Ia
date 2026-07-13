@@ -17,6 +17,7 @@ from ocr_balloon import (
     _classify_background_region,
     _classify_groups,
     _caption_overlay_mask,
+    _cross_region_resolution_bonus,
     _dark_blotch_artifact_metrics,
     _debug_payload,
     _detached_light_text_components_mask,
@@ -36,6 +37,7 @@ from ocr_balloon import (
     _uniform_light_line_text_mask,
     _apply_textured_caption_overlay,
     _refine_classification_with_background,
+    _score_group_quality,
     _should_translate_group,
     _split_groups_at_sentence_boundaries,
     _mask_shape_metrics,
@@ -1859,6 +1861,93 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertTrue(group.manual_review_required)
         self.assertTrue(group.preserved_original)
         self.assertEqual(group.translation, group.text)
+
+    def test_unknown_source_echo_is_rejected_before_retry(self):
+        valid, reason = validate_translation_text("QELON", "QELON", "speech")
+
+        self.assertFalse(valid)
+        self.assertEqual(reason, "candidate_equals_source")
+
+    def test_explicit_proper_name_tokens_are_allowed_in_translation(self):
+        valid, reason = validate_translation_text(
+            "ASTRA VALE ARRIVED.",
+            "ASTRA VALE CHEGOU.",
+            "speech",
+            ["ASTRA VALE"],
+        )
+
+        self.assertTrue(valid, reason)
+
+    def test_linguistic_decorative_text_requires_manual_review(self):
+        group = TextGroup(
+            group_id="T",
+            lines=[_line("A BRIGHT MESSAGE!")],
+            text="A BRIGHT MESSAGE!",
+            ignored=True,
+            ignore_reason="decorative_text",
+            classification="decorative",
+        )
+        _score_group_quality([group])
+
+        self.assertTrue(group.manual_review_required)
+        self.assertIn("ignored_decorative_linguistic_content", group.quality_reasons)
+        debug_data = _debug_payload("", group.lines, [], [group])
+        item = debug_data["items"][0]
+        self.assertEqual(item["translation_final_state"], "manual_review")
+        self.assertEqual(item["translation_quality_impact"], "review_required")
+
+    def test_cross_region_resolution_bonus_requires_clean_high_quality_candidate(self):
+        original = _scored_group("ONE TWO THREE FOUR FIVE")
+        original.quality_reasons.append("possible_cross_region_group")
+        clean = _scored_group("TWO THREE FOUR FIVE")
+        clean.quality_score = 0.90
+        clean.quality_reasons = []
+
+        self.assertGreater(
+            _cross_region_resolution_bonus(original, clean, 0.75),
+            0.0,
+        )
+        clean.quality_reasons = ["possible_cross_region_group"]
+        self.assertEqual(_cross_region_resolution_bonus(original, clean, 0.75), 0.0)
+
+    def test_clean_regional_reading_beats_cross_region_source_agreement(self):
+        original = TextGroup(
+            group_id="T",
+            lines=[_boxed_line("ALPHA BRAVO CHARLIE DELTA", (80, 80, 230, 126))],
+            text="ALPHA BRAVO CHARLIE DELTA",
+            classification="narration",
+            inside_narration_box_like_region=True,
+            source_engine="rapidocr",
+        )
+        original.quality_score = 0.65
+        original.quality_reasons = ["possible_cross_region_group"]
+        mobile = _regional_candidate(
+            "ALPHA BRAVO CHARLIE DELTA",
+            "paddle_mobile",
+            0.90,
+        )
+        mobile.quality_score = 0.75
+        full = _regional_candidate(
+            "BRAVO CHARLIE DELTA",
+            "paddle_full",
+            0.95,
+        )
+        full.quality_score = 0.95
+
+        selected_lines, records = _run_fake_selective_fallback(
+            original,
+            [mobile, full],
+        )
+
+        self.assertEqual(
+            " ".join(line.text for line in selected_lines),
+            "BRAVO CHARLIE DELTA",
+        )
+        self.assertEqual(records[0]["fallback_variant"], "paddle_full")
+        self.assertGreater(
+            records[0]["attempts"][1]["cross_region_resolution_bonus"],
+            0.0,
+        )
 
     def test_quality_report_accounts_for_every_translatable_terminal_state(self):
         states = [

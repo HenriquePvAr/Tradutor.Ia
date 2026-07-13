@@ -8,7 +8,7 @@ from ocr_engine import COMMON_ENGLISH_WORDS as OCR_ENGLISH_WORDS
 from pipeline_cache import atomic_write_json, load_json, stable_hash
 
 
-CONTEXT_VERSION = "chapter-session-v1"
+CONTEXT_VERSION = "chapter-session-v2"
 TRANSLATION_STYLE = "portugues brasileiro natural para webtoon/manhwa"
 PRESERVATION_RULES = [
     "Preservar nomes proprios e a grafia escolhida durante o capitulo.",
@@ -55,37 +55,37 @@ class SessionContextStore:
     def prepare(self, groups):
         token_counts = Counter()
         speech_counts = Counter()
-        leading_counts = Counter()
-        vocative_counts = Counter()
+        explicit_name_counts = Counter()
+        explicit_name_text = {}
         for group in groups:
             classification = str(getattr(group, "classification", "unknown"))
             text = str(getattr(group, "text", "") or "")
             text_tokens = _tokens(text)
-            for index, token in enumerate(text_tokens):
+            for token in text_tokens:
                 normalized = _normalized_token(token)
                 if len(normalized) < 2:
                     continue
                 token_counts[normalized] += 1
-                if index == 0:
-                    leading_counts[normalized] += 1
-                if re.search(rf"\b{re.escape(token)}\s*[,!?]", text, flags=re.IGNORECASE):
-                    vocative_counts[normalized] += 1
                 if classification in {"speech", "thought", "narration"}:
                     speech_counts[normalized] += 1
+            for name in getattr(group, "detected_proper_names", []) or []:
+                name_text = str(name or "").strip()
+                normalized_name = _normalized_token(name_text)
+                if len(normalized_name) < 2:
+                    continue
+                explicit_name_counts[normalized_name] += 1
+                explicit_name_text.setdefault(normalized_name, name_text)
 
-        existing_names = _entry_map(self.data.get("proper_names"))
+        existing_names = (
+            _entry_map(self.data.get("proper_names"))
+            if self.data.get("version") == CONTEXT_VERSION
+            else {}
+        )
         name_candidates = {}
-        for token, count in token_counts.items():
-            if not self._is_name_candidate(
-                token,
-                count,
-                leading_counts[token],
-                vocative_counts[token],
-            ):
-                continue
+        for token, count in explicit_name_counts.items():
             previous = existing_names.get(token, {})
             name_candidates[token] = {
-                "text": previous.get("text") or token.title(),
+                "text": previous.get("text") or explicit_name_text[token].title(),
                 "mentions": max(int(previous.get("mentions") or 0), int(count)),
                 "preserve": True,
             }
@@ -226,13 +226,3 @@ class SessionContextStore:
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.path, self.data)
-
-    @staticmethod
-    def _is_name_candidate(token, count, leading_count=0, vocative_count=0):
-        if count < 2 or not 3 <= len(token) <= 24:
-            return False
-        if _is_known_english_word(token) or token in SFX_WORDS:
-            return False
-        if not token.isalpha():
-            return False
-        return vocative_count >= 1 or leading_count >= 2

@@ -29,12 +29,12 @@ class RunWebtoonTests(unittest.TestCase):
 
     def test_session_context_is_saved_and_added_to_prompt(self):
         groups = [
-            SimpleNamespace(classification="speech", text="JAY, ARE YOU HERE?", translation="JAY, VOCE ESTA AQUI?"),
-            SimpleNamespace(classification="speech", text="JAY!", translation="JAY!"),
-            SimpleNamespace(classification="speech", text="LOGAN IS WAITING", translation="LOGAN ESTA ESPERANDO"),
-            SimpleNamespace(classification="narration", text="LOGAN WAS STILL WAITING", translation="LOGAN AINDA ESPERAVA"),
-            SimpleNamespace(classification="speech", text="THIS IS FROM JAY", translation="ISTO E DO JAY"),
-            SimpleNamespace(classification="narration", text="THIS CAME FROM JAY", translation="ISTO VEIO DO JAY"),
+            SimpleNamespace(classification="speech", text="JAY, ARE YOU HERE?", translation="JAY, VOCE ESTA AQUI?", detected_proper_names=["JAY"]),
+            SimpleNamespace(classification="speech", text="JAY!", translation="JAY!", detected_proper_names=["JAY"]),
+            SimpleNamespace(classification="speech", text="LOGAN IS WAITING", translation="LOGAN ESTA ESPERANDO", detected_proper_names=["LOGAN"]),
+            SimpleNamespace(classification="narration", text="LOGAN WAS STILL WAITING", translation="LOGAN AINDA ESPERAVA", detected_proper_names=["LOGAN"]),
+            SimpleNamespace(classification="speech", text="THIS IS FROM JAY", translation="ISTO E DO JAY", detected_proper_names=["JAY"]),
+            SimpleNamespace(classification="narration", text="THIS CAME FROM JAY", translation="ISTO VEIO DO JAY", detected_proper_names=["JAY"]),
         ]
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "session_context.json"
@@ -69,6 +69,16 @@ class RunWebtoonTests(unittest.TestCase):
             self.assertIn("Contexto temporario", prompt)
             self.assertIn("Jay", prompt)
             self.assertTrue(translator.stats["context_enabled"])
+
+    def test_repeated_dialogue_tokens_are_not_promoted_to_proper_names(self):
+        groups = [
+            SimpleNamespace(classification="speech", text="ECHO, COME BACK!", translation="ECHO, VOLTE!", detected_proper_names=[]),
+            SimpleNamespace(classification="speech", text="ECHO, PLEASE!", translation="ECHO, POR FAVOR!", detected_proper_names=[]),
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            store = SessionContextStore(Path(folder) / "session_context.json", "https://example.com/chapter")
+            data = store.prepare(groups)
+        self.assertEqual(data["proper_names"], [])
 
 
 if __name__ == "__main__":

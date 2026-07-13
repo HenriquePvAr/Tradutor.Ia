@@ -853,6 +853,14 @@ def _ensure_translation_terminal_state(group):
     if group.translation_final_state in TRANSLATION_TERMINAL_STATES:
         return
     if group.ignored or group.preserve_as_name:
+        if group.manual_review_required:
+            _set_translation_terminal_state(
+                group,
+                "manual_review",
+                group.ignore_reason or "translation_review_required",
+                preserved_original=True,
+            )
+            return
         _set_translation_terminal_state(
             group,
             "skipped_with_reason",
@@ -1979,8 +1987,36 @@ def _should_translate_group(group):
 def _score_group_quality(groups):
     for group in groups:
         score, reasons = score_group_ocr_quality(group)
+        if _ignored_decorative_requires_review(group, reasons):
+            reasons.append("ignored_decorative_linguistic_content")
+            group.manual_review_required = True
         group.quality_score = score
         group.quality_reasons = reasons
+
+
+def _ignored_decorative_requires_review(group, reasons):
+    """Keep unclassified linguistic decorative text visible to quality review.
+
+    Decorative text is normally preserved. A long, punctuated or compact-word
+    candidate can instead be missed dialogue, so it must not disappear from the
+    audit merely because its classifier is conservative. This does not alter SFX
+    routing or render the region.
+    """
+    if not (
+        group.ignored
+        and group.classification == "decorative"
+        and group.ignore_reason == "decorative_text"
+    ):
+        return False
+    text = clean_ocr_text(group.text)
+    compact = re.sub(r"[^A-Za-z0-9]", "", text)
+    if len(compact) < 10:
+        return False
+    has_sentence_punctuation = bool(re.search(r"[,!?…]", text))
+    has_compact_segmentation = "compact_word_segmentation_candidate" in reasons
+    return has_sentence_punctuation or (
+        len(_translation_token_infos(text)) >= 2 and has_compact_segmentation
+    )
 
 
 def _assign_region_metadata(groups):
@@ -2507,6 +2543,11 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                         and len(candidate_compact) > len(context_compact) * 1.8
                         else 0.0
                     )
+                    cross_region_resolution_bonus = _cross_region_resolution_bonus(
+                        group,
+                        best_candidate,
+                        content_retention,
+                    )
                     selection_score = (
                         candidate_quality
                         + min(0.12, proposal_support * 0.06)
@@ -2514,6 +2555,7 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                         + content_retention * 0.35
                         - shrink_penalty
                         - expansion_penalty
+                        + cross_region_resolution_bonus
                     )
                 attempt = {
                     "engine": variant,
@@ -2527,6 +2569,10 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                     "content_retention": round(content_retention, 4),
                     "shrink_penalty": round(shrink_penalty, 4),
                     "expansion_penalty": round(expansion_penalty, 4),
+                    "cross_region_resolution_bonus": round(
+                        cross_region_resolution_bonus,
+                        4,
+                    ),
                     "text": candidate_text,
                 }
                 attempts.append(attempt)
@@ -3088,6 +3134,19 @@ def _candidate_quality(group):
     return group.quality_score
 
 
+def _cross_region_resolution_bonus(original_group, candidate_group, content_retention):
+    """Prefer a clean regional reading over agreement with a crossed region."""
+    if "possible_cross_region_group" not in original_group.quality_reasons:
+        return 0.0
+    if candidate_group is None or (
+        "possible_cross_region_group" in candidate_group.quality_reasons
+    ):
+        return 0.0
+    if _candidate_quality(candidate_group) < 0.82 or content_retention < 0.70:
+        return 0.0
+    return 0.32
+
+
 def _repair_proposal_tokens(group):
     tokens = set()
     for line in group.lines:
@@ -3266,6 +3325,32 @@ def _residual_source_hyphen_fragment(source_text, translation, allowed_names):
     return source_prefix
 
 
+def _normalized_allowed_name_tokens(allowed_proper_names):
+    allowed = set()
+    for name in allowed_proper_names or []:
+        folded = _ascii_fold(name).upper()
+        compact = re.sub(r"[^A-Z]", "", folded)
+        if compact:
+            allowed.add(compact)
+        allowed.update(re.findall(r"[A-Z]+", folded))
+    return allowed
+
+
+def _source_token_is_name_like(info):
+    raw = str(info.get("raw") or "")
+    letters = re.sub(r"[^A-Za-z]", "", raw)
+    return bool(letters and not letters.isupper())
+
+
+def _is_stuttered_name_fragment(text):
+    return bool(
+        re.fullmatch(
+            r"\s*[A-Za-z]\s*-\s*[A-Za-z]{3,}\s*[.!?…]*\s*",
+            str(text or ""),
+        )
+    )
+
+
 def validate_translation_text(
     source_text,
     translation,
@@ -3282,11 +3367,39 @@ def validate_translation_text(
     translated_infos = _translation_token_infos(translated)
     source_tokens = {info["token"] for info in source_infos}
     translated_tokens = [info["token"] for info in translated_infos]
-    allowed_names = {
-        re.sub(r"[^A-Z]", "", _ascii_fold(name).upper())
-        for name in (allowed_proper_names or [])
-    }
+    allowed_names = _normalized_allowed_name_tokens(allowed_proper_names)
+    translatable_context = classification in {"speech", "thought", "narration", "unknown"}
     portuguese_hits = sum(token in PORTUGUESE_MARKERS for token in translated_tokens)
+    target_language_signal = portuguese_hits or any(
+        info["has_diacritic"] for info in translated_infos
+    )
+    source_has_known_english = any(
+        token in RESIDUAL_TRANSLATION_ENGLISH_WORDS
+        or _looks_like_inflected_english_token(token)
+        for token in source_tokens
+    )
+    source_has_name_like_token = any(
+        _source_token_is_name_like(info) for info in source_infos
+    )
+    normalized_source = _normalized_translation_text(source_text)
+    if (
+        translatable_context
+        and normalized_source
+        and normalized_source == _normalized_translation_text(translated)
+        and not (source_tokens and source_tokens.issubset(allowed_names))
+        and not target_language_signal
+        and not source_has_known_english
+        and not source_has_name_like_token
+        and not _is_stuttered_name_fragment(source_text)
+    ):
+        if not (
+            len(source_tokens) == 1
+            and (
+                len(next(iter(source_tokens))) <= 2
+                or bool(re.fullmatch(r"(.)\1{2,}", next(iter(source_tokens))))
+            )
+        ):
+            return False, "candidate_equals_source"
     forbidden = []
     for index, token in enumerate(translated_tokens):
         if token in {"A", "O", "E"}:
@@ -3318,7 +3431,6 @@ def validate_translation_text(
     ):
         return False, "mixed_language_tokens:" + ",".join(sorted(set(forbidden))[:6])
 
-    translatable_context = classification in {"speech", "thought", "narration", "unknown"}
     partial_source_fragment = _residual_source_hyphen_fragment(
         source_text,
         translated,
