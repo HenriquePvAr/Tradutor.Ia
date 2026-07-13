@@ -19,6 +19,21 @@ python -m unittest discover -p "test_*.py"
 pytest
 ```
 
+No GitHub Actions, o workflow **Hermetic Tests** roda em `windows-latest` a
+cada push para `main` e pull request destinado a `main`. Ele instala somente
+as dependências declaradas, mantém a rede de smokes desautorizada e não
+executa scripts manuais nem usa segredo NVIDIA.
+
+O equivalente local da CI é:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
+python -m pytest --collect-only -q
+python -m pytest -q
+node --check static/tradutor_ui.js
+```
+
 O `pytest.ini` exclui os marcadores `network` e `manual` por padrão. Os
 marcadores disponíveis são `unit`, `integration`, `network`, `manual` e
 `slow`.

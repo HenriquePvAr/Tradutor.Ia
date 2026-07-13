@@ -1,0 +1,86 @@
+name: Hermetic Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Set up Node LTS
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Confirm network smokes are disabled
+        run: |
+          $names = "ALLOW_NETWORK_TESTS", "ALLOW_WEBTOON_SMOKE", "ALLOW_NVIDIA_SMOKE"
+          foreach ($name in $names) {
+            $authorized = [Environment]::GetEnvironmentVariable($name) -eq "1"
+            Write-Output "$name autorizado: $authorized"
+            if ($authorized) {
+              throw "Opt-in de smoke de rede não pode ser autorizado na CI."
+            }
+          }
+
+      - name: Collect hermetic tests
+        run: python -m pytest --collect-only -q
+
+      - name: Run hermetic tests
+        run: python -m pytest -q
+
+      - name: Check JavaScript syntax
+        run: node --check static/tradutor_ui.js
+
+      - name: Compile Python modules
+        run: |
+          python -m py_compile `
+            ocr_balloon.py `
+            translator_nvidia.py `
+            benchmark_pipeline.py `
+            run_webtoon.py `
+            process_launcher.py `
+            app_ui.py `
+            adaptive_scheduler.py `
+            resource_monitor.py `
+            ocr_parallel.py `
+            conftest.py `
+            scripts/manual_webtoon_smoke.py `
+            scripts/manual_nvidia_smoke.py
