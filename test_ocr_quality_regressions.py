@@ -18,6 +18,7 @@ from ocr_balloon import (
     _classify_background_region,
     _classify_groups,
     _caption_overlay_mask,
+    _content_shrink_penalty,
     _cross_region_resolution_bonus,
     _dark_blotch_artifact_metrics,
     _debug_payload,
@@ -259,6 +260,45 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
         self.assertEqual(preserved, 1)
         self.assertEqual([line.text for line in merged], ["BUG", "OTHER TEXT"])
+
+    def test_content_shrink_penalty_scales_with_dropped_content(self):
+        # Keeping the content costs nothing.
+        self.assertEqual(_content_shrink_penalty(1.0, 5), 0.0)
+        # A candidate that drops a whole line of speech must be penalised, even
+        # though it sits above the old hard threshold that let it through free.
+        heavy = _content_shrink_penalty(0.5833, 6)
+        self.assertGreater(heavy, 0.5)
+        # A small trim is penalised only lightly.
+        light = _content_shrink_penalty(0.8065, 8)
+        self.assertGreater(light, 0.0)
+        self.assertLess(light, heavy)
+        # A single-token context keeps the previous no-penalty behaviour.
+        self.assertEqual(_content_shrink_penalty(0.2, 1), 0.0)
+
+    def test_cross_region_original_is_exempt_from_shrink_penalty(self):
+        # When the original reading is suspected of merging text across regions,
+        # dropping the crossed-over content is the intended correction, so the
+        # candidate must not be penalised for shedding it.
+        self.assertGreater(_content_shrink_penalty(0.6, 6), 0.0)
+        self.assertEqual(
+            _content_shrink_penalty(0.6, 6, cross_region_suspected=True), 0.0
+        )
+
+    def test_truncating_fallback_candidate_loses_to_complete_one(self):
+        # Fixture from a real run: a fallback candidate that dropped a trailing
+        # clause scored 0.9392 while the candidate keeping every line scored
+        # 0.74. Penalising the dropped content must let the complete one win.
+        truncating = 0.9392 - _content_shrink_penalty(0.5833, 6)
+        complete = 0.74 - _content_shrink_penalty(1.0, 6)
+        self.assertGreater(complete, truncating + 0.03)
+
+    def test_high_quality_trim_still_beats_noisy_complete_candidate(self):
+        # Guard: dropping a leading sound effect with a clean, high-quality read
+        # must still win over a lower-quality candidate that keeps it, so the
+        # penalty does not drag sound effects back into speech.
+        trimmed = 1.9085 - _content_shrink_penalty(0.8065, 8)
+        noisy_complete = 1.42 - _content_shrink_penalty(1.0, 8)
+        self.assertGreater(trimmed, noisy_complete + 0.03)
 
     def test_candidate_normalization_ignores_case_and_spacing(self):
         self.assertEqual(

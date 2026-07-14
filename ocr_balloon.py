@@ -2644,10 +2644,12 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                         1.0,
                         len(candidate_compact) / max(1, len(context_compact)),
                     )
-                    shrink_penalty = (
-                        0.75
-                        if len(context_tokens) >= 2 and content_retention < 0.55
-                        else 0.0
+                    shrink_penalty = _content_shrink_penalty(
+                        content_retention,
+                        len(context_tokens),
+                        cross_region_suspected=(
+                            "possible_cross_region_group" in group.quality_reasons
+                        ),
                     )
                     expansion_penalty = (
                         0.35
@@ -3349,6 +3351,39 @@ def _candidate_quality(group):
     if group.ignored and len(group.text) < 8:
         return min(group.quality_score, 0.35)
     return group.quality_score
+
+
+_SHRINK_PENALTY_MAX = 0.75
+_SHRINK_PENALTY_FREE_RETENTION = 0.95
+_SHRINK_PENALTY_FULL_RETENTION = 0.55
+
+
+def _content_shrink_penalty(
+    content_retention,
+    context_token_count,
+    cross_region_suspected=False,
+):
+    """Penalise a fallback OCR candidate in proportion to the content it drops.
+
+    A hard threshold let a candidate that discarded a whole line of speech pass
+    free whenever it landed just above the cut-off, so the truncated reading
+    could win and the missing text never reached translation. Scale the penalty
+    with how much content is lost instead: a candidate must be clearly better to
+    justify dropping source text, while a small trim backed by a clean read (for
+    example shedding a leading sound effect) is only lightly penalised.
+
+    When the original reading is itself suspected of merging text across regions,
+    dropping content is the intended correction, so no penalty applies.
+    """
+    if cross_region_suspected:
+        return 0.0
+    if context_token_count < 2:
+        return 0.0
+    if content_retention >= _SHRINK_PENALTY_FREE_RETENTION:
+        return 0.0
+    span = _SHRINK_PENALTY_FREE_RETENTION - _SHRINK_PENALTY_FULL_RETENTION
+    lost = _SHRINK_PENALTY_FREE_RETENTION - content_retention
+    return _SHRINK_PENALTY_MAX * min(1.0, lost / span)
 
 
 def _cross_region_resolution_bonus(original_group, candidate_group, content_retention):
