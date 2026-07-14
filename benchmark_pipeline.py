@@ -1442,6 +1442,105 @@ def _is_mixed_language_validation_reason(reason):
     return str(reason or "").startswith(MIXED_LANGUAGE_VALIDATION_REASON_PREFIXES)
 
 
+def _region_source_lexical_words(item):
+    """Real source words that stayed visible because the item was not rendered.
+
+    A lexical word is a run of >=2 letters containing at least one vowel. The
+    vowel requirement is a generic, language-agnostic filter that drops OCR
+    noise and consonant-cluster onomatopoeia (e.g. "MM", "PSST", "GRR") while
+    keeping actual dialogue words, so a phantom read never forces a review.
+    """
+    text = str(item.get("clean_text") or item.get("raw_text") or "")
+    return [
+        word
+        for word in re.findall(r"[A-Za-zÀ-ÿ]{2,}", text)
+        if re.search(r"[aeiouyAEIOUYÀ-ÿ]", word)
+    ]
+
+
+def _item_is_rendered(item):
+    return (
+        str(item.get("translation_final_state") or "") == "translated"
+        and bool(item.get("redrawn"))
+    )
+
+
+def _boxes_form_one_speech_block(a, b):
+    """True when two boxes read as one balloon block (stacked or same line).
+
+    Uses only generic geometry: comparable text height, strong overlap on one
+    axis and a small gap on the other. This associates split lines of the same
+    balloon without any chapter-, word- or coordinate-specific rule.
+    """
+    try:
+        ax, ay, aw, ah = (float(v) for v in a)
+        bx, by, bw, bh = (float(v) for v in b)
+    except (TypeError, ValueError):
+        return False
+    if min(aw, ah, bw, bh) <= 0:
+        return False
+    if min(ah, bh) / max(ah, bh) < 0.4:  # very different font scale -> not siblings
+        return False
+    avg_height = (ah + bh) / 2.0
+    horizontal_overlap = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    vertical_overlap = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+    horizontal_ratio = horizontal_overlap / min(aw, bw)
+    vertical_ratio = vertical_overlap / min(ah, bh)
+    vertical_gap = max(ay, by) - min(ay + ah, by + bh)
+    horizontal_gap = max(ax, bx) - min(ax + aw, bx + bw)
+    stacked = horizontal_ratio >= 0.35 and vertical_gap <= 0.8 * avg_height
+    same_line = vertical_ratio >= 0.35 and horizontal_gap <= 0.8 * avg_height
+    return stacked or same_line
+
+
+def _incomplete_speech_region_coverage(states):
+    """Rendered speech/narration lines whose balloon still shows source text.
+
+    A region is incomplete when a translated-and-rendered speech/narration line
+    shares a balloon block with another line that still carries source words but
+    was never rendered (dropped, decorative, SFX, manual review, preserved).
+    """
+    violations = []
+    for state in states:
+        items = [
+            item
+            for item in state.get("debug_data", {}).get("items", [])
+            if item.get("bounding_box")
+        ]
+        rendered = [
+            item
+            for item in items
+            if item.get("classification") in {"speech", "narration"}
+            and _item_is_rendered(item)
+        ]
+        residual = [
+            item
+            for item in items
+            if not _item_is_rendered(item) and _region_source_lexical_words(item)
+        ]
+        for line in rendered:
+            for other in residual:
+                if other is line:
+                    continue
+                if _boxes_form_one_speech_block(
+                    line["bounding_box"], other["bounding_box"]
+                ):
+                    violations.append(
+                        {
+                            "page": state.get("index"),
+                            "rendered_id": line.get("id"),
+                            "residual_id": other.get("id"),
+                            "residual_text": str(
+                                other.get("clean_text")
+                                or other.get("raw_text")
+                                or ""
+                            ),
+                        }
+                    )
+                    break
+    return violations
+
+
 def _translation_quality_accounting(states):
     terminal_counts = {
         state: 0 for state in sorted(TRANSLATION_TERMINAL_STATES)
@@ -1462,11 +1561,15 @@ def _translation_quality_accounting(states):
         "invalid_candidate": 0,
         "translation_not_applied": 0,
         "missing_terminal_state": 0,
+        "incomplete_region_coverage": 0,
         "terminal_state_counts": terminal_counts,
         "accounting_closed": False,
         "requires_review": False,
         "quality_passed": False,
     }
+    coverage_violations = _incomplete_speech_region_coverage(states)
+    result["incomplete_region_coverage"] = len(coverage_violations)
+    result["incomplete_region_coverage_details"] = coverage_violations[:50]
     translatable_items = [
         item
         for state in states
@@ -1528,6 +1631,7 @@ def _translation_quality_accounting(states):
         or result["candidate_equals_source"]
         or result["source_language_residual"]
         or result["invalid_candidate"]
+        or result["incomplete_region_coverage"]
         or not result["accounting_closed"]
     )
     result["quality_passed"] = bool(

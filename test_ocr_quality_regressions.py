@@ -58,8 +58,10 @@ from benchmark_pipeline import (
     _aggregate_debug_data,
     _build_quality_report,
     _grouping_fallback_reason,
+    _incomplete_speech_region_coverage,
     _preserve_selected_regional_ocr,
     _retry_layout_overflow_translations,
+    _translation_quality_accounting,
 )
 from ocr_engine import (
     OCRLine,
@@ -1256,6 +1258,87 @@ class OCRQualityRegressionTests(unittest.TestCase):
         aggregate = _aggregate_debug_data(states)
         self.assertEqual(quality_report["totals"]["mixed_language_items"], 1)
         self.assertEqual(aggregate["mixed_language_items"], 1)
+
+    @staticmethod
+    def _coverage_state(items):
+        return [{
+            "index": 1, "status": "processed", "output_path": "", "image_path": "",
+            "timings": {},
+            "debug_data": {"items": items, "selective_ocr_fallbacks": [],
+                           "classification_counts": {}},
+        }]
+
+    @staticmethod
+    def _rendered_speech(id_, box, text="TRANSLATED LINE"):
+        return {"id": id_, "classification": "speech", "translation_final_state":
+                "translated", "redrawn": True, "bounding_box": list(box),
+                "clean_text": text, "translation": text}
+
+    @staticmethod
+    def _unrendered(id_, box, text, classification="decorative", state="manual_review"):
+        return {"id": id_, "classification": classification,
+                "translation_final_state": state, "redrawn": False,
+                "bounding_box": list(box), "clean_text": text, "translation": ""}
+
+    def test_partial_speech_region_coverage_forces_review(self):
+        # A rendered speech line stacked directly above an untranslated source
+        # line in the same balloon means part of the balloon is still in the
+        # source language: the region is not complete and must require review.
+        items = [
+            self._rendered_speech("R1", (140, 534, 430, 44)),
+            self._unrendered("S1", (138, 591, 432, 43), "THINGS YOU BECOME"),
+        ]
+        violations = _incomplete_speech_region_coverage(self._coverage_state(items))
+        self.assertEqual(len(violations), 1, violations)
+        acc = _translation_quality_accounting(self._coverage_state(items))
+        self.assertEqual(acc["incomplete_region_coverage"], 1)
+        self.assertTrue(acc["requires_review"])
+        self.assertFalse(acc["quality_passed"])
+
+    def test_same_line_untranslated_sibling_forces_review(self):
+        # An untranslated fragment on the same text line as a rendered speech
+        # line (e.g. the tail of a split exclamation) is residual source text.
+        items = [
+            self._rendered_speech("R1", (180, 167, 277, 59)),
+            self._unrendered("S1", (460, 176, 80, 46), "IT", classification="sfx",
+                             state="skipped_with_reason"),
+        ]
+        violations = _incomplete_speech_region_coverage(self._coverage_state(items))
+        self.assertEqual(len(violations), 1, violations)
+
+    def test_dropped_short_source_line_in_balloon_forces_review(self):
+        # A short source line dropped before grouping (no terminal state) that
+        # sits inside the balloon of a rendered line is still visible source.
+        items = [
+            self._rendered_speech("R1", (255, 360, 163, 39)),
+            {"id": "LINE_1", "classification": "unknown",
+             "translation_final_state": None, "redrawn": False,
+             "bounding_box": [303, 314, 66, 43], "clean_text": "SO"},
+        ]
+        violations = _incomplete_speech_region_coverage(self._coverage_state(items))
+        self.assertEqual(len(violations), 1, violations)
+
+    def test_complete_region_does_not_force_review(self):
+        # Two stacked lines both rendered: the region is fully translated.
+        items = [
+            self._rendered_speech("R1", (140, 534, 430, 44)),
+            self._rendered_speech("R2", (138, 591, 432, 43)),
+        ]
+        violations = _incomplete_speech_region_coverage(self._coverage_state(items))
+        self.assertEqual(violations, [])
+        acc = _translation_quality_accounting(self._coverage_state(items))
+        self.assertEqual(acc["incomplete_region_coverage"], 0)
+
+    def test_distant_untranslated_text_does_not_force_review(self):
+        # A legitimate untranslated element (e.g. an SFX on the art) far from any
+        # rendered balloon line must not be treated as residual coverage.
+        items = [
+            self._rendered_speech("R1", (140, 200, 200, 40)),
+            self._unrendered("S1", (80, 1400, 300, 120), "CRASH",
+                             classification="sfx", state="skipped_with_reason"),
+        ]
+        violations = _incomplete_speech_region_coverage(self._coverage_state(items))
+        self.assertEqual(violations, [])
 
     def test_adversarial_spanish_leakage_and_legitimate_foreign_controls(self):
         invalid_cases = [
