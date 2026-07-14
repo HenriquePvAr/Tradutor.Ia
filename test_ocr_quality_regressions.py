@@ -1427,6 +1427,50 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertNotIn("SO", group.text)
         self.assertTrue(candidate.ignored)
 
+    # ---- RC2: sibling lines split by weak visual white regions ----
+
+    @staticmethod
+    def _region_line(text, box, region_id, enclosed):
+        line = _boxed_line(text, box, confidence=0.95)
+        line.metadata = {
+            "visual_white_region_id": region_id,
+            "visual_white_region_enclosed": enclosed,
+        }
+        return line
+
+    def test_weak_region_lines_merge_into_one_group(self):
+        # Stacked, aligned speech lines that a weak (non-enclosed) white-region
+        # detector split into one region per line must still form a single group
+        # so the whole balloon is translated together.
+        lines = [
+            self._region_line("IF YOU GET BITTEN", (167, 477, 376, 44), 1, False),
+            self._region_line("BY ONE OF THOSE", (172, 534, 367, 44), 8, False),
+            self._region_line("THINGS YOU BECOME", (138, 588, 433, 47), 14, False),
+            self._region_line("A MONSTER TOO", (177, 644, 353, 47), 17, False),
+        ]
+        groups = _group_lines(lines)
+        self.assertEqual(len(groups), 1, [g.text for g in groups])
+        self.assertEqual(len(groups[0].lines), 4)
+
+    def test_distinct_enclosed_regions_stay_separate(self):
+        # Two confirmed enclosed balloons that happen to be stacked must not be
+        # merged: a real container boundary still separates them.
+        lines = [
+            self._region_line("HELLO THERE FRIEND", (167, 477, 376, 44), 1, True),
+            self._region_line("GOODBYE FOR NOW", (172, 534, 367, 44), 8, True),
+        ]
+        groups = _group_lines(lines)
+        self.assertEqual(len(groups), 2)
+
+    def test_same_region_lines_still_group(self):
+        # Regression guard: lines sharing a region id keep grouping as before.
+        lines = [
+            self._region_line("FIRST LINE HERE", (167, 477, 376, 44), 5, False),
+            self._region_line("SECOND LINE HERE", (172, 534, 367, 44), 5, False),
+        ]
+        groups = _group_lines(lines)
+        self.assertEqual(len(groups), 1)
+
     def test_adversarial_spanish_leakage_and_legitimate_foreign_controls(self):
         invalid_cases = [
             ("MAYBE IT'S THIS WAY.", "QUIZÁS SEJA POR AQUI."),

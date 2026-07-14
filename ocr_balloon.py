@@ -1378,12 +1378,24 @@ def _line_belongs_to_group(line, group):
     base_area = float(np.median(existing_areas)) if existing_areas else max(1, gw * gh)
     line_letters = len(re.sub(r"[^A-Za-z]", "", line.text or ""))
     line_region_id = int((line.metadata or {}).get("visual_white_region_id") or 0)
+    line_region_enclosed = bool(
+        (line.metadata or {}).get("visual_white_region_enclosed")
+    )
     group_region_ids = {
         int((item.metadata or {}).get("visual_white_region_id") or 0)
         for item in group.lines
     }
     group_region_ids.discard(0)
-    if line_region_id and group_region_ids and line_region_id not in group_region_ids:
+    # Only a confirmed *enclosed* container of a different id blocks the merge.
+    # Weak, non-enclosed white regions over-fragment a single balloon into one
+    # region per line, which wrongly splits stacked, aligned speech lines; those
+    # must fall through to the geometric checks below.
+    if (
+        line_region_id
+        and group_region_ids
+        and line_region_id not in group_region_ids
+        and line_region_enclosed
+    ):
         return False
     if (
         line_letters <= 6
