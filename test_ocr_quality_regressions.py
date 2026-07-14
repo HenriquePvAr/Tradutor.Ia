@@ -215,6 +215,36 @@ def _run_fake_selective_fallback(original, candidates):
         )
 
 
+class _IsolatedRetryTranslator:
+    """Fake translator that answers the strict retry and the isolated retry
+    differently, so the isolated attempt can be observed without any network."""
+
+    def __init__(self, strict="", isolated=""):
+        self.strict = strict
+        self.isolated = isolated
+        self.strict_calls = []
+        self.isolated_calls = []
+
+    def translate_strict(
+        self,
+        text,
+        previous_translation="",
+        validation_reason="",
+        force=False,
+        allow_proper_names=True,
+    ):
+        record = {
+            "text": text,
+            "previous_translation": previous_translation,
+            "validation_reason": validation_reason,
+        }
+        if allow_proper_names:
+            self.strict_calls.append(record)
+            return self.strict
+        self.isolated_calls.append(record)
+        return self.isolated
+
+
 class _StrictRetryTranslator:
     def __init__(self, *responses):
         self.responses = list(responses)
@@ -2291,6 +2321,68 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(debug_data["translated_group_count"], 0)
         self.assertFalse(debug_data["items"][0]["translated"])
 
+    def test_isolated_retry_recovers_speech_left_in_source_language(self):
+        # The strict retry invites the model to keep proper names, so a source
+        # word it mistakes for a name survives and the candidate keeps failing.
+        # When the group has no detected proper name, nothing justifies leaving a
+        # source-language word, so a final isolated attempt demands a full
+        # translation and recovers the line.
+        group = _scored_group("SHUT IT, Will YoU?")
+        apply_group_translations([group], ["Cala a boca, Will!"])
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(
+            group.translation_validation_reason.startswith("mixed_language_tokens")
+        )
+
+        translator = _IsolatedRetryTranslator(
+            strict="Cala a boca, Will!",
+            isolated="Cala a boca, ta bom?",
+        )
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            validate_and_retry_translations([group], translator)
+
+        self.assertTrue(translator.isolated_calls, "isolated retry was not attempted")
+        self.assertTrue(group.translation_valid, group.translation_validation_reason)
+        self.assertEqual(group.translation, "Cala a boca, ta bom?")
+        self.assertEqual(group.translation_final_state, "translated")
+        self.assertFalse(group.manual_review_required)
+
+    def test_isolated_retry_failure_keeps_manual_review(self):
+        # If the isolated attempt still leaves source language, the original is
+        # preserved and the region goes to manual review. Nothing is invented.
+        group = _scored_group("SHUT IT, Will YoU?")
+        apply_group_translations([group], ["Cala a boca, Will!"])
+
+        translator = _IsolatedRetryTranslator(
+            strict="Cala a boca, Will!",
+            isolated="Cala a boca, Will!",
+        )
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            validate_and_retry_translations([group], translator)
+
+        self.assertTrue(translator.isolated_calls)
+        self.assertFalse(group.translation_valid)
+        self.assertTrue(group.manual_review_required)
+        self.assertTrue(group.preserved_original)
+        self.assertEqual(group.translation, group.text)
+
+    def test_isolated_retry_is_not_used_when_a_proper_name_is_known(self):
+        # A detected proper name legitimately stays in the translation, so the
+        # isolated "translate every word" attempt must not run and erase it.
+        line = _line("ORION VaLE")
+        line.metadata = {"original_text": "ORION VaLE"}
+        group = TextGroup(
+            group_id="T", lines=[line], text="ORION VALE", classification="speech",
+        )
+        group.detected_proper_names = ["ORION VALE"]
+        apply_group_translations([group], ["ORION VALE"])
+
+        translator = _IsolatedRetryTranslator(strict="ORION VALE", isolated="X")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            validate_and_retry_translations([group], translator)
+
+        self.assertEqual(translator.isolated_calls, [])
+
     def test_source_echo_after_retries_has_explicit_terminal_reason(self):
         group = _scored_group("THE SIGNAL IS CLEAR.")
         apply_group_translations([group], [group.text])
@@ -3501,7 +3593,12 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
         with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
             records = validate_and_retry_translations([group], InvalidTranslator())
-        self.assertEqual(len(records), 1)
+        # The strict retry runs, then the isolated attempt (no proper name is
+        # known, so a full translation is demanded). Both fail here, and the
+        # region is still preserved for review rather than rendered.
+        self.assertEqual(len(records), 2)
+        self.assertTrue(records[-1]["isolated"])
+        self.assertFalse(any(record["valid"] for record in records))
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
         self.assertEqual(group.translation, group.text)

@@ -3981,6 +3981,25 @@ def _looks_like_inflected_english_token(token):
     return bool(_english_inflection_base(token))
 
 
+def _needs_isolated_retry(group, reason):
+    """True when a final, fully-translating attempt is justified for a group.
+
+    The strict retry tells the model it may keep proper names, so a source word
+    it mistakes for a name survives and the candidate keeps failing validation.
+    When the pipeline detected no proper name in this group, nothing justifies
+    leaving a source-language word, so one last isolated attempt may demand a
+    full translation. Groups with a known proper name are left alone, so the name
+    is never translated away.
+    """
+    if group.detected_proper_names:
+        return False
+    if group.classification not in {"speech", "thought", "narration", "unknown"}:
+        return False
+    return str(reason or "").startswith(
+        ("mixed_language_tokens", "residual_source_language", "residual_spanish_token")
+    )
+
+
 def validate_and_retry_translations(groups, translator, force=False):
     retry_records = []
     for group in groups:
@@ -4052,6 +4071,54 @@ def validate_and_retry_translations(groups, translator, force=False):
                     _set_translation_terminal_state(group, "translated", "retry_ok")
                     break
                 reason = new_reason
+
+        if not group.translation_valid and _needs_isolated_retry(group, reason):
+            try:
+                candidate = translator.translate_strict(
+                    group.text,
+                    previous_translation=latest_candidate,
+                    validation_reason=reason,
+                    force=force,
+                    allow_proper_names=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep the caller on failure.
+                candidate = ""
+                had_retry_error = True
+                reason = f"isolated_retry_error:{type(exc).__name__}"
+            candidate = _match_source_case(group.text, clean_ocr_text(candidate))
+            if candidate:
+                latest_candidate = candidate
+                group.translation_candidate = candidate
+                valid, new_reason = validate_translation_text(
+                    group.text,
+                    candidate,
+                    group.classification,
+                    _group_validation_allowed_proper_names(group),
+                )
+                retry_records.append(
+                    {
+                        "group_id": group.group_id,
+                        "source": group.text,
+                        "previous_translation": group.translation,
+                        "candidate_translation": candidate,
+                        "attempt": group.translation_retry_count + 1,
+                        "valid": valid,
+                        "reason": new_reason,
+                        "isolated": True,
+                    }
+                )
+                group.translation_retry_count += 1
+                if valid:
+                    group.translation = candidate
+                    group.translation_valid = True
+                    group.translation_validation_reason = "isolated_retry_ok"
+                    group.rejected_translation = ""
+                    group.manual_review_required = False
+                    _set_translation_terminal_state(
+                        group, "translated", "isolated_retry_ok"
+                    )
+                else:
+                    reason = new_reason
 
         if group.translation_valid:
             continue
