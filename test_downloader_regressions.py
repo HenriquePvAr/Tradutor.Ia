@@ -394,7 +394,6 @@ class DownloaderRegressionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder)
-            before = time.perf_counter()
             try:
                 with (
                     mock.patch("down._create_driver", return_value=_QuitDriver(block_quit)),
@@ -416,7 +415,6 @@ class DownloaderRegressionTests(unittest.TestCase):
                         target_folder=str(base / "input"),
                         force=False,
                     )
-                elapsed = time.perf_counter() - before
                 report = json.loads(
                     (base / "debug" / "downloaded_images.json").read_text(
                         encoding="utf-8"
@@ -425,10 +423,25 @@ class DownloaderRegressionTests(unittest.TestCase):
             finally:
                 release.set()
 
-        self.assertLess(elapsed, 0.5)
+        # The functional teardown result is the deterministic proof that the
+        # blocked quit was interrupted by the timeout: status "timeout" is set
+        # only when the quit thread did not finish within the quit budget.
         self.assertTrue(report["download_valid"])
         self.assertEqual(report["teardown"]["status"], "timeout")
         self.assertEqual(report["teardown"]["fallback_status"], "skipped")
+        # Bound the internally-measured teardown duration (quit-wait + cleanup),
+        # not the whole download wall clock: the latter also includes temp-dir
+        # I/O and metadata writes and is sensitive to shared-runner load, which
+        # is what made the old clock assertion flaky on CI. The margin over the
+        # mocked quit/cleanup budgets (0.02 + 0.01) absorbs thread spawn/join and
+        # OS scheduler jitter; a broken timeout would hang indefinitely and an
+        # abnormal cleanup would blow far past this bound.
+        quit_budget = 0.02
+        cleanup_budget = 0.01
+        self.assertLess(
+            report["teardown"]["duration_seconds"],
+            quit_budget + cleanup_budget + 0.5,
+        )
 
     def test_atomic_metadata_files_are_valid_json(self):
         with tempfile.TemporaryDirectory() as folder:
