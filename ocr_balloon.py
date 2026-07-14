@@ -3166,6 +3166,42 @@ _RECLAIMABLE_IGNORE_REASONS = frozenset(
     {"noise_like_text", "too_few_useful_chars", "low_alpha_ratio"}
 )
 
+_INTERRUPTED_SPEECH_DASHES = r"\-‐-―−"
+_CONTAINER_COVERAGE_MIN = 0.9
+
+
+def _text_is_interrupted_speech_fragment(text):
+    """A single-letter utterance cut off by a dash or ellipsis.
+
+    Interrupted speech ("a pronoun the speaker never finishes") is a real line of
+    a balloon even though it carries too few letters for the lexical test. A bare
+    letter is deliberately excluded: alone it is ambiguous (a roman numeral, an
+    initial, a decorative glyph), so it must not be promoted into speech.
+    """
+    stripped = clean_ocr_text(text)
+    return bool(
+        re.fullmatch(
+            rf"[A-Za-zÀ-ÿ][{_INTERRUPTED_SPEECH_DASHES}.…]{{1,4}}[.!?]?",
+            stripped,
+        )
+    )
+
+
+def _line_box_matches_text_density(line):
+    """True when the box is dimensionally plausible for the recognised glyphs.
+
+    A box far wider than the text the engine returned means only part of the line
+    was recognised. Merging that partial text would corrupt the speech, so such a
+    line is never reclaimed; the coverage gate reports the region instead.
+    """
+    _, _, width, height = line.box
+    if width <= 0 or height <= 0:
+        return False
+    glyphs = len(re.sub(r"\s", "", clean_ocr_text(line.text)))
+    if glyphs <= 0:
+        return False
+    return width <= height * 1.15 * glyphs
+
 
 def _text_has_lexical_word(text):
     """A word of >=2 letters containing a vowel (generic, language-agnostic).
@@ -3221,23 +3257,38 @@ def _group_has_enclosed_container(group):
 
     Distinguishes real dialogue balloons from stylized vocalizations/SFX drawn
     on open art, which are not enclosed. Reclaiming short lines only into
-    enclosed containers keeps screams and art onomatopoeia from being merged.
+    confirmed containers keeps screams and art onomatopoeia from being merged.
+
+    A closed contour is the strongest signal, but a balloon drawn on a light page
+    can merge with the background so its region is never marked enclosed even
+    though the text sits almost entirely inside it. Such a region counts as a
+    container when it covers nearly all of the line; stylized shouts lettered on
+    open art keep only partial coverage and stay out.
     """
-    return any(
-        bool((line.metadata or {}).get("visual_white_region_enclosed"))
-        for line in group.lines
-    )
+    for line in group.lines:
+        metadata = line.metadata or {}
+        if metadata.get("visual_white_region_enclosed"):
+            return True
+        try:
+            coverage = float(metadata.get("visual_white_region_coverage") or 0.0)
+        except (TypeError, ValueError):
+            coverage = 0.0
+        if coverage >= _CONTAINER_COVERAGE_MIN:
+            return True
+    return False
 
 
 def _reclaim_short_lexical_lines(groups, candidates, image_shape):
-    """Reclaim short lexical lines filtered as noise into their speech group.
+    """Reclaim short speech lines filtered as noise into their speech group.
 
     A short line dropped by a length/shape noise filter can be a real part of a
-    balloon (a leading word, a short interjection). When it carries a lexical
-    word and structurally belongs to an existing text group, merge it before
-    classification so it is translated and rendered with the rest of the speech
-    instead of surviving as visible source text. Purely structural: no word,
-    page, coordinate or chapter rule.
+    balloon: a leading word, a short interjection, or an utterance the speaker
+    cuts off. When it reads as speech and structurally belongs to an existing
+    text group, merge it before classification so it is translated and rendered
+    with the rest of the speech instead of surviving as visible source text.
+    A line whose box is far wider than the glyphs the engine returned is only
+    partially recognised and is never merged, since its text would corrupt the
+    speech. Purely structural: no word, page, coordinate or chapter rule.
     """
     for candidate in candidates:
         if not candidate.ignored:
@@ -3245,7 +3296,12 @@ def _reclaim_short_lexical_lines(groups, candidates, image_shape):
         if candidate.ignore_reason not in _RECLAIMABLE_IGNORE_REASONS:
             continue
         line = candidate.line
-        if not _text_has_lexical_word(line.text):
+        if not (
+            _text_has_lexical_word(line.text)
+            or _text_is_interrupted_speech_fragment(line.text)
+        ):
+            continue
+        if not _line_box_matches_text_density(line):
             continue
         target = None
         for group in groups:

@@ -1451,6 +1451,91 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(len(group.lines), 1)
         self.assertTrue(candidate.ignored)
 
+    def test_interrupted_speech_fragment_is_reclaimed(self):
+        # A one-letter utterance cut off by a dash is real speech continuing the
+        # balloon; it must join the group instead of being dropped for having
+        # too few letters.
+        big = _boxed_line("LADY BRELOFF,", (275, 1137, 192, 29), confidence=0.96)
+        frag = _boxed_line("I--", (350, 1174, 43, 31), confidence=0.73)
+        group = self._speech_group_from([big])
+        candidate = TextCandidate(line=frag, ignored=True,
+                                  ignore_reason="too_few_useful_chars")
+        _reclaim_short_lexical_lines([group], [candidate], (1500, 690, 3))
+        self.assertIn("I--", group.text)
+        self.assertFalse(candidate.ignored)
+
+    def test_under_read_wide_box_fragment_is_not_reclaimed(self):
+        # The box is far wider than the single recognised glyph, so the engine
+        # only read part of the line. Merging that partial text would corrupt the
+        # speech, so it must not be reclaimed (coverage reports it instead).
+        big = _boxed_line("YOU STILL", (145, 382, 203, 38), confidence=0.99)
+        frag = _boxed_line("H", (199, 336, 93, 44), confidence=0.92)
+        group = self._speech_group_from([big])
+        candidate = TextCandidate(line=frag, ignored=True,
+                                  ignore_reason="too_few_useful_chars")
+        _reclaim_short_lexical_lines([group], [candidate], (1500, 690, 3))
+        self.assertEqual(len(group.lines), 1)
+        self.assertTrue(candidate.ignored)
+
+    def test_bare_single_letter_is_not_reclaimed(self):
+        # A lone letter with no interrupting punctuation is ambiguous (a roman
+        # numeral, an initial, a decorative glyph) and must stay out of speech.
+        big = _boxed_line("HELLO THERE", (275, 1137, 192, 29), confidence=0.96)
+        frag = _boxed_line("I", (350, 1174, 20, 31), confidence=0.90)
+        group = self._speech_group_from([big])
+        candidate = TextCandidate(line=frag, ignored=True,
+                                  ignore_reason="too_few_useful_chars")
+        _reclaim_short_lexical_lines([group], [candidate], (1500, 690, 3))
+        self.assertEqual(len(group.lines), 1)
+        self.assertTrue(candidate.ignored)
+
+    def test_container_confirmed_by_near_total_coverage(self):
+        # A balloon drawn on a light page merges with the background, so its
+        # region is never marked enclosed even though the text sits almost
+        # entirely inside it. Near-total coverage confirms the container.
+        big = _boxed_line("LADY BRELOFF,", (275, 1137, 192, 29), confidence=0.96)
+        big.metadata = {"visual_white_region_id": 1,
+                        "visual_white_region_enclosed": False,
+                        "visual_white_region_coverage": 0.9849}
+        frag = _boxed_line("I--", (350, 1174, 43, 31), confidence=0.73)
+        frag.metadata = {"visual_white_region_id": 1,
+                         "visual_white_region_enclosed": False,
+                         "visual_white_region_coverage": 1.0}
+        group = _group_lines([big])[0]
+        candidate = TextCandidate(line=frag, ignored=True,
+                                  ignore_reason="too_few_useful_chars")
+        _reclaim_short_lexical_lines([group], [candidate], (1500, 690, 3))
+        self.assertIn("I--", group.text)
+
+    def test_partial_coverage_shout_on_art_is_not_a_container(self):
+        # Stylized shouts lettered on open art keep only partial coverage; they
+        # must not count as a container, so nothing is merged into them.
+        big = _boxed_line("AGH", (412, 539, 206, 111), confidence=0.99)
+        big.metadata = {"visual_white_region_id": 1,
+                        "visual_white_region_enclosed": False,
+                        "visual_white_region_coverage": 0.7394}
+        frag = _boxed_line("A--", (430, 660, 60, 100), confidence=0.90)
+        frag.metadata = {"visual_white_region_id": 1,
+                         "visual_white_region_enclosed": False,
+                         "visual_white_region_coverage": 0.7851}
+        group = _group_lines([big])[0]
+        candidate = TextCandidate(line=frag, ignored=True,
+                                  ignore_reason="noise_like_text")
+        _reclaim_short_lexical_lines([group], [candidate], (1500, 690, 3))
+        self.assertEqual(len(group.lines), 1)
+        self.assertTrue(candidate.ignored)
+
+    def test_interrupted_fragment_outside_container_stays_dropped(self):
+        # The same shape drawn on open art (no confirmed container) is not speech.
+        big = _boxed_line("SOME WORDS", (275, 1137, 192, 29), confidence=0.96)
+        frag = _boxed_line("I--", (350, 1174, 43, 31), confidence=0.73)
+        group = self._speech_group_from([big], enclosed=False)
+        candidate = TextCandidate(line=frag, ignored=True,
+                                  ignore_reason="too_few_useful_chars")
+        _reclaim_short_lexical_lines([group], [candidate], (1500, 690, 3))
+        self.assertEqual(len(group.lines), 1)
+        self.assertTrue(candidate.ignored)
+
     def test_reclaim_respects_distinct_enclosed_container(self):
         # A short line inside a different *enclosed* balloon must not be pulled
         # into a neighbouring balloon's group.
