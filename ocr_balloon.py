@@ -3207,20 +3207,425 @@ def _text_is_interrupted_speech_fragment(text):
     )
 
 
+def _glyph_count(text):
+    return len(re.sub(r"\s", "", clean_ocr_text(text)))
+
+
+def _box_fits_glyphs(box, text):
+    """True when a box is dimensionally plausible for the glyphs it is said to hold.
+
+    A glyph is at most about one line-height wide, so a box far wider than the
+    recognised glyph count is holding characters the engine never returned.
+    """
+    _, _, width, height = box
+    if width <= 0 or height <= 0:
+        return False
+    glyphs = _glyph_count(text)
+    if glyphs <= 0:
+        return False
+    return width <= height * 1.15 * glyphs
+
+
 def _line_box_matches_text_density(line):
     """True when the box is dimensionally plausible for the recognised glyphs.
 
     A box far wider than the text the engine returned means only part of the line
     was recognised. Merging that partial text would corrupt the speech, so such a
-    line is never reclaimed; the coverage gate reports the region instead.
+    line is never reclaimed; the selective re-OCR pass reprocesses it instead.
     """
-    _, _, width, height = line.box
-    if width <= 0 or height <= 0:
+    return _box_fits_glyphs(line.box, line.text)
+
+
+_UNDERREAD_MIN_CONFIDENCE = 0.8
+_REOCR_MIN_CONFIDENCE = 0.75
+_GAP_MIN_COMPONENTS = 3
+
+
+def _container_text_gap_boxes(image_bgr, lines):
+    """Text-like clusters inside a container that no recognised line covers.
+
+    Bounded to containers that already hold text: inside each one, dark glyph-like
+    components are collected, everything the existing lines already cover is
+    removed, and what is left is grouped into reading rows. A row survives only if
+    it holds several glyph-sized components at a text height comparable to the
+    lines already read there, so a balloon border, a tail, art bleeding in or a
+    speck of noise never becomes a candidate. The page as a whole is never
+    scanned; only containers with text are examined.
+    """
+    if image_bgr is None or image_bgr.size == 0 or not lines:
+        return []
+    regions = {}
+    for line in lines:
+        region_id = int((line.metadata or {}).get("visual_white_region_id") or 0)
+        if region_id:
+            regions.setdefault(region_id, []).append(line)
+    if not regions:
+        return []
+
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape
+    gaps = []
+    for region_lines in regions.values():
+        heights = [line.box[3] for line in region_lines if line.box[3] > 0]
+        if not heights:
+            continue
+        text_height = float(np.median(heights))
+        # Container extent: the block the known lines occupy, opened up enough to
+        # reach a row they may have missed, but never the whole page.
+        xs = [line.box[0] for line in region_lines]
+        ys = [line.box[1] for line in region_lines]
+        xe = [line.box[0] + line.box[2] for line in region_lines]
+        ye = [line.box[1] + line.box[3] for line in region_lines]
+        pad_x = int(text_height * 1.2)
+        pad_y = int(text_height * 1.6)
+        x1 = max(0, int(min(xs)) - pad_x)
+        y1 = max(0, int(min(ys)) - pad_y)
+        x2 = min(width, int(max(xe)) + pad_x)
+        y2 = min(height, int(max(ye)) + pad_y)
+        if x2 - x1 < 8 or y2 - y1 < 8:
+            continue
+        crop = gray[y1:y2, x1:x2]
+        # Glyphs are dark on the light inside of a container.
+        dark = np.where(crop <= 140, 255, 0).astype(np.uint8)
+        # Drop what any recognised line already covers. Every line counts, not
+        # only this container's: the crop reaches neighbouring text, and leaving
+        # it in would rediscover lines that were read perfectly well.
+        for line in lines:
+            lx, ly, lw, lh = line.box
+            margin = max(3, int(lh * 0.25))
+            cx1 = max(0, int(lx) - x1 - margin)
+            cy1 = max(0, int(ly) - y1 - margin)
+            cx2 = min(crop.shape[1], int(lx + lw) - x1 + margin)
+            cy2 = min(crop.shape[0], int(ly + lh) - y1 + margin)
+            if cx2 > cx1 and cy2 > cy1:
+                dark[cy1:cy2, cx1:cx2] = 0
+        count, _, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+        glyphs = []
+        for label in range(1, count):
+            cx = int(stats[label, cv2.CC_STAT_LEFT])
+            cy = int(stats[label, cv2.CC_STAT_TOP])
+            cw = int(stats[label, cv2.CC_STAT_WIDTH])
+            ch = int(stats[label, cv2.CC_STAT_HEIGHT])
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            if ch < text_height * 0.25 or ch > text_height * 1.6:
+                continue  # not a glyph at this container's text size
+            if cw > text_height * 2.0 or area < max(12, text_height * 0.8):
+                continue  # a border stroke, a tail, or a speck
+            if cx <= 1 or cy <= 1 or cx + cw >= crop.shape[1] - 1 or cy + ch >= crop.shape[0] - 1:
+                continue  # touches the crop edge: art or balloon outline
+            glyphs.append((cx, cy, cw, ch))
+        if len(glyphs) < _GAP_MIN_COMPONENTS:
+            continue
+        # Group the leftover glyphs into reading rows.
+        for row in _cluster_glyphs_into_rows(glyphs, text_height):
+            if len(row) < _GAP_MIN_COMPONENTS:
+                continue
+            rx1 = min(g[0] for g in row)
+            ry1 = min(g[1] for g in row)
+            rx2 = max(g[0] + g[2] for g in row)
+            ry2 = max(g[1] + g[3] for g in row)
+            margin = int(text_height * 0.4)
+            gaps.append(
+                (
+                    max(0, x1 + rx1 - margin),
+                    max(0, y1 + ry1 - margin),
+                    min(width, x1 + rx2 + margin) - max(0, x1 + rx1 - margin),
+                    min(height, y1 + ry2 + margin) - max(0, y1 + ry1 - margin),
+                )
+            )
+    return gaps
+
+
+_REOCR_RECOVERY_MIN_CONFIDENCE = 0.85
+
+
+def _recovered_text_is_acceptable(text, confidence):
+    """A newly recovered line must be confident and read like real words.
+
+    Adding text that was never read is the riskiest thing this pass can do, so the
+    bar is higher than for a re-read: the engine must be sure, and the result must
+    contain a real word rather than a smear of glyph-shaped noise.
+    """
+    if confidence < _REOCR_RECOVERY_MIN_CONFIDENCE:
         return False
-    glyphs = len(re.sub(r"\s", "", clean_ocr_text(line.text)))
-    if glyphs <= 0:
+    return _text_has_lexical_word(text)
+
+
+_REOCR_ENGINES = ("paddle", "rapidocr")
+
+
+def _reocr_engines_for(ocr_lang):
+    """Every recogniser available, so the crop gets a genuine second opinion.
+
+    The engine that produced the incomplete reading is the one that failed, and
+    which engine that was depends on how the run was configured, so no assumption
+    is made: each recogniser is asked and the candidates are scored against each
+    other.
+    """
+    engines = []
+    for name in _REOCR_ENGINES:
+        try:
+            engines.append(OCREngine(ocr_lang, engine=name, fallback_engine=name))
+        except Exception:  # noqa: BLE001 - a missing recogniser is not fatal.
+            continue
+    return engines
+
+
+def _reocr_crop_candidates(engines, crop, page_index=None):
+    """Read a crop with every recogniser; return (engine, text, confidence, lines)."""
+    candidates = []
+    for engine in engines:
+        try:
+            crop_lines = engine.detect_lines(crop, page=page_index)
+        except Exception:  # noqa: BLE001 - never break the page for one crop.
+            continue
+        if not crop_lines:
+            continue
+        text = clean_ocr_text(" ".join(item.text for item in crop_lines))
+        confidence = min(float(item.confidence or 0.0) for item in crop_lines)
+        candidates.append((engine.engine, text, confidence, crop_lines))
+    return candidates
+
+
+def apply_speech_container_reocr(
+    original_bgr,
+    raw_lines,
+    ocr_lang,
+    page_index=None,
+):
+    """Second, selective OCR pass over speech containers with coverage gaps.
+
+    Two things make a container's coverage incomplete, and each is reprocessed on
+    its own pixels with the alternate engine:
+
+    * a confidently recognised line whose box is far too wide for the glyphs it
+      returned, meaning the rest of the line was never read;
+    * a run of glyph-sized components inside a container that no line covers,
+      meaning a whole row of text was never detected.
+
+    Nothing is inferred: a replacement is accepted only when it explains the box
+    the old reading could not, and a recovered row only when the engine is sure and
+    returns real words. Otherwise the previous reading is kept untouched and the
+    gap is reported, so the region can be flagged rather than silently completed.
+    Returns the (possibly extended) lines and a record of every decision.
+    """
+    lines = list(raw_lines or [])
+    records = []
+    if original_bgr is None or original_bgr.size == 0 or not lines:
+        return lines, records
+    if not config.OCR_REGION_SELECTIVE_FALLBACK:
+        return lines, records
+
+    underread = [line for line in lines if _line_needs_underread_reocr(line)]
+    gaps = _container_text_gap_boxes(original_bgr, lines)
+    if not underread and not gaps:
+        return lines, records
+
+    engines = _reocr_engines_for(ocr_lang)
+    if not engines:
+        return lines, records
+    height, width = original_bgr.shape[:2]
+
+    for line in underread:
+        x, y, w, h = line.box
+        pad = max(4, int(h * 0.35))
+        x1, y1 = max(0, x - pad), max(0, y - pad)
+        x2, y2 = min(width, x + w + pad), min(height, y + h + pad)
+        crop = original_bgr[y1:y2, x1:x2]
+        record = {
+            "trigger": "speech_line_underread",
+            "page": page_index,
+            "box": [int(v) for v in line.box],
+            "previous_engine": line.engine,
+            "previous_text": line.text,
+            "candidates": [],
+            "accepted": False,
+            "reason": "selective_reocr_no_confident_candidate",
+        }
+        best = None
+        if crop.size:
+            for engine_name, _, _, crop_lines in _reocr_crop_candidates(
+                engines, crop, page_index
+            ):
+                # The crop holds one line, so read the detection that lands on the
+                # original box. Anything the padding picked up along the way (a
+                # balloon border, a neighbouring glyph) is not this line.
+                for item in crop_lines:
+                    ix, iy, iw, ih = item.box
+                    overlap = _box_iou(
+                        (int(x1 + ix), int(y1 + iy), int(iw), int(ih)),
+                        tuple(int(v) for v in line.box),
+                    )
+                    if overlap < 0.25:
+                        continue
+                    text = clean_ocr_text(item.text)
+                    confidence = float(item.confidence or 0.0)
+                    record["candidates"].append(
+                        {
+                            "engine": engine_name,
+                            "text": text,
+                            "confidence": round(confidence, 4),
+                            "overlap": round(overlap, 3),
+                        }
+                    )
+                    if not _underread_candidate_is_better(
+                        line.text, text, confidence, line.box
+                    ):
+                        continue
+                    # Prefer the reading that explains the box with the most glyphs
+                    # it is confident about, not merely the longest or the boldest.
+                    score = _glyph_count(text) + confidence
+                    if best is None or score > best[0]:
+                        best = (score, engine_name, text, confidence)
+        if best:
+            _, engine_name, text, confidence = best
+            record["accepted"] = True
+            record["reason"] = "selective_reocr_recovered_text"
+            record["selected_engine"] = engine_name
+            record["new_text"] = text
+            line.original_text = line.original_text or line.raw_text or line.text
+            line.text = text
+            line.raw_text = text
+            line.confidence = confidence
+            line.engine = f"{engine_name}+reocr"
+        records.append(record)
+
+    for box in gaps:
+        x, y, w, h = box
+        crop = original_bgr[y:y + h, x:x + w]
+        record = {
+            "trigger": "speech_container_uncovered_text",
+            "page": page_index,
+            "box": [int(v) for v in box],
+            "candidates": [],
+            "accepted": False,
+            "reason": "selective_reocr_no_confident_candidate",
+        }
+        if not crop.size:
+            records.append(record)
+            continue
+        best = None
+        for engine_name, text, confidence, crop_lines in _reocr_crop_candidates(
+            engines, crop, page_index
+        ):
+            record["candidates"].append(
+                {"engine": engine_name, "text": text, "confidence": round(confidence, 4)}
+            )
+            if not _recovered_text_is_acceptable(text, confidence):
+                continue
+            score = _glyph_count(text) + confidence
+            if best is None or score > best[0]:
+                best = (score, engine_name, crop_lines)
+        if best:
+            _, engine_name, crop_lines = best
+            for item in crop_lines:
+                text = clean_ocr_text(item.text)
+                confidence = float(item.confidence or 0.0)
+                if not _recovered_text_is_acceptable(text, confidence):
+                    continue
+                ix, iy, iw, ih = item.box
+                recovered_box = (int(x + ix), int(y + iy), int(iw), int(ih))
+                # A crop cut around leftover components can still reach text that
+                # was read perfectly well. A reading that lands on a line we
+                # already have is a rediscovery, not a recovery, and adding it
+                # would duplicate the line.
+                if any(
+                    _box_iou(recovered_box, tuple(int(v) for v in known.box)) >= 0.2
+                    for known in lines
+                ):
+                    record.setdefault("skipped", []).append(
+                        {"text": text, "reason": "overlaps_existing_line"}
+                    )
+                    continue
+                lines.append(
+                    OCRLine(
+                        text=text,
+                        confidence=confidence,
+                        polygon=_polygon_from_box(recovered_box),
+                        box=recovered_box,
+                        raw_text=text,
+                        engine=f"{engine_name}+reocr",
+                        page=page_index,
+                        metadata={
+                            "selective_reocr": "speech_container_uncovered_text",
+                        },
+                    )
+                )
+                record["accepted"] = True
+                record["reason"] = "selective_reocr_recovered_text"
+                record["selected_engine"] = engine_name
+                record.setdefault("new_lines", []).append(
+                    {
+                        "text": text,
+                        "box": list(recovered_box),
+                        "confidence": round(confidence, 4),
+                    }
+                )
+        records.append(record)
+
+    return lines, records
+
+
+def _polygon_from_box(box):
+    x, y, w, h = box
+    return np.array(
+        [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+        dtype=np.int32,
+    )
+
+
+def _cluster_glyphs_into_rows(glyphs, text_height):
+    """Group glyph boxes that share a reading row."""
+    rows = []
+    for glyph in sorted(glyphs, key=lambda g: (g[1], g[0])):
+        cy_center = glyph[1] + glyph[3] / 2.0
+        placed = False
+        for row in rows:
+            ref = row[0]
+            ref_center = ref[1] + ref[3] / 2.0
+            if abs(cy_center - ref_center) <= text_height * 0.6:
+                row.append(glyph)
+                placed = True
+                break
+        if not placed:
+            rows.append([glyph])
+    return rows
+
+
+def _line_needs_underread_reocr(line):
+    """A confidently recognised line whose box still holds unread characters.
+
+    The engine was sure of the glyphs it returned, so this is not noise, yet the
+    box is far too wide for them: the rest of the line was never read. Such a line
+    is worth reprocessing on its own pixels. A low-confidence read is left alone,
+    since it is more likely a phantom picked up from art or a balloon border.
+    """
+    try:
+        confidence = float(line.confidence or 0.0)
+    except (TypeError, ValueError):
         return False
-    return width <= height * 1.15 * glyphs
+    if confidence < _UNDERREAD_MIN_CONFIDENCE:
+        return False
+    if not re.search(r"[A-Za-zÀ-ÿ]", clean_ocr_text(line.text or "")):
+        return False
+    return not _box_fits_glyphs(line.box, line.text)
+
+
+def _underread_candidate_is_better(previous_text, candidate_text, candidate_confidence, box):
+    """Accept a re-read only when it explains the box the old reading could not.
+
+    The replacement must be confident, must return more glyphs than before, and
+    those glyphs must make the box plausible. A longer but still implausible read,
+    or a confident read that does not add characters, is rejected, so a valid
+    reading is never replaced by a worse one.
+    """
+    if candidate_confidence < _REOCR_MIN_CONFIDENCE:
+        return False
+    if not re.search(r"[A-Za-zÀ-ÿ]", clean_ocr_text(candidate_text or "")):
+        return False
+    if _glyph_count(candidate_text) <= _glyph_count(previous_text):
+        return False
+    return _box_fits_glyphs(box, candidate_text)
 
 
 def _text_has_lexical_word(text):

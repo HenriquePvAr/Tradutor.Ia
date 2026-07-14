@@ -25,6 +25,7 @@ from ocr_balloon import (
     TRANSLATION_TERMINAL_STATES,
     analyze_image_array,
     apply_selective_ocr_fallbacks,
+    apply_speech_container_reocr,
     apply_group_translations,
     get_translatable_groups,
     normalize_recurring_compact_names,
@@ -541,6 +542,34 @@ def run_benchmark(args):
                 state.get("raw_lines", []),
                 page_index=state["index"],
             )
+        reocr_started = time.perf_counter()
+        with profile_step(
+            "pipeline.speech_container_reocr",
+            page_index=state["index"],
+            items=len(state.get("raw_lines", []) or []),
+        ):
+            reocr_lines, reocr_records = apply_speech_container_reocr(
+                original,
+                state.get("raw_lines", []),
+                ocr_lang,
+                state["index"],
+            )
+        reocr_elapsed = time.perf_counter() - reocr_started
+        if reocr_records:
+            state["speech_container_reocr"] = reocr_records
+            stage_seconds["ocr_selective_fallback"] += reocr_elapsed
+            if any(record.get("accepted") for record in reocr_records):
+                state["raw_lines"] = reocr_lines
+                with profile_step(
+                    "pipeline.analyze_after_speech_container_reocr",
+                    page_index=state["index"],
+                    items=len(reocr_lines),
+                ):
+                    candidates, groups = analyze_image_array(
+                        original,
+                        reocr_lines,
+                        page_index=state["index"],
+                    )
         selective_started = time.perf_counter()
         with profile_step(
             "pipeline.selective_ocr_fallbacks",

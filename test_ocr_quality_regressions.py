@@ -18,7 +18,12 @@ from ocr_balloon import (
     _classify_background_region,
     _classify_groups,
     _caption_overlay_mask,
+    _container_text_gap_boxes,
     _content_shrink_penalty,
+    _line_needs_underread_reocr,
+    _recovered_text_is_acceptable,
+    _underread_candidate_is_better,
+    apply_speech_container_reocr,
     _cross_region_resolution_bonus,
     _dark_blotch_artifact_metrics,
     _debug_payload,
@@ -329,6 +334,111 @@ class OCRQualityRegressionTests(unittest.TestCase):
         trimmed = 1.9085 - _content_shrink_penalty(0.8065, 8)
         noisy_complete = 1.42 - _content_shrink_penalty(1.0, 8)
         self.assertGreater(trimmed, noisy_complete + 0.03)
+
+    # ---- selective re-OCR of speech containers ----
+
+    def test_wide_box_with_one_glyph_is_flagged_for_reocr(self):
+        # The engine was sure of the glyph it returned, yet the box is far too
+        # wide for it: the rest of the line was never read.
+        line = _boxed_line("H", (199, 336, 93, 44), confidence=0.92)
+        self.assertTrue(_line_needs_underread_reocr(line))
+
+    def test_tight_box_is_not_flagged_for_reocr(self):
+        # A box that genuinely fits its glyph is a complete reading.
+        line = _boxed_line("H", (199, 336, 30, 44), confidence=0.92)
+        self.assertFalse(_line_needs_underread_reocr(line))
+
+    def test_low_confidence_wide_box_is_not_flagged_for_reocr(self):
+        # A hesitant read over a wide box is more likely a phantom from art or a
+        # balloon border than a partially read line.
+        line = _boxed_line("MM", (232, 1129, 264, 60), confidence=0.61)
+        self.assertFalse(_line_needs_underread_reocr(line))
+
+    def test_reread_is_accepted_only_when_it_explains_the_box(self):
+        box = (199, 336, 93, 44)
+        # More glyphs, confident, and the box now makes sense: accept.
+        self.assertTrue(_underread_candidate_is_better("H", "HEY,", 0.99, box))
+        # Same glyph count adds nothing, even with perfect confidence.
+        self.assertFalse(_underread_candidate_is_better("H", "X", 1.0, box))
+        # Confident but still far too few glyphs for the box: reject.
+        self.assertFalse(_underread_candidate_is_better("H", "HI", 0.99, (199, 336, 400, 44)))
+        # A hesitant re-read never replaces a confident one.
+        self.assertFalse(_underread_candidate_is_better("H", "HEY,", 0.40, box))
+
+    def test_recovered_text_must_be_confident_and_lexical(self):
+        self.assertTrue(_recovered_text_is_acceptable("TO THEM?", 0.96))
+        # Glyph-shaped noise the engine is unsure about is not text.
+        self.assertFalse(_recovered_text_is_acceptable("MLIOIO11", 0.59))
+        # A confident smear with no real word is still not text.
+        self.assertFalse(_recovered_text_is_acceptable("XXXX", 0.95))
+
+    @staticmethod
+    def _balloon_with_rows(rows):
+        """White container with dark text rows; returns (image, row boxes)."""
+        image = np.full((260, 420, 3), 255, dtype=np.uint8)
+        boxes = []
+        for text, (x, y) in rows:
+            cv2.putText(image, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                        (10, 10, 10), 2)
+            boxes.append((x, y - 22, 12 * len(text), 28))
+        return image, boxes
+
+    def _line_at(self, text, box, region=1):
+        line = _boxed_line(text, box, confidence=0.95)
+        line.metadata = {"visual_white_region_id": region,
+                         "visual_white_region_enclosed": True}
+        return line
+
+    def test_uncovered_row_inside_container_is_found(self):
+        # Two rows of text at normal line spacing, only the first recognised: the
+        # second must be reported as a gap so it can be read on its own pixels.
+        image, boxes = self._balloon_with_rows(
+            [("FIRST ROW", (40, 90)), ("SECOND ROW", (40, 126))]
+        )
+        known = [self._line_at("FIRST ROW", boxes[0])]
+        gaps = _container_text_gap_boxes(image, known)
+        self.assertEqual(len(gaps), 1, gaps)
+        gx, gy, gw, gh = gaps[0]
+        # The gap must land on the unread row, not on the row already read.
+        self.assertGreater(gy, boxes[0][1])
+
+    def test_fully_covered_container_reports_no_gap(self):
+        image, boxes = self._balloon_with_rows(
+            [("FIRST ROW", (40, 90)), ("SECOND ROW", (40, 150))]
+        )
+        known = [self._line_at("FIRST ROW", boxes[0]),
+                 self._line_at("SECOND ROW", boxes[1])]
+        self.assertEqual(_container_text_gap_boxes(image, known), [])
+
+    def test_speck_of_noise_is_not_a_gap(self):
+        # A couple of stray marks are not a row of text.
+        image, boxes = self._balloon_with_rows([("FIRST ROW", (40, 90))])
+        cv2.circle(image, (300, 200), 3, (10, 10, 10), -1)
+        known = [self._line_at("FIRST ROW", boxes[0])]
+        self.assertEqual(_container_text_gap_boxes(image, known), [])
+
+    def test_lines_without_a_container_are_never_scanned(self):
+        # Text drawn on open art belongs to no container, so the page is not
+        # scanned for gaps at all.
+        image, boxes = self._balloon_with_rows(
+            [("FIRST ROW", (40, 90)), ("SECOND ROW", (40, 150))]
+        )
+        loose = _boxed_line("FIRST ROW", boxes[0], confidence=0.95)
+        self.assertEqual(_container_text_gap_boxes(image, [loose]), [])
+
+    def test_reocr_keeps_previous_reading_when_nothing_is_confident(self):
+        # Fail-closed: with no confident candidate the line is left exactly as it
+        # was and the gap is reported, never silently completed.
+        image, boxes = self._balloon_with_rows([("FIRST ROW", (40, 90))])
+        line = self._line_at("H", (199, 200, 93, 44))
+        with patch("ocr_balloon._reocr_crop_candidates", return_value=[]):
+            lines, records = apply_speech_container_reocr(image, [line], "3", 1)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].text, "H")
+        self.assertTrue(records)
+        self.assertFalse(records[0]["accepted"])
+        self.assertEqual(records[0]["reason"],
+                         "selective_reocr_no_confident_candidate")
 
     def test_candidate_normalization_ignores_case_and_spacing(self):
         self.assertEqual(
