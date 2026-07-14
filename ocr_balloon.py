@@ -1407,6 +1407,26 @@ def _line_belongs_to_group(line, group):
         return False
     avg_height = max(base_height, gh / max(1, len(group.lines)))
 
+    # Same reading row: a fragment sitting beside the group's text on the same
+    # baseline is the tail of that line (an exclamation split off the end), not a
+    # separate block. The row must genuinely coincide, the text height must be
+    # comparable and the gap only word-sized, so a larger sound effect or a
+    # neighbouring balloon is not pulled in. A different enclosed container is
+    # already vetoed above.
+    vertical_overlap = max(0, min(gy + gh, ly + lh) - max(gy, ly))
+    horizontal_gap = max(gx, lx) - min(gx + gw, lx + lw)
+    height_ratio = min(lh, base_height) / max(1.0, max(lh, base_height))
+    same_container = bool(
+        line_region_id and group_region_ids and line_region_id in group_region_ids
+    )
+    if (
+        same_container
+        and vertical_overlap >= 0.6 * min(gh, lh)
+        and height_ratio >= 0.6
+        and horizontal_gap <= 0.9 * base_height
+    ):
+        return True
+
     if vertical_gap < -max(lh, avg_height) * 0.8:
         return False
 

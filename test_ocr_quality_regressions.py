@@ -1563,6 +1563,46 @@ class OCRQualityRegressionTests(unittest.TestCase):
         }
         return line
 
+    # ---- horizontal speech siblings on the same reading row ----
+
+    def test_same_row_speech_fragment_joins_group(self):
+        # A fragment sitting beside the line on the same baseline, in the same
+        # container and at a comparable text height, is the tail of that speech
+        # and must join it instead of becoming its own group.
+        first = self._region_line("GOD D*** j", (180, 167, 277, 59), 1, False)
+        second = self._region_line("It!!", (440, 176, 80, 46), 1, False)
+        group = _group_lines([first])[0]
+        self.assertTrue(_line_belongs_to_group(second, group))
+
+    def test_side_by_side_balloons_are_not_merged(self):
+        # Two distinct enclosed balloons on the same row stay separate.
+        first = self._region_line("HELLO THERE", (180, 167, 277, 59), 1, True)
+        second = self._region_line("GOODBYE NOW", (470, 176, 240, 55), 2, True)
+        group = _group_lines([first])[0]
+        self.assertFalse(_line_belongs_to_group(second, group))
+
+    def test_large_sfx_beside_speech_is_not_merged(self):
+        # A sound effect lettered much larger than the speech is not a sibling.
+        first = self._region_line("GOD D*** j", (180, 167, 277, 59), 1, False)
+        sfx = self._region_line("CRASH", (470, 120, 260, 190), 1, False)
+        group = _group_lines([first])[0]
+        self.assertFalse(_line_belongs_to_group(sfx, group))
+
+    def test_open_art_text_on_same_row_is_not_merged(self):
+        # Title/logo and credit elements sit on open art, inside no container, so
+        # they must never be pulled together even when they share a reading row.
+        logo = _boxed_line("Platfopim", (127, 1118, 265, 81), confidence=0.90)
+        effect = _boxed_line("Lero", (383, 1135, 185, 71), confidence=0.90)
+        group = _group_lines([logo])[0]
+        self.assertFalse(_line_belongs_to_group(effect, group))
+
+    def test_distant_same_row_text_is_not_merged(self):
+        # Same row but far away across the panel: not part of this speech.
+        first = self._region_line("GOD D*** j", (180, 167, 277, 59), 1, False)
+        far = self._region_line("It!!", (640, 176, 80, 46), 1, False)
+        group = _group_lines([first])[0]
+        self.assertFalse(_line_belongs_to_group(far, group))
+
     def test_weak_region_lines_merge_into_one_group(self):
         # Stacked, aligned speech lines that a weak (non-enclosed) white-region
         # detector split into one region per line must still form a single group
