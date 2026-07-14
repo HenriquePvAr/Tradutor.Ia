@@ -237,11 +237,13 @@ class _IsolatedRetryTranslator:
         validation_reason="",
         force=False,
         allow_proper_names=True,
+        proper_names=None,
     ):
         record = {
             "text": text,
             "previous_translation": previous_translation,
             "validation_reason": validation_reason,
+            "proper_names": list(proper_names or []),
         }
         if allow_proper_names:
             self.strict_calls.append(record)
@@ -261,6 +263,8 @@ class _StrictRetryTranslator:
         previous_translation="",
         validation_reason="",
         force=False,
+        allow_proper_names=True,
+        proper_names=None,
     ):
         self.calls.append(
             {
@@ -268,6 +272,7 @@ class _StrictRetryTranslator:
                 "previous_translation": previous_translation,
                 "validation_reason": validation_reason,
                 "force": force,
+                "proper_names": list(proper_names or []),
             }
         )
         if self.responses:
@@ -1315,12 +1320,16 @@ class OCRQualityRegressionTests(unittest.TestCase):
         with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
             records = validate_and_retry_translations([group], translator)
 
-        self.assertEqual(len(records), 1)
+        # The strict retry keeps the Spanish token, so the group has no detected
+        # name and earns the final isolated attempt, which fails as well.
+        self.assertEqual(len(records), 2)
         self.assertFalse(records[0]["valid"], records)
         self.assertTrue(
             records[0]["reason"].startswith("residual_spanish_token"),
             records,
         )
+        self.assertTrue(records[-1]["isolated"], records)
+        self.assertFalse(records[-1]["valid"], records)
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
         self.assertEqual(group.rejected_translation, "QUIZÁS SEJA POR AQUI.")

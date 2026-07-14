@@ -114,6 +114,31 @@ class TranslatorNvidiaBatch:
         self.detected_names_signature = stable_hash(normalized) if normalized else ""
         self.stats["detected_name_count"] = len(normalized)
 
+    def _proper_name_instruction(self, proper_names, allow_proper_names):
+        """Name the spans the model may keep, never merely that names may exist.
+
+        A vague 'keep proper names' lets the model elect its own candidate and then
+        adapt it into the target language, which is how a source auxiliary becomes an
+        invented character name. Only detected spans may survive, and an empty list
+        means every single word must be translated.
+        """
+        spans = [str(span).strip() for span in (proper_names or []) if str(span).strip()]
+        if not allow_proper_names or not spans:
+            return (
+                "NENHUMA palavra pode permanecer em "
+                f"{self.source_language}: nao ha nomes proprios "
+                "neste texto, entao traduza cada palavra. "
+                "Preserve a pontuacao e qualquer censura (***). "
+            )
+        return (
+            "Os unicos nomes proprios deste texto sao: "
+            + ", ".join(spans)
+            + ". Copie esses nomes exatamente como estao, sem traduzir, adaptar "
+            "nem substituir por equivalentes. Nenhum outro token pode ser tratado "
+            "como nome proprio: traduza todas as demais palavras. "
+            "Preserve a pontuacao e qualquer censura (***). "
+        )
+
     def translate_strict(
         self,
         text,
@@ -121,6 +146,7 @@ class TranslatorNvidiaBatch:
         validation_reason="",
         force=False,
         allow_proper_names=True,
+        proper_names=None,
     ):
         if not str(text).strip():
             return text
@@ -143,16 +169,9 @@ class TranslatorNvidiaBatch:
                             self._system_prompt()
                             + "\nRevisao estrita: traduza TODO texto de "
                             f"{self.source_language} para {self._target_language_name()}. "
-                            + (
-                                "Nao deixe palavras/frases no idioma de origem, "
-                                "exceto nomes proprios. "
-                                if allow_proper_names
-                                else (
-                                    "NENHUMA palavra pode permanecer em "
-                                    f"{self.source_language}: nao ha nomes proprios "
-                                    "neste texto, entao traduza cada palavra. "
-                                    "Preserve a pontuacao e qualquer censura (***). "
-                                )
+                            + self._proper_name_instruction(
+                                proper_names,
+                                allow_proper_names,
                             )
                             + "Se o texto for uma onomatopeia/SFX, "
                             "preserve. Retorne somente JSON."

@@ -759,8 +759,169 @@ def _group_has_mixed_case_name_evidence(group):
     return any(token.isalpha() and not token.isupper() for token in raw_tokens)
 
 
+ENGLISH_FUNCTION_TOKENS = frozenset(
+    {
+        # auxiliaries and modals
+        "AM", "ARE", "BE", "BEEN", "BEING", "CAN", "COULD", "DID", "DO",
+        "DOES", "DONE", "HAD", "HAS", "HAVE", "IS", "MAY", "MIGHT", "MUST",
+        "SHALL", "SHOULD", "WAS", "WERE", "WILL", "WOULD", "WONT", "CANT",
+        # pronouns and determiners
+        "HE", "HER", "HERS", "HIM", "HIS", "I", "IT", "ITS", "ME", "MINE",
+        "MY", "OUR", "OURS", "SHE", "THEIR", "THEIRS", "THEM", "THEY", "US",
+        "WE", "YOU", "YOUR", "YOURS", "THIS", "THAT", "THESE", "THOSE",
+        "THE", "AN", "SOME", "ANY", "EVERY",
+        # interrogatives and frequent function words
+        "WHAT", "WHEN", "WHERE", "WHICH", "WHO", "WHOM", "WHOSE", "WHY",
+        "HOW", "NOT", "NOR", "AND", "OR", "BUT", "IF", "SO", "THEN", "THAN",
+        "AS", "AT", "BY", "FROM", "IN", "INTO", "OF", "ON", "OUT", "OVER",
+        "TO", "UP", "WITH", "WITHOUT",
+        # interjections and discourse markers that open a clause
+        "OK", "OKAY", "YES", "YEAH", "NO", "WELL", "HEY", "PLEASE", "SORRY",
+        "THANKS", "JUST", "NOW", "HERE", "THERE", "STILL", "ALSO", "EVEN",
+    }
+)
+
+NAME_TITLE_TOKENS = frozenset(
+    {
+        "LADY", "LORD", "SIR", "MADAM", "MADAME", "MISS", "MISTER", "MR",
+        "MRS", "MS", "DR", "DOCTOR", "PROFESSOR", "CAPTAIN", "COMMANDER",
+        "GENERAL", "COUNT", "COUNTESS", "DUKE", "DUCHESS", "BARON",
+        "BARONESS", "PRINCE", "PRINCESS", "KING", "QUEEN", "EMPEROR",
+        "EMPRESS", "MASTER", "SAINT", "FATHER", "MOTHER", "UNCLE", "AUNT",
+    }
+)
+
+# Endings that mark a token as an inflected English word rather than a name, so a
+# clause-opening adverb followed by a comma is never read as a vocative.
+NON_NAME_SUFFIXES = (
+    "LY", "ING", "TION", "SION", "NESS", "MENT", "OUS", "FUL", "LESS",
+    "ABLE", "IBLE", "EST",
+)
+
+MIN_PROPER_NAME_LENGTH = 3
+MIN_STANDALONE_NAME_LENGTH = 4
+
+
+def _name_token_of(raw):
+    return re.sub(r"[^A-Z']", "", _ascii_fold(str(raw or "")).upper()).strip("'")
+
+
+def _token_is_source_vocabulary(token):
+    """True when the source language uses this token as a word, not as a name.
+
+    Comic lettering is all-caps, so capitalisation carries no signal at all. The
+    only reliable refusal is lexical: anything the pipeline already knows as an
+    English word, an auxiliary/pronoun, an SFX, or a visibly inflected form is
+    never a name, however name-shaped its position looks.
+    """
+    if not token:
+        return True
+    if (
+        token in ENGLISH_FUNCTION_TOKENS
+        or token in COMMON_ENGLISH_WORDS
+        or token in RESIDUAL_TRANSLATION_ENGLISH_WORDS
+        or token in SFX_WORDS
+        or token in NAME_TITLE_TOKENS
+    ):
+        return True
+    if token.casefold() in OCR_REPAIR_ENGLISH_WORDS:
+        return True
+    return len(token) >= 5 and token.endswith(NON_NAME_SUFFIXES)
+
+
+def _separator_between(text, left_match, right_match):
+    return text[left_match.end() : right_match.start()]
+
+
+def _token_governs_following_pronoun(text, matches, index):
+    """True when the token reads as a verb or auxiliary of the source clause.
+
+    A modal opening a tag question ('..., <modal> you?') sits in exactly the
+    position a vocative would, so position alone cannot separate the two. What
+    separates them is that the next token is a pronoun the verb governs, with no
+    punctuation in between: an address is always punctuated off from its clause,
+    a verb phrase never is.
+    """
+    if index + 1 >= len(matches):
+        return False
+    following = _name_token_of(matches[index + 1].group(0))
+    if following not in ENGLISH_FUNCTION_TOKENS:
+        return False
+    separator = _separator_between(text, matches[index], matches[index + 1])
+    return not re.search(r"[,;:!?…]|\.\.\.", separator)
+
+
+def _has_strong_name_context(matches, index):
+    """True only in the positions that mark a name beyond doubt.
+
+    Deliberately narrow. A bare vocative ('X, WAIT!' against 'WAIT, X') cannot be
+    resolved without knowing that the other token is a verb, and this pipeline has
+    no English lexicon deep enough to know that. Guessing there would either freeze
+    an ordinary word in the source language or hand the model a fake name to adapt,
+    which is the failure being fixed. Recurring names are recovered from
+    chapter-level consensus instead and arrive here as ``known_names``.
+    """
+    token = _name_token_of(matches[index].group(0))
+    if len(token) < MIN_PROPER_NAME_LENGTH:
+        return False
+
+    # A title binds to the name that follows it: 'LADY <NAME>'.
+    if index > 0 and _name_token_of(matches[index - 1].group(0)) in NAME_TITLE_TOKENS:
+        return True
+
+    # A direct address standing alone, which is how a character is called out.
+    return len(matches) == 1 and len(token) >= MIN_STANDALONE_NAME_LENGTH
+
+
+def detect_proper_name_spans(text, known_names=()):
+    """Return the tokens of ``text`` that are confidently proper names.
+
+    The translator must be told which spans it may keep, never merely that names
+    may exist: told only 'keep proper names', the model elects its own candidate
+    and then adapts it into the target language, which is how a source auxiliary
+    became an invented character name. Detection is fail-closed - an ambiguous
+    token is left out and simply gets translated like any other word, because a
+    word translated in error is recoverable and a name invented in error is not.
+    """
+    cleaned = clean_ocr_text(text)
+    matches = list(re.finditer(r"[A-Za-z][A-Za-z’-]*", cleaned))
+    if not matches:
+        return []
+    known = {
+        _name_token_of(part)
+        for name in (known_names or ())
+        for part in re.split(r"\s+", str(name or ""))
+        if _name_token_of(part)
+    }
+    spans = []
+    for index, match in enumerate(matches):
+        raw = match.group(0)
+        token = _name_token_of(raw)
+        if len(token) < MIN_PROPER_NAME_LENGTH:
+            continue
+        # The source vocabulary always wins, even over chapter consensus: a word
+        # the language uses grammatically can never be preserved as a name.
+        if _token_is_source_vocabulary(token):
+            continue
+        is_known = token in known
+        if not is_known and _token_governs_following_pronoun(cleaned, matches, index):
+            continue
+        if is_known or _has_strong_name_context(matches, index):
+            if raw not in spans:
+                spans.append(raw)
+    return spans
+
+
+def group_proper_name_spans(group):
+    return detect_proper_name_spans(
+        group.text,
+        known_names=getattr(group, "detected_proper_names", ()) or (),
+    )
+
+
 def _group_validation_allowed_proper_names(group):
     names = list(group.detected_proper_names or [])
+    names.extend(group_proper_name_spans(group))
     if _group_has_mixed_case_name_evidence(group):
         names.append(group.text)
     return names
@@ -789,6 +950,7 @@ def apply_group_translations(groups, translations):
             group.translation,
             group.classification,
             _group_validation_allowed_proper_names(group),
+            required_name_spans=group_proper_name_spans(group),
         )
         group.translation_valid = valid
         group.translation_validation_reason = reason
@@ -4075,9 +4237,18 @@ def _normalized_allowed_name_tokens(allowed_proper_names):
 
 
 def _source_token_is_name_like(info):
+    """True when a source token looks like a name rather than OCR case noise.
+
+    Comic lettering is all-caps, so a mixed-case token is usually the recogniser
+    misreading glyphs, not a name. Treating any mixed-case token as name evidence
+    let a misread auxiliary pose as a character name, so a token the source
+    language uses as a word is never counted here.
+    """
     raw = str(info.get("raw") or "")
     letters = re.sub(r"[^A-Za-z]", "", raw)
-    return bool(letters and not letters.isupper())
+    if not letters or letters.isupper():
+        return False
+    return not _token_is_source_vocabulary(_name_token_of(raw))
 
 
 def _is_stuttered_name_fragment(text):
@@ -4109,6 +4280,7 @@ def validate_translation_text(
     translation,
     classification="speech",
     allowed_proper_names=None,
+    required_name_spans=None,
 ):
     translated = clean_ocr_text(translation)
     if classification == "sfx" and not config.TRANSLATE_SFX:
@@ -4121,6 +4293,24 @@ def validate_translation_text(
     source_tokens = {info["token"] for info in source_infos}
     translated_tokens = [info["token"] for info in translated_infos]
     allowed_names = _normalized_allowed_name_tokens(allowed_proper_names)
+    translatable_context_for_names = classification in {
+        "speech",
+        "thought",
+        "narration",
+        "unknown",
+    }
+    altered_names = sorted(
+        {
+            _name_token_of(span)
+            for span in (required_name_spans or ())
+            if _name_token_of(span) in source_tokens
+            and _name_token_of(span) not in translated_tokens
+        }
+    )
+    if translatable_context_for_names and altered_names:
+        # A detected name must survive the translation verbatim. When it does not,
+        # the model replaced it with a target-language equivalent it invented.
+        return False, "proper_name_altered:" + ",".join(altered_names[:6])
     translatable_context = classification in {"speech", "thought", "narration", "unknown"}
     portuguese_hits = sum(token in PORTUGUESE_MARKERS for token in translated_tokens)
     target_language_signal = portuguese_hits or any(
@@ -4396,7 +4586,7 @@ def _needs_isolated_retry(group, reason):
     full translation. Groups with a known proper name are left alone, so the name
     is never translated away.
     """
-    if group.detected_proper_names:
+    if group_proper_name_spans(group):
         return False
     if group.classification not in {"speech", "thought", "narration", "unknown"}:
         return False
@@ -4410,11 +4600,13 @@ def validate_and_retry_translations(groups, translator, force=False):
     for group in groups:
         if not group.sent_to_translation:
             continue
+        name_spans = group_proper_name_spans(group)
         valid, reason = validate_translation_text(
             group.text,
             group.translation,
             group.classification,
             _group_validation_allowed_proper_names(group),
+            required_name_spans=name_spans,
         )
         group.translation_valid = valid
         group.translation_validation_reason = reason
@@ -4439,6 +4631,7 @@ def validate_and_retry_translations(groups, translator, force=False):
                         previous_translation=latest_candidate,
                         validation_reason=reason,
                         force=force,
+                        proper_names=name_spans,
                     )
                 except Exception as exc:
                     candidate = ""
@@ -4453,6 +4646,7 @@ def validate_and_retry_translations(groups, translator, force=False):
                     candidate,
                     group.classification,
                     _group_validation_allowed_proper_names(group),
+                    required_name_spans=name_spans,
                 )
                 retry_records.append(
                     {
@@ -4485,6 +4679,7 @@ def validate_and_retry_translations(groups, translator, force=False):
                     validation_reason=reason,
                     force=force,
                     allow_proper_names=False,
+                    proper_names=[],
                 )
             except Exception as exc:  # noqa: BLE001 - keep the caller on failure.
                 candidate = ""
@@ -4499,6 +4694,7 @@ def validate_and_retry_translations(groups, translator, force=False):
                     candidate,
                     group.classification,
                     _group_validation_allowed_proper_names(group),
+                    required_name_spans=name_spans,
                 )
                 retry_records.append(
                     {
