@@ -21,8 +21,7 @@ from ocr_balloon import (
     TextGroup,
     apply_group_translations,
     detect_proper_name_spans,
-    group_is_proper_name_only,
-    group_proper_name_spans,
+    group_has_name_only_shape,
     validate_and_retry_translations,
     validate_translation_text,
 )
@@ -116,9 +115,6 @@ class ProperNameDetectionTests(unittest.TestCase):
     def test_title_followed_by_name(self):
         self.assertEqual(detect_proper_name_spans("LADY BRELOFF, I--"), ["BRELOFF"])
 
-    def test_standalone_direct_address(self):
-        self.assertEqual(detect_proper_name_spans("ARSKAN..."), ["ARSKAN"])
-
     def test_chapter_consensus_name_is_kept_mid_sentence(self):
         self.assertEqual(
             detect_proper_name_spans("I SAW ARSKAN THERE", known_names=["ARSKAN"]),
@@ -184,11 +180,20 @@ class FalseNameControlTests(unittest.TestCase):
     def test_interjection_before_a_comma_is_not_a_vocative(self):
         self.assertEqual(detect_proper_name_spans("OKAY, ALL CLEAR!"), [])
 
-    def test_name_with_ellipsis_is_still_a_name(self):
-        self.assertEqual(detect_proper_name_spans("BRELOFF..."), ["BRELOFF"])
+    def test_lone_token_is_never_claimed_from_its_shape(self):
+        # This is the regression the offline re-audit caught. A lone token looks
+        # exactly like a lone name, so static detection claims neither: 'WAIT!' must
+        # not be frozen, which means 'BRELOFF...' cannot be claimed here either. The
+        # model settles it later.
+        self.assertEqual(detect_proper_name_spans("BRELOFF..."), [])
+        self.assertEqual(detect_proper_name_spans("WAIT!"), [])
+        self.assertEqual(detect_proper_name_spans("PANT"), [])
 
-    def test_hyphenated_name_is_detected(self):
-        self.assertEqual(detect_proper_name_spans("VAL-KIRA..."), ["VAL-KIRA"])
+    def test_lone_name_is_recovered_once_the_chapter_knows_it(self):
+        self.assertEqual(
+            detect_proper_name_spans("BRELOFF...", known_names=["BRELOFF"]),
+            ["BRELOFF"],
+        )
 
     def test_known_name_that_is_a_common_word_is_refused(self):
         # Fail-closed: the vocabulary wins over the consensus list, so a common
@@ -200,27 +205,45 @@ class FalseNameControlTests(unittest.TestCase):
 
 
 class ProperNameOnlyTerminalStateTests(unittest.TestCase):
-    """Phase 7: a name-only balloon is preserved, not reported as untranslated."""
+    """Phase 7: a lone name is settled by the model, never by its shape.
 
-    def test_name_only_group_is_detected(self):
-        self.assertTrue(group_is_proper_name_only(_group("ARSKAN...")))
+    'WAIT!' and 'ARSKAN...' are the same shape, and this pipeline has no English
+    lexicon that can tell them apart. So it asks: once the model is told the text has
+    no names and every word must be translated, an ordinary word comes back
+    translated and a name comes back unchanged.
+    """
 
-    def test_sentence_group_is_not_name_only(self):
-        self.assertFalse(group_is_proper_name_only(_group("ARSKAN, WAIT!")))
+    def test_name_shape_alone_claims_nothing(self):
+        self.assertTrue(group_has_name_only_shape(_group("ARSKAN...")))
+        # Same shape, ordinary word: the shape test cannot separate them, and does
+        # not pretend to.
+        self.assertTrue(group_has_name_only_shape(_group("WAIT!")))
 
-    def test_sfx_group_is_never_name_only(self):
-        self.assertFalse(group_is_proper_name_only(_group("KRAAA", classification="sfx")))
+    def test_sentence_has_no_name_shape(self):
+        self.assertFalse(group_has_name_only_shape(_group("ARSKAN, WAIT!")))
 
-    def test_name_only_group_is_quality_neutral(self):
+    def test_sfx_group_never_has_name_shape(self):
+        self.assertFalse(
+            group_has_name_only_shape(_group("KRAAA", classification="sfx"))
+        )
+
+    def test_vocabulary_word_never_has_name_shape(self):
+        self.assertFalse(group_has_name_only_shape(_group("OKAY!")))
+
+    def test_model_refusing_to_translate_settles_it_as_a_name(self):
         group = _group("ARSKAN...")
         apply_group_translations([group], ["ARSKAN..."])
+        self.assertFalse(group.translation_valid)
 
-        translator = _RecordingTranslator("ARSKAN...")
-        with patch.object(config, "TRANSLATION_MAX_RETRIES", 2):
-            records = validate_and_retry_translations([group], translator)
+        # The model hands the text back even after names are forbidden.
+        translator = _RecordingTranslator("ARSKAN...", "ARSKAN...")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            validate_and_retry_translations([group], translator)
 
-        self.assertEqual(records, [], "a name-only group must not be retried")
-        self.assertEqual(translator.calls, [], "the model must not be called again")
+        self.assertTrue(
+            any(not call["allow_proper_names"] for call in translator.calls),
+            "the model must be asked once with every name forbidden",
+        )
         self.assertEqual(group.translation_final_state, "preserved_original")
         self.assertEqual(group.translation_final_reason, "proper_name_only")
         self.assertEqual(group.translation_quality_impact, "none")
@@ -229,8 +252,24 @@ class ProperNameOnlyTerminalStateTests(unittest.TestCase):
         self.assertTrue(group.preserved_original)
         self.assertEqual(group.translation, group.text)
 
+    def test_ordinary_lone_word_is_translated_not_preserved(self):
+        # The regression the offline re-audit caught: a lone ordinary word has the
+        # shape of a name, and must never be frozen as one.
+        group = _group("WAIT!")
+        apply_group_translations([group], ["WAIT!"])
+
+        translator = _RecordingTranslator("WAIT!", "ESPERA!")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            validate_and_retry_translations([group], translator)
+
+        self.assertEqual(group.translation, "ESPERA!")
+        self.assertEqual(group.translation_final_state, "translated")
+        self.assertNotEqual(group.translation_final_reason, "proper_name_only")
+        self.assertFalse(group.manual_review_required)
+
     def test_untranslated_sentence_still_reaches_manual_review(self):
-        # The neutral state must not become a hiding place for a real failure.
+        # The neutral state must not become a hiding place for a real failure: a
+        # sentence has no name-only shape, so it can never take this route.
         group = _group("THE SIGNAL IS CLEAR.")
         apply_group_translations([group], [group.text])
 

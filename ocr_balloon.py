@@ -854,23 +854,20 @@ def _token_governs_following_pronoun(text, matches, index):
 def _has_strong_name_context(matches, index):
     """True only in the positions that mark a name beyond doubt.
 
-    Deliberately narrow. A bare vocative ('X, WAIT!' against 'WAIT, X') cannot be
-    resolved without knowing that the other token is a verb, and this pipeline has
-    no English lexicon deep enough to know that. Guessing there would either freeze
-    an ordinary word in the source language or hand the model a fake name to adapt,
-    which is the failure being fixed. Recurring names are recovered from
-    chapter-level consensus instead and arrive here as ``known_names``.
+    Deliberately narrow. Neither a bare vocative ('X, WAIT!' against 'WAIT, X') nor a
+    lone token ('ARSKAN...' against 'WAIT!') can be resolved from the sentence alone:
+    separating them needs to know that the other word is a verb, and this pipeline has
+    no English lexicon deep enough to know that. Guessing there freezes ordinary words
+    in the source language, so nothing is claimed from position except a title binding
+    to the name after it. Recurring names arrive from chapter consensus as
+    ``known_names``, and a lone name is settled by evidence from the model instead.
     """
     token = _name_token_of(matches[index].group(0))
     if len(token) < MIN_PROPER_NAME_LENGTH:
         return False
 
     # A title binds to the name that follows it: 'LADY <NAME>'.
-    if index > 0 and _name_token_of(matches[index - 1].group(0)) in NAME_TITLE_TOKENS:
-        return True
-
-    # A direct address standing alone, which is how a character is called out.
-    return len(matches) == 1 and len(token) >= MIN_STANDALONE_NAME_LENGTH
+    return index > 0 and _name_token_of(matches[index - 1].group(0)) in NAME_TITLE_TOKENS
 
 
 def detect_proper_name_spans(text, known_names=()):
@@ -919,23 +916,45 @@ def group_proper_name_spans(group):
     )
 
 
-def group_is_proper_name_only(group):
-    """True when the group carries a name and nothing else translatable.
+def group_has_name_only_shape(group):
+    """True when the group could be a lone name: one out-of-vocabulary token.
 
-    Such a group has no sentence to translate: the correct output is the name
-    itself, so a candidate equal to the source is the right answer rather than a
-    missing translation.
+    Shape alone proves nothing - 'WAIT!' has the same shape as 'ARSKAN...' - so this
+    only says the group is worth asking about. What settles it is
+    ``group_is_untranslatable_name``, which reads the model's own answer.
     """
     if group.classification not in {"speech", "thought", "narration", "unknown"}:
         return False
     cleaned = clean_ocr_text(group.text)
-    matches = list(re.finditer(r"[A-Za-z][A-Za-z'’-]*", cleaned))
-    if not matches:
+    matches = list(re.finditer(r"[A-Za-z][A-Za-z’-]*", cleaned))
+    if len(matches) != 1:
         return False
-    spans = {_name_token_of(span) for span in group_proper_name_spans(group)}
-    if not spans:
+    token = _name_token_of(matches[0].group(0))
+    if len(token) < MIN_STANDALONE_NAME_LENGTH:
         return False
-    return all(_name_token_of(match.group(0)) in spans for match in matches)
+    if _token_is_source_vocabulary(token):
+        return False
+    return not _is_nonlexical_vocalization_token({token})
+
+
+def group_is_untranslatable_name(group, candidate):
+    """True when the model, told to translate every word, returned the source.
+
+    This pipeline has no English lexicon, so it cannot tell a lone name from a lone
+    ordinary word by inspection. The model can. Once it has been instructed that the
+    text contains no proper names and that every word must be translated, a candidate
+    still identical to the source is the model reporting there is nothing to
+    translate - which is what a name is. An ordinary word comes back translated and
+    never reaches here.
+    """
+    if not group_has_name_only_shape(group):
+        return False
+    candidate = clean_ocr_text(candidate)
+    if not candidate:
+        return False
+    return _normalized_translation_text(candidate) == _normalized_translation_text(
+        group.text
+    )
 
 
 def _group_validation_allowed_proper_names(group):
@@ -964,8 +983,6 @@ def apply_group_translations(groups, translations):
 
         group.translation_candidate = _match_source_case(group.text, translated)
         group.translation = group.translation_candidate
-        if _finalize_proper_name_only(group):
-            continue
         valid, reason = validate_translation_text(
             group.text,
             group.translation,
@@ -1058,7 +1075,7 @@ def _terminal_translation_failure_reason(group, validation_reason, candidate):
 PROPER_NAME_ONLY_REASON = "proper_name_only"
 
 
-def _finalize_proper_name_only(group):
+def _finalize_proper_name_only(group, candidate):
     """Close a name-only group as correctly preserved instead of untranslated.
 
     A balloon holding just a character's name has no sentence to translate: keeping
@@ -1066,7 +1083,7 @@ def _finalize_proper_name_only(group):
     the failure path it produced a candidate equal to the source, a retry storm and a
     manual review, so a whole chapter was held back by a name that was already right.
     """
-    if not group_is_proper_name_only(group):
+    if not group_is_untranslatable_name(group, candidate):
         return False
     group.translation = group.text
     group.translation_candidate = group.text
@@ -4694,7 +4711,15 @@ def _needs_isolated_retry(group, reason):
     if group.classification not in {"speech", "thought", "narration", "unknown"}:
         return False
     return str(reason or "").startswith(
-        ("mixed_language_tokens", "residual_source_language", "residual_spanish_token")
+        (
+            "mixed_language_tokens",
+            "residual_source_language",
+            "residual_spanish_token",
+            # A candidate identical to its source is either a word the model failed
+            # to translate or a name it correctly refused to. Asking once more, with
+            # names forbidden, is what separates the two.
+            "candidate_equals_source",
+        )
     )
 
 
@@ -4702,8 +4727,6 @@ def validate_and_retry_translations(groups, translator, force=False):
     retry_records = []
     for group in groups:
         if not group.sent_to_translation:
-            continue
-        if _finalize_proper_name_only(group):
             continue
         name_spans = group_proper_name_spans(group)
         valid, reason = validate_translation_text(
@@ -4776,7 +4799,9 @@ def validate_and_retry_translations(groups, translator, force=False):
                     break
                 reason = new_reason
 
+        names_were_forbidden = False
         if not group.translation_valid and _needs_isolated_retry(group, reason):
+            names_were_forbidden = True
             try:
                 candidate = translator.translate_strict(
                     group.text,
@@ -4827,6 +4852,12 @@ def validate_and_retry_translations(groups, translator, force=False):
                     reason = new_reason
 
         if group.translation_valid:
+            continue
+        # The model was told this text held no names and that every word had to be
+        # translated, and it handed the text straight back. For a lone
+        # out-of-vocabulary token that is not a failure to translate: it is the
+        # model reporting there is nothing to translate, which is what a name is.
+        if names_were_forbidden and _finalize_proper_name_only(group, latest_candidate):
             continue
         failure_reason = _terminal_translation_failure_reason(
             group,
