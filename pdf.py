@@ -171,6 +171,49 @@ def prepare_smart_webtoon_pages(
     return page_paths, report
 
 
+def smart_split_audit(report):
+    """Expand every unsafe cut into a record that can actually be audited.
+
+    A count of unsafe cuts with no list behind it says a page may have been cut
+    through artwork while naming no page, no coordinate and no metric, so nothing can
+    be checked afterwards. The cut is still applied - the alternative is an unbounded
+    page - but it is now fully described, and the counter can never exist without the
+    matching detail.
+    """
+    details = []
+    for record in report.get("splits") or []:
+        if record.get("safe_band"):
+            continue
+        page = int(record.get("page") or 0)
+        details.append(
+            {
+                "page": page,
+                "logical_pages": [page, page + 1],
+                "source_images": int(report.get("source_images") or 0),
+                "split_y": int(record.get("height") or 0),
+                "orientation": str(record.get("orientation") or "horizontal"),
+                "band_score": record.get("band_score"),
+                "white_ratio": record.get("white_ratio"),
+                "dark_ratio": record.get("dark_ratio"),
+                "texture": record.get("texture"),
+                "horizontal_edges": record.get("horizontal_edges"),
+                "reason": str(record.get("reason") or ""),
+                "safe_band": False,
+                # The lowest-risk band is taken rather than letting the page grow
+                # without bound; nothing is discarded, so the cut is applied.
+                "fallback_decision": "kept_lowest_risk_band",
+                "accepted": True,
+                "requires_review": True,
+            }
+        )
+    return {
+        "safe": not details,
+        "unsafe_count": len(details),
+        "details_count": len(details),
+        "details": details,
+    }
+
+
 def create_split_boundary_contact_sheet(page_paths, report, target, max_items=24):
     """Render page seams, prioritizing low-confidence cuts, for visual auditing."""
 
@@ -325,10 +368,11 @@ def _find_safe_horizontal_split(image, target_height, min_height, max_height):
         return target, {
             "safe_band": False,
             "reason": "no_candidate_band",
+            "orientation": "horizontal",
         }
     (
         safe_band,
-        _,
+        score,
         _,
         y,
         white_ratio,
@@ -340,6 +384,8 @@ def _find_safe_horizontal_split(image, target_height, min_height, max_height):
     return int(y), {
         "safe_band": bool(safe_band),
         "reason": band_type if safe_band else "lowest_risk_band",
+        "orientation": "horizontal",
+        "band_score": round(float(score), 6),
         "white_ratio": round(float(white_ratio), 6),
         "dark_ratio": round(float(dark_ratio), 6),
         "texture": round(float(texture), 6),

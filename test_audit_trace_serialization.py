@@ -12,6 +12,7 @@ import unittest
 
 from benchmark_pipeline import _build_quality_report, _serializable_state
 from ocr_balloon import summarize_speech_container_reocr
+from pdf import smart_split_audit
 
 
 def _reocr_record(
@@ -156,6 +157,99 @@ class SpeechContainerReocrSerializationTests(unittest.TestCase):
         report = _build_quality_report({}, [state], [])
         self.assertEqual(report["pages"][0]["speech_container_reocr"], [])
         self.assertEqual(report["totals"]["speech_container_reocr"]["containers_evaluated"], 0)
+
+
+def _split(page, safe_band=True, height=1800):
+    record = {
+        "page": page,
+        "height": height,
+        "safe_band": safe_band,
+        "reason": "white_gutter" if safe_band else "lowest_risk_band",
+        "orientation": "horizontal",
+        "band_score": 4.2 if safe_band else 0.7,
+        "white_ratio": 0.97 if safe_band else 0.49,
+        "dark_ratio": 0.0,
+        "texture": 2.1 if safe_band else 23.8,
+        "horizontal_edges": 0.4 if safe_band else 1.6,
+    }
+    return record
+
+
+def _split_report(splits):
+    return {
+        "source_images": 12,
+        "pdf_pages": len(splits),
+        "splits": splits,
+        "unsafe_split_count": sum(not s.get("safe_band") for s in splits),
+    }
+
+
+class SmartSplitSerializationTests(unittest.TestCase):
+    def test_safe_chapter_reports_no_details(self):
+        audit = smart_split_audit(_split_report([_split(1), _split(2)]))
+
+        self.assertTrue(audit["safe"])
+        self.assertEqual(audit["unsafe_count"], 0)
+        self.assertEqual(audit["details_count"], 0)
+        self.assertEqual(audit["details"], [])
+
+    def test_one_unsafe_cut_is_fully_described(self):
+        audit = smart_split_audit(
+            _split_report([_split(1), _split(2, safe_band=False, height=1287)])
+        )
+
+        self.assertFalse(audit["safe"])
+        self.assertEqual(audit["unsafe_count"], 1)
+        detail = audit["details"][0]
+        self.assertEqual(detail["page"], 2)
+        self.assertEqual(detail["logical_pages"], [2, 3])
+        self.assertEqual(detail["split_y"], 1287)
+        self.assertEqual(detail["orientation"], "horizontal")
+        self.assertEqual(detail["reason"], "lowest_risk_band")
+        self.assertEqual(detail["fallback_decision"], "kept_lowest_risk_band")
+        self.assertTrue(detail["accepted"])
+        self.assertTrue(detail["requires_review"])
+        self.assertEqual(detail["texture"], 23.8)
+
+    def test_two_unsafe_cuts_yield_two_details(self):
+        audit = smart_split_audit(
+            _split_report(
+                [
+                    _split(1),
+                    _split(2, safe_band=False),
+                    _split(3, safe_band=False),
+                    _split(4),
+                ]
+            )
+        )
+
+        self.assertEqual(audit["unsafe_count"], 2)
+        self.assertEqual(audit["details_count"], 2)
+        self.assertEqual([d["page"] for d in audit["details"]], [2, 3])
+
+    def test_counter_can_never_exist_without_its_list(self):
+        for splits in (
+            [],
+            [_split(1)],
+            [_split(1, safe_band=False)],
+            [_split(1, safe_band=False), _split(2, safe_band=False)],
+        ):
+            with self.subTest(splits=len(splits)):
+                audit = smart_split_audit(_split_report(splits))
+                self.assertEqual(audit["unsafe_count"], len(audit["details"]))
+                self.assertEqual(audit["details_count"], audit["unsafe_count"])
+                self.assertEqual(audit["safe"], audit["unsafe_count"] == 0)
+
+    def test_details_are_json_serializable(self):
+        audit = smart_split_audit(_split_report([_split(1, safe_band=False)]))
+        json.dumps(audit)
+
+    def test_report_without_splits_is_tolerated(self):
+        # A run with the smart split disabled carries no split list at all.
+        audit = smart_split_audit({"unsafe_split_count": 0})
+
+        self.assertTrue(audit["safe"])
+        self.assertEqual(audit["details"], [])
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ from pdf import (
     create_split_boundary_contact_sheet,
     generate_pdf,
     prepare_smart_webtoon_pages,
+    smart_split_audit,
 )
 from pipeline_cache import (
     atomic_copy,
@@ -929,12 +930,15 @@ def run_benchmark(args):
         expected_page_count=len(completed_states),
         full=args.full,
     )
-    quality["smart_split_unsafe_count"] = int(
-        smart_split_report.get("unsafe_split_count", 0)
-    )
-    quality["smart_split_safe"] = (
-        quality["smart_split_unsafe_count"] == 0
-    )
+    split_audit = smart_split_audit(smart_split_report)
+    quality["smart_split_unsafe_count"] = split_audit["unsafe_count"]
+    quality["smart_split_safe"] = split_audit["safe"]
+    quality["smart_split_details"] = split_audit["details"]
+    quality["smart_split_summary"] = {
+        "safe": split_audit["safe"],
+        "unsafe_count": split_audit["unsafe_count"],
+        "details_count": split_audit["details_count"],
+    }
     quality["passed"] = bool(
         quality.get("passed") and quality["smart_split_safe"]
     )
