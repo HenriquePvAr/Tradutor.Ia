@@ -12,6 +12,7 @@ import numpy as np
 import config
 
 from ocr_balloon import (
+    TextCandidate,
     TextGroup,
     _assign_visual_white_regions,
     _classify_background_region,
@@ -37,6 +38,7 @@ from ocr_balloon import (
     _uniform_container_evidence,
     _uniform_light_line_text_mask,
     _apply_textured_caption_overlay,
+    _reclaim_short_lexical_lines,
     _refine_classification_with_background,
     _score_group_quality,
     _should_translate_group,
@@ -1339,6 +1341,91 @@ class OCRQualityRegressionTests(unittest.TestCase):
         ]
         violations = _incomplete_speech_region_coverage(self._coverage_state(items))
         self.assertEqual(violations, [])
+
+    # ---- RC1: short lines retained inside speech containers ----
+
+    @staticmethod
+    def _speech_group_from(lines, enclosed=True):
+        # Mark the group's lines as sitting in an enclosed visual container so
+        # the reclaim guard (dialogue balloons only, not art SFX) is satisfied.
+        for line in lines:
+            meta = dict(line.metadata or {})
+            meta.setdefault("visual_white_region_enclosed", enclosed)
+            line.metadata = meta
+        return _group_lines(lines)[0]
+
+    def test_short_lexical_line_above_is_reclaimed_into_speech_group(self):
+        # A short word dropped by a noise filter but sitting directly above a
+        # larger speech line in the same balloon must join it, so it is
+        # translated instead of being left as visible source text.
+        big = _boxed_line("GET UP", (257, 360, 162, 42), confidence=0.99)
+        short = _boxed_line("SO", (303, 314, 66, 43), confidence=0.78)
+        group = self._speech_group_from([big])
+        candidate = TextCandidate(line=short, ignored=True,
+                                  ignore_reason="noise_like_text")
+        _reclaim_short_lexical_lines([group], [candidate], (1374, 690, 3))
+        self.assertIn("SO", group.text)
+        self.assertEqual(len(group.lines), 2)
+        self.assertFalse(candidate.ignored)
+
+    def test_short_lexical_line_below_is_reclaimed_into_speech_group(self):
+        big = _boxed_line("PLEASE", (257, 300, 162, 42), confidence=0.99)
+        short = _boxed_line("NO", (300, 346, 66, 43), confidence=0.78)
+        group = self._speech_group_from([big])
+        candidate = TextCandidate(line=short, ignored=True,
+                                  ignore_reason="noise_like_text")
+        _reclaim_short_lexical_lines([group], [candidate], (1374, 690, 3))
+        self.assertIn("NO", group.text)
+        self.assertFalse(candidate.ignored)
+
+    def test_distant_short_line_stays_noise(self):
+        big = _boxed_line("GET UP", (257, 360, 162, 42), confidence=0.99)
+        far = _boxed_line("SO", (50, 1200, 66, 43), confidence=0.78)
+        group = self._speech_group_from([big])
+        candidate = TextCandidate(line=far, ignored=True,
+                                  ignore_reason="noise_like_text")
+        _reclaim_short_lexical_lines([group], [candidate], (1374, 690, 3))
+        self.assertNotIn("SO", group.text)
+        self.assertTrue(candidate.ignored)
+
+    def test_consonant_cluster_noise_is_not_reclaimed(self):
+        # A vowel-less fragment ("MM") is OCR noise, never a reclaimed word.
+        big = _boxed_line("SORRY", (257, 300, 162, 42), confidence=0.99)
+        mm = _boxed_line("MM", (300, 346, 66, 43), confidence=0.78)
+        group = self._speech_group_from([big])
+        candidate = TextCandidate(line=mm, ignored=True,
+                                  ignore_reason="noise_like_text")
+        _reclaim_short_lexical_lines([group], [candidate], (1374, 690, 3))
+        self.assertNotIn("MM", group.text)
+        self.assertTrue(candidate.ignored)
+
+    def test_single_char_fragment_is_not_merged_as_text(self):
+        # A one-character OCR fragment must not be merged as lexical text (it
+        # would corrupt the translation); it is left for cleanup/review.
+        big = _boxed_line("YOU STILL", (145, 382, 203, 38), confidence=0.99)
+        frag = _boxed_line("H", (199, 336, 93, 44), confidence=0.78)
+        group = self._speech_group_from([big])
+        candidate = TextCandidate(line=frag, ignored=True,
+                                  ignore_reason="too_few_useful_chars")
+        _reclaim_short_lexical_lines([group], [candidate], (1374, 690, 3))
+        self.assertEqual(len(group.lines), 1)
+        self.assertTrue(candidate.ignored)
+
+    def test_reclaim_respects_distinct_enclosed_container(self):
+        # A short line inside a different *enclosed* balloon must not be pulled
+        # into a neighbouring balloon's group.
+        big = _boxed_line("GET UP", (257, 360, 162, 42), confidence=0.99)
+        big.metadata = {"visual_white_region_id": 1,
+                        "visual_white_region_enclosed": True}
+        short = _boxed_line("SO", (303, 314, 66, 43), confidence=0.78)
+        short.metadata = {"visual_white_region_id": 2,
+                          "visual_white_region_enclosed": True}
+        group = self._speech_group_from([big])
+        candidate = TextCandidate(line=short, ignored=True,
+                                  ignore_reason="noise_like_text")
+        _reclaim_short_lexical_lines([group], [candidate], (1374, 690, 3))
+        self.assertNotIn("SO", group.text)
+        self.assertTrue(candidate.ignored)
 
     def test_adversarial_spanish_leakage_and_legitimate_foreign_controls(self):
         invalid_cases = [

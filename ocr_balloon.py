@@ -451,6 +451,12 @@ def analyze_image_array(original_bgr, raw_lines, page_index=None):
     ):
         groups = _split_groups_at_sentence_boundaries(groups)
     with profile_step(
+        "analyze.reclaim_short_lexical_lines",
+        page_index=page_index,
+        items=len(candidates),
+    ):
+        _reclaim_short_lexical_lines(groups, candidates, original.shape)
+    with profile_step(
         "analyze.associate_ignored_cleanup_lines",
         page_index=page_index,
         items=len(candidates),
@@ -3140,6 +3146,111 @@ def _assign_visual_white_regions(image_bgr, lines):
             "visual_white_region_touches_edge": int(touches_edge),
             "visual_white_region_enclosed": enclosed,
         }
+
+
+_RECLAIMABLE_IGNORE_REASONS = frozenset(
+    {"noise_like_text", "too_few_useful_chars", "low_alpha_ratio"}
+)
+
+
+def _text_has_lexical_word(text):
+    """A word of >=2 letters containing a vowel (generic, language-agnostic).
+
+    Excludes OCR noise and consonant-cluster onomatopoeia so a phantom read is
+    never promoted into a translated line.
+    """
+    for word in re.findall(r"[A-Za-zÀ-ÿ]{2,}", str(text or "")):
+        if re.search(r"[aeiouyAEIOUYÀ-ÿ]", word):
+            return True
+    return False
+
+
+def _short_line_joins_group(line, group):
+    """Symmetric structural test: does a filtered short line belong to a group.
+
+    Uses only generic geometry (comparable text height, strong horizontal
+    overlap, a small vertical gap in either direction). A confirmed *enclosed*
+    visual container with a different id vetoes the join; a weak, non-enclosed
+    region assignment does not, since it over-fragments a single balloon.
+    """
+    line_region_id = int((line.metadata or {}).get("visual_white_region_id") or 0)
+    line_enclosed = bool((line.metadata or {}).get("visual_white_region_enclosed"))
+    group_region_ids = {
+        int((item.metadata or {}).get("visual_white_region_id") or 0)
+        for item in group.lines
+    }
+    group_region_ids.discard(0)
+    if (
+        line_region_id
+        and group_region_ids
+        and line_region_id not in group_region_ids
+        and line_enclosed
+    ):
+        return False
+    gx, gy, gw, gh = group.box
+    lx, ly, lw, lh = line.box
+    if lw <= 0 or lh <= 0 or gw <= 0 or gh <= 0:
+        return False
+    heights = [item.box[3] for item in group.lines if item.box[3] > 0]
+    base_height = float(np.median(heights)) if heights else max(1, gh)
+    if min(lh, base_height) / max(lh, base_height) < 0.5:
+        return False
+    horizontal_overlap = max(0, min(gx + gw, lx + lw) - max(gx, lx))
+    if horizontal_overlap / max(1, min(gw, lw)) < 0.35:
+        return False
+    vertical_gap = max(gy - (ly + lh), ly - (gy + gh))
+    return vertical_gap <= 0.8 * base_height
+
+
+def _group_has_enclosed_container(group):
+    """True when a group sits in a confirmed enclosed visual container.
+
+    Distinguishes real dialogue balloons from stylized vocalizations/SFX drawn
+    on open art, which are not enclosed. Reclaiming short lines only into
+    enclosed containers keeps screams and art onomatopoeia from being merged.
+    """
+    return any(
+        bool((line.metadata or {}).get("visual_white_region_enclosed"))
+        for line in group.lines
+    )
+
+
+def _reclaim_short_lexical_lines(groups, candidates, image_shape):
+    """Reclaim short lexical lines filtered as noise into their speech group.
+
+    A short line dropped by a length/shape noise filter can be a real part of a
+    balloon (a leading word, a short interjection). When it carries a lexical
+    word and structurally belongs to an existing text group, merge it before
+    classification so it is translated and rendered with the rest of the speech
+    instead of surviving as visible source text. Purely structural: no word,
+    page, coordinate or chapter rule.
+    """
+    for candidate in candidates:
+        if not candidate.ignored:
+            continue
+        if candidate.ignore_reason not in _RECLAIMABLE_IGNORE_REASONS:
+            continue
+        line = candidate.line
+        if not _text_has_lexical_word(line.text):
+            continue
+        target = None
+        for group in groups:
+            if group.ignored or not _text_has_lexical_word(group.text):
+                continue
+            if not _group_has_enclosed_container(group):
+                continue
+            if _short_line_joins_group(line, group):
+                target = group
+                break
+        if target is None:
+            continue
+        if any(id(existing) == id(line) for existing in target.lines):
+            continue
+        target.lines.append(line)
+        target.lines.sort(key=lambda item: (item.box[1], item.box[0]))
+        target.text = clean_ocr_text(" ".join(item.text for item in target.lines))
+        candidate.ignored = False
+        candidate.ignore_reason = ""
 
 
 def _associate_ignored_cleanup_lines(groups, candidates, image_shape, page_index=None):
