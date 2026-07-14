@@ -15,11 +15,14 @@ from unittest.mock import patch
 import numpy as np
 
 import config
+from benchmark_pipeline import _translation_quality_accounting
 from ocr_balloon import (
     OCRLine,
     TextGroup,
     apply_group_translations,
     detect_proper_name_spans,
+    group_is_proper_name_only,
+    group_proper_name_spans,
     validate_and_retry_translations,
     validate_translation_text,
 )
@@ -194,6 +197,114 @@ class FalseNameControlTests(unittest.TestCase):
             detect_proper_name_spans("SHUT IT, WILL YOU?", known_names=["WILL"]),
             [],
         )
+
+
+class ProperNameOnlyTerminalStateTests(unittest.TestCase):
+    """Phase 7: a name-only balloon is preserved, not reported as untranslated."""
+
+    def test_name_only_group_is_detected(self):
+        self.assertTrue(group_is_proper_name_only(_group("ARSKAN...")))
+
+    def test_sentence_group_is_not_name_only(self):
+        self.assertFalse(group_is_proper_name_only(_group("ARSKAN, WAIT!")))
+
+    def test_sfx_group_is_never_name_only(self):
+        self.assertFalse(group_is_proper_name_only(_group("KRAAA", classification="sfx")))
+
+    def test_name_only_group_is_quality_neutral(self):
+        group = _group("ARSKAN...")
+        apply_group_translations([group], ["ARSKAN..."])
+
+        translator = _RecordingTranslator("ARSKAN...")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 2):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(records, [], "a name-only group must not be retried")
+        self.assertEqual(translator.calls, [], "the model must not be called again")
+        self.assertEqual(group.translation_final_state, "preserved_original")
+        self.assertEqual(group.translation_final_reason, "proper_name_only")
+        self.assertEqual(group.translation_quality_impact, "none")
+        self.assertTrue(group.translation_valid)
+        self.assertFalse(group.manual_review_required)
+        self.assertTrue(group.preserved_original)
+        self.assertEqual(group.translation, group.text)
+
+    def test_untranslated_sentence_still_reaches_manual_review(self):
+        # The neutral state must not become a hiding place for a real failure.
+        group = _group("THE SIGNAL IS CLEAR.")
+        apply_group_translations([group], [group.text])
+
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            validate_and_retry_translations([group], _RecordingTranslator(group.text))
+
+        self.assertEqual(group.translation_final_state, "manual_review")
+        self.assertTrue(group.manual_review_required)
+
+
+class ProperNameAccountingTests(unittest.TestCase):
+    """Phase 7/15: a preserved name must not fail the chapter's quality gate."""
+
+    @staticmethod
+    def _states(items):
+        return [
+            {
+                "index": 1,
+                "status": "processed",
+                "output_path": "",
+                "image_path": "",
+                "timings": {},
+                "debug_data": {
+                    "items": items,
+                    "selective_ocr_fallbacks": [],
+                    "classification_counts": {},
+                },
+            }
+        ]
+
+    @staticmethod
+    def _name_only_item():
+        return {
+            "id": "BALAO_1",
+            "classification": "speech",
+            "translation_final_state": "preserved_original",
+            "translation_final_reason": "proper_name_only",
+            "translation_valid": True,
+            "preserved_original": True,
+            "redrawn": False,
+            "sent_to_nvidia": True,
+            "clean_text": "ARSKAN...",
+            "translation": "ARSKAN...",
+            "translation_candidate": "ARSKAN...",
+            "bounding_box": [10, 10, 90, 30],
+        }
+
+    def test_preserved_name_does_not_require_review(self):
+        accounting = _translation_quality_accounting(self._states([self._name_only_item()]))
+
+        self.assertEqual(accounting["proper_name_preserved"], 1)
+        self.assertEqual(accounting["candidate_equals_source"], 0)
+        self.assertEqual(accounting["invalid_candidate"], 0)
+        self.assertEqual(accounting["manual_review"], 0)
+        self.assertEqual(accounting["source_language_residual"], 0)
+        self.assertTrue(accounting["accounting_closed"])
+        self.assertFalse(accounting["requires_review"])
+        self.assertTrue(accounting["quality_passed"])
+
+    def test_untranslated_sentence_still_requires_review(self):
+        item = self._name_only_item()
+        item["translation_final_reason"] = "untranslated_source_after_retries"
+        item["translation_final_state"] = "manual_review"
+        item["translation_valid"] = False
+        item["clean_text"] = "THE SIGNAL IS CLEAR."
+        item["translation"] = "THE SIGNAL IS CLEAR."
+        item["translation_candidate"] = "THE SIGNAL IS CLEAR."
+
+        accounting = _translation_quality_accounting(self._states([item]))
+
+        self.assertEqual(accounting["proper_name_preserved"], 0)
+        self.assertEqual(accounting["candidate_equals_source"], 1)
+        self.assertTrue(accounting["requires_review"])
+        self.assertFalse(accounting["quality_passed"])
 
 
 class StrictRetryRoutingTests(unittest.TestCase):

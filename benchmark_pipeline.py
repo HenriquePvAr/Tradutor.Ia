@@ -22,6 +22,7 @@ from classification_profiler import (
 from down import download_images, force_remove
 from json_utils import dumps_json
 from ocr_balloon import (
+    PROPER_NAME_ONLY_REASON,
     TRANSLATION_TERMINAL_STATES,
     analyze_image_array,
     apply_selective_ocr_fallbacks,
@@ -1642,6 +1643,7 @@ def _translation_quality_accounting(states):
         "source_language_residual": 0,
         "missing_candidate": 0,
         "candidate_equals_source": 0,
+        "proper_name_preserved": 0,
         "invalid_candidate": 0,
         "translation_not_applied": 0,
         "missing_terminal_state": 0,
@@ -1684,9 +1686,20 @@ def _translation_quality_accounting(states):
             result["translated_rendered"] += 1
         if item.get("preserved_original"):
             result["preserved_original"] += 1
+        # A balloon holding only a character's name has no sentence to translate:
+        # the name itself is the correct output. Counting it as an untranslated
+        # source held whole chapters in review over text that was already right.
+        proper_name_only = reason == PROPER_NAME_ONLY_REASON
+        if proper_name_only:
+            result["proper_name_preserved"] += 1
         if not candidate:
             result["missing_candidate"] += 1
-        if source and candidate and source.casefold() == candidate.casefold():
+        if (
+            not proper_name_only
+            and source
+            and candidate
+            and source.casefold() == candidate.casefold()
+        ):
             result["candidate_equals_source"] += 1
         if not item.get("translation_valid", False):
             result["invalid_candidate"] += 1

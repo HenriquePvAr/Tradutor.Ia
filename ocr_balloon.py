@@ -919,6 +919,25 @@ def group_proper_name_spans(group):
     )
 
 
+def group_is_proper_name_only(group):
+    """True when the group carries a name and nothing else translatable.
+
+    Such a group has no sentence to translate: the correct output is the name
+    itself, so a candidate equal to the source is the right answer rather than a
+    missing translation.
+    """
+    if group.classification not in {"speech", "thought", "narration", "unknown"}:
+        return False
+    cleaned = clean_ocr_text(group.text)
+    matches = list(re.finditer(r"[A-Za-z][A-Za-z'’-]*", cleaned))
+    if not matches:
+        return False
+    spans = {_name_token_of(span) for span in group_proper_name_spans(group)}
+    if not spans:
+        return False
+    return all(_name_token_of(match.group(0)) in spans for match in matches)
+
+
 def _group_validation_allowed_proper_names(group):
     names = list(group.detected_proper_names or [])
     names.extend(group_proper_name_spans(group))
@@ -945,6 +964,8 @@ def apply_group_translations(groups, translations):
 
         group.translation_candidate = _match_source_case(group.text, translated)
         group.translation = group.translation_candidate
+        if _finalize_proper_name_only(group):
+            continue
         valid, reason = validate_translation_text(
             group.text,
             group.translation,
@@ -1032,6 +1053,34 @@ def _terminal_translation_failure_reason(group, validation_reason, candidate):
     if str(validation_reason or "").startswith("strict_retry_error"):
         return "translation_failed_after_retries"
     return "invalid_translation_after_retries"
+
+
+PROPER_NAME_ONLY_REASON = "proper_name_only"
+
+
+def _finalize_proper_name_only(group):
+    """Close a name-only group as correctly preserved instead of untranslated.
+
+    A balloon holding just a character's name has no sentence to translate: keeping
+    the name verbatim is the right output, not a missing translation. Routed through
+    the failure path it produced a candidate equal to the source, a retry storm and a
+    manual review, so a whole chapter was held back by a name that was already right.
+    """
+    if not group_is_proper_name_only(group):
+        return False
+    group.translation = group.text
+    group.translation_candidate = group.text
+    group.translation_valid = True
+    group.translation_validation_reason = PROPER_NAME_ONLY_REASON
+    group.rejected_translation = ""
+    group.manual_review_required = False
+    _set_translation_terminal_state(
+        group,
+        "preserved_original",
+        PROPER_NAME_ONLY_REASON,
+        preserved_original=True,
+    )
+    return True
 
 
 def _finalize_translation_failure(
@@ -4599,6 +4648,8 @@ def validate_and_retry_translations(groups, translator, force=False):
     retry_records = []
     for group in groups:
         if not group.sent_to_translation:
+            continue
+        if _finalize_proper_name_only(group):
             continue
         name_spans = group_proper_name_spans(group)
         valid, reason = validate_translation_text(
