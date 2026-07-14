@@ -1458,6 +1458,45 @@ def _region_source_lexical_words(item):
     ]
 
 
+_PARTIAL_RECOGNITION_MIN_CONFIDENCE = 0.8
+
+
+def _item_is_partially_recognized(item):
+    """A box far wider than the glyphs the engine returned still holds unread text.
+
+    When recognition collapses a whole word to one or two glyphs, the text stays
+    on the art but carries too few letters for the lexical test. The mismatch
+    between the box width and the recognised glyph count is a generic, language
+    agnostic signal that source text in the region was never read, so the region
+    must not be reported as complete.
+
+    Confidence separates this from a phantom read: a genuine partial recognition
+    means the engine was sure of the glyphs it returned and simply did not return
+    the rest, whereas noise picked up from balloon borders or art comes back with
+    low confidence and must not force a review.
+    """
+    box = item.get("bounding_box") or []
+    if len(box) != 4:
+        return False
+    try:
+        _, _, width, height = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return False
+    try:
+        confidence = float(item.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < _PARTIAL_RECOGNITION_MIN_CONFIDENCE:
+        return False
+    text = str(item.get("clean_text") or item.get("raw_text") or "")
+    if width <= 0 or height <= 0 or not re.search(r"[A-Za-zÀ-ÿ]", text):
+        return False
+    glyphs = len(re.sub(r"\s", "", text))
+    if glyphs <= 0:
+        return False
+    return width > height * 1.15 * glyphs
+
+
 def _item_is_rendered(item):
     return (
         str(item.get("translation_final_state") or "") == "translated"
@@ -1516,7 +1555,11 @@ def _incomplete_speech_region_coverage(states):
         residual = [
             item
             for item in items
-            if not _item_is_rendered(item) and _region_source_lexical_words(item)
+            if not _item_is_rendered(item)
+            and (
+                _region_source_lexical_words(item)
+                or _item_is_partially_recognized(item)
+            )
         ]
         for line in rendered:
             for other in residual:

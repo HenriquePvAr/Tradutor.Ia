@@ -1360,6 +1360,46 @@ class OCRQualityRegressionTests(unittest.TestCase):
         violations = _incomplete_speech_region_coverage(self._coverage_state(items))
         self.assertEqual(len(violations), 1, violations)
 
+    def test_partially_recognized_line_in_balloon_forces_review(self):
+        # The engine returned a single glyph for a box wide enough to hold a
+        # whole word: unread source text is still sitting in the balloon, so the
+        # region must not be reported as complete.
+        items = [
+            self._rendered_speech("R1", (145, 382, 203, 84)),
+            {"id": "LINE_1", "classification": "unknown",
+             "translation_final_state": None, "redrawn": False,
+             "bounding_box": [199, 336, 93, 44], "clean_text": "H",
+             "confidence": 0.9202},
+        ]
+        violations = _incomplete_speech_region_coverage(self._coverage_state(items))
+        self.assertEqual(len(violations), 1, violations)
+        acc = _translation_quality_accounting(self._coverage_state(items))
+        self.assertTrue(acc["requires_review"])
+
+    def test_low_confidence_phantom_read_does_not_force_review(self):
+        # Noise picked up from a balloon border comes back with low confidence.
+        # It is not evidence of unread text and must not force a review.
+        items = [
+            self._rendered_speech("R1", (229, 1084, 250, 40)),
+            {"id": "LINE_1", "classification": "unknown",
+             "translation_final_state": None, "redrawn": False,
+             "bounding_box": [232, 1129, 264, 60], "clean_text": "MM",
+             "confidence": 0.6087},
+        ]
+        violations = _incomplete_speech_region_coverage(self._coverage_state(items))
+        self.assertEqual(violations, [])
+
+    def test_tight_single_glyph_does_not_force_review(self):
+        # A box that genuinely fits one glyph is not evidence of unread text.
+        items = [
+            self._rendered_speech("R1", (145, 382, 203, 84)),
+            {"id": "LINE_1", "classification": "unknown",
+             "translation_final_state": None, "redrawn": False,
+             "bounding_box": [199, 346, 30, 40], "clean_text": "H"},
+        ]
+        violations = _incomplete_speech_region_coverage(self._coverage_state(items))
+        self.assertEqual(violations, [])
+
     def test_complete_region_does_not_force_review(self):
         # Two stacked lines both rendered: the region is fully translated.
         items = [
