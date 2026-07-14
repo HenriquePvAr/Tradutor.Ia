@@ -854,13 +854,14 @@ def _token_governs_following_pronoun(text, matches, index):
 def _has_strong_name_context(matches, index):
     """True only in the positions that mark a name beyond doubt.
 
-    Deliberately narrow. Neither a bare vocative ('X, WAIT!' against 'WAIT, X') nor a
-    lone token ('ARSKAN...' against 'WAIT!') can be resolved from the sentence alone:
-    separating them needs to know that the other word is a verb, and this pipeline has
-    no English lexicon deep enough to know that. Guessing there freezes ordinary words
-    in the source language, so nothing is claimed from position except a title binding
-    to the name after it. Recurring names arrive from chapter consensus as
-    ``known_names``, and a lone name is settled by evidence from the model instead.
+    Deliberately narrow. Neither a bare vocative (a name before a comma against a verb
+    before a comma) nor a lone token (a name alone against an ordinary word alone) can
+    be resolved from the sentence alone: separating them needs to know that the other
+    word is a verb, and this pipeline has no English lexicon deep enough to know that.
+    Guessing there freezes ordinary words in the source language, so nothing is claimed
+    from position except a title binding to the name after it. Recurring names arrive
+    from chapter consensus as ``known_names``, and a lone name is settled by evidence
+    from the model instead.
     """
     token = _name_token_of(matches[index].group(0))
     if len(token) < MIN_PROPER_NAME_LENGTH:
@@ -919,8 +920,8 @@ def group_proper_name_spans(group):
 def group_has_name_only_shape(group):
     """True when the group could be a lone name: one out-of-vocabulary token.
 
-    Shape alone proves nothing - 'WAIT!' has the same shape as 'ARSKAN...' - so this
-    only says the group is worth asking about. What settles it is
+    Shape alone proves nothing - a lone ordinary word has the same shape as a lone
+    name - so this only says the group is worth asking about. What settles it is
     ``group_is_untranslatable_name``, which reads the model's own answer.
     """
     if group.classification not in {"speech", "thought", "narration", "unknown"}:
