@@ -30,6 +30,7 @@ from ocr_balloon import (
     apply_group_translations,
     get_translatable_groups,
     normalize_recurring_compact_names,
+    summarize_speech_container_reocr,
     render_analyzed_image,
     validate_and_retry_translations,
 )
@@ -1763,6 +1764,13 @@ def _build_quality_report(report, states, translation_retry_records):
         "broad_mask_rejections": 0,
         "background_type_counts": {},
         "translation_accounting": translation_accounting,
+        "speech_container_reocr": summarize_speech_container_reocr(
+            [
+                record
+                for state in states
+                for record in state.get("speech_container_reocr", []) or []
+            ]
+        ),
     }
 
     for state in sorted(states, key=lambda item: item["index"]):
@@ -1882,6 +1890,7 @@ def _build_quality_report(report, states, translation_retry_records):
                     _quality_item_summary(item) for item in suspicious[:12]
                 ],
                 "selective_ocr_fallbacks": fallback_records,
+                "speech_container_reocr": state.get("speech_container_reocr", []),
                 "text_repairs": debug.get("text_repairs", []),
                 "rejected_text_repairs": debug.get("rejected_text_repairs", []),
                 "translation_retries": [
@@ -2202,6 +2211,7 @@ def _serializable_state(state):
         "cache_source",
         "debug_data",
         "selective_ocr_fallbacks",
+        "speech_container_reocr",
         "timings",
         "error",
     }

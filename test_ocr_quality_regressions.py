@@ -403,7 +403,10 @@ class OCRQualityRegressionTests(unittest.TestCase):
         known = [self._line_at("FIRST ROW", boxes[0])]
         gaps = _container_text_gap_boxes(image, known)
         self.assertEqual(len(gaps), 1, gaps)
-        gx, gy, gw, gh = gaps[0]
+        # Each gap carries the container it belongs to, so a recovery can be
+        # audited back to the balloon it came from.
+        container_id, (gx, gy, gw, gh) = gaps[0]
+        self.assertTrue(container_id)
         # The gap must land on the unread row, not on the row already read.
         self.assertGreater(gy, boxes[0][1])
 

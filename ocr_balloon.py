@@ -3476,7 +3476,7 @@ def _container_text_gap_boxes(image_bgr, lines):
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     height, width = gray.shape
     gaps = []
-    for region_lines in regions.values():
+    for region_id, region_lines in regions.items():
         heights = [line.box[3] for line in region_lines if line.box[3] > 0]
         if not heights:
             continue
@@ -3538,10 +3538,13 @@ def _container_text_gap_boxes(image_bgr, lines):
             margin = int(text_height * 0.4)
             gaps.append(
                 (
-                    max(0, x1 + rx1 - margin),
-                    max(0, y1 + ry1 - margin),
-                    min(width, x1 + rx2 + margin) - max(0, x1 + rx1 - margin),
-                    min(height, y1 + ry2 + margin) - max(0, y1 + ry1 - margin),
+                    int(region_id),
+                    (
+                        max(0, x1 + rx1 - margin),
+                        max(0, y1 + ry1 - margin),
+                        min(width, x1 + rx2 + margin) - max(0, x1 + rx1 - margin),
+                        min(height, y1 + ry2 + margin) - max(0, y1 + ry1 - margin),
+                    ),
                 )
             )
     return gaps
@@ -3637,18 +3640,27 @@ def apply_speech_container_reocr(
         return lines, records
     height, width = original_bgr.shape[:2]
 
+    engine_names = [engine.engine for engine in engines]
+
     for line in underread:
         x, y, w, h = line.box
         pad = max(4, int(h * 0.35))
         x1, y1 = max(0, x - pad), max(0, y - pad)
         x2, y2 = min(width, x + w + pad), min(height, y + h + pad)
         crop = original_bgr[y1:y2, x1:x2]
+        started = time.perf_counter()
         record = {
             "trigger": "speech_line_underread",
             "page": page_index,
+            "container_id": int(
+                (line.metadata or {}).get("visual_white_region_id") or 0
+            ),
             "box": [int(v) for v in line.box],
+            "crop_box": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
             "previous_engine": line.engine,
             "previous_text": line.text,
+            "previous_confidence": round(float(line.confidence or 0.0), 4),
+            "engines_attempted": list(engine_names),
             "candidates": [],
             "accepted": False,
             "reason": "selective_reocr_no_confident_candidate",
@@ -3693,26 +3705,34 @@ def apply_speech_container_reocr(
             record["accepted"] = True
             record["reason"] = "selective_reocr_recovered_text"
             record["selected_engine"] = engine_name
+            record["selected_confidence"] = round(float(confidence), 4)
             record["new_text"] = text
             line.original_text = line.original_text or line.raw_text or line.text
             line.text = text
             line.raw_text = text
             line.confidence = confidence
             line.engine = f"{engine_name}+reocr"
+        record["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
         records.append(record)
 
-    for box in gaps:
+    for container_id, box in gaps:
         x, y, w, h = box
         crop = original_bgr[y:y + h, x:x + w]
+        started = time.perf_counter()
         record = {
             "trigger": "speech_container_uncovered_text",
             "page": page_index,
+            "container_id": int(container_id),
             "box": [int(v) for v in box],
+            "crop_box": [int(x), int(y), int(w), int(h)],
+            "previous_text": "",
+            "engines_attempted": list(engine_names),
             "candidates": [],
             "accepted": False,
             "reason": "selective_reocr_no_confident_candidate",
         }
         if not crop.size:
+            record["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
             records.append(record)
             continue
         best = None
@@ -3765,6 +3785,7 @@ def apply_speech_container_reocr(
                 record["accepted"] = True
                 record["reason"] = "selective_reocr_recovered_text"
                 record["selected_engine"] = engine_name
+                record["selected_confidence"] = round(float(confidence), 4)
                 record.setdefault("new_lines", []).append(
                     {
                         "text": text,
@@ -3772,9 +3793,42 @@ def apply_speech_container_reocr(
                         "confidence": round(confidence, 4),
                     }
                 )
+        record["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
         records.append(record)
 
     return lines, records
+
+
+def summarize_speech_container_reocr(records):
+    """Roll the per-container decisions up into auditable counters.
+
+    The mechanism was already deciding correctly in production, but nothing it
+    decided reached an artifact, so a recovered line could not be traced back to the
+    container, engine and score that recovered it.
+    """
+    records = list(records or [])
+    triggers = {}
+    for record in records:
+        trigger = str(record.get("trigger") or "unknown")
+        triggers[trigger] = triggers.get(trigger, 0) + 1
+    accepted = [record for record in records if record.get("accepted")]
+    return {
+        "containers_evaluated": len(records),
+        "triggers": triggers,
+        "accepted": len(accepted),
+        "rejected": len(records) - len(accepted),
+        "underread_recovered": sum(
+            record.get("trigger") == "speech_line_underread" for record in accepted
+        ),
+        "uncovered_text_recovered": sum(
+            record.get("trigger") == "speech_container_uncovered_text"
+            for record in accepted
+        ),
+        "total_duration_ms": round(
+            sum(float(record.get("duration_ms") or 0.0) for record in records),
+            3,
+        ),
+    }
 
 
 def _polygon_from_box(box):
