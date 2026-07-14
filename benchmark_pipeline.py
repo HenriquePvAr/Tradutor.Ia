@@ -58,6 +58,11 @@ from pipeline_cache import (
 )
 from session_context import SessionContextStore
 from output_manifest import build_run_manifest
+from pdf_naming import (
+    build_pdf_filename,
+    episode_number_from_url,
+    series_slug_from_url,
+)
 from translator_nllb import get_translator
 from translator_nvidia import PROMPT_VERSION
 from resource_monitor import ResourceMonitor, detect_gpu_basic
@@ -106,10 +111,11 @@ def _output_run_manifest(output_folder, report, translator):
         }
     )[:24]
     quality = report.get("quality_validation") or {}
+    source_url = str(report.get("url") or "")
     return build_run_manifest(
         run_id=run_id,
         created_at=created_at,
-        source_url=str(report.get("url") or ""),
+        source_url=source_url,
         commit_hash=git["commit_hash"],
         branch=git["branch"],
         pipeline_version=PIPELINE_MANIFEST_VERSION,
@@ -119,6 +125,8 @@ def _output_run_manifest(output_folder, report, translator):
         manual_review_count=int(quality.get("manual_review_required_groups") or 0),
         rejected_count=int(report.get("translation_rejections") or 0),
         pdf_path=str(report.get("pdf_path") or ""),
+        series_slug=series_slug_from_url(source_url),
+        episode_number=episode_number_from_url(source_url),
     )
 
 
@@ -886,15 +894,19 @@ def run_benchmark(args):
     if not completed_states:
         raise RuntimeError("Nenhuma pagina valida foi produzida.")
 
-    pdf_path = (
-        output_folder / "regression.pdf"
+    pdf_filename = (
+        "regression.pdf"
         if targeted_regression
         else (
-            output_folder / "capitulo_completo_traduzido.pdf"
+            build_pdf_filename(
+                source_url=args.url,
+                fallback_id=output_folder.name,
+            )
             if args.full
-            else output_folder / f"benchmark_{args.max_images:03}.pdf"
+            else f"benchmark_{args.max_images:03}.pdf"
         )
     )
+    pdf_path = output_folder / pdf_filename
     resource_monitor.set_stage("pdf")
     pdf_started = time.perf_counter()
     generate_pdf([state["output_path"] for state in completed_states], str(pdf_path))

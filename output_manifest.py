@@ -50,8 +50,12 @@ def build_run_manifest(
     manual_review_count: int,
     rejected_count: int,
     pdf_path: str,
+    series_slug: str = "",
+    episode_number: str = "",
 ) -> dict[str, Any]:
-    return {
+    # The descriptive fields are optional so a manifest written before they
+    # existed stays valid; readers fall back to the path when they are absent.
+    manifest = {
         "manifest_version": MANIFEST_VERSION,
         "run_id": str(run_id or ""),
         "created_at": str(created_at or ""),
@@ -66,6 +70,14 @@ def build_run_manifest(
         "rejected_count": max(0, int(rejected_count or 0)),
         "pdf_path": str(pdf_path or ""),
     }
+    pdf_filename = Path(str(pdf_path or "")).name
+    if pdf_filename:
+        manifest["pdf_filename"] = pdf_filename
+    if series_slug:
+        manifest["series_slug"] = str(series_slug)
+    if episode_number:
+        manifest["episode_number"] = str(episode_number)
+    return manifest
 
 
 def load_verified_run_manifest(output_folder: Path) -> dict[str, Any]:

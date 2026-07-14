@@ -186,6 +186,18 @@ output/<slug>/
 
 Contact sheets e diretórios de debug podem ser produzidos conforme as flags. Eles são artefatos locais e não devem ser tratados como assets públicos do projeto.
 
+### Nome do PDF
+
+O PDF de um capítulo completo é nomeado pela obra e pelo capítulo, de modo que a saída possa ser identificada sem abri-la:
+
+```text
+<obra>_capitulo_<numero>.pdf
+```
+
+`pdf_naming.py` é a única fonte do nome. A obra vem do título da série quando o pipeline o conhece e, caso contrário, do slug da série na URL do capítulo — o segmento do episódio nunca é usado como nome da obra. O número vem da metadata do capítulo, depois da URL, e só recorre ao identificador da execução quando o capítulo não tem número. O nome é sanitizado para o Windows: minúsculas, sem acentos, sem caracteres inválidos, sem travessia de caminho, sem nomes reservados e com tamanho limitado.
+
+A execução registra o caminho do PDF no `run_manifest.json` (`pdf_path`, `pdf_filename`), e a UI abre o arquivo por esse caminho em vez de remontar o nome. Saídas antigas continuam funcionando: elas usavam um nome genérico e são descobertas pelo caminho persistido ou pelo PDF presente na pasta. A convenção nova vale apenas para novas execuções — nenhum PDF existente é renomeado.
+
 ## Recursos e paralelismo
 
 `ocr_parallel.py` coordena workers de OCR. `adaptive_scheduler.py` pode ajustar concorrência a partir da memória e CPU observadas, enquanto `resource_monitor.py` registra amostras e relatórios. Os defaults mantêm paralelismo adaptativo e monitoramento detalhado desativados; ambos são opt-in pelo `.env`.

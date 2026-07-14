@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from output_manifest import MANIFEST_FILENAME
+
 
 REPO_ROOT = Path(__file__).resolve().parent
 OUTPUT_ROOT = REPO_ROOT / "output"
@@ -403,8 +405,17 @@ def find_output_artifacts(output_folder: Path) -> dict[str, str]:
                 return str(path.resolve())
         return ""
 
+    # A run states where its PDF is, so the name never has to be rebuilt here.
+    # Older outputs carry no manifest, so the timing report and finally any PDF in
+    # the folder still resolve them, whatever they were called.
+    manifest = load_json(folder / MANIFEST_FILENAME)
     return {
-        "pdf_path": first_existing(report.get("pdf_path"), *folder.glob("*.pdf")),
+        "pdf_path": first_existing(
+            manifest.get("pdf_path"),
+            manifest.get("pdf_filename"),
+            report.get("pdf_path"),
+            *folder.glob("*.pdf"),
+        ),
         "quality_report_path": first_existing(report.get("quality_report_html"), folder / "quality_report.html"),
         "compare_sheet_path": first_existing(report.get("preview_compare_sheet"), folder / "compare_sheet.jpg"),
         "contact_sheet_path": first_existing(report.get("preview_contact_sheet"), folder / "contact_sheet.jpg"),
