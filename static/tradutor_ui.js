@@ -196,6 +196,7 @@
     burstAt(rect.right, rect.top + rect.height / 2, 10);
     if (name === 'hist') renderHistory();
     if (name === 'inicio') renderDashboard();
+    if (name === 'community') loadCommunityFeed();
   }
   $$('.rail-tab').forEach(tab => tab.addEventListener('click', () => activateTab(tab.dataset.tab)));
   $$('[data-goto]').forEach(button => button.addEventListener('click', () => activateTab(button.dataset.goto)));
@@ -502,7 +503,7 @@
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(runStatusLabels[record.status] || record.status || 'local')}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
-      <div class="hm-actions">${actionButton('Abrir PDF', 'open', record.pdf_path)}${actionButton('Pasta', 'open', record.output_folder)}${actionButton('Relatório', 'open', record.quality_report_path)}${actionButton('Compare', 'open', record.compare_sheet_path)}${actionButton('Contexto', 'open', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}</div>
+      <div class="hm-actions">${actionButton('Abrir PDF', 'open', record.pdf_path)}${actionButton('Pasta', 'open', record.output_folder)}${actionButton('Relatório', 'open', record.quality_report_path)}${actionButton('Compare', 'open', record.compare_sheet_path)}${actionButton('Contexto', 'open', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${record.pdf_path ? actionButton('Publicar na comunidade', 'publish') : ''}</div>
     </div>`;
   }
   function renderHistory() {
@@ -542,8 +543,53 @@
     const record = appState.history.find(item => String(item.id) === String(button.closest('.hist-item')?.dataset.id));
     if (!record) return;
     if (button.dataset.action === 'reprocess') { loadRecordIntoForm(record); return; }
+    if (button.dataset.action === 'publish') { await publishToCommunity(record); return; }
     await openArtifact(decodeURIComponent(button.dataset.path || ''));
   });
+
+  /* ---------- community publishing ---------- */
+  async function publishToCommunity(record) {
+    const guess = guessFromUrl(record.url || '');
+    const description = (window.prompt('Descrição (opcional) — publique apenas conteúdo cuja publicação você tem direito de fazer:', '') || '').slice(0, 2000);
+    if (description === null) return;
+    const payload = {
+      slug: record.slug || guess.slug,
+      source_job_id: record.job_id || record.id || '',
+      series_title: record.series_name || record.chapter_name || '',
+      series_slug: record.series_slug || guess.slug,
+      episode_number: record.episode_number || '',
+      title: record.chapter_name || '',
+      description,
+      visibility: 'public',
+    };
+    try {
+      await api('/api/community/publish', {method: 'POST', body: JSON.stringify(payload)});
+      showToast('Publicação enviada à fila. O worker fará o upload.', 'ok');
+      await loadCommunityFeed();
+    } catch (error) { showToast(error.message, 'error'); }
+  }
+
+  async function loadCommunityFeed() {
+    const container = $('#communityFeed');
+    if (!container) return;
+    try {
+      const data = await api('/api/community/posts');
+      const posts = (data && data.posts) || [];
+      if (!posts.length) { container.innerHTML = '<div class="empty-real-state">nenhuma publicação na comunidade ainda</div>'; return; }
+      container.innerHTML = posts.map(renderCommunityCard).join('');
+    } catch (error) { container.innerHTML = `<div class="empty-real-state">${escapeHtml(error.message)}</div>`; }
+  }
+
+  $('#communityRefreshBtn')?.addEventListener('click', loadCommunityFeed);
+
+  function renderCommunityCard(post) {
+    const title = post.title || post.series_title || 'Capítulo';
+    const sub = `${escapeHtml(post.series_title || '')} · ep ${escapeHtml(String(post.episode_number || ''))} · ${Number(post.views || 0)} leituras`;
+    const pdfUrl = `/api/community/posts/${encodeURIComponent(post.post_id)}/pdf`;
+    return `<div class="hist-item"><div class="hist-cover" style="background:#b8557a">${escapeHtml(title.slice(0,1).toUpperCase())}</div>
+      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}</div></div>
+      <div class="hm-actions"><a class="btn-ghost" href="${pdfUrl}" target="_blank" rel="noopener">Abrir PDF</a></div></div>`;
+  }
   function loadRecordIntoForm(record) {
     appState.programmingFields = true;
     $('#urlInput').value = record.url || '';
