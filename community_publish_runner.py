@@ -25,6 +25,9 @@ from job_store import JobStatus, JobStore, TransitionError
 CHUNK_SIZE = 256 * 1024
 HEARTBEAT_SECONDS = 3.0
 MAX_TRANSIENT_RETRIES = 6
+# Test-only pacing hook (seconds per chunk); 0 in production. Lets a survival test span a
+# realistic upload window without a giant file.
+_CHUNK_DELAY = float(os.getenv("COMMUNITY_UPLOAD_CHUNK_DELAY", "0") or 0)
 
 _STOP = False
 
@@ -107,6 +110,8 @@ def run_job(job_id: str, db_path: str) -> int:
                 community.update_file(file_id, bytes_uploaded=offset)
                 jobs.update_progress(job_id, stage="uploading", current=offset, total=total,
                                      message=f"{offset}/{total} bytes")
+                if _CHUNK_DELAY:
+                    time.sleep(_CHUNK_DELAY)
 
         if cancelled:
             community.update_file(file_id, upload_status=FileStatus.FAILED)
