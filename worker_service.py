@@ -74,11 +74,20 @@ class Worker:
         healthy = self.store.healthy_worker(stale_seconds=self.stale_seconds / 2)
         return bool(healthy and healthy["worker_id"] != self.worker_id)
 
+    # Runner script per job type. Only translation is the default; more handlers register
+    # here without spreading job-type ifs through the worker loop.
+    _RUNNERS = {
+        "translation": "job_runner.py",
+        "community_publish": "community_publish_runner.py",
+    }
+
     def _spawn_runner(self, job: dict) -> subprocess.Popen:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"{job['id']}.log"
+        job_type = (job.get("configuration") or {}).get("job_type", "translation")
+        runner = self._RUNNERS.get(job_type, "job_runner.py")
         command = [
-            sys.executable, "-u", str(REPO_ROOT / "job_runner.py"),
+            sys.executable, "-u", str(REPO_ROOT / runner),
             "--job-id", job["id"],
             "--db", str(self.db_path),
             "--worker-id", self.worker_id,
