@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class JobStatus:
@@ -49,7 +49,9 @@ class JobStatus:
 # stray write can never move a job into a nonsensical state from another module.
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     JobStatus.QUEUED: frozenset({JobStatus.CLAIMING, JobStatus.CANCELLED}),
-    JobStatus.CLAIMING: frozenset({JobStatus.STARTING, JobStatus.QUEUED, JobStatus.FAILED}),
+    JobStatus.CLAIMING: frozenset(
+        {JobStatus.STARTING, JobStatus.QUEUED, JobStatus.FAILED, JobStatus.INTERRUPTED}
+    ),
     JobStatus.STARTING: frozenset(
         {JobStatus.RUNNING, JobStatus.INTERRUPTED, JobStatus.FAILED, JobStatus.CANCELLING}
     ),
@@ -85,7 +87,8 @@ _JOB_COLUMNS = (
     "output_dir", "configuration_json", "command_json", "status", "stage",
     "progress_current", "progress_total", "progress_message",
     "created_at", "queued_at", "claimed_at", "started_at", "heartbeat_at", "finished_at",
-    "worker_id", "worker_pid", "runner_pid", "exit_code",
+    "worker_id", "worker_pid", "worker_create_time", "runner_pid", "runner_create_time",
+    "exit_code",
     "cancel_requested", "interrupted_reason", "recoverable", "resume_from_stage",
     "attempt", "previous_job_id", "commit_hash", "branch",
     "manifest_path", "progress_path", "quality_report_path", "pdf_path", "log_path",
@@ -121,12 +124,27 @@ class JobStore:
         version = int(row["value"]) if row else 0
         if version < 1:
             self._create_v1()
+        if version < 2:
+            self._migrate_v2()
         # Idempotent: record the current version.
         self._conn.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (str(SCHEMA_VERSION),),
         )
+
+    def _migrate_v2(self) -> None:
+        # Additive: process start times let recovery tell a live runner from a reused PID,
+        # and a stop flag lets a detached worker be stopped without a shared console.
+        job_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        for column in ("worker_create_time", "runner_create_time"):
+            if column not in job_cols:
+                self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} REAL")
+        worker_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(workers)")}
+        if "create_time" not in worker_cols:
+            self._conn.execute("ALTER TABLE workers ADD COLUMN create_time REAL")
+        if "stop_requested" not in worker_cols:
+            self._conn.execute("ALTER TABLE workers ADD COLUMN stop_requested INTEGER DEFAULT 0")
 
     def _create_v1(self) -> None:
         self._conn.executescript(
@@ -440,6 +458,31 @@ class JobStore:
             recovered.append(row["id"])
         return recovered
 
+    def orphaned_in_flight_jobs(
+        self, *, exclude_worker: str = "", worker_stale_seconds: float = 15.0
+    ) -> list[dict[str, Any]]:
+        """In-flight jobs whose owning worker is gone, for a new worker to reconcile.
+
+        The job heartbeat is written by the runner, which can outlive a crashed worker
+        (a stuck pipeline keeps heartbeating), so staleness of the job heartbeat is the
+        wrong signal. A job is orphaned when the worker that owns it is no longer a live,
+        heartbeating worker - then its runner, however lively, has nobody supervising it.
+        This does not transition anything; the caller checks the runner process first.
+        """
+        cutoff = time.time() - worker_stale_seconds
+        placeholders = ",".join("?" for _ in JobStatus.IN_FLIGHT)
+        rows = self._conn.execute(
+            f"""
+            SELECT j.* FROM jobs j
+            LEFT JOIN workers w ON j.worker_id = w.worker_id
+            WHERE j.status IN ({placeholders})
+              AND (j.worker_id IS NULL OR j.worker_id != ?
+                   AND (w.worker_id IS NULL OR w.heartbeat_at IS NULL OR w.heartbeat_at < ?))
+            """,
+            (*JobStatus.IN_FLIGHT, exclude_worker or "", cutoff),
+        ).fetchall()
+        return [self._row_to_dict(row) for row in rows]  # type: ignore[misc]
+
     def mark_resumable(self, job_id: str, *, resume_from_stage: str = "") -> dict[str, Any]:
         return self.transition(
             job_id,
@@ -449,13 +492,26 @@ class JobStore:
         )
 
     # ---- worker registry ----------------------------------------------------
-    def register_worker(self, worker_id: str, pid: int) -> None:
+    def register_worker(self, worker_id: str, pid: int, create_time: float | None = None) -> None:
         now = time.time()
         self._conn.execute(
-            "INSERT INTO workers(worker_id, pid, started_at, heartbeat_at) VALUES(?,?,?,?) "
-            "ON CONFLICT(worker_id) DO UPDATE SET pid=excluded.pid, heartbeat_at=excluded.heartbeat_at",
-            (worker_id, int(pid), now, now),
+            "INSERT INTO workers(worker_id, pid, started_at, heartbeat_at, create_time, stop_requested) "
+            "VALUES(?,?,?,?,?,0) "
+            "ON CONFLICT(worker_id) DO UPDATE SET pid=excluded.pid, "
+            "heartbeat_at=excluded.heartbeat_at, create_time=excluded.create_time, stop_requested=0",
+            (worker_id, int(pid), now, now, create_time),
         )
+
+    def request_worker_stop(self, worker_id: str) -> None:
+        self._conn.execute(
+            "UPDATE workers SET stop_requested=1 WHERE worker_id=?", (worker_id,)
+        )
+
+    def worker_stop_requested(self, worker_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT stop_requested FROM workers WHERE worker_id=?", (worker_id,)
+        ).fetchone()
+        return bool(row and row["stop_requested"])
 
     def worker_heartbeat(self, worker_id: str) -> None:
         self._conn.execute(

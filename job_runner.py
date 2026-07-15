@@ -24,6 +24,7 @@ import threading
 import time
 from pathlib import Path
 
+import process_tree
 from job_store import JobStatus, JobStore, TransitionError
 from ui_helpers import (
     ProgressSnapshot,
@@ -36,6 +37,24 @@ from ui_helpers import (
 
 HEARTBEAT_SECONDS = 3.0
 CANCEL_GRACE_SECONDS = 8.0
+
+# Set when the runner is signalled to stop (by the worker or the OS); the poll loop
+# observes it, stops the pipeline tree and interrupts the job instead of finishing.
+_STOP_REQUESTED = False
+
+
+def _install_stop_handlers() -> None:
+    def _handler(signum, _frame):
+        global _STOP_REQUESTED
+        _STOP_REQUESTED = True
+
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _handler)
+            except (ValueError, OSError):
+                pass
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -102,7 +121,13 @@ class _OutputPump(threading.Thread):
 
 
 def _terminate(proc: subprocess.Popen) -> None:
-    """Stop the pipeline child cooperatively, then forcibly, by its verified handle."""
+    """Stop the pipeline and its whole tree: cooperative signal, then a validated kill.
+
+    The pipeline runs in its own process group and may itself spawn children (a launcher
+    shim, a browser driver). A cooperative CTRL_BREAK reaches its group first; anything
+    still alive - including descendants the direct handle does not cover - is then stopped
+    by the process-tree helper, which we hold the live handle for so ownership is certain.
+    """
     if proc.poll() is not None:
         return
     try:
@@ -114,17 +139,19 @@ def _terminate(proc: subprocess.Popen) -> None:
         pass
     try:
         proc.wait(timeout=CANCEL_GRACE_SECONDS)
-        return
     except subprocess.TimeoutExpired:
         pass
+    if proc.poll() is None:
+        # Recursively terminate the pipeline tree by its verified live handle.
+        process_tree.terminate_tree(proc.pid, timeout=CANCEL_GRACE_SECONDS)
     try:
-        proc.kill()
-        proc.wait(timeout=CANCEL_GRACE_SECONDS)
-    except (OSError, subprocess.TimeoutExpired, ValueError):
+        proc.wait(timeout=2)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
         pass
 
 
 def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
+    _install_stop_handlers()
     store = JobStore(db_path)
     try:
         job = store.get_job(job_id)
@@ -149,12 +176,16 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                              error_message="empty command")
             return 2
 
-        # Ensure the job is STARTING then RUNNING, and write the initial manifest.
+        # Ensure the job is STARTING then RUNNING, and write the initial manifest. The
+        # worker owns runner_pid/runner_create_time: it records the top of the runner tree
+        # (the process it spawned), so the recovery termination catches the whole tree
+        # including the venv launcher shim. The runner does not set them, to avoid racing
+        # the worker with its own (child) PID.
         if job["status"] == JobStatus.CLAIMING:
             job = store.transition(job_id, JobStatus.STARTING, expected_worker=job.get("worker_id"))
         job = store.transition(
             job_id, JobStatus.RUNNING, expected_worker=job.get("worker_id"),
-            runner_pid=os.getpid(), log_path=log_path, stage="created",
+            log_path=log_path, stage="created",
         )
         _write_manifest(output_dir, job)
 
@@ -176,6 +207,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
             pump.start()
 
             cancelled = False
+            interrupted = False
             while proc.poll() is None:
                 time.sleep(min(HEARTBEAT_SECONDS, 1.0))
                 snap = pump.drain_progress()
@@ -196,21 +228,38 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                     except TransitionError:
                         pass
                     _terminate(proc)
+                elif not cancelled and _STOP_REQUESTED:
+                    # The worker or the OS asked this runner to stop. Preserve checkpoints,
+                    # stop the pipeline tree, and let finalize mark the job interrupted.
+                    interrupted = True
+                    handle.write(f"{time.strftime('%H:%M:%S')} parada solicitada; encerrando pipeline\n")
+                    handle.flush()
+                    _terminate(proc)
+                    break
             pump.join(timeout=2)
             return_code = proc.wait()
 
-        return _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path)
+        return _finalize(store, job_id, job, output_dir, return_code, cancelled,
+                         log_path, interrupted=interrupted)
     finally:
         store.close()
 
 
-def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path) -> int:
+def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
+              *, interrupted: bool = False) -> int:
     artifacts = find_output_artifacts(output_dir)
     report = load_json(output_dir / "timing_report.json")
     quality = report.get("quality_validation") or {}
-    technical_ok = return_code == 0 and bool(artifacts.get("pdf_path")) and not cancelled
+    technical_ok = (
+        return_code == 0 and bool(artifacts.get("pdf_path"))
+        and not cancelled and not interrupted
+    )
     if cancelled:
         target = JobStatus.CANCELLED
+    elif interrupted:
+        # An operational stop is not a failure: the chapter can be resumed. RUNNING
+        # transitions straight to INTERRUPTED (a permitted, recoverable outcome).
+        target = JobStatus.INTERRUPTED
     else:
         status = derive_final_run_status(
             technical_success=technical_ok, cancelled=False, quality_validation=quality,
@@ -231,6 +280,9 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path) 
     if target == JobStatus.FAILED:
         fields["error_type"] = "pipeline"
         fields["error_message"] = f"exit_code={return_code}, pdf={'yes' if artifacts.get('pdf_path') else 'no'}"
+    if target == JobStatus.INTERRUPTED:
+        fields["interrupted_reason"] = "worker_stop"
+        fields["recoverable"] = 1
     try:
         job = store.transition(job_id, target, expected_worker=job.get("worker_id"), **fields)
     except TransitionError as exc:

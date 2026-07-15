@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 
+import process_tree
 from job_store import JobStatus, JobStore
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -41,9 +43,32 @@ class Worker:
         self.poll_seconds = poll_seconds
         self.stale_seconds = stale_seconds
         self.store = JobStore(self.db_path)
+        self._stop_requested = False
+        self._active: dict | None = None  # {proc, job_id, worker_id fingerprint}
 
     def close(self) -> None:
         self.store.close()
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+
+    def _install_signal_handlers(self) -> None:
+        def _handler(signum, _frame):
+            self._stop_requested = True
+
+        for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+            sig = getattr(signal, name, None)
+            if sig is not None:
+                try:
+                    signal.signal(sig, _handler)
+                except (ValueError, OSError):
+                    pass
+
+    @staticmethod
+    def _runner_fingerprint(job_id: str) -> list[str]:
+        # A runner's command always carries "job_runner.py" and its job id, so a live
+        # process can be matched to this exact job and never to a reused PID.
+        return ["job_runner.py", job_id]
 
     def another_worker_alive(self) -> bool:
         healthy = self.store.healthy_worker(stale_seconds=self.stale_seconds / 2)
@@ -70,24 +95,131 @@ class Worker:
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
+    def _should_stop(self) -> bool:
+        if self._stop_requested:
+            return True
+        try:
+            return self.store.worker_stop_requested(self.worker_id)
+        except Exception:  # noqa: BLE001 - a transient read must not crash the loop
+            return False
+
     def _run_one(self, job: dict) -> None:
         proc = self._spawn_runner(job)
-        # Keep the worker's own lease alive while the runner owns the job's heartbeat.
-        while proc.poll() is None:
+        # Persist the top of the runner tree (the process we spawned) so a later stop or
+        # reconcile terminates the whole tree - including the launcher shim the venv
+        # inserts as the parent of the real interpreter - not just a subtree of it.
+        snap = process_tree.snapshot(proc.pid)
+        self.store.update_fields(
+            job["id"], runner_pid=proc.pid,
+            runner_create_time=(snap or {}).get("create_time"),
+        )
+        self._active = {"proc": proc, "job_id": job["id"]}
+        try:
+            # Keep the worker's lease alive while the runner owns the job's heartbeat.
+            while proc.poll() is None:
+                self.store.worker_heartbeat(self.worker_id)
+                if self._should_stop():
+                    self._stop_requested = True
+                    self._stop_active_runner(job["id"])
+                    break
+                time.sleep(min(WORKER_HEARTBEAT_SECONDS, 1.0))
             self.store.worker_heartbeat(self.worker_id)
-            time.sleep(WORKER_HEARTBEAT_SECONDS)
-        self.store.worker_heartbeat(self.worker_id)
+        finally:
+            self._active = None
+
+    def _stop_active_runner(self, job_id: str) -> None:
+        """On worker stop, take the active runner's whole tree down and interrupt the job.
+
+        The runner runs in its own process group, so a signal to the worker never reaches
+        it; the worker must stop it explicitly. The tree is validated by the runner's
+        command fingerprint before anything is terminated, so no unrelated process dies.
+        """
+        active = self._active
+        proc = active["proc"] if active else None
+        job = self.store.get_job(job_id)
+        runner_pid = (job or {}).get("runner_pid") or (proc.pid if proc else None)
+        report = process_tree.terminate_tree(
+            runner_pid,
+            create_time=(job or {}).get("runner_create_time"),
+            substrings=self._runner_fingerprint(job_id),
+            timeout=8.0,
+        )
+        # If the store did not yet know the runner pid (very early), fall back to the
+        # handle we hold, which is unambiguously our child.
+        if report["reason"] in {"ownership_mismatch", "not_running", "no_pid"} and proc and proc.poll() is None:
+            process_tree.terminate_tree(proc.pid, timeout=8.0)
+        if proc:
+            try:
+                proc.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                pass
+        # The runner itself moves the job to interrupted on its stop signal; if it died
+        # before doing so, close the accounting here.
+        fresh = self.store.get_job(job_id)
+        if fresh and fresh["status"] in JobStatus.IN_FLIGHT:
+            reason = "cancel_requested" if fresh.get("cancel_requested") else "worker_stop"
+            target = JobStatus.CANCELLING if fresh.get("cancel_requested") else JobStatus.INTERRUPTED
+            try:
+                if target == JobStatus.CANCELLING:
+                    self.store.transition(job_id, JobStatus.CANCELLING, expected_worker=self.worker_id)
+                    self.store.transition(job_id, JobStatus.CANCELLED, expected_worker=self.worker_id,
+                                          interrupted_reason=reason)
+                else:
+                    self.store.transition(job_id, JobStatus.INTERRUPTED, expected_worker=self.worker_id,
+                                          interrupted_reason=reason, recoverable=1)
+            except Exception:  # noqa: BLE001 - the runner may have finalized concurrently
+                pass
+
+    def _reconcile_stale(self) -> None:
+        """Recover jobs whose owning worker died, taking down any orphaned runner tree.
+
+        A crashed worker can leave its runner alive - even heartbeating a stuck pipeline -
+        so the signal is the owning worker's lease being gone, not the job heartbeat. A
+        live, validated runner is stopped first so it cannot keep processing or later
+        finalize the job; a reused or foreign PID is never touched and the job is flagged
+        ownership_mismatch. This guarantees no orphan and never a second live attempt.
+        """
+        orphans = self.store.orphaned_in_flight_jobs(
+            exclude_worker=self.worker_id, worker_stale_seconds=self.stale_seconds / 2
+        )
+        for job in orphans:
+            job_id = job["id"]
+            runner_pid = job.get("runner_pid")
+            fingerprint = self._runner_fingerprint(job_id)
+            alive = process_tree.is_alive(
+                runner_pid, create_time=job.get("runner_create_time"), substrings=fingerprint
+            )
+            reused = bool(runner_pid) and process_tree.snapshot(runner_pid) is not None and not alive
+            reason = "orphaned_worker_gone"
+            if alive:
+                process_tree.terminate_tree(
+                    runner_pid, create_time=job.get("runner_create_time"),
+                    substrings=fingerprint, timeout=8.0,
+                )
+                reason = "reconciled_live_runner"
+            elif reused:
+                # PID belongs to some other process now: fail closed, do not terminate it.
+                reason = "ownership_mismatch"
+            try:
+                self.store.transition(job_id, JobStatus.INTERRUPTED,
+                                      interrupted_reason=reason, recoverable=1)
+            except Exception:  # noqa: BLE001 - another worker may have won the reconcile
+                pass
 
     def run(self, *, once: bool = False, max_idle_cycles: int | None = None) -> None:
         if self.another_worker_alive():
             print("another healthy worker is running; exiting cleanly")
             return
-        self.store.register_worker(self.worker_id, self.pid)
+        self._install_signal_handlers()
+        self.store.register_worker(self.worker_id, self.pid, create_time=process_tree.snapshot(self.pid)["create_time"] if process_tree.snapshot(self.pid) else None)
         idle = 0
         try:
-            while True:
+            while not self._stop_requested:
                 self.store.worker_heartbeat(self.worker_id)
-                self.store.recover_stale(stale_seconds=self.stale_seconds)
+                if self.store.worker_stop_requested(self.worker_id):
+                    self._stop_requested = True
+                    break
+                self._reconcile_stale()
                 job = self.store.claim_next_job(self.worker_id, self.pid)
                 if job is None:
                     if once:
