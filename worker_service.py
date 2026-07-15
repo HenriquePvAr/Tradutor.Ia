@@ -60,7 +60,15 @@ class Worker:
             "--log", str(log_path),
         ]
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-        return subprocess.Popen(command, cwd=str(REPO_ROOT), creationflags=creationflags)
+        # The runner writes everything worth keeping to its own per-job log file, so its
+        # stdout/stderr are silenced. Inheriting them would hand the runner (and the
+        # pipeline it spawns) a handle to whatever console launched the worker, and a
+        # tool capturing that console would then block on EOF until every descendant
+        # exits - the cause of an earlier multi-hour hang.
+        return subprocess.Popen(
+            command, cwd=str(REPO_ROOT), creationflags=creationflags,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
 
     def _run_one(self, job: dict) -> None:
         proc = self._spawn_runner(job)
