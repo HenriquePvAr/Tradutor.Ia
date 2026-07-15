@@ -111,6 +111,19 @@ def _current_branch() -> str:
     return _run_git("rev-parse", "--abbrev-ref", "HEAD")
 
 
+def _runner_still_alive(job: dict[str, Any]) -> bool:
+    """True when the job's recorded runner process is still the live runner for it."""
+    try:
+        import process_tree
+    except Exception:  # noqa: BLE001 - process checks are best-effort in the UI
+        return False
+    return process_tree.is_alive(
+        job.get("runner_pid"),
+        create_time=job.get("runner_create_time"),
+        substrings=["job_runner.py", job["id"]],
+    )
+
+
 def _read_env_file() -> dict[str, str]:
     path = REPO_ROOT / ".env"
     values: dict[str, str] = {}
@@ -372,6 +385,10 @@ class UiBridge:
             raise ValueError("Job não encontrado.")
         if job["status"] not in {JobStatus.INTERRUPTED, JobStatus.RESUMABLE}:
             raise ValueError("Somente jobs interrompidos podem ser retomados.")
+        # Mutual exclusion: never start a new attempt while the previous attempt's runner
+        # is still alive, or two trees would process the same chapter at once.
+        if _runner_still_alive(job):
+            raise ValueError("previous_attempt_still_running")
         if job["status"] == JobStatus.INTERRUPTED:
             self.store.mark_resumable(job_id, resume_from_stage=job.get("resume_from_stage") or "")
         # A resume is a fresh attempt that reuses the same output dir and command; the

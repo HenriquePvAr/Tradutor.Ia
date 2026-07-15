@@ -71,29 +71,58 @@ def print_status() -> None:
     )
 
 
-def stop_worker() -> None:
-    """Ask a running worker to stop by terminating its verified PID (not by name)."""
-    import signal
+def stop_worker(*, force: bool = False, timeout: float = 30.0) -> int:
+    """Gracefully stop a running worker (and its active runner tree), verified by PID.
 
+    The stop is requested through the database so it reaches even a detached worker with
+    no shared console. The worker's own loop then takes its active runner tree down and
+    exits. ``--force`` is a fallback that terminates the worker's validated process tree
+    directly; it never touches a process whose command line is not the worker's.
+    """
+    import process_tree
     from job_store import JobStore
 
     store = JobStore(DB_PATH)
     try:
         healthy = store.healthy_worker(stale_seconds=60)
+        if not healthy:
+            print("no healthy worker to stop")
+            return 0
+        worker_id = healthy["worker_id"]
+        pid = int(healthy["pid"])
+        create_time = healthy.get("create_time")
+        active = store.active_job()
+        if active:
+            print(f"active job: {active['id']} ({active['status']})")
+        if not process_tree.matches(pid, create_time=create_time, substrings=["worker_service.py"]):
+            print(f"worker pid {pid} no longer matches a worker process; not signalling")
+            return 0
+        store.request_worker_stop(worker_id)
+        print(f"stop requested for worker {worker_id} (pid {pid})")
     finally:
         store.close()
-    if not healthy:
-        print("no healthy worker to stop")
-        return
-    pid = int(healthy["pid"])
-    try:
-        if os.name == "nt":
-            os.kill(pid, signal.CTRL_BREAK_EVENT)
-        else:
-            os.kill(pid, signal.SIGTERM)
-        print(f"stop signal sent to worker pid {pid}")
-    except (OSError, ValueError) as exc:
-        print(f"could not signal worker pid {pid}: {exc}")
+
+    # Wait for the worker to unregister its lease (it exits after stopping its runner).
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process_tree.snapshot(pid) is None:
+            break
+        time.sleep(0.5)
+
+    if process_tree.snapshot(pid) is not None:
+        if not force:
+            print("worker still running; re-run with --force to terminate its tree")
+            return 1
+        report = process_tree.terminate_tree(
+            pid, create_time=create_time, substrings=["worker_service.py"], timeout=10.0
+        )
+        print(f"force stop: {report['reason']} (terminated {len(report['terminated'])}, "
+              f"killed {len(report['killed'])}, survivors {report['survivors']})")
+        if report["survivors"]:
+            return 1
+
+    print("worker stopped; verified gone:", process_tree.snapshot(pid) is None)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,9 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     if command == "status":
         print_status()
         return 0
-    if command == "stop":
-        stop_worker()
-        return 0
+    if command in {"stop", "stop-worker"}:
+        return stop_worker(force="--force" in args)
     if command == "all":
         start_worker()
         return start_ui()
