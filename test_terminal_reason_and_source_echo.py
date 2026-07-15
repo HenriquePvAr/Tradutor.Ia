@@ -23,6 +23,8 @@ from ocr_balloon import (
     PROPER_NAME_ONLY_REASON,
     _set_translation_terminal_state,
     _source_token_is_name_like,
+    _title_used_as_common_noun_tokens,
+    _translation_token_infos,
     apply_group_translations,
     render_analyzed_image,
     validate_and_retry_translations,
@@ -143,6 +145,56 @@ class MixedCaseNoiseTests(unittest.TestCase):
             validate_and_retry_translations([grp], translator)
         self.assertTrue(any(not c["allow_proper_names"] for c in translator.calls))
         self.assertIn(grp.translation_final_state, {"preserved_original", "manual_review"})
+
+
+class ResidualTitleTests(unittest.TestCase):
+    """Case 3: a common-noun title kept in the source language is rejected."""
+
+    def test_title_after_determiner_is_a_common_noun(self):
+        infos = _translation_token_infos("ISUPPOSE THE COUNT'S GOT TIES TO THEM?")
+        self.assertEqual(_title_used_as_common_noun_tokens(infos), {"COUNT"})
+
+    def test_title_bound_to_a_name_is_not_a_common_noun(self):
+        infos = _translation_token_infos("LADY BRELOFF, I--")
+        self.assertEqual(_title_used_as_common_noun_tokens(infos), set())
+
+    def test_untranslated_common_noun_title_is_rejected(self):
+        valid, reason = validate_translation_text(
+            "ISUPPOSE THE COUNT'S GOT TIES TO THEM?",
+            "ACHO QUE O COUNT TEM LIGACOES COM ELES.",
+            "narration", [],
+        )
+        self.assertFalse(valid)
+        self.assertTrue(reason.startswith("residual_source_language_title"), reason)
+
+    def test_translated_title_passes(self):
+        valid, reason = validate_translation_text(
+            "ISUPPOSE THE COUNT'S GOT TIES TO THEM?",
+            "ACHO QUE O CONDE TEM LIGACOES COM ELES.",
+            "narration", [],
+        )
+        self.assertTrue(valid, reason)
+
+    def test_title_plus_name_address_is_not_flagged(self):
+        # 'LADY BRELOFF, EU--' must not regress: the title before a name stays.
+        valid, reason = validate_translation_text(
+            "LADY BRELOFF, I--", "LADY BRELOFF, EU--", "speech", ["BRELOFF"])
+        self.assertTrue(valid, reason)
+
+    def test_bare_title_and_name_without_determiner_is_kept(self):
+        valid, reason = validate_translation_text(
+            "COUNT ARSKAN IS HERE", "COUNT ARSKAN ESTA AQUI", "speech", ["ARSKAN"])
+        self.assertTrue(valid, reason)
+
+    def test_common_noun_title_is_translated_on_retry(self):
+        grp = _group("ISUPPOSE THE COUNT'S GOT TIES TO THEM?", cls="narration")
+        apply_group_translations([grp], ["ACHO QUE O COUNT TEM LIGACOES COM ELES."])
+        self.assertFalse(grp.translation_valid)
+        translator = _Fake("ACHO QUE O CONDE TEM LIGACOES COM ELES.")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            validate_and_retry_translations([grp], translator)
+        self.assertEqual(grp.translation_final_state, "translated")
+        self.assertNotIn("COUNT", grp.translation.upper().split())
 
 
 if __name__ == "__main__":

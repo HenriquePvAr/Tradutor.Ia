@@ -802,6 +802,11 @@ NAME_TITLE_TOKENS = frozenset(
     }
 )
 
+# Source-language determiners that mark the following title as a common noun.
+SOURCE_DETERMINERS = frozenset(
+    {"THE", "A", "AN", "THIS", "THAT", "THESE", "THOSE"}
+)
+
 # Endings that mark a token as an inflected English word rather than a name, so a
 # clause-opening adverb followed by a comma is never read as a vocative.
 NON_NAME_SUFFIXES = (
@@ -919,6 +924,29 @@ def detect_proper_name_spans(text, known_names=()):
             if raw not in spans:
                 spans.append(raw)
     return spans
+
+
+def _title_used_as_common_noun_tokens(source_infos):
+    """Title tokens the source uses as a common noun, which must be translated.
+
+    A title bound to a name ('LADY <NAME>') is a form of address and is kept
+    verbatim. A title standing as a common noun - preceded by a determiner or
+    carrying a possessive ("the count's ...") - is ordinary vocabulary and has to be
+    translated like any other word, or the candidate stays half in the source
+    language. Detected structurally from determiner and possessive, so no specific
+    title or language is ever special-cased.
+    """
+    tokens = [info["token"] for info in source_infos]
+    bases = [token.split("'")[0] for token in tokens]
+    result = set()
+    for index, base in enumerate(bases):
+        if base not in NAME_TITLE_TOKENS:
+            continue
+        previous = bases[index - 1] if index > 0 else ""
+        has_possessive = "'" in tokens[index]
+        if previous in SOURCE_DETERMINERS or has_possessive:
+            result.add(base)
+    return result
 
 
 def group_proper_name_spans(group):
@@ -1080,6 +1108,7 @@ def _terminal_translation_failure_reason(group, validation_reason, candidate):
             "english_phrase",
             "residual_english",
             "residual_inflected_english",
+            "residual_source_language",
             "residual_spanish",
             "multilingual_partial",
             "untranslated_english",
@@ -4456,6 +4485,24 @@ def validate_translation_text(
     target_language_signal = portuguese_hits or any(
         info["has_diacritic"] for info in translated_infos
     )
+    # A title used as a common noun in the source ("the count's ...") that survived
+    # verbatim into an otherwise-translated candidate is a partial translation, not a
+    # loanword: reject it so the retry finishes the job. A title bound to a name is
+    # not flagged, so a form of address like a title before a character name stays.
+    residual_titles = sorted(
+        {
+            info["token"]
+            for info in translated_infos
+            if info["token"] in _title_used_as_common_noun_tokens(source_infos)
+            and info["token"] not in allowed_names
+            and not info["has_diacritic"]
+        }
+    )
+    if translatable_context and residual_titles and target_language_signal:
+        return (
+            False,
+            "residual_source_language_title:" + ",".join(residual_titles[:6]),
+        )
     source_has_known_english = any(
         token in RESIDUAL_TRANSLATION_ENGLISH_WORDS
         or _looks_like_inflected_english_token(token)
