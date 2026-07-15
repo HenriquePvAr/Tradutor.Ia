@@ -1,13 +1,14 @@
-"""Runtime bridge between the custom local frontend and ``run_webtoon.py``.
+"""Runtime bridge between the custom local frontend and the persistent job queue.
 
-The browser never executes the pipeline directly.  This module validates UI
-payloads, starts one shell-free subprocess at a time, masks logs, persists the
-local history/profile and exposes serializable state to NiceGUI API routes.
+The browser never executes the pipeline directly, and neither does this module: it
+validates UI payloads, records jobs in the persistent SQLite store, and exposes
+serializable state read back from that store. The pipeline runs in the independent
+worker/runner processes, so closing or restarting the UI never touches a running job.
+The local history/profile persistence is unchanged.
 """
 
 from __future__ import annotations
 
-import asyncio
 import importlib.metadata
 import importlib.util
 import json
@@ -15,24 +16,19 @@ import os
 import platform
 import subprocess
 import sys
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from job_store import JobStatus, JobStore
 from ui_helpers import (
     OUTPUT_ROOT,
     REPO_ROOT,
-    ProgressSnapshot,
     build_run_command,
     clean_url,
-    derive_final_run_status,
     env_status,
-    find_output_artifacts,
-    load_json,
     mask_secrets,
-    parse_progress_line,
     sanitize_output_name,
     suggest_chapter_details,
 )
@@ -41,7 +37,19 @@ from ui_history import UIHistoryStore, utc_now
 
 PROFILE_PATH = REPO_ROOT / ".cache" / "ui_profile.json"
 PROFILE_MEDIA_DIR = REPO_ROOT / ".cache" / "ui_profile"
+JOBS_DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
+JOB_LOG_DIR = REPO_ROOT / ".cache" / "runtime" / "logs"
 MAX_LOG_LINES = 3000
+_UI_STAGE_LABELS = {
+    "created": "Preparando",
+    "download": "Baixando imagens",
+    "smart_split": "Reconstrução",
+    "ocr": "OCR",
+    "translate": "Tradução NVIDIA",
+    "render": "Renderização",
+    "pdf": "Geração de PDF",
+    "final": "Finalizado",
+}
 MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
 PROFILE_MEDIA_TYPES = {
     ".gif": "image/gif",
@@ -61,6 +69,46 @@ def _format_seconds(value: Any) -> str:
         seconds = 0.0
     minutes, remainder = divmod(int(seconds), 60)
     return f"{minutes}min {remainder:02d}s" if minutes else f"{seconds:.1f}s"
+
+
+def _epoch_to_iso(value: Any) -> str:
+    try:
+        if not value:
+            return ""
+        return datetime.fromtimestamp(float(value), timezone.utc).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def _duration(job: dict[str, Any] | None) -> float:
+    if not job:
+        return 0.0
+    started = job.get("started_at")
+    if not started:
+        return 0.0
+    end = job.get("finished_at") or __import__("time").time()
+    try:
+        return max(0.0, float(end) - float(started))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _run_git(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _current_commit() -> str:
+    return _run_git("rev-parse", "HEAD")
+
+
+def _current_branch() -> str:
+    return _run_git("rev-parse", "--abbrev-ref", "HEAD")
 
 
 def _read_env_file() -> dict[str, str]:
@@ -115,63 +163,117 @@ class UiBridge:
         self.history_store = UIHistoryStore()
         self.history = self.history_store.discover_outputs()
         self.profile = self._load_profile()
-        self.queue: list[dict[str, Any]] = []
-        self.process: asyncio.subprocess.Process | None = None
-        self.runner_task: asyncio.Task[Any] | None = None
-        self.queue_running = False
-        self.cancel_requested = False
-        self.status = "ready"
-        self.active_record: dict[str, Any] | None = None
-        self.latest_record: dict[str, Any] | None = self.history[0] if self.history else None
-        self.progress = ProgressSnapshot()
-        self.started_monotonic = 0.0
-        self.logs: list[dict[str, Any]] = []
-        self.log_sequence = 0
+        self.store = JobStore(JOBS_DB_PATH)
         self.history_revision = 1
-        self._lock = asyncio.Lock()
+
+    # ---- job <-> UI record mapping -----------------------------------------
+    def _job_record(self, job: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not job:
+            return None
+        config = job.get("configuration") or {}
+        return {
+            "id": job["id"],
+            "run_id": job.get("run_id"),
+            "job_id": job["id"],
+            "chapter_name": config.get("chapter_name") or job.get("series_title") or job.get("series_slug") or "",
+            "slug": Path(job.get("output_dir") or "").name,
+            "url": job.get("source_url") or "",
+            "mode": config.get("mode") or "fast",
+            "scope": "full" if config.get("full", True) else "partial",
+            "cache_mode": "force" if config.get("force") else "cache",
+            "status": job.get("status"),
+            "output_folder": job.get("output_dir") or "",
+            "pdf_path": job.get("pdf_path") or "",
+            "quality_report_path": job.get("quality_report_path") or "",
+            "attempt": job.get("attempt") or 1,
+            "recoverable": bool(job.get("recoverable")),
+            "interrupted_reason": job.get("interrupted_reason") or "",
+            "error_message": mask_secrets(job.get("error_message") or ""),
+            "started_at": _epoch_to_iso(job.get("started_at")),
+            "finished_at": _epoch_to_iso(job.get("finished_at")),
+            "total_seconds": _duration(job),
+        }
 
     def bootstrap(self, cursor: int = 0) -> dict[str, Any]:
         return {
             **self.runtime_state(cursor),
-            "history": self.history,
+            "history": self._history_payload(),
             "profile": self._profile_payload(),
             "settings": self.settings(),
             "community": {"available": False, "posts": 0},
         }
 
+    def _history_payload(self) -> list[dict[str, Any]]:
+        # Terminal jobs from the store, plus legacy output discovery for old runs.
+        self.history = self.history_store.discover_outputs()
+        return self.history
+
     def runtime_state(self, cursor: int = 0) -> dict[str, Any]:
-        elapsed = (
-            max(0.0, time.monotonic() - self.started_monotonic)
-            if self.status == "running" and self.started_monotonic
-            else float((self.latest_record or {}).get("total_seconds") or 0)
-        )
-        current = int(self.progress.current or 0)
-        total = int(self.progress.total or 0)
+        active = self.store.active_job()
+        record = self._job_record(active)
+        status = (active["status"] if active else "ready")
+        stage = str((active or {}).get("stage") or "created")
+        current = int((active or {}).get("progress_current") or 0)
+        total = int((active or {}).get("progress_total") or 0)
         stage_fraction = (current / total) if current and total else None
+        running = status in JobStatus.IN_FLIGHT
+        queued = [self._job_record(job) for job in self.store.list_jobs(statuses=[JobStatus.QUEUED])]
+        resumable = [self._job_record(job) for job in self.store.list_jobs(
+            statuses=[JobStatus.INTERRUPTED, JobStatus.RESUMABLE])]
+        worker = self.store.healthy_worker(stale_seconds=15)
+        logs = self._tail_job_logs(active, cursor)
         return {
-            "status": self.status,
-            "active": self.active_record,
-            "latest": self.latest_record,
+            "status": status if status in JobStatus.ALL else "ready",
+            "active": record,
+            "latest": record or self._job_record(self._latest_terminal_job()),
             "progress": {
-                "stage": self.progress.stage,
-                "stage_key": self._stage_key(self.progress.stage),
+                "stage": _UI_STAGE_LABELS.get(stage, stage),
+                "stage_key": stage,
                 "current": current,
                 "total": total,
                 "fraction": stage_fraction,
-                "indeterminate": stage_fraction is None and self.status == "running",
-                "pages": int(self.progress.pages or 0),
-                "groups": int(self.progress.groups or 0),
-                "errors": int(self.progress.errors or 0),
-                "last_message": self.progress.last_message,
-                "elapsed_seconds": elapsed,
-                "elapsed_label": _format_seconds(elapsed),
+                "indeterminate": stage_fraction is None and running,
+                "pages": current,
+                "groups": int((active or {}).get("progress_current") or 0),
+                "errors": 0,
+                "last_message": (active or {}).get("progress_message") or "",
+                "elapsed_seconds": _duration(active) if active else 0.0,
+                "elapsed_label": _format_seconds(_duration(active) if active else 0.0),
             },
-            "logs": [entry for entry in self.logs if int(entry["seq"]) > int(cursor or 0)],
-            "log_cursor": self.log_sequence,
-            "queue": self.queue,
-            "queue_running": self.queue_running,
+            "logs": logs["entries"],
+            "log_cursor": logs["cursor"],
+            "queue": queued,
+            "queue_running": running,
+            "resumable": resumable,
+            "worker": {
+                "online": bool(worker),
+                "worker_id": (worker or {}).get("worker_id", ""),
+                "pid": (worker or {}).get("pid", 0),
+            },
             "history_revision": self.history_revision,
         }
+
+    def _latest_terminal_job(self) -> dict[str, Any] | None:
+        jobs = self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=1)
+        return jobs[0] if jobs else None
+
+    def _tail_job_logs(self, active: dict[str, Any] | None, cursor: int) -> dict[str, Any]:
+        if not active or not active.get("log_path"):
+            return {"entries": [], "cursor": int(cursor or 0)}
+        path = Path(active["log_path"])
+        if not path.is_file():
+            return {"entries": [], "cursor": int(cursor or 0)}
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return {"entries": [], "cursor": int(cursor or 0)}
+        start = int(cursor or 0)
+        entries = [
+            {"seq": index + 1, "time": "", "kind": "info", "text": mask_secrets(line)}
+            for index, line in enumerate(lines[-MAX_LOG_LINES:])
+            if index + 1 > start
+        ]
+        return {"entries": entries, "cursor": len(lines[-MAX_LOG_LINES:])}
 
     def settings(self) -> dict[str, Any]:
         values = _read_env_file()
@@ -210,221 +312,112 @@ class UiBridge:
         }
 
     async def start(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self._lock:
-            if self.runner_task and not self.runner_task.done():
-                raise ValueError("Já existe uma tradução ou fila em andamento.")
-            normalized = self._normalize_payload(payload)
-            self.cancel_requested = False
-            self.runner_task = asyncio.create_task(self._single_worker(normalized))
-        return {"ok": True, "run_id": normalized["id"]}
+        job = self._create_job(payload)
+        return {"ok": True, "run_id": job["run_id"], "job_id": job["id"]}
 
-    async def _single_worker(self, payload: dict[str, Any]) -> None:
-        try:
-            await self._execute(payload)
-        finally:
-            self.runner_task = None
-
-    async def cancel(self, *, queue: bool = False) -> dict[str, Any]:
-        self.cancel_requested = True
-        if queue:
-            self.queue_running = False
-            for item in self.queue:
-                if item.get("status") == "waiting":
-                    item["status"] = "cancelled"
-        process = self.process
-        if process and process.returncode is None:
-            self._append_log("Cancelamento solicitado; encerrando o subprocesso com segurança.", "warn")
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=8)
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
-        return {"ok": True}
-
-    def add_queue_item(self, payload: dict[str, Any]) -> dict[str, Any]:
-        normalized = self._normalize_payload({**payload, "full": True}, require_environment=False)
-        normalized["status"] = "waiting"
-        normalized["error"] = ""
-        self.queue.append(normalized)
-        return normalized
-
-    def remove_queue_item(self, item_id: str) -> None:
-        self.queue = [
-            item
-            for item in self.queue
-            if not (item.get("id") == item_id and item.get("status") == "waiting")
-        ]
-
-    def clear_queue(self) -> None:
-        if self.queue_running:
-            self.queue = [item for item in self.queue if item.get("status") == "processing"]
-        else:
-            self.queue.clear()
-
-    async def start_queue(self) -> dict[str, Any]:
-        async with self._lock:
-            if self.runner_task and not self.runner_task.done():
-                raise ValueError("Já existe uma tradução ou fila em andamento.")
-            if not any(item.get("status") == "waiting" for item in self.queue):
-                raise ValueError("A fila não tem itens aguardando.")
-            status = env_status()
-            if not status["env_exists"] or not status["nvidia_configured"]:
-                raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
-            self.cancel_requested = False
-            self.queue_running = True
-            self.runner_task = asyncio.create_task(self._queue_worker())
-        return {"ok": True}
-
-    async def _queue_worker(self) -> None:
-        try:
-            for item in self.queue:
-                if self.cancel_requested or not self.queue_running:
-                    break
-                if item.get("status") != "waiting":
-                    continue
-                item["status"] = "processing"
-                try:
-                    result = await self._execute(item)
-                    item["status"] = result.get("status", "error")
-                    item["record_id"] = result.get("id", "")
-                except Exception as exc:  # keep the queue moving
-                    item["status"] = "error"
-                    item["error"] = mask_secrets(str(exc))
-                    self._append_log(f"Item da fila falhou: {exc}", "error")
-            if self.cancel_requested:
-                for item in self.queue:
-                    if item.get("status") == "waiting":
-                        item["status"] = "cancelled"
-        finally:
-            self.queue_running = False
-            self.runner_task = None
-
-    async def _execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _create_job(self, payload: dict[str, Any], *, require_environment: bool = True) -> dict[str, Any]:
+        normalized = self._normalize_payload(payload, require_environment=require_environment)
         command = build_run_command(
-            url=payload["url"],
-            mode=payload["mode"],
-            output=payload["slug"],
-            full=payload["full"],
-            max_images=payload.get("max_images"),
-            use_cache=payload["use_cache"],
-            force=payload["force"],
-            use_context=payload["use_context"],
-            open_output=payload["open_output"],
+            url=normalized["url"],
+            mode=normalized["mode"],
+            output=normalized["slug"],
+            full=normalized["full"],
+            max_images=normalized.get("max_images"),
+            use_cache=normalized["use_cache"],
+            force=normalized["force"],
+            use_context=normalized["use_context"],
+            open_output=normalized["open_output"],
             python_executable=sys.executable,
         )
-        output_folder = (OUTPUT_ROOT / payload["slug"]).resolve()
-        record = {
-            "id": payload["id"],
-            "chapter_name": payload["chapter_name"],
-            "slug": payload["slug"],
-            "url": payload["url"],
-            "mode": payload["mode"],
-            "scope": "full" if payload["full"] else "partial",
-            "max_images": payload.get("max_images"),
-            "cache_mode": "force" if payload["force"] else "cache",
-            "started_at": utc_now(),
-            "finished_at": "",
-            "total_seconds": 0,
-            "status": "running",
-            "output_folder": str(output_folder),
-            "pages_processed": 0,
-            "groups_translated": 0,
-            "errors": 0,
-            "quality_gate": "",
-        }
-        self.active_record = record
-        self.latest_record = record
-        self.status = "running"
-        self.started_monotonic = time.monotonic()
-        self.progress = ProgressSnapshot(last_message="Preparando o pipeline local…")
-        self.history_store.upsert(record)
-        self._refresh_history()
-        self._append_log("$ " + " ".join(json.dumps(part) if " " in part else part for part in command), "command")
-
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-        environment = os.environ.copy()
-        environment["PYTHONUNBUFFERED"] = "1"
-        error_message = ""
-        return_code = 1
-        try:
-            self.process = await asyncio.create_subprocess_exec(
-                *command,
-                cwd=str(REPO_ROOT),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                creationflags=creationflags,
-                env=environment,
-            )
-            assert self.process.stdout is not None
-            while True:
-                raw_line = await self.process.stdout.readline()
-                if not raw_line:
-                    break
-                line = raw_line.decode("utf-8", errors="replace").rstrip()
-                self._append_log(line)
-                previous_stage = self.progress.stage
-                previous_current = self.progress.current
-                previous_total = self.progress.total
-                self.progress = parse_progress_line(line, self.progress)
-                if self.progress.stage != previous_stage and not self._line_has_fraction(line):
-                    self.progress.current = 0
-                    self.progress.total = 0
-                elif self.progress.stage == previous_stage and not self._line_has_fraction(line):
-                    self.progress.current = previous_current
-                    self.progress.total = previous_total
-            return_code = await self.process.wait()
-        except Exception as exc:
-            error_message = mask_secrets(str(exc))
-            self._append_log(f"Erro ao iniciar a execução: {error_message}", "error")
-        finally:
-            self.process = None
-
-        cancelled = self.cancel_requested and return_code != 0
-        elapsed = max(0.0, time.monotonic() - self.started_monotonic)
-        report = load_json(output_folder / "timing_report.json")
-        artifacts = find_output_artifacts(output_folder)
-        quality = report.get("quality_validation") or {}
-        technical_finished = return_code == 0 and bool(artifacts.get("pdf_path")) and not cancelled
-        final_status = derive_final_run_status(
-            technical_success=technical_finished,
-            cancelled=cancelled,
-            quality_validation=quality,
+        output_folder = (OUTPUT_ROOT / normalized["slug"]).resolve()
+        details = suggest_chapter_details(normalized["url"])
+        job_id = self.store.create_job(
+            source_url=normalized["url"],
+            output_dir=str(output_folder),
+            command=command,
+            run_id=str(normalized["id"]),
+            configuration={
+                "mode": normalized["mode"],
+                "full": normalized["full"],
+                "force": normalized["force"],
+                "use_cache": normalized["use_cache"],
+                "use_context": normalized["use_context"],
+                "chapter_name": normalized["chapter_name"],
+            },
+            series_title=normalized["chapter_name"],
+            series_slug=str(details.get("slug") or ""),
+            episode_number=str(details.get("episode") or ""),
+            commit_hash=_current_commit(),
+            branch=_current_branch(),
         )
-        record.update(
-            {
-                "finished_at": utc_now(),
-                "total_seconds": float(report.get("total_seconds") or elapsed),
-                "status": final_status,
-                **artifacts,
-                "pages_processed": int(report.get("processed_images") or self.progress.pages or 0),
-                "groups_translated": int(report.get("groups_translated") or self.progress.groups or 0),
-                "sfx_preserved": int(report.get("groups_ignored_sfx_decorative") or 0),
-                "errors": int(report.get("pages_with_error") or (0 if technical_finished else 1)),
-                "quality_gate": quality.get("passed", ""),
-                "last_message": error_message or self.progress.last_message,
-            }
+        self.history_revision += 1
+        return self.store.get_job(job_id)  # type: ignore[return-value]
+
+    async def cancel(self, *, queue: bool = False) -> dict[str, Any]:
+        active = self.store.active_job()
+        if active:
+            self.store.request_cancel(active["id"])
+        if queue:
+            for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+                try:
+                    self.store.transition(job["id"], JobStatus.CANCELLED,
+                                          interrupted_reason="queue_cleared")
+                except Exception:  # noqa: BLE001 - best effort per queued job
+                    pass
+        return {"ok": True}
+
+    def resume(self, job_id: str) -> dict[str, Any]:
+        job = self.store.get_job(job_id)
+        if not job:
+            raise ValueError("Job não encontrado.")
+        if job["status"] not in {JobStatus.INTERRUPTED, JobStatus.RESUMABLE}:
+            raise ValueError("Somente jobs interrompidos podem ser retomados.")
+        if job["status"] == JobStatus.INTERRUPTED:
+            self.store.mark_resumable(job_id, resume_from_stage=job.get("resume_from_stage") or "")
+        # A resume is a fresh attempt that reuses the same output dir and command; the
+        # previous attempt is preserved for history.
+        new_id = self.store.create_job(
+            source_url=job["source_url"],
+            output_dir=job["output_dir"],
+            command=job.get("command") or [],
+            configuration=job.get("configuration") or {},
+            series_title=job.get("series_title") or "",
+            series_slug=job.get("series_slug") or "",
+            episode_number=job.get("episode_number") or "",
+            commit_hash=_current_commit(),
+            branch=_current_branch(),
+            previous_job_id=job_id,
+            attempt=int(job.get("attempt") or 1) + 1,
+            resume_from_stage=job.get("resume_from_stage") or "",
         )
-        self.latest_record = self.history_store.upsert(record)
-        self.active_record = None
-        self.status = final_status if final_status in {"finished", "review_required", "error"} else "ready"
-        if final_status in {"finished", "review_required"}:
-            self.progress.stage = "Revisão necessária" if final_status == "review_required" else "Finalizado"
-            self.progress.current = record["pages_processed"]
-            self.progress.total = record["pages_processed"]
-            self.progress.pages = record["pages_processed"]
-            self.progress.groups = record["groups_translated"]
-            self.progress.errors = record["errors"]
-            if final_status == "review_required":
-                self.progress.last_message = f"PDF gerado para revisão: {record.get('pdf_path', '')}"
-                self._append_log("Execução finalizada com revisão de qualidade pendente.", "warn")
-            else:
-                self.progress.last_message = f"PDF pronto: {record.get('pdf_path', '')}"
-                self._append_log("Execução finalizada com artefatos reais.", "success")
-        elif cancelled:
-            self.progress.last_message = "Execução cancelada pelo usuário."
-        self._refresh_history()
-        return record
+        self.store.transition(job_id, JobStatus.QUEUED) if job["status"] == JobStatus.RESUMABLE else None
+        self.history_revision += 1
+        return {"ok": True, "job_id": new_id}
+
+    def add_queue_item(self, payload: dict[str, Any]) -> dict[str, Any]:
+        job = self._create_job({**payload, "full": True}, require_environment=False)
+        return self._job_record(job)  # type: ignore[return-value]
+
+    def remove_queue_item(self, item_id: str) -> None:
+        job = self.store.get_job(item_id)
+        if job and job["status"] == JobStatus.QUEUED:
+            self.store.transition(item_id, JobStatus.CANCELLED, interrupted_reason="removed")
+
+    def clear_queue(self) -> None:
+        for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+            try:
+                self.store.transition(job["id"], JobStatus.CANCELLED, interrupted_reason="queue_cleared")
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def start_queue(self) -> dict[str, Any]:
+        # Jobs are already queued in the store; the independent worker drains them.
+        if not self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+            raise ValueError("A fila não tem itens aguardando.")
+        status = env_status()
+        if not status["env_exists"] or not status["nvidia_configured"]:
+            raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
+        return {"ok": True}
 
     def save_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
         allowed_status = {"online", "away", "busy", "offline"}
@@ -540,7 +533,12 @@ class UiBridge:
             webbrowser.open(path.as_uri())
 
     async def shutdown(self) -> None:
-        await self.cancel(queue=True)
+        # Closing the UI must never cancel a running job: the worker owns it and keeps
+        # processing. Only release this process's database handle.
+        try:
+            self.store.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _normalize_payload(
         self,
@@ -623,37 +621,3 @@ class UiBridge:
                 else ""
             )
         return payload
-
-    def _append_log(self, line: str, kind: str = "info") -> None:
-        safe = mask_secrets(str(line or ""))
-        self.log_sequence += 1
-        self.logs.append(
-            {
-                "seq": self.log_sequence,
-                "time": datetime.now(timezone.utc).astimezone().strftime("%H:%M:%S"),
-                "kind": kind,
-                "text": safe,
-            }
-        )
-        self.logs = self.logs[-MAX_LOG_LINES:]
-
-    @staticmethod
-    def _line_has_fraction(line: str) -> bool:
-        import re
-
-        return bool(re.search(r"\d+\s*/\s*\d+", line))
-
-    @staticmethod
-    def _stage_key(stage: str) -> str:
-        return {
-            "Preparando": "prepare",
-            "Baixando imagens": "download",
-            "Validando imagens": "validation",
-            "OCR": "ocr",
-            "Classificação": "classification",
-            "Tradução NVIDIA": "translate",
-            "Renderização": "render",
-            "Geração de PDF": "pdf",
-            "Relatórios": "reports",
-            "Finalizado": "final",
-        }.get(stage, "prepare")

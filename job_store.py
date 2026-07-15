@@ -424,7 +424,11 @@ class JobStore:
         ).fetchall()
         recovered: list[str] = []
         for row in rows:
-            reference = row["heartbeat_at"] or row["created_at"] or 0
+            reference = row["heartbeat_at"]
+            if reference is None:
+                reference = row["created_at"]
+            if reference is None:
+                reference = 0
             if reference > cutoff:
                 continue
             self.transition(

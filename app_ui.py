@@ -77,6 +77,11 @@ async def api_queue_start() -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/ui/resume")
+def api_resume(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    return _api_call(BRIDGE.resume, str(payload.get("job_id") or payload.get("id") or ""))
+
+
 @app.post("/api/ui/profile")
 def api_profile(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     return {"ok": True, "profile": BRIDGE.save_profile(payload)}
