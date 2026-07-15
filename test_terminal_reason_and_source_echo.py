@@ -12,16 +12,33 @@ Real chapter text appears only as fixtures; nothing in production keys off any w
 """
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
+import config
 from ocr_balloon import (
     OCRLine,
     TextGroup,
     PROPER_NAME_ONLY_REASON,
     _set_translation_terminal_state,
+    _source_token_is_name_like,
+    apply_group_translations,
     render_analyzed_image,
+    validate_and_retry_translations,
+    validate_translation_text,
 )
+
+
+class _Fake:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def translate_strict(self, text, previous_translation="", validation_reason="",
+                         force=False, allow_proper_names=True, proper_names=None):
+        self.calls.append({"allow_proper_names": allow_proper_names})
+        return self.responses.pop(0) if self.responses else previous_translation
 
 
 def _line(text, box=(10, 400, 200, 40)):
@@ -88,6 +105,44 @@ class TerminalReasonPrecedenceTests(unittest.TestCase):
         self.assertTrue(grp.preserved_original)
         self.assertFalse(grp.redrawn)
         self.assertTrue(grp.visual_validation.get("render_preserved_source_echo"))
+
+
+class MixedCaseNoiseTests(unittest.TestCase):
+    """Case 2: OCR case noise is not proper-name evidence."""
+
+    def test_mixed_case_token_is_not_name_like(self):
+        for raw in ("STeP", "WaIT", "STOp", "PaNT", "HuFF", "PuLL", "SaVE"):
+            self.assertFalse(_source_token_is_name_like({"raw": raw}), raw)
+
+    def test_all_caps_token_is_not_name_like(self):
+        self.assertFalse(_source_token_is_name_like({"raw": "STEP"}))
+
+    def test_mixed_case_common_word_echo_is_rejected(self):
+        valid, reason = validate_translation_text("STeP", "STeP", "speech", [])
+        self.assertFalse(valid)
+        self.assertEqual(reason, "candidate_equals_source")
+
+    def test_mixed_case_word_is_translated_when_the_model_translates_it(self):
+        grp = _group("STeP")
+        apply_group_translations([grp], ["STeP"])
+        self.assertFalse(grp.translation_valid)
+        translator = _Fake("STeP", "PASSO")  # strict echoes, isolated translates
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            validate_and_retry_translations([grp], translator)
+        self.assertEqual(grp.translation, "PASSO")
+        self.assertEqual(grp.translation_final_state, "translated")
+        self.assertTrue(any(not c["allow_proper_names"] for c in translator.calls))
+
+    def test_mixed_case_word_reaches_the_model_evidence_path_when_unresolved(self):
+        # When even the forced retry echoes, the lone token is settled by the model,
+        # exactly like any other lone token - not by its casing.
+        grp = _group("STeP")
+        apply_group_translations([grp], ["STeP"])
+        translator = _Fake("STeP", "STeP")
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
+            validate_and_retry_translations([grp], translator)
+        self.assertTrue(any(not c["allow_proper_names"] for c in translator.calls))
+        self.assertIn(grp.translation_final_state, {"preserved_original", "manual_review"})
 
 
 if __name__ == "__main__":

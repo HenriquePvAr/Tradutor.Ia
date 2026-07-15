@@ -4379,18 +4379,16 @@ def _normalized_allowed_name_tokens(allowed_proper_names):
 
 
 def _source_token_is_name_like(info):
-    """True when a source token looks like a name rather than OCR case noise.
+    """Mixed case is OCR noise, not evidence of a name, so this proves nothing.
 
-    Comic lettering is all-caps, so a mixed-case token is usually the recogniser
-    misreading glyphs, not a name. Treating any mixed-case token as name evidence
-    let a misread auxiliary pose as a character name, so a token the source
-    language uses as a word is never counted here.
+    Comic lettering is all-caps: an internally alternating token like an OCR misread
+    of a common word is the recogniser stumbling on glyphs, not a character name.
+    Treating that casing as name evidence let an ordinary word survive untranslated
+    as a "name-like" echo. Real names are established from detected spans and chapter
+    consensus (which reach the validator through ``allowed_names``) and, for a lone
+    token, from the model refusing to translate it - never from case alone.
     """
-    raw = str(info.get("raw") or "")
-    letters = re.sub(r"[^A-Za-z]", "", raw)
-    if not letters or letters.isupper():
-        return False
-    return not _token_is_source_vocabulary(_name_token_of(raw))
+    return False
 
 
 def _is_stuttered_name_fragment(text):
