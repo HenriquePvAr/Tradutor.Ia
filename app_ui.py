@@ -7,9 +7,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import Body, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from nicegui import app, ui
 
+from community_api import CommunityApi
+from community_service import CommunityError
+from community_storage import StorageError
 from ui_bridge import UiBridge
 
 
@@ -18,8 +21,18 @@ STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
 APP_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
 BRIDGE = UiBridge()
+COMMUNITY = CommunityApi(BRIDGE.store)
 
 app.add_static_files("/static", STATIC_DIR)
+
+
+def _community_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    try:
+        return callback(*args, **kwargs)
+    except CommunityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except StorageError as exc:
+        raise HTTPException(status_code=502, detail="storage_unavailable") from exc
 
 
 def _api_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -80,6 +93,50 @@ async def api_queue_start() -> dict[str, Any]:
 @app.post("/api/ui/resume")
 def api_resume(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     return _api_call(BRIDGE.resume, str(payload.get("job_id") or payload.get("id") or ""))
+
+
+# ---- community ------------------------------------------------------------
+@app.post("/api/community/publish")
+def api_community_publish(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    return _community_call(COMMUNITY.publish, payload)
+
+
+@app.get("/api/community/posts")
+def api_community_feed(series_slug: str = Query(""), q: str = Query(""),
+                       limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)) -> dict[str, Any]:
+    return _community_call(COMMUNITY.feed, series_slug=series_slug, query=q, limit=limit, offset=offset)
+
+
+@app.get("/api/community/my-posts")
+def api_community_my_posts() -> dict[str, Any]:
+    return _community_call(COMMUNITY.my_posts)
+
+
+@app.post("/api/community/posts/{post_id}/unpublish")
+def api_community_unpublish(post_id: str) -> dict[str, Any]:
+    return _community_call(COMMUNITY.unpublish, post_id)
+
+
+@app.api_route("/api/community/posts/{post_id}/pdf", methods=["GET", "HEAD"])
+def api_community_pdf(post_id: str, request: Request):
+    range_header = request.headers.get("range", "") if request.method == "GET" else ""
+    meta, stream = _community_call(COMMUNITY.open_pdf, post_id, range_header=range_header)
+    headers = {
+        "Content-Length": str(meta["content_length"]),
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="{meta["filename"]}"',
+        "X-Content-Type-Options": "nosniff",
+    }
+    if request.method == "HEAD":
+        headers["Content-Length"] = str(meta["total_size"])
+        return Response(status_code=200, media_type="application/pdf", headers=headers)
+    if meta["partial"]:
+        headers["Content-Range"] = f'bytes {meta["start"]}-{meta["end"]}/{meta["total_size"]}'
+        status = 206
+    else:
+        status = 200
+    return StreamingResponse(stream.iter_chunks(), status_code=status,
+                             media_type="application/pdf", headers=headers)
 
 
 @app.post("/api/ui/profile")
