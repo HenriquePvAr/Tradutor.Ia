@@ -128,6 +128,30 @@ class UiPersistentQueueTests(unittest.TestCase):
         self.bridge.remove_queue_item(jid)
         self.assertEqual(self.bridge.store.get_job(jid)["status"], JobStatus.CANCELLED)
 
+    def test_resume_blocked_while_previous_runner_alive(self):
+        # An interrupted job whose recorded runner is still a live process must not be
+        # resumed - that would run two trees for the same chapter.
+        import os
+        import process_tree
+        store = JobStore(self.db)
+        jid = store.create_job(source_url="https://example/x",
+                               output_dir=str(self.tmp / "out"), command=["x"])
+        store.claim_next_job("w1", 1)
+        store.transition(jid, JobStatus.STARTING, expected_worker="w1")
+        # Point runner_pid at THIS live process with a matching fingerprint, so the guard
+        # sees a live runner. The command line of the test process contains "job_runner"?
+        # Use a fingerprint we know is present: the running python's own args won't have
+        # it, so instead assert the guard via a monkeypatched liveness check.
+        store.transition(jid, JobStatus.RUNNING, expected_worker="w1",
+                         runner_pid=os.getpid(), runner_create_time=process_tree.snapshot(os.getpid())["create_time"])
+        store.update_fields(jid, heartbeat_at=1.0)
+        store.recover_stale(stale_seconds=1)  # -> interrupted
+        store.close()
+        with patch.object(ui_bridge, "_runner_still_alive", lambda job: True):
+            with self.assertRaises(ValueError) as ctx:
+                self.bridge.resume(jid)
+        self.assertIn("previous_attempt_still_running", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
