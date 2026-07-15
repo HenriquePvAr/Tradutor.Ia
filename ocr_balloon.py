@@ -92,6 +92,17 @@ TRANSLATION_TERMINAL_STATES = frozenset(
     }
 )
 
+PROPER_NAME_ONLY_REASON = "proper_name_only"
+
+# Terminal reasons that record a proven, specific conclusion about a group. A later
+# stage may still preserve the original pixels for such a group, but it must not
+# replace the proven reason with its own generic one: the accounting keys off the
+# reason, so a downgrade silently turns a settled name back into an untranslated echo
+# and holds the whole chapter in review. Kept as a set so more proven reasons can join.
+STICKY_TERMINAL_REASONS = frozenset({PROPER_NAME_ONLY_REASON})
+
+REVIEW_TERMINAL_STATES = frozenset({"rejected", "manual_review", "translation_failed"})
+
 COMMON_ENGLISH_WORDS = {
     "ABOUT",
     "AFTER",
@@ -1008,16 +1019,24 @@ def _set_translation_terminal_state(
 ):
     if state not in TRANSLATION_TERMINAL_STATES:
         raise ValueError(f"estado terminal de traducao invalido: {state}")
+    new_reason = str(reason or group.translation_validation_reason or "")
+    current_reason = getattr(group, "translation_final_reason", "") or ""
+    # A proven, specific reason outranks a later generic one when the outcome stays
+    # neutral: the renderer preserves original pixels for both a proper name and a
+    # stylized echo, but only the name is quality-neutral, so the name reason must
+    # survive the render's bookkeeping. A genuine review outcome still wins.
+    if (
+        state not in REVIEW_TERMINAL_STATES
+        and current_reason in STICKY_TERMINAL_REASONS
+        and new_reason not in STICKY_TERMINAL_REASONS
+    ):
+        new_reason = current_reason
     group.translation_final_state = state
-    group.translation_final_reason = str(
-        reason or group.translation_validation_reason or ""
-    )
+    group.translation_final_reason = new_reason
     if preserved_original is not None:
         group.preserved_original = bool(preserved_original)
     group.translation_quality_impact = (
-        "review_required"
-        if state in {"rejected", "manual_review", "translation_failed"}
-        else "none"
+        "review_required" if state in REVIEW_TERMINAL_STATES else "none"
     )
 
 
@@ -1071,9 +1090,6 @@ def _terminal_translation_failure_reason(group, validation_reason, candidate):
     if str(validation_reason or "").startswith("strict_retry_error"):
         return "translation_failed_after_retries"
     return "invalid_translation_after_retries"
-
-
-PROPER_NAME_ONLY_REASON = "proper_name_only"
 
 
 def _finalize_proper_name_only(group, candidate):
@@ -1227,7 +1243,12 @@ def render_analyzed_image(
             group.visual_validation = {
                 "visual_validation_passed": True,
                 "reason": "source_echo_preserved_original",
+                "render_preserved_source_echo": True,
             }
+            # Preserve the original pixels either way, but let a proven reason such as
+            # ``proper_name_only`` survive: the precedence policy in
+            # ``_set_translation_terminal_state`` keeps the specific reason and only
+            # takes this generic one when none was proven earlier.
             _set_translation_terminal_state(
                 group,
                 "preserved_original",
