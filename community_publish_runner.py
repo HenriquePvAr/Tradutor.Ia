@@ -21,13 +21,14 @@ from pathlib import Path
 from community_storage import StorageError, build_storage_provider
 from community_store import CommunityStore, FileStatus, PostStatus
 from job_store import JobStatus, JobStore, TransitionError
+from local_environment import load_local_environment_for_entrypoint
 
 CHUNK_SIZE = 256 * 1024
 HEARTBEAT_SECONDS = 3.0
 MAX_TRANSIENT_RETRIES = 6
 # Test-only pacing hook (seconds per chunk); 0 in production. Lets a survival test span a
 # realistic upload window without a giant file.
-_CHUNK_DELAY = float(os.getenv("COMMUNITY_UPLOAD_CHUNK_DELAY", "0") or 0)
+_CHUNK_DELAY = 0.0
 
 _STOP = False
 
@@ -178,6 +179,10 @@ def _fail(jobs, community, job_id, post_id, file_id, job, reason):
 
 
 def main(argv: list[str] | None = None) -> int:
+    if not load_local_environment_for_entrypoint():
+        return 2
+    global _CHUNK_DELAY
+    _CHUNK_DELAY = float(os.getenv("COMMUNITY_UPLOAD_CHUNK_DELAY", "0") or 0)
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--db", required=True)

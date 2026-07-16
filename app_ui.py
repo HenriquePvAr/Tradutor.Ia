@@ -13,8 +13,12 @@ from nicegui import app, ui
 from community_api import CommunityApi
 from community_service import CommunityError
 from community_storage import StorageError
+from local_environment import load_local_environment_for_entrypoint
 from ui_bridge import UiBridge
 
+
+if not load_local_environment_for_entrypoint():
+    raise SystemExit(2)
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"

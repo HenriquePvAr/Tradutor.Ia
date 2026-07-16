@@ -1,9 +1,9 @@
 import os
 
-from dotenv import load_dotenv
+from local_environment import load_local_environment
 
 
-load_dotenv()
+load_local_environment()
 
 
 def _env_str(name, default=""):

@@ -18,6 +18,8 @@ import sys
 import time
 from pathlib import Path
 
+from local_environment import load_local_environment_for_entrypoint
+
 REPO_ROOT = Path(__file__).resolve().parent
 DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
 
@@ -126,6 +128,8 @@ def stop_worker(*, force: bool = False, timeout: float = 30.0) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if not load_local_environment_for_entrypoint():
+        return 2
     args = list(sys.argv[1:] if argv is None else argv)
     command = args[0] if args else "all"
     if command == "worker":

@@ -25,6 +25,7 @@ from pathlib import Path
 
 import process_tree
 from job_store import JobStatus, JobStore
+from local_environment import load_local_environment_for_entrypoint
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
@@ -262,6 +263,8 @@ def print_status(db_path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if not load_local_environment_for_entrypoint():
+        return 2
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--once", action="store_true")

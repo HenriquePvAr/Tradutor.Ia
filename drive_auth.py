@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from community_storage import StorageError
+from local_environment import load_local_environment_for_entrypoint
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -253,6 +254,8 @@ def cmd_create_root_folder(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if not load_local_environment_for_entrypoint():
+        return 2
     parser = argparse.ArgumentParser(description="Administrative Google Drive OAuth helper")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("authorize").set_defaults(func=cmd_authorize)

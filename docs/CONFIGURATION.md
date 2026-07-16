@@ -6,7 +6,10 @@ Esta referência descreve as opções reais do `.env.example` e as poucas variá
 
 ## Como a configuração é carregada
 
-`config.py` chama `load_dotenv()` ao ser importado. Variáveis já presentes no ambiente do processo têm precedência sobre o arquivo `.env`. Valores ausentes ou vazios usam o default do código.
+`local_environment.py` carrega exclusivamente o `.env` localizado na raiz real do projeto,
+sem procurar arquivos em diretórios pais. Variáveis já presentes no ambiente do processo
+têm precedência (`override=False`); valores ausentes ou vazios usam o default do código.
+Os entrypoints chamam esse helper antes de consultar a configuração.
 
 Valores booleanos verdadeiros aceitos: `1`, `true`, `yes` e `on`, sem distinção de caixa. Qualquer outro valor não vazio é interpretado como falso.
 
