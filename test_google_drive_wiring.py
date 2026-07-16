@@ -20,6 +20,7 @@ from google_drive_factory import GoogleDriveConfig, build_google_drive_provider
 from google_drive_storage import HttpResponse
 from job_store import JobStatus, JobStore
 import community_publish_runner
+from community_auth import RequestPrincipal
 
 
 # ---- a fake requests.Session for the concrete transport ---------------------
@@ -243,9 +244,11 @@ class FullFlowThroughFactoriesTests(unittest.TestCase):
         self.jobs.close()
 
     def _publish(self):
-        draft = self.svc.create_draft(output_dir=str(self.output_root / "chap"),
+        principal = RequestPrincipal(
+            "local", True, auth_source="test", session_id="test-owner")
+        draft = self.svc.create_draft(principal=principal, output_dir=str(self.output_root / "chap"),
                                       series_slug="chap", episode_number="1", series_title="Chap")
-        return self.svc.request_publish(draft["post_id"])
+        return self.svc.request_publish(draft["post_id"], principal=principal)
 
     def _run_with_fake_transport(self, job_id, transport):
         # Build the real provider through the real factory, but inject the fake transport

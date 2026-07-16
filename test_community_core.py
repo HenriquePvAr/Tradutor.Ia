@@ -4,13 +4,19 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from community_auth import RequestPrincipal, ResourceNotFound
 from community_storage import (
     FakeStorageProvider, FilesystemStorageProvider, StorageError, build_storage_provider,
 )
 from community_store import CommunityStore, FileStatus, Moderation, PostStatus, Visibility
 from community_service import CommunityService, CommunityError, safe_pdf_filename, sha256_of_file
-from job_store import JobStore
+from job_store import JobStatus, JobStore
+
+
+OWNER = RequestPrincipal("local", True, auth_source="test", session_id="test-owner")
+ANONYMOUS = RequestPrincipal.anonymous()
 
 
 def _write_pdf(path: Path, body: bytes = b"body", *, magic=b"%PDF-1.4\n"):
@@ -147,7 +153,7 @@ class CommunityServiceTests(unittest.TestCase):
 
     def test_validate_rejects_path_traversal(self):
         with self.assertRaises(CommunityError) as ctx:
-            self.svc.create_draft(output_dir=str(self.tmp / "elsewhere"))
+            self.svc.create_draft(principal=OWNER, output_dir=str(self.tmp / "elsewhere"))
         self.assertIn("output_outside_root", str(ctx.exception))
 
     def test_validate_rejects_non_pdf(self):
@@ -155,13 +161,13 @@ class CommunityServiceTests(unittest.TestCase):
         out.mkdir()
         (out / "chapter.pdf").write_bytes(b"NOTPDF")
         with self.assertRaises(CommunityError):
-            self.svc.create_draft(output_dir=str(out))
+            self.svc.create_draft(principal=OWNER, output_dir=str(out))
 
     def test_create_draft_and_publish_creates_job(self):
         out = self._chapter()
-        draft = self.svc.create_draft(output_dir=str(out), series_slug="platform_zero",
+        draft = self.svc.create_draft(principal=OWNER, output_dir=str(out), series_slug="platform_zero",
                                       episode_number="1", series_title="Platform Zero")
-        result = self.svc.request_publish(draft["post_id"])
+        result = self.svc.request_publish(draft["post_id"], principal=OWNER)
         self.assertTrue(result["job_id"])
         job = self.jobs.get_job(result["job_id"])
         self.assertEqual(job["configuration"]["job_type"], "community_publish")
@@ -172,15 +178,94 @@ class CommunityServiceTests(unittest.TestCase):
 
     def test_publish_blocks_duplicate_active(self):
         out = self._chapter()
-        draft = self.svc.create_draft(output_dir=str(out), series_slug="x", episode_number="1")
-        self.svc.request_publish(draft["post_id"])
-        with self.assertRaises(CommunityError) as ctx:
-            self.svc.request_publish(draft["post_id"])
-        self.assertIn("publish_already_active", str(ctx.exception))
+        draft = self.svc.create_draft(principal=OWNER, output_dir=str(out), series_slug="x", episode_number="1")
+        first = self.svc.request_publish(draft["post_id"], principal=OWNER)
+        repeated = self.svc.request_publish(draft["post_id"], principal=OWNER)
+        self.assertEqual(repeated, first)
+
+    def test_publish_is_idempotent_when_runner_finishes_before_transactional_prepare(self):
+        out = self._chapter()
+        draft = self.svc.create_draft(
+            principal=OWNER,
+            output_dir=str(out),
+            series_slug="x",
+            episode_number="1",
+        )
+        first = self.svc.request_publish(draft["post_id"], principal=OWNER)
+        original_prepare_publish_attempt = self.store.prepare_publish_attempt
+
+        def finish_runner_before_prepare(**preparation):
+            claimed = self.jobs.claim_next_job("runner", 1234)
+            self.assertIsNotNone(claimed)
+            self.assertEqual(claimed["id"], first["job_id"])
+            self.jobs.transition(
+                first["job_id"], JobStatus.STARTING, expected_worker="runner")
+            self.jobs.transition(
+                first["job_id"], JobStatus.RUNNING, expected_worker="runner")
+            self.assertTrue(self.store.update_current_publish_file(
+                draft["post_id"],
+                first["file_id"],
+                first["job_id"],
+                upload_status=FileStatus.VERIFYING,
+                storage_file_id="remote-file",
+            ))
+            self.assertTrue(self.store.complete_publish_attempt(
+                post_id=draft["post_id"],
+                file_id=first["file_id"],
+                upload_job_id=first["job_id"],
+                provider_checksum="checksum",
+                actor_id=OWNER.user_id,
+                size=(out / "chapter.pdf").stat().st_size,
+            ))
+            self.jobs.transition(
+                first["job_id"], JobStatus.FINISHED, expected_worker="runner")
+            return original_prepare_publish_attempt(**preparation)
+
+        with patch.object(
+            self.store,
+            "prepare_publish_attempt",
+            side_effect=finish_runner_before_prepare,
+        ):
+            repeated = self.svc.request_publish(draft["post_id"], principal=OWNER)
+
+        self.assertEqual(repeated, first)
+        jobs = self.jobs.list_jobs(limit=None)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["id"], first["job_id"])
+        self.assertEqual(jobs[0]["status"], JobStatus.FINISHED)
+        self.assertEqual(
+            self.store.get_post(draft["post_id"])["status"], PostStatus.PUBLISHED)
+        self.assertEqual(
+            self.store.get_file(first["file_id"])["upload_status"], FileStatus.VERIFIED)
+
+    def test_republish_never_falls_back_to_older_verified_same_hash(self):
+        out = self._chapter()
+        draft = self.svc.create_draft(
+            principal=OWNER, output_dir=str(out), series_slug="x", episode_number="1")
+        pdf_hash, pdf_size = sha256_of_file(out / "chapter.pdf")
+        old_id = self.store.create_file(
+            post_id=draft["post_id"], filename="old.pdf", mime_type="application/pdf",
+            size_bytes=pdf_size, sha256=pdf_hash, storage_provider="fake")
+        self.store.update_file(
+            old_id, upload_status=FileStatus.VERIFIED, storage_file_id="old-remote")
+        latest_id = self.store.create_file(
+            post_id=draft["post_id"], filename="latest.pdf", mime_type="application/pdf",
+            size_bytes=10, sha256="newer-hash", storage_provider="fake")
+        self.store.update_file(latest_id, upload_status=FileStatus.DELETED)
+        self.store.set_post_status(draft["post_id"], PostStatus.UNPUBLISHED)
+        with self.assertRaisesRegex(CommunityError, "pdf_version_unavailable"):
+            self.svc.request_publish(draft["post_id"], principal=OWNER)
+        self.assertEqual(
+            self.store.get_post(draft["post_id"])["status"], PostStatus.UNPUBLISHED)
 
     def test_feed_does_not_expose_storage_file_id(self):
         out = self._chapter()
-        draft = self.svc.create_draft(output_dir=str(out), series_slug="x", episode_number="1", title="T")
+        draft = self.svc.create_draft(principal=OWNER, output_dir=str(out), series_slug="x",
+                                      episode_number="1", title="T")
+        file_id = self.store.create_file(
+            post_id=draft["post_id"], filename="chapter.pdf", mime_type="application/pdf",
+            size_bytes=10, sha256="verified", storage_provider="fake")
+        self.store.update_file(file_id, upload_status=FileStatus.VERIFIED, storage_file_id="file-1")
         self.store.set_post_status(draft["post_id"], PostStatus.PUBLISHED,
                                    moderation_status=Moderation.APPROVED)
         cards = self.svc.feed()
@@ -189,12 +274,12 @@ class CommunityServiceTests(unittest.TestCase):
 
     def test_read_requires_verified_file(self):
         out = self._chapter()
-        draft = self.svc.create_draft(output_dir=str(out), series_slug="x", episode_number="1")
+        draft = self.svc.create_draft(principal=OWNER, output_dir=str(out), series_slug="x", episode_number="1")
         self.store.set_post_status(draft["post_id"], PostStatus.PUBLISHED,
                                    moderation_status=Moderation.APPROVED)
-        with self.assertRaises(CommunityError) as ctx:
-            self.svc.resolve_readable_file(draft["post_id"])
-        self.assertIn("file_not_available", str(ctx.exception))
+        with self.assertRaises(ResourceNotFound) as ctx:
+            self.svc.resolve_readable_file(draft["post_id"], principal=ANONYMOUS)
+        self.assertIn("post_not_found", str(ctx.exception))
 
     def test_sha256_streaming(self):
         out = self._chapter()
@@ -208,9 +293,9 @@ class CommunityServiceTests(unittest.TestCase):
 
     def test_unpublish_keeps_file(self):
         out = self._chapter()
-        draft = self.svc.create_draft(output_dir=str(out), series_slug="x", episode_number="1")
+        draft = self.svc.create_draft(principal=OWNER, output_dir=str(out), series_slug="x", episode_number="1")
         self.store.set_post_status(draft["post_id"], PostStatus.PUBLISHED)
-        self.svc.unpublish(draft["post_id"])
+        self.svc.unpublish(draft["post_id"], principal=OWNER)
         self.assertEqual(self.store.get_post(draft["post_id"])["status"], PostStatus.UNPUBLISHED)
 
 

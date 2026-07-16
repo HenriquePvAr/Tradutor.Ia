@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import ui_bridge
+from community_auth import RequestPrincipal
 from job_store import JobStatus, JobStore
 
 
@@ -56,6 +57,29 @@ class UiPersistentQueueTests(unittest.TestCase):
         self.assertFalse(hasattr(self.bridge, "process") and self.bridge.process)
         # The command was recorded but not executed.
         self.assertIn("run_webtoon.py", " ".join(jobs[0]["command"]))
+        self.assertEqual(jobs[0]["configuration"]["job_type"], "translation")
+        self.assertNotIn("community_owner_id", jobs[0]["configuration"])
+
+    def test_authenticated_start_stamps_owner_only_from_principal(self):
+        principal = RequestPrincipal("owner-a", True, auth_source="test")
+        payload = {
+            **self._payload(),
+            "user_id": "forged-user",
+            "community_owner_id": "forged-owner",
+            "role": "admin",
+        }
+        result = _run(self.bridge.start(payload, principal=principal))
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["configuration"]["community_owner_id"], "owner-a")
+        self.assertEqual(job["configuration"]["job_type"], "translation")
+        self.assertNotIn("user_id", job["configuration"])
+        self.assertNotIn("role", job["configuration"])
+
+    def test_authenticated_queue_item_is_owned_by_principal(self):
+        principal = RequestPrincipal("owner-a", True, auth_source="test")
+        item = self.bridge.add_queue_item(self._payload(), principal=principal)
+        job = self.bridge.store.get_job(item["id"])
+        self.assertEqual(job["configuration"]["community_owner_id"], "owner-a")
 
     def test_state_comes_from_sqlite(self):
         # A job inserted straight into the store shows up in UI state.
@@ -127,6 +151,59 @@ class UiPersistentQueueTests(unittest.TestCase):
         store.close()
         self.bridge.remove_queue_item(jid)
         self.assertEqual(self.bridge.store.get_job(jid)["status"], JobStatus.CANCELLED)
+
+    def test_generic_queue_controls_never_cancel_community_publish_job(self):
+        jid = self.bridge.store.create_job(
+            source_url="",
+            output_dir=str(self.tmp / "publish"),
+            command=["community_publish"],
+            configuration={"job_type": "community_publish"},
+        )
+        self.bridge.remove_queue_item(jid)
+        _run(self.bridge.cancel(queue=True))
+        self.bridge.clear_queue()
+        self.assertEqual(self.bridge.store.get_job(jid)["status"], JobStatus.QUEUED)
+
+    def test_community_publish_jobs_are_hidden_from_translation_runtime_state(self):
+        jid = self.bridge.store.create_job(
+            source_url="",
+            output_dir=str(self.tmp / "publish"),
+            command=["community_publish"],
+            configuration={"job_type": "community_publish"},
+        )
+        self.bridge.store.claim_next_job("publisher", 1)
+        self.bridge.store.transition(jid, JobStatus.STARTING, expected_worker="publisher")
+        self.bridge.store.transition(jid, JobStatus.RUNNING, expected_worker="publisher")
+        state = self.bridge.runtime_state()
+        self.assertIsNone(state["active"])
+        self.assertEqual(state["status"], "ready")
+        self.assertFalse(state["queue_running"])
+        self.assertEqual(state["queue"], [])
+        self.assertEqual(state["resumable"], [])
+
+    def test_start_queue_rejects_queue_containing_only_community_publish(self):
+        self.bridge.store.create_job(
+            source_url="",
+            output_dir=str(self.tmp / "publish"),
+            command=["community_publish"],
+            configuration={"job_type": "community_publish"},
+        )
+        with self.assertRaisesRegex(ValueError, "fila não tem itens"):
+            _run(self.bridge.start_queue())
+
+    def test_generic_resume_rejects_community_publish_job(self):
+        jid = self.bridge.store.create_job(
+            source_url="",
+            output_dir=str(self.tmp / "publish"),
+            command=["community_publish"],
+            configuration={"job_type": "community_publish"},
+        )
+        self.bridge.store.claim_next_job("publisher", 1)
+        self.bridge.store.transition(jid, JobStatus.STARTING, expected_worker="publisher")
+        self.bridge.store.transition(jid, JobStatus.RUNNING, expected_worker="publisher")
+        self.bridge.store.transition(jid, JobStatus.INTERRUPTED, expected_worker="publisher")
+        with self.assertRaises(ValueError):
+            self.bridge.resume(jid)
 
     def test_resume_blocked_while_previous_runner_alive(self):
         # An interrupted job whose recorded runner is still a live process must not be

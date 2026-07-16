@@ -221,6 +221,41 @@ class UIHelpersTests(unittest.TestCase):
             self.assertFalse(record["quality_gate"])
             self.assertEqual(record["pdf_path"], str(pdf_path.resolve()))
 
+    def test_discovered_history_maps_only_valid_runner_job_id(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            chapter = output_root / "chapter"
+            chapter.mkdir(parents=True)
+            pdf_path = chapter / "chapter.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+            (chapter / "timing_report.json").write_text(
+                json.dumps({
+                    "ocr_engine": "rapidocr",
+                    "pdf_path": str(pdf_path),
+                    "quality_validation": {"passed": True},
+                }),
+                encoding="utf-8",
+            )
+            job_id = "a" * 32
+            (chapter / "job_manifest.json").write_text(
+                json.dumps({"job_id": job_id}),
+                encoding="utf-8",
+            )
+            store = UIHistoryStore(root / "history.json")
+            with patch("ui_history.OUTPUT_ROOT", output_root):
+                record = store.discover_outputs()[0]
+            self.assertEqual(record["id"], "discovered-chapter")
+            self.assertEqual(record["job_id"], job_id)
+
+            (chapter / "job_manifest.json").write_text(
+                json.dumps({"job_id": "discovered-chapter"}),
+                encoding="utf-8",
+            )
+            with patch("ui_history.OUTPUT_ROOT", output_root):
+                invalid = store.discover_outputs()[0]
+            self.assertFalse(invalid.get("job_id"))
+
     def test_discovery_prioritizes_verified_manifest_and_separates_legacy(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

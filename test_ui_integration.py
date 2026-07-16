@@ -76,6 +76,11 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn("review_required", source)
         self.assertIn("revisão necessária", source)
 
+    def test_frontend_never_uses_presentation_record_id_as_source_job(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertNotIn("record.job_id || record.id", source)
+        self.assertIn("if (trustedJobId) payload.source_job_id = trustedJobId", source)
+
     def test_shell_contains_no_seed_chapter(self):
         source = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
         for marker in ("Lookism", "Jungle Juice", "Plus One"):
