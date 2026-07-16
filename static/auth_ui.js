@@ -1,0 +1,114 @@
+// Wires the minimal auth UI (masthead status + modal) to the Supabase SDK module.
+// Loaded as an ES module so it can import the SDK. Keeps the current access token in a
+// window field that the classic tradutor_ui.js reads to attach the Bearer header.
+// Never logs a token, session, or password.
+import {
+  getSupabaseClient, signUp, signIn, signOut, onAuthChange,
+} from '/static/supabase_auth.js';
+
+const $ = (sel) => document.querySelector(sel);
+
+function setError(msg) {
+  const el = $('#authError');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+function setNote(msg) {
+  const el = $('#authNote');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+function openModal() { $('#authModalOverlay')?.classList.add('show'); }
+function closeModal() {
+  $('#authModalOverlay')?.classList.remove('show');
+  setError(''); setNote('');
+}
+
+let mode = 'login';
+function setMode(next) {
+  mode = next;
+  document.querySelectorAll('.auth-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.authmode === next);
+  });
+  const submit = $('#authSubmit');
+  const pw = $('#authPassword');
+  if (submit) submit.textContent = next === 'signup' ? 'Criar conta' : 'Entrar';
+  if (pw) pw.autocomplete = next === 'signup' ? 'new-password' : 'current-password';
+  setError(''); setNote('');
+}
+
+function renderSession(session) {
+  const area = $('#authArea');
+  const status = $('#authStatus');
+  const openBtn = $('#authOpenBtn');
+  const logoutBtn = $('#authLogoutBtn');
+  if (!area) return;
+  area.hidden = false;
+  window.__tradutorAccessToken = session?.access_token || '';
+  const email = session?.user?.email || '';
+  if (session && email) {
+    status.textContent = email;
+    openBtn.hidden = true;
+    logoutBtn.hidden = false;
+  } else {
+    status.textContent = 'visitante';
+    openBtn.hidden = false;
+    logoutBtn.hidden = true;
+  }
+}
+
+async function init() {
+  const client = await getSupabaseClient();
+  if (!client) {
+    // Local-session provider (or unconfigured): no Supabase auth UI.
+    window.__tradutorAccessToken = '';
+    return;
+  }
+  document.querySelectorAll('.auth-tab').forEach((tab) => {
+    tab.addEventListener('click', () => setMode(tab.dataset.authmode));
+  });
+  $('#authOpenBtn')?.addEventListener('click', openModal);
+  $('#authModalClose')?.addEventListener('click', closeModal);
+  $('#authModalOverlay')?.addEventListener('click', (event) => {
+    if (event.target === $('#authModalOverlay')) closeModal();
+  });
+  $('#authLogoutBtn')?.addEventListener('click', async () => {
+    await signOut();
+  });
+  $('#authForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    setError(''); setNote('');
+    const email = $('#authEmail').value.trim();
+    const password = $('#authPassword').value;
+    const submit = $('#authSubmit');
+    submit.disabled = true;
+    submit.textContent = 'Aguarde…';
+    try {
+      if (mode === 'signup') {
+        const { needsConfirmation } = await signUp(email, password);
+        if (needsConfirmation) {
+          setNote('Conta criada. Confirme pelo e-mail e depois entre.');
+          setMode('login');
+        } else {
+          closeModal();
+        }
+      } else {
+        await signIn(email, password);
+        closeModal();
+      }
+    } catch (err) {
+      setError(err?.message ? String(err.message) : 'Falha na autenticação.');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = mode === 'signup' ? 'Criar conta' : 'Entrar';
+    }
+  });
+  // Keeps token fresh across login, logout and SDK auto-refresh.
+  await onAuthChange(renderSession);
+}
+
+init().catch(() => { /* auth UI stays hidden on init failure */ });

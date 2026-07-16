@@ -12,6 +12,7 @@ from nicegui import app, ui
 
 from community_auth import (
     AuthConfigurationError,
+    AuthenticationRequired,
     CsrfRejected,
     RequestPrincipal,
     SESSION_COOKIE_NAME,
@@ -50,8 +51,12 @@ def _api_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
 
 
 def _job_principal(request: Request) -> RequestPrincipal:
-    """Optionally bind a local translation job to a valid cookie-authenticated user."""
-    principal = AUTH.authenticate_request(request)
+    """Optionally bind a local translation job to a validly authenticated user."""
+    try:
+        principal = AUTH.authenticate_request(request)
+    except AuthenticationRequired as exc:
+        # A credential was presented (cookie or Bearer) but failed validation.
+        raise HTTPException(status_code=401, detail="authentication_required") from exc
     if not principal.authenticated and request.cookies.get(SESSION_COOKIE_NAME):
         raise HTTPException(status_code=401, detail="authentication_required")
     if principal.authenticated:
@@ -60,6 +65,16 @@ def _job_principal(request: Request) -> RequestPrincipal:
         except CsrfRejected as exc:
             raise HTTPException(status_code=403, detail="csrf_rejected") from exc
     return principal
+
+
+@app.get("/auth/callback")
+def auth_callback() -> FileResponse:
+    """Supabase e-mail confirmation/login landing page.
+
+    Static file, no query/hash parameter is ever echoed back, and the page always
+    returns to the fixed local root — no open redirect surface.
+    """
+    return FileResponse(ROOT / "ui" / "auth_callback.html", media_type="text/html")
 
 
 @app.get("/api/ui/bootstrap")
@@ -188,6 +203,7 @@ def index() -> None:
     )
     ui.add_body_html(shell)
     ui.add_body_html('<script src="/static/tradutor_ui.js" defer></script>')
+    ui.add_body_html('<script type="module" src="/static/auth_ui.js"></script>')
 
 
 @app.on_shutdown

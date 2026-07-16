@@ -1222,3 +1222,27 @@
     .media-file-card .media-action{grid-row:2;}
     .profile-preview-panel{position:static; top:auto;}
   }
+
+  /* ---------- auth (Supabase) ---------- */
+  .mh-auth{display:inline-flex; align-items:center; gap:8px;}
+  .mh-auth-status{
+    font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--gold);
+    max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .mh-auth-btn{padding:3px 10px; font-size:11px;}
+  .auth-card{max-width:380px;}
+  .auth-tabs{display:flex; gap:6px; margin-bottom:20px; padding-right:30px;}
+  .auth-tab{
+    flex:1; background:transparent; border:1px solid var(--line); color:var(--muted);
+    padding:8px 0; border-radius:5px; cursor:pointer; font-family:'Space Grotesk',sans-serif;
+    font-size:12.5px; font-weight:500; transition:all .15s;
+  }
+  .auth-tab.active{border-color:var(--rose); color:var(--paper); background:rgba(184,85,122,0.12);}
+  .auth-error{
+    color:var(--vermillion); font-family:'JetBrains Mono',monospace; font-size:10.5px;
+    margin:4px 0 12px; line-height:1.5;
+  }
+  .auth-note{
+    color:var(--gold); font-family:'JetBrains Mono',monospace; font-size:10.5px;
+    margin:4px 0 12px; line-height:1.5;
+  }

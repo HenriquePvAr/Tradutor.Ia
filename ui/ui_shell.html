@@ -36,6 +36,11 @@
     <div class="mh-right">
       <span class="mh-version" id="appStatus">pronto</span>
       <span class="mh-sep">·</span>
+      <div class="mh-auth" id="authArea" hidden>
+        <span class="mh-auth-status" id="authStatus">—</span>
+        <button type="button" class="btn-ghost mh-auth-btn" id="authOpenBtn" hidden>Entrar</button>
+        <button type="button" class="btn-ghost mh-auth-btn" id="authLogoutBtn" hidden>Sair</button>
+      </div>
       <span class="mh-sep">criado por</span>
       <span class="mh-author">Henrique Paiva Araújo</span>
     </div>
@@ -668,5 +673,29 @@
     </section>
 
   </main>
+  </div>
+</div>
+
+<!-- AUTH MODAL (Supabase) -->
+<div class="modal-overlay" id="authModalOverlay">
+  <div class="modal-card auth-card">
+    <button type="button" class="modal-close" id="authModalClose" aria-label="fechar">✕</button>
+    <div class="auth-tabs">
+      <button type="button" class="auth-tab active" data-authmode="login">Entrar</button>
+      <button type="button" class="auth-tab" data-authmode="signup">Criar conta</button>
+    </div>
+    <form id="authForm" autocomplete="on">
+      <div class="field">
+        <label for="authEmail">E-mail</label>
+        <input type="email" id="authEmail" required autocomplete="email" placeholder="voce@exemplo.com" />
+      </div>
+      <div class="field">
+        <label for="authPassword">Senha</label>
+        <input type="password" id="authPassword" required minlength="8" autocomplete="current-password" placeholder="mínimo 8 caracteres" />
+      </div>
+      <div class="auth-error" id="authError" hidden></div>
+      <div class="auth-note" id="authNote" hidden></div>
+      <button type="submit" class="btn-primary" id="authSubmit">Entrar</button>
+    </form>
   </div>
 </div>

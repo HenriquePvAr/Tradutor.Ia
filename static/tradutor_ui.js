@@ -58,6 +58,10 @@
       const csrf = cookieValue('tradutor_community_csrf');
       if (csrf) headers['X-Tradutor-CSRF'] = csrf;
     }
+    // Supabase mode: attach the current access token (kept fresh by the SDK). The token
+    // lives only in the auth module's cache; this never persists or logs it.
+    const bearer = window.__tradutorAccessToken || '';
+    if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     const init = {...options, method, headers, credentials: 'same-origin'};
     const response = await fetch(path, init);
     let payload = {};
