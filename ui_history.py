@@ -98,6 +98,7 @@ class UIHistoryStore:
                         "manifest_path": str(folder / MANIFEST_FILENAME)
                         if manifest
                         else "",
+                        "job_id": self._job_id_from_manifest(folder),
                         "run_id": manifest.get("run_id", ""),
                         "commit_hash": manifest.get("commit_hash", ""),
                         "branch": manifest.get("branch", ""),
@@ -152,6 +153,8 @@ class UIHistoryStore:
         if manifest:
             for key in ("run_id", "commit_hash", "branch", "pipeline_version"):
                 enriched[key] = manifest.get(key, "")
+        if not enriched.get("job_id"):
+            enriched["job_id"] = self._job_id_from_manifest(folder)
         if enriched.get("status") not in {"running", "cancelled", "error"}:
             report = load_json(folder / "timing_report.json")
             enriched["status"] = derive_final_run_status(
@@ -159,6 +162,18 @@ class UIHistoryStore:
                 quality_validation=report.get("quality_validation") or {},
             )
         return enriched
+
+    @staticmethod
+    def _job_id_from_manifest(folder: Path) -> str:
+        """Expose only a syntactically valid runner job id from server output metadata."""
+        try:
+            manifest = json.loads((folder / "job_manifest.json").read_text(encoding="utf-8"))
+            candidate = str(manifest.get("job_id") or "") if isinstance(manifest, dict) else ""
+        except (OSError, ValueError, TypeError):
+            return ""
+        if len(candidate) != 32 or any(char not in "0123456789abcdef" for char in candidate):
+            return ""
+        return candidate
 
     def _write(self, records: list[dict[str, Any]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,6 +188,7 @@ class UIHistoryStore:
     def _safe_record(record: dict[str, Any]) -> dict[str, Any]:
         allowed = {
             "id",
+            "job_id",
             "chapter_name",
             "slug",
             "url",
@@ -207,6 +223,12 @@ class UIHistoryStore:
             "pipeline_version",
         }
         result = {key: value for key, value in record.items() if key in allowed}
+        job_id = str(result.get("job_id") or "")
+        if job_id and (
+            len(job_id) != 32
+            or any(char not in "0123456789abcdef" for char in job_id)
+        ):
+            result.pop("job_id", None)
         result.setdefault("status", "unknown")
         return result
 

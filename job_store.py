@@ -22,6 +22,7 @@ SCHEMA_VERSION = 2
 
 
 class JobStatus:
+    STAGING = "staging"
     QUEUED = "queued"
     CLAIMING = "claiming"
     STARTING = "starting"
@@ -36,7 +37,7 @@ class JobStatus:
 
     ALL = frozenset(
         {
-            QUEUED, CLAIMING, STARTING, RUNNING, CANCELLING, CANCELLED,
+            STAGING, QUEUED, CLAIMING, STARTING, RUNNING, CANCELLING, CANCELLED,
             INTERRUPTED, RESUMABLE, FAILED, FINISHED, REVIEW_REQUIRED,
         }
     )
@@ -48,6 +49,7 @@ class JobStatus:
 # Allowed transitions. A transition not listed here is rejected (fail-closed), so a
 # stray write can never move a job into a nonsensical state from another module.
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
+    JobStatus.STAGING: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED}),
     JobStatus.QUEUED: frozenset({JobStatus.CLAIMING, JobStatus.CANCELLED}),
     JobStatus.CLAIMING: frozenset(
         {JobStatus.STARTING, JobStatus.QUEUED, JobStatus.FAILED, JobStatus.INTERRUPTED}
@@ -228,6 +230,7 @@ class JobStore:
     def create_job(
         self,
         *,
+        job_id: str | None = None,
         source_url: str,
         output_dir: str,
         command: Iterable[str],
@@ -241,8 +244,15 @@ class JobStore:
         previous_job_id: str = "",
         attempt: int = 1,
         resume_from_stage: str = "",
+        initial_status: str = JobStatus.QUEUED,
+        staging_owner_pid: int | None = None,
+        staging_owner_create_time: float | None = None,
     ) -> str:
-        job_id = uuid.uuid4().hex
+        job_id = str(job_id or uuid.uuid4().hex)
+        if len(job_id) != 32 or any(char not in "0123456789abcdef" for char in job_id):
+            raise ValueError("invalid_job_id")
+        if initial_status not in {JobStatus.QUEUED, JobStatus.STAGING}:
+            raise ValueError("invalid_initial_job_status")
         now = time.time()
         self._conn.execute(
             """
@@ -250,9 +260,10 @@ class JobStore:
                 id, run_id, source_url, series_title, series_slug, episode_number,
                 output_dir, configuration_json, command_json, status, stage,
                 progress_current, progress_total, created_at, queued_at, updated_at,
+                worker_pid, worker_create_time,
                 cancel_requested, recoverable, attempt, previous_job_id,
                 resume_from_stage, commit_hash, branch
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,0,0,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,0,0,?,?,?,?,?)
             """,
             (
                 job_id,
@@ -264,11 +275,13 @@ class JobStore:
                 output_dir,
                 json.dumps(configuration or {}, ensure_ascii=False),
                 json.dumps(list(command), ensure_ascii=False),
-                JobStatus.QUEUED,
+                initial_status,
                 "created",
                 now,
+                now if initial_status == JobStatus.QUEUED else None,
                 now,
-                now,
+                int(staging_owner_pid) if staging_owner_pid is not None else None,
+                staging_owner_create_time,
                 int(attempt),
                 previous_job_id,
                 resume_from_stage,
@@ -282,18 +295,30 @@ class JobStore:
         row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return self._row_to_dict(row)
 
-    def list_jobs(self, *, statuses: Iterable[str] | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    def list_jobs(
+        self,
+        *,
+        statuses: Iterable[str] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
         if statuses:
             placeholders = ",".join("?" for _ in statuses)
-            rows = self._conn.execute(
+            sql = (
                 f"SELECT * FROM jobs WHERE status IN ({placeholders}) "
-                "ORDER BY created_at DESC LIMIT ?",
-                (*statuses, int(limit)),
-            ).fetchall()
+                "ORDER BY created_at DESC"
+            )
+            params: tuple[Any, ...] = tuple(statuses)
+            if limit is not None:
+                sql += " LIMIT ?"
+                params += (int(limit),)
+            rows = self._conn.execute(sql, params).fetchall()
         else:
-            rows = self._conn.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (int(limit),)
-            ).fetchall()
+            sql = "SELECT * FROM jobs ORDER BY created_at DESC"
+            params = ()
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = (int(limit),)
+            rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_dict(row) for row in rows]  # type: ignore[misc]
 
     def active_job(self) -> dict[str, Any] | None:
@@ -318,12 +343,14 @@ class JobStore:
             """
             UPDATE jobs SET status=?, worker_id=?, worker_pid=?, claimed_at=?, updated_at=?
             WHERE id = (
-                SELECT id FROM jobs WHERE status=? ORDER BY created_at ASC LIMIT 1
+                SELECT id FROM jobs WHERE status=?
+                AND (queued_at IS NULL OR queued_at<=?)
+                ORDER BY created_at ASC LIMIT 1
             ) AND status=?
             """,
             (
                 JobStatus.CLAIMING, worker_id, int(worker_pid), now, now,
-                JobStatus.QUEUED, JobStatus.QUEUED,
+                JobStatus.QUEUED, now, JobStatus.QUEUED,
             ),
         )
         if cur.rowcount != 1:
@@ -490,6 +517,52 @@ class JobStore:
             recoverable=1,
             resume_from_stage=resume_from_stage,
         )
+
+    def reconcile_community_publish_terminal(self, job_id: str, target: str) -> dict[str, Any]:
+        """Close a publish job after its other database already reached a terminal state."""
+        if target not in {JobStatus.FINISHED, JobStatus.FAILED}:
+            raise TransitionError("invalid community publish recovery target")
+        row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise TransitionError(f"unknown job: {job_id}")
+        try:
+            config = json.loads(row["configuration_json"] or "{}")
+        except (TypeError, ValueError):
+            config = {}
+        if not isinstance(config, dict) or config.get("job_type") != "community_publish":
+            raise TransitionError("job is not a community publish")
+        eligible = {
+            JobStatus.CLAIMING,
+            JobStatus.STARTING,
+            JobStatus.RUNNING,
+            JobStatus.CANCELLING,
+            JobStatus.STAGING,
+            JobStatus.INTERRUPTED,
+            JobStatus.RESUMABLE,
+        }
+        if row["status"] not in eligible:
+            raise TransitionError(
+                f"cannot reconcile {row['status']} community publish to {target}"
+            )
+        now = time.time()
+        cur = self._conn.execute(
+            "UPDATE jobs SET status=?,stage=?,exit_code=?,finished_at=?,updated_at=?,"
+            "error_type=?,error_message=? WHERE id=? AND status=?",
+            (
+                target,
+                "finished" if target == JobStatus.FINISHED else "failed",
+                0 if target == JobStatus.FINISHED else 1,
+                now,
+                now,
+                "" if target == JobStatus.FINISHED else "community_publish",
+                "" if target == JobStatus.FINISHED else "publish_failed",
+                job_id,
+                row["status"],
+            ),
+        )
+        if cur.rowcount != 1:
+            raise TransitionError("community publish changed during terminal reconciliation")
+        return self.get_job(job_id)  # type: ignore[return-value]
 
     # ---- worker registry ----------------------------------------------------
     def register_worker(self, worker_id: str, pid: int, create_time: float | None = None) -> None:

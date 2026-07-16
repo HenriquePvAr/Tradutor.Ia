@@ -26,6 +26,7 @@ from pathlib import Path
 
 import process_tree
 from job_store import JobStatus, JobStore, TransitionError
+from runner_start_gate import wait_for_start_gate
 from ui_helpers import (
     ProgressSnapshot,
     derive_final_run_status,
@@ -299,7 +300,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", required=True)
     parser.add_argument("--worker-id", default="")
     parser.add_argument("--log", required=True)
+    parser.add_argument("--start-gate", default="")
     args = parser.parse_args(argv)
+    if not wait_for_start_gate(args.start_gate):
+        return 3
     return run_job(args.job_id, args.db, args.worker_id, args.log)
 
 

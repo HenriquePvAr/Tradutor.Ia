@@ -33,6 +33,9 @@ LOG_DIR = REPO_ROOT / ".cache" / "runtime" / "logs"
 POLL_SECONDS = 1.5
 WORKER_HEARTBEAT_SECONDS = 3.0
 STALE_SECONDS = 30.0
+STAGING_GRACE_SECONDS = 5.0
+COMMUNITY_RUNNER_MAX_ATTEMPTS = 3
+COMMUNITY_RUNNER_RETRY_BACKOFF_SECONDS = 2.0
 
 
 class Worker:
@@ -65,12 +68,6 @@ class Worker:
                 except (ValueError, OSError):
                     pass
 
-    @staticmethod
-    def _runner_fingerprint(job_id: str) -> list[str]:
-        # A runner's command always carries "job_runner.py" and its job id, so a live
-        # process can be matched to this exact job and never to a reused PID.
-        return ["job_runner.py", job_id]
-
     def another_worker_alive(self) -> bool:
         healthy = self.store.healthy_worker(stale_seconds=self.stale_seconds / 2)
         return bool(healthy and healthy["worker_id"] != self.worker_id)
@@ -82,17 +79,28 @@ class Worker:
         "community_publish": "community_publish_runner.py",
     }
 
+    def _runner_fingerprint(self, job_id: str, job: dict | None = None) -> list[str]:
+        # Match the actual runner selected for this job type.  Using the translation
+        # filename for every job would misclassify a live community upload as a reused
+        # PID and could permit a second concurrent attempt.
+        current = job or self.store.get_job(job_id) or {}
+        job_type = (current.get("configuration") or {}).get("job_type", "translation")
+        runner = self._RUNNERS.get(job_type, "job_runner.py")
+        return [runner, job_id]
+
     def _spawn_runner(self, job: dict) -> subprocess.Popen:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"{job['id']}.log"
         job_type = (job.get("configuration") or {}).get("job_type", "translation")
         runner = self._RUNNERS.get(job_type, "job_runner.py")
+        gate_path = LOG_DIR / f".{job['id']}.{uuid.uuid4().hex}.start"
         command = [
             sys.executable, "-u", str(REPO_ROOT / runner),
             "--job-id", job["id"],
             "--db", str(self.db_path),
             "--worker-id", self.worker_id,
             "--log", str(log_path),
+            "--start-gate", str(gate_path),
         ]
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         # The runner writes everything worth keeping to its own per-job log file, so its
@@ -100,10 +108,12 @@ class Worker:
         # pipeline it spawns) a handle to whatever console launched the worker, and a
         # tool capturing that console would then block on EOF until every descendant
         # exits - the cause of an earlier multi-hour hang.
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             command, cwd=str(REPO_ROOT), creationflags=creationflags,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        proc._tradutor_start_gate = gate_path  # type: ignore[attr-defined]
+        return proc
 
     def _should_stop(self) -> bool:
         if self._stop_requested:
@@ -115,15 +125,33 @@ class Worker:
 
     def _run_one(self, job: dict) -> None:
         proc = self._spawn_runner(job)
+        # Own the unambiguously spawned child immediately.  There is a small but real
+        # window before runner_pid reaches SQLite; if that write fails, this handle is
+        # the only safe way to prevent an untracked runner from surviving.
+        self._active = {
+            "proc": proc,
+            "job_id": job["id"],
+            "fingerprint": self._runner_fingerprint(job["id"], job),
+        }
         # Persist the top of the runner tree (the process we spawned) so a later stop or
         # reconcile terminates the whole tree - including the launcher shim the venv
         # inserts as the parent of the real interpreter - not just a subtree of it.
-        snap = process_tree.snapshot(proc.pid)
-        self.store.update_fields(
-            job["id"], runner_pid=proc.pid,
-            runner_create_time=(snap or {}).get("create_time"),
-        )
-        self._active = {"proc": proc, "job_id": job["id"]}
+        try:
+            snap = process_tree.snapshot(proc.pid)
+            self.store.update_fields(
+                job["id"], runner_pid=proc.pid,
+                runner_create_time=(snap or {}).get("create_time"),
+            )
+            gate_path = getattr(proc, "_tradutor_start_gate", None)
+            if gate_path is not None:
+                fd = os.open(str(gate_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.close(fd)
+        except Exception:  # noqa: BLE001 - the child must not outlive PID persistence
+            try:
+                self._stop_active_runner(job["id"])
+            finally:
+                self._active = None
+            return
         try:
             # Keep the worker's lease alive while the runner owns the job's heartbeat.
             while proc.poll() is None:
@@ -135,7 +163,72 @@ class Worker:
                 time.sleep(min(WORKER_HEARTBEAT_SECONDS, 1.0))
             self.store.worker_heartbeat(self.worker_id)
         finally:
-            self._active = None
+            try:
+                # Any exception in worker-side heartbeat/accounting must not abandon a
+                # live child.  Conversely, a child that exited before the runner could
+                # transition its row must not leave a job owned by this healthy worker
+                # in CLAIMING/STARTING/RUNNING forever.
+                if proc.poll() is None:
+                    try:
+                        self._stop_active_runner(job["id"])
+                    except Exception:  # noqa: BLE001 - Popen handle is authoritative
+                        process_tree.terminate_tree(proc.pid, timeout=8.0)
+                        try:
+                            proc.wait(timeout=5)
+                        except (subprocess.TimeoutExpired, OSError, ValueError):
+                            pass
+                if proc.poll() is not None:
+                    self._reconcile_runner_exit(job["id"])
+            finally:
+                gate_path = getattr(proc, "_tradutor_start_gate", None)
+                if gate_path is not None:
+                    try:
+                        Path(gate_path).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                self._active = None
+
+    def _reconcile_runner_exit(self, job_id: str) -> None:
+        """Close worker-owned accounting when a runner exits before terminalizing."""
+        fresh = self.store.get_job(job_id)
+        if not fresh or fresh["status"] not in JobStatus.IN_FLIGHT:
+            return
+        if not fresh.get("cancel_requested"):
+            # CLAIMING means the child never crossed its own trusted start boundary
+            # (for example import/start-gate failure). Retrying the identical binary in
+            # a tight loop cannot make progress. Later-stage crashes get bounded,
+            # delayed recovery in _recover_interrupted_community_publishes.
+            recoverable = int(fresh["status"] != JobStatus.CLAIMING)
+            self.store.transition(
+                job_id,
+                JobStatus.INTERRUPTED,
+                expected_worker=self.worker_id,
+                interrupted_reason="runner_exited_before_terminal",
+                recoverable=recoverable,
+            )
+            return
+
+        current = fresh["status"]
+        if current in {JobStatus.STARTING, JobStatus.RUNNING}:
+            self.store.transition(
+                job_id,
+                JobStatus.CANCELLING,
+                expected_worker=self.worker_id,
+            )
+        elif current == JobStatus.CLAIMING:
+            self.store.transition(
+                job_id,
+                JobStatus.INTERRUPTED,
+                expected_worker=self.worker_id,
+                interrupted_reason="cancel_requested",
+                recoverable=0,
+            )
+        self.store.transition(
+            job_id,
+            JobStatus.CANCELLED,
+            expected_worker=self.worker_id,
+            interrupted_reason="cancel_requested",
+        )
 
     def _stop_active_runner(self, job_id: str) -> None:
         """On worker stop, take the active runner's whole tree down and interrupt the job.
@@ -146,12 +239,18 @@ class Worker:
         """
         active = self._active
         proc = active["proc"] if active else None
-        job = self.store.get_job(job_id)
+        try:
+            job = self.store.get_job(job_id)
+        except Exception:  # noqa: BLE001 - the owned Popen handle still permits cleanup
+            job = None
         runner_pid = (job or {}).get("runner_pid") or (proc.pid if proc else None)
+        fingerprint = (active or {}).get("fingerprint")
+        if not fingerprint:
+            fingerprint = self._runner_fingerprint(job_id, job) if job else []
         report = process_tree.terminate_tree(
             runner_pid,
             create_time=(job or {}).get("runner_create_time"),
-            substrings=self._runner_fingerprint(job_id),
+            substrings=fingerprint,
             timeout=8.0,
         )
         # If the store did not yet know the runner pid (very early), fall back to the
@@ -165,7 +264,10 @@ class Worker:
                 pass
         # The runner itself moves the job to interrupted on its stop signal; if it died
         # before doing so, close the accounting here.
-        fresh = self.store.get_job(job_id)
+        try:
+            fresh = self.store.get_job(job_id)
+        except Exception:  # noqa: BLE001 - cleanup succeeded; accounting retries later
+            fresh = None
         if fresh and fresh["status"] in JobStatus.IN_FLIGHT:
             reason = "cancel_requested" if fresh.get("cancel_requested") else "worker_stop"
             target = JobStatus.CANCELLING if fresh.get("cancel_requested") else JobStatus.INTERRUPTED
@@ -180,7 +282,7 @@ class Worker:
             except Exception:  # noqa: BLE001 - the runner may have finalized concurrently
                 pass
 
-    def _reconcile_stale(self) -> None:
+    def _reconcile_stale(self) -> bool:
         """Recover jobs whose owning worker died, taking down any orphaned runner tree.
 
         A crashed worker can leave its runner alive - even heartbeating a stuck pipeline -
@@ -192,20 +294,26 @@ class Worker:
         orphans = self.store.orphaned_in_flight_jobs(
             exclude_worker=self.worker_id, worker_stale_seconds=self.stale_seconds / 2
         )
+        safe_to_continue = True
         for job in orphans:
             job_id = job["id"]
             runner_pid = job.get("runner_pid")
-            fingerprint = self._runner_fingerprint(job_id)
+            fingerprint = self._runner_fingerprint(job_id, job)
             alive = process_tree.is_alive(
                 runner_pid, create_time=job.get("runner_create_time"), substrings=fingerprint
             )
             reused = bool(runner_pid) and process_tree.snapshot(runner_pid) is not None and not alive
             reason = "orphaned_worker_gone"
             if alive:
-                process_tree.terminate_tree(
+                report = process_tree.terminate_tree(
                     runner_pid, create_time=job.get("runner_create_time"),
                     substrings=fingerprint, timeout=8.0,
                 )
+                if report["reason"] != "stopped":
+                    # Never claim/requeue more work while a validated old runner may
+                    # still be alive.  The next poll retries reconciliation.
+                    safe_to_continue = False
+                    continue
                 reason = "reconciled_live_runner"
             elif reused:
                 # PID belongs to some other process now: fail closed, do not terminate it.
@@ -215,6 +323,258 @@ class Worker:
                                       interrupted_reason=reason, recoverable=1)
             except Exception:  # noqa: BLE001 - another worker may have won the reconcile
                 pass
+        return safe_to_continue
+
+    def _recover_interrupted_community_publishes(self) -> bool:
+        """Requeue only a still-current publish after its old runner is confirmed gone.
+
+        Generic UI resume deliberately refuses community jobs.  Recovery therefore
+        lives in the trusted worker and validates the post/file/job linkage before a
+        new runner can be claimed.  Invalidated or cancelled attempts are terminalized
+        without constructing a storage provider.
+        """
+        from community_store import CommunityStore
+
+        safe_to_continue = True
+        candidates = self.store.list_jobs(
+            statuses=[JobStatus.INTERRUPTED, JobStatus.RESUMABLE],
+            limit=None,
+        )
+        for listed in candidates:
+            config = listed.get("configuration") or {}
+            if config.get("job_type") != "community_publish":
+                continue
+            job_id = listed["id"]
+            current = self.store.get_job(job_id)
+            if not current or current["status"] not in {
+                JobStatus.INTERRUPTED,
+                JobStatus.RESUMABLE,
+            }:
+                continue
+
+            runner_pid = current.get("runner_pid")
+            fingerprint = self._runner_fingerprint(job_id, current)
+            if process_tree.is_alive(
+                runner_pid,
+                create_time=current.get("runner_create_time"),
+                substrings=fingerprint,
+            ):
+                report = process_tree.terminate_tree(
+                    runner_pid,
+                    create_time=current.get("runner_create_time"),
+                    substrings=fingerprint,
+                    timeout=8.0,
+                )
+                if report["reason"] != "stopped":
+                    safe_to_continue = False
+                    continue
+
+            community = None
+            post_id = str(config.get("post_id") or "")
+            file_id = str(config.get("file_id") or "")
+            valid = False
+            cancelled = bool(current.get("cancel_requested"))
+            recovery_allowed = bool(current.get("recoverable")) or (
+                current["status"] == JobStatus.RESUMABLE
+            )
+            runner_exit = (
+                current.get("interrupted_reason") == "runner_exited_before_terminal"
+            )
+            attempt = max(1, int(current.get("attempt") or 1))
+            state = "invalid"
+            validation_completed = False
+            try:
+                if post_id and file_id and config.get("community_db"):
+                    community = CommunityStore(config["community_db"])
+                    state = community.publish_attempt_state(post_id, file_id, job_id)
+                    validation_completed = True
+                    if state == "completed":
+                        self.store.reconcile_community_publish_terminal(
+                            job_id,
+                            JobStatus.FINISHED,
+                        )
+                        continue
+                    if state == "failed":
+                        self.store.reconcile_community_publish_terminal(
+                            job_id,
+                            JobStatus.FAILED,
+                        )
+                        continue
+                    valid = state == "active"
+                    if cancelled and valid:
+                        community.fail_publish_attempt(
+                            post_id=post_id,
+                            file_id=file_id,
+                            upload_job_id=job_id,
+                            actor_id=str(config.get("user_id") or ""),
+                            reason="recovery_cancelled",
+                        )
+                    elif not recovery_allowed and valid:
+                        community.fail_publish_attempt(
+                            post_id=post_id,
+                            file_id=file_id,
+                            upload_job_id=job_id,
+                            actor_id=str(config.get("user_id") or ""),
+                            reason="publish_not_recoverable",
+                        )
+                        valid = False
+                    elif (
+                        runner_exit
+                        and recovery_allowed
+                        and valid
+                        and attempt >= COMMUNITY_RUNNER_MAX_ATTEMPTS
+                    ):
+                        community.fail_publish_attempt(
+                            post_id=post_id,
+                            file_id=file_id,
+                            upload_job_id=job_id,
+                            actor_id=str(config.get("user_id") or ""),
+                            reason="runner_retry_exhausted",
+                        )
+                        recovery_allowed = False
+                        valid = False
+                    elif not valid:
+                        community.invalidate_publish_file(file_id, job_id)
+                else:
+                    validation_completed = True
+            except Exception:  # noqa: BLE001 - unavailable cross-DB state must be retried
+                safe_to_continue = False
+                continue
+            finally:
+                if community is not None:
+                    community.close()
+
+            if not validation_completed:
+                safe_to_continue = False
+                continue
+
+            current = self.store.get_job(job_id)
+            if not current or current["status"] not in {
+                JobStatus.INTERRUPTED,
+                JobStatus.RESUMABLE,
+            }:
+                continue
+            try:
+                if cancelled or not valid:
+                    target = (
+                        JobStatus.FAILED
+                        if not recovery_allowed
+                        and current["status"] == JobStatus.INTERRUPTED
+                        else JobStatus.CANCELLED
+                    )
+                    self.store.transition(
+                        job_id,
+                        target,
+                        expected_worker=current.get("worker_id"),
+                        error_type="community_publish_recovery",
+                        error_message=(
+                            "cancelled_before_recovery" if cancelled
+                            else "publish_not_recoverable" if not recovery_allowed
+                            else "invalid_publish_attempt"
+                        ),
+                    )
+                    continue
+                if current["status"] == JobStatus.INTERRUPTED:
+                    current = self.store.mark_resumable(
+                        job_id,
+                        resume_from_stage=current.get("stage") or "uploading",
+                    )
+                self.store.transition(
+                    job_id,
+                    JobStatus.QUEUED,
+                    expected_worker=current.get("worker_id"),
+                    stage="requeued",
+                    queued_at=(
+                        time.time()
+                        + COMMUNITY_RUNNER_RETRY_BACKOFF_SECONDS
+                        * (2 ** max(0, attempt - 1))
+                        if runner_exit
+                        else time.time()
+                    ),
+                    attempt=attempt + 1 if runner_exit else attempt,
+                    worker_id=None,
+                    worker_pid=None,
+                    worker_create_time=None,
+                    runner_pid=None,
+                    runner_create_time=None,
+                    interrupted_reason="",
+                )
+            except Exception:  # noqa: BLE001 - another worker/state change won the CAS
+                pass
+        return safe_to_continue
+
+    def _recover_staged_community_publishes(
+        self,
+        *,
+        grace_seconds: float = STAGING_GRACE_SECONDS,
+    ) -> bool:
+        """Finish or discard stale non-claimable jobs left by a hard-killed API."""
+        from community_store import CommunityStore
+
+        safe_to_continue = True
+        cutoff = time.time() - max(0.0, float(grace_seconds))
+        for current in self.store.list_jobs(statuses=[JobStatus.STAGING], limit=None):
+            if float(current.get("created_at") or 0) > cutoff:
+                continue
+            owner_alive = process_tree.is_alive(
+                current.get("worker_pid"),
+                create_time=current.get("worker_create_time"),
+            )
+            config = current.get("configuration") or {}
+            if config.get("job_type") != "community_publish":
+                if owner_alive:
+                    continue
+                try:
+                    self.store.transition(current["id"], JobStatus.CANCELLED)
+                except Exception:
+                    pass
+                continue
+            job_id = current["id"]
+            post_id = str(config.get("post_id") or "")
+            file_id = str(config.get("file_id") or "")
+            community = None
+            try:
+                if not (post_id and file_id and config.get("community_db")):
+                    state = "invalid"
+                else:
+                    community = CommunityStore(config["community_db"])
+                    state = community.publish_attempt_state(post_id, file_id, job_id)
+                # A live API PID protects only the short unlinked creation window.  A
+                # linked active/terminal community state is authoritative and must be
+                # reconciled even if both the queue transition and lease-clear writes
+                # failed while the long-lived API process stayed up.
+                if state == "invalid" and owner_alive:
+                    continue
+                if state == "active":
+                    self.store.transition(
+                        job_id,
+                        JobStatus.QUEUED,
+                        queued_at=time.time(),
+                        stage="recovered_staging",
+                        worker_pid=None,
+                        worker_create_time=None,
+                    )
+                elif state == "completed":
+                    self.store.reconcile_community_publish_terminal(
+                        job_id, JobStatus.FINISHED)
+                elif state == "failed":
+                    self.store.reconcile_community_publish_terminal(
+                        job_id, JobStatus.FAILED)
+                else:
+                    if community is not None:
+                        community.invalidate_publish_file(file_id, job_id)
+                    self.store.transition(
+                        job_id,
+                        JobStatus.CANCELLED,
+                        error_type="community_publish_staging",
+                        error_message="staging_link_missing",
+                    )
+            except Exception:  # noqa: BLE001 - leave STAGING for a later safe retry
+                safe_to_continue = False
+            finally:
+                if community is not None:
+                    community.close()
+        return safe_to_continue
 
     def run(self, *, once: bool = False, max_idle_cycles: int | None = None) -> None:
         if self.another_worker_alive():
@@ -229,7 +589,21 @@ class Worker:
                 if self.store.worker_stop_requested(self.worker_id):
                     self._stop_requested = True
                     break
-                self._reconcile_stale()
+                if not self._reconcile_stale():
+                    if once:
+                        return
+                    time.sleep(self.poll_seconds)
+                    continue
+                if not self._recover_staged_community_publishes():
+                    if once:
+                        return
+                    time.sleep(self.poll_seconds)
+                    continue
+                if not self._recover_interrupted_community_publishes():
+                    if once:
+                        return
+                    time.sleep(self.poll_seconds)
+                    continue
                 job = self.store.claim_next_job(self.worker_id, self.pid)
                 if job is None:
                     if once:

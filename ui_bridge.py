@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from community_auth import RequestPrincipal
 from job_store import JobStatus, JobStore
 from ui_helpers import (
     OUTPUT_ROOT,
@@ -207,6 +208,14 @@ class UiBridge:
             "total_seconds": _duration(job),
         }
 
+    @staticmethod
+    def _is_translation_job(job: dict[str, Any] | None) -> bool:
+        if not job:
+            return False
+        # Jobs created before job_type was introduced are legacy translation jobs.
+        job_type = str((job.get("configuration") or {}).get("job_type") or "translation")
+        return job_type == "translation"
+
     def bootstrap(self, cursor: int = 0) -> dict[str, Any]:
         return {
             **self.runtime_state(cursor),
@@ -222,7 +231,12 @@ class UiBridge:
         return self.history
 
     def runtime_state(self, cursor: int = 0) -> dict[str, Any]:
-        active = self.store.active_job()
+        active_jobs = self.store.list_jobs(statuses=JobStatus.IN_FLIGHT, limit=None)
+        active = max(
+            (job for job in active_jobs if self._is_translation_job(job)),
+            key=lambda job: float(job.get("claimed_at") or 0),
+            default=None,
+        )
         record = self._job_record(active)
         status = (active["status"] if active else "ready")
         stage = str((active or {}).get("stage") or "created")
@@ -230,9 +244,14 @@ class UiBridge:
         total = int((active or {}).get("progress_total") or 0)
         stage_fraction = (current / total) if current and total else None
         running = status in JobStatus.IN_FLIGHT
-        queued = [self._job_record(job) for job in self.store.list_jobs(statuses=[JobStatus.QUEUED])]
+        queued = [
+            self._job_record(job)
+            for job in self.store.list_jobs(statuses=[JobStatus.QUEUED])
+            if self._is_translation_job(job)
+        ]
         resumable = [self._job_record(job) for job in self.store.list_jobs(
-            statuses=[JobStatus.INTERRUPTED, JobStatus.RESUMABLE])]
+            statuses=[JobStatus.INTERRUPTED, JobStatus.RESUMABLE])
+            if self._is_translation_job(job)]
         worker = self.store.healthy_worker(stale_seconds=15)
         logs = self._tail_job_logs(active, cursor)
         return {
@@ -267,8 +286,8 @@ class UiBridge:
         }
 
     def _latest_terminal_job(self) -> dict[str, Any] | None:
-        jobs = self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=1)
-        return jobs[0] if jobs else None
+        jobs = self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=None)
+        return next((job for job in jobs if self._is_translation_job(job)), None)
 
     def _tail_job_logs(self, active: dict[str, Any] | None, cursor: int) -> dict[str, Any]:
         if not active or not active.get("log_path"):
@@ -324,11 +343,24 @@ class UiBridge:
             "port": int(os.getenv("TRADUTOR_UI_PORT", "8080")),
         }
 
-    async def start(self, payload: dict[str, Any]) -> dict[str, Any]:
-        job = self._create_job(payload)
+    async def start(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None = None,
+    ) -> dict[str, Any]:
+        job = self._create_job(payload, principal=principal)
         return {"ok": True, "run_id": job["run_id"], "job_id": job["id"]}
 
-    def _create_job(self, payload: dict[str, Any], *, require_environment: bool = True) -> dict[str, Any]:
+    def _create_job(
+        self,
+        payload: dict[str, Any],
+        *,
+        require_environment: bool = True,
+        principal: RequestPrincipal | None = None,
+    ) -> dict[str, Any]:
+        if principal is not None and not isinstance(principal, RequestPrincipal):
+            raise TypeError("principal must be a RequestPrincipal")
         normalized = self._normalize_payload(payload, require_environment=require_environment)
         command = build_run_command(
             url=normalized["url"],
@@ -344,19 +376,23 @@ class UiBridge:
         )
         output_folder = (OUTPUT_ROOT / normalized["slug"]).resolve()
         details = suggest_chapter_details(normalized["url"])
+        configuration = {
+            "job_type": "translation",
+            "mode": normalized["mode"],
+            "full": normalized["full"],
+            "force": normalized["force"],
+            "use_cache": normalized["use_cache"],
+            "use_context": normalized["use_context"],
+            "chapter_name": normalized["chapter_name"],
+        }
+        if principal is not None and principal.authenticated:
+            configuration["community_owner_id"] = principal.user_id
         job_id = self.store.create_job(
             source_url=normalized["url"],
             output_dir=str(output_folder),
             command=command,
             run_id=str(normalized["id"]),
-            configuration={
-                "mode": normalized["mode"],
-                "full": normalized["full"],
-                "force": normalized["force"],
-                "use_cache": normalized["use_cache"],
-                "use_context": normalized["use_context"],
-                "chapter_name": normalized["chapter_name"],
-            },
+            configuration=configuration,
             series_title=normalized["chapter_name"],
             series_slug=str(details.get("slug") or ""),
             episode_number=str(details.get("episode") or ""),
@@ -368,10 +404,12 @@ class UiBridge:
 
     async def cancel(self, *, queue: bool = False) -> dict[str, Any]:
         active = self.store.active_job()
-        if active:
+        if self._is_translation_job(active):
             self.store.request_cancel(active["id"])
         if queue:
             for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+                if not self._is_translation_job(job):
+                    continue
                 try:
                     self.store.transition(job["id"], JobStatus.CANCELLED,
                                           interrupted_reason="queue_cleared")
@@ -383,6 +421,8 @@ class UiBridge:
         job = self.store.get_job(job_id)
         if not job:
             raise ValueError("Job não encontrado.")
+        if not self._is_translation_job(job):
+            raise ValueError("job_type_not_resumable_from_ui")
         if job["status"] not in {JobStatus.INTERRUPTED, JobStatus.RESUMABLE}:
             raise ValueError("Somente jobs interrompidos podem ser retomados.")
         # Mutual exclusion: never start a new attempt while the previous attempt's runner
@@ -411,17 +451,28 @@ class UiBridge:
         self.history_revision += 1
         return {"ok": True, "job_id": new_id}
 
-    def add_queue_item(self, payload: dict[str, Any]) -> dict[str, Any]:
-        job = self._create_job({**payload, "full": True}, require_environment=False)
+    def add_queue_item(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None = None,
+    ) -> dict[str, Any]:
+        job = self._create_job(
+            {**payload, "full": True},
+            require_environment=False,
+            principal=principal,
+        )
         return self._job_record(job)  # type: ignore[return-value]
 
     def remove_queue_item(self, item_id: str) -> None:
         job = self.store.get_job(item_id)
-        if job and job["status"] == JobStatus.QUEUED:
+        if self._is_translation_job(job) and job["status"] == JobStatus.QUEUED:
             self.store.transition(item_id, JobStatus.CANCELLED, interrupted_reason="removed")
 
     def clear_queue(self) -> None:
         for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+            if not self._is_translation_job(job):
+                continue
             try:
                 self.store.transition(job["id"], JobStatus.CANCELLED, interrupted_reason="queue_cleared")
             except Exception:  # noqa: BLE001
@@ -429,7 +480,10 @@ class UiBridge:
 
     async def start_queue(self) -> dict[str, Any]:
         # Jobs are already queued in the store; the independent worker drains them.
-        if not self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+        if not any(
+            self._is_translation_job(job)
+            for job in self.store.list_jobs(statuses=[JobStatus.QUEUED])
+        ):
             raise ValueError("A fila não tem itens aguardando.")
         status = env_status()
         if not status["env_exists"] or not status["nvidia_configured"]:
