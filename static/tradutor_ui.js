@@ -46,8 +46,19 @@
     return null;
   };
 
+  function cookieValue(name) {
+    const prefix = `${encodeURIComponent(name)}=`;
+    const part = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith(prefix));
+    return part ? decodeURIComponent(part.slice(prefix.length)) : '';
+  }
   async function api(path, options = {}) {
-    const init = {headers: {'Content-Type': 'application/json'}, ...options};
+    const method = String(options.method || 'GET').toUpperCase();
+    const headers = {'Content-Type': 'application/json', ...(options.headers || {})};
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+      const csrf = cookieValue('tradutor_community_csrf');
+      if (csrf) headers['X-Tradutor-CSRF'] = csrf;
+    }
+    const init = {...options, method, headers, credentials: 'same-origin'};
     const response = await fetch(path, init);
     let payload = {};
     try { payload = await response.json(); } catch (_) { /* empty response */ }
@@ -552,9 +563,9 @@
     const guess = guessFromUrl(record.url || '');
     const description = (window.prompt('Descrição (opcional) — publique apenas conteúdo cuja publicação você tem direito de fazer:', '') || '').slice(0, 2000);
     if (description === null) return;
+    const trustedJobId = /^[0-9a-f]{32}$/.test(String(record.job_id || '')) ? String(record.job_id) : '';
     const payload = {
       slug: record.slug || guess.slug,
-      source_job_id: record.job_id || record.id || '',
       series_title: record.series_name || record.chapter_name || '',
       series_slug: record.series_slug || guess.slug,
       episode_number: record.episode_number || '',
@@ -562,6 +573,10 @@
       description,
       visibility: 'public',
     };
+    // Discovered legacy ids (for example "discovered-series") are presentation ids,
+    // never job identities.  Omitting source_job_id lets the server apply its explicit
+    // admin-only legacy slug policy instead of turning every old record into a false 404.
+    if (trustedJobId) payload.source_job_id = trustedJobId;
     try {
       await api('/api/community/publish', {method: 'POST', body: JSON.stringify(payload)});
       showToast('Publicação enviada à fila. O worker fará o upload.', 'ok');

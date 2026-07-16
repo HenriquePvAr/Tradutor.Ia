@@ -7,12 +7,20 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import Body, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse
 from nicegui import app, ui
 
+from community_auth import (
+    AuthConfigurationError,
+    CsrfRejected,
+    RequestPrincipal,
+    SESSION_COOKIE_NAME,
+    build_auth_provider,
+    configured_bind_host,
+    validate_bind_security,
+)
 from community_api import CommunityApi
-from community_service import CommunityError
-from community_storage import StorageError
+from community_http import CommunityNetworkBoundaryMiddleware, create_community_router
 from local_environment import load_local_environment_for_entrypoint
 from ui_bridge import UiBridge
 
@@ -24,19 +32,14 @@ ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
 APP_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
+APP_HOST = configured_bind_host()
 BRIDGE = UiBridge()
 COMMUNITY = CommunityApi(BRIDGE.store)
+AUTH = build_auth_provider()
 
+app.add_middleware(CommunityNetworkBoundaryMiddleware, auth=AUTH)
 app.add_static_files("/static", STATIC_DIR)
-
-
-def _community_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    try:
-        return callback(*args, **kwargs)
-    except CommunityError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except StorageError as exc:
-        raise HTTPException(status_code=502, detail="storage_unavailable") from exc
+app.include_router(create_community_router(COMMUNITY, AUTH))
 
 
 def _api_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -44,6 +47,19 @@ def _api_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         return callback(*args, **kwargs)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _job_principal(request: Request) -> RequestPrincipal:
+    """Optionally bind a local translation job to a valid cookie-authenticated user."""
+    principal = AUTH.authenticate_request(request)
+    if not principal.authenticated and request.cookies.get(SESSION_COOKIE_NAME):
+        raise HTTPException(status_code=401, detail="authentication_required")
+    if principal.authenticated:
+        try:
+            AUTH.require_csrf(request, principal)
+        except CsrfRejected as exc:
+            raise HTTPException(status_code=403, detail="csrf_rejected") from exc
+    return principal
 
 
 @app.get("/api/ui/bootstrap")
@@ -57,9 +73,12 @@ def api_state(cursor: int = Query(0, ge=0)) -> dict[str, Any]:
 
 
 @app.post("/api/ui/run")
-async def api_run(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+async def api_run(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
     try:
-        return await BRIDGE.start(payload)
+        return await BRIDGE.start(payload, principal=_job_principal(request))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -70,8 +89,18 @@ async def api_cancel(payload: dict[str, Any] = Body(default={})) -> dict[str, An
 
 
 @app.post("/api/ui/queue/add")
-def api_queue_add(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    return {"ok": True, "item": _api_call(BRIDGE.add_queue_item, payload)}
+def api_queue_add(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "item": _api_call(
+            BRIDGE.add_queue_item,
+            payload,
+            principal=_job_principal(request),
+        ),
+    }
 
 
 @app.post("/api/ui/queue/remove")
@@ -97,50 +126,6 @@ async def api_queue_start() -> dict[str, Any]:
 @app.post("/api/ui/resume")
 def api_resume(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     return _api_call(BRIDGE.resume, str(payload.get("job_id") or payload.get("id") or ""))
-
-
-# ---- community ------------------------------------------------------------
-@app.post("/api/community/publish")
-def api_community_publish(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    return _community_call(COMMUNITY.publish, payload)
-
-
-@app.get("/api/community/posts")
-def api_community_feed(series_slug: str = Query(""), q: str = Query(""),
-                       limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)) -> dict[str, Any]:
-    return _community_call(COMMUNITY.feed, series_slug=series_slug, query=q, limit=limit, offset=offset)
-
-
-@app.get("/api/community/my-posts")
-def api_community_my_posts() -> dict[str, Any]:
-    return _community_call(COMMUNITY.my_posts)
-
-
-@app.post("/api/community/posts/{post_id}/unpublish")
-def api_community_unpublish(post_id: str) -> dict[str, Any]:
-    return _community_call(COMMUNITY.unpublish, post_id)
-
-
-@app.api_route("/api/community/posts/{post_id}/pdf", methods=["GET", "HEAD"])
-def api_community_pdf(post_id: str, request: Request):
-    range_header = request.headers.get("range", "") if request.method == "GET" else ""
-    meta, stream = _community_call(COMMUNITY.open_pdf, post_id, range_header=range_header)
-    headers = {
-        "Content-Length": str(meta["content_length"]),
-        "Accept-Ranges": "bytes",
-        "Content-Disposition": f'inline; filename="{meta["filename"]}"',
-        "X-Content-Type-Options": "nosniff",
-    }
-    if request.method == "HEAD":
-        headers["Content-Length"] = str(meta["total_size"])
-        return Response(status_code=200, media_type="application/pdf", headers=headers)
-    if meta["partial"]:
-        headers["Content-Range"] = f'bytes {meta["start"]}-{meta["end"]}/{meta["total_size"]}'
-        status = 206
-    else:
-        status = 200
-    return StreamingResponse(stream.iter_chunks(), status_code=status,
-                             media_type="application/pdf", headers=headers)
 
 
 @app.post("/api/ui/profile")
@@ -211,8 +196,12 @@ async def shutdown_processes() -> None:
 
 
 if __name__ in {"__main__", "__mp_main__"}:
+    try:
+        bind_host = validate_bind_security(APP_HOST, AUTH)
+    except AuthConfigurationError as exc:
+        raise SystemExit(f"configuration_error: {exc}") from exc
     ui.run(
-        host="0.0.0.0",
+        host=bind_host,
         port=APP_PORT,
         title="Tradutor.Ia · Painel local",
         dark=True,
