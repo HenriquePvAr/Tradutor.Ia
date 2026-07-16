@@ -7,9 +7,11 @@ and restricted permissions, and refreshes the access token on demand. Credential
 never written to logs, never returned to the frontend, and never stored in the community
 database.
 
-This task implements and unit-tests the parsing, storage and refresh with fakes. It does
-not run real OAuth: ``authorize`` prints the consent URL and the manual next step but
-opens no browser and exchanges no code unless one is explicitly provided offline.
+``authorize`` runs the official Installed-App OAuth flow: a loopback redirect on
+127.0.0.1 with an ephemeral port, PKCE and offline access, opening the system browser -
+never an out-of-band copy/paste flow, a fixed port, or an embedded webview. It only runs
+when an administrator invokes it directly; the backend never triggers OAuth during a web
+request. Tests mock the flow seam, so no browser opens and no real Google endpoint is hit.
 """
 
 from __future__ import annotations
@@ -115,13 +117,6 @@ def _form(fields: dict[str, str]) -> bytes:
     return urlencode(fields).encode("utf-8")
 
 
-def build_authorize_url(client_id: str, redirect_uri: str) -> str:
-    from urllib.parse import urlencode
-    params = {"client_id": client_id, "redirect_uri": redirect_uri, "response_type": "code",
-              "scope": SCOPE, "access_type": "offline", "prompt": "consent"}
-    return f"{AUTH_URL}?{urlencode(params)}"
-
-
 def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
@@ -130,31 +125,89 @@ def _token_path() -> Path:
     return Path(_env("GOOGLE_OAUTH_TOKEN_PATH", str(Path.home() / ".tradutor_ia" / "drive_token.json")))
 
 
-# ---- CLI (no real OAuth in this task) --------------------------------------
+def _config_scopes() -> list[str]:
+    raw = _env("GOOGLE_OAUTH_SCOPES", "")
+    return [s.strip() for s in raw.split(",") if s.strip()] or [SCOPE]
+
+
+def run_installed_app_flow(*, client_id: str, client_secret: str, scopes: list[str]) -> OAuthTokens:
+    """Run the official Installed-App OAuth flow on a loopback redirect.
+
+    Isolated so tests mock exactly this seam - no browser opens and no Google endpoint is
+    hit under test. Uses an ephemeral loopback port (127.0.0.1:0), offline access for a
+    refresh token, and the library's built-in PKCE; never OOB, a fixed port, or a webview.
+    """
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    client_config = {
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": AUTH_URL,
+            "token_uri": TOKEN_URL,
+            "redirect_uris": ["http://127.0.0.1"],
+        }
+    }
+    flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
+    creds = flow.run_local_server(host="127.0.0.1", port=0, open_browser=True,
+                                  access_type="offline", prompt="consent",
+                                  authorization_prompt_message="",
+                                  success_message="Autorizado. Pode fechar esta aba.")
+    expiry = creds.expiry.timestamp() if getattr(creds, "expiry", None) else time.time() + 3600
+    return OAuthTokens(access_token=creds.token or "",
+                       refresh_token=creds.refresh_token or "",
+                       expiry=float(expiry))
+
+
+# ---- CLI --------------------------------------------------------------------
 def cmd_authorize(_args) -> int:
     client_id = _env("GOOGLE_OAUTH_CLIENT_ID")
-    if not client_id:
-        print("set GOOGLE_OAUTH_CLIENT_ID first", file=sys.stderr)
+    client_secret = _env("GOOGLE_OAUTH_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        print("set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET first", file=sys.stderr)
         return 2
-    url = build_authorize_url(client_id, "http://localhost:8765/callback")
-    print("Open this URL in your browser to authorize (not opened automatically):")
-    print(url)
-    print("Then exchange the code offline; this task does not perform the exchange.")
+    tokens = run_installed_app_flow(client_id=client_id, client_secret=client_secret,
+                                    scopes=_config_scopes())
+    if not tokens.refresh_token:
+        print("no refresh token returned; re-run authorize with consent", file=sys.stderr)
+        return 1
+    save_tokens(_token_path(), tokens)
+    # Never print token values.
+    print("authorized; token saved to", _token_path())
     return 0
 
 
 def cmd_status(_args) -> int:
     tokens = load_tokens(_token_path())
-    # Never print token values, only their presence and expiry.
     print(f"token_path: {_token_path()}")
+    print(f"client_configured: {bool(_env('GOOGLE_OAUTH_CLIENT_ID') and _env('GOOGLE_OAUTH_CLIENT_SECRET'))}")
+    print(f"root_folder_configured: {bool(_env('COMMUNITY_DRIVE_ROOT_FOLDER_ID'))}")
+    print(f"provider: {_env('COMMUNITY_STORAGE_PROVIDER', 'filesystem')}")
     print(f"has_refresh_token: {bool(tokens.refresh_token)}")
     print(f"has_access_token: {bool(tokens.access_token)}")
     print(f"access_expired: {tokens.expired()}")
+    print(f"refresh_possible: {bool(tokens.refresh_token)}")
+    print(f"scopes: {','.join(_config_scopes())}")
     return 0
 
 
-def cmd_revoke(_args) -> int:
+def cmd_revoke(args) -> int:
+    if not getattr(args, "yes", False):
+        print("this removes the local token (and revokes it online when possible).")
+        print("re-run with --yes to confirm.")
+        return 1
     path = _token_path()
+    tokens = load_tokens(path)
+    if tokens.refresh_token:
+        try:
+            from google_drive_transport import RequestsHttpTransport
+            RequestsHttpTransport().request(
+                "POST", REVOKE_URL,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data=_form({"token": tokens.refresh_token}))
+            print("online revoke attempted")
+        except Exception:  # noqa: BLE001 - local removal proceeds regardless
+            print("online revoke failed; removing local token anyway")
     if path.exists():
         path.unlink()
         print("local token removed")
@@ -164,8 +217,38 @@ def cmd_revoke(_args) -> int:
 
 
 def cmd_test_access(_args) -> int:
-    # Would build the provider and call health_check; skipped here to avoid real network.
-    print("test-access requires a configured transport; not run in offline mode")
+    """Build the real provider and confirm the root folder is reachable. No upload."""
+    from google_drive_factory import GoogleDriveConfig, build_google_drive_provider
+    try:
+        config = GoogleDriveConfig.from_env()
+        provider = build_google_drive_provider(config)
+        meta = provider.stat_file(config.root_folder_id)
+    except StorageError as exc:
+        print(f"test-access failed: {exc}", file=sys.stderr)
+        return 1
+    is_folder = meta.mime_type == "application/vnd.google-apps.folder"
+    print(f"account_reachable: True")
+    print(f"root_folder_exists: {bool(meta.file_id)}")
+    print(f"root_is_folder: {is_folder}")
+    print(f"root_trashed: {meta.trashed}")
+    print(f"provider_healthy: {provider.health_check()}")
+    return 0 if (meta.file_id and is_folder and not meta.trashed) else 1
+
+
+def cmd_create_root_folder(args) -> int:
+    """Create a private app-owned folder (drive.file scope) and print only its ID."""
+    from google_drive_factory import GoogleDriveConfig, build_google_drive_provider
+    name = getattr(args, "name", "") or "TradutorIA-Comunidade"
+    try:
+        # Root folder id is not required to create a top-level app folder.
+        config = GoogleDriveConfig.from_env(root_folder_id_override="root")
+        provider = build_google_drive_provider(config)
+        folder_id = provider.ensure_folder(name, "root")
+    except StorageError as exc:
+        print(f"create-root-folder failed: {exc}", file=sys.stderr)
+        return 1
+    print("created private folder; set COMMUNITY_DRIVE_ROOT_FOLDER_ID to its id")
+    print(f"folder_id: {folder_id}")
     return 0
 
 
@@ -174,8 +257,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("authorize").set_defaults(func=cmd_authorize)
     sub.add_parser("status").set_defaults(func=cmd_status)
-    sub.add_parser("revoke").set_defaults(func=cmd_revoke)
+    revoke = sub.add_parser("revoke")
+    revoke.add_argument("--yes", action="store_true")
+    revoke.set_defaults(func=cmd_revoke)
     sub.add_parser("test-access").set_defaults(func=cmd_test_access)
+    crf = sub.add_parser("create-root-folder")
+    crf.add_argument("--name", default="TradutorIA-Comunidade")
+    crf.set_defaults(func=cmd_create_root_folder)
     args = parser.parse_args(argv)
     return args.func(args)
 
