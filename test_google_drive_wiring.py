@@ -124,6 +124,7 @@ class ConfigTests(unittest.TestCase):
         text = repr(cfg)
         self.assertNotIn("CID", text)
         self.assertNotIn("SECRET", text)
+        self.assertNotIn("/t", text)
         self.assertIn("redacted", text)
 
     def test_default_scope_is_drive_file_only(self):

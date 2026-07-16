@@ -58,7 +58,8 @@ class TokenSourceTests(unittest.TestCase):
         import io
         import contextlib
         drive_auth.save_tokens(self.path, drive_auth.OAuthTokens(access_token="SECRETVALUE",
-                                                                 refresh_token="REFRESHVALUE"))
+                                                                 refresh_token="REFRESHVALUE",
+                                                                 expiry=9e9))
         with unittest.mock.patch.dict(os.environ, {"GOOGLE_OAUTH_TOKEN_PATH": str(self.path)}):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -66,7 +67,9 @@ class TokenSourceTests(unittest.TestCase):
             out = buf.getvalue()
         self.assertNotIn("SECRETVALUE", out)
         self.assertNotIn("REFRESHVALUE", out)
-        self.assertIn("has_refresh_token: True", out)
+        self.assertNotIn(str(self.path), out)
+        self.assertIn("token_present: True", out)
+        self.assertIn("token_valid: True", out)
 
     def test_authorize_runs_flow_and_saves_token_without_leaking(self):
         # The OAuth flow seam is mocked: no browser, no Google endpoint. The returned
@@ -93,7 +96,9 @@ class TokenSourceTests(unittest.TestCase):
         self.assertEqual(saved.refresh_token, "RT_SECRET")
 
     def test_authorize_requires_client_secret(self):
-        with unittest.mock.patch.dict(os.environ, {"GOOGLE_OAUTH_CLIENT_ID": "cid"}, clear=False):
+        with unittest.mock.patch.dict(os.environ, {"GOOGLE_OAUTH_CLIENT_ID": "cid"}, clear=False), \
+                unittest.mock.patch.object(drive_auth, "load_local_environment_for_entrypoint",
+                                           return_value=True):
             os.environ.pop("GOOGLE_OAUTH_CLIENT_SECRET", None)
             self.assertEqual(drive_auth.main(["authorize"]), 2)
 
