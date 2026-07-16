@@ -374,11 +374,15 @@ class LocalSessionAuthProvider:
 def build_auth_provider(env: Mapping[str, str] | None = None) -> AuthProvider:
     values = os.environ if env is None else env
     provider_name = str(values.get("COMMUNITY_AUTH_PROVIDER", "local") or "local").strip().lower()
-    if provider_name != "local":
-        raise AuthConfigurationError(
-            "unsupported community auth provider; Supabase JWT verification is not implemented"
-        )
-    return LocalSessionAuthProvider.from_env(values)
+    if provider_name == "local":
+        return LocalSessionAuthProvider.from_env(values)
+    if provider_name == "supabase":
+        # Fail closed on incomplete configuration; never fall back to the local
+        # provider silently.  Imported lazily so local-only setups need no JWT stack.
+        from supabase_auth import SupabaseAuthConfig, SupabaseAuthProvider
+
+        return SupabaseAuthProvider(SupabaseAuthConfig.from_env(values))
+    raise AuthConfigurationError(f"unsupported community auth provider: {provider_name}")
 
 
 def require_admin(principal: RequestPrincipal) -> None:

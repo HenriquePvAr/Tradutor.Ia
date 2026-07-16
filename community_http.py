@@ -162,6 +162,13 @@ def create_community_router(community, auth) -> APIRouter:
         set_session_cookies(response, issued, request=request)
         return response
 
+    @router.get("/auth/config")
+    def auth_config() -> JSONResponse:
+        """Browser-safe provider configuration; never secrets or JWKS internals."""
+        public = getattr(auth, "public_config", None)
+        content = public() if callable(public) else {"provider": getattr(auth, "auth_source", "local")}
+        return JSONResponse(content, headers=no_store_headers)
+
     @router.get("/auth/session")
     def session(request: Request) -> JSONResponse:
         principal = request_principal(request)
