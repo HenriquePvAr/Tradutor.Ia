@@ -1,13 +1,18 @@
 # Comunidade e armazenamento privado no Google Drive
 
+O modelo de identidade, sessões, CSRF, políticas de visibilidade e bind seguro está em
+[`COMMUNITY_AUTHORIZATION.md`](COMMUNITY_AUTHORIZATION.md). Autorização sempre ocorre
+antes da construção do provider descrito neste documento.
+
 Usuários podem publicar PDFs traduzidos em uma comunidade. **Apenas PDFs escolhidos
 explicitamente** para publicação são enviados ao Google Drive privado do administrador.
 
 ## Arquitetura
 
-    UI  →  /api/community/publish  →  post draft + job community_publish (fila SQLite)
+    UI  →  /api/community/publish  →  post draft + job STAGING não claimável
+                                          ↓ vínculo atômico + transição para queued
                                           ↓ worker independente
-                                     community_publish_runner (upload retomável)
+                                     community_publish_runner (upload em chunks + retry seguro)
                                           ↓ StorageProvider
                                      Google Drive privado  (só bytes do PDF)
 
@@ -34,30 +39,59 @@ por S3/R2 no futuro não exige mudar posts nem APIs.
 No histórico, um capítulo com PDF mostra **“Publicar na comunidade”**. A UI envia
 identificadores (slug/job), **nunca um caminho** — o backend resolve o PDF dentro de
 `output/`, valida (dentro do root, `.pdf`, magic `%PDF`, não vazio, sem path traversal),
-calcula o SHA-256 por streaming, cria o `community_file` e enfileira o job. O post fica
-`publishing`; só vira `published` **após o upload e a verificação**.
+calcula o SHA-256 por streaming e classifica a tentativa em uma transação. Quando precisa
+de upload, cria primeiro um job `STAGING` não claimável, vincula atomicamente o
+`community_file`/`upload_job_id` e só então o torna `queued`. O post fica `publishing`;
+só vira `published` **após o upload e a verificação**.
+
+Antes de qualquer acesso ao provider, o runner copia o artefato escolhido para um arquivo
+temporário e confere novamente tamanho e SHA-256. O upload lê esse snapshot imutável; um
+PDF substituído depois do enqueue falha sem que os bytes substituídos cheguem ao storage.
 
 ## Status do post / arquivo
 
 Post: `draft → publishing → published → unpublished/blocked/failed/deleted`.
 Arquivo: `pending → uploading → verifying → verified → failed/deleting/deleted`.
 
-## Upload retomável
+## Upload em chunks e recuperação
 
-Em chunks (256 KB), sem carregar o PDF inteiro na RAM; persiste `bytes_uploaded` para
-retomar; heartbeat e progresso no banco; retry apenas em erros transitórios com backoff +
-jitter; respeita cancelamento e parada do worker. Sobrevive ao fechamento da UI e é
-reconciliado após crash do worker.
+Em chunks (256 KB), sem carregar o PDF inteiro na RAM; persiste `bytes_uploaded`,
+heartbeat e progresso no banco; retry de chamadas transitórias usa backoff + jitter e
+respeita cancelamento e parada do worker. Fechar a UI não interrompe o upload.
+
+Após interrupção/crash, o worker valida novamente a ligação post/arquivo/job e confirma
+que o runner anterior terminou. A interface atual não reabre uma sessão no offset salvo:
+o mesmo job reinicia com segurança no byte zero. Antes da nova sessão, remove o arquivo
+remoto parcial identificado e abandona a sessão quando o provider oferece essa operação,
+evitando acumular uma segunda cópia. `cancel_requested` nunca é apagado.
+
+O recovery também reconcilia as janelas entre os dois bancos: `PUBLISHED/VERIFIED`
+fecha o job como `finished`, e `FAILED/FAILED` como `failed`. Se o banco da comunidade
+estiver temporariamente indisponível, o job permanece recuperável e é tentado depois; uma
+falha de leitura nunca é confundida com revogação. Uma tentativa invalidada por
+`unpublish` termina sem construir provider.
+
+Um `STAGING` ligado e ativo é recuperado mesmo se a API continuar viva após falharem as
+escritas de enqueue e de liberação da lease; a lease protege apenas staging ainda sem
+vínculo. Antes de executar qualquer runner, um start gate também exige que o worker
+persista PID/create-time. Saída ou timeout antes da transição terminal deixa o job
+`interrupted` recuperável, nunca preso a um worker saudável nem executando como órfão.
 
 ## Verificação remota
 
 Após o upload: consulta metadata remota, confere tamanho e MIME, persiste o SHA-256 local
 e o checksum do provider, marca `verified` e só então publica. Divergência → job `failed`,
-post não publica, arquivo remoto **não** é destruído automaticamente (reconciliável).
+post não publica; o identificador remoto conhecido permanece registrado para auditoria e
+reconciliação. Arquivos parciais de uma tentativa recuperada são removidos antes do retry.
 
 ## Leitura (streaming)
 
-`GET /api/community/posts/<id>/pdf` valida status/moderação/visibilidade/autorização e
+Respostas de PDF usam `Cache-Control: private, no-store` e `Vary: Cookie`. HEAD autorizado
+usa apenas nome e tamanho verificados no banco: não abre stream no provider e não
+incrementa views.
+
+`GET /api/community/posts/<id>/pdf` autentica a sessão, valida
+status/moderação/visibilidade/autorização e
 transmite do provider com `Range`/`206`, `Content-Length`, `HEAD`, `Content-Disposition`
 saneado e `nosniff`. Não carrega o PDF inteiro na memória e **não expõe** o
 `storage_file_id` nem credenciais.
@@ -65,8 +99,12 @@ saneado e `nosniff`. Não carrega o PDF inteiro na memória e **não expõe** o
 ## Feed
 
 `GET /api/community/posts` consulta **somente o banco** (nunca o Drive). Mostra apenas
-`published` e, quando a moderação estiver ativa, `moderation_status=approved`. Filtros por
+`published`, `visibility=public`, `moderation_status=approved` e arquivo `verified`. Filtros por
 série, texto, paginação. Cards expõem só metadata.
+
+A versão absolutamente mais recente do arquivo é autoritativa, inclusive se estiver
+pending, failed ou deleted. O backend nunca volta silenciosamente para uma versão
+verified mais antiga após exclusão ou nova tentativa.
 
 ## Despublicar e excluir
 
@@ -77,8 +115,10 @@ série, texto, paginação. Cards expõem só metadata.
 
 ## Deduplicação e versões
 
-Antes do upload verifica SHA-256/post/usuário/capítulo e job ativo, bloqueando duplicata
-acidental. Um hash diferente é permitido como nova versão (com confirmação).
+Pedidos normais são idempotentes por owner + source job: cliques concorrentes reutilizam
+o mesmo post e o mesmo job ativo. Também verifica SHA-256 e publicação ativa para bloquear
+duplicata acidental. `force_new_version` é o opt-in explícito para uma nova versão e
+preserva o source job na proveniência.
 
 ## OAuth administrativo (Desktop app)
 
