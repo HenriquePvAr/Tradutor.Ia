@@ -1,1 +1,5 @@
 pytest>=9,<10
+# The community security battery exercises the real ASGI boundary offline via
+# fastapi's in-process TestClient (no sockets, no server).
+fastapi>=0.115,<1
+httpx>=0.28,<1
