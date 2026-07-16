@@ -98,6 +98,10 @@ class StorageProvider(abc.ABC):
     @abc.abstractmethod
     def upload_chunk(self, session: ResumableSession, offset: int, data: bytes) -> ChunkResult: ...
 
+    def abandon_resumable_session(self, session_id: str) -> None:
+        """Forget an incomplete session when supported; remote providers may expire it."""
+        return None
+
     @abc.abstractmethod
     def stat_file(self, file_id: str) -> RemoteFileMetadata: ...
 
@@ -196,6 +200,9 @@ class FakeStorageProvider(StorageProvider):
             blob.completed = True
         return ChunkResult(uploaded=stored.uploaded, completed=completed,
                            file_id=stored.file_id if completed else "")
+
+    def abandon_resumable_session(self, session_id: str) -> None:
+        self._sessions.pop(session_id, None)
 
     def stat_file(self, file_id: str) -> RemoteFileMetadata:
         self._require_online()
@@ -324,6 +331,9 @@ class FilesystemStorageProvider(StorageProvider):
             self._save(self._meta_path(s["file_id"]), meta)
         return ChunkResult(uploaded=s["uploaded"], completed=completed,
                            file_id=s["file_id"] if completed else "")
+
+    def abandon_resumable_session(self, session_id: str) -> None:
+        self._session_path(session_id).unlink(missing_ok=True)
 
     def stat_file(self, file_id: str) -> RemoteFileMetadata:
         meta = self._load(self._meta_path(file_id))

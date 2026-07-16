@@ -10,14 +10,25 @@ the storage provider without exposing the provider's file id or any credential.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from community_store import CommunityStore, FileStatus, Moderation, PostStatus, Visibility
+from community_auth import (
+    AuthenticationRequired,
+    AuthorizationDenied,
+    RequestPrincipal,
+    ResourceNotFound,
+)
+from community_authorization import authorize_delete_file, authorize_manage_post, authorize_read_post
+from community_store import CommunityStore, FileStatus, PostStatus, Visibility
+from job_store import JobStatus
+import process_tree
 
 PDF_MAGIC = b"%PDF"
-LOCAL_USER_ID = "local"  # single local user until real auth exists
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -72,36 +83,73 @@ class CommunityService:
     def __init__(self, store: CommunityStore, job_store, *, output_root: Path,
                  provider_name: str = "fake", community_db_path: str = "",
                  storage_config: dict | None = None,
-                 build_command: Callable[[dict], list[str]] | None = None,
-                 user_id: str = LOCAL_USER_ID):
+                 build_command: Callable[[dict], list[str]] | None = None):
         self.store = store
         self.job_store = job_store
         self.output_root = Path(output_root)
         self.provider_name = provider_name
         self.community_db_path = community_db_path
         self.storage_config = storage_config or {}
-        self.user_id = user_id
         # How to turn a publish job into a runnable command; injected so tests can point
         # it at the fake community-publish runner. Defaults to a marker the worker
         # recognises to run the community publish runner by job_type.
         self._build_command = build_command or (lambda payload: ["community_publish"])
 
     # ---- draft + publish ----------------------------------------------------
-    def create_draft(self, *, output_dir: str, source_job_id: str = "", source_run_id: str = "",
+    def create_draft(self, *, principal: RequestPrincipal, output_dir: str,
+                     pdf_path: str = "",
+                     source_job_id: str = "", source_run_id: str = "",
+                     reuse_source_post: bool = True,
                      series_title: str = "", series_slug: str = "", episode_number: str = "",
                      title: str = "", description: str = "", visibility: str = Visibility.PUBLIC,
-                     user_id: str | None = None) -> dict[str, Any]:
+                     ) -> dict[str, Any]:
+        self._require_authenticated(principal)
+        if visibility not in Visibility.ALL:
+            raise CommunityError("invalid_visibility")
         out = Path(output_dir).resolve()
         root = self.output_root.resolve()
         if root != out and root not in out.parents:
             raise CommunityError("output_outside_root")
-        pdf = self._resolve_pdf(out)
+        if pdf_path:
+            pdf = Path(pdf_path).resolve()
+            if out not in pdf.parents:
+                raise CommunityError("pdf_outside_output_dir")
+        else:
+            pdf = self._resolve_pdf(out)
         validate_local_pdf(pdf, self.output_root)
-        post_id = self.store.create_post(
-            user_id=user_id or self.user_id, source_job_id=source_job_id,
-            source_run_id=source_run_id, series_title=series_title, series_slug=series_slug,
-            episode_number=episode_number, output_dir=str(out), title=title or series_title,
-            description=description, visibility=visibility)
+        post_fields = {
+            "user_id": principal.user_id,
+            "source_job_id": source_job_id,
+            "source_run_id": source_run_id,
+            "series_title": series_title,
+            "series_slug": series_slug,
+            "episode_number": episode_number,
+            "output_dir": str(out),
+            "title": title or series_title,
+            "description": description,
+            "visibility": visibility,
+        }
+        if source_job_id and reuse_source_post:
+            post_id, created = self.store.create_or_get_source_post(**post_fields)
+            if not created:
+                existing = self.store.get_post(post_id) or {}
+                comparable = (
+                    "source_run_id",
+                    "series_title",
+                    "series_slug",
+                    "episode_number",
+                    "output_dir",
+                    "title",
+                    "description",
+                    "visibility",
+                )
+                if any(
+                    str(existing.get(key) or "") != str(post_fields.get(key) or "")
+                    for key in comparable
+                ):
+                    raise CommunityError("source_publish_conflict")
+        else:
+            post_id = self.store.create_post(**post_fields)
         return {"post_id": post_id, "pdf_path": str(pdf)}
 
     def _resolve_pdf(self, output_dir: Path) -> Path:
@@ -120,30 +168,66 @@ class CommunityService:
             raise CommunityError("pdf_not_found")
         return pdfs[0]
 
-    def request_publish(self, post_id: str, *, user_id: str | None = None,
+    def request_publish(self, post_id: str, *, principal: RequestPrincipal,
+                        pdf_path: str = "",
                         force_new_version: bool = False) -> dict[str, Any]:
+        self._require_authenticated(principal)
         post = self.store.get_post(post_id)
         if not post:
-            raise CommunityError("post_not_found")
-        actor = user_id or self.user_id
-        if post["user_id"] != actor:
-            raise CommunityError("not_authorized")
-        if self.store.active_publish_exists(post_id):
-            raise CommunityError("publish_already_active")
+            raise ResourceNotFound("post_not_found")
+        authorize_manage_post(principal, post)
+        if post["status"] in {PostStatus.BLOCKED, PostStatus.DELETED}:
+            raise AuthorizationDenied("post_not_publishable")
+        actor = principal.user_id
 
         output_dir = self._post_output_dir(post)
-        pdf = self._resolve_pdf(output_dir)
+        if pdf_path:
+            pdf = Path(pdf_path).resolve()
+            if output_dir not in pdf.parents:
+                raise CommunityError("pdf_outside_output_dir")
+        elif post.get("source_job_id"):
+            # Source jobs must use the exact runner-recorded artifact supplied by the
+            # authenticated API resolver; never fall back to a directory glob.
+            raise ResourceNotFound("output_not_found")
+        else:
+            pdf = self._resolve_pdf(output_dir)
         validate_local_pdf(pdf, self.output_root)
         sha256, size = sha256_of_file(pdf)
 
-        duplicate = self.store.published_sha_exists(sha256, exclude_post=post_id)
-        if duplicate and not force_new_version:
-            raise CommunityError("duplicate_pdf_already_published")
-
+        # Refresh after hashing: a runner or unpublish can commit while the local file
+        # is read.  Decisions below must use the current post/file pair, not the stale
+        # row loaded at method entry.
+        post = self.store.get_post(post_id)
+        if not post:
+            raise ResourceNotFound("post_not_found")
+        authorize_manage_post(principal, post)
+        if post["status"] in {PostStatus.BLOCKED, PostStatus.DELETED}:
+            raise AuthorizationDenied("post_not_publishable")
         filename = safe_pdf_filename(post["series_slug"] or "", post["episode_number"] or "", pdf.name)
-        file_id = self.store.create_file(
-            post_id=post_id, filename=filename, mime_type="application/pdf",
-            size_bytes=size, sha256=sha256, storage_provider=self.provider_name)
+        preparation = self.store.prepare_publish_attempt(
+            post_id=post_id,
+            sha256=sha256,
+            actor_id=actor,
+            allow_duplicate=force_new_version,
+        )
+        outcome = preparation.get("outcome")
+        if outcome in {"active", "completed"}:
+            return {
+                "post_id": post_id,
+                "file_id": preparation["file_id"],
+                "job_id": preparation["job_id"],
+            }
+        if outcome != "needs_job":
+            errors = {
+                "duplicate": "duplicate_pdf_already_published",
+                "not_publishable": "post_not_publishable",
+                "unavailable": "pdf_version_unavailable",
+                "conflict": "publish_state_conflict",
+                "missing": "post_not_found",
+            }
+            raise CommunityError(errors.get(str(outcome), "publish_state_conflict"))
+
+        file_id = preparation.get("file_id") or uuid.uuid4().hex
         payload = {
             "post_id": post_id, "file_id": file_id, "user_id": actor,
             "local_pdf_path": str(pdf), "pdf_filename": filename, "pdf_size": size,
@@ -152,7 +236,13 @@ class CommunityService:
             "storage_provider": self.provider_name, "visibility": post["visibility"],
         }
         command = self._build_command(payload)
-        job_id = self.job_store.create_job(
+        # Create the job first in a non-claimable state.  Only the atomic community
+        # reservation below may make it QUEUED; a hard crash at either side is then
+        # recoverable without a phantom upload_job_id or a second runner.
+        job_id = uuid.uuid4().hex
+        process = process_tree.snapshot(os.getpid()) or {}
+        self.job_store.create_job(
+            job_id=job_id,
             source_url="", output_dir=str(output_dir), command=command,
             configuration={
                 "job_type": "community_publish",
@@ -161,11 +251,79 @@ class CommunityService:
                 **payload,
             },
             series_title=post["series_title"] or "", series_slug=post["series_slug"] or "",
-            episode_number=post["episode_number"] or "")
-        self.store.update_file(file_id, upload_job_id=job_id, upload_status=FileStatus.PENDING)
-        self.store.set_post_status(post_id, PostStatus.PUBLISHING, actor_id=actor)
-        self.store.add_event(post_id, actor, "publish_requested", {"file_id": file_id, "job_id": job_id})
-        return {"post_id": post_id, "file_id": file_id, "job_id": job_id}
+            episode_number=post["episode_number"] or "",
+            initial_status=JobStatus.STAGING,
+            staging_owner_pid=os.getpid(),
+            staging_owner_create_time=process.get("create_time"),
+        )
+        try:
+            reservation = self.store.activate_publish_attempt(
+                post_id=post_id,
+                file_id=file_id,
+                upload_job_id=job_id,
+                filename=filename,
+                mime_type="application/pdf",
+                size_bytes=size,
+                sha256=sha256,
+                storage_provider=self.provider_name,
+                actor_id=actor,
+                allow_duplicate=force_new_version,
+            )
+        except BaseException:
+            # The community transaction may have committed before the connection
+            # reported an error.  Keep the job non-claimable and release the API
+            # process lease so the worker can classify the authoritative community
+            # state instead of guessing FAILED from an ambiguous cross-DB outcome.
+            try:
+                self.job_store.update_fields(
+                    job_id, worker_pid=None, worker_create_time=None)
+            except Exception:
+                pass
+            raise
+
+        outcome = reservation.get("outcome")
+        if outcome != "reserved":
+            try:
+                self.job_store.transition(job_id, JobStatus.CANCELLED)
+            except Exception:
+                pass
+            if outcome in {"active", "completed"}:
+                return {
+                    "post_id": post_id,
+                    "file_id": reservation["file_id"],
+                    "job_id": reservation["job_id"],
+                }
+            errors = {
+                "duplicate": "duplicate_pdf_already_published",
+                "not_publishable": "post_not_publishable",
+                "unavailable": "pdf_version_unavailable",
+                "conflict": "publish_state_conflict",
+                "missing": "post_not_found",
+            }
+            raise CommunityError(errors.get(str(outcome), "publish_state_conflict"))
+
+        try:
+            self.job_store.transition(
+                job_id,
+                JobStatus.QUEUED,
+                queued_at=time.time(),
+                worker_pid=None,
+                worker_create_time=None,
+            )
+        except BaseException:
+            # The linked STAGING job is safe for worker recovery even while this API
+            # process remains alive; clear its staging-owner lease before propagating.
+            try:
+                self.job_store.update_fields(
+                    job_id, worker_pid=None, worker_create_time=None)
+            except Exception:
+                pass
+            raise
+        return {
+            "post_id": post_id,
+            "file_id": reservation["file_id"],
+            "job_id": reservation["job_id"],
+        }
 
     def _post_output_dir(self, post: dict[str, Any]) -> Path:
         candidate = post.get("output_dir") or ""
@@ -182,7 +340,7 @@ class CommunityService:
 
     # ---- feed + read --------------------------------------------------------
     def feed(self, **kwargs: Any) -> list[dict[str, Any]]:
-        posts = self.store.feed(**kwargs)
+        posts = self.store.feed(require_verified_file=True, **kwargs)
         return [self._card(post) for post in posts]
 
     @staticmethod
@@ -202,48 +360,77 @@ class CommunityService:
             "status": post["status"],
         }
 
-    def resolve_readable_file(self, post_id: str, *, user_id: str | None = None) -> dict[str, Any]:
-        """Return the storage file for a readable post, or raise. Never exposes the id."""
+    def resolve_readable_file(self, post_id: str, *, principal: RequestPrincipal) -> dict[str, Any]:
+        """Authorize from DB metadata before returning an internal storage file record."""
+        if not isinstance(principal, RequestPrincipal):
+            raise AuthenticationRequired("authentication_required")
         post = self.store.get_post(post_id)
         if not post:
-            raise CommunityError("post_not_found")
-        if post["status"] != PostStatus.PUBLISHED:
-            raise CommunityError("post_not_published")
-        if post["moderation_status"] not in {Moderation.APPROVED, Moderation.PENDING}:
-            raise CommunityError("post_blocked")
-        if post["visibility"] == Visibility.PRIVATE and (user_id or self.user_id) != post["user_id"]:
-            raise CommunityError("not_authorized")
+            raise ResourceNotFound("post_not_found")
+        authorize_read_post(principal, post)
         file = self.store.file_for_post(post_id)
         if not file or file["upload_status"] != FileStatus.VERIFIED or not file["storage_file_id"]:
-            raise CommunityError("file_not_available")
+            raise ResourceNotFound("post_not_found")
         return file
 
     # ---- lifecycle ----------------------------------------------------------
-    def unpublish(self, post_id: str, *, user_id: str | None = None) -> None:
-        post = self._owned_post(post_id, user_id)
-        self.store.set_post_status(post_id, PostStatus.UNPUBLISHED, actor_id=post["user_id"])
+    def unpublish(self, post_id: str, *, principal: RequestPrincipal) -> None:
+        post = self._managed_post(post_id, principal)
+        if post["status"] in {PostStatus.BLOCKED, PostStatus.DELETED}:
+            raise ResourceNotFound("post_not_found")
+        self.store.set_post_status(post_id, PostStatus.UNPUBLISHED, actor_id=principal.user_id)
+        file = self.store.file_for_post(post_id)
+        if (
+            file
+            and file.get("upload_job_id")
+            and file.get("upload_status") in {
+                FileStatus.PENDING,
+                FileStatus.UPLOADING,
+                FileStatus.VERIFYING,
+            }
+        ):
+            self.store.invalidate_publish_file(file["id"], file["upload_job_id"])
+            self.job_store.request_cancel(file["upload_job_id"])
+            self.store.add_event(
+                post_id,
+                principal.user_id,
+                "publish_cancel_requested",
+                {"file_id": file["id"], "job_id": file["upload_job_id"]},
+            )
 
-    def _owned_post(self, post_id: str, user_id: str | None) -> dict[str, Any]:
+    def _managed_post(self, post_id: str, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated(principal)
         post = self.store.get_post(post_id)
         if not post:
-            raise CommunityError("post_not_found")
-        if post["user_id"] != (user_id or self.user_id):
-            raise CommunityError("not_authorized")
+            raise ResourceNotFound("post_not_found")
+        authorize_manage_post(principal, post)
         return post
 
-    def delete_remote_file(self, post_id: str, *, provider, user_id: str | None = None,
+    def delete_remote_file(self, post_id: str, *, provider, principal: RequestPrincipal,
                            to_trash: bool = True) -> None:
         """Explicit admin action to remove the remote file; never automatic on unpublish."""
-        self._owned_post(post_id, user_id)
+        self._require_authenticated(principal)
+        post = self.store.get_post(post_id)
+        if not post:
+            raise ResourceNotFound("post_not_found")
+        authorize_delete_file(principal, post)
         file = self.store.file_for_post(post_id)
-        if not file or not file["storage_file_id"]:
+        if (
+            not file
+            or file["upload_status"] != FileStatus.VERIFIED
+            or not file["storage_file_id"]
+        ):
             return
         self.store.update_file(file["id"], upload_status=FileStatus.DELETING)
         if to_trash:
             provider.move_to_trash(file["storage_file_id"])
         else:
             provider.delete_file(file["storage_file_id"])
-        import time
         self.store.update_file(file["id"], upload_status=FileStatus.DELETED, deleted_at=time.time())
-        self.store.add_event(post_id, user_id or self.user_id, "file_deleted",
+        self.store.add_event(post_id, principal.user_id, "file_deleted",
                              {"to_trash": to_trash})
+
+    @staticmethod
+    def _require_authenticated(principal: RequestPrincipal) -> None:
+        if not isinstance(principal, RequestPrincipal) or not principal.authenticated:
+            raise AuthenticationRequired("authentication_required")
