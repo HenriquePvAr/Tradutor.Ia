@@ -277,9 +277,20 @@ class CommunityServiceTests(unittest.TestCase):
         draft = self.svc.create_draft(principal=OWNER, output_dir=str(out), series_slug="x", episode_number="1")
         self.store.set_post_status(draft["post_id"], PostStatus.PUBLISHED,
                                    moderation_status=Moderation.APPROVED)
+        # Authorized owner still gets a uniform 404 while no verified file exists.
         with self.assertRaises(ResourceNotFound) as ctx:
-            self.svc.resolve_readable_file(draft["post_id"], principal=ANONYMOUS)
+            self.svc.resolve_readable_file(draft["post_id"], principal=OWNER)
         self.assertIn("post_not_found", str(ctx.exception))
+
+    def test_community_read_is_authenticated_only(self):
+        from community_auth import AuthenticationRequired
+        out = self._chapter()
+        draft = self.svc.create_draft(principal=OWNER, output_dir=str(out),
+                                      series_slug="x", episode_number="1")
+        self.store.set_post_status(draft["post_id"], PostStatus.PUBLISHED,
+                                   moderation_status=Moderation.APPROVED)
+        with self.assertRaises(AuthenticationRequired):
+            self.svc.resolve_readable_file(draft["post_id"], principal=ANONYMOUS)
 
     def test_sha256_streaming(self):
         out = self._chapter()

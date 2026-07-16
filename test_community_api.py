@@ -17,6 +17,10 @@ OWNER = RequestPrincipal(
     "local", True, roles=frozenset({"admin"}), auth_source="test", session_id="test-owner")
 NON_ADMIN = RequestPrincipal(
     "local", True, auth_source="test", session_id="test-non-admin")
+# A different signed-in community member (not the owner): the community is
+# authenticated-read, so a member may read a published post but not manage it.
+MEMBER = RequestPrincipal(
+    "member-x", True, auth_source="test", session_id="test-member")
 ANONYMOUS = RequestPrincipal.anonymous()
 
 
@@ -78,7 +82,7 @@ class CommunityApiTests(unittest.TestCase):
         # If the feed touched the provider, a broken provider would raise. Patch it to blow up.
         with patch.object(community_api, "build_read_provider",
                           side_effect=AssertionError("feed must not call provider")):
-            feed = self.api.feed(principal=ANONYMOUS)
+            feed = self.api.feed(principal=MEMBER)
         self.assertEqual(feed["count"], 1)
         self.assertNotIn("storage_file_id", feed["posts"][0])
 
@@ -86,12 +90,12 @@ class CommunityApiTests(unittest.TestCase):
         result = self._publish_and_run()
         self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
                                        moderation_status=Moderation.APPROVED)
-        meta, stream = self.api.open_pdf(result["post_id"], principal=ANONYMOUS)
+        meta, stream = self.api.open_pdf(result["post_id"], principal=MEMBER)
         body = b"".join(stream.iter_chunks())
         self.assertEqual(len(body), meta["total_size"])
         self.assertEqual(meta["mime_type"], "application/pdf")
         # Range request returns a partial slice.
-        meta2, stream2 = self.api.open_pdf(result["post_id"], principal=ANONYMOUS,
+        meta2, stream2 = self.api.open_pdf(result["post_id"], principal=MEMBER,
                                            range_header="bytes=0-99")
         self.assertTrue(meta2["partial"])
         self.assertEqual(meta2["content_length"], 100)
@@ -101,7 +105,20 @@ class CommunityApiTests(unittest.TestCase):
         result = self.api.publish({"slug": "chap", "series_slug": "chap", "episode_number": "1"},
                                   principal=OWNER)
         with self.assertRaises(ResourceNotFound):
+            self.api.open_pdf(result["post_id"], principal=MEMBER)
+
+    def test_community_read_and_feed_require_authentication(self):
+        from community_auth import AuthenticationRequired
+        result = self._publish_and_run()
+        self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
+                                       moderation_status=Moderation.APPROVED)
+        # Anonymous cannot read a community post nor list the feed.
+        with self.assertRaises(AuthenticationRequired):
             self.api.open_pdf(result["post_id"], principal=ANONYMOUS)
+        with self.assertRaises(AuthenticationRequired):
+            self.api.feed(principal=ANONYMOUS)
+        # Any authenticated member can.
+        self.assertEqual(self.api.feed(principal=MEMBER)["count"], 1)
 
     def test_read_private_requires_owner(self):
         result = self._publish_and_run()
@@ -117,7 +134,7 @@ class CommunityApiTests(unittest.TestCase):
         result = self._publish_and_run()
         self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
                                        moderation_status=Moderation.APPROVED)
-        self.api.open_pdf(result["post_id"], principal=ANONYMOUS)
+        self.api.open_pdf(result["post_id"], principal=MEMBER)
         self.assertEqual(self.api.store.get_post(result["post_id"])["views"], 1)
 
     def test_open_pdf_releases_community_lock_before_slow_provider_factory(self):
@@ -140,7 +157,7 @@ class CommunityApiTests(unittest.TestCase):
 
         def open_pdf():
             try:
-                self.api.open_pdf(result["post_id"], principal=ANONYMOUS)
+                self.api.open_pdf(result["post_id"], principal=MEMBER)
             except BaseException as exc:  # surface failures from the helper thread
                 read_errors.append(exc)
 
@@ -153,7 +170,7 @@ class CommunityApiTests(unittest.TestCase):
         feed = None
         if lock_was_free:
             try:
-                feed = self.api.feed(principal=ANONYMOUS)
+                feed = self.api.feed(principal=MEMBER)
             finally:
                 self.api._community_lock.release()
 
@@ -176,9 +193,9 @@ class CommunityApiTests(unittest.TestCase):
         result = self._publish_and_run()
         self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
                                        moderation_status=Moderation.APPROVED)
-        self.assertEqual(self.api.feed(principal=ANONYMOUS)["count"], 1)
+        self.assertEqual(self.api.feed(principal=MEMBER)["count"], 1)
         self.api.unpublish(result["post_id"], principal=OWNER)
-        self.assertEqual(self.api.feed(principal=ANONYMOUS)["count"], 0)
+        self.assertEqual(self.api.feed(principal=MEMBER)["count"], 0)
 
 
 if __name__ == "__main__":

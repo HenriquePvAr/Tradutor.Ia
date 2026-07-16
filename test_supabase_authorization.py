@@ -185,10 +185,34 @@ class SupabaseAuthorizationTests(unittest.TestCase):
         ids = [p.get("post_id") for p in r.json()["posts"]]
         self.assertIn(self.private_id, ids)
 
-    def test_public_readable_by_anyone(self):
-        r = self.client.get(self._pdf_url(self.public_id))
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.content, PUBLIC_BYTES)
+    def test_community_readable_by_any_authenticated_member(self):
+        url = self._pdf_url(self.public_id)
+        # Owner and any other signed-in Supabase user can read a community post.
+        owner = self.client.get(url, headers=self._bearer(self.owner_token))
+        self.assertEqual(owner.status_code, 200)
+        self.assertEqual(owner.content, PUBLIC_BYTES)
+        other = self.client.get(url, headers=self._bearer(self.other_token))
+        self.assertEqual(other.status_code, 200)
+        self.assertEqual(other.content, PUBLIC_BYTES)
+        rng = self.client.get(url, headers={**self._bearer(self.other_token),
+                                            "Range": "bytes=0-4"})
+        self.assertEqual(rng.status_code, 206)
+
+    def test_community_read_is_not_anonymous(self):
+        # "public" is not anonymous access: a community post requires a valid JWT.
+        for call in (
+            lambda: self.client.head(self._pdf_url(self.public_id)),
+            lambda: self.client.get(self._pdf_url(self.public_id)),
+            lambda: self.client.get(self._pdf_url(self.public_id),
+                                    headers={"Range": "bytes=0-4"}),
+        ):
+            self.assertEqual(call().status_code, 401)
+        self.assertEqual(self.spy.open_calls, 0)
+
+    def test_non_owner_member_cannot_manage_community_post(self):
+        r = self.client.post(f"/api/community/posts/{self.public_id}/unpublish",
+                             headers=self._bearer(self.other_token))
+        self.assertEqual(r.status_code, 404)
 
     # ---- other user denied uniformly ----
     def test_other_user_gets_404_and_no_storage(self):
@@ -244,9 +268,18 @@ class SupabaseAuthorizationTests(unittest.TestCase):
         r = self.client.get(url, headers={"Authorization": "Bearer not.a.jwt"})
         self.assertEqual(r.status_code, 401)
 
-    def test_feed_hides_private(self):
-        r = self.client.get("/api/community/posts")
-        titles = [p.get("title") for p in r.json()["posts"]]
+    def test_feed_requires_authentication_and_hides_private(self):
+        # Anonymous cannot list the community feed at all.
+        anon = self.client.get("/api/community/posts")
+        self.assertEqual(anon.status_code, 401)
+        # A signed-in member sees the community post but never the private one.
+        member = self.client.get("/api/community/posts",
+                                 headers=self._bearer(self.other_token))
+        self.assertEqual(member.status_code, 200)
+        ids = [p.get("post_id") for p in member.json()["posts"]]
+        titles = [p.get("title") for p in member.json()["posts"]]
+        self.assertIn(self.public_id, ids)
+        self.assertNotIn(self.private_id, ids)
         self.assertNotIn("Private title", titles)
         self.assertEqual(self.spy.open_calls, 0)
 

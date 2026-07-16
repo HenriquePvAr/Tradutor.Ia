@@ -731,15 +731,74 @@ def test_moderator_does_not_inherit_private_read_access(harness):
     assert harness.spy.builds == 0
 
 
-def test_anonymous_public_get_still_streams(harness):
+def test_scenario_private_owner_reads_other_404_anonymous_401(harness):
+    """Business rule 1 — private/draft is restricted to owner (and trusted admin)."""
+    url = f"/api/community/posts/{harness.private_id}/pdf"
+    owner = harness.client.get(url, headers=harness.headers(harness.owner))
+    assert owner.status_code == 200 and owner.content == PRIVATE_BYTES
+    other = harness.client.get(url, headers=harness.headers(harness.other))
+    assert other.status_code == 404
+    admin = harness.client.get(url, headers=harness.headers(harness.admin))
+    assert admin.status_code == 200
+    anonymous = harness.client.get(url)
+    assert anonymous.status_code == 401
+
+
+def test_scenario_community_owner_and_other_read_anonymous_401(harness):
+    """Business rule 2 — a community post is readable by any signed-in member."""
+    url = f"/api/community/posts/{harness.public_id}/pdf"
+    owner = harness.client.get(url, headers=harness.headers(harness.owner))
+    assert owner.status_code == 200 and owner.content == PUBLIC_BYTES
+    other = harness.client.get(url, headers=harness.headers(harness.other))
+    assert other.status_code == 200 and other.content == PUBLIC_BYTES
+    rng = harness.client.get(url, headers={**harness.headers(harness.other),
+                                           "Range": "bytes=0-3"})
+    assert rng.status_code == 206
+    anonymous = harness.client.get(url)
+    assert anonymous.status_code == 401
+
+
+def test_non_owner_member_cannot_manage_community_post(harness):
+    """Rule 2 — a reader is only a reader: no unpublish/edit/delete on another's post."""
+    unpublish = harness.client.post(
+        f"/api/community/posts/{harness.public_id}/unpublish",
+        headers=harness.headers(harness.other, csrf=True),
+    )
+    assert unpublish.status_code == 404
+    # The post is still published and readable by the owner afterwards.
+    still = harness.client.get(
+        f"/api/community/posts/{harness.public_id}/pdf",
+        headers=harness.headers(harness.owner))
+    assert still.status_code == 200
+    assert harness.api.store.get_post(harness.public_id)["status"] == PostStatus.PUBLISHED
+
+
+def test_anonymous_community_read_is_401(harness):
+    # A community (public) post is authenticated-only: anonymous is asked to sign in and
+    # never receives bytes, size, filename or storage id.
     response = harness.client.get(f"/api/community/posts/{harness.public_id}/pdf")
+    assert response.status_code == 401
+    assert response.content != PUBLIC_BYTES
+    assert "content-length" not in {k.lower(): v for k, v in response.headers.items()} \
+        or response.headers.get("content-length") != str(len(PUBLIC_BYTES))
+    assert harness.spy.builds == harness.spy.open_calls == 0
+
+
+def test_authenticated_non_owner_reads_community_pdf(harness):
+    response = harness.client.get(
+        f"/api/community/posts/{harness.public_id}/pdf",
+        headers=harness.headers(harness.other),
+    )
     assert response.status_code == 200
     assert response.content == PUBLIC_BYTES
     assert "storage_file_id" not in response.text
 
 
-def test_anonymous_public_head_has_consistent_size_and_no_body(harness):
-    response = harness.client.head(f"/api/community/posts/{harness.public_id}/pdf")
+def test_authenticated_non_owner_head_has_consistent_size_and_no_body(harness):
+    response = harness.client.head(
+        f"/api/community/posts/{harness.public_id}/pdf",
+        headers=harness.headers(harness.other),
+    )
     assert response.status_code == 200
     assert response.content == b""
     assert response.headers["content-length"] == str(len(PUBLIC_BYTES))
@@ -749,27 +808,44 @@ def test_anonymous_public_head_has_consistent_size_and_no_body(harness):
     assert harness.api.store.get_post(harness.public_id)["views"] == 0
 
 
+def test_anonymous_community_head_is_401(harness):
+    response = harness.client.head(f"/api/community/posts/{harness.public_id}/pdf")
+    assert response.status_code == 401
+    assert harness.spy.builds == harness.spy.open_calls == 0
+
+
 @pytest.mark.parametrize("range_header,start,end", [
     ("bytes=0-3", 0, 3),
     ("bytes=4-11", 4, 11),
     (f"bytes={len(PUBLIC_BYTES)-4}-", len(PUBLIC_BYTES) - 4, len(PUBLIC_BYTES) - 1),
     ("bytes=-4", len(PUBLIC_BYTES) - 4, len(PUBLIC_BYTES) - 1),
 ])
-def test_public_single_ranges_stream_exact_bytes(harness, range_header, start, end):
+def test_community_single_ranges_stream_exact_bytes(harness, range_header, start, end):
     response = harness.client.get(
         f"/api/community/posts/{harness.public_id}/pdf",
-        headers={"Range": range_header},
+        headers={**harness.headers(harness.other), "Range": range_header},
     )
     assert response.status_code == 206
     assert response.content == PUBLIC_BYTES[start:end + 1]
     assert response.headers["content-range"] == f"bytes {start}-{end}/{len(PUBLIC_BYTES)}"
 
 
-@pytest.mark.parametrize("range_header", ["invalid", "bytes=-", "bytes=99999-", "bytes=0-1,4-5"])
-def test_invalid_or_multiple_public_range_is_416_before_provider(harness, range_header):
+def test_anonymous_community_range_is_401_before_provider(harness):
+    # Authorization precedes range parsing: anonymous is 401, never a 416 that would
+    # confirm the size.
     response = harness.client.get(
         f"/api/community/posts/{harness.public_id}/pdf",
-        headers={"Range": range_header},
+        headers={"Range": "bytes=0-3"},
+    )
+    assert response.status_code == 401
+    assert harness.spy.builds == 0
+
+
+@pytest.mark.parametrize("range_header", ["invalid", "bytes=-", "bytes=99999-", "bytes=0-1,4-5"])
+def test_invalid_or_multiple_community_range_is_416_before_provider(harness, range_header):
+    response = harness.client.get(
+        f"/api/community/posts/{harness.public_id}/pdf",
+        headers={**harness.headers(harness.other), "Range": range_header},
     )
     assert response.status_code == 416
     assert response.headers["content-range"] == f"bytes */{len(PUBLIC_BYTES)}"
@@ -801,11 +877,22 @@ def test_feed_only_contains_public_published_approved_verified(harness):
         sha256="new-pending",
         storage_provider="filesystem",
     )
-    response = harness.client.get("/api/community/posts")
+    response = harness.client.get(
+        "/api/community/posts", headers=harness.headers(harness.other))
     ids = {post["post_id"] for post in response.json()["posts"]}
     assert ids == {harness.public_id}
     assert harness.private_id not in ids
     assert harness.spy.builds == 0
+
+
+def test_feed_requires_authentication(harness):
+    anonymous = harness.client.get("/api/community/posts")
+    assert anonymous.status_code == 401
+    member = harness.client.get(
+        "/api/community/posts", headers=harness.headers(harness.other))
+    assert member.status_code == 200
+    assert harness.public_id in {p["post_id"] for p in member.json()["posts"]}
+    assert harness.private_id not in {p["post_id"] for p in member.json()["posts"]}
 
 
 def test_deleted_latest_file_never_falls_back_to_older_verified_version(harness):
@@ -829,9 +916,12 @@ def test_deleted_latest_file_never_falls_back_to_older_verified_version(harness)
         upload_status=FileStatus.DELETED,
         storage_file_id=uploaded.file_id,
     )
-    feed = harness.client.get("/api/community/posts")
+    feed = harness.client.get(
+        "/api/community/posts", headers=harness.headers(harness.other))
     assert harness.public_id not in {item["post_id"] for item in feed.json()["posts"]}
-    denied = harness.client.get(f"/api/community/posts/{harness.public_id}/pdf")
+    denied = harness.client.get(
+        f"/api/community/posts/{harness.public_id}/pdf",
+        headers=harness.headers(harness.other))
     assert denied.status_code == 404
     assert harness.spy.builds == harness.spy.open_calls == 0
 
