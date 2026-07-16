@@ -90,6 +90,7 @@ def run_job(job_id: str, db_path: str) -> int:
 
         cancelled = False
         interrupted = False
+        remote_file_id = session.file_id  # some providers know it upfront; Drive reports it on completion
         with pdf_path.open("rb") as handle:
             offset = 0
             while offset < total:
@@ -107,6 +108,8 @@ def run_job(job_id: str, db_path: str) -> int:
                     _fail(jobs, community, job_id, post_id, file_id, job, "upload_failed")
                     return 0
                 offset = result.uploaded
+                if getattr(result, "file_id", ""):
+                    remote_file_id = result.file_id
                 community.update_file(file_id, bytes_uploaded=offset)
                 jobs.update_progress(job_id, stage="uploading", current=offset, total=total,
                                      message=f"{offset}/{total} bytes")
@@ -127,9 +130,9 @@ def run_job(job_id: str, db_path: str) -> int:
         # Verify the remote file before publishing.
         jobs.update_progress(job_id, stage="verifying", current=total, total=total)
         community.update_file(file_id, upload_status=FileStatus.VERIFYING,
-                              storage_file_id=session.file_id)
+                              storage_file_id=remote_file_id)
         try:
-            meta = provider.stat_file(session.file_id)
+            meta = provider.stat_file(remote_file_id)
         except StorageError as exc:
             _fail(jobs, community, job_id, post_id, file_id, job, f"verify_error:{exc.status}")
             return 0

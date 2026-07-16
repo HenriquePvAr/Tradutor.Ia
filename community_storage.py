@@ -377,4 +377,11 @@ def build_storage_provider(config: dict) -> StorageProvider:
         return FakeStorageProvider()
     if name == "filesystem":
         return FilesystemStorageProvider(config["storage_root"])
+    if name == "google_drive":
+        # Secrets come from the environment/token file, never from the passed config
+        # (which is persisted with the job in the database).
+        from google_drive_factory import GoogleDriveConfig, build_google_drive_provider
+        gconfig = GoogleDriveConfig.from_env(
+            root_folder_id_override=(config or {}).get("root_folder_id", ""))
+        return build_google_drive_provider(gconfig)
     raise StorageError(f"unknown or unconfigured storage provider: {name}")

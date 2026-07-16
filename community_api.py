@@ -41,7 +41,12 @@ def build_read_provider():
     if name in {"fake", "memory"}:
         return FakeStorageProvider()
     if name == "google_drive":
-        raise StorageError("google_drive read provider requires configured OAuth (smoke step)")
+        # Same wiring as publishing, so read and upload share one configuration and token
+        # source; never runs interactive OAuth during a request.
+        from google_drive_factory import GoogleDriveConfig, build_google_drive_provider
+        return build_google_drive_provider(
+            GoogleDriveConfig.from_env(
+                root_folder_id_override=os.getenv("COMMUNITY_DRIVE_ROOT_FOLDER_ID", "")))
     raise StorageError(f"unknown storage provider: {name}")
 
 
