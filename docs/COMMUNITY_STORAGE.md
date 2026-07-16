@@ -98,9 +98,11 @@ saneado e `nosniff`. Não carrega o PDF inteiro na memória e **não expõe** o
 
 ## Feed
 
-`GET /api/community/posts` consulta **somente o banco** (nunca o Drive). Mostra apenas
-`published`, `visibility=public`, `moderation_status=approved` e arquivo `verified`. Filtros por
-série, texto, paginação. Cards expõem só metadata.
+`GET /api/community/posts` **exige autenticação** (anônimo recebe `401`) e consulta
+**somente o banco** (nunca o Drive). Mostra apenas `published`, `visibility=public`,
+`moderation_status=approved` e arquivo `verified`. A comunidade é autenticada para ler:
+`public` é acessível a qualquer membro autenticado, nunca anonimamente. Filtros por série,
+texto, paginação. Cards expõem só metadata.
 
 A versão absolutamente mais recente do arquivo é autoritativa, inclusive se estiver
 pending, failed ou deleted. O backend nunca volta silenciosamente para uma versão

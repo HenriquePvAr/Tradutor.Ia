@@ -52,20 +52,34 @@ seria visto como peer de loopback.
 
 ## Política de posts
 
+A comunidade é **autenticada para ler**: `public` significa "qualquer membro
+autenticado", nunca acesso anônimo. O PDF é sempre transmitido pelo backend e o arquivo
+remoto permanece privado no Drive — nenhum link público é criado.
+
 | Visibilidade | Quem lê o PDF | Requisitos adicionais |
 |---|---|---|
-| `public` | anônimo ou autenticado | `published`, moderação `approved`, arquivo `verified` |
+| `public` (comunidade) | **qualquer usuário autenticado** | `published`, moderação `approved`, arquivo `verified` |
 | `unlisted` | owner ou admin confiável | `published`, moderação `approved` ou `pending`, arquivo `verified` |
 | `private` | owner ou admin confiável | `published`, moderação `approved` ou `pending`, arquivo `verified` |
+
+Um leitor autenticado de um post `public` é **apenas leitor**: publicar, editar,
+despublicar, excluir/trash e moderar continuam exigindo owner (ou admin conforme
+política) — um membro comum recebe `404` ao tentar administrar post alheio.
 
 Moderadores não recebem acesso a PDFs private/unlisted por padrão. Podem ser autorizados
 somente por uma política administrativa explícita. Posts draft, publishing, unpublished,
 blocked, failed ou deleted nunca entregam PDF; moderação rejected/blocked também nega.
 
-Anônimo diante de private/unlisted recebe `401`. Um usuário autenticado sem acesso recebe
-`404`, evitando enumeração. CSRF inválido recebe `403`. A mesma regra é usada por HEAD,
-GET completo e Range. Respostas negadas não incluem tamanho real, Range, filename,
-checksum, título privado ou `storage_file_id`.
+**Anônimo nunca lê nada da comunidade** (nem `public`): recebe `401` e é convidado a
+entrar. Um usuário autenticado sem acesso a um post restrito recebe `404`, evitando
+enumeração. CSRF inválido recebe `403`. A mesma regra é usada por HEAD, GET completo e
+Range — a autorização precede o parsing de Range, então um anônimo recebe `401` antes de
+qualquer `416`. Respostas negadas não incluem tamanho real, Range, filename, checksum,
+título privado ou `storage_file_id`.
+
+O feed da comunidade (`GET /api/community/posts`) também exige autenticação: um anônimo
+recebe `401`; um membro autenticado vê apenas posts `public` + `published` + `approved` +
+`verified`, nunca private/unlisted/não-publicados.
 
 Respostas de PDF usam `Cache-Control: private, no-store` e `Vary: Cookie`; as respostas
 sensíveis negadas (`401/403/404/416`), `my-posts` e metadata de sessão usam a mesma
