@@ -80,21 +80,33 @@ série, texto, paginação. Cards expõem só metadata.
 Antes do upload verifica SHA-256/post/usuário/capítulo e job ativo, bloqueando duplicata
 acidental. Um hash diferente é permitido como nova versão (com confirmação).
 
-## OAuth administrativo
+## OAuth administrativo (Desktop app)
 
 O storage pertence à conta Google do administrador, então usa **OAuth 2.0 de usuário**
-(não service account, que não pode ser dona de arquivos no Meu Drive). `drive_auth.py`:
+(não service account, que não pode ser dona de arquivos no Meu Drive). Use uma credencial
+OAuth do tipo **Desktop app**. `drive_auth.py` roda o fluxo oficial `InstalledAppFlow` com
+**redirect de loopback em `127.0.0.1` numa porta efêmera**, PKCE e acesso offline —
+**nunca** OOB/copiar-colar, porta fixa nem webview embutida. O backend **nunca** dispara
+OAuth durante uma requisição web.
 
 ```
-python drive_auth.py authorize     # imprime a URL de consentimento (nao abre navegador)
-python drive_auth.py status        # presenca/validade do token (nunca imprime valores)
-python drive_auth.py revoke        # remove o token local
-python drive_auth.py test-access   # verifica acesso (requer transporte configurado)
+python drive_auth.py authorize            # abre o navegador do sistema, faz consentimento e salva o token
+python drive_auth.py status               # presenca/validade do token e config (nunca imprime valores)
+python drive_auth.py create-root-folder   # cria a pasta privada do app e imprime so o ID
+python drive_auth.py test-access          # confirma acesso a pasta raiz (nao faz upload)
+python drive_auth.py revoke --yes         # revoga online quando possivel e remove o token local
 ```
+
+Escopo mínimo `drive.file` (o app só vê arquivos que ele criou) — por isso a pasta raiz
+deve ser **criada pelo próprio app** (`create-root-folder`); uma pasta criada manualmente
+fora do app não é acessível com `drive.file`, e o sistema falha com mensagem clara em vez
+de ampliar o escopo silenciosamente.
 
 Token fora do repositório (`GOOGLE_OAUTH_TOKEN_PATH`), escrita atômica, permissão restrita
 (0600), **nunca** em logs, no frontend ou no banco da comunidade. Refresh automático do
-access token; `.env.example` traz **apenas placeholders**.
+access token (repetido uma única vez por request em 401); `.env.example` traz **apenas
+placeholders**. Token expirado/revogado → erro operacional claro pedindo `authorize`; o
+backend não abre navegador sozinho.
 
 ## Reconciliação
 
