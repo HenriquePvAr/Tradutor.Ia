@@ -16,3 +16,5 @@ sentencepiece
 accelerate
 pytesseract
 psutil
+google-auth>=2.0,<3
+google-auth-oauthlib>=1.0,<2
