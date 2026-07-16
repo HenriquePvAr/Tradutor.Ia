@@ -174,20 +174,27 @@ def cmd_authorize(_args) -> int:
         return 1
     save_tokens(_token_path(), tokens)
     # Never print token values.
-    print("authorized; token saved to", _token_path())
+    print("authorized; token saved")
     return 0
 
 
 def cmd_status(_args) -> int:
-    tokens = load_tokens(_token_path())
-    print(f"token_path: {_token_path()}")
-    print(f"client_configured: {bool(_env('GOOGLE_OAUTH_CLIENT_ID') and _env('GOOGLE_OAUTH_CLIENT_SECRET'))}")
-    print(f"root_folder_configured: {bool(_env('COMMUNITY_DRIVE_ROOT_FOLDER_ID'))}")
+    token_path = _token_path()
+    token_present = token_path.is_file()
+    tokens = load_tokens(token_path) if token_present else OAuthTokens()
+    token_valid = bool(
+        token_present
+        and tokens.access_token
+        and tokens.refresh_token
+        and not tokens.expired()
+    )
     print(f"provider: {_env('COMMUNITY_STORAGE_PROVIDER', 'filesystem')}")
-    print(f"has_refresh_token: {bool(tokens.refresh_token)}")
-    print(f"has_access_token: {bool(tokens.access_token)}")
-    print(f"access_expired: {tokens.expired()}")
-    print(f"refresh_possible: {bool(tokens.refresh_token)}")
+    print(f"client_id_configured: {bool(_env('GOOGLE_OAUTH_CLIENT_ID'))}")
+    print(f"client_secret_configured: {bool(_env('GOOGLE_OAUTH_CLIENT_SECRET'))}")
+    print(f"token_path_configured: {bool(_env('GOOGLE_OAUTH_TOKEN_PATH'))}")
+    print(f"token_present: {token_present}")
+    print(f"token_valid: {token_valid}")
+    print(f"root_folder_configured: {bool(_env('COMMUNITY_DRIVE_ROOT_FOLDER_ID'))}")
     print(f"scopes: {','.join(_config_scopes())}")
     return 0
 

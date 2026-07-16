@@ -34,7 +34,8 @@ class GoogleDriveConfig:
 
     def __repr__(self) -> str:  # never leak secrets in logs or tracebacks
         return (f"GoogleDriveConfig(root_folder_id={_mask(self.root_folder_id)!r}, "
-                f"token_path={self.token_path!r}, client_id=<redacted>, "
+                f"token_path=<{('configured' if self.token_path else 'missing')}>, "
+                f"client_id=<redacted>, "
                 f"client_secret=<redacted>, scopes={self.scopes})")
 
     @classmethod
@@ -63,7 +64,7 @@ class GoogleDriveConfig:
 def _mask(value: str) -> str:
     if not value:
         return ""
-    return value[:4] + "…" if len(value) > 6 else "…"
+    return f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "..."
 
 
 def build_google_drive_provider(config: GoogleDriveConfig, *, transport=None, tokens=None):
