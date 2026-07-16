@@ -36,8 +36,16 @@ def can_read_post(
     *,
     policy: CommunityAuthorizationPolicy = DEFAULT_POLICY,
 ) -> bool:
-    """Apply one read policy before any storage provider is constructed or called."""
+    """Apply one read policy before any storage provider is constructed or called.
+
+    The community is authenticated-only: a published+approved post is readable by any
+    signed-in user, but never anonymously. ``public`` means "any authenticated member",
+    not "world-readable" — the PDF is always streamed through the backend and the remote
+    file stays private.
+    """
     if post.get("status") != PostStatus.PUBLISHED:
+        return False
+    if not principal.authenticated:
         return False
     visibility = post.get("visibility")
     moderation = post.get("moderation_status")
@@ -64,10 +72,10 @@ def authorize_read_post(
 ) -> None:
     if can_read_post(principal, post, policy=policy):
         return
-    if not principal.authenticated and post.get("visibility") in {
-        Visibility.PRIVATE,
-        Visibility.UNLISTED,
-    }:
+    # Nothing in the community is anonymous-readable: an unauthenticated caller is asked
+    # to sign in (401), while an authenticated caller who simply lacks access gets a
+    # uniform 404 that never reveals whether the post exists.
+    if not principal.authenticated:
         raise AuthenticationRequired("authentication_required")
     raise ResourceNotFound("post_not_found")
 

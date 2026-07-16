@@ -231,8 +231,9 @@ class CommunityApi:
 
     def feed(self, *, principal: RequestPrincipal, series_slug: str = "", query: str = "", limit: int = 50,
              offset: int = 0) -> dict[str, Any]:
-        if not isinstance(principal, RequestPrincipal):
-            raise AuthenticationRequired("principal_required")
+        # The community feed is authenticated-only; it never lists posts to anonymous
+        # callers even though every card is metadata-only.
+        self._require_authenticated_principal(principal)
         with self._community_lock:
             cards = self.service.feed(
                 series_slug=series_slug,
