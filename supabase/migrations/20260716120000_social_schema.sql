@@ -416,13 +416,13 @@ grant execute on function public.can_read_chapter(uuid) to authenticated;
 create index if not exists idx_works_owner_id on public.works (owner_id);
 create index if not exists idx_works_status on public.works (status);
 create index if not exists idx_works_published_at on public.works (published_at);
-create index if not exists idx_works_community_live on public.works (id)
+create index if not exists idx_works_community_live on public.works (published_at desc)
     where status = 'community' and deleted_at is null;
 
 create index if not exists idx_chapters_work_id on public.chapters (work_id);
 create index if not exists idx_chapters_status on public.chapters (status);
 create index if not exists idx_chapters_published_at on public.chapters (published_at);
-create index if not exists idx_chapters_community_live on public.chapters (work_id)
+create index if not exists idx_chapters_community_live on public.chapters (work_id, chapter_number)
     where status = 'community' and deleted_at is null;
 
 create index if not exists idx_comments_chapter_id on public.comments (chapter_id);
