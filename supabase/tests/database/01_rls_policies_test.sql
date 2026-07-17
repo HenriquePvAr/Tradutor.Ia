@@ -43,7 +43,13 @@ values ('dddd1111-0000-0000-0000-000000000001',
 -- ===========================================================================
 set local role anon;
 set local request.jwt.claims = '';
-select is((select count(*)::int from public.profiles), 0, '1 anonymous cannot read profiles');
+-- anon has no grant at all on the social tables, so even a read is denied outright
+-- (stricter than an RLS-filtered empty result). throws_ok keeps the tx alive via savepoint.
+select throws_ok(
+    $$select count(*) from public.profiles$$,
+    '42501',
+    NULL,
+    '1 anonymous cannot read profiles');
 reset role;
 
 set local role authenticated;
@@ -274,22 +280,18 @@ reset role;
 
 -- ===========================================================================
 -- updated_at trigger (scenario 35)
+-- Within one transaction now() is constant, so seed an intentionally old updated_at
+-- (INSERT does not fire the BEFORE UPDATE trigger) and confirm the update advances it.
 -- ===========================================================================
-do $$
-declare
-    before_ts timestamptz;
-    after_ts timestamptz;
-begin
-    select updated_at into before_ts from public.works where slug = 'a-community';
-    perform pg_sleep(0.01);
-    update public.works set title = 'A Community v2' where slug = 'a-community';
-    select updated_at into after_ts from public.works where slug = 'a-community';
-    if after_ts <= before_ts then
-        raise exception 'updated_at did not advance';
-    end if;
-end;
-$$;
-select ok(true, '35 updated_at advances on update');
+insert into public.works (id, owner_id, title, slug, status, updated_at)
+values ('aaaa1111-0000-0000-0000-0000000000ff', :'user_a', 'Stamp', 'stamp-test', 'draft',
+        '2000-01-01T00:00:00Z');
+update public.works set title = 'Stamp v2' where slug = 'stamp-test';
+select cmp_ok(
+    (select updated_at from public.works where slug = 'stamp-test'),
+    '>',
+    '2000-01-01T00:00:00Z'::timestamptz,
+    '35 updated_at advances on update');
 
 select * from finish();
 rollback;

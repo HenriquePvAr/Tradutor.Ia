@@ -1,0 +1,4 @@
+# Supabase CLI local state — never committed.
+.branches
+.temp
+.env
