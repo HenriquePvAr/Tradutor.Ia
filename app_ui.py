@@ -220,6 +220,7 @@ def index() -> None:
     ui.add_body_html(shell)
     ui.add_body_html('<script src="/static/tradutor_ui.js" defer></script>')
     ui.add_body_html('<script type="module" src="/static/auth_ui.js"></script>')
+    ui.add_body_html('<script type="module" src="/static/social_community.js"></script>')
 
 
 @app.on_shutdown

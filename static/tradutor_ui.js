@@ -250,6 +250,8 @@
     stack.appendChild(toast);
     window.setTimeout(() => { toast.classList.add('leaving'); window.setTimeout(() => toast.remove(), 280); }, 3200);
   }
+  // Bridge so ES modules (e.g. the social community UI) reuse the same toast component.
+  window.__tradutorToast = (message, kind) => showToast(message, kind === 'err' ? 'error' : kind || 'ok');
   function shake(element) {
     if (!element) return;
     element.style.animation = 'none';
