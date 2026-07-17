@@ -42,6 +42,22 @@ app.add_middleware(CommunityNetworkBoundaryMiddleware, auth=AUTH)
 app.add_static_files("/static", STATIC_DIR)
 app.include_router(create_community_router(COMMUNITY, AUTH))
 
+# Supabase social API (works/chapters/comments/…). Mounted only when the social provider
+# is configured; the browser never reaches the tables directly — every call forwards the
+# user's JWT to the Data API under RLS. Fails closed (skips mounting) if unconfigured.
+try:
+    from social_http import create_social_router
+    from social_repository import build_social_repository
+    from supabase_social import SocialConfigError
+
+    try:
+        _SOCIAL_REPO = build_social_repository()
+        app.include_router(create_social_router(_SOCIAL_REPO, AUTH))
+    except SocialConfigError as exc:
+        print(f"social API not mounted: {exc}")
+except Exception as exc:  # never let an optional feature break app startup
+    print(f"social API not mounted: {type(exc).__name__}")
+
 
 def _api_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     try:
