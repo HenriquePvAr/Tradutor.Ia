@@ -1,0 +1,14 @@
+# Local Supabase CLI configuration for Tradutor.Ia.
+# project_id is a LOCAL name only — never the remote project ref (which stays out of Git).
+project_id = "tradutor-ia"
+
+[db]
+# Port used by the local `supabase start` Postgres (requires Docker; not run in this env).
+port = 54322
+major_version = 15
+
+[db.migrations]
+schema_paths = []
+
+[test]
+# `supabase test db` runs every *.sql under this folder as pgTAP (requires Docker).
