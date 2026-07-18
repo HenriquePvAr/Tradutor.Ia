@@ -15,8 +15,10 @@ to ``private.chapter_assets`` behind a dedicated least-privilege role stays docu
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +78,79 @@ class ChapterAssetRepository:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sca_owner ON social_chapter_assets(owner_id)"
         )
+        # Retention: a replaced/unlinked asset is never deleted — it is retained (with a
+        # deadline) so the owner can restore it, and only a later sweep may move it to the
+        # Drive trash. Additive tables; timestamps are epoch seconds (UTC).
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS social_asset_retention (
+                id TEXT PRIMARY KEY,
+                chapter_id TEXT NOT NULL,
+                publication_id TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                state TEXT NOT NULL,
+                previous_state TEXT,
+                retained_at REAL NOT NULL,
+                retain_until REAL NOT NULL,
+                trashed_at REAL,
+                restored_at REAL,
+                last_attempt_at REAL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error_code TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        # At most one *live* retention per (chapter, publication): repeated replace/unlink
+        # must not pile up duplicate retentions for the same asset.
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sar_live "
+            "ON social_asset_retention(chapter_id, publication_id) "
+            "WHERE state IN ('retained','pending_trash','reconcile_required')"
+        )
+        for col in ("state", "retain_until", "publication_id", "chapter_id", "owner_id"):
+            self._conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_sar_{col} ON social_asset_retention({col})")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS social_asset_audit_log (
+                id TEXT PRIMARY KEY,
+                retention_id TEXT,
+                chapter_id TEXT,
+                publication_id TEXT,
+                owner_id TEXT,
+                actor_id TEXT,
+                action TEXT NOT NULL,
+                from_state TEXT,
+                to_state TEXT,
+                reason TEXT,
+                metadata_json TEXT,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_saal_retention ON social_asset_audit_log(retention_id)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS social_asset_reconcile_runs (
+                id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                started_at REAL NOT NULL,
+                finished_at REAL,
+                status TEXT NOT NULL,
+                scanned_count INTEGER NOT NULL DEFAULT 0,
+                safe_count INTEGER NOT NULL DEFAULT 0,
+                ambiguous_count INTEGER NOT NULL DEFAULT 0,
+                changed_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                summary_json TEXT
+            )
+            """
+        )
         # Publish intents make the async upload idempotent: a duplicate click/retry finds
         # the same in-flight publication instead of starting a second upload.
         self._conn.execute(
@@ -114,6 +189,170 @@ class ChapterAssetRepository:
         self._conn.execute(
             "DELETE FROM social_publish_intents WHERE chapter_id=? AND owner_id=?",
             (chapter_id, owner_id))
+
+    # ---- retention lifecycle -------------------------------------------------
+    LIVE_STATES = ("retained", "pending_trash", "reconcile_required")
+
+    def create_retention(self, *, chapter_id: str, publication_id: str, owner_id: str,
+                         reason: str, retain_until: float, previous_state: str = "active") -> str:
+        """Idempotent: a live retention for the same (chapter, publication) is reused."""
+        existing = self.get_live_retention(chapter_id, publication_id)
+        if existing:
+            return existing["id"]
+        now = time.time()
+        rid = uuid.uuid4().hex
+        self._conn.execute(
+            "INSERT INTO social_asset_retention(id,chapter_id,publication_id,owner_id,reason,"
+            "state,previous_state,retained_at,retain_until,created_at,updated_at,version) "
+            "VALUES(?,?,?,?,?,'retained',?,?,?,?,?,1)",
+            (rid, chapter_id, publication_id, owner_id, reason, previous_state,
+             now, retain_until, now, now))
+        self.audit(action="retain", retention_id=rid, chapter_id=chapter_id,
+                   publication_id=publication_id, owner_id=owner_id, actor_id=owner_id,
+                   from_state=previous_state, to_state="retained", reason=reason)
+        return rid
+
+    def get_live_retention(self, chapter_id: str, publication_id: str) -> dict[str, Any] | None:
+        marks = ",".join("?" for _ in self.LIVE_STATES)
+        r = self._conn.execute(
+            f"SELECT * FROM social_asset_retention WHERE chapter_id=? AND publication_id=? "
+            f"AND state IN ({marks})", (chapter_id, publication_id, *self.LIVE_STATES)).fetchone()
+        return dict(r) if r else None
+
+    def get_retention(self, retention_id: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            "SELECT * FROM social_asset_retention WHERE id=?", (retention_id,)).fetchone()
+        return dict(r) if r else None
+
+    def latest_retention_for_chapter(self, chapter_id: str, owner_id: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            "SELECT * FROM social_asset_retention WHERE chapter_id=? AND owner_id=? "
+            "ORDER BY retained_at DESC LIMIT 1", (chapter_id, owner_id)).fetchone()
+        return dict(r) if r else None
+
+    def list_owner_retentions(self, owner_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        marks = ",".join("?" for _ in self.LIVE_STATES)
+        rows = self._conn.execute(
+            f"SELECT * FROM social_asset_retention WHERE owner_id=? AND state IN ({marks}) "
+            f"ORDER BY retained_at DESC LIMIT ?",
+            (owner_id, *self.LIVE_STATES, int(limit))).fetchall()
+        return [dict(r) for r in rows]
+
+    # Allowed retention transitions; anything else is rejected (fail-closed) even when a
+    # caller bypasses the service layer.
+    TRANSITIONS = {
+        "retained": {"pending_trash", "restored", "reconcile_required", "failed"},
+        "pending_trash": {"trashed", "failed", "retained", "reconcile_required"},
+        "failed": {"pending_trash", "trashed", "reconcile_required", "retained"},
+        "reconcile_required": {"retained", "ignored", "pending_trash"},
+        "trashed": {"restored"},
+        "restored": set(),
+        "ignored": set(),
+    }
+
+    def list_retentions_for_reconcile(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Every non-terminal retention, all owners — reconciliation scans app records only."""
+        rows = self._conn.execute(
+            "SELECT * FROM social_asset_retention WHERE state NOT IN ('restored','ignored') "
+            "ORDER BY retained_at ASC LIMIT ?", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_due_retentions(self, now: float, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Retentions whose deadline has passed and that are still awaiting a decision."""
+        rows = self._conn.execute(
+            "SELECT * FROM social_asset_retention WHERE state IN ('retained','pending_trash','failed') "
+            "AND retain_until <= ? ORDER BY retain_until ASC LIMIT ?", (now, int(limit))).fetchall()
+        return [dict(r) for r in rows]
+
+    def transition_retention(self, retention_id: str, *, to_state: str, expected_version: int,
+                             actor_id: str = "system", reason: str = "", **fields: Any) -> bool:
+        """Optimistic-locked state change; a stale writer loses and must re-read."""
+        current = self.get_retention(retention_id)
+        if current and to_state not in self.TRANSITIONS.get(current["state"], set()):
+            return False
+        if not current or current["version"] != expected_version:
+            return False
+        allowed = {"trashed_at", "restored_at", "last_attempt_at", "attempt_count", "last_error_code"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"unknown retention columns: {bad}")
+        sets = ["state=?", "previous_state=?", "updated_at=?", "version=version+1"]
+        params: list[Any] = [to_state, current["state"], time.time()]
+        for k, v in fields.items():
+            sets.append(f"{k}=?"); params.append(v)
+        params += [retention_id, expected_version]
+        cur = self._conn.execute(
+            f"UPDATE social_asset_retention SET {', '.join(sets)} WHERE id=? AND version=?", params)
+        if cur.rowcount != 1:
+            return False
+        self.audit(action=f"transition:{to_state}", retention_id=retention_id,
+                   chapter_id=current["chapter_id"], publication_id=current["publication_id"],
+                   owner_id=current["owner_id"], actor_id=actor_id,
+                   from_state=current["state"], to_state=to_state, reason=reason)
+        return True
+
+    def current_publication_id(self, chapter_id: str, owner_id: str) -> str:
+        """Server-side only: the publication currently linked (for retention bookkeeping)."""
+        row = self._row(chapter_id)
+        if not row or row["owner_id"] != owner_id or row.get("deleted_at") is not None:
+            return ""
+        return str(row["publication_id"])
+
+    def publication_storage_id_for_retention(self, retention: dict[str, Any]) -> str:
+        """Resolve the Drive id server-side from the retained publication. Never exposed."""
+        return self._publication_storage_id(retention["publication_id"], retention["owner_id"])
+
+    def publication_reference_count(self, publication_id: str) -> int:
+        """Every known live reference to a publication: active links and in-flight uploads."""
+        links = self._conn.execute(
+            "SELECT COUNT(*) c FROM social_chapter_assets WHERE publication_id=? "
+            "AND deleted_at IS NULL", (publication_id,)).fetchone()["c"]
+        intents = self._conn.execute(
+            "SELECT COUNT(*) c FROM social_publish_intents WHERE publication_id=?",
+            (publication_id,)).fetchone()["c"]
+        return int(links) + int(intents)
+
+    def other_live_retentions(self, publication_id: str, exclude_id: str) -> int:
+        marks = ",".join("?" for _ in self.LIVE_STATES)
+        return int(self._conn.execute(
+            f"SELECT COUNT(*) c FROM social_asset_retention WHERE publication_id=? AND id<>? "
+            f"AND state IN ({marks})",
+            (publication_id, exclude_id, *self.LIVE_STATES)).fetchone()["c"])
+
+    def audit(self, *, action: str, retention_id: str = "", chapter_id: str = "",
+              publication_id: str = "", owner_id: str = "", actor_id: str = "",
+              from_state: str = "", to_state: str = "", reason: str = "",
+              metadata: dict | None = None) -> None:
+        """Sanitized audit trail — never stores tokens, Drive ids, paths or file contents."""
+        self._conn.execute(
+            "INSERT INTO social_asset_audit_log(id,retention_id,chapter_id,publication_id,"
+            "owner_id,actor_id,action,from_state,to_state,reason,metadata_json,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (uuid.uuid4().hex, retention_id, chapter_id, publication_id, owner_id, actor_id,
+             action, from_state, to_state, reason,
+             json.dumps(metadata or {}, ensure_ascii=False), time.time()))
+
+    def list_audit(self, retention_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM social_asset_audit_log WHERE retention_id=? ORDER BY created_at",
+            (retention_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def start_reconcile_run(self, mode: str) -> str:
+        rid = uuid.uuid4().hex
+        self._conn.execute(
+            "INSERT INTO social_asset_reconcile_runs(id,mode,started_at,status) VALUES(?,?,?,?)",
+            (rid, mode, time.time(), "running"))
+        return rid
+
+    def finish_reconcile_run(self, run_id: str, *, status: str, counts: dict[str, int],
+                             summary: dict | None = None) -> None:
+        self._conn.execute(
+            "UPDATE social_asset_reconcile_runs SET finished_at=?,status=?,scanned_count=?,"
+            "safe_count=?,ambiguous_count=?,changed_count=?,failed_count=?,summary_json=? WHERE id=?",
+            (time.time(), status, counts.get("scanned", 0), counts.get("safe", 0),
+             counts.get("ambiguous", 0), counts.get("changed", 0), counts.get("failed", 0),
+             json.dumps(summary or {}, ensure_ascii=False), run_id))
 
     # ---- internal helpers ----------------------------------------------------
     def _row(self, chapter_id: str) -> dict[str, Any] | None:

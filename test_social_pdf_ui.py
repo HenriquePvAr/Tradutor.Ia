@@ -96,3 +96,35 @@ class PdfWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetentionUiTests(unittest.TestCase):
+    def setUp(self):
+        self.api = read("static/social_api.js")
+        self.ui = read("static/social_community.js")
+
+    def test_retention_endpoints_exposed(self):
+        for fn in ("retainedAssets", "assetRetention", "restoreAsset"):
+            self.assertRegex(self.api, rf"export (const|async function) {fn}\b", fn)
+
+    def test_restore_sends_no_client_controlled_fields(self):
+        # The restore call carries no body: state/owner/deadline are server-derived.
+        line = [l for l in self.api.splitlines() if "restoreAsset" in l][0]
+        for bad in ("state", "retain_until", "publication_id", "owner_id", "force"):
+            self.assertNotIn(bad, line, bad)
+
+    def test_ui_says_retained_not_deleted(self):
+        self.assertIn("fica retido e pode ser restaurado", self.ui)
+        self.assertIn("Restaurar PDF", self.ui)
+        self.assertIn("Restaurar este PDF retido", self.ui)   # explicit confirmation
+
+    def test_ui_has_no_force_trash_or_delete_control(self):
+        for bad in ("forceTrash", "hardDelete", "emptyTrash", "reconcileNow", "retain_until"):
+            self.assertNotIn(bad, self.ui, bad)
+
+    def test_retained_panel_shows_no_storage_identifiers(self):
+        panel = self.ui[self.ui.index("function retainedAssetsPanel"):]
+        panel = panel[:panel.index("function renderAssetControls")]
+        # Field *accesses*, not the prose in comments.
+        for bad in ("it.storage_file_id", "it.drive", "it.publication_id", "it.path", "it.url"):
+            self.assertNotIn(bad, panel, bad)

@@ -148,6 +148,10 @@ export const publishStatus = (chapterId, o) => request('GET', `/chapters/${enc(c
 export const getAsset = (chapterId, o) => request('GET', `/chapters/${enc(chapterId)}/asset`, o);
 export const replaceAsset = (chapterId, source_job_id, o) =>
   request('POST', `/chapters/${enc(chapterId)}/asset/replace`, { ...o, body: { source_job_id } });
+export const retainedAssets = (o) => request('GET', '/retained-assets', o);
+export const assetRetention = (chapterId, o) => request('GET', `/chapters/${enc(chapterId)}/asset/retention`, o);
+// Restore takes no body at all: the server derives owner, publication and deadline.
+export const restoreAsset = (chapterId, o) => request('POST', `/chapters/${enc(chapterId)}/asset/restore`, o);
 export const unlinkAsset = (chapterId, o) => request('DELETE', `/chapters/${enc(chapterId)}/asset`, o);
 
 // Authenticated PDF fetch → object URL for the reader. The Bearer travels in the header

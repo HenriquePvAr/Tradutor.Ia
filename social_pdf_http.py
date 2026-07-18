@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from community_auth import AuthenticationRequired, AuthorizationDenied, RequestPrincipal
 from community_storage import StorageError
 from chapter_asset_repository import AssetNotFound, ChapterAssetError
+from social_asset_retention import RetentionConflict, RetentionError
 from social_content import RangeNotSatisfiable
 from supabase_social import SocialConfigError, SocialError
 
@@ -32,7 +33,7 @@ def _bearer(request: Request) -> str:
     return token.strip()
 
 
-def create_social_pdf_router(publishing, content_service, auth) -> APIRouter:
+def create_social_pdf_router(publishing, content_service, auth, retention=None) -> APIRouter:
     router = APIRouter(prefix="/api/community/social", tags=["social-pdf"])
 
     def ctx(request: Request) -> tuple[RequestPrincipal, str]:
@@ -52,6 +53,10 @@ def create_social_pdf_router(publishing, content_service, auth) -> APIRouter:
             status = getattr(exc, "status", 404) if isinstance(exc, SocialError) else 404
             code = getattr(exc, "code", "not_found")
             raise HTTPException(status_code=status, detail=code, headers=_NO_STORE) from exc
+        except RetentionConflict as exc:
+            raise HTTPException(status_code=409, detail="conflict", headers=_NO_STORE) from exc
+        except RetentionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc) or "conflict", headers=_NO_STORE) from exc
         except ChapterAssetError as exc:
             raise HTTPException(status_code=409, detail="conflict", headers=_NO_STORE) from exc
         except AuthenticationRequired as exc:
@@ -107,6 +112,30 @@ def create_social_pdf_router(publishing, content_service, auth) -> APIRouter:
     def unlink_asset(request: Request, chapter_id: str):
         p, t = ctx(request)
         return ok(run(publishing.unlink_asset, t, p, chapter_id))
+
+    # ---- retention (owner-only) ----------------------------------------------
+    def _retention_or_503():
+        if retention is None:
+            raise HTTPException(status_code=503, detail="retention_unavailable", headers=_NO_STORE)
+        return retention
+
+    @router.get("/retained-assets")
+    def retained_assets(request: Request):
+        p, _ = ctx(request)
+        return ok(run(_retention_or_503().list_owner_retained_assets, p.user_id))
+
+    @router.get("/chapters/{chapter_id}/asset/retention")
+    def asset_retention(request: Request, chapter_id: str):
+        p, t = ctx(request)
+        run(publishing.get_asset, t, p, chapter_id)  # visibility/ownership gate first
+        return ok(run(_retention_or_503().get_retention_status, chapter_id, p.user_id))
+
+    @router.post("/chapters/{chapter_id}/asset/restore")
+    def restore_asset(request: Request, chapter_id: str, payload: dict = Body(default={})):
+        p, t = ctx(request)
+        clean(payload, set())  # no body fields accepted at all
+        run(publishing.require_owner, t, p, chapter_id)
+        return ok(run(_retention_or_503().restore_asset, chapter_id, p.user_id))
 
     # ---- protected content (HEAD/GET/Range) ----------------------------------
     def _content_headers(meta: dict[str, Any], *, partial: bool) -> dict[str, str]:

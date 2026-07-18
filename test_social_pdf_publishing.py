@@ -195,6 +195,14 @@ class _StubPublishing:
     def list_local_results(self, p):
         return {"items": []}
 
+    def require_owner(self, t, p, chapter_id):
+        if chapter_id == "not-mine":
+            raise SocialNotFound()
+        return {"id": chapter_id}
+
+    def get_asset(self, t, p, chapter_id):
+        return {"linked": True, "available": True}
+
 
 class _Stream:
     def __init__(self, n): self.start, self.end, self.content_length = 0, n - 1, n
@@ -212,6 +220,23 @@ class _StubContent:
                  "partial": partial, "mime_type": "application/pdf", "filename": "capitulo.pdf"}, s)
 
 
+class _StubRetention:
+    def __init__(self):
+        self.restored = []
+
+    def list_owner_retained_assets(self, owner_id, **kw):
+        return {"items": [{"chapter_id": "c1", "state": "retained", "reason": "replaced",
+                           "retained_at": 1.0, "retain_until": 2.0, "days_remaining": 7,
+                           "restorable": True}]}
+
+    def get_retention_status(self, chapter_id, owner_id):
+        return {"state": "retained", "restorable": True, "days_remaining": 7}
+
+    def restore_asset(self, chapter_id, owner_id):
+        self.restored.append((chapter_id, owner_id))
+        return {"restored": True, "chapter_id": chapter_id}
+
+
 class EndpointTests(unittest.TestCase):
     def setUp(self):
         self._orig = (socket.socket.connect, socket.socket.connect_ex, socket.create_connection)
@@ -220,7 +245,9 @@ class EndpointTests(unittest.TestCase):
         socket.create_connection = _loopback_test_create_connection
         self.pub = _StubPublishing()
         app = FastAPI()
-        app.include_router(create_social_pdf_router(self.pub, _StubContent(), _StubAuth()))
+        self.retention = _StubRetention()
+        app.include_router(create_social_pdf_router(self.pub, _StubContent(), _StubAuth(),
+                                                    retention=self.retention))
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
     def tearDown(self):
@@ -266,6 +293,46 @@ class EndpointTests(unittest.TestCase):
         blob = " ".join(f"{k}:{v}" for k, v in get.headers.items()).lower()
         for bad in ("drive", "storage_file_id", "webcontentlink", "googleapis", "x-google"):
             self.assertNotIn(bad, blob)
+
+
+    def test_retention_endpoints_require_auth(self):
+        for method, path in (("get", "/api/community/social/retained-assets"),
+                             ("get", "/api/community/social/chapters/c1/asset/retention"),
+                             ("post", "/api/community/social/chapters/c1/asset/restore")):
+            self.assertEqual(getattr(self.client, method)(path).status_code, 401, path)
+
+    def test_retained_assets_dto_has_no_storage_identifiers(self):
+        r = self.client.get("/api/community/social/retained-assets", headers=self.h())
+        self.assertEqual(r.status_code, 200)
+        blob = r.text.lower()
+        for bad in ("storage_file_id", "drive", "publication_id", "path", "googleapis"):
+            self.assertNotIn(bad, blob, bad)
+
+    def test_restore_is_owner_gated(self):
+        r = self.client.post("/api/community/social/chapters/not-mine/asset/restore",
+                             headers=self.h(), json={})
+        self.assertEqual(r.status_code, 404)          # anti-enumeration, not 403
+        self.assertEqual(self.retention.restored, [])
+
+    def test_restore_rejects_any_client_supplied_field(self):
+        for bad in ({"state": "restored"}, {"retain_until": 0}, {"owner_id": "x"},
+                    {"publication_id": "p"}, {"force": True}):
+            r = self.client.post("/api/community/social/chapters/c1/asset/restore",
+                                 headers=self.h(), json=bad)
+            self.assertEqual(r.status_code, 422, bad)
+        self.assertEqual(self.retention.restored, [])
+
+    def test_restore_happy_path_derives_owner_server_side(self):
+        r = self.client.post("/api/community/social/chapters/c1/asset/restore",
+                             headers=self.h(), json={})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.retention.restored, [("c1", "owner-A")])
+
+    def test_no_endpoint_can_force_trash_or_delete(self):
+        for path in ("/api/community/social/chapters/c1/asset/trash",
+                     "/api/community/social/chapters/c1/asset/hard-delete",
+                     "/api/community/social/reconcile"):
+            self.assertIn(self.client.post(path, headers=self.h(), json={}).status_code, (404, 405))
 
 
 if __name__ == "__main__":

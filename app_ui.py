@@ -65,8 +65,16 @@ try:
         _ASSET_REPO = ChapterAssetRepository(
             ROOT / ".cache" / "runtime" / "social_assets.sqlite3", community_store=COMMUNITY.store)
         _CONTENT = SocialContentService(_SOCIAL_REPO, _ASSET_REPO)
-        _PUBLISHING = SocialPdfPublishingService(COMMUNITY, _ASSET_REPO, _SOCIAL_REPO, BRIDGE.store)
-        app.include_router(create_social_pdf_router(_PUBLISHING, _CONTENT, AUTH))
+        # Retention: a replaced/unlinked PDF is retained (never deleted) so the owner can
+        # restore it. Nothing sweeps automatically here — trashing is operator-invoked via
+        # social_asset_maintenance_cli.py.
+        from social_asset_retention import SocialAssetRetentionService
+
+        _RETENTION = SocialAssetRetentionService(_ASSET_REPO)
+        _PUBLISHING = SocialPdfPublishingService(COMMUNITY, _ASSET_REPO, _SOCIAL_REPO, BRIDGE.store,
+                                                 retention=_RETENTION)
+        app.include_router(create_social_pdf_router(_PUBLISHING, _CONTENT, AUTH,
+                                                    retention=_RETENTION))
     except SocialConfigError as exc:
         print(f"social API not mounted: {exc}")
 except Exception as exc:  # never let an optional feature break app startup

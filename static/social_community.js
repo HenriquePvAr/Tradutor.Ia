@@ -329,6 +329,33 @@ function chapterRow(c, work, owner) {
   return row;
 }
 
+function confirmRestore(c) {
+  if (!window.confirm('Restaurar este PDF retido como arquivo ativo do capítulo?')) return;
+  api.restoreAsset(c.id)
+    .then(() => { toast('PDF restaurado.'); render(); })
+    .catch((e) => fail(e && e.status === 409
+      ? new Error('O capítulo já tem um PDF ativo. Desvincule-o antes de restaurar.') : e));
+}
+
+export function retainedAssetsPanel(host) {
+  host.replaceChildren();
+  // Owner-only listing; the DTO carries no Drive id, no path and no storage id.
+  api.retainedAssets().then((r) => {
+    const items = (r && r.items) || [];
+    if (!items.length) { host.appendChild(el('p', { class: 'sc-muted', text: 'Nenhum arquivo retido.' })); return; }
+    items.forEach((it) => {
+      const row = el('div', { class: 'sc-retained-row' });
+      row.appendChild(el('span', { text: `Capítulo ${it.chapter_id} — ${it.reason}` }));
+      row.appendChild(el('span', { class: 'sc-muted', text: `expira em ${it.days_remaining} dia(s)` }));
+      if (it.restorable) {
+        row.appendChild(el('button', { class: 'btn-ghost btn-sm', text: 'Restaurar',
+          on: { click: () => confirmRestore({ id: it.chapter_id }) } }));
+      }
+      host.appendChild(row);
+    });
+  }).catch(fail);
+}
+
 function renderAssetControls(host, note, c, work, owner, asset) {
   host.replaceChildren();
   const available = asset && asset.available;
@@ -338,11 +365,18 @@ function renderAssetControls(host, note, c, work, owner, asset) {
       note.textContent = '';
       host.appendChild(el('button', { class: 'btn-ghost btn-sm', text: 'Substituir PDF', on: { click: () => publishModal(c, 'replace') } }));
       host.appendChild(el('button', { class: 'btn-ghost btn-sm sc-danger', text: 'Desvincular',
-        on: { click: () => confirmDelete('vínculo do PDF', () => api.unlinkAsset(c.id).then(() => { toast('PDF desvinculado.'); render(); }).catch(fail)) } }));
+        on: { click: () => confirmDelete('vínculo do PDF', () => api.unlinkAsset(c.id).then(() => { toast('PDF desvinculado. O arquivo fica retido e pode ser restaurado.'); render(); }).catch(fail)) } }));
     }
   } else if (owner) {
     note.textContent = 'Arquivo ainda não vinculado';
     host.appendChild(el('button', { class: 'btn-primary btn-sm', text: 'Publicar PDF', on: { click: () => publishModal(c, 'publish') } }));
+    // A retained (replaced/unlinked) PDF can be brought back while the window is open.
+    api.assetRetention(c.id).then((r) => {
+      if (!r || !r.restorable) return;
+      note.textContent = `Arquivo retido — restauração disponível por ${r.days_remaining} dia(s)`;
+      host.appendChild(el('button', { class: 'btn-ghost btn-sm', text: 'Restaurar PDF',
+        on: { click: () => confirmRestore(c) } }));
+    }).catch(() => {});
   }
   // For a non-owner without an available asset: no controls, no internal details.
 }

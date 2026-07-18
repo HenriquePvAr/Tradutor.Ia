@@ -24,11 +24,13 @@ _HEX32 = set("0123456789abcdef")
 
 
 class SocialPdfPublishingService:
-    def __init__(self, community_api, asset_repo, social_repo, job_store):
+    def __init__(self, community_api, asset_repo, social_repo, job_store, retention=None):
         self._community = community_api
         self._assets = asset_repo
         self._social = social_repo
         self._jobs = job_store
+        # Retention preserves a replaced/unlinked PDF instead of deleting it.
+        self._retention = retention
 
     # ---- ownership --------------------------------------------------------------
     def _require_authenticated(self, principal: RequestPrincipal) -> None:
@@ -42,6 +44,11 @@ class SocialPdfPublishingService:
         if str(work.get("owner_id") or "") != principal.user_id:
             raise SocialNotFound()  # anti-enumeration: not the owner → 404
         return chapter
+
+    def require_owner(self, token: str, principal: RequestPrincipal, chapter_id: str) -> dict[str, Any]:
+        """Public owner gate reused by retention endpoints (404 for anyone else)."""
+        self._require_authenticated(principal)
+        return self._require_chapter_owner(token, principal, chapter_id)
 
     # ---- listing publishable local results -------------------------------------
     def list_local_results(self, principal: RequestPrincipal) -> dict[str, Any]:
@@ -118,6 +125,7 @@ class SocialPdfPublishingService:
         # Verified: link the chapter → publication and apply the chosen status. Only now
         # can the chapter become visible with a valid asset.
         is_replace = intent["target_status"] == "__replace__"
+        superseded = self._assets.current_publication_id(chapter_id, principal.user_id)
         try:
             if is_replace:
                 self._assets.replace_asset(chapter_id, publication_id, principal.user_id)
@@ -129,6 +137,10 @@ class SocialPdfPublishingService:
         except AssetNotFound:
             self._assets.clear_intent(chapter_id, principal.user_id)
             return {"status": "failed"}
+        # The superseded PDF is never deleted: it enters retention so the owner can
+        # restore it, and only a later sweep may move it to the Drive trash.
+        if self._retention and superseded and superseded != publication_id:
+            self._retention.retain_superseded_asset(chapter_id, superseded, principal.user_id)
         if not is_replace:
             # Apply the chosen visibility only after a valid asset is linked.
             self._social.update_chapter(token, chapter_id, {"status": intent["target_status"]})
@@ -161,7 +173,11 @@ class SocialPdfPublishingService:
     def unlink_asset(self, token: str, principal: RequestPrincipal, chapter_id: str) -> dict[str, Any]:
         self._require_authenticated(principal)
         self._require_chapter_owner(token, principal, chapter_id)
+        unlinked = self._assets.current_publication_id(chapter_id, principal.user_id)
         self._assets.unlink_asset(chapter_id, principal.user_id)
+        # Keep the remote file and record retention so the owner can restore it.
+        if self._retention and unlinked:
+            self._retention.retain_unlinked_asset(chapter_id, unlinked, principal.user_id)
         self._assets.clear_intent(chapter_id, principal.user_id)
         return {"ok": True}
 
