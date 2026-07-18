@@ -428,6 +428,10 @@ class UiBridge:
         config = job.get("configuration") or {}
         if config.get("fixture") or config.get("smoke"):
             return False
+        # A cancelled or failed run produced no result: showing it as "the last result" is
+        # how a stopped job kept appearing as a finished chapter.
+        if job.get("status") not in (JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED):
+            return False
         output_dir = str(job.get("output_dir") or "")
         return bool(output_dir) and Path(output_dir).is_dir()
 
