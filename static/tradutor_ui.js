@@ -66,7 +66,20 @@
     const response = await fetch(path, init);
     let payload = {};
     try { payload = await response.json(); } catch (_) { /* empty response */ }
-    if (!response.ok) throw new Error(payload.detail || `Falha local (${response.status})`);
+    if (!response.ok) {
+      const detail = payload.detail;
+      const error = new Error(
+        (detail && typeof detail === 'object' ? detail.message : detail)
+        || `Falha local (${response.status})`);
+      error.status = response.status;
+      if (detail && typeof detail === 'object') {
+        error.code = detail.code || '';
+        error.stage = detail.stage || '';
+        error.action = detail.action || '';
+        error.hosts = detail.hosts || null;
+      }
+      throw error;
+    }
     return payload;
   }
 
@@ -369,17 +382,56 @@
       open_output: $('#openToggle').checked,
     };
   }
+  function resetRunPreview() {
+    const summary = $('#runSummary');
+    if (summary) { summary.hidden = true; summary.innerHTML = ''; }
+    appState.lastFinishedId = '';
+    appState.previewJobId = '';
+  }
+
+  function showStartError(error) {
+    const box = $('#startError');
+    if (!box) { showToast(error.message, 'error'); return; }
+    const parts = [`<strong>Não foi possível iniciar</strong>`];
+    if (error.stage) parts.push(`Etapa: ${escapeHtml(error.stage)}`);
+    parts.push(escapeHtml(error.message || 'Erro desconhecido.'));
+    if (Array.isArray(error.hosts) && error.hosts.length) {
+      parts.push(`Fontes suportadas: ${escapeHtml(error.hosts.join(', '))}`);
+    }
+    if (error.action) parts.push(escapeHtml(error.action));
+    if (error.code) parts.push(`<code>${escapeHtml(error.code)}</code>`);
+    parts.push('<button class="btn-ghost" id="startRetryBtn">Tentar novamente</button>');
+    box.innerHTML = parts.join('<br>');
+    box.hidden = false;
+    $('#startRetryBtn')?.addEventListener('click', () => { box.hidden = true; startTranslation(); });
+  }
+
   async function startTranslation() {
     if (!validateForm()) return;
+    const button = $('#startBtn');
+    if (button?.dataset.busy === '1') return;      // guards a double click in-flight
+    const previousLabel = button ? button.textContent : '';
+    if (button) { button.dataset.busy = '1'; button.disabled = true; button.textContent = 'Iniciando processamento…'; }
+    $('#startError') && ($('#startError').hidden = true);
     try {
       const result = await api('/api/ui/run', {method: 'POST', body: JSON.stringify(formPayload())});
       appState.lastFinishedId = '';
+      resetRunPreview();                            // never carry the previous job's card over
       setRunControls(true);
-      showToast('Pipeline real iniciado.', 'ok');
+      if (result && result.worker && result.worker.online === false) {
+        showToast('Job enfileirado, mas o worker não está online.', 'warn');
+      } else {
+        showToast(result && result.duplicate
+          ? 'Este capítulo já está na fila.' : 'Pipeline real iniciado.', 'ok');
+      }
       activateTab('nova');
       return result;
     } catch (error) {
-      showToast(error.message, 'error');
+      // The backend rejected it: return control to the user with a readable reason.
+      if (button) { button.disabled = false; button.textContent = previousLabel || 'Iniciar tradução'; }
+      showStartError(error);
+    } finally {
+      if (button) delete button.dataset.busy;
     }
   }
   async function cancelTranslation(queue = false) {

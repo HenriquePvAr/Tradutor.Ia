@@ -130,10 +130,24 @@ async def api_run(
     request: Request,
     payload: dict[str, Any] = Body(default={}),
 ) -> dict[str, Any]:
+    from chapter_source import UnsupportedSource, supported_hosts
+
     try:
         return await BRIDGE.start(payload, principal=_job_principal(request))
+    except UnsupportedSource as exc:
+        # Structured so the UI can render a real message instead of a bare 400.
+        raise HTTPException(status_code=400, detail={
+            "code": exc.code,
+            "stage": "validacao_da_fonte",
+            "message": "Esta fonte ainda não é suportada.",
+            "hosts": supported_hosts(),
+            "action": "Use uma URL de uma fonte suportada.",
+        }) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail={
+            "code": "invalid_request", "stage": "validacao",
+            "message": str(exc), "action": "Corrija os campos e tente novamente.",
+        }) from exc
 
 
 @app.post("/api/ui/cancel")

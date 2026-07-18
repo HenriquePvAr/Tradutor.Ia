@@ -373,8 +373,17 @@ class UiBridge:
             if self._is_translation_job(job)]
         worker = self.store.healthy_worker(stale_seconds=15)
         logs = self._tail_job_logs(active, cursor)
+        # A queued job is pending work, not "pronto". Reporting it as ready is what made a
+        # successful submit look like nothing happened.
+        pending = bool(queued) and not running
+        if pending:
+            status = JobStatus.QUEUED
+        blocked = pending and not worker
         return {
             "status": status if status in JobStatus.ALL else "ready",
+            "pending": pending,
+            "blocked": blocked,
+            "blocked_reason": "worker_offline" if blocked else "",
             "active": record,
             "latest": record or self._job_record(self._latest_terminal_job()),
             "progress": {
@@ -398,7 +407,7 @@ class UiBridge:
             "logs": logs["entries"],
             "log_cursor": logs["cursor"],
             "queue": queued,
-            "queue_running": running,
+            "queue_running": running or pending,   # a queued job is still "em andamento"
             "resumable": resumable,
             "worker": {
                 "online": bool(worker),
@@ -408,9 +417,24 @@ class UiBridge:
             "history_revision": self.history_revision,
         }
 
+    @staticmethod
+    def _is_presentable_result(job: dict[str, Any]) -> bool:
+        """A job worth showing as "the last result".
+
+        Smoke/fixture rows (from authorized smokes) are real jobs but not real chapters:
+        they are flagged in configuration, and their output directory does not exist. Either
+        signal disqualifies them, so a fixture can never be presented as a translation.
+        """
+        config = job.get("configuration") or {}
+        if config.get("fixture") or config.get("smoke"):
+            return False
+        output_dir = str(job.get("output_dir") or "")
+        return bool(output_dir) and Path(output_dir).is_dir()
+
     def _latest_terminal_job(self) -> dict[str, Any] | None:
         jobs = self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=None)
-        return next((job for job in jobs if self._is_translation_job(job)), None)
+        return next((job for job in jobs
+                     if self._is_translation_job(job) and self._is_presentable_result(job)), None)
 
     def _tail_job_logs(self, active: dict[str, Any] | None, cursor: int) -> dict[str, Any]:
         if not active or not active.get("log_path"):
@@ -472,8 +496,35 @@ class UiBridge:
         *,
         principal: RequestPrincipal | None = None,
     ) -> dict[str, Any]:
+        # A double click (or a retried request) must not queue the same chapter twice.
+        duplicate = self._pending_duplicate(payload)
+        if duplicate:
+            return {"ok": True, "duplicate": True, "run_id": duplicate.get("run_id") or "",
+                    "job_id": duplicate["id"], "worker": self.ensure_worker()}
         job = self._create_job(payload, principal=principal)
-        return {"ok": True, "run_id": job["run_id"], "job_id": job["id"]}
+        # Persisting a job nobody claims is the whole bug: make the consumer exist, and
+        # report honestly when it could not be started instead of looking like a no-op.
+        worker = self.ensure_worker()
+        return {"ok": True, "run_id": job["run_id"], "job_id": job["id"], "worker": worker}
+
+    def _pending_duplicate(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """An identical chapter already queued or in flight, if any."""
+        try:
+            url = clean_url(str(payload.get("url") or "")).strip()
+            slug = sanitize_output_name(str(payload.get("slug") or ""))
+        except Exception:  # noqa: BLE001 - normalization errors surface in _create_job
+            return None
+        if not url:
+            return None
+        pending = self.store.list_jobs(
+            statuses=[JobStatus.QUEUED, *JobStatus.IN_FLIGHT], limit=None)
+        for job in pending:
+            if not self._is_translation_job(job):
+                continue
+            same_slug = slug and Path(str(job.get("output_dir") or "")).name == slug
+            if job.get("source_url") == url or same_slug:
+                return job
+        return None
 
     def _create_job(
         self,
@@ -524,6 +575,25 @@ class UiBridge:
         )
         self.history_revision += 1
         return self.store.get_job(job_id)  # type: ignore[return-value]
+
+    def ensure_worker(self) -> dict[str, Any]:
+        """Make sure a worker exists to claim queued jobs.
+
+        Without this the UI happily persists a job that nobody ever picks up: the queue is
+        not in-flight, so the status stays "pronto" and the click looks like a no-op. Never
+        starts a second worker — start_worker() checks the registered lease first.
+        """
+        healthy = self.store.healthy_worker(stale_seconds=15)
+        if healthy:
+            return {"online": True, "started": False}
+        try:
+            from start_tradutor import start_worker
+
+            start_worker()
+        except Exception as exc:  # noqa: BLE001 - reported to the caller, never swallowed
+            return {"online": False, "started": False, "error": type(exc).__name__}
+        healthy = self.store.healthy_worker(stale_seconds=15)
+        return {"online": bool(healthy), "started": bool(healthy)}
 
     async def cancel(self, *, queue: bool = False) -> dict[str, Any]:
         active = self.store.active_job()
