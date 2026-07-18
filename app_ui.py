@@ -53,6 +53,20 @@ try:
     try:
         _SOCIAL_REPO = build_social_repository()
         app.include_router(create_social_router(_SOCIAL_REPO, AUTH))
+
+        # Explicit PDF publishing + protected reader. The chapter→publication link lives in
+        # server-side SQLite (no service_role / private-schema credential); the Drive id is
+        # resolved server-side and never exposed. The browser never sends a path.
+        from chapter_asset_repository import ChapterAssetRepository
+        from social_content import SocialContentService
+        from social_pdf_publishing import SocialPdfPublishingService
+        from social_pdf_http import create_social_pdf_router
+
+        _ASSET_REPO = ChapterAssetRepository(
+            ROOT / ".cache" / "runtime" / "social_assets.sqlite3", community_store=COMMUNITY.store)
+        _CONTENT = SocialContentService(_SOCIAL_REPO, _ASSET_REPO)
+        _PUBLISHING = SocialPdfPublishingService(COMMUNITY, _ASSET_REPO, _SOCIAL_REPO, BRIDGE.store)
+        app.include_router(create_social_pdf_router(_PUBLISHING, _CONTENT, AUTH))
     except SocialConfigError as exc:
         print(f"social API not mounted: {exc}")
 except Exception as exc:  # never let an optional feature break app startup

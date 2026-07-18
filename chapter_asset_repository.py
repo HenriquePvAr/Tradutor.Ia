@@ -76,6 +76,44 @@ class ChapterAssetRepository:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sca_owner ON social_chapter_assets(owner_id)"
         )
+        # Publish intents make the async upload idempotent: a duplicate click/retry finds
+        # the same in-flight publication instead of starting a second upload.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS social_publish_intents (
+                chapter_id TEXT PRIMARY KEY,
+                publication_id TEXT NOT NULL,
+                target_status TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                source_job_id TEXT NOT NULL,
+                idempotency_key TEXT,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+
+    # ---- publish intents (idempotency for the async upload) ------------------
+    def get_intent(self, chapter_id: str, owner_id: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            "SELECT * FROM social_publish_intents WHERE chapter_id=? AND owner_id=?",
+            (chapter_id, owner_id)).fetchone()
+        return dict(r) if r else None
+
+    def set_intent(self, chapter_id: str, publication_id: str, target_status: str,
+                   owner_id: str, source_job_id: str, idempotency_key: str = "") -> None:
+        self._conn.execute(
+            "INSERT INTO social_publish_intents(chapter_id,publication_id,target_status,"
+            "owner_id,source_job_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(chapter_id) DO UPDATE SET publication_id=excluded.publication_id,"
+            "target_status=excluded.target_status,source_job_id=excluded.source_job_id,"
+            "idempotency_key=excluded.idempotency_key,created_at=excluded.created_at",
+            (chapter_id, publication_id, target_status, owner_id, source_job_id,
+             idempotency_key, time.time()))
+
+    def clear_intent(self, chapter_id: str, owner_id: str) -> None:
+        self._conn.execute(
+            "DELETE FROM social_publish_intents WHERE chapter_id=? AND owner_id=?",
+            (chapter_id, owner_id))
 
     # ---- internal helpers ----------------------------------------------------
     def _row(self, chapter_id: str) -> dict[str, Any] | None:
