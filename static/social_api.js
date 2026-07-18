@@ -139,3 +139,26 @@ export const getMyReports = ({ cursor, limit } = {}, o) => request('GET', `/repo
 // ---- notifications ----
 export const getNotifications = ({ cursor, limit } = {}, o) => request('GET', `/notifications${qs({ cursor, limit })}`, o);
 export const markNotificationRead = (id, o) => request('PATCH', `/notifications/${enc(id)}/read`, o);
+
+// ---- explicit PDF publishing + asset lifecycle ----
+export const listLocalResults = (o) => request('GET', '/local-pdf-results', o);
+export const publishPdf = (chapterId, { source_job_id, target_status } = {}, o) =>
+  request('POST', `/chapters/${enc(chapterId)}/publish-pdf`, { ...o, body: { source_job_id, target_status } });
+export const publishStatus = (chapterId, o) => request('GET', `/chapters/${enc(chapterId)}/publish-status`, o);
+export const getAsset = (chapterId, o) => request('GET', `/chapters/${enc(chapterId)}/asset`, o);
+export const replaceAsset = (chapterId, source_job_id, o) =>
+  request('POST', `/chapters/${enc(chapterId)}/asset/replace`, { ...o, body: { source_job_id } });
+export const unlinkAsset = (chapterId, o) => request('DELETE', `/chapters/${enc(chapterId)}/asset`, o);
+
+// Authenticated PDF fetch → object URL for the reader. The Bearer travels in the header
+// (never the URL); the browser gets an in-memory blob URL, not a Google Drive link.
+export async function fetchChapterPdfUrl(chapterId, signal) {
+  const token = await currentAccessToken();
+  if (!token) throw new SocialApiError(401, 'authentication_required');
+  const resp = await fetch(`${BASE}/chapters/${enc(chapterId)}/content`, {
+    headers: { 'Authorization': `Bearer ${token}` }, credentials: 'same-origin', signal,
+  });
+  if (!resp.ok) throw new SocialApiError(resp.status, '');
+  const blob = await resp.blob();
+  return URL.createObjectURL(blob);
+}

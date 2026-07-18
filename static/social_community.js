@@ -309,20 +309,42 @@ function chapterRow(c, work, owner) {
     el('span', { class: 'sc-chapter-title', text: c.title || 'Sem título' }),
     owner ? el('span', { class: 'sc-badge sc-badge-sm', text: statusLabel(c.status) }) : null,
   ]));
-  // PDF linkage is a separate future phase: no "Ler" button. Owner sees a discreet note.
-  if (owner) row.appendChild(el('div', { class: 'sc-chapter-note', text: 'Arquivo ainda não vinculado' }));
+  const note = el('div', { class: 'sc-chapter-note' });
+  if (owner) row.appendChild(note);
   const acts = el('div', { class: 'sc-chapter-acts' });
   acts.appendChild(el('button', { class: 'btn-ghost btn-sm', text: 'Comentários', on: { click: () => commentsModal(c) } }));
   const likeBtn = el('button', { class: 'btn-ghost btn-sm sc-like', text: '♡', attrs: { 'aria-label': 'Curtir capítulo' },
     on: { click: () => toggleLike('chapter', c.id, likeBtn) } });
   acts.appendChild(likeBtn);
+  const assetActs = el('span', { class: 'sc-asset-acts' });
+  acts.appendChild(assetActs);
   if (owner) {
     acts.appendChild(el('button', { class: 'btn-ghost btn-sm', text: 'Editar', on: { click: () => chapterForm(work.id, c) } }));
     acts.appendChild(el('button', { class: 'btn-ghost btn-sm sc-danger', text: 'Excluir',
       on: { click: () => confirmDelete('capítulo', () => api.deleteChapter(c.id).then(() => { toast('Capítulo excluído.'); render(); }).catch(fail)) } }));
   }
   row.appendChild(acts);
+  // Asset state drives the read/publish controls; fetched lazily per row.
+  api.getAsset(c.id).then((asset) => renderAssetControls(assetActs, note, c, work, owner, asset)).catch(() => {});
   return row;
+}
+
+function renderAssetControls(host, note, c, work, owner, asset) {
+  host.replaceChildren();
+  const available = asset && asset.available;
+  if (available) {
+    host.appendChild(el('button', { class: 'btn-primary btn-sm', text: 'Ler', on: { click: () => readerModal(c) } }));
+    if (owner) {
+      note.textContent = '';
+      host.appendChild(el('button', { class: 'btn-ghost btn-sm', text: 'Substituir PDF', on: { click: () => publishModal(c, 'replace') } }));
+      host.appendChild(el('button', { class: 'btn-ghost btn-sm sc-danger', text: 'Desvincular',
+        on: { click: () => confirmDelete('vínculo do PDF', () => api.unlinkAsset(c.id).then(() => { toast('PDF desvinculado.'); render(); }).catch(fail)) } }));
+    }
+  } else if (owner) {
+    note.textContent = 'Arquivo ainda não vinculado';
+    host.appendChild(el('button', { class: 'btn-primary btn-sm', text: 'Publicar PDF', on: { click: () => publishModal(c, 'publish') } }));
+  }
+  // For a non-owner without an available asset: no controls, no internal details.
 }
 
 async function togglePublish(w) {
@@ -641,6 +663,104 @@ function editBox(textNode, c, reload) {
     e.preventDefault(); save.disabled = true;
     try { await api.updateComment(c.id, ta.value.trim()); reload(); }
     catch (err) { save.disabled = false; fail(err); }
+  });
+}
+
+// ---- explicit PDF publishing + reader ----
+function publishModal(chapter, mode) {
+  const isReplace = mode === 'replace';
+  const list = el('div', { class: 'sc-pub-list', attrs: { 'aria-busy': 'true' } });
+  list.appendChild(skeleton(2));
+  let chosen = null;
+  const status = el('div', { class: 'sc-pub-status' });
+  const visibility = el('div', { class: 'sc-pub-visibility' });
+  if (!isReplace) {
+    visibility.appendChild(el('p', { class: 'sc-modal-text',
+      text: 'Este PDF ainda está apenas no seu computador. Ao continuar, ele será enviado para o armazenamento privado e publicado conforme a visibilidade escolhida.' }));
+    const priv = radio('publishVis', 'private', 'Privado — somente você poderá ler.', true);
+    const comm = radio('publishVis', 'community', 'Comunidade — qualquer usuário autenticado poderá ler.', false);
+    visibility.append(priv, comm);
+  }
+  const submit = el('button', { class: 'btn-primary', text: isReplace ? 'Substituir' : 'Publicar', attrs: { disabled: 'true' } });
+  const m = modal(isReplace ? 'Substituir PDF' : 'Publicar na comunidade',
+    [el('p', { class: 'sc-field-hint', text: 'Escolha um resultado local concluído:' }), list, visibility, status, el('div', { class: 'sc-modal-actions' }, [submit])]);
+  api.listLocalResults().then((res) => {
+    list.replaceChildren(); list.removeAttribute('aria-busy');
+    const items = (res && res.items) || [];
+    if (!items.length) { list.appendChild(empty('Nenhum resultado local publicável. Conclua uma tradução autenticada primeiro.')); return; }
+    for (const r of items) {
+      const opt = el('label', { class: 'sc-pub-opt' }, [
+        el('input', { attrs: { type: 'radio', name: 'localResult', value: r.source_job_id } }),
+        el('span', { text: `${r.title} · ${fmtDate(r.created_at ? r.created_at * 1000 : '')}` }),
+      ]);
+      opt.querySelector('input').addEventListener('change', () => { chosen = r.source_job_id; submit.removeAttribute('disabled'); });
+      list.appendChild(opt);
+    }
+  }).catch((err) => { list.replaceChildren(errorBox(() => publishModal(chapter, mode))); if (err.status === 401) handleExpired(); });
+
+  submit.addEventListener('click', async () => {
+    if (!chosen || submit.dataset.busy) return;
+    submit.dataset.busy = '1'; submit.disabled = true; submit.textContent = 'Enviando…';
+    status.textContent = 'Enviando o PDF para o armazenamento privado…';
+    try {
+      if (isReplace) {
+        await api.replaceAsset(chapter.id, chosen);
+      } else {
+        const target = (visibility.querySelector('input[name="publishVis"]:checked') || {}).value || 'private';
+        await api.publishPdf(chapter.id, { source_job_id: chosen, target_status: target });
+      }
+      await pollPublish(chapter.id, status);
+      m.destroy(); toast(isReplace ? 'PDF substituído.' : 'Publicado com sucesso.', 'ok'); render();
+    } catch (err) {
+      submit.disabled = false; delete submit.dataset.busy; submit.textContent = isReplace ? 'Substituir' : 'Publicar';
+      status.textContent = ''; fail(err);
+    }
+  });
+}
+
+function radio(name, value, label, checked) {
+  const input = el('input', { attrs: { type: 'radio', name, value } });
+  if (checked) input.checked = true;
+  return el('label', { class: 'sc-pub-opt' }, [input, el('span', { text: label })]);
+}
+
+async function pollPublish(chapterId, statusNode) {
+  // Poll the backend until the async upload finishes; never a tight loop.
+  for (let i = 0; i < 60; i++) {
+    const s = await api.publishStatus(chapterId);
+    if (s.status === 'published') return;
+    if (s.status === 'failed') throw new api.SocialApiError(503, 'publish_failed');
+    statusNode.textContent = 'Enviando… isso pode levar alguns instantes.';
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new api.SocialApiError(503, 'publish_timeout');
+}
+
+function readerModal(chapter) {
+  const controller = new AbortController();
+  let objectUrl = null;
+  const frame = el('div', { class: 'sc-reader-frame', attrs: { 'aria-busy': 'true' } });
+  frame.appendChild(el('div', { class: 'sc-reader-loading', text: 'Carregando…' }));
+  const m = modal(`Leitura — capítulo #${chapter.chapter_number}`, [frame]);
+  const origDestroy = m.destroy;
+  m.destroy = () => {
+    controller.abort();
+    if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; } // free memory + token-less blob
+    frame.replaceChildren();
+    origDestroy();
+  };
+  // Rebind close/escape to the wrapped destroy.
+  m.card.querySelector('.sc-modal-close')?.addEventListener('click', m.destroy, { once: true });
+  api.fetchChapterPdfUrl(chapter.id, controller.signal).then((url) => {
+    objectUrl = url;
+    frame.replaceChildren(el('object', { class: 'sc-reader-object',
+      attrs: { data: url, type: 'application/pdf', 'aria-label': 'PDF do capítulo' } },
+      [el('p', { text: 'Não foi possível exibir o PDF neste navegador.' })]));
+    frame.removeAttribute('aria-busy');
+  }).catch((err) => {
+    if (controller.signal.aborted) return;
+    frame.replaceChildren(errorBox(() => { m.destroy(); readerModal(chapter); }));
+    if (err instanceof api.SocialApiError && err.status === 401) handleExpired();
   });
 }
 

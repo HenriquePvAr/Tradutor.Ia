@@ -1362,3 +1362,17 @@
   @media (prefers-reduced-motion:reduce){
     .sc-skel{animation:none;}
   }
+
+  /* ---------- publicacao explicita de PDF + leitor ---------- */
+  .sc-asset-acts{display:inline-flex; gap:6px; flex-wrap:wrap;}
+  .sc-pub-list{display:flex; flex-direction:column; gap:6px; max-height:34vh; overflow-y:auto; margin-bottom:8px;}
+  .sc-pub-opt{display:flex; gap:8px; align-items:flex-start; font-size:13px; cursor:pointer;
+    padding:8px 10px; border:1px solid var(--line); border-radius:6px;}
+  .sc-pub-opt:hover{border-color:var(--rose);}
+  .sc-pub-visibility{display:flex; flex-direction:column; gap:8px; margin:10px 0;}
+  .sc-pub-status{font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--gold); min-height:16px;}
+  .sc-reader-frame{width:100%; height:70vh; background:var(--ink); border:1px solid var(--line);
+    border-radius:6px; display:flex; align-items:center; justify-content:center; overflow:hidden;}
+  .sc-reader-object{width:100%; height:100%; border:0;}
+  .sc-reader-loading{color:var(--muted); font-size:13px;}
+  @media (max-width:520px){ .sc-reader-frame{height:60vh;} }
