@@ -31,7 +31,7 @@ from down import (
 
 
 class _FakeDriver:
-    def execute_script(self, _script):
+    def execute_script(self, _script, *_args):
         return {
             "imageCount": 3,
             "urls": ["https://example.test/1.jpg", "https://example.test/2.jpg", "https://example.test/3.jpg"],
@@ -331,7 +331,7 @@ class DownloaderRegressionTests(unittest.TestCase):
                 mock.patch("down.time.sleep"),
             ):
                 result = download_images(
-                    "https://example.test/chapter",
+                    "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer",
                     debug_folder=str(base / "debug"),
                     target_folder=str(base / "input"),
                     force=False,
@@ -365,7 +365,7 @@ class DownloaderRegressionTests(unittest.TestCase):
                 mock.patch("down.time.sleep"),
             ):
                 download_images(
-                    "https://example.test/chapter",
+                    "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer",
                     debug_folder=str(base / "debug"),
                     target_folder=str(base / "input"),
                     force=False,
@@ -410,7 +410,7 @@ class DownloaderRegressionTests(unittest.TestCase):
                     mock.patch("down.time.sleep"),
                 ):
                     download_images(
-                        "https://example.test/chapter",
+                        "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer",
                         debug_folder=str(base / "debug"),
                         target_folder=str(base / "input"),
                         force=False,

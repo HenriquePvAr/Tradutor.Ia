@@ -39,9 +39,19 @@ A seleção é explícita e vive em [chapter_source.py](../chapter_source.py). U
 buscado se algum adapter registrado o reivindicar; **não existe fallback** que tente um site
 desconhecido — um palpite errado significaria buscar de um host que ninguém validou.
 
-| Adapter | Hosts | Runner |
-| --- | --- | --- |
-| `webtoons` | `webtoons.com`, `webtoon.com` (e subdomínios) | `run_webtoon.py` |
+| Adapter | Hosts | Runner | Registrado |
+| --- | --- | --- | --- |
+| `WEBTOONS` | `webtoons.com`, `webtoon.com` (e subdomínios) | `run_webtoon.py` | sim |
+| `GenericImageChapterAdapter` | os que você passar no construtor | `run_webtoon.py` | **não** — template |
+
+`GenericImageChapterAdapter` existe para você registrar uma fonte própria cujo leitor seja
+imagens lazy-loaded simples. Ele **não** é fallback: precisa ser instanciado com hosts
+explícitos e adicionado a `ADAPTERS`. Registrar uma fonte é um ato deliberado que afirma
+duas coisas — que o adapter a suporta e que você tem o direito de ler aquele conteúdo.
+
+Cada adapter é dono do próprio conhecimento de leitor (`reader_selectors`,
+`classify_candidate`, `exclude_candidate`), então `down.py` não guarda mais nenhum seletor
+específico de site — há teste que falha se algum voltar para lá.
 
 Host não registrado → `UnsupportedSource` (código `unsupported_source`), rejeitado **antes**
 de o job existir. A UI mostra "Esta fonte ainda não é suportada." com a lista de hosts.
@@ -111,6 +121,40 @@ nesta tarefa.
 
 Nada foi marcado PASS sem execução real. As linhas `NOT_RUN` são honestas: o pipeline de
 tradução ponta a ponta e o smoke de navegador não foram exercitados nesta tarefa.
+
+## Códigos de falha
+
+Um job sempre termina em um código; nunca fica preso em `queued`/`running`.
+
+| Código | Quando |
+| --- | --- |
+| `unsupported_source` | host não registrado, esquema proibido, credenciais na URL, alvo privado, path que não é capítulo |
+| `source_not_ready` | leitor não carregou |
+| `challenge_required` | CAPTCHA/Turnstile/desafio interativo — **paramos, não contornamos** |
+| `source_access_denied` | 401/403 |
+| `source_rate_limited` | 429/503 |
+| `no_chapter_images` | zero imagens após a coleta |
+| `invalid_image_response` | MIME fora de `ALLOWED_IMAGE_MIME`, ou HTML disfarçado de imagem |
+| `incomplete_download` | conjunto de páginas incompleto |
+
+`sanitize_error()` devolve só o código ou o nome da classe da exceção — nunca a mensagem,
+que poderia carregar URL, cookie ou header.
+
+## SSRF e falsificação de host
+
+| Vetor | Resultado |
+| --- | --- |
+| `evil-webtoons.com`, `webtoons.com.evil.net` | rejeitado (match exato ou sufixo de ponto) |
+| `file:`, `data:`, `ftp:`, `gopher:` | rejeitado |
+| `https://user:senha@host/` | rejeitado |
+| `127.0.0.1`, `::1`, `10/8`, `192.168/16`, `172.16/12` | rejeitado |
+| `169.254.169.254` (metadados de nuvem) | rejeitado |
+| hostname público que **resolve** para IP interno | rejeitado (checagem por DNS, não só literal) |
+| hostname que não resolve | rejeitado — não buscamos o que não conseguimos localizar |
+| redirect para host não permitido | revalidado e rejeitado |
+
+A validação roda **antes** de qualquer driver abrir: há teste que afirma
+`_create_driver` não foi chamado.
 
 ## Segurança verificada
 
