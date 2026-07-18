@@ -297,6 +297,10 @@ def derive_final_run_status(
 @dataclass
 class ProgressSnapshot:
     stage: str = "Preparando"
+    # The stage the current/total counter was actually read from. The stage label advances
+    # monotonically on keyword matches, so without this a counter emitted by an earlier
+    # stage (99/99 downloads) would be displayed under a later label (Tradução NVIDIA).
+    counter_stage: str = ""
     current: int = 0
     total: int = 0
     percent: float = 0.0
@@ -341,6 +345,7 @@ def parse_progress_line(line: str, snapshot: ProgressSnapshot) -> ProgressSnapsh
         current = int(fraction.group("current"))
         total = max(1, int(fraction.group("total")))
         snapshot.current, snapshot.total = current, total
+        snapshot.counter_stage = snapshot.stage
         local = min(1.0, current / total)
         if snapshot.stage == "Baixando imagens":
             snapshot.percent = max(snapshot.percent, 0.08 + local * 0.1)

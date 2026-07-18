@@ -216,6 +216,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                     store.update_progress(
                         job_id, stage=snap.stage, current=int(snap.current or 0),
                         total=int(snap.total or 0), message=snap.last_message,
+                        counter_stage=snap.counter_stage,
                     )
                 else:
                     store.heartbeat(job_id)

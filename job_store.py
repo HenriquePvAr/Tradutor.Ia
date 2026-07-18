@@ -87,7 +87,7 @@ class TransitionError(RuntimeError):
 _JOB_COLUMNS = (
     "id", "run_id", "source_url", "series_title", "series_slug", "episode_number",
     "output_dir", "configuration_json", "command_json", "status", "stage",
-    "progress_current", "progress_total", "progress_message",
+    "progress_current", "progress_total", "progress_message", "progress_counter_stage",
     "created_at", "queued_at", "claimed_at", "started_at", "heartbeat_at", "finished_at",
     "worker_id", "worker_pid", "worker_create_time", "runner_pid", "runner_create_time",
     "exit_code",
@@ -142,6 +142,10 @@ class JobStore:
         for column in ("worker_create_time", "runner_create_time"):
             if column not in job_cols:
                 self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} REAL")
+        # Additive: the stage a counter came from, so a download's 99/99 is never rendered
+        # under a later stage's label.
+        if "progress_counter_stage" not in job_cols:
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN progress_counter_stage TEXT")
         worker_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(workers)")}
         if "create_time" not in worker_cols:
             self._conn.execute("ALTER TABLE workers ADD COLUMN create_time REAL")
@@ -166,6 +170,7 @@ class JobStore:
                 progress_current INTEGER DEFAULT 0,
                 progress_total INTEGER DEFAULT 0,
                 progress_message TEXT,
+                progress_counter_stage TEXT,
                 created_at REAL,
                 queued_at REAL,
                 claimed_at REAL,
@@ -424,6 +429,7 @@ class JobStore:
         current: int | None = None,
         total: int | None = None,
         message: str | None = None,
+        counter_stage: str | None = None,
     ) -> None:
         fields: dict[str, Any] = {"heartbeat_at": time.time()}
         if stage is not None:
@@ -434,6 +440,8 @@ class JobStore:
             fields["progress_total"] = int(total)
         if message is not None:
             fields["progress_message"] = message
+        if counter_stage is not None:
+            fields["progress_counter_stage"] = counter_stage
         self.update_fields(job_id, **fields)
 
     def request_cancel(self, job_id: str) -> bool:
