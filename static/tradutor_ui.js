@@ -450,7 +450,11 @@
     if (appState.status === 'running') {
       summary.hidden = false;
       const count = progress.total ? `${progress.current}/${progress.total}` : 'contador indisponível';
-      summary.innerHTML = `<strong>${escapeHtml(progress.stage || 'Preparando')}</strong><br>${escapeHtml(count)} · ${escapeHtml(progress.elapsed_label || '0.0s')}<br>${escapeHtml(progress.last_message || '')}`;
+      // elapsed_label is authoritative: the server freezes it and emits 'Tempo indisponível'
+      // for an unusable timestamp. Never substitute a locally computed number here.
+      const elapsed = progress.elapsed_label || 'Tempo indisponível';
+      const stale = progress.stale ? `<br><em>${escapeHtml(progress.stale_label || 'Sem atualização recente')}</em>` : '';
+      summary.innerHTML = `<strong>${escapeHtml(progress.stage || 'Preparando')}</strong><br>${escapeHtml(count)} · ${escapeHtml(elapsed)}${stale}<br>${escapeHtml(progress.last_message || '')}`;
     }
   }
   function renderResult(record) {
@@ -501,9 +505,15 @@
     return explicit || 'Sem série identificada';
   }
   function formatSeconds(value) {
-    const seconds = Math.max(0, Number(value || 0));
-    if (seconds >= 60) return `${Math.floor(seconds / 60)}min ${String(Math.floor(seconds % 60)).padStart(2, '0')}s`;
-    return `${seconds.toFixed(1)}s`;
+    if (value === null || value === undefined || value === '') return 'Tempo indisponível';
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds < 0) return 'Tempo indisponível';
+    const whole = Math.floor(seconds);
+    const hours = Math.floor(whole / 3600);
+    const minutes = Math.floor((whole % 3600) / 60);
+    if (hours) return `${hours}h ${String(minutes).padStart(2, '0')}min`;
+    if (minutes) return `${minutes}min ${String(whole % 60).padStart(2, '0')}s`;
+    return `${whole}s`;
   }
   function actionButton(label, action, path = '') {
     if (!path && action !== 'reprocess') return '';

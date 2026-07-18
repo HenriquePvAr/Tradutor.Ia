@@ -16,6 +16,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,13 +64,44 @@ PROFILE_MEDIA_TYPES = {
 }
 
 
-def _format_seconds(value: Any) -> str:
+UNAVAILABLE_DURATION = "Tempo indisponível"
+
+# A timestamp far above plausible epoch-seconds is a milliseconds value written by mistake;
+# anything below this is treated as seconds. (2001-09-09 in seconds / 1970 in ms.)
+_MS_THRESHOLD = 1e11
+
+
+def _normalize_epoch(value: Any) -> float | None:
+    """Epoch seconds, or None when the value cannot be trusted as a timestamp."""
     try:
-        seconds = max(0.0, float(value or 0))
+        number = float(value)
     except (TypeError, ValueError):
-        seconds = 0.0
-    minutes, remainder = divmod(int(seconds), 60)
-    return f"{minutes}min {remainder:02d}s" if minutes else f"{seconds:.1f}s"
+        return None
+    if number <= 0 or number != number or number in (float("inf"), float("-inf")):
+        return None
+    if number >= _MS_THRESHOLD:      # milliseconds written where seconds were expected
+        number /= 1000.0
+    return number
+
+
+def _format_seconds(value: Any) -> str:
+    """34s | 12min 34s | 1h 12min. None/invalid never renders as a number."""
+    if value is None:
+        return UNAVAILABLE_DURATION
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return UNAVAILABLE_DURATION
+    if seconds != seconds or seconds in (float("inf"), float("-inf")) or seconds < 0:
+        return UNAVAILABLE_DURATION
+    seconds = int(seconds)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}min"
+    if minutes:
+        return f"{minutes}min {secs:02d}s"
+    return f"{secs}s"
 
 
 def _epoch_to_iso(value: Any) -> str:
@@ -81,17 +113,33 @@ def _epoch_to_iso(value: Any) -> str:
         return ""
 
 
-def _duration(job: dict[str, Any] | None) -> float:
+def _duration(job: dict[str, Any] | None, *, live: bool = False) -> float | None:
+    """Elapsed seconds, or None when it cannot be computed honestly.
+
+    The clock only advances while the job is *proven* live. For anything else the end is a
+    stored timestamp (finished_at, then heartbeat_at, then updated_at), so an abandoned job
+    freezes at its last sign of life instead of counting up forever.
+    """
     if not job:
-        return 0.0
-    started = job.get("started_at")
-    if not started:
-        return 0.0
-    end = job.get("finished_at") or __import__("time").time()
-    try:
-        return max(0.0, float(end) - float(started))
-    except (TypeError, ValueError):
-        return 0.0
+        return None
+    started = _normalize_epoch(job.get("started_at"))
+    if started is None:
+        return None
+    if live:
+        end: float | None = time.time()
+    else:
+        end = next(
+            (stamp for stamp in (
+                _normalize_epoch(job.get("finished_at")),
+                _normalize_epoch(job.get("heartbeat_at")),
+                _normalize_epoch(job.get("updated_at")),
+            ) if stamp is not None),
+            None,
+        )
+    if end is None:
+        return None
+    elapsed = end - started
+    return None if elapsed < 0 else elapsed        # negative = corrupt clock, never shown
 
 
 def _run_git(*args: str) -> str:
@@ -179,6 +227,60 @@ class UiBridge:
         self.profile = self._load_profile()
         self.store = JobStore(JOBS_DB_PATH)
         self.history_revision = 1
+        # A job left in flight by a crash must not come back as PROCESSANDO after a restart.
+        self.reconcile_orphans()
+
+    # ---- orphan reconciliation ----------------------------------------------
+    def _success_evidence(self, job: dict[str, Any]) -> bool:
+        """Complete proof the run really finished: exit code 0, a manifest and a real PDF.
+
+        A vanished PID is never proof of success on its own — a killed process and a
+        completed one look identical from the outside.
+        """
+        if job.get("exit_code") not in (0, "0"):
+            return False
+        output_dir = job.get("output_dir")
+        if not output_dir:
+            return False
+        base = Path(output_dir)
+        try:
+            if not (base / "output_manifest.json").is_file():
+                return False
+            # A PDF that exists but is empty/truncated is not evidence either.
+            pdfs = [p for p in base.rglob("*.pdf") if p.is_file() and p.stat().st_size > 1024]
+            if not pdfs:
+                return False
+            with open(pdfs[0], "rb") as handle:
+                return handle.read(5) == b"%PDF-"
+        except OSError:
+            return False
+
+    def reconcile_orphans(self) -> list[dict[str, str]]:
+        """Freeze in-flight jobs whose runner process is gone. Outputs are never touched."""
+        reconciled: list[dict[str, str]] = []
+        try:
+            in_flight = self.store.list_jobs(statuses=list(JobStatus.IN_FLIGHT), limit=None)
+        except Exception:  # noqa: BLE001 - the UI must start even with an unreadable store
+            return reconciled
+        for job in in_flight:
+            if _runner_still_alive(job):
+                continue                      # a real, verified process owns this job
+            job_id = job["id"]
+            frozen = _normalize_epoch(job.get("heartbeat_at")) or \
+                _normalize_epoch(job.get("updated_at")) or time.time()
+            if job.get("cancel_requested"):
+                target, reason = JobStatus.CANCELLED, "cancelled_process_not_found"
+            elif self._success_evidence(job):
+                target, reason = JobStatus.FINISHED, "completed_before_shutdown"
+            else:
+                target, reason = JobStatus.INTERRUPTED, "process_not_found"
+            try:
+                self.store.transition(job_id, target, interrupted_reason=reason,
+                                      finished_at=frozen, recoverable=1)
+            except Exception:  # noqa: BLE001 - a concurrent owner wins; leave the row alone
+                continue
+            reconciled.append({"job_id": job_id, "status": target, "reason": reason})
+        return reconciled
 
     # ---- job <-> UI record mapping -----------------------------------------
     def _job_record(self, job: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -231,6 +333,9 @@ class UiBridge:
         return self.history
 
     def runtime_state(self, cursor: int = 0) -> dict[str, Any]:
+        # Reconcile on every poll, not only at startup: a runner can die at any moment and
+        # the UI must stop claiming PROCESSANDO within one polling interval.
+        self.reconcile_orphans()
         active_jobs = self.store.list_jobs(statuses=JobStatus.IN_FLIGHT, limit=None)
         active = max(
             (job for job in active_jobs if self._is_translation_job(job)),
@@ -242,8 +347,22 @@ class UiBridge:
         stage = str((active or {}).get("stage") or "created")
         current = int((active or {}).get("progress_current") or 0)
         total = int((active or {}).get("progress_total") or 0)
+        # The counter only belongs to the stage that produced it; otherwise a download's
+        # 99/99 would be rendered under the translation label.
+        counter_stage = str((active or {}).get("progress_counter_stage") or "")
+        counter_matches = (not counter_stage) or counter_stage == stage
+        if not counter_matches:
+            current = total = 0
         stage_fraction = (current / total) if current and total else None
         running = status in JobStatus.IN_FLIGHT
+        # "running" now means a verified live process, because reconcile_orphans() already
+        # demoted every in-flight job whose runner is gone.
+        live = running and bool(active) and _runner_still_alive(active)
+        elapsed = _duration(active, live=live) if active else None
+        last_update = _normalize_epoch((active or {}).get("updated_at"))
+        stale_updates = bool(
+            running and last_update is not None and (time.time() - last_update) > 120
+        )
         queued = [
             self._job_record(job)
             for job in self.store.list_jobs(statuses=[JobStatus.QUEUED])
@@ -269,8 +388,12 @@ class UiBridge:
                 "groups": int((active or {}).get("progress_current") or 0),
                 "errors": 0,
                 "last_message": (active or {}).get("progress_message") or "",
-                "elapsed_seconds": _duration(active) if active else 0.0,
-                "elapsed_label": _format_seconds(_duration(active) if active else 0.0),
+                "elapsed_seconds": elapsed,
+                "elapsed_label": _format_seconds(elapsed),
+                "updated_at": last_update,
+                "stale": stale_updates,
+                "stale_label": "Sem atualização recente" if stale_updates else "",
+                "live": live,
             },
             "logs": logs["entries"],
             "log_cursor": logs["cursor"],
@@ -406,6 +529,19 @@ class UiBridge:
         active = self.store.active_job()
         if self._is_translation_job(active):
             self.store.request_cancel(active["id"])
+            # The runner honours the flag and tears down only its own process tree. When the
+            # runner is already gone nobody would ever act on the flag, so settle the job
+            # here instead of leaving it in flight forever. Outputs are left untouched.
+            if not _runner_still_alive(active):
+                frozen = (_normalize_epoch(active.get("heartbeat_at"))
+                          or _normalize_epoch(active.get("updated_at")) or time.time())
+                for target in (JobStatus.CANCELLING, JobStatus.CANCELLED):
+                    try:
+                        self.store.transition(active["id"], target,
+                                              interrupted_reason="cancelled_process_not_found",
+                                              finished_at=frozen)
+                    except Exception:  # noqa: BLE001 - already settled by another path
+                        pass
         if queue:
             for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
                 if not self._is_translation_job(job):
