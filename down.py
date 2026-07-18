@@ -61,6 +61,15 @@ def download_images(
     target_folder=None,
     force=True,
 ):
+    from chapter_source import select_adapter
+
+    # Fail-closed source selection. An unregistered host raises here, before a driver is
+    # ever opened, so the job ends on a coded failure instead of half-running.
+    adapter = select_adapter(url)
+    adapter.validate_url(url)
+    adapter.validate_path(url)
+    url = adapter.normalize_url(url)
+
     max_retries = max_retries or MAX_RETRIES_DOWNLOAD
     target_folder = target_folder or TEMP_FOLDER
     total_started = time.perf_counter()
@@ -81,6 +90,7 @@ def download_images(
         "total_ignored": 0,
         "requested_max_images": max_images,
         "collection_strategy": "incremental_scroll",
+        "adapter": adapter.name,
         "viewer_image_count": 0,
         "viewer_unique_urls": 0,
         "ignored": [],
@@ -101,14 +111,14 @@ def download_images(
         collection_started = time.perf_counter()
         driver.get(url)
         time.sleep(4)
-        viewer_snapshot = _viewer_image_snapshot(driver)
+        viewer_snapshot = _viewer_image_snapshot(driver, adapter)
         report["viewer_image_count"] = viewer_snapshot["image_count"]
         report["viewer_unique_urls"] = len(viewer_snapshot["urls"])
         report["viewer_urls"] = viewer_snapshot["urls"]
         report["viewer_manifest_complete"] = bool(viewer_snapshot["complete_manifest"])
         scroll_diagnostics = _scroll_incrementally(driver)
         report["scroll_diagnostics"] = scroll_diagnostics
-        viewer_snapshot_after_scroll = _viewer_image_snapshot(driver)
+        viewer_snapshot_after_scroll = _viewer_image_snapshot(driver, adapter)
         report["viewer_image_count_after_scroll"] = viewer_snapshot_after_scroll["image_count"]
         report["viewer_unique_urls_after_scroll"] = len(viewer_snapshot_after_scroll["urls"])
         report["lazy_loading_fully_loaded"] = bool(
@@ -123,7 +133,7 @@ def download_images(
             report["viewer_urls"] = viewer_snapshot["urls"]
         if viewer_snapshot["complete_manifest"]:
             report["collection_strategy"] = "direct_viewer_manifest"
-        candidates = _collect_image_candidates(driver, url)
+        candidates = _collect_image_candidates(driver, url, adapter)
         report["timings"]["collection_seconds"] = (
             time.perf_counter() - collection_started
         )
@@ -650,12 +660,17 @@ def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5):
     }
 
 
-def _viewer_image_snapshot(driver):
-    """Return the chapter image manifest exposed by supported viewer pages."""
+def _viewer_image_snapshot(driver, adapter=None):
+    """Return the chapter image manifest exposed by the adapter's reader.
 
+    Selectors are supplied by the source adapter: the downloader holds no site-specific
+    knowledge, so adding a source never means editing this function.
+    """
+    selectors = (adapter.reader_selectors() if adapter else {}) or {}
+    image_selector = selectors.get("image") or "img"
     payload = driver.execute_script(
         r"""
-        const images = [...document.querySelectorAll('#_imageList img, .viewer_img img._images')];
+        const images = [...document.querySelectorAll(arguments[0])];
         const urls = images
             .map((el) => el.getAttribute('data-url') || el.getAttribute('data-src') || '')
             .filter(Boolean);
@@ -663,7 +678,8 @@ def _viewer_image_snapshot(driver):
             imageCount: images.length,
             urls: [...new Set(urls)],
         };
-        """
+        """,
+        image_selector,
     ) or {}
     image_count = int(payload.get("imageCount") or 0)
     urls = [str(value) for value in payload.get("urls") or [] if value]
@@ -674,8 +690,13 @@ def _viewer_image_snapshot(driver):
     }
 
 
-def _collect_image_candidates(driver, page_url):
+def _collect_image_candidates(driver, page_url, adapter=None):
+    selectors = (adapter.reader_selectors() if adapter else {}) or {}
+    container_selector = selectors.get("container") or ""
+    image_selector = selectors.get("image") or "img"
     script = r"""
+        const CONTAINER_SELECTOR = arguments[0] || "";
+        const IMAGE_SELECTOR = arguments[1] || "";
         const out = [];
         const add = (el, tag, url, source, order) => {
             if (!url) return;
@@ -692,10 +713,10 @@ def _collect_image_candidates(driver, page_url):
                 declaredWidth: Math.round(parseFloat(el.getAttribute('width') || '0')),
                 declaredHeight: Math.round(parseFloat(el.getAttribute('height') || '0')),
                 isChapterCandidate: Boolean(
-                    el.matches('#_imageList img, .viewer_img img._images') ||
-                    el.closest('#_imageList, .viewer_img, .viewer_lst') &&
-                    (el.getAttribute('data-url') || el.classList.contains('_images'))
+                    (IMAGE_SELECTOR && el.matches(IMAGE_SELECTOR)) ||
+                    (CONTAINER_SELECTOR && el.closest(CONTAINER_SELECTOR))
                 ),
+                inContainer: Boolean(CONTAINER_SELECTOR && el.closest(CONTAINER_SELECTOR)),
                 y: Math.round((window.scrollY || 0) + rect.top),
                 className: el.className || "",
                 id: el.id || "",
@@ -726,7 +747,7 @@ def _collect_image_candidates(driver, page_url):
 
         return out;
     """
-    raw_candidates = driver.execute_script(script)
+    raw_candidates = driver.execute_script(script, container_selector, image_selector)
     candidates = []
 
     for raw in raw_candidates:
