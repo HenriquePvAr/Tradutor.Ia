@@ -177,9 +177,16 @@ def build_run_command(
     open_output: bool = False,
     python_executable: str | None = None,
 ) -> list[str]:
+    from chapter_source import select_adapter
+
     cleaned_url = clean_url(url)
     if not cleaned_url.startswith(("http://", "https://")):
         raise ValueError("A URL precisa começar com http:// ou https://.")
+    # Explicit source selection: an unregistered host is rejected here, before a job is
+    # persisted, instead of failing obscurely inside the Webtoons runner.
+    adapter = select_adapter(cleaned_url)
+    adapter.validate_url(cleaned_url)
+    cleaned_url = adapter.normalize_url(cleaned_url)
     if mode not in {"fast", "quality"}:
         raise ValueError("O modo precisa ser fast ou quality.")
     if use_cache and force:
@@ -189,7 +196,7 @@ def build_run_command(
 
     command = [
         python_executable or sys.executable,
-        str(REPO_ROOT / "run_webtoon.py"),
+        str(REPO_ROOT / adapter.runner),
         cleaned_url,
         "--mode",
         mode,
