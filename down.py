@@ -928,24 +928,40 @@ def _candidate_skip_reason(candidate):
     return None
 
 
-def _download_url(url, referer, max_retries):
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
-        ),
-        "Referer": referer,
-        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-    }
+def _download_url(url, referer, max_retries, transports=None):
+    """Fetch through bounded transports, trying each in order.
 
-    for _ in range(max_retries):
-        try:
-            response = requests.get(url, timeout=20, headers=headers)
-            if response.status_code == 200 and response.content:
-                return response.content
-        except Exception:
-            time.sleep(0.3)
+    The previous implementation was an unbounded ``requests.get``: no size ceiling and, more
+    importantly, redirects followed silently — so a 302 could walk the fetch to an address
+    the URL validation had already rejected. Coded failures (access denied, rate limited,
+    challenge) propagate instead of being retried blindly.
+    """
+    from chapter_source import ChallengeRequired, SourceError
+    from download_transport import RequestsTransport
 
+    if transports is None:
+        from chapter_source import select_adapter
+
+        transports = [RequestsTransport(select_adapter(url))]
+
+    last_error = None
+    for transport in transports:
+        for _ in range(max(1, max_retries)):
+            try:
+                return transport.fetch(url, referer=referer).content
+            except ChallengeRequired:
+                raise                     # interactive challenge: stop, never work around
+            except SourceError as exc:
+                last_error = exc
+                if exc.code != "invalid_image_response":
+                    break                 # denied/rate-limited: retrying will not help
+                time.sleep(0.3)
+            except Exception as exc:  # noqa: BLE001 - transport-level fault, try the next
+                last_error = exc
+                time.sleep(0.3)
+    if last_error is not None:
+        # Sanitized: only the failure code or class name — never a URL, cookie or header.
+        _download_url.last_failure = getattr(last_error, "code", None) or type(last_error).__name__
     return None
 
 
