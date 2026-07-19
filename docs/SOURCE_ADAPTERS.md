@@ -246,3 +246,42 @@ está estabilizada e continua avisando `scroll_incomplete`.
 
 O `UniversalChapterAdapter` não herda a regra permissiva — há teste aplicando exatamente a
 forma medida do Webtoons ao universal e exigindo que ele continue recusando.
+
+## Estratégia de coleta por adapter
+
+O `BaseAdapter.analyze` executava `_collected_payload` — a varredura genérica (DOM amplo +
+rede/CDP + JSON + iframes) — para **todo** adapter. Um job real do Webtoons registrou **823
+candidatos, 90 aceitos**, com `cross_origin_iframe`, `network_log_limit` e
+`network_json_limit`, numa página cujo reader tem 167 elementos e **zero iframes**. O adapter
+específico era selecionado, mas quem coletava era a máquina genérica.
+
+| Estratégia | Adapter | Coleta |
+| --- | --- | --- |
+| `adapter_specific` | Webtoons, VortexScans | somente o container do reader |
+| `generic_multisource` | Universal (padrão) | DOM amplo + rede/CDP + JSON + clusterização + score |
+| `local_snapshot` | LocalFolder | snapshot local, sem navegador |
+
+Medido contra o leitor oficial após a correção: `collector=webtoons_reader`, **167**
+candidatos, **0** de rede, **0** de JSON, **nenhum warning**. A decisão pertence ao adapter —
+há teste que falha se um nome de host aparecer no roteamento do `analyze`.
+
+### Lazy-load: 167 elementos não são 167 páginas
+
+Medição da distribuição por host, ~5s após o load e **sem** scroll:
+
+| Host | Elementos | Dimensões |
+| --- | --- | --- |
+| `webtoons-static.pstatic.net` | 164 | 1×1 |
+| `webtoon-phinf.pstatic.net` | 3 | 800×1280 |
+
+Os 164 são **placeholders** de lazy-load, não páginas. Um registro anterior afirmando "167
+imagens válidas" media depois do scroll e inspecionava apenas as primeiras da amostra;
+a distribuição nunca havia sido medida.
+
+Consequências: `webtoons-static.pstatic.net` **não** é autorizado em `resource_hosts` — é o
+host dos placeholders, e `exclude_candidate` já os descarta como `tracking_pixel`. E a
+coleta específica precisa ocorrer **depois** de o lazy-load resolver, não logo após o load.
+Isso explica os 90 aceitos do job real: parte das páginas ainda não havia resolvido.
+
+Este ponto permanece **em aberto**: a coleta ainda não aguarda a resolução completa antes de
+contar candidatos.
