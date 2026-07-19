@@ -29,6 +29,9 @@ NO_CHAPTER_IMAGES = "no_chapter_images"
 SUPPORTED_SPECIFIC_ADAPTER = "supported_specific_adapter"
 INVALID_IMAGE_RESPONSE = "invalid_image_response"
 INCOMPLETE_DOWNLOAD = "incomplete_download"
+# Analysis-stage coverage: the collector could not see the whole reader. Distinct from
+# INCOMPLETE_DOWNLOAD, which is only meaningful once downloads have been attempted.
+INCOMPLETE_SOURCE_COVERAGE = "incomplete_source_coverage"
 AUTHENTICATION_REQUIRED = "authentication_required"
 UNSUPPORTED_CANVAS_READER = "unsupported_canvas_reader"
 UNSUPPORTED_CROSS_ORIGIN_READER = "unsupported_cross_origin_reader"

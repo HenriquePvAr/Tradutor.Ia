@@ -169,6 +169,7 @@ async def api_run(
             "no_chapter_images": ("Nenhuma página de capítulo foi encontrada.", "Confirme que a URL abre o leitor do capítulo."),
             "unsupported_low_confidence": ("Não foi possível reconhecer o leitor com segurança.", "Use uma fonte com leitor visível ou um adapter específico."),
             "unsupported_canvas_reader": ("O leitor em canvas não pôde ser capturado com integridade.", "Use uma fonte que exponha páginas visíveis sem proteção interativa."),
+            "incomplete_source_coverage": ("Não foi possível ler o capítulo inteiro na página.", "Abra o capítulo completo no navegador e tente novamente."),
             "incomplete_download": ("As páginas não puderam ser baixadas por completo.", "Revise a fonte e tente novamente mais tarde."),
         }
         if exc.code.startswith("local_"):

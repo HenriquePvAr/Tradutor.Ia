@@ -750,15 +750,22 @@ class UiBridge:
         if self._source_analysis_is_incomplete(public_analysis):
             # Manual review may choose among an uncertain *complete* reader manifest; it is
             # never an override for evidence that the collector already knows is partial.
+            #
+            # This is analysis coverage, not download coverage. Reporting it as
+            # incomplete_download blamed a download that had not been attempted yet — the
+            # runner has not even started at this point — and sent the user chasing a
+            # network problem for what is a collector that could not see the whole reader.
+            from chapter_source import INCOMPLETE_SOURCE_COVERAGE
+
             job = self.store.transition(
-                job["id"], JobStatus.FAILED, reason_code="incomplete_download",
+                job["id"], JobStatus.FAILED, reason_code=INCOMPLETE_SOURCE_COVERAGE,
                 source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
                 stage="source_analysis", error_type="source_analysis",
                 error_message="source_coverage_incomplete", **provenance,
             )
             return {
                 "ok": False, "run_id": job["run_id"], "job_id": job["id"],
-                "analysis": public_analysis, "reason_code": "incomplete_download",
+                "analysis": public_analysis, "reason_code": INCOMPLETE_SOURCE_COVERAGE,
             }
         selected_ids = [candidate.id for candidate in analysis.accepted]
         if analysis.outcome == REVIEW_REQUIRED_MEDIUM_CONFIDENCE:
