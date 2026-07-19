@@ -357,6 +357,30 @@ percorrer o leitor inteiro forçando o carregamento de todas as páginas, o que 
 manifesto completo do capítulo — a peça imediatamente anterior à captura. A peça está pronta
 para ser conectada a uma fonte com direitos, inclusive à entrada por pasta local.
 
+## Migração da análise para o worker — em andamento
+
+**Marco concluído:** o tratamento do resultado da análise foi extraído para
+`UiBridge._apply_source_analysis`. Ele decide o próximo estado do job — cobertura
+incompleta, revisão manual, resultado não suportado, ambiente não configurado, ou `queued` —
+e agora é alcançável por quem quer que tenha executado a análise, em vez de viver dentro do
+handler HTTP. Refatoração pura, comportamento idêntico.
+
+**Marcos restantes**, nesta ordem:
+
+1. mover `_apply_source_analysis` e `_run_source_analysis` para um módulo de fase que receba
+   um `JobStore`, já que o worker não tem `UiBridge`;
+2. `start()` para URL: validar, calcular fingerprint, bloquear duplicidade, criar job em
+   `queued`, garantir worker, devolver `job_id` — sem abrir Selenium;
+3. `WorkerService._run_one`: antes de spawnar o runner, se o job URL não tiver
+   `source_analysis_json`, executar a fase; quando ela não terminar em `queued`, **não**
+   spawnar runner;
+4. cancelamento atravessando a fase e progresso persistido por etapa;
+5. frontend consumindo os novos estágios.
+
+O ponto delicado é o (3): hoje `_run_one` spawna o runner na primeira linha, então a
+supressão condicional do spawn precisa de teste próprio para cancelamento e para restart do
+worker no meio da fase.
+
 ## Dívida técnica: análise de fonte no submit
 
 `ui_bridge.start` continua executando a análise com Selenium dentro da requisição HTTP, o que
