@@ -71,13 +71,16 @@ def looks_like_markup(data: bytes) -> bool:
 
 def validate_image_bytes(data: bytes, *, min_width: int = MIN_WIDTH,
                          min_height: int = MIN_HEIGHT,
+                         min_bytes: int = MIN_BYTES,
                          max_bytes: int | None = None) -> ValidatedImage:
     """Accept only bytes that really are a decodable image. Raises SourceError otherwise."""
     if not data:
         raise SourceError(INVALID_IMAGE_RESPONSE, "empty")
     if max_bytes is not None and len(data) > max_bytes:
         raise SourceError(INVALID_IMAGE_RESPONSE, "too_large")
-    if len(data) < MIN_BYTES:
+    # Callers set their own floor: a locally supplied separator strip is a legitimate page
+    # and can be far smaller than a scraped one.
+    if len(data) < max(1, int(min_bytes)):
         raise SourceError(INVALID_IMAGE_RESPONSE, "too_small_bytes")
     if looks_like_markup(data):
         # HTML/JSON disguised as a JPEG — an error page or a challenge.

@@ -27,6 +27,8 @@ CHALLENGE_REQUIRED = "challenge_required"
 SOURCE_ACCESS_DENIED = "source_access_denied"
 SOURCE_RATE_LIMITED = "source_rate_limited"
 NO_CHAPTER_IMAGES = "no_chapter_images"
+# A registered adapter claimed the source (as opposed to a refusal).
+SUPPORTED_SPECIFIC_ADAPTER = "supported_specific_adapter"
 INVALID_IMAGE_RESPONSE = "invalid_image_response"
 INCOMPLETE_DOWNLOAD = "incomplete_download"
 
