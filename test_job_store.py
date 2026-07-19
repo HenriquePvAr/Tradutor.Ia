@@ -2,6 +2,7 @@
 
 import _test_bootstrap  # noqa: F401
 
+import sqlite3
 import threading
 import time
 import unittest
@@ -44,6 +45,36 @@ class JobStoreBasicsTests(unittest.TestCase):
         store2 = JobStore(self.tmp / "jobs.sqlite3")
         self.assertIsNotNone(store2.get_job(jid))
         store2.close()
+
+    def test_current_version_backfills_missing_additive_columns(self):
+        jid = _new_job(self.store)
+        db_path = self.tmp / "jobs.sqlite3"
+        self.store.close()
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("ALTER TABLE jobs DROP COLUMN progress_counter_stage")
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '5') "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        store2 = JobStore(db_path)
+        try:
+            columns = {
+                row[1]
+                for row in store2._conn.execute("PRAGMA table_info(jobs)").fetchall()
+            }
+            self.assertIn("progress_counter_stage", columns)
+            store2.update_progress(jid, stage="source_validation",
+                                   counter_stage="source_validation")
+            self.assertEqual(
+                store2.get_job(jid)["progress_counter_stage"], "source_validation")
+        finally:
+            store2.close()
+        self.store = JobStore(db_path)
 
     def test_configuration_and_command_roundtrip(self):
         jid = _new_job(self.store, configuration={"mode": "fast", "force": True})

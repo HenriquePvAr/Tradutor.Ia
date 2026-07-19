@@ -161,12 +161,27 @@ class JobStore:
             self._migrate_v4()
         if version < 5:
             self._migrate_v5()
+        self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (str(SCHEMA_VERSION),),
         )
+
+    def _backfill_additive_columns(self) -> None:
+        """Repair databases whose schema_version advanced before all columns existed.
+
+        Some development branches introduced independent additive migrations with the
+        same intermediate schema version.  A database may therefore already report the
+        current version while still lacking one of those physical columns.  Re-running
+        the idempotent additive migrations keeps opened stores usable without lowering
+        or rewriting their version marker.
+        """
+        self._migrate_v2()
+        self._migrate_v3()
+        self._migrate_v4()
+        self._migrate_v5()
 
     def _migrate_v2(self) -> None:
         # Additive: process start times let recovery tell a live runner from a reused PID,
