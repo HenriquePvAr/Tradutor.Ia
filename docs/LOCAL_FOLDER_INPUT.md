@@ -90,11 +90,42 @@ Mensagens sanitizadas; nenhum traceback e nenhum caminho no frontend.
 
 Tudo hermético: imagens sintéticas, sem rede, sem NVIDIA, sem Drive, sem Supabase remoto.
 
+## Integração com jobs
+
+O job carrega apenas proveniência, nunca caminho:
+
+| Campo | Conteúdo |
+| --- | --- |
+| `source_type` | `local_folder` |
+| `adapter_name` / `adapter_version` | identificação do adapter |
+| `input_root_fingerprint` | SHA-256 truncado da pasta — estável e não reversível |
+| `snapshot_ref` | referência opaca ao workspace |
+| `logical_pages` | `1` para pasta local |
+| `input_count` / `accepted_count` / `rejected_count` / `duplicate_count` | contadores |
+| `total_size_bytes` | tamanho total aceito |
+
+Migration SQLite **v3**, aditiva e idempotente: bancos existentes recebem as colunas sem
+perder jobs (verificado com 11 jobs reais), bancos novos já nascem com elas. Nenhuma
+migration no Supabase.
+
+O comando do runner é lista de argumentos, nunca string de shell, e recebe a
+`--snapshot-ref` opaca em vez de um caminho vindo do cliente — uma requisição forjada não
+consegue fazer o runner ler arquivo arbitrário.
+
+## E2E hermético
+
+`test_local_pipeline_e2e.py` cobre o caminho completo com imagens sintéticas: análise →
+snapshot → job → runner → PDF. As etapas de tradução passam pelo `fake_pipeline.py`, que
+produz checkpoints, timing report e PDF reais sem chamar nenhum provider.
+
+Valida: ordem natural (`1`, `2`, `10`), página alta de 760×2600 intacta, originais
+byte-idênticos depois da execução inteira, PDF com header `%PDF-`, `exit_code == 0`,
+`finished_at` preenchido e elapsed congelado.
+
 ## Limitações
 
-- A UI ainda **não** tem o seletor "URL / Pasta local"; o fluxo local existe na camada de
-  adapter, snapshot e manifest, e ainda não foi ligado à tela Nova tradução.
-- O E2E hermético completo (OCR fake → tradução fake → PDF → quality gate) **não** foi
-  executado nesta tarefa; o que está provado é a entrada, a validação, o snapshot e o
-  passthrough de páginas lógicas.
-- Publicação a partir de entrada local usa o fluxo explícito existente, não exercitado aqui.
+- A UI ainda **não** tem o seletor "URL / Pasta local". A camada de submit
+  (`local_folder_job.py`) está pronta e testada, mas a tela Nova tradução continua só com URL.
+- O E2E usa `fake_pipeline.py` no lugar de OCR e tradução reais. O encadeamento está provado;
+  a qualidade de OCR/tradução em si não.
+- Publicação a partir de PDF local usa o fluxo explícito existente, não exercitado aqui.
