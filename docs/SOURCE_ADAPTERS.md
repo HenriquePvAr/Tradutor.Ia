@@ -217,3 +217,32 @@ era essa a causa de ambiente.
 Isso prende a requisição, arrisca timeout e inicia um driver no processo web. Separar isso
 (criar o job `queued` e analisar no worker) é uma migração arquitetural com testes próprios,
 deliberadamente fora do escopo desta correção.
+
+## Estratégia de cobertura por adapter
+
+O downloader decidia cobertura com uma regra única, cujo próprio docstring dizia valer "for
+every adapter type": só considerava completo quando `reached_document_end` **e**
+`stabilized`. Isso é correto para uma página desconhecida — qualquer coisa abaixo da última
+imagem observada ainda pode ser capítulo, então parar cedo deve falhar fechado.
+
+É errado para um leitor registrado. Medição real do leitor oficial: o reader termina em
+~212530 e o documento em 218644 — cerca de 6000px de recomendações e rodapé vêm **depois**
+do leitor. O scroll estabiliza no fim do reader e o fim do documento nunca é alcançado. Além
+disso, as 167 imagens já chegam resolvidas no primeiro snapshot, então não há crescimento
+nenhum a observar. As duas coisas são normais, e a regra antiga classificava um capítulo
+completo como truncado.
+
+| Estratégia | Adapter | Evidência de cobertura |
+| --- | --- | --- |
+| `reader_container` | Webtoons (registrado) | o coletor viu o reader parar de mudar pelas rodadas exigidas |
+| `generic_document` | Universal (padrão) | fim do documento **e** estabilização |
+
+A decisão pertence ao adapter (`coverage_strategy`), não ao downloader: não há
+`if host == "webtoons.com"` espalhado, e há teste que falha se um host aparecer nessa função.
+
+Ausência de crescimento **não** implica incompletude. O que distingue os casos é
+`stabilized`: uma execução que apenas esgotou rodadas ou tempo enquanto ainda mudava não
+está estabilizada e continua avisando `scroll_incomplete`.
+
+O `UniversalChapterAdapter` não herda a regra permissiva — há teste aplicando exatamente a
+forma medida do Webtoons ao universal e exigindo que ele continue recusando.
