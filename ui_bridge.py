@@ -745,6 +745,21 @@ class UiBridge:
         current = self.store.get_job(job["id"])
         if not current or current.get("status") == JobStatus.CANCELLED:
             return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
+        return self._apply_source_analysis(job, analysis)
+
+
+    def _apply_source_analysis(self, job: dict[str, Any], analysis: Any) -> dict[str, Any]:
+        """Persist an analysis outcome and decide the job's next state.
+
+        Extracted verbatim from the submit path so the identical decision can be made by
+        whoever ran the analysis — today the HTTP request, next the worker.
+        """
+        from universal_chapter_adapter import (
+            REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
+            SUPPORTED_GENERIC_HIGH_CONFIDENCE,
+            SUPPORTED_SPECIFIC_ADAPTER,
+        )
+
         public_analysis = analysis.public()
         provenance = self._remote_source_provenance(public_analysis)
         if self._source_analysis_is_incomplete(public_analysis):
