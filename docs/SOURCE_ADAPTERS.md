@@ -402,11 +402,31 @@ mecanismo deixou de existir. O que ela protegia sobrevive em dois testes — an�
 termina é terminal sem runner, e job cancelado nunca chega ao analisador — mais um afirmando
 que a duração do submit não pode depender de uma análise que ele não executa.
 
+### A tela acompanha o worker
+
+Cada estágio que o worker reporta tem rótulo em `static/tradutor_ui.js`: `queued`,
+`worker_starting`, `source_validation`, `browser_loading`, `source_analysis`,
+`source_lazy_resolution`, `source_selection`, `downloading_pages`, `validating_pages`.
+
+Os controles agora viram **depois** da resposta, não antes. Virá-los antes era contorno para
+a espera de 93-101s; com o submit rápido, a tela mostra o estágio que o worker de fato
+reporta em vez de anunciar "Analisando fonte" por conta própria.
+
+O contador pertence ao estágio que o produziu (`counter_stage`). Sem isso, o `20/20` da
+resolução lazy continuaria na tela enquanto o download ainda não tinha contado uma página.
+
+Falhas codificadas têm frase própria, e `incomplete_source_coverage` lê diferente de
+`incomplete_download` — um erro de download nunca aparece para uma análise que não chegou ao
+download.
+
+A revisão manual é aberta pelo **polling**, a partir de `runtime.source_review`, já que o
+submit não a produz mais.
+
 ### Limitações
 
-O `static/tradutor_ui.js` ainda não foi ajustado para os novos estágios. Os rótulos existem
-no backend (`queued`, `worker_starting`, `source_lazy_resolution`, `source_selection`) e o
-polling já os recebe, mas a tela de submit continua com o texto antigo.
+O `lazy_slot_resolver` continua **não integrado** à coleta do Webtoons. Ele está
+implementado, testado e com operações de browser injetáveis, pronto para ser conectado a uma
+fonte com direitos — inclusive à entrada por pasta local, que já está integrada.
 
 Nenhum capítulo real foi processado: análises falsas, banco temporário, zero rede.
 

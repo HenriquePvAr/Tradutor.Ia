@@ -776,11 +776,13 @@ class FrontendContractTests(unittest.TestCase):
     def test_in_flight_label_shown_while_the_request_runs(self):
         self.assertIn("Iniciando processamento…", self.js)
 
-    def test_controls_are_not_flipped_before_the_backend_accepts(self):
-        # Source analysis is a persisted, cancelable staging state before the request settles.
+    def test_controls_are_flipped_only_after_the_backend_accepts(self):
+        # This assertion inverted with the architecture. Flipping first was a workaround for
+        # a submit that held the request for 93-101s while it analysed; the submit now
+        # enqueues and returns a job to poll, so the response is what flips the controls.
         start = self.js[self.js.index("async function startTranslation"):]
         body = start[:start.index("\n  async function cancelTranslation")]
-        self.assertLess(body.index("setRunControls(true);"), body.index("await api('/api/ui/run'"))
+        self.assertLess(body.index("await api('/api/ui/run'"), body.index("setRunControls(true"))
 
     def test_double_click_guard(self):
         self.assertIn("button.dataset.busy", self.js)
