@@ -116,7 +116,43 @@ def drive(coro):
     raise AssertionError("unexpectedly awaited")
 
 
+
+class _PhaseWorker(Worker):
+    """Worker with the analysis and the spawn replaced; everything else is real."""
+
+    def __init__(self, store, analyzer):
+        self.store = store
+        self.worker_id = "w-test"
+        self.pid = os.getpid()
+        self._active = None
+        self._stop_requested = False
+        self._analyzer = analyzer
+        self.spawns = 0
+
+    def _analyze_source(self, url, *, cancel_check=None):
+        return self._analyzer(url, cancel_check=cancel_check)
+
+    def _spawn_runner(self, job):
+        self.spawns += 1
+        raise AssertionError("runner spawned")
+
+
+def run_source_phase(bridge, job_id, analyzer):
+    """Drive the worker over a queued job, as claim_next_job + _run_one would.
+
+    The submit no longer analyses, so a test that asserts on an analysis outcome has to
+    exercise the actor that now produces it.
+    """
+    bridge.store.transition(job_id, JobStatus.CLAIMING, worker_id="w-test")
+    worker = _PhaseWorker(bridge.store, analyzer)
+    prepared = worker._prepare_source(bridge.store.get_job(job_id))
+    return worker, prepared
+
+
 class SubmitTests(unittest.TestCase):
+    def run_phase(self, job_id):
+        return run_source_phase(self.bridge, job_id, self.bridge._analyze_source)
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.bridge = _Bridge(self.tmp / "jobs.sqlite3")
@@ -145,6 +181,8 @@ class SubmitTests(unittest.TestCase):
 
     def test_remote_submission_persists_sanitized_adapter_provenance(self):
         result = self.start()
+        # Provenance is produced by the analysis, which the worker now owns.
+        run_source_phase(self.bridge, result["job_id"], self.bridge._analyze_source)
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["source_type"], "url")
         self.assertEqual(job["adapter_name"], "webtoons")
@@ -158,8 +196,10 @@ class SubmitTests(unittest.TestCase):
 
     def test_remote_resume_preserves_analysis_selection_and_scalar_provenance(self):
         result = self.start()
+        run_source_phase(self.bridge, result["job_id"], self.bridge._analyze_source)
         original = self.bridge.store.get_job(result["job_id"])
-        self.bridge.store.claim_next_job("remote-worker", 999999)
+        self.bridge.store.transition(original["id"], JobStatus.CLAIMING,
+                                     worker_id="remote-worker")
         self.bridge.store.transition(original["id"], JobStatus.STARTING, expected_worker="remote-worker")
         self.bridge.store.transition(original["id"], JobStatus.RUNNING, expected_worker="remote-worker")
         self.bridge.store.transition(original["id"], JobStatus.INTERRUPTED, expected_worker="remote-worker")
@@ -191,15 +231,25 @@ class SubmitTests(unittest.TestCase):
         self.assertIs(self.start()["worker"]["online"], False)
 
     def test_automatic_source_never_queues_the_pipeline_without_configured_environment(self):
-        with mock.patch.object(ui_bridge, "env_status",
-                               return_value={"env_exists": False, "nvidia_configured": False}):
-            result = drive(self.bridge.start(self.payload()))
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["reason_code"], "environment_not_configured")
+        result = drive(self.bridge.start(self.payload()))
+        with mock.patch("source_analysis_phase.apply_source_analysis") as apply:
+            from source_analysis_phase import FAILED as PHASE_FAILED, SourceAnalysisPhaseResult
+
+            def refuse(store, job, analysis, **_kw):
+                store.transition(job["id"], JobStatus.FAILED,
+                                 reason_code="environment_not_configured",
+                                 stage="source_analysis")
+                return SourceAnalysisPhaseResult(
+                    outcome=PHASE_FAILED, job_id=job["id"],
+                    reason_code="environment_not_configured")
+
+            apply.side_effect = refuse
+            worker, prepared = self.run_phase(result["job_id"])
+        self.assertIsNone(prepared)
+        self.assertEqual(worker.spawns, 0)
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.FAILED)
         self.assertEqual(job["reason_code"], "environment_not_configured")
-        self.assertEqual(self.bridge.worker_calls, 0)
 
     def test_double_submit_creates_only_one_job(self):
         first = self.start()
@@ -448,6 +498,9 @@ class SourceReviewTests(unittest.TestCase):
     def tearDown(self):
         self.bridge.store.close()
 
+    def run_phase(self, job_id):
+        return run_source_phase(self.bridge, job_id, self.bridge._analyze_source)
+
     def payload(self, **over):
         base = {"url": "https://reader.example.test/chapter/1", "chapter_name": "Reader 1",
                 "slug": "reader_1", "mode": "fast", "full": True, "use_cache": False,
@@ -455,10 +508,11 @@ class SourceReviewTests(unittest.TestCase):
         base.update(over)
         return base
 
-    def test_medium_confidence_waits_without_a_worker_and_exposes_sanitized_review(self):
+    def test_medium_confidence_waits_without_a_runner_and_exposes_sanitized_review(self):
         result = drive(self.bridge.start(self.payload()))
-        self.assertTrue(result["awaiting_source_review"])
-        self.assertEqual(self.bridge.worker_calls, 0)
+        worker, prepared = self.run_phase(result["job_id"])
+        self.assertIsNone(prepared)                      # no runner for a review
+        self.assertEqual(worker.spawns, 0)
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.AWAITING_SOURCE_REVIEW)
         self.assertEqual(job["stage"], "awaiting_source_review")
@@ -469,20 +523,21 @@ class SourceReviewTests(unittest.TestCase):
     def test_known_incomplete_source_never_enters_manual_page_review(self):
         self.public["warnings"] = ["pagination_incomplete"]
         result = drive(self.bridge.start(self.payload()))
-        self.assertFalse(result["ok"])
+        worker, prepared = self.run_phase(result["job_id"])
         # The intent is unchanged — a known-incomplete source must not reach manual review —
-        # but the code now names analysis coverage instead of a download that never ran.
-        self.assertEqual(result["reason_code"], "incomplete_source_coverage")
+        # but the verdict is now produced by the worker, not by the submit.
+        self.assertIsNone(prepared)
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.FAILED)
         self.assertEqual(job["reason_code"], "incomplete_source_coverage")
         self.assertEqual(job["stage"], "source_analysis")
         # The invariant the bug violated: a download verdict cannot be born in analysis.
         self.assertNotEqual(job["reason_code"], "incomplete_download")
-        self.assertEqual(self.bridge.worker_calls, 0)
+        self.assertEqual(worker.spawns, 0)
 
     def test_confirmation_requires_a_nonempty_known_subset_and_preserves_open_output(self):
         result = drive(self.bridge.start(self.payload()))
+        self.run_phase(result["job_id"])
         with self.assertRaises(ValueError):
             self.bridge.confirm_source_pages(result["job_id"], [])
         with self.assertRaises(ValueError):
@@ -499,6 +554,7 @@ class SourceReviewTests(unittest.TestCase):
 
     def test_confirmation_records_explicit_manual_page_order(self):
         result = drive(self.bridge.start(self.payload()))
+        self.run_phase(result["job_id"])
         with mock.patch.object(ui_bridge, "env_status", return_value={
             "env_exists": True, "nvidia_configured": True,
         }):
@@ -525,6 +581,7 @@ class SourceReviewTests(unittest.TestCase):
 
     def test_controlled_manual_selection_keeps_max_images_and_subset_provenance(self):
         result = drive(self.bridge.start(self.payload(full=False, max_images=2)))
+        self.run_phase(result["job_id"])
         with mock.patch.object(ui_bridge, "env_status", return_value={
             "env_exists": True, "nvidia_configured": True,
         }):
@@ -544,15 +601,17 @@ class SourceReviewTests(unittest.TestCase):
                             "accepted": [], "accepted_count": 0, "discarded_count": 0},
         )
         result = drive(self.bridge.start(self.payload()))
-        self.assertFalse(result["ok"])
+        worker, prepared = self.run_phase(result["job_id"])
+        self.assertIsNone(prepared)
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.FAILED)
         self.assertEqual(job["reason_code"], UNSUPPORTED_LOW_CONFIDENCE)
         self.assertIsNotNone(job["finished_at"])
-        self.assertEqual(self.bridge.worker_calls, 0)
+        self.assertEqual(worker.spawns, 0)
 
     def test_cancel_review_freezes_it_without_queueing(self):
         result = drive(self.bridge.start(self.payload()))
+        self.run_phase(result["job_id"])
         drive(self.bridge.cancel(job_id=result["job_id"]))
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.CANCELLED)
@@ -600,58 +659,74 @@ class SourceReviewTests(unittest.TestCase):
             self.bridge.store.get_job(second["id"])["status"], JobStatus.AWAITING_SOURCE_REVIEW)
 
     def test_coded_remote_source_failure_is_recorded_then_returned_to_the_api(self):
-        self.bridge._analyze_source = lambda _url, **_kw: (_ for _ in ()).throw(
-            SourceError("challenge_required", "sanitized"))
-        with self.assertRaises(SourceError):
-            drive(self.bridge.start(self.payload()))
+        def raises(_url, **_kw):
+            raise SourceError("challenge_required", "sanitized")
+
+        result = drive(self.bridge.start(self.payload()))
+        # The submit accepts the job; the coded failure now reaches the user through the
+        # job row and polling instead of an exception out of the HTTP request.
+        worker, prepared = run_source_phase(self.bridge, result["job_id"], raises)
+        self.assertIsNone(prepared)
+        self.assertEqual(worker.spawns, 0)
         failed = self.bridge.store.list_jobs(statuses=[JobStatus.FAILED])
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0]["reason_code"], "challenge_required")
         self.assertIsNotNone(failed[0]["finished_at"])
-        self.assertEqual(self.bridge.worker_calls, 0)
 
 
-class _TimeoutBridge(_Bridge):
-    def __init__(self, db_path):
-        super().__init__(db_path)
-        self.cancel_seen = threading.Event()
+class SourceAnalysisTimeoutTests(unittest.TestCase):
+    """A slow analysis is the worker's problem now, not the request's.
 
-    def _analyze_source(self, _url, *, cancel_check=None):
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and not (cancel_check and cancel_check()):
-            time.sleep(0.002)
-        if cancel_check and cancel_check():
-            self.cancel_seen.set()
-            raise SourceError("cancelled", "timeout_observed")
-        raise AssertionError("analysis thread did not observe cancellation")
+    The old test drove a timeout inside the submit and asserted the staging row flipped so
+    the background thread cancelled itself. That mechanism is gone: the submit no longer
+    analyses anything. The requirement it protected survives — an analysis that cannot
+    finish must end the job terminally and must never leave a runner behind.
+    """
 
-    async def _run_source_analysis(self, url, *, cancel_check=None):
-        return await ui_bridge.UiBridge._run_source_analysis(
-            self, url, cancel_check=cancel_check)
-
-
-class SourceAnalysisTimeoutTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
+    def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
-        self.bridge = _TimeoutBridge(self.tmp / "jobs.sqlite3")
+        self.bridge = _Bridge(self.tmp / "jobs.sqlite3")
 
-    async def asyncTearDown(self):
+    def tearDown(self):
         self.bridge.store.close()
 
-    async def test_timeout_changes_staging_state_so_background_analysis_cancels_itself(self):
-        payload = {
-            "url": WEBTOON_URL, "slug": "timeout_probe", "mode": "fast", "full": True,
-            "use_cache": False, "force": True, "use_context": True,
-        }
-        with mock.patch.object(ui_bridge, "SOURCE_ANALYSIS_TIMEOUT_SECONDS", 0.02):
-            with self.assertRaises(SourceError) as ctx:
-                await self.bridge.start(payload)
-        self.assertEqual(ctx.exception.code, SOURCE_NOT_READY)
+    def payload(self):
+        return {"url": WEBTOON_URL, "slug": "timeout_probe", "mode": "fast", "full": True,
+                "use_cache": False, "force": True, "use_context": True}
+
+    def test_submit_returns_before_any_analysis_could_time_out(self):
+        started = time.monotonic()
+        result = drive(self.bridge.start(self.payload()))
+        # The submit does no analysis at all, so its duration cannot depend on one. A slow
+        # analyzer would blow this budget by two orders of magnitude if it were called.
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], JobStatus.QUEUED)
+
+    def test_a_timed_out_analysis_is_terminal_and_spawns_no_runner(self):
+        result = drive(self.bridge.start(self.payload()))
+
+        def times_out(_url, **_kw):
+            raise SourceError(SOURCE_NOT_READY, "source_analysis_timeout")
+
+        worker, prepared = run_source_phase(self.bridge, result["job_id"], times_out)
+        self.assertIsNone(prepared)
+        self.assertEqual(worker.spawns, 0)
         failed = self.bridge.store.list_jobs(statuses=[JobStatus.FAILED])
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0]["reason_code"], SOURCE_NOT_READY)
-        self.assertTrue(await asyncio.to_thread(self.bridge.cancel_seen.wait, 1.0))
-        self.assertEqual(self.bridge.worker_calls, 0)
+        self.assertIsNotNone(failed[0]["finished_at"])
+
+    def test_a_cancelled_analysis_never_reaches_the_runner(self):
+        result = drive(self.bridge.start(self.payload()))
+        self.bridge.store.request_cancel(result["job_id"])
+
+        def never_called(_url, **_kw):
+            raise AssertionError("analysis ran for a cancelled job")
+
+        worker, prepared = run_source_phase(self.bridge, result["job_id"], never_called)
+        self.assertIsNone(prepared)
+        self.assertEqual(worker.spawns, 0)
 
 
 class FixtureFilteringTests(unittest.TestCase):
