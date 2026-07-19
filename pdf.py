@@ -81,17 +81,24 @@ def prepare_smart_webtoon_pages(
     target_height=1800,
     min_height=1050,
     max_height=2400,
+    logical_pages=False,
 ):
     """Join source slices and rebuild logical pages around low-risk horizontal bands.
 
     Webtoon source assets are transport slices, not real pages. Rebuilding them before
     OCR prevents a speech balloon or narration box split between adjacent assets from
     being recognized and rendered as two unrelated fragments.
+
+    ``logical_pages=True`` means the caller already supplies complete pages — the usual case
+    for a local folder. Joining and re-cutting those would destroy the author's page
+    boundaries, so the inputs pass through untouched, in order.
     """
 
     paths = [str(path) for path in image_paths if path]
     if not paths:
         raise ValueError("Nenhuma imagem fornecida para reconstruir o Webtoon.")
+    if logical_pages:
+        return _passthrough_logical_pages(paths, split_folder)
     folder = Path(split_folder)
     folder.mkdir(parents=True, exist_ok=True)
     for previous in folder.glob("page_*.png"):
@@ -165,6 +172,38 @@ def prepare_smart_webtoon_pages(
         "unsafe_split_count": sum(
             not bool(record.get("safe_band")) for record in split_records
         ),
+    }
+    with (folder / "smart_split_report.json").open("w", encoding="utf-8") as file:
+        dump_json(report, file, ensure_ascii=False, indent=2)
+    return page_paths, report
+
+
+
+def _passthrough_logical_pages(paths, split_folder):
+    """Copy already-complete pages into the split folder unchanged, preserving order."""
+    folder = Path(split_folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    for previous in folder.glob("page_*.png"):
+        previous.unlink(missing_ok=True)
+
+    page_paths = []
+    source_height = 0
+    for index, path in enumerate(paths, start=1):
+        with Image.open(path) as opened:
+            image = to_rgb(opened)
+            source_height += image.height
+            target = folder / f"page_{index:03d}.png"
+            image.save(target)
+        page_paths.append(str(target))
+
+    report = {
+        "strategy": "logical_pages_passthrough",
+        "smart_split_skipped": True,
+        "skip_reason": "inputs_are_complete_pages",
+        "source_images": len(paths),
+        "source_height": source_height,
+        "pages": len(page_paths),
+        "splits": [],
     }
     with (folder / "smart_split_report.json").open("w", encoding="utf-8") as file:
         dump_json(report, file, ensure_ascii=False, indent=2)
