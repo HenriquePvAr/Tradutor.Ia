@@ -357,56 +357,58 @@ percorrer o leitor inteiro forçando o carregamento de todas as páginas, o que 
 manifesto completo do capítulo — a peça imediatamente anterior à captura. A peça está pronta
 para ser conectada a uma fonte com direitos, inclusive à entrada por pasta local.
 
-## Migração da análise para o worker — em andamento
+## Análise de fonte pertence ao worker
 
-**Marcos concluídos (2 de 3):**
+O submit rodava Selenium dentro da requisição HTTP. A análise leva o tempo que o leitor
+levar — 93-101s medidos numa página real — então a requisição ficava aberta o tempo todo e a
+tela ficava numa mensagem estática sem job para consultar.
 
-1. `_apply_source_analysis` extraído do handler HTTP (refatoração pura).
-2. A decisão vive em `source_analysis_phase`, que depende só de um `JobStore` e de callables
-   explícitos — sem import de UI, framework web ou singleton de bridge. O resultado é uma
-   decisão tipada única (`ready_for_runner`, `awaiting_source_review`, `failed`,
-   `cancelled`), e `should_spawn_runner` deriva dela, então revisão ou estado terminal não
-   conseguem iniciar processo filho por acidente.
-3. `Worker._run_one` executa a fase **antes** de `_spawn_runner`. O runner é suprimido para
-   revisão, cobertura incompleta, erro de análise, pedido de cancelamento e qualquer estado
-   terminal. Job com seleção utilizável pula a reanálise; job de pasta local não passa pelo
-   caminho URL.
+**Fluxo atual:**
 
-Isso exigiu uma aresta aditiva no mapa de transições: `CLAIMING → AWAITING_SOURCE_REVIEW`,
-já que a análise agora roda com o worker segurando o claim. Nada removido.
+```
+submit  → valida → normaliza → dedupe → cria job queued → ensure_worker → devolve job_id
+worker  → source_validation → browser_loading → source_analysis
+        → source_lazy_resolution → source_selection → runner
+```
 
-**Marco restante:** virar `ui_bridge.start()` para o caminho URL — criar o job em `queued`,
-garantir worker e devolver `job_id` sem abrir Selenium. O worker já sabe fazer o resto.
+O navegador nunca sobe no processo web. `ensure_worker` roda **depois** de o payload estar
+durável, para que um worker que reivindique cedo não analise uma linha pela metade.
 
-O que torna esse último passo maior do que parece: `test_translation_start.py` tem 15
-chamadas a `bridge.start()` e 30 asserções sobre o resultado da análise, mais duas classes
-(`SourceReviewTests`, `SourceAnalysisTimeoutTests`) inteiramente construídas sobre o retorno
-síncrono. Todas mudam de significado quando o submit passa a responder antes da análise, e
-reescrevê-las às pressas arriscaria esconder uma regressão em vez de detectá-la.
+Falha de análise não volta mais como exceção do submit: ela chega pelo job e pelo polling,
+que é onde uma operação de 90 segundos pertence.
 
+### Divisão de responsabilidade
 
+| Camada | Responsabilidade |
+| --- | --- |
+| `ui_bridge.start()` | validação, fingerprint, duplicidade, criar job `queued`, devolver `job_id` |
+| `source_analysis_phase` | a decisão: `ready_for_runner`, `awaiting_source_review`, `failed`, `cancelled` |
+| `Worker._prepare_source` | executa a fase antes do spawn e suprime o runner quando a decisão não permite |
 
-**Marco concluído:** o tratamento do resultado da análise foi extraído para
-`UiBridge._apply_source_analysis`. Ele decide o próximo estado do job — cobertura
-incompleta, revisão manual, resultado não suportado, ambiente não configurado, ou `queued` —
-e agora é alcançável por quem quer que tenha executado a análise, em vez de viver dentro do
-handler HTTP. Refatoração pura, comportamento idêntico.
+`should_spawn_runner` deriva do outcome, então revisão ou estado terminal não conseguem
+iniciar processo filho por acidente. Job com seleção utilizável pula a reanálise em vez de
+reabrir navegador.
 
-**Marcos restantes**, nesta ordem:
+### Testes reorganizados
 
-1. mover `_apply_source_analysis` e `_run_source_analysis` para um módulo de fase que receba
-   um `JobStore`, já que o worker não tem `UiBridge`;
-2. `start()` para URL: validar, calcular fingerprint, bloquear duplicidade, criar job em
-   `queued`, garantir worker, devolver `job_id` — sem abrir Selenium;
-3. `WorkerService._run_one`: antes de spawnar o runner, se o job URL não tiver
-   `source_analysis_json`, executar a fase; quando ela não terminar em `queued`, **não**
-   spawnar runner;
-4. cancelamento atravessando a fase e progresso persistido por etapa;
-5. frontend consumindo os novos estágios.
+Doze testes afirmavam resultados de análise sobre o retorno do submit. As asserções
+codificam requisitos reais — revisão não spawna runner, cobertura incompleta não é veredito
+de download, falha codificada é terminal e congelada — então foram mantidas e apontadas para
+o ator que agora as produz, via `run_source_phase`.
 
-O ponto delicado é o (3): hoje `_run_one` spawna o runner na primeira linha, então a
-supressão condicional do spawn precisa de teste próprio para cancelamento e para restart do
-worker no meio da fase.
+`SourceAnalysisTimeoutTests` foi reconstruída, não remendada: ela dirigia um timeout dentro
+do submit e afirmava que a linha em staging virava para o thread se cancelar sozinho, e esse
+mecanismo deixou de existir. O que ela protegia sobrevive em dois testes — análise que não
+termina é terminal sem runner, e job cancelado nunca chega ao analisador — mais um afirmando
+que a duração do submit não pode depender de uma análise que ele não executa.
+
+### Limitações
+
+O `static/tradutor_ui.js` ainda não foi ajustado para os novos estágios. Os rótulos existem
+no backend (`queued`, `worker_starting`, `source_lazy_resolution`, `source_selection`) e o
+polling já os recebe, mas a tela de submit continua com o texto antigo.
+
+Nenhum capítulo real foi processado: análises falsas, banco temporário, zero rede.
 
 ## Dívida técnica: análise de fonte no submit
 

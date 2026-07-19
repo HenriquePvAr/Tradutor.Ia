@@ -48,6 +48,12 @@ MAX_LOG_LINES = 3000
 SOURCE_ANALYSIS_TIMEOUT_SECONDS = 180
 _UI_STAGE_LABELS = {
     "created": "Preparando",
+    # Worker-owned stages. The submit returns before any of these, so the screen only shows
+    # "Analisando fonte" once the worker actually reports it.
+    "queued": "Na fila",
+    "worker_starting": "Iniciando processamento",
+    "source_lazy_resolution": "Carregando páginas do leitor",
+    "source_selection": "Preparando páginas",
     "source_validation": "Validando fonte",
     "source_analysis": "Analisando fonte",
     "validating_local_source": "Validando pasta local",
