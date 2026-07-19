@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class JobStatus:
@@ -88,6 +88,9 @@ _JOB_COLUMNS = (
     "id", "run_id", "source_url", "series_title", "series_slug", "episode_number",
     "output_dir", "configuration_json", "command_json", "status", "stage",
     "progress_current", "progress_total", "progress_message", "progress_counter_stage",
+    "source_type", "adapter_name", "adapter_version", "input_root_fingerprint",
+    "snapshot_ref", "logical_pages", "input_count", "accepted_count",
+    "rejected_count", "duplicate_count", "total_size_bytes",
     "created_at", "queued_at", "claimed_at", "started_at", "heartbeat_at", "finished_at",
     "worker_id", "worker_pid", "worker_create_time", "runner_pid", "runner_create_time",
     "exit_code",
@@ -128,6 +131,8 @@ class JobStore:
             self._create_v1()
         if version < 2:
             self._migrate_v2()
+        if version < 3:
+            self._migrate_v3()
         # Idempotent: record the current version.
         self._conn.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
@@ -151,6 +156,24 @@ class JobStore:
             self._conn.execute("ALTER TABLE workers ADD COLUMN create_time REAL")
         if "stop_requested" not in worker_cols:
             self._conn.execute("ALTER TABLE workers ADD COLUMN stop_requested INTEGER DEFAULT 0")
+
+    def _migrate_v3(self) -> None:
+        """Additive: local-folder provenance on the job row.
+
+        Text/integer only — never a filesystem path. The original folder and the snapshot
+        location stay server-side; the row carries a fingerprint and an opaque reference.
+        Runs on its own version so databases already at v2 actually receive the columns.
+        """
+        job_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        for column, kind in (
+            ("source_type", "TEXT"), ("adapter_name", "TEXT"), ("adapter_version", "TEXT"),
+            ("input_root_fingerprint", "TEXT"), ("snapshot_ref", "TEXT"),
+            ("logical_pages", "INTEGER"), ("input_count", "INTEGER"),
+            ("accepted_count", "INTEGER"), ("rejected_count", "INTEGER"),
+            ("duplicate_count", "INTEGER"), ("total_size_bytes", "INTEGER"),
+        ):
+            if column not in job_cols:
+                self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {kind}")
 
     def _create_v1(self) -> None:
         self._conn.executescript(
