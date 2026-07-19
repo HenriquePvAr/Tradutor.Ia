@@ -244,6 +244,8 @@ class Worker:
         job = self._prepare_source(job)
         if job is None:
             return
+        if not self._runner_input_ready(job):
+            return
         proc = self._spawn_runner(job)
         # Own the unambiguously spawned child immediately.  There is a small but real
         # window before runner_pid reaches SQLite; if that write fails, this handle is
@@ -307,6 +309,23 @@ class Worker:
                     except OSError:
                         pass
                 self._active = None
+
+    def _runner_input_ready(self, job: dict) -> bool:
+        """Fail closed before spawning a runner with incomplete URL source evidence."""
+        from source_analysis_phase import has_usable_selection
+
+        if str((job or {}).get("source_type") or "") != "url":
+            return True
+        if has_usable_selection(job):
+            return True
+        try:
+            self.store.transition(
+                job["id"], JobStatus.FAILED, expected_worker=self.worker_id,
+                stage="source_selection", reason_code="missing_source_selection",
+                error_type="source_analysis", error_message="missing_source_selection")
+        except Exception:  # noqa: BLE001 - a concurrent owner may already have settled it
+            pass
+        return False
 
     def _reconcile_runner_exit(self, job_id: str) -> None:
         """Close worker-owned accounting when a runner exits before terminalizing."""

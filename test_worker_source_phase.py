@@ -82,6 +82,15 @@ class _Worker(Worker):
         raise AssertionError("runner spawned")
 
 
+class _WorkerWithPreparedJob(_Worker):
+    def __init__(self, store, prepared):
+        super().__init__(store)
+        self._prepared = prepared
+
+    def _prepare_source(self, job):
+        return self._prepared
+
+
 class WorkerPhaseTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -171,6 +180,20 @@ class WorkerPhaseTests(unittest.TestCase):
         worker = _Worker(self.store, error=AssertionError("url analysis ran"))
         prepared = worker._prepare_source(self.store.get_job(job["id"]))
         self.assertIsNotNone(prepared)
+
+    def test_url_job_without_usable_selection_never_spawns_runner(self):
+        job = self.queued_url_job(
+            source_analysis_json='{"outcome":"source_analysis_pending","accepted":[]}',
+            source_selection_json="{}")
+        worker = _WorkerWithPreparedJob(self.store, self.store.get_job(job["id"]))
+
+        worker._run_one(job)
+
+        self.assertEqual(worker.spawns, 0)
+        row = self.store.get_job(job["id"])
+        self.assertEqual(row["status"], JobStatus.FAILED)
+        self.assertEqual(row["stage"], "source_selection")
+        self.assertEqual(row["reason_code"], "missing_source_selection")
 
 
 class SelectionReuseTests(unittest.TestCase):
