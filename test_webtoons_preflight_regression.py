@@ -1,11 +1,16 @@
 """The navigation preflight must not veto a browser-based registered reader.
 
-Regression: official Webtoons chapter URLs stopped working. The preflight makes a cookieless
-``requests`` call before Chrome navigates; a site that requires a real browser answers that
-call with 403, and the preflight turned it into source_access_denied — so the browser was
-never opened at all. The preflight's SSRF purpose (revalidating each redirect hop against
-the adapter) is kept; only the readiness veto is removed, and only for adapters that own
-their readiness. Generic sources still fail closed.
+CORRECTION OF RECORD: this was written to fix a diagnosed cause of the reported Webtoons
+regression — the theory being that the cookieless preflight received 403 and turned it into
+source_access_denied before Chrome ever opened. A live check against the official chapter
+URL refuted that theory: the preflight receives 200 and passes end to end. Adapter
+selection, normalization, path validation and the preflight all work for that URL, so the
+reported regression is downstream of everything covered here and remains unidentified.
+
+What survives is a defensive contract, not a regression fix: a registered reader whose whole
+strategy is a real browser should not be vetoed by a bare HTTP client's authorization
+answer, because some readers do answer that way. Generic sources still fail closed, which is
+what these tests mainly pin.
 
 Fully hermetic: fake sessions, stubbed DNS, no site is contacted.
 """
