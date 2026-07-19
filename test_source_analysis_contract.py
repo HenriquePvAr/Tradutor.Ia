@@ -76,8 +76,10 @@ class ReasonCodeOwnershipTests(unittest.TestCase):
         self.assertEqual(emitting, [], emitting)
 
     def test_analysis_failure_uses_the_coverage_code(self):
-        source = (REPO / "ui_bridge.py").read_text(encoding="utf-8")
-        block = source[source.index("if self._source_analysis_is_incomplete("):]
+        # The decision moved to the shared phase module; the assertion follows the code,
+        # not the file it used to live in.
+        source = (REPO / "source_analysis_phase.py").read_text(encoding="utf-8")
+        block = source[source.index("if source_analysis_is_incomplete("):]
         block = block[:block.index("selected_ids =")]
         self.assertIn("INCOMPLETE_SOURCE_COVERAGE", block)
         self.assertIn('stage="source_analysis"', block)

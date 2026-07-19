@@ -749,99 +749,24 @@ class UiBridge:
 
 
     def _apply_source_analysis(self, job: dict[str, Any], analysis: Any) -> dict[str, Any]:
-        """Persist an analysis outcome and decide the job's next state.
+        """Delegate to the shared phase so the worker reaches the identical decision."""
+        from source_analysis_phase import READY_FOR_RUNNER, apply_source_analysis
 
-        Extracted verbatim from the submit path so the identical decision can be made by
-        whoever ran the analysis — today the HTTP request, next the worker.
-        """
-        from universal_chapter_adapter import (
-            REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
-            SUPPORTED_GENERIC_HIGH_CONFIDENCE,
-            SUPPORTED_SPECIFIC_ADAPTER,
+        def environment_ready() -> bool:
+            status = env_status()
+            return bool(status["env_exists"] and status["nvidia_configured"])
+
+        result = apply_source_analysis(
+            self.store, job, analysis,
+            environment_ready=environment_ready,
+            public_provenance=self._public_job_source_provenance,
         )
-
-        public_analysis = analysis.public()
-        provenance = self._remote_source_provenance(public_analysis)
-        if self._source_analysis_is_incomplete(public_analysis):
-            # Manual review may choose among an uncertain *complete* reader manifest; it is
-            # never an override for evidence that the collector already knows is partial.
-            #
-            # This is analysis coverage, not download coverage. Reporting it as
-            # incomplete_download blamed a download that had not been attempted yet — the
-            # runner has not even started at this point — and sent the user chasing a
-            # network problem for what is a collector that could not see the whole reader.
-            from chapter_source import INCOMPLETE_SOURCE_COVERAGE
-
-            job = self.store.transition(
-                job["id"], JobStatus.FAILED, reason_code=INCOMPLETE_SOURCE_COVERAGE,
-                source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
-                stage="source_analysis", error_type="source_analysis",
-                error_message="source_coverage_incomplete", **provenance,
-            )
-            return {
-                "ok": False, "run_id": job["run_id"], "job_id": job["id"],
-                "analysis": public_analysis, "reason_code": INCOMPLETE_SOURCE_COVERAGE,
-            }
-        selected_ids = [candidate.id for candidate in analysis.accepted]
-        if analysis.outcome == REVIEW_REQUIRED_MEDIUM_CONFIDENCE:
-            job = self.store.transition(
-                job["id"], JobStatus.AWAITING_SOURCE_REVIEW,
-                reason_code=analysis.outcome,
-                source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
-                stage="awaiting_source_review",
-                **provenance,
-            )
-            return {"ok": True, "awaiting_source_review": True, "run_id": job["run_id"],
-                    "job_id": job["id"], "analysis": public_analysis,
-                    "source_provenance": self._public_job_source_provenance(job)}
-        if analysis.outcome not in {SUPPORTED_SPECIFIC_ADAPTER, SUPPORTED_GENERIC_HIGH_CONFIDENCE}:
-            # Record a terminal, sanitised outcome so the user never sees a source failure as
-            # a silently abandoned submission.  No worker or child process is started.
-            job = self.store.transition(
-                job["id"], JobStatus.FAILED, reason_code=analysis.outcome,
-                source_analysis_json=json.dumps(public_analysis, ensure_ascii=False), stage="source_analysis",
-                error_type="source_analysis", error_message=analysis.outcome,
-                **provenance,
-            )
-            return {"ok": False, "run_id": job["run_id"], "job_id": job["id"],
-                    "analysis": public_analysis, "reason_code": analysis.outcome}
-
-        # Automatic high-confidence extraction is re-analysed by the runner. Storing the
-        # opaque IDs gives auditability, but does not pin a volatile DOM order in its command.
-        status = env_status()
-        if not status["env_exists"] or not status["nvidia_configured"]:
-            reason_code = "environment_not_configured"
-            job = self.store.transition(
-                job["id"], JobStatus.FAILED, reason_code=reason_code,
-                source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
-                stage="source_analysis", error_type="configuration", error_message=reason_code,
-                **provenance,
-            )
-            return {
-                "ok": False, "run_id": job["run_id"], "job_id": job["id"],
-                "analysis": public_analysis, "reason_code": reason_code,
-                "message": "Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.",
-                "stage": "configuração", "action": "Configure o ambiente e envie a fonte novamente.",
-            }
-        automatic_selection = {
-            "candidate_ids": selected_ids,
-            "automatic": True,
-            "accepted_candidate_count": len(selected_ids),
-            "selected_candidate_count": len(selected_ids),
-            "manual_subset": False,
-        }
-        job = self.store.transition(
-            job["id"], JobStatus.QUEUED,
-            source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
-            source_selection_json=json.dumps(automatic_selection, ensure_ascii=False),
-            stage="created",
-            **provenance,
-        )
-        # Persisting a job nobody claims is the whole bug: make the consumer exist, and
-        # report honestly when it could not be started instead of looking like a no-op.
-        worker = self.ensure_worker()
-        return {"ok": True, "run_id": job["run_id"], "job_id": job["id"], "worker": worker,
-                "analysis": public_analysis}
+        payload = dict(result.payload)
+        if result.outcome == READY_FOR_RUNNER:
+            # Persisting a job nobody claims is the whole bug: make the consumer exist and
+            # report honestly when it could not be started.
+            payload["worker"] = self.ensure_worker()
+        return payload
 
     @staticmethod
     def _requested_source_type(payload: dict[str, Any]) -> str:
