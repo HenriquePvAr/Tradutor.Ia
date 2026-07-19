@@ -2,6 +2,7 @@
 
 import _test_bootstrap  # noqa: F401
 
+import json
 import os
 import tempfile
 import time
@@ -11,6 +12,7 @@ from unittest import mock
 
 import ui_bridge
 from job_store import JobStatus, JobStore
+from output_manifest import MANIFEST_FILENAME, build_run_manifest
 from ui_bridge import UNAVAILABLE_DURATION, _duration, _format_seconds, _normalize_epoch
 from ui_helpers import ProgressSnapshot, parse_progress_line
 
@@ -115,6 +117,32 @@ class ReconcileTests(unittest.TestCase):
             heartbeat_at=time.time() - 44 * 3600, exit_code=exit_code)
         return self.store.get_job(job["id"])
 
+    @staticmethod
+    def write_verified_manifest(
+        output_dir: Path,
+        pdf_path: Path,
+        *,
+        final_status: str = "finished",
+        quality_passed: bool = True,
+    ) -> None:
+        manifest = build_run_manifest(
+            run_id="reconcile-test",
+            created_at="2026-07-19T00:00:00+00:00",
+            source_url="https://example.test/chapter",
+            commit_hash="abc123",
+            branch="main",
+            pipeline_version="test",
+            model="fake",
+            final_status=final_status,
+            quality_passed=quality_passed,
+            manual_review_count=0,
+            rejected_count=0,
+            pdf_path=str(pdf_path),
+        )
+        (output_dir / MANIFEST_FILENAME).write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
     def test_running_with_dead_pid_becomes_interrupted(self):
         job = self.make_running()
         with mock.patch.object(ui_bridge, "_runner_still_alive", return_value=False):
@@ -148,18 +176,70 @@ class ReconcileTests(unittest.TestCase):
     def test_dead_with_complete_evidence_is_finished(self):
         out = self.tmp / "done"
         out.mkdir()
-        (out / "output_manifest.json").write_text("{}", encoding="utf-8")
-        (out / "cap.pdf").write_bytes(b"%PDF-" + b"x" * 2000)
+        pdf = out / "cap.pdf"
+        pdf.write_bytes(b"%PDF-" + b"x" * 2000)
+        self.write_verified_manifest(out, pdf)
         job = self.make_running(exit_code=0, output_dir=out)
         with mock.patch.object(ui_bridge, "_runner_still_alive", return_value=False):
             self.bridge.reconcile_orphans()
         self.assertEqual(self.store.get_job(job["id"])["status"], JobStatus.FINISHED)
 
+    def test_dead_with_review_required_manifest_preserves_quality_outcome(self):
+        out = self.tmp / "quality-review"
+        out.mkdir()
+        pdf = out / "cap.pdf"
+        pdf.write_bytes(b"%PDF-" + b"x" * 2000)
+        self.write_verified_manifest(
+            out, pdf, final_status="review_required", quality_passed=False)
+        job = self.make_running(exit_code=0, output_dir=out)
+        with mock.patch.object(ui_bridge, "_runner_still_alive", return_value=False):
+            reconciled = self.bridge.reconcile_orphans()
+        self.assertEqual(reconciled[0]["status"], JobStatus.REVIEW_REQUIRED)
+        self.assertEqual(reconciled[0]["reason"], "quality_review_completed_before_shutdown")
+        self.assertEqual(self.store.get_job(job["id"])["status"], JobStatus.REVIEW_REQUIRED)
+
+    def test_legacy_manifest_filename_is_not_success_evidence(self):
+        out = self.tmp / "legacy-manifest"
+        out.mkdir()
+        pdf = out / "cap.pdf"
+        pdf.write_bytes(b"%PDF-" + b"x" * 2000)
+        manifest = build_run_manifest(
+            run_id="legacy-name",
+            created_at="2026-07-19T00:00:00+00:00",
+            source_url="https://example.test/chapter",
+            commit_hash="abc123",
+            branch="main",
+            pipeline_version="test",
+            model="fake",
+            final_status="finished",
+            quality_passed=True,
+            manual_review_count=0,
+            rejected_count=0,
+            pdf_path=str(pdf),
+        )
+        (out / "output_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        job = self.make_running(exit_code=0, output_dir=out)
+        with mock.patch.object(ui_bridge, "_runner_still_alive", return_value=False):
+            self.bridge.reconcile_orphans()
+        self.assertEqual(self.store.get_job(job["id"])["status"], JobStatus.INTERRUPTED)
+
+    def test_nonzero_exit_is_not_success_even_with_verified_artifacts(self):
+        out = self.tmp / "failed-exit"
+        out.mkdir()
+        pdf = out / "cap.pdf"
+        pdf.write_bytes(b"%PDF-" + b"x" * 2000)
+        self.write_verified_manifest(out, pdf)
+        job = self.make_running(exit_code=1, output_dir=out)
+        with mock.patch.object(ui_bridge, "_runner_still_alive", return_value=False):
+            self.bridge.reconcile_orphans()
+        self.assertEqual(self.store.get_job(job["id"])["status"], JobStatus.INTERRUPTED)
+
     def test_truncated_pdf_is_not_evidence(self):
         out = self.tmp / "bad"
         out.mkdir()
-        (out / "output_manifest.json").write_text("{}", encoding="utf-8")
-        (out / "cap.pdf").write_bytes(b"not-a-pdf")
+        pdf = out / "cap.pdf"
+        pdf.write_bytes(b"not-a-pdf")
+        self.write_verified_manifest(out, pdf)
         job = self.make_running(exit_code=0, output_dir=out)
         with mock.patch.object(ui_bridge, "_runner_still_alive", return_value=False):
             self.bridge.reconcile_orphans()

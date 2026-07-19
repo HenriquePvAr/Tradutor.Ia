@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
@@ -106,7 +106,8 @@ _JOB_COLUMNS = (
     "id", "run_id", "source_url", "series_title", "series_slug", "episode_number",
     "output_dir", "configuration_json", "command_json", "status", "stage",
     "progress_current", "progress_total", "progress_message", "progress_counter_stage",
-    "source_type", "adapter_name", "adapter_version", "input_root_fingerprint",
+    "source_type", "adapter_name", "adapter_version", "transport_name", "source_score",
+    "candidate_count", "input_root_fingerprint",
     "snapshot_ref", "logical_pages", "input_count", "accepted_count",
     "rejected_count", "duplicate_count", "total_size_bytes",
     "created_at", "queued_at", "claimed_at", "started_at", "heartbeat_at", "finished_at",
@@ -154,6 +155,8 @@ class JobStore:
             self._migrate_v3()
         if version < 4:
             self._migrate_v4()
+        if version < 5:
+            self._migrate_v5()
         # Idempotent: record the current version.
         self._conn.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
@@ -204,6 +207,21 @@ class JobStore:
             ("logical_pages", "INTEGER"), ("input_count", "INTEGER"),
             ("accepted_count", "INTEGER"), ("rejected_count", "INTEGER"),
             ("duplicate_count", "INTEGER"), ("total_size_bytes", "INTEGER"),
+        ):
+            if column not in job_cols:
+                self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {kind}")
+
+    def _migrate_v5(self) -> None:
+        """Add scalar source-run provenance needed by queue/history views.
+
+        The JSON source diagnosis remains the detailed audit record; these columns are the
+        bounded values needed to filter/display a job without parsing or exposing it.
+        """
+        job_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        for column, kind in (
+            ("transport_name", "TEXT"),
+            ("source_score", "REAL"),
+            ("candidate_count", "INTEGER"),
         ):
             if column not in job_cols:
                 self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {kind}")

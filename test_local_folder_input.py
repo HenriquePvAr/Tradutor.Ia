@@ -7,9 +7,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
+import local_folder_input
 from local_folder_input import materialize_snapshot
 from local_folder_source import LocalFolderChapterAdapter, LocalFolderError, LocalFolderPolicy
 
@@ -74,6 +76,19 @@ class LocalFolderInputTests(unittest.TestCase):
             materialize_snapshot(
                 snap.manifest_path, target, snapshot_root=self.snapshots, output_root=self.output_root)
         self.assertEqual(raised.exception.detail, "snapshot_size_mismatch")
+
+    def test_resumed_materialization_enforces_the_aggregate_byte_budget_before_copying(self):
+        snap = self.snapshot()
+        first = (snap.workspace / "0001.png").stat().st_size
+        second = (snap.workspace / "0002.png").stat().st_size
+        target = self.output_root / "chapter" / "input"
+        with mock.patch.object(local_folder_input, "HARD_MAX_TOTAL_BYTES", first + second - 1):
+            with self.assertRaises(LocalFolderError) as raised:
+                materialize_snapshot(
+                    snap.manifest_path, target, snapshot_root=self.snapshots,
+                    output_root=self.output_root)
+        self.assertEqual(raised.exception.detail, "max_total_bytes")
+        self.assertFalse((target / "002.png").exists())
 
     def test_existing_output_is_never_deleted_without_an_owned_marker_and_explicit_clear(self):
         snap = self.snapshot()

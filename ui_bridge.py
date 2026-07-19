@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -23,9 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from community_auth import RequestPrincipal
+from community_auth import RequestPrincipal, bind_is_loopback, peer_is_loopback
 from job_store import JobStatus, JobStore
-from output_manifest import sanitize_source_url
+from output_manifest import MANIFEST_FILENAME, load_verified_run_manifest, sanitize_source_url
 from ui_helpers import (
     OUTPUT_ROOT,
     REPO_ROOT,
@@ -49,6 +50,8 @@ _UI_STAGE_LABELS = {
     "created": "Preparando",
     "source_validation": "Validando fonte",
     "source_analysis": "Analisando fonte",
+    "validating_local_source": "Validando pasta local",
+    "creating_snapshot": "Criando cópia segura",
     "browser_loading": "Abrindo leitor",
     "collecting_candidates": "Coletando páginas",
     "clustering_candidates": "Validando páginas",
@@ -76,6 +79,18 @@ PROFILE_MEDIA_TYPES = {
 
 
 UNAVAILABLE_DURATION = "Tempo indisponível"
+
+
+def local_folder_ui_allowed(*, bind_host: str, peer_host: str) -> bool:
+    """Return whether a browser may submit a local filesystem source.
+
+    A folder path is intrinsically machine-local data.  Both the server binding and the
+    connected browser must therefore be loopback addresses; checking only the request peer
+    would still allow a remotely reachable server to turn an exposed API into a local-file
+    reader.
+    """
+
+    return bind_is_loopback(bind_host) and peer_is_loopback(peer_host)
 
 # A timestamp far above plausible epoch-seconds is a milliseconds value written by mistake;
 # anything below this is treated as seconds. (2001-09-09 in seconds / 1970 in ms.)
@@ -263,29 +278,48 @@ class UiBridge:
             except Exception:  # noqa: BLE001 - concurrent submit/cancel wins
                 continue
 
-    def _success_evidence(self, job: dict[str, Any]) -> bool:
+    def _completion_evidence(self, job: dict[str, Any]) -> str:
         """Complete proof the run really finished: exit code 0, a manifest and a real PDF.
 
         A vanished PID is never proof of success on its own — a killed process and a
         completed one look identical from the outside.
         """
         if job.get("exit_code") not in (0, "0"):
-            return False
+            return ""
         output_dir = job.get("output_dir")
         if not output_dir:
-            return False
+            return ""
         base = Path(output_dir)
         try:
-            if not (base / "output_manifest.json").is_file():
-                return False
+            # The manifest is part of the output contract.  Do not accept the old
+            # ad-hoc filename or merely well-formed JSON: only a schema-verified
+            # run manifest proves that this output belongs to a completed run.
+            if not (base / MANIFEST_FILENAME).is_file():
+                return ""
+            manifest = load_verified_run_manifest(base)
+            if not manifest:
+                return ""
             # A PDF that exists but is empty/truncated is not evidence either.
             pdfs = [p for p in base.rglob("*.pdf") if p.is_file() and p.stat().st_size > 1024]
             if not pdfs:
-                return False
+                return ""
             with open(pdfs[0], "rb") as handle:
-                return handle.read(5) == b"%PDF-"
+                if handle.read(5) != b"%PDF-":
+                    return ""
+            status = str(manifest.get("final_status") or "")
+            if status == "finished" and manifest.get("quality_passed") is True:
+                return JobStatus.FINISHED
+            if status == "review_required" or (
+                status == "finished" and manifest.get("quality_passed") is False
+            ):
+                return JobStatus.REVIEW_REQUIRED
+            return ""
         except OSError:
-            return False
+            return ""
+
+    def _success_evidence(self, job: dict[str, Any]) -> bool:
+        """Backward-compatible boolean: any proven completed terminal outcome."""
+        return bool(self._completion_evidence(job))
 
     def reconcile_orphans(self) -> list[dict[str, str]]:
         """Freeze in-flight jobs whose runner process is gone. Outputs are never touched."""
@@ -302,8 +336,12 @@ class UiBridge:
                 _normalize_epoch(job.get("updated_at")) or time.time()
             if job.get("cancel_requested"):
                 target, reason = JobStatus.CANCELLED, "cancelled_process_not_found"
-            elif self._success_evidence(job):
-                target, reason = JobStatus.FINISHED, "completed_before_shutdown"
+            elif completion := self._completion_evidence(job):
+                target = completion
+                reason = (
+                    "quality_review_completed_before_shutdown"
+                    if target == JobStatus.REVIEW_REQUIRED else "completed_before_shutdown"
+                )
             else:
                 target, reason = JobStatus.INTERRUPTED, "process_not_found"
             try:
@@ -319,15 +357,28 @@ class UiBridge:
         if not job:
             return None
         config = job.get("configuration") or {}
+        source_type = str(job.get("source_type") or config.get("source_type") or "url")
+        local_summary = config.get("local_source_summary")
+        if not isinstance(local_summary, dict):
+            local_summary = {}
         return {
             "id": job["id"],
             "run_id": job.get("run_id"),
             "job_id": job["id"],
             "chapter_name": config.get("chapter_name") or job.get("series_title") or job.get("series_slug") or "",
             "slug": Path(job.get("output_dir") or "").name,
-            # The queue retains the raw URL only to execute the job. The browser-facing
-            # record is diagnostic data and must not echo signed query material.
-            "url": sanitize_source_url(str(job.get("source_url") or "")),
+            # The queue retains the raw URL only to execute a remote job. The browser-facing
+            # record is diagnostic data and must not echo signed query material. Local jobs
+            # carry no source path in their row; their snapshot reference stays opaque.
+            "url": (
+                sanitize_source_url(str(job.get("source_url") or ""))
+                if source_type != "local_folder" else ""
+            ),
+            "source_type": source_type,
+            "source_label": (
+                str(local_summary.get("folder_name") or "Pasta local")[:120]
+                if source_type == "local_folder" else ""
+            ),
             "mode": config.get("mode") or "fast",
             "scope": "full" if config.get("full", True) else "partial",
             "cache_mode": "force" if config.get("force") else "cache",
@@ -339,12 +390,48 @@ class UiBridge:
             "recoverable": bool(job.get("recoverable")),
             "interrupted_reason": job.get("interrupted_reason") or "",
             "reason_code": job.get("reason_code") or "",
+            "stage": str(job.get("stage") or "created"),
             "error_message": sanitize_diagnostic_text(job.get("error_message") or ""),
             "source_analysis": job.get("source_analysis") or {},
             "source_selection": job.get("source_selection") or {},
+            "source_provenance": self._public_job_source_provenance(job),
             "started_at": _epoch_to_iso(job.get("started_at")),
             "finished_at": _epoch_to_iso(job.get("finished_at")),
             "total_seconds": _duration(job),
+        }
+
+    @staticmethod
+    def _public_job_source_provenance(job: dict[str, Any]) -> dict[str, Any]:
+        """Return only scalar, path-free source evidence for browser/history records."""
+
+        def identifier(value: Any) -> str:
+            text = str(value or "").strip()
+            return text if re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", text) else ""
+
+        def count(value: Any) -> int:
+            try:
+                result = int(value)
+            except (TypeError, ValueError):
+                return 0
+            return result if 0 <= result <= 10_000 else 0
+
+        def score(value: Any) -> float | None:
+            try:
+                result = float(value)
+            except (TypeError, ValueError):
+                return None
+            return result if 0.0 <= result <= 1.0 else None
+
+        return {
+            "source_type": "local_folder" if job.get("source_type") == "local_folder" else "url",
+            "adapter_name": identifier(job.get("adapter_name")),
+            "adapter_version": identifier(job.get("adapter_version")),
+            "transport_name": identifier(job.get("transport_name")),
+            "score": score(job.get("source_score")),
+            "candidate_count": count(job.get("candidate_count")),
+            "accepted_page_count": count(job.get("accepted_count")),
+            "rejected_page_count": count(job.get("rejected_count")),
+            "reason_code": identifier(job.get("reason_code")),
         }
 
     @staticmethod
@@ -354,6 +441,15 @@ class UiBridge:
         # Jobs created before job_type was introduced are legacy translation jobs.
         job_type = str((job.get("configuration") or {}).get("job_type") or "translation")
         return job_type == "translation"
+
+    def _displayed_source_review(self) -> dict[str, Any] | None:
+        """The one pending review currently shown by the single-review UI surface."""
+        return max(
+            (job for job in self.store.list_jobs(
+                statuses=[JobStatus.AWAITING_SOURCE_REVIEW], limit=None)
+             if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
 
     def bootstrap(self, cursor: int = 0) -> dict[str, Any]:
         return {
@@ -379,12 +475,7 @@ class UiBridge:
             key=lambda job: float(job.get("claimed_at") or 0),
             default=None,
         )
-        waiting_reviews = self.store.list_jobs(
-            statuses=[JobStatus.AWAITING_SOURCE_REVIEW], limit=None)
-        waiting = max(
-            (job for job in waiting_reviews if self._is_translation_job(job)),
-            key=lambda job: float(job.get("updated_at") or 0), default=None,
-        )
+        waiting = self._displayed_source_review()
         staging_jobs = self.store.list_jobs(statuses=[JobStatus.STAGING], limit=None)
         staging = max(
             (job for job in staging_jobs if self._is_translation_job(job)),
@@ -553,7 +644,16 @@ class UiBridge:
         payload: dict[str, Any],
         *,
         principal: RequestPrincipal | None = None,
+        local_folder_allowed: bool = False,
     ) -> dict[str, Any]:
+        source_type = self._requested_source_type(payload)
+        if source_type == "local_folder":
+            # The HTTP boundary calculates this from both the bind address and the peer.
+            # Direct callers are deliberately denied by default so a future endpoint cannot
+            # accidentally turn a local path into a remotely reachable capability.
+            if local_folder_allowed is not True:
+                raise ValueError("local_folder_requires_loopback_ui")
+            return await self._start_local_folder(payload, principal=principal)
         # A double click (or a retried request) must not queue the same chapter twice.
         duplicate = self._pending_duplicate(payload)
         if duplicate:
@@ -562,6 +662,7 @@ class UiBridge:
             if duplicate.get("status") == JobStatus.AWAITING_SOURCE_REVIEW:
                 result["awaiting_source_review"] = True
                 result["analysis"] = duplicate.get("source_analysis") or {}
+                result["source_provenance"] = self._public_job_source_provenance(duplicate)
                 return result
             result["worker"] = self.ensure_worker()
             return result
@@ -581,7 +682,7 @@ class UiBridge:
             source_analysis={"adapter": "", "outcome": "source_analysis_pending", "accepted": []},
         )
         self.store.update_fields(
-            job["id"], stage="source_analysis", reason_code="",
+            job["id"], source_type="url", stage="source_analysis", reason_code="",
             started_at=time.time(), heartbeat_at=time.time(),
         )
 
@@ -645,6 +746,20 @@ class UiBridge:
         if not current or current.get("status") == JobStatus.CANCELLED:
             return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
         public_analysis = analysis.public()
+        provenance = self._remote_source_provenance(public_analysis)
+        if self._source_analysis_is_incomplete(public_analysis):
+            # Manual review may choose among an uncertain *complete* reader manifest; it is
+            # never an override for evidence that the collector already knows is partial.
+            job = self.store.transition(
+                job["id"], JobStatus.FAILED, reason_code="incomplete_download",
+                source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
+                stage="source_analysis", error_type="source_analysis",
+                error_message="source_coverage_incomplete", **provenance,
+            )
+            return {
+                "ok": False, "run_id": job["run_id"], "job_id": job["id"],
+                "analysis": public_analysis, "reason_code": "incomplete_download",
+            }
         selected_ids = [candidate.id for candidate in analysis.accepted]
         if analysis.outcome == REVIEW_REQUIRED_MEDIUM_CONFIDENCE:
             job = self.store.transition(
@@ -652,9 +767,11 @@ class UiBridge:
                 reason_code=analysis.outcome,
                 source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
                 stage="awaiting_source_review",
+                **provenance,
             )
             return {"ok": True, "awaiting_source_review": True, "run_id": job["run_id"],
-                    "job_id": job["id"], "analysis": public_analysis}
+                    "job_id": job["id"], "analysis": public_analysis,
+                    "source_provenance": self._public_job_source_provenance(job)}
         if analysis.outcome not in {SUPPORTED_SPECIFIC_ADAPTER, SUPPORTED_GENERIC_HIGH_CONFIDENCE}:
             # Record a terminal, sanitised outcome so the user never sees a source failure as
             # a silently abandoned submission.  No worker or child process is started.
@@ -662,6 +779,7 @@ class UiBridge:
                 job["id"], JobStatus.FAILED, reason_code=analysis.outcome,
                 source_analysis_json=json.dumps(public_analysis, ensure_ascii=False), stage="source_analysis",
                 error_type="source_analysis", error_message=analysis.outcome,
+                **provenance,
             )
             return {"ok": False, "run_id": job["run_id"], "job_id": job["id"],
                     "analysis": public_analysis, "reason_code": analysis.outcome}
@@ -675,6 +793,7 @@ class UiBridge:
                 job["id"], JobStatus.FAILED, reason_code=reason_code,
                 source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
                 stage="source_analysis", error_type="configuration", error_message=reason_code,
+                **provenance,
             )
             return {
                 "ok": False, "run_id": job["run_id"], "job_id": job["id"],
@@ -694,12 +813,342 @@ class UiBridge:
             source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
             source_selection_json=json.dumps(automatic_selection, ensure_ascii=False),
             stage="created",
+            **provenance,
         )
         # Persisting a job nobody claims is the whole bug: make the consumer exist, and
         # report honestly when it could not be started instead of looking like a no-op.
         worker = self.ensure_worker()
         return {"ok": True, "run_id": job["run_id"], "job_id": job["id"], "worker": worker,
                 "analysis": public_analysis}
+
+    @staticmethod
+    def _requested_source_type(payload: dict[str, Any]) -> str:
+        """Validate source fields without loading the local image stack for URL jobs."""
+
+        from chapter_source import SourceError
+
+        source_url = str(payload.get("url") or "").strip()
+        local_folder = str(payload.get("local_folder") or "").strip()
+        if source_url and local_folder:
+            raise SourceError("invalid_request", "url_and_folder")
+        if local_folder:
+            actual = "local_folder"
+        elif source_url:
+            actual = "url"
+        else:
+            raise SourceError("invalid_request", "missing_source")
+        declared = str(payload.get("source_type") or "").strip().casefold()
+        if declared and declared not in {"url", "local_folder"}:
+            raise SourceError("invalid_request", "unknown_source_type")
+        if declared and declared != actual:
+            raise SourceError("invalid_request", "source_type_mismatch")
+        return actual
+
+    @staticmethod
+    def _remote_source_provenance(public_analysis: dict[str, Any]) -> dict[str, Any]:
+        """Return fixed-width, URL-free provenance fields for a remote source job.
+
+        The full public analysis remains in its JSON diagnostic column.  The indexed job
+        columns intentionally receive only the small adapter/count subset needed to identify
+        a run in history, never a page URL, cookie, selector, source title or signed token.
+        """
+
+        analysis = public_analysis if isinstance(public_analysis, dict) else {}
+
+        def identifier(value: Any) -> str:
+            text = str(value or "").strip()
+            return text if re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", text) else ""
+
+        def count(name: str) -> int:
+            value = analysis.get(name, 0)
+            try:
+                result = int(value)
+            except (TypeError, ValueError):
+                return 0
+            return result if 0 <= result <= 10_000 else 0
+
+        def score() -> float:
+            try:
+                value = float(analysis.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+            return value if 0.0 <= value <= 1.0 else 0.0
+
+        return {
+            "source_type": "url",
+            "adapter_name": identifier(analysis.get("adapter")),
+            "adapter_version": identifier(analysis.get("adapter_version")),
+            # A browser analysis has not selected a network transport yet.  Represent that
+            # explicitly; the runner replaces it with the transport actually used.
+            "transport_name": "pending",
+            "source_score": score(),
+            "candidate_count": count("candidate_count"),
+            "input_count": count("candidate_count"),
+            "accepted_count": count("accepted_count"),
+            "rejected_count": count("discarded_count"),
+        }
+
+    @staticmethod
+    def _source_analysis_is_incomplete(public_analysis: dict[str, Any]) -> bool:
+        """Recognise only bounded collector coverage warnings in a public analysis."""
+
+        warnings = public_analysis.get("warnings", ()) if isinstance(public_analysis, dict) else ()
+        if isinstance(warnings, (str, bytes)):
+            warnings = (warnings,)
+        return bool({
+            str(value or "").strip()
+            for value in (warnings or ())
+        } & {"page_limit_exceeded", "scroll_incomplete", "pagination_incomplete"})
+
+    async def _start_local_folder(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None,
+    ) -> dict[str, Any]:
+        """Snapshot a loopback-only folder selection and queue its opaque reference.
+
+        The raw path exists only as an argument to the local adapter.  The SQLite row,
+        command, browser DTO, output name and source-analysis JSON contain generated ids,
+        counts, and a non-reversible fingerprint instead.
+        """
+
+        normalized = self._normalize_local_payload(payload)
+        job = self._create_local_folder_staging_job(normalized, principal=principal)
+        self.store.update_fields(
+            job["id"], stage="validating_local_source", reason_code="",
+            started_at=time.time(), heartbeat_at=time.time(),
+        )
+
+        # Do not read or copy a local folder when translation execution is unavailable. The
+        # failure is still a visible terminal job, but there is no orphaned snapshot/cache.
+        status = env_status()
+        if not status["env_exists"] or not status["nvidia_configured"]:
+            reason_code = "environment_not_configured"
+            failed = self.store.transition(
+                job["id"], JobStatus.FAILED, reason_code=reason_code,
+                stage="validating_local_source", error_type="configuration",
+                error_message=reason_code,
+            )
+            return {
+                "ok": False, "run_id": failed["run_id"], "job_id": failed["id"],
+                "reason_code": reason_code,
+                "message": "Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.",
+                "stage": "configuração", "action": "Configure o ambiente e envie a pasta novamente.",
+            }
+
+        raw_folder = str(payload.get("local_folder") or "").strip()
+        try:
+            self.store.update_fields(job["id"], stage="creating_snapshot", heartbeat_at=time.time())
+            snapshot_ref, summary, candidate_ids = await self._snapshot_local_folder(raw_folder)
+        except asyncio.CancelledError:
+            current = self.store.get_job(job["id"])
+            if current and current.get("status") == JobStatus.STAGING:
+                self.store.transition(
+                    job["id"], JobStatus.CANCELLED, reason_code="cancelled",
+                    interrupted_reason="local_snapshot_request_cancelled",
+                )
+            raise
+        except Exception as exc:
+            from chapter_source import SOURCE_NOT_READY, SourceError
+
+            current = self.store.get_job(job["id"])
+            if current and current.get("status") == JobStatus.CANCELLED:
+                return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
+            source_error = exc if isinstance(exc, SourceError) else SourceError(
+                SOURCE_NOT_READY, type(exc).__name__)
+            if current and current.get("status") == JobStatus.STAGING:
+                self.store.transition(
+                    job["id"], JobStatus.FAILED, reason_code=source_error.code,
+                    stage="validating_local_source", error_type="local_source",
+                    error_message=source_error.code,
+                )
+            if isinstance(exc, SourceError):
+                raise
+            raise source_error from exc
+
+        current = self.store.get_job(job["id"])
+        if not current or current.get("status") == JobStatus.CANCELLED:
+            return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
+
+        from local_folder_job import build_local_job_command, job_fields
+
+        command = build_local_job_command(
+            snapshot_ref=snapshot_ref,
+            output=normalized["slug"],
+            mode=normalized["mode"],
+            logical_pages=True,
+            use_cache=normalized["use_cache"],
+            force=normalized["force"],
+            use_context=normalized["use_context"],
+            open_output=normalized["open_output"],
+            python_executable=sys.executable,
+        )
+        selection = {
+            "candidate_ids": candidate_ids,
+            "automatic": True,
+            "accepted_candidate_count": len(candidate_ids),
+            "selected_candidate_count": len(candidate_ids),
+            "manual_subset": False,
+        }
+        configuration = dict(current.get("configuration") or {})
+        configuration.update({
+            "local_source_summary": summary,
+            "source_selection": selection,
+        })
+        self.store.update_fields(
+            job["id"],
+            command_json=json.dumps(command, ensure_ascii=False),
+            configuration_json=json.dumps(configuration, ensure_ascii=False),
+            source_analysis_json=json.dumps(summary, ensure_ascii=False),
+            source_selection_json=json.dumps(selection, ensure_ascii=False),
+            **job_fields(summary, snapshot_ref),
+        )
+        queued = self.store.transition(job["id"], JobStatus.QUEUED, stage="created")
+        self.history_revision += 1
+        return {
+            "ok": True, "run_id": queued["run_id"], "job_id": queued["id"],
+            "worker": self.ensure_worker(), "analysis": summary,
+        }
+
+    async def _snapshot_local_folder(
+        self,
+        raw_folder: str,
+    ) -> tuple[str, dict[str, Any], list[str]]:
+        """Run bounded local validation/copying off the UI loop, returning no path."""
+
+        return await asyncio.to_thread(self._snapshot_local_folder_sync, raw_folder)
+
+    @staticmethod
+    def _snapshot_local_folder_sync(raw_folder: str) -> tuple[str, dict[str, Any], list[str]]:
+        # Imports are intentionally delayed: opening the UI or importing this module neither
+        # creates an input directory nor initialises the local image adapter.
+        from local_folder_input import snapshot_workspace_root
+        from local_folder_job import public_summary
+        from local_folder_source import LocalFolderChapterAdapter
+
+        snapshot = LocalFolderChapterAdapter().snapshot(raw_folder, snapshot_workspace_root())
+        summary = public_summary(snapshot.analysis.source_folder, snapshot.analysis)
+        manifest = snapshot.public()
+        pages = manifest.get("pages") if isinstance(manifest, dict) else []
+        candidate_ids = [
+            str(page.get("id") or "")
+            for page in pages if isinstance(page, dict) and str(page.get("id") or "")
+        ]
+        if not candidate_ids:
+            from chapter_source import NO_CHAPTER_IMAGES, SourceError
+
+            raise SourceError(NO_CHAPTER_IMAGES, "local_snapshot_without_pages")
+        # ``workspace.name`` is generated by the adapter, never a user path/name.
+        return snapshot.workspace.name, summary, candidate_ids
+
+    def _create_local_folder_staging_job(
+        self,
+        normalized: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None,
+    ) -> dict[str, Any]:
+        if principal is not None and not isinstance(principal, RequestPrincipal):
+            raise TypeError("principal must be a RequestPrincipal")
+        from local_folder_job import SOURCE_TYPE_LOCAL_FOLDER
+
+        output_folder = (OUTPUT_ROOT / normalized["slug"]).resolve()
+        configuration: dict[str, Any] = {
+            "job_type": "translation",
+            "source_type": SOURCE_TYPE_LOCAL_FOLDER,
+            "mode": normalized["mode"],
+            "full": True,
+            "max_images": None,
+            "force": normalized["force"],
+            "use_cache": normalized["use_cache"],
+            "use_context": normalized["use_context"],
+            "chapter_name": normalized["chapter_name"],
+            "open_output": normalized["open_output"],
+            "create_source_profile": False,
+            "source_analysis": {},
+            "source_selection": {},
+        }
+        if principal is not None and principal.authenticated:
+            configuration["community_owner_id"] = principal.user_id
+        staging_owner_pid = os.getpid()
+        staging_owner_create_time: float | None = None
+        try:
+            import process_tree
+
+            snapshot = process_tree.snapshot(staging_owner_pid) or {}
+            value = snapshot.get("create_time")
+            staging_owner_create_time = float(value) if value is not None else None
+        except (ImportError, OSError, TypeError, ValueError):
+            pass
+        job_id = self.store.create_job(
+            # A local folder is never a URL and its original path is never persisted.
+            source_url="",
+            output_dir=str(output_folder),
+            command=[],
+            run_id=str(normalized["id"]),
+            configuration=configuration,
+            series_title=normalized["chapter_name"],
+            series_slug=normalized["slug"],
+            episode_number="",
+            commit_hash=_current_commit(),
+            branch=_current_branch(),
+            initial_status=JobStatus.STAGING,
+            staging_owner_pid=staging_owner_pid,
+            staging_owner_create_time=staging_owner_create_time,
+        )
+        # Keep the universal source discriminator on the row from the moment the job is
+        # visible.  Snapshot-specific provenance is intentionally unavailable until the
+        # local adapter has accepted the folder, but a failed intake must still be
+        # classifiable without inspecting its configuration blob.
+        self.store.update_fields(job_id, source_type=SOURCE_TYPE_LOCAL_FOLDER)
+        self.history_revision += 1
+        return self.store.get_job(job_id)  # type: ignore[return-value]
+
+    @staticmethod
+    def _looks_like_local_path(value: str) -> bool:
+        text = str(value or "").strip()
+        return bool(re.search(
+            r"(?:[A-Za-z]:[\\\\/]|\\\\\\\\|(?:^|\s)/|\bfile:)", text, re.I))
+
+    def _normalize_local_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Normalise local-run settings without deriving any label from the folder path."""
+
+        raw_folder = str(payload.get("local_folder") or "").strip()
+        if not raw_folder:
+            raise ValueError("local_folder_required")
+        mode = str(payload.get("mode") or "fast")
+        full = bool(payload.get("full", True))
+        max_images = None if full else int(payload.get("max_images") or 0)
+        force = bool(payload.get("force", False))
+        use_cache = bool(payload.get("use_cache", not force))
+        if mode not in {"fast", "quality"}:
+            raise ValueError("O modo precisa ser fast ou quality.")
+        if use_cache and force:
+            raise ValueError("Cache e reprocessamento forçado são mutuamente exclusivos.")
+        if not full or max_images is not None:
+            raise ValueError("local_folder_requires_full_scope")
+        chapter_name = str(payload.get("chapter_name") or "Capítulo local").strip()[:120]
+        raw_slug = str(payload.get("slug") or "capitulo_local").strip()
+        if (
+            self._looks_like_local_path(chapter_name)
+            or self._looks_like_local_path(raw_slug)
+            or raw_folder.casefold() in chapter_name.casefold()
+            or raw_folder.casefold() in raw_slug.casefold()
+        ):
+            raise ValueError("local_folder_name_must_not_be_path")
+        return {
+            "id": str(payload.get("id") or uuid.uuid4()),
+            "chapter_name": chapter_name or "Capítulo local",
+            "slug": sanitize_output_name(raw_slug),
+            "mode": mode,
+            "full": True,
+            "max_images": None,
+            "use_cache": use_cache,
+            "force": force,
+            "use_context": bool(payload.get("use_context", True)),
+            "open_output": bool(payload.get("open_output", False)),
+            "create_source_profile": False,
+        }
 
     @staticmethod
     def _analyze_source(url: str, *, cancel_check=None):
@@ -748,11 +1197,12 @@ class UiBridge:
         if not job or job.get("status") != JobStatus.AWAITING_SOURCE_REVIEW:
             raise ValueError("source_review_not_available")
         analysis = job.get("source_analysis") or {}
-        allowed = {
+        accepted_ids = [
             str(item.get("id") or "")
             for item in (analysis.get("accepted") or [])
-            if isinstance(item, dict)
-        }
+            if isinstance(item, dict) and str(item.get("id") or "")
+        ]
+        allowed = set(accepted_ids)
         selected = list(dict.fromkeys(str(value or "") for value in candidate_ids if value))
         if not selected or not set(selected).issubset(allowed):
             raise ValueError("invalid_source_candidate_selection")
@@ -782,6 +1232,10 @@ class UiBridge:
             # are not chapter pages. Persist it so a completed output is never mistaken for
             # an untouched automatic cluster.
             "manual_subset": len(selected) < len(allowed),
+            # The UI submits opaque IDs in visible order. Preserve an intentional reordering
+            # separately from an ordinary subset so the downloader can retain that sequence
+            # and an audit can distinguish it from adapter order.
+            "manual_reordered": selected != [item for item in accepted_ids if item in selected],
         }
         config["source_selection"] = selection
         self.store.update_fields(
@@ -833,6 +1287,7 @@ class UiBridge:
             "use_context": normalized["use_context"],
             "chapter_name": normalized["chapter_name"],
             "open_output": normalized["open_output"],
+            "create_source_profile": normalized["create_source_profile"],
             "source_analysis": source_analysis or {},
             "source_selection": source_selection or {},
         }
@@ -871,12 +1326,26 @@ class UiBridge:
             staging_owner_pid=staging_owner_pid,
             staging_owner_create_time=staging_owner_create_time,
         )
+        # Every URL job receives scalar adapter evidence before it can enter a queue. A later
+        # fresh downloader diagnosis replaces preliminary values, but a specific-adapter batch
+        # item never becomes an anonymous row while it waits for a worker.
+        from chapter_source import select_adapter
+
+        adapter = select_adapter(normalized["url"])
+        provenance: dict[str, Any] = {
+            "source_type": "url",
+            "adapter_name": str(getattr(adapter, "name", "") or ""),
+            "adapter_version": str(getattr(adapter, "adapter_version", "") or ""),
+            "transport_name": "pending",
+        }
+        if source_analysis is not None:
+            provenance.update(self._remote_source_provenance(source_analysis))
         if source_analysis is not None or source_selection is not None:
-            self.store.update_fields(
-                job_id,
-                source_analysis_json=json.dumps(source_analysis or {}, ensure_ascii=False),
-                source_selection_json=json.dumps(source_selection or {}, ensure_ascii=False),
-            )
+            provenance.update({
+                "source_analysis_json": json.dumps(source_analysis or {}, ensure_ascii=False),
+                "source_selection_json": json.dumps(source_selection or {}, ensure_ascii=False),
+            })
+        self.store.update_fields(job_id, **provenance)
         self.history_revision += 1
         return self.store.get_job(job_id)  # type: ignore[return-value]
 
@@ -899,7 +1368,20 @@ class UiBridge:
         healthy = self.store.healthy_worker(stale_seconds=15)
         return {"online": bool(healthy), "started": bool(healthy)}
 
-    async def cancel(self, *, queue: bool = False) -> dict[str, Any]:
+    async def cancel(self, *, queue: bool = False, job_id: str = "") -> dict[str, Any]:
+        requested_review_id = str(job_id or "").strip()
+        if requested_review_id:
+            displayed = self._displayed_source_review()
+            # The source-review panel represents exactly the newest waiting job. Refuse a
+            # stale/forged id rather than cancelling another pending chapter behind it.
+            if not displayed or displayed.get("id") != requested_review_id:
+                raise ValueError("source_review_not_available")
+            self.store.transition(
+                requested_review_id, JobStatus.CANCELLED,
+                interrupted_reason="cancelled_source_review", reason_code="cancelled",
+            )
+            self.history_revision += 1
+            return {"ok": True, "job_id": requested_review_id}
         active = self.store.active_job()
         if self._is_translation_job(active):
             self.store.request_cancel(active["id"])
@@ -916,18 +1398,14 @@ class UiBridge:
                                               finished_at=frozen)
                     except Exception:  # noqa: BLE001 - already settled by another path
                         pass
-        for review in self.store.list_jobs(statuses=[JobStatus.AWAITING_SOURCE_REVIEW]):
-            if not self._is_translation_job(review):
-                continue
-            try:
-                self.store.transition(review["id"], JobStatus.CANCELLED,
-                                      interrupted_reason="cancelled_source_review",
-                                      reason_code="cancelled")
-            except Exception:  # noqa: BLE001 - a concurrent confirmation wins
-                pass
-        for staging in self.store.list_jobs(statuses=[JobStatus.STAGING]):
-            if not self._is_translation_job(staging):
-                continue
+        # A source review needs its explicit displayed job id above. For a source-analysis
+        # request that has not yet returned a review id, cancel at most the newest staging row;
+        # never fan one browser action out to unrelated submissions.
+        staging = max(
+            (candidate for candidate in self.store.list_jobs(statuses=[JobStatus.STAGING])
+             if self._is_translation_job(candidate)),
+            key=lambda candidate: float(candidate.get("updated_at") or 0), default=None)
+        if staging:
             try:
                 self.store.transition(staging["id"], JobStatus.CANCELLED,
                                       interrupted_reason="cancelled_source_analysis",
@@ -943,7 +1421,40 @@ class UiBridge:
                                           interrupted_reason="queue_cleared")
                 except Exception:  # noqa: BLE001 - best effort per queued job
                     pass
+        self.history_revision += 1
         return {"ok": True}
+
+    async def retry_source_review(self, job_id: str) -> dict[str, Any]:
+        """Discard one displayed review hold and rerun only its safe source analysis."""
+        job = self._displayed_source_review()
+        if not job or job.get("id") != str(job_id or "").strip():
+            raise ValueError("source_review_not_available")
+        config = job.get("configuration") or {}
+        source_url = str(job.get("source_url") or "")
+        if not source_url:
+            # Local snapshots are immutable inputs; retrying their source analysis would mean
+            # rereading a path that is deliberately absent from the job row.
+            raise ValueError("source_review_retry_not_available")
+        self.store.transition(
+            job["id"], JobStatus.CANCELLED,
+            interrupted_reason="source_review_retry_requested", reason_code="cancelled",
+        )
+        self.history_revision += 1
+        payload = {
+            "source_type": "url",
+            "url": source_url,
+            "chapter_name": config.get("chapter_name") or job.get("series_title") or "",
+            "slug": Path(str(job.get("output_dir") or "chapter")).name,
+            "mode": config.get("mode") or "fast",
+            "full": bool(config.get("full", True)),
+            "max_images": config.get("max_images"),
+            "use_cache": bool(config.get("use_cache")),
+            "force": bool(config.get("force")),
+            "use_context": bool(config.get("use_context", True)),
+            "open_output": bool(config.get("open_output", False)),
+            "create_source_profile": config.get("create_source_profile") is True,
+        }
+        return await self.start(payload)
 
     def resume(self, job_id: str) -> dict[str, Any]:
         job = self.store.get_job(job_id)
@@ -975,6 +1486,24 @@ class UiBridge:
             attempt=int(job.get("attempt") or 1) + 1,
             resume_from_stage=job.get("resume_from_stage") or "",
         )
+        # ``create_job`` starts an independent attempt. Preserve the path-free scalar
+        # evidence and the sanitised analysis/selection for both local snapshots and URL
+        # jobs so retries remain auditable even before the downloader refreshes its result.
+        provenance = {
+            key: job.get(key)
+            for key in (
+                "source_type", "adapter_name", "adapter_version", "transport_name",
+                "source_score", "candidate_count", "input_root_fingerprint",
+                "snapshot_ref", "logical_pages", "input_count", "accepted_count",
+                "rejected_count", "duplicate_count", "total_size_bytes",
+            )
+            if job.get(key) is not None
+        }
+        provenance["source_analysis_json"] = json.dumps(
+            job.get("source_analysis") or {}, ensure_ascii=False)
+        provenance["source_selection_json"] = json.dumps(
+            job.get("source_selection") or {}, ensure_ascii=False)
+        self.store.update_fields(new_id, **provenance)
         self.store.transition(job_id, JobStatus.QUEUED) if job["status"] == JobStatus.RESUMABLE else None
         self.history_revision += 1
         return {"ok": True, "job_id": new_id}
@@ -989,7 +1518,10 @@ class UiBridge:
         # confirmed.  Specific adapters retain the existing batch flow; a generic source is
         # intentionally directed through the interactive source-analysis screen.
         from chapter_source import select_adapter
-
+        if self._requested_source_type(payload) == "local_folder":
+            # The batch form is URL-only.  Folder intake needs the loopback-only API gate and
+            # a snapshot before a job is queued, so it can only start from the main form.
+            raise ValueError("local_folder_requires_primary_submit")
         url = clean_url(str(payload.get("url") or ""))
         if not select_adapter(url).is_specific:
             raise ValueError("generic_sources_require_interactive_review")
@@ -1187,6 +1719,7 @@ class UiBridge:
             "force": force,
             "use_context": bool(payload.get("use_context", True)),
             "open_output": bool(payload.get("open_output", False)),
+            "create_source_profile": payload.get("create_source_profile") is True,
         }
 
     def _refresh_history(self) -> None:

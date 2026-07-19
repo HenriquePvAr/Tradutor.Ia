@@ -11,11 +11,28 @@ from urllib.parse import urlparse
 from output_manifest import sanitize_source_url
 
 
+REPO_ROOT = Path(__file__).resolve().parent
+_LOCAL_SNAPSHOT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$")
+_MAX_LOCAL_MANIFEST_BYTES = 2 * 1024 * 1024
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Executa um capitulo com os modos simples fast ou quality.",
     )
     parser.add_argument("url", nargs="?", help="URL do capitulo.")
+    parser.add_argument(
+        "--local-folder",
+        metavar="DIRETORIO",
+        help=(
+            "Pasta local de paginas, dentro de uma raiz LOCAL_INPUT_ROOTS permitida. "
+            "As imagens sao validadas e copiadas para um snapshot interno antes do processamento."
+        ),
+    )
+    # This is deliberately hidden from normal help.  It is the hand-off from the local job
+    # runner, not a way to give the pipeline an arbitrary filesystem path.  The value is
+    # revalidated below as one direct child of the owned local-snapshot workspace.
+    parser.add_argument("--input-manifest", metavar="MANIFEST", help=argparse.SUPPRESS)
     parser.add_argument(
         "--mode",
         choices=("fast", "quality"),
@@ -80,11 +97,7 @@ def main(argv=None):
     else:
         args = parser.parse_args(argv)
 
-    if not args.url:
-        parser.error("informe a URL do capitulo")
-    args.url = _clean_url(args.url)
-    if not args.url.startswith(("http://", "https://")):
-        parser.error("a URL deve comecar com http:// ou https://")
+    source_type = _prepare_source(args, parser)
     if args.max_images is not None and args.max_images <= 0:
         parser.error("--max-images deve ser maior que zero")
     if args.no_context and (args.keep_context or args.delete_context_after):
@@ -92,7 +105,14 @@ def main(argv=None):
     if args.keep_context and args.delete_context_after:
         parser.error("use apenas --keep-context ou --delete-context-after")
 
-    output_folder = _resolve_output_folder(args.output, args.url)
+    try:
+        output_folder = (
+            _resolve_local_output_folder(args.output, args.local_snapshot_ref)
+            if source_type == "local_folder"
+            else _resolve_output_folder(args.output, args.url)
+        )
+    except ValueError:
+        parser.error("a saida da pasta local deve ficar dentro de output/")
     context_path = output_folder / "session_context.json"
     if args.download_only:
         return _run_download_only(args, output_folder)
@@ -116,6 +136,7 @@ def main(argv=None):
         use_context=not args.no_context,
         session_context_path=str(context_path),
         source_candidate_ids=list(args.source_candidate_id or []),
+        local_manifest_path=str(getattr(args, "local_manifest_path", "") or ""),
     )
 
     print(f"Capitulo: {sanitize_source_url(args.url)}")
@@ -124,9 +145,7 @@ def main(argv=None):
     print(f"Contexto: {'desativado' if args.no_context else context_path}")
     print(f"Saida: {output_folder}")
 
-    from benchmark_pipeline import run_benchmark
-
-    report = run_benchmark(benchmark_args)
+    report = _run_benchmark(benchmark_args)
     pdf_path = Path(report.get("pdf_path") or "")
     if args.delete_context_after and pdf_path.is_file() and context_path.exists():
         context_path.unlink()
@@ -153,6 +172,9 @@ def main(argv=None):
 
 
 def _run_download_only(args, output_folder):
+    if getattr(args, "local_manifest_path", ""):
+        return _run_local_download_only(args, output_folder)
+
     from down import download_images
 
     input_folder = output_folder / "input"
@@ -190,6 +212,181 @@ def _run_download_only(args, output_folder):
             "Download gate reprovado: " + ", ".join(gate.get("reasons") or [])
         )
     return report
+
+
+def _run_local_download_only(args, output_folder):
+    """Materialise an already-owned local snapshot without importing the downloader.
+
+    ``materialize_snapshot`` verifies the generated names, hashes and image bytes again.  It
+    cannot dereference a user folder or a URL, and it writes only beneath the local output
+    root that ``_resolve_local_output_folder`` has already constrained.
+    """
+
+    from local_folder_input import materialize_snapshot
+    from pipeline_cache import atomic_write_json
+
+    input_folder = output_folder / "input"
+    max_images = args.max_images
+    print(f"Download-only: {sanitize_source_url(args.url)}")
+    print(f"Escopo: {'capitulo completo' if max_images is None else f'{max_images} imagens'}")
+    print(f"Saida: {output_folder}")
+    image_paths, report = materialize_snapshot(
+        args.local_manifest_path,
+        input_folder,
+        max_images=max_images,
+        clear_existing=bool(args.force),
+    )
+    output_folder.mkdir(parents=True, exist_ok=True)
+    report_path = output_folder / "downloaded_images.json"
+    atomic_write_json(report_path, report)
+    gate = report.get("download_gate") or {}
+    print(f"Imagens validas: {len(image_paths)}")
+    print(f"Download gate: {'aprovado' if gate.get('passed') else 'reprovado'}")
+    print(f"Downloaded images: {report_path}")
+    if args.open_output:
+        _open_folder(output_folder)
+    if not gate.get("passed"):
+        raise RuntimeError(
+            "Download gate reprovado: " + ", ".join(gate.get("reasons") or [])
+        )
+    return report
+
+
+def _prepare_source(args, parser):
+    """Choose one source type and keep raw local paths out of run-facing arguments.
+
+    URL support remains exactly as before.  A local folder is copied into an owned snapshot
+    first; all later pipeline stages receive only an opaque ``local-folder:`` reference and
+    an internal manifest path.  The latter is never written to a manifest, job DTO or console
+    line by this runner.
+    """
+
+    raw_url = str(getattr(args, "url", "") or "").strip()
+    raw_folder = str(getattr(args, "local_folder", "") or "").strip()
+    raw_manifest = str(getattr(args, "input_manifest", "") or "").strip()
+    source_count = sum(bool(value) for value in (raw_url, raw_folder, raw_manifest))
+    if source_count != 1:
+        parser.error("informe exatamente uma URL ou uma pasta local")
+
+    args.local_manifest_path = ""
+    args.local_snapshot_ref = ""
+    if raw_url:
+        args.url = _clean_url(raw_url)
+        if not args.url.startswith(("http://", "https://")):
+            parser.error("a URL deve comecar com http:// ou https://")
+        return "url"
+
+    if args.source_candidate_id:
+        parser.error("--source-candidate-id nao se aplica a uma pasta local")
+    try:
+        if raw_folder:
+            manifest_path, source_reference, snapshot_ref = _snapshot_local_folder(raw_folder)
+        else:
+            manifest_path, source_reference, snapshot_ref = _owned_local_manifest(raw_manifest)
+    except Exception:
+        # LocalFolderError inherits ValueError, but a filesystem race can also surface as a
+        # lower-level exception.  Collapse every local-intake failure to this stable public
+        # message rather than risking an absolute source path in a traceback.
+        parser.error("entrada local recusada")
+
+    args.url = source_reference
+    args.local_manifest_path = str(manifest_path)
+    args.local_snapshot_ref = snapshot_ref
+    return "local_folder"
+
+
+def _snapshot_local_folder(folder):
+    """Create an immutable internal snapshot and return path-free run provenance."""
+
+    from local_folder_input import local_source_reference, snapshot_workspace_root
+    from local_folder_source import LocalFolderChapterAdapter
+
+    snapshot = LocalFolderChapterAdapter().snapshot(folder, snapshot_workspace_root())
+    return (
+        Path(snapshot.manifest_path).resolve(strict=True),
+        local_source_reference(snapshot.analysis.source_fingerprint),
+        snapshot.workspace.name,
+    )
+
+
+def _owned_local_manifest(value):
+    """Resolve a local snapshot manifest only when it has the owned direct-child layout."""
+
+    from local_folder_input import local_source_reference, snapshot_workspace_root
+
+    root = Path(snapshot_workspace_root()).resolve()
+    supplied = Path(str(value or "")).expanduser()
+    if not supplied.is_absolute():
+        supplied = root / supplied
+    manifest_path = supplied.resolve(strict=True)
+    try:
+        manifest_path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("manifest_outside_workspace") from exc
+    if manifest_path.name != "manifest.json" or manifest_path.parent.parent != root:
+        raise ValueError("invalid_snapshot_layout")
+    snapshot_ref = manifest_path.parent.name
+    if not _LOCAL_SNAPSHOT_REF_RE.fullmatch(snapshot_ref):
+        raise ValueError("invalid_snapshot_ref")
+
+    expected = root / snapshot_ref / "manifest.json"
+    if _is_reparse_point(expected.parent) or _is_reparse_point(expected):
+        raise ValueError("snapshot_reparse_point")
+    if expected.resolve(strict=True) != manifest_path:
+        raise ValueError("snapshot_layout_changed")
+    try:
+        size = manifest_path.stat().st_size
+    except OSError as exc:
+        raise ValueError("snapshot_manifest_unreadable") from exc
+    if size <= 0 or size > _MAX_LOCAL_MANIFEST_BYTES:
+        raise ValueError("snapshot_manifest_size")
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError("snapshot_manifest_unreadable") from exc
+    if not isinstance(payload, dict) or str(payload.get("snapshot_id") or "") != snapshot_ref:
+        raise ValueError("snapshot_manifest_identity")
+    return manifest_path, local_source_reference(payload.get("source_fingerprint")), snapshot_ref
+
+
+def _is_reparse_point(path):
+    """Reject symlinks/junctions at the CLI-to-owned-workspace boundary."""
+
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+    except OSError:
+        return True
+    return path.is_symlink() or bool(attributes & 0x400)
+
+
+def _resolve_local_output_folder(value, snapshot_ref):
+    """Keep local snapshots' materialised pages under the repository output root."""
+
+    root = (REPO_ROOT / "output").resolve()
+    if not value:
+        suffix = re.sub(r"[^A-Za-z0-9_-]+", "", str(snapshot_ref or ""))[:24]
+        candidate = root / f"local_chapter_{suffix or 'run'}"
+    else:
+        path = Path(value).expanduser()
+        if path.is_absolute():
+            candidate = path.resolve()
+        elif path.parts and path.parts[0].casefold() == "output":
+            candidate = (REPO_ROOT / path).resolve()
+        else:
+            candidate = (root / path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("output_outside_root") from exc
+    return candidate
+
+
+def _run_benchmark(benchmark_args):
+    """Small seam so local CLI routing is testable without importing the real pipeline."""
+
+    from benchmark_pipeline import run_benchmark
+
+    return run_benchmark(benchmark_args)
 
 
 def _interactive_args(parser):

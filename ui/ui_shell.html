@@ -206,10 +206,26 @@
         <div class="panel">
           <div class="panel-label">Origem do capítulo</div>
 
-          <div class="field">
+          <div class="source-type-row" id="sourceTypeChoices" role="radiogroup" aria-label="Tipo de origem">
+            <button type="button" class="source-type-card selected" data-source-type="url" aria-pressed="true">
+              URL pública
+            </button>
+            <button type="button" class="source-type-card" data-source-type="local_folder" aria-pressed="false">
+              Pasta local
+            </button>
+          </div>
+
+          <div class="field" id="urlSourceField">
             <label>URL do capítulo</label>
             <input type="text" id="urlInput" placeholder="https://exemplo.com/manhwa/capitulo-142" />
             <div class="field-error" id="urlError">informe a URL do capítulo antes de iniciar</div>
+          </div>
+
+          <div class="field" id="localFolderSourceField" hidden>
+            <label>Pasta local do capítulo</label>
+            <input type="text" id="localFolderInput" autocomplete="off" spellcheck="false" placeholder="C:\\pasta-permitida\\capitulo" />
+            <div class="field-error" id="localFolderError">informe a pasta local antes de iniciar</div>
+            <div class="field-hint">Disponível apenas no painel local. O caminho é validado e copiado para uma área temporária; ele não é salvo no histórico ou no output.</div>
           </div>
 
           <div class="field">
@@ -282,6 +298,10 @@
               <div class="toggle-copy"><div class="tt">Abrir pasta ao terminar</div><div class="td">Mostra os arquivos assim que o capítulo estiver pronto</div></div>
               <label class="switch"><input type="checkbox" id="openToggle"><span class="slider"></span></label>
             </div>
+            <div class="toggle-row">
+              <div class="toggle-copy"><div class="tt">Registrar perfil local da fonte</div><div class="td">Opcional: sÃ³ apÃ³s revisÃ£o manual concluÃ­da; salva apenas evidÃªncias sanitizadas.</div></div>
+              <label class="switch"><input type="checkbox" id="sourceProfileToggle"><span class="slider"></span></label>
+            </div>
           </div>
 
           <div class="cta-row">
@@ -321,6 +341,7 @@
               <div class="source-review-list" id="sourceReviewList"></div>
               <div class="cta-row source-review-actions">
                 <button class="btn-primary" type="button" id="confirmSourcePages">Confirmar páginas</button>
+                <button class="btn-ghost" type="button" id="retrySourceReview">Tentar nova anÃ¡lise</button>
                 <button class="btn-ghost" type="button" id="cancelSourceReview">Cancelar</button>
               </div>
             </div>

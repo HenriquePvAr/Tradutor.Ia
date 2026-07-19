@@ -1,131 +1,145 @@
 # Entrada por pasta local
 
-Traduzir a partir de arquivos que você já tem no disco, sem nenhum acesso a site externo.
+Esta fonte permite processar imagens de capítulo que já estão no computador. Ela é uma
+alternativa à URL pública: não abre Webtoon, não cria Selenium, não usa `file://` e não usa o
+downloader HTTP para obter as páginas de origem. Depois de a entrada ser aceita, as etapas
+normais de OCR, tradução e PDF continuam sendo as do pipeline; portanto, uma execução completa
+pode usar os provedores configurados para essas etapas.
 
-## Uso
+O objetivo da fronteira local é aceitar somente uma pasta de páginas autorizada, produzir um
+snapshot estável e passar ao restante do pipeline apenas referências opacas. Ela não é um modo
+de navegar no sistema de arquivos a partir de uma URL, nem uma permissão para uma UI exposta na
+rede ler arquivos da máquina.
 
-Coloque as imagens numa pasta dentro de uma raiz permitida (padrão: `input/`):
+## Como usar
 
+### Preparar uma raiz permitida
+
+Por padrão, a única raiz permitida é `<repositório>/input`, **se ela já existir**. O programa
+nunca cria essa pasta apenas porque foi importado ou aberto. Para usar outra raiz, configure
+`LOCAL_INPUT_ROOTS` com caminhos absolutos separados pelo separador do sistema (no Windows,
+normalmente `;`). Exemplo conceitual:
+
+```text
+LOCAL_INPUT_ROOTS=C:\CapitulosPermitidos;D:\OutroAcervoPermitido
 ```
-input/meu_capitulo/
-  1.png
-  2.png
-  10.png
+
+Selecione uma subpasta de capítulo dentro dessa raiz, e não a raiz em si. A política recusa
+caminhos relativos, `..`, `file:`, UNC, dispositivos Windows, links simbólicos, junctions e
+qualquer caminho que escape da raiz depois de resolvido.
+
+### Pela UI local
+
+Na tela **Nova tradução**, escolha **Pasta local**, informe a pasta e mantenha o escopo completo.
+A API aceita essa modalidade somente quando **tanto** o endereço em que a UI está ligada quanto o
+navegador conectado são loopback. Uma UI ligada em rede não pode transformar uma requisição
+remota em leitura de arquivos locais; nesse caso a solicitação falha com
+`local_folder_requires_loopback_ui`.
+
+O campo mostra a pasta apenas no formulário de envio. O histórico não reconstrói nem exibe esse
+caminho depois: ele conserva somente o nome final da pasta, contagens e referências opacas.
+
+### Pela linha de comando
+
+Quando a pasta está sob uma raiz permitida, a entrada direta é:
+
+```powershell
+.\.venv\Scripts\python.exe run_webtoon.py --local-folder "C:\CapitulosPermitidos\capitulo-01" --output capitulo_local_01 --mode fast
 ```
 
-A ordenação é **natural**: `1`, `2`, `10` — nunca `1`, `10`, `2`.
+`--local-folder`, URL e o manifesto interno são mutuamente exclusivos. Para uma pasta local,
+`--source-candidate-id` não é aceito e a saída precisa permanecer sob `output/`. O runner de
+jobs usa `run_local_folder.py --snapshot-ref ...` internamente; `--snapshot-ref` e
+`--input-manifest` não são interfaces para apontar o pipeline a um caminho arbitrário.
 
-## Raízes permitidas
+Use uma execução real somente quando ela for desejada e o ambiente de OCR/tradução estiver
+configurado. Os testes herméticos não executam esse comando contra uma pasta real nem chamam
+provedores externos.
 
-Padrão: `<repo>/input`. Configurável, com defaults seguros. A política recusa:
+## Validação antes do snapshot
 
-- caminho fora das raízes configuradas;
-- path traversal (`..\`);
-- fuga por symlink ou junction (o caminho real é resolvido e revalidado);
-- UNC remoto;
-- dispositivos especiais;
-- `C:\` ou diretório de sistema como raiz.
+Somente arquivos regulares diretamente dentro da pasta do capítulo entram na análise. Não há
+varredura recursiva. Arquivos auxiliares sem extensão de imagem permitida são ignorados; formatos
+de imagem conhecidos, mas não aceitos, falham fechados em vez de serem omitidos silenciosamente.
 
-Nunca é usado `file://` e nenhum navegador é aberto.
-
-## Validação de cada arquivo
-
-Extensões aceitas: `.png`, `.jpg`, `.jpeg`, `.webp`, `.avif` — mas a extensão **não** é a prova. Cada arquivo passa por:
-
-| Checagem | Por quê |
+| Controle | Comportamento |
 | --- | --- |
-| magic bytes / assinatura real | extensão mente |
-| MIME real | idem |
-| markup detection | HTML ou JSON salvo como `.jpg` |
-| Pillow `verify()` + `load()` | pega truncamento e corrupção |
-| OpenCV quando necessário | segunda opinião no decode |
-| largura / altura / área | descarta lixo |
-| tamanho > 0, teto por arquivo e total | limita entrada abusiva |
-| `sha256` | deduplicação por conteúdo |
+| Ordem | ordenação natural e determinística (`1`, `2`, `10`) |
+| Extensões | `.png`, `.jpg`, `.jpeg`, `.webp`, `.avif` |
+| Formato real | assinatura, MIME/decodificação e coerência com a extensão |
+| Integridade | `Pillow.verify()`, carregamento completo e `cv2.imdecode()` |
+| Limites | até 32 MiB por arquivo, 1 GiB no capítulo e 400 páginas |
+| Diretório | enumeração limitada; arquivos indiretos, symlinks e reparse points são recusados |
+| Duplicatas | SHA-256 duplicado interrompe toda a entrada |
 
-Rejeição gera `rejection_reason` no manifest — o arquivo original não é tocado.
+Uma imagem inválida, duplicada ou um limite excedido não produz um capítulo menor sem aviso: a
+entrada inteira é recusada antes de enfileirar o processamento.
 
-## Snapshot isolado
+## Snapshot, proveniência e materialização
 
-Cada job materializa um snapshot próprio:
+Ao aceitar a pasta, o adaptador copia os bytes validados para um filho novo de
+`.cache/runtime/local_sources/`. Os nomes são gerados (`0001.png`, por exemplo), e o manifesto
+interno contém hashes, dimensões, formato, tamanho, IDs opacos e uma impressão digital da origem.
+Ele não contém o caminho original nem os nomes originais das páginas.
 
-- nomes internos gerados, não os originais;
-- caminho original registrado **apenas server-side**;
-- idempotente, sem sobrescrever snapshot de outro job;
-- **os arquivos originais nunca são alterados, movidos ou apagados**.
+O job guarda `source_type=local_folder`, nome/versão do adapter, contagens, uma impressão digital
+da pasta e um `snapshot_ref` opaco. O comando do worker recebe somente esse `snapshot_ref`; o
+runner o resolve novamente como filho direto do workspace controlado. Antes de copiar as páginas
+para `output/<execução>/input`, ele confere layout, hash, tamanho e bytes outra vez.
 
-O frontend e os endpoints sociais nunca recebem o caminho local nem o caminho do snapshot.
+Os originais são somente leitura para o processo: não são movidos, renomeados, alterados ou
+apagados. Um destino de entrada já existente também não é limpo por padrão. A limpeza só é
+permitida para um diretório marcado como pertencente a um snapshot local e com autorização
+explícita de reprocessamento; conteúdo não pertencente ao pipeline causa falha fechada.
+
+Os snapshots são artefatos internos de cache. Esta implementação não promete limpeza automática
+de snapshots antigos; trate a retenção deles conforme a política local de armazenamento, sem
+apagar artefatos de uma execução ativa.
 
 ## Páginas lógicas e Smart Split
 
-Esta é a parte que mais importa acertar.
+Arquivos de pasta local são tratados como páginas lógicas completas. Por isso o relatório marca:
 
-O Smart Split existe porque assets de webtoon são **fatias de transporte, não páginas**: ele junta as fatias e recorta em faixas horizontais seguras, para um balão não ficar partido entre dois arquivos.
-
-Arquivos de uma pasta local normalmente **já são páginas completas**. Rodar o Smart Split neles juntaria tudo e recortaria de novo, destruindo os limites de página do autor.
-
-Por isso o manifest marca `logical_page: true`, e `prepare_smart_webtoon_pages(..., logical_pages=True)` faz *passthrough*: as páginas passam intactas, na ordem, e o relatório grava `smart_split_skipped: true` com `skip_reason: inputs_are_complete_pages`.
-
-O caminho padrão (fatias) continua funcionando exatamente como antes — há teste para os dois.
-
-## Manifest
-
-`job_id`, `source_type: local_folder`, `adapter_name`, `adapter_version`, `created_at`,
-`input_count`, `accepted_count`, `rejected_count`, `ordered_pages`, e por página: filename
-interno, `hash`, MIME, `width`, `height`, `size_bytes`, `logical_page` e
-`rejection_reason` quando aplicável.
-
-## Erros
-
-`local_folder_not_found`, `local_path_not_allowed`, `no_supported_images`,
-`invalid_local_image`, `duplicate_local_image`, `snapshot_failed`, `local_input_too_large`.
-
-Mensagens sanitizadas; nenhum traceback e nenhum caminho no frontend.
-
-## Testes
-
-```
-.\.venv\Scripts\python.exe -m pytest test_local_folder_source.py test_local_folder_input.py test_logical_pages.py -q
+```json
+{
+  "logical_pages": true,
+  "requires_smart_split": false
+}
 ```
 
-Tudo hermético: imagens sintéticas, sem rede, sem NVIDIA, sem Drive, sem Supabase remoto.
+O Smart Split faz *passthrough*: mantém cada página na ordem e nas dimensões originais, em vez de
+juntar fatias e recortá-las novamente. Isso evita partir uma página alta que já foi fornecida
+como unidade editorial. O comportamento padrão para fatias Webtoon continua separado e não é
+alterado pela entrada local.
 
-## Integração com jobs
+## Erros sanitizados
 
-O job carrega apenas proveniência, nunca caminho:
+Os erros locais usam códigos sem incluir o caminho do usuário em DTOs ou logs públicos. Exemplos:
 
-| Campo | Conteúdo |
+| Código | Significado resumido |
 | --- | --- |
-| `source_type` | `local_folder` |
-| `adapter_name` / `adapter_version` | identificação do adapter |
-| `input_root_fingerprint` | SHA-256 truncado da pasta — estável e não reversível |
-| `snapshot_ref` | referência opaca ao workspace |
-| `logical_pages` | `1` para pasta local |
-| `input_count` / `accepted_count` / `rejected_count` / `duplicate_count` | contadores |
-| `total_size_bytes` | tamanho total aceito |
+| `local_input_not_configured` | não há raiz local permitida disponível |
+| `local_path_unsupported`, `local_path_traversal`, `local_path_not_allowed` | o caminho não satisfaz a política |
+| `local_reparse_point` | link, junction ou reparse point foi encontrado |
+| `local_unsupported_extension`, `invalid_local_image` | tipo/extensão ou bytes não são aceitos |
+| `local_input_limit`, `local_input_duplicate` | excedeu limite ou há conteúdo repetido |
+| `local_workspace_invalid`, `local_snapshot_conflict` | o snapshot interno não passou na validação |
+| `local_folder_requires_loopback_ui` | tentativa de enviar pasta por UI não-loopback |
 
-Migration SQLite **v3**, aditiva e idempotente: bancos existentes recebem as colunas sem
-perder jobs (verificado com 11 jobs reais), bancos novos já nascem com elas. Nenhuma
-migration no Supabase.
+## Cobertura verificada e limites conhecidos
 
-O comando do runner é lista de argumentos, nunca string de shell, e recebe a
-`--snapshot-ref` opaca em vez de um caminho vindo do cliente — uma requisição forjada não
-consegue fazer o runner ler arquivo arbitrário.
+Os seguintes testes são herméticos: usam diretórios temporários e imagens sintéticas, sem
+Webtoon, NVIDIA, Chrome, Selenium ou downloader remoto.
 
-## E2E hermético
+- `test_local_folder_source.py`: política de raízes, traversal, reparse points, formatos,
+  limites, duplicatas, snapshot e ausência de caminhos no manifesto;
+- `test_local_folder_input.py`: revalidação do snapshot, materialização e proteção da saída;
+- `test_local_folder_cli.py`: referência opaca, rota CLI/runner e confinamento da saída;
+- `test_logical_pages.py`: passthrough do Smart Split para páginas lógicas;
+- `test_local_pipeline_e2e.py`: encadeamento sintético de pasta, snapshot, job, worker e PDF
+  com `fake_pipeline.py`.
 
-`test_local_pipeline_e2e.py` cobre o caminho completo com imagens sintéticas: análise →
-snapshot → job → runner → PDF. As etapas de tradução passam pelo `fake_pipeline.py`, que
-produz checkpoints, timing report e PDF reais sem chamar nenhum provider.
-
-Valida: ordem natural (`1`, `2`, `10`), página alta de 760×2600 intacta, originais
-byte-idênticos depois da execução inteira, PDF com header `%PDF-`, `exit_code == 0`,
-`finished_at` preenchido e elapsed congelado.
-
-## Limitações
-
-- A UI ainda **não** tem o seletor "URL / Pasta local". A camada de submit
-  (`local_folder_job.py`) está pronta e testada, mas a tela Nova tradução continua só com URL.
-- O E2E usa `fake_pipeline.py` no lugar de OCR e tradução reais. O encadeamento está provado;
-  a qualidade de OCR/tradução em si não.
-- Publicação a partir de PDF local usa o fluxo explícito existente, não exercitado aqui.
+O E2E sintético comprova o contrato de encadeamento, não a qualidade de OCR/tradução nem a
+execução de um capítulo real. Nenhum smoke externo de fonte, OCR de capítulo ou provider de
+tradução é afirmado por este documento. Para as fronteiras de URL e rede, consulte
+[Adapters de fonte](SOURCE_ADAPTERS.md) e [Segurança](SECURITY.md).

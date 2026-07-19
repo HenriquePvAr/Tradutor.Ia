@@ -62,53 +62,54 @@ class UIHistoryStore:
         known = {str(Path(item.get("output_folder") or "").resolve()) for item in records}
         if not OUTPUT_ROOT.is_dir():
             return records
-        for timing_path in OUTPUT_ROOT.glob("*/timing_report.json"):
-            folder = timing_path.parent.resolve()
+        # A canonical run manifest is sufficient discovery evidence.  Older outputs still
+        # need a timing report, but a valid newer run must not disappear just because a
+        # diagnostic timing file is absent or was retained elsewhere.
+        for candidate in OUTPUT_ROOT.iterdir():
+            if not candidate.is_dir():
+                continue
+            folder = candidate.resolve()
             if str(folder) in known:
                 continue
-            report = load_json(timing_path)
-            artifacts = find_output_artifacts(folder)
-            quality = report.get("quality_validation") or {}
+            timing_path = folder / "timing_report.json"
+            report = load_json(timing_path) if timing_path.is_file() else {}
             verification, manifest = self._output_verification(folder)
-            status = derive_final_run_status(
-                technical_success=bool(artifacts.get("pdf_path")),
-                quality_validation=quality,
-            )
-            records.append(
-                self._enrich_record(
-                    {
-                        "id": f"discovered-{folder.name}",
-                        "chapter_name": folder.name.replace("_", " ").title(),
-                        "slug": folder.name,
-                        "url": report.get("url", ""),
-                        "mode": "fast" if report.get("ocr_engine") == "rapidocr" else "quality",
-                        "scope": report.get("mode", ""),
-                        "cache_mode": "force" if report.get("force") else "cache",
-                        "started_at": datetime.fromtimestamp(
-                            timing_path.stat().st_mtime, timezone.utc
-                        ).isoformat(timespec="seconds"),
-                        "finished_at": datetime.fromtimestamp(
-                            timing_path.stat().st_mtime, timezone.utc
-                        ).isoformat(timespec="seconds"),
-                        "total_seconds": report.get("total_seconds", 0),
-                        "status": status,
-                        "output_folder": str(folder),
-                        **artifacts,
-                        "output_verification": verification,
-                        "manifest_path": str(folder / MANIFEST_FILENAME)
-                        if manifest
-                        else "",
-                        "job_id": self._job_id_from_manifest(folder),
-                        "run_id": manifest.get("run_id", ""),
-                        "commit_hash": manifest.get("commit_hash", ""),
-                        "branch": manifest.get("branch", ""),
-                        "pipeline_version": manifest.get("pipeline_version", ""),
-                        "pages_processed": report.get("processed_images", 0),
-                        "groups_translated": report.get("groups_translated", 0),
-                        "errors": report.get("pages_with_error", 0),
-                        "quality_gate": quality.get("passed", ""),
-                    }
+            if not manifest and not report:
+                continue
+            artifacts = find_output_artifacts(folder)
+            if manifest:
+                record = self._record_from_verified_manifest(
+                    folder, manifest, report, artifacts, timing_path)
+            else:
+                quality = report.get("quality_validation") or {}
+                status = derive_final_run_status(
+                    technical_success=bool(artifacts.get("pdf_path")),
+                    quality_validation=quality,
                 )
+                record = {
+                    "id": f"discovered-{folder.name}",
+                    "chapter_name": folder.name.replace("_", " ").title(),
+                    "slug": folder.name,
+                    "url": report.get("url", ""),
+                    "mode": "fast" if report.get("ocr_engine") == "rapidocr" else "quality",
+                    "scope": report.get("mode", ""),
+                    "cache_mode": "force" if report.get("force") else "cache",
+                    "started_at": self._discovery_timestamp(timing_path, folder),
+                    "finished_at": self._discovery_timestamp(timing_path, folder),
+                    "total_seconds": report.get("total_seconds", 0),
+                    "status": status,
+                    "output_folder": str(folder),
+                    **artifacts,
+                    "output_verification": verification,
+                    "manifest_path": "",
+                    "job_id": self._job_id_from_manifest(folder),
+                    "pages_processed": report.get("processed_images", 0),
+                    "groups_translated": report.get("groups_translated", 0),
+                    "errors": report.get("pages_with_error", 0),
+                    "quality_gate": quality.get("passed", ""),
+                }
+            records.append(
+                self._enrich_record(record)
             )
         return self._sort_records(records)
 
@@ -128,9 +129,80 @@ class UIHistoryStore:
         )
 
     @staticmethod
-    def _output_verification(folder: Path) -> tuple[str, dict[str, Any]]:
+    def _discovery_timestamp(timing_path: Path, folder: Path) -> str:
+        try:
+            stamp = (timing_path if timing_path.is_file() else folder).stat().st_mtime
+        except OSError:
+            return ""
+        return datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec="seconds")
+
+    @staticmethod
+    def _manifest_pdf_path(folder: Path, manifest: dict[str, Any]) -> str:
+        """Validate the manifest PDF as an artifact confined to its own run folder."""
+
+        candidate = str(manifest.get("pdf_path") or manifest.get("pdf_filename") or "")
+        if not candidate:
+            return ""
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = folder / path
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(folder.resolve())
+        except (OSError, ValueError):
+            return ""
+        return str(resolved) if resolved.is_file() else ""
+
+    @classmethod
+    def _record_from_verified_manifest(
+        cls,
+        folder: Path,
+        manifest: dict[str, Any],
+        report: dict[str, Any],
+        artifacts: dict[str, str],
+        timing_path: Path,
+    ) -> dict[str, Any]:
+        """Make the canonical manifest the terminal source of truth for a run card."""
+
+        slug = str(manifest.get("slug") or folder.name)
+        created_at = str(manifest.get("created_at") or cls._discovery_timestamp(timing_path, folder))
+        final_status = str(manifest.get("final_status") or "review_required")
+        # A technically produced PDF with a false quality gate is a review outcome even if
+        # a pre-schema writer mistakenly labelled it finished.
+        if final_status == "finished" and manifest.get("quality_passed") is not True:
+            final_status = "review_required"
+        return {
+            "id": f"discovered-{folder.name}",
+            "chapter_name": slug.replace("_", " ").title(),
+            "slug": slug,
+            "url": manifest.get("source_url", ""),
+            "mode": "fast" if report.get("ocr_engine") == "rapidocr" else "quality",
+            "scope": report.get("mode", ""),
+            "cache_mode": "force" if report.get("force") else "cache",
+            "started_at": created_at,
+            "finished_at": created_at,
+            "total_seconds": report.get("total_seconds", 0),
+            "status": final_status,
+            "output_folder": str(folder),
+            **artifacts,
+            "pdf_path": cls._manifest_pdf_path(folder, manifest),
+            "output_verification": "manifest_verified",
+            "manifest_path": str(folder / MANIFEST_FILENAME),
+            "job_id": cls._job_id_from_manifest(folder),
+            "run_id": manifest.get("run_id", ""),
+            "commit_hash": manifest.get("commit_hash", ""),
+            "branch": manifest.get("branch", ""),
+            "pipeline_version": manifest.get("pipeline_version", ""),
+            "pages_processed": report.get("processed_images", 0),
+            "groups_translated": report.get("groups_translated", 0),
+            "errors": report.get("pages_with_error", 0),
+            "quality_gate": manifest.get("quality_passed"),
+        }
+
+    @classmethod
+    def _output_verification(cls, folder: Path) -> tuple[str, dict[str, Any]]:
         manifest = load_verified_run_manifest(folder)
-        if manifest:
+        if manifest and cls._manifest_pdf_path(folder, manifest):
             return "manifest_verified", manifest
         runtime = REPO_ROOT / ".cache" / "e2e_runtime" / folder.name
         try:
@@ -145,7 +217,7 @@ class UIHistoryStore:
     def _with_output_verification(self, record: dict[str, Any]) -> dict[str, Any]:
         enriched = dict(record)
         folder = Path(str(enriched.get("output_folder") or ""))
-        if not folder.is_dir() or not (folder / "timing_report.json").is_file():
+        if not folder.is_dir():
             return enriched
         verification, manifest = self._output_verification(folder)
         enriched["output_verification"] = verification
@@ -153,9 +225,19 @@ class UIHistoryStore:
         if manifest:
             for key in ("run_id", "commit_hash", "branch", "pipeline_version"):
                 enriched[key] = manifest.get(key, "")
+            enriched["slug"] = manifest.get("slug") or enriched.get("slug") or folder.name
+            enriched["url"] = manifest.get("source_url") or enriched.get("url", "")
+            enriched["pdf_path"] = self._manifest_pdf_path(folder, manifest)
+            status = str(manifest.get("final_status") or "review_required")
+            enriched["status"] = (
+                "review_required"
+                if status == "finished" and manifest.get("quality_passed") is not True
+                else status
+            )
+            enriched["quality_gate"] = manifest.get("quality_passed")
         if not enriched.get("job_id"):
             enriched["job_id"] = self._job_id_from_manifest(folder)
-        if enriched.get("status") not in {"running", "cancelled", "error"}:
+        if not manifest and (folder / "timing_report.json").is_file() and enriched.get("status") not in {"running", "cancelled", "error"}:
             report = load_json(folder / "timing_report.json")
             enriched["status"] = derive_final_run_status(
                 technical_success=bool(enriched.get("pdf_path")),

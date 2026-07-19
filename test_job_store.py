@@ -64,6 +64,26 @@ class JobStoreBasicsTests(unittest.TestCase):
         self.assertEqual(job["source_analysis"]["accepted"][0]["id"], "opaque")
         self.assertFalse(job["source_selection"]["automatic"])
 
+    def test_source_provenance_metrics_roundtrip_as_direct_job_columns(self):
+        jid = _new_job(self.store)
+        self.store.update_fields(
+            jid,
+            source_type="url",
+            adapter_name="universal",
+            adapter_version="1",
+            transport_name="browser_session",
+            source_score=0.72,
+            candidate_count=5,
+            accepted_count=3,
+            rejected_count=2,
+        )
+        job = self.store.get_job(jid)
+        self.assertEqual(job["transport_name"], "browser_session")
+        self.assertEqual(job["source_score"], 0.72)
+        self.assertEqual(job["candidate_count"], 5)
+        self.assertEqual(job["accepted_count"], 3)
+        self.assertEqual(job["rejected_count"], 2)
+
     def test_no_secrets_stored(self):
         jid = _new_job(self.store, configuration={"mode": "fast"})
         job = self.store.get_job(jid)

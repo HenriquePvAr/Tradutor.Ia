@@ -189,6 +189,11 @@ def build_run_command(
     adapter = select_adapter(cleaned_url)
     adapter.validate_url(cleaned_url)
     cleaned_url = adapter.normalize_url(cleaned_url)
+    # A recognised host alone is not enough to queue work.  Specific adapters intentionally
+    # distinguish a reader chapter from a series index/profile, and accepting the latter here
+    # would create a background browser job with no valid chapter contract.
+    adapter.validate_url(cleaned_url)
+    adapter.validate_path(cleaned_url)
     if mode not in {"fast", "quality"}:
         raise ValueError("O modo precisa ser fast ou quality.")
     if use_cache and force:
@@ -196,9 +201,20 @@ def build_run_command(
     if not full and (max_images is None or int(max_images) <= 0):
         raise ValueError("Informe uma quantidade positiva de páginas para o teste parcial.")
 
+    runner = str(getattr(adapter, "runner", "run_webtoon.py") or "run_webtoon.py")
+    # Let a registered adapter describe its runner through the source contract, while still
+    # refusing a page-controlled/path-like value.  URL adapters are internal code, but this
+    # small validation keeps a future profile/plugin from turning a job command into an
+    # arbitrary executable path.
+    plan = adapter.build_command({"url": cleaned_url, "mode": mode, "output": output})
+    if isinstance(plan, dict):
+        proposed = str(plan.get("runner") or runner)
+        if proposed == Path(proposed).name and re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", proposed):
+            runner = proposed
+
     command = [
         python_executable or sys.executable,
-        str(REPO_ROOT / adapter.runner),
+        str(REPO_ROOT / runner),
         cleaned_url,
         "--mode",
         mode,
@@ -430,8 +446,15 @@ def find_output_artifacts(output_folder: Path) -> dict[str, str]:
             path = Path(candidate)
             if not path.is_absolute():
                 path = folder / path
-            if path.is_file():
-                return str(path.resolve())
+            try:
+                resolved = path.resolve()
+                # Run artifacts are opened/served by the UI.  A report or manifest must
+                # never point that operation at an arbitrary filesystem location.
+                resolved.relative_to(folder)
+            except (OSError, ValueError):
+                continue
+            if resolved.is_file():
+                return str(resolved)
         return ""
 
     # A run states where its PDF is, so the name never has to be rebuilt here.

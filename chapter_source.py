@@ -12,6 +12,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -31,7 +32,6 @@ INCOMPLETE_DOWNLOAD = "incomplete_download"
 AUTHENTICATION_REQUIRED = "authentication_required"
 UNSUPPORTED_CANVAS_READER = "unsupported_canvas_reader"
 UNSUPPORTED_CROSS_ORIGIN_READER = "unsupported_cross_origin_reader"
-SUPPORTED_SPECIFIC_ADAPTER = "supported_specific_adapter"
 SUPPORTED_GENERIC_HIGH_CONFIDENCE = "supported_generic_high_confidence"
 REVIEW_REQUIRED_MEDIUM_CONFIDENCE = "review_required_medium_confidence"
 UNSUPPORTED_LOW_CONFIDENCE = "unsupported_low_confidence"
@@ -39,6 +39,13 @@ UNSUPPORTED_LOW_CONFIDENCE = "unsupported_low_confidence"
 ALLOWED_SCHEMES = ("http", "https")
 ALLOWED_IMAGE_MIME = ("image/jpeg", "image/png", "image/webp", "image/avif", "image/gif")
 MAX_OBSERVED_RESOURCE_HOSTS = 64
+
+# One browser observation can include performance logs, whose reads are destructive on some
+# Selenium backends.  Adapter hooks therefore share the same in-flight evidence through a
+# context-local cache; concurrent jobs never see each other's browser or candidate data.
+_ACTIVE_COLLECTION: ContextVar[dict[tuple[int, str], dict[str, Any]] | None] = ContextVar(
+    "chapter_source_active_collection", default=None
+)
 
 # Interactive challenges we refuse to work around. Detecting one is a terminal, honest stop.
 CHALLENGE_MARKERS = (
@@ -91,7 +98,7 @@ class ChapterSourceAdapter(Protocol):
     def collect_network_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]: ...
     def collect_json_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]: ...
     def cluster_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
-    def score_cluster(self, cluster: Any) -> float: ...
+    def score_cluster(self, cluster: Any) -> float | None: ...
     def build_page_manifest(self, cluster: Any) -> dict[str, Any]: ...
     def build_command(self, job: dict[str, Any]) -> dict[str, str]: ...
     def sanitize_error(self, error: BaseException) -> str: ...
@@ -238,8 +245,9 @@ class BaseAdapter:
             raise SourceError(UNSUPPORTED_SOURCE, "not_a_chapter_url")
 
     def validate_redirect(self, final_url: str) -> None:
-        """A redirect must land somewhere this adapter still claims."""
+        """A browser redirect must still be an allowed reader *chapter* destination."""
         self.validate_navigation_url(final_url)
+        self.validate_path(final_url)
 
     def authorize_related_url(self, url: str) -> None:
         """Known adapters only authorise resources on their registered hosts."""
@@ -309,14 +317,50 @@ class BaseAdapter:
             page_url = str(getattr(browser, "current_url", "") or "")
         if browser is None or not page_url:
             raise SourceError(SOURCE_NOT_READY, "analysis_context")
+        self.validate_redirect(page_url)
         self.wait_until_ready(browser)
-        from universal_chapter_adapter import analyse_driver
+        # Collect exactly once, then route that immutable observation through the public
+        # adapter hooks.  This makes an adapter override effective without re-reading the
+        # performance log three times (which can otherwise consume it on the first call).
+        collected = self._collected_payload(browser, page_url)
+        key = (id(browser), page_url)
+        token = _ACTIVE_COLLECTION.set({key: collected})
+        try:
+            dom = self.collect_dom_candidates(browser, page_url=page_url)
+            network = self.collect_network_candidates(browser, page_url=page_url)
+            json_candidates = self.collect_json_candidates(browser, page_url=page_url)
+            raw_candidates = self.cluster_candidates([
+                *list(dom or ()), *list(network or ()), *list(json_candidates or ()),
+            ])
+            if not isinstance(raw_candidates, (list, tuple)):
+                raise SourceError(SOURCE_NOT_READY, "invalid_cluster_candidates")
+            from universal_chapter_adapter import analyse_collected
 
-        return analyse_driver(browser, page_url, self, profile=profile,
-                              extra_warnings=extra_warnings)
+            analysis = analyse_collected(
+                page_url,
+                {
+                    **collected,
+                    "candidates": list(raw_candidates),
+                    "dom_candidates": list(dom or ()),
+                    "network_candidates": list(network or ()),
+                    "json_candidates": list(json_candidates or ()),
+                },
+                self,
+                profile=profile,
+                extra_warnings=extra_warnings,
+                cluster_score=self.score_cluster,
+            )
+            analysis.page_manifest = self.build_page_manifest(analysis.accepted)
+            return analysis
+        finally:
+            _ACTIVE_COLLECTION.reset(token)
 
     @staticmethod
     def _collected_payload(browser: Any, page_url: str) -> dict[str, Any]:
+        active = _ACTIVE_COLLECTION.get()
+        cached = (active or {}).get((id(browser), page_url))
+        if cached is not None:
+            return cached
         from universal_chapter_adapter import collect_from_driver
 
         return collect_from_driver(
@@ -338,12 +382,9 @@ class BaseAdapter:
         """Compatibility hook for a specific adapter with its own deterministic grouping."""
         return list(candidates)
 
-    def score_cluster(self, cluster: Any) -> float:
-        """Compatibility hook for calibrated site-specific clusters."""
-        try:
-            return float(getattr(cluster, "score", 0.0))
-        except (TypeError, ValueError):
-            return 0.0
+    def score_cluster(self, cluster: Any) -> float | None:
+        """Optional calibrated site-specific score; ``None`` keeps generic scoring."""
+        return None
 
     def build_page_manifest(self, cluster: Any) -> dict[str, Any]:
         """Produce an opaque selection manifest, never raw candidate URLs."""
@@ -422,6 +463,11 @@ class VortexScansAdapter(BaseAdapter):
                 ".reader-area img"
             ),
         )
+        # Each selected adapter is a fresh instance, so these run-local grants cannot leak
+        # across jobs.  A public CDN is never a selectable reader host; it becomes fetchable
+        # only after this browser observation places it in the accepted reader cluster.
+        self._observed_resource_hosts: set[str] = set()
+        self._authorized_resource_hosts: set[str] = set()
 
     @staticmethod
     def _has_exact_host(url: str) -> bool:
@@ -438,7 +484,13 @@ class VortexScansAdapter(BaseAdapter):
             raise UnsupportedSource(raw_host_of(url))
 
     def validate_url(self, url: str) -> None:
-        self._validate_exact_vortex_url(url)
+        host = raw_host_of(url)
+        if self._has_exact_host(url):
+            self._validate_exact_vortex_url(url)
+            return
+        self._validate_public_url(url)
+        if host not in self._authorized_resource_hosts:
+            raise UnsupportedSource(host)
 
     def validate_navigation_url(self, url: str) -> None:
         self._validate_exact_vortex_url(url)
@@ -451,6 +503,23 @@ class VortexScansAdapter(BaseAdapter):
             path = ""
         if not _VORTEXSCANS_CHAPTER_PATH.fullmatch(path):
             raise SourceError(UNSUPPORTED_SOURCE, "not_a_chapter_url")
+
+    def validate_observed_url(self, url: str) -> None:
+        """Validate an observed public asset without granting it download authority yet."""
+        host = raw_host_of(url)
+        self._validate_public_url(url)
+        if host:
+            if (host not in self._observed_resource_hosts
+                    and len(self._observed_resource_hosts) >= MAX_OBSERVED_RESOURCE_HOSTS):
+                raise SourceError(UNSUPPORTED_SOURCE, "too_many_resource_hosts")
+            self._observed_resource_hosts.add(host)
+
+    def authorize_related_url(self, url: str) -> None:
+        host = raw_host_of(url)
+        self._validate_public_url(url)
+        if host not in self._observed_resource_hosts:
+            raise SourceError(UNSUPPORTED_SOURCE, "unobserved_resource_host")
+        self._authorized_resource_hosts.add(host)
 
 
 class UniversalChapterAdapter(BaseAdapter):
@@ -553,6 +622,10 @@ ADAPTERS: tuple[BaseAdapter, ...] = (WEBTOONS, VORTEXSCANS)
 def select_adapter(url: str) -> BaseAdapter:
     for adapter in ADAPTERS:
         if adapter.supports(url):
+            # Vortex keeps ephemeral, per-run CDN grants.  Returning a fresh adapter avoids
+            # cross-job host authority without changing the stable registry/prototype API.
+            if isinstance(adapter, VortexScansAdapter):
+                return VortexScansAdapter()
             return adapter
     return UniversalChapterAdapter(url)
 

@@ -171,6 +171,7 @@ class ManifestAndDiscoveryTests(unittest.TestCase):
             manual_review_count=0,
             rejected_count=0,
             pdf_path=pdf_path,
+            slug="romance_run",
             series_slug=series_slug_from_url(_ROMANCE_URL),
             episode_number=episode_number_from_url(_ROMANCE_URL),
         )
@@ -187,10 +188,95 @@ class ManifestAndDiscoveryTests(unittest.TestCase):
             )
 
             self.assertEqual(manifest["pdf_filename"], name)
+            self.assertEqual(manifest["slug"], "romance_run")
             self.assertEqual(manifest["episode_number"], "85")
             self.assertTrue(manifest["series_slug"])
             # The schema still validates with the new optional fields present.
             self.assertTrue(load_verified_run_manifest(root))
+
+    def test_manifest_keeps_only_scalar_source_provenance(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            pdf = root / "chapter.pdf"
+            pdf.write_bytes(b"%PDF-1.4\n")
+            # Recreate through the public builder with an untrusted downloader-shaped
+            # selection. Candidate identifiers and URL-like values must not reach the
+            # canonical discovery manifest.
+            manifest = build_run_manifest(
+                run_id="r1",
+                created_at="2026-01-01T00:00:00+00:00",
+                source_url=_ROMANCE_URL,
+                commit_hash="abc123",
+                branch="main",
+                pipeline_version="v1",
+                model="m",
+                final_status="review_required",
+                quality_passed=False,
+                manual_review_count=0,
+                rejected_count=0,
+                pdf_path=str(pdf),
+                source_type="url",
+                adapter_name="universal",
+                adapter_version="v1",
+                transport_name="browser_session",
+                source_provenance={
+                    "source_type": "url",
+                    "adapter_name": "universal",
+                    "adapter_version": "v1",
+                    "transport_name": "browser_session",
+                    "score": 0.72,
+                    "candidate_count": 8,
+                    "accepted_page_count": 5,
+                    "rejected_page_count": 3,
+                    "outcome": "review_required_medium_confidence",
+                    "selection": {
+                        "automatic": False,
+                        "selected_page_count": 4,
+                        "accepted_candidate_count": 5,
+                        "manual_subset": True,
+                        "manual_reordered": True,
+                        "reason_code": "review_required_medium_confidence",
+                        "candidate_ids": ["opaque-page-id"],
+                        "source_url": "https://example.invalid/private?token=secret",
+                    },
+                },
+            )
+            provenance = manifest["source_provenance"]
+            self.assertEqual(provenance["score"], 0.72)
+            self.assertEqual(provenance["candidate_count"], 8)
+            self.assertEqual(provenance["accepted_page_count"], 5)
+            self.assertEqual(provenance["rejected_page_count"], 3)
+            self.assertEqual(provenance["selection"]["mode"], "manual")
+            self.assertEqual(provenance["selection"]["selected_page_count"], 4)
+            serialized = json.dumps(manifest)
+            self.assertNotIn("opaque-page-id", serialized)
+            self.assertNotIn("example.invalid", serialized)
+
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertTrue(load_verified_run_manifest(root))
+
+    def test_manifest_rejects_non_scalar_source_provenance(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            pdf = root / "chapter.pdf"
+            pdf.write_bytes(b"%PDF-1.4\n")
+            manifest = self._manifest(str(pdf))
+            manifest["source_provenance"] = {
+                "source_type": "url",
+                "selection": {"candidate_ids": ["opaque-page-id"]},
+            }
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertFalse(load_verified_run_manifest(root))
+
+    def test_current_manifest_requires_a_safe_run_slug(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            pdf = root / "chapter.pdf"
+            pdf.write_bytes(b"%PDF-1.4\n")
+            manifest = self._manifest(str(pdf))
+            manifest["slug"] = "../../outside"
+            (root / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertFalse(load_verified_run_manifest(root))
 
     def test_ui_opens_the_pdf_recorded_by_the_run(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -220,7 +306,10 @@ class ManifestAndDiscoveryTests(unittest.TestCase):
             legacy_pdf = root / "capitulo_completo_traduzido.pdf"
             legacy_pdf.write_bytes(b"%PDF-1.4\n")
             manifest = self._manifest(str(legacy_pdf))
-            for field in ("pdf_filename", "series_slug", "episode_number"):
+            # Version-2 manifests did not carry the output-run slug.  They remain
+            # readable as legacy verified outputs, while version 3 requires it.
+            manifest["manifest_version"] = 2
+            for field in ("pdf_filename", "slug", "series_slug", "episode_number"):
                 manifest.pop(field, None)
             (root / MANIFEST_FILENAME).write_text(
                 json.dumps(manifest), encoding="utf-8"

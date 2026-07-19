@@ -8,9 +8,11 @@ paywall. O resultado é uma decisão codificada e metadados sanitizados para a U
 URLs, cookies, query strings, headers privados e corpos de resposta não entram no manifesto
 público.
 
-Entrada por pasta local é uma fonte distinta e deve ser resolvida antes de qualquer URL quando
-esse adapter estiver habilitado. Este documento descreve o registro HTTP(S) atual; ele não
-declara que uma pasta local já seja aceita por esse registro.
+Entrada por pasta local é uma fonte distinta da resolução HTTP(S). A UI e a CLI escolhem
+exatamente uma origem — URL pública **ou** pasta local — antes de criar o job. A pasta passa por
+`LocalFolderChapterAdapter`, política de caminhos e snapshot interno; ela não é convertida em
+`file://`, não entra no registro de hosts HTTP e não abre navegador. Veja
+[Entrada por pasta local](LOCAL_FOLDER_INPUT.md).
 
 ## Contrato v1
 
@@ -33,12 +35,13 @@ download. O transporte revalida cada URL efetivamente buscada.
 
 ## Resolução
 
-Para URLs HTTP(S), a resolução é determinística:
+Para uma submissão, a resolução é determinística:
 
-1. adapter específico registrado que declara `supports(url)`;
-2. `UniversalChapterAdapter` para URL pública não reclamada;
-3. estado codificado de bloqueio ou revisão quando URL, cobertura ou confiança não forem
-   aceitáveis.
+1. fonte local declarada: validação/snapshot por `LocalFolderChapterAdapter`;
+2. URL: adapter específico registrado que declara `supports(url)`;
+3. URL pública não reclamada: `UniversalChapterAdapter`;
+4. estado codificado de bloqueio ou revisão quando caminho, URL, cobertura ou confiança não
+   forem aceitáveis.
 
 Um adapter específico sempre vence o fallback universal. A presença de um host no fallback não
 o transforma em fonte homologada nem cria allowlist global.
@@ -59,13 +62,29 @@ herméticas correspondentes.
   são tratados como Vortex;
 - aceita somente path genérico de capítulo no formato `/series/<slug>/chapter-<slug>`;
 - possui seletores próprios, sem reutilizar seletores do Webtoons;
-- não autoriza CDN externo apenas porque ele foi visto na página;
+- nunca aceita CDN externo como URL de capítulo ou destino de navegação;
+- um host de recurso público só pode ser autorizado na instância atual depois de observado e
+  validado; essa autorização não vira allowlist global nem vaza para outro job;
 - aplica as mesmas validações de URL, redirect, MIME, bytes e limites dos transportes.
 
-Essa política falha fechada. Um reader que dependa de host de imagem não verificado, paginação
-interativa, challenge, autenticação ou estrutura não observável pode parar com estado controlado
-em vez de produzir capítulo parcial. Compatibilidade real requer smoke autorizado separado; os
-testes padrão usam somente fixtures e DNS falso.
+Essa política falha fechada. A paginação genérica limitada não é aplicada a adapters específicos:
+um reader Vortex que dependa de host de imagem não verificado, paginação própria/interativa,
+challenge, autenticação ou estrutura não observável pode parar com estado controlado em vez de
+produzir capítulo parcial. Compatibilidade real requer smoke autorizado separado; os
+testes padrão usam somente fixtures, drivers/sessões falsos e DNS sintético.
+
+### Pasta local
+
+LocalFolderChapterAdapter é específico, mas não herda o contrato de URL: ele aceita uma pasta
+absoluta sob raiz permitida, valida arquivos diretos e gera um snapshot de páginas lógicas.
+O job e o output recebem source_type=local_folder, adapter/versão, contagens, fingerprint e
+referência de snapshot opaca — não o caminho original. A interface local só aceita esse tipo de
+fonte quando o bind e o cliente são loopback.
+
+As páginas já fornecidas como unidades completas marcam logical_pages=true, portanto não passam
+por reconstrução Smart Split. A materialização revalida manifesto, hash e bytes antes de copiar
+as páginas geradas para output/. A entrada é offline quanto à aquisição; OCR/tradução de uma
+execução real continuam sujeitos à configuração normal do pipeline.
 
 ## UniversalChapterAdapter
 
@@ -85,9 +104,19 @@ explicável.
 | `unsupported_cross_origin_reader` | Iframe externo com evidência de reader não pode ser inspecionado sem contorno. |
 
 Score alto é evidência de agrupamento, não prova de direito de acesso, estabilidade, OCR ou
-qualidade de tradução. O fallback não clica genericamente em next, load more, anúncios,
-carrosséis ou sliders. Esses padrões precisam de adapter específico com controles de identidade
-de capítulo, ciclo, quantidade e ordem.
+qualidade de tradução. Para o fallback universal há uma única forma limitada de paginação:
+ele pode seguir um `href` explícito, visível e não desabilitado apenas quando origem e path são
+idênticos, os demais parâmetros de query são idênticos e uma chave convencional de página numérica
+avança exatamente de N para N+1. A navegação usa a URL já validada, nunca `click()` nem handler
+da página; é limitada a 24 avanços e 45 segundos, além dos limites normais.
+
+Cada superfície adicional recebe scroll, análise e manifesto próprios antes de os candidatos
+aceitos serem agregados. Link ambíguo, query não comprovada, ciclo, redirect, timeout, scroll
+incompleto ou análise posterior inutilizável gera `pagination_incomplete`; esse sinal de
+cobertura bloqueia a seleção, inclusive pelo caminho de revisão manual, e não vira um download
+parcial. O fallback continua sem acionar `load more`,
+botões sem `href`, anúncios, carrosséis ou sliders. Esses padrões precisam de adapter específico
+com controles de identidade de capítulo, ciclo, quantidade e ordem.
 
 ## Evidência e privacidade
 
@@ -102,6 +131,18 @@ Persistem apenas host, fingerprint do path, `Content-Type`, `Content-Length` lim
 ordem, initiator e tempo relativo. Query strings, cookies, `Authorization`, JWTs, request IDs,
 headers privados e corpo não são persistidos. JSON pequeno e reconhecido pode ser analisado em
 memória para extrair páginas; ele é descartado depois e nunca é executado como JavaScript.
+
+Quando a análise precisa de revisão humana, uma imagem DOM visível que o navegador já carregou
+pode gerar uma prévia local opcional. A prévia é um `data:image` JPEG/PNG base64 limitado (até 64
+itens, 24.000 caracteres por item e 1.000.000 no total), nunca URL de origem; a UI valida essa
+forma e a renderiza sem fazer request remoto. Imagem disponível apenas em metadados de rede,
+imagem oculta/ausente e superfície CORS/tainted permanecem sem prévia, mas preservam os metadados
+seguros do candidato para a decisão humana. A prévia não altera score, seleção ou download.
+
+Enquanto o mesmo job está em `awaiting_source_review`, a UI preserva o DOM da revisão entre
+pollings, para não restaurar páginas excluídas nem desfazer a ordem manual na aba atual. A
+confirmação continua a enviar somente IDs opacos; recarregar a página ou mudar de job não é um
+mecanismo de persistência dessa edição local.
 
 Iframe cross-origin decorativo gera diagnóstico sem ser atravessado. Quando a moldura tem
 evidência de reader, o resultado é `unsupported_cross_origin_reader`; o sistema não usa uma
@@ -124,5 +165,5 @@ subrecursos antes da análise e uma conexão HTTP comum ainda possui janela DNS 
 aceite URLs arbitrárias precisa de proxy/firewall de egress ou política de rede equivalente; sem
 isso, use somente fontes confiáveis e autorizadas.
 
-Consulte também [Adaptador universal](UNIVERSAL_CHAPTER_ADAPTER.md) e
-[Transportes de download](DOWNLOAD_TRANSPORTS.md).
+Consulte também [Adaptador universal](UNIVERSAL_CHAPTER_ADAPTER.md),
+[Transportes de download](DOWNLOAD_TRANSPORTS.md) e [Segurança](SECURITY.md).

@@ -96,6 +96,8 @@ def public_summary(resolved: Path, analysis: Any) -> dict[str, Any]:
         "folder_name": display_name(resolved),
         "input_root_fingerprint": folder_fingerprint(resolved),
         "input_count": accepted,
+        "candidate_count": accepted,
+        "source_score": 1.0,
         "accepted_count": accepted,
         "rejected_count": 0,
         "duplicate_count": 0,
@@ -107,15 +109,25 @@ def public_summary(resolved: Path, analysis: Any) -> dict[str, Any]:
 
 def job_fields(summary: dict[str, Any], snapshot_ref: str) -> dict[str, Any]:
     """The subset persisted on the job row."""
+    # A stored local-folder summary from an older UI/test fixture predates the explicit
+    # score/candidate columns.  The local adapter is deterministic: every accepted input
+    # is a candidate and its successful validation has full confidence.  Preserve that
+    # invariant without making an old, path-free summary impossible to resume.
+    accepted_count = int(summary.get("accepted_count", summary.get("input_count", 0)) or 0)
+    candidate_count = int(summary.get("candidate_count", accepted_count) or 0)
+    source_score = summary.get("source_score", 1.0)
     return {
         "source_type": SOURCE_TYPE_LOCAL_FOLDER,
         "adapter_name": summary["adapter_name"],
         "adapter_version": summary["adapter_version"],
+        "transport_name": "local_snapshot",
+        "source_score": source_score,
+        "candidate_count": candidate_count,
         "input_root_fingerprint": summary["input_root_fingerprint"],
         "snapshot_ref": snapshot_ref,
         "logical_pages": 1 if summary.get("logical_pages") else 0,
         "input_count": summary["input_count"],
-        "accepted_count": summary["accepted_count"],
+        "accepted_count": accepted_count,
         "rejected_count": summary["rejected_count"],
         "duplicate_count": summary["duplicate_count"],
         "total_size_bytes": summary["total_size_bytes"],

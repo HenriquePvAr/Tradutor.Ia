@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ from local_folder_source import (
     LOCAL_FOLDER_ADAPTER_NAME,
     LOCAL_FOLDER_ADAPTER_VERSION,
     LOCAL_FOLDER_MANIFEST_VERSION,
+    HARD_MAX_BYTES_PER_FILE,
+    HARD_MAX_TOTAL_BYTES,
     LOCAL_INPUT_LIMIT,
     LOCAL_INVALID_IMAGE,
     LOCAL_PATH_NOT_ALLOWED,
@@ -116,7 +119,11 @@ def materialize_snapshot(
         source = (manifest_file.parent / filename).resolve(strict=True)
         if source.parent != manifest_file.parent or _is_reparse(source):
             raise LocalFolderError(LOCAL_REPARSE_POINT, "snapshot_page_reparse")
-        data = _read_bounded(source, expected_size=item.get("byte_size"))
+        data = _read_bounded(
+            source,
+            expected_size=item.get("byte_size"),
+            remaining_total=HARD_MAX_TOTAL_BYTES - total_bytes,
+        )
         validated = validate_image_bytes(
             data, min_width=480, min_height=1, min_bytes=12,
         )
@@ -125,6 +132,8 @@ def materialize_snapshot(
         if validated.fmt != str(item.get("format") or ""):
             raise LocalFolderError(LOCAL_INVALID_IMAGE, "snapshot_format_mismatch")
         total_bytes += len(data)
+        if total_bytes > HARD_MAX_TOTAL_BYTES:
+            raise LocalFolderError(LOCAL_INPUT_LIMIT, "max_total_bytes")
         destination = destination_root / f"{index:03d}{source.suffix.casefold()}"
         _atomic_write(destination, data)
         paths.append(str(destination))
@@ -214,20 +223,77 @@ def _validate_manifest(payload: dict[str, Any]) -> str:
     return local_source_reference(payload.get("source_fingerprint"))
 
 
-def _read_bounded(path: Path, *, expected_size: object) -> bytes:
+def _read_bounded(path: Path, *, expected_size: object, remaining_total: int) -> bytes:
+    """Read a snapshot page with the same hard caps as the original intake.
+
+    A snapshot is an internal workspace, not an immutable filesystem primitive.  It can be
+    changed between initial validation and a resumed job, so do not trust its manifest size or
+    call ``Path.read_bytes()``.  The descriptor identity, byte count and aggregate chapter
+    budget are all checked while reading before a destination page is created.
+    """
+
     try:
         declared = int(expected_size)
     except (TypeError, ValueError) as exc:
         raise LocalFolderError(LOCAL_WORKSPACE_INVALID, "snapshot_size_invalid") from exc
-    if declared < 12 or declared > 32 * 1024 * 1024:
+    if declared < 12 or declared > HARD_MAX_BYTES_PER_FILE:
         raise LocalFolderError(LOCAL_INPUT_LIMIT, "max_bytes_per_file")
+    if remaining_total < 0 or declared > remaining_total:
+        raise LocalFolderError(LOCAL_INPUT_LIMIT, "max_total_bytes")
     try:
-        data = path.read_bytes()
+        before = os.lstat(path)
     except OSError as exc:
         raise LocalFolderError(LOCAL_WORKSPACE_INVALID, "snapshot_page_unreadable") from exc
-    if len(data) != declared:
+    if _is_reparse(path) or not stat.S_ISREG(before.st_mode):
+        raise LocalFolderError(LOCAL_REPARSE_POINT, "snapshot_page_reparse")
+    if before.st_size != declared:
         raise LocalFolderError(LOCAL_INVALID_IMAGE, "snapshot_size_mismatch")
-    return data
+    flags = os.O_RDONLY | int(getattr(os, "O_BINARY", 0) or 0)
+    flags |= int(getattr(os, "O_NOFOLLOW", 0) or 0)
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        descriptor = os.open(str(path), flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or _file_identity(opened) != _file_identity(before):
+                raise LocalFolderError(LOCAL_INVALID_IMAGE, "snapshot_changed_before_read")
+            while total < declared:
+                chunk = handle.read(min(1024 * 1024, declared - total))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > remaining_total:
+                    raise LocalFolderError(LOCAL_INPUT_LIMIT, "max_total_bytes")
+                chunks.append(chunk)
+            # Probe exactly one byte: this detects a race/growth without reading an unbounded
+            # payload into memory.
+            if handle.read(1):
+                raise LocalFolderError(LOCAL_INVALID_IMAGE, "snapshot_size_mismatch")
+    except LocalFolderError:
+        raise
+    except OSError as exc:
+        raise LocalFolderError(LOCAL_WORKSPACE_INVALID, "snapshot_page_unreadable") from exc
+    try:
+        after = os.lstat(path)
+    except OSError as exc:
+        raise LocalFolderError(LOCAL_INVALID_IMAGE, "snapshot_changed_during_read") from exc
+    if _is_reparse(path) or not stat.S_ISREG(after.st_mode):
+        raise LocalFolderError(LOCAL_REPARSE_POINT, "snapshot_page_reparse")
+    if _file_identity(before) != _file_identity(after):
+        raise LocalFolderError(LOCAL_INVALID_IMAGE, "snapshot_changed_during_read")
+    if total != declared:
+        raise LocalFolderError(LOCAL_INVALID_IMAGE, "snapshot_size_mismatch")
+    return b"".join(chunks)
+
+
+def _file_identity(entry: os.stat_result) -> tuple[int, int, int, int]:
+    return (
+        int(getattr(entry, "st_dev", 0) or 0),
+        int(getattr(entry, "st_ino", 0) or 0),
+        int(getattr(entry, "st_size", 0) or 0),
+        int(getattr(entry, "st_mtime_ns", int(entry.st_mtime * 1_000_000_000))),
+    )
 
 
 def _is_reparse(path: Path) -> bool:

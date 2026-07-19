@@ -55,8 +55,10 @@ class HostTests(unittest.TestCase):
 class VortexScansAdapterTests(unittest.TestCase):
     def test_literal_host_and_valid_chapter_path_select_specific_adapter(self):
         adapter = select_adapter(VORTEX_CHAPTER_URL)
-        self.assertIs(adapter, VORTEXSCANS)
         self.assertIsInstance(adapter, VortexScansAdapter)
+        # The registry retains a stable prototype, but every run receives fresh ephemeral
+        # CDN authority so a previous chapter cannot leak resource-host grants.
+        self.assertIsNot(adapter, VORTEXSCANS)
         self.assertEqual(adapter.name, "vortexscans")
         self.assertEqual(adapter.adapter_version, "1")
         with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
@@ -90,6 +92,20 @@ class VortexScansAdapterTests(unittest.TestCase):
         self.assertIn("reading-content", selectors["container"])
         self.assertIn("reading-content", selectors["image"])
         self.assertNotIn("_imageList", selectors["image"])
+
+    def test_observed_vortex_cdn_requires_selected_run_authorization(self):
+        cdn = "https://cdn.reader-assets.example.test/pages/001.webp"
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            adapter = select_adapter(VORTEX_CHAPTER_URL)
+            adapter.validate_url(VORTEX_CHAPTER_URL)
+            with self.assertRaises(SourceError):
+                adapter.validate_url(cdn)
+            adapter.validate_observed_url(cdn)
+            adapter.authorize_related_url(cdn)
+            adapter.validate_url(cdn)
+            # A separately selected chapter gets a fresh adapter and no inherited CDN grant.
+            with self.assertRaises(SourceError):
+                select_adapter(VORTEX_CHAPTER_URL).validate_url(cdn)
 
 
 class SsrfTests(unittest.TestCase):
@@ -147,6 +163,12 @@ class SsrfTests(unittest.TestCase):
             for bad in ("https://elsewhere.example/x", "http://127.0.0.1/x"):
                 with self.assertRaises(SourceError, msg=bad):
                     WEBTOONS.validate_redirect(bad)
+
+    def test_specific_redirect_cannot_fall_back_to_a_series_or_home_page(self):
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            with self.assertRaises(SourceError) as ctx:
+                VORTEXSCANS.validate_redirect("https://vortexscans.org/series/demo-series")
+        self.assertEqual(ctx.exception.detail, "not_a_chapter_url")
 
 
 class PathTests(unittest.TestCase):

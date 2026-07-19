@@ -34,6 +34,7 @@ from universal_chapter_adapter import (
     _COLLECTION_SCRIPT,
     analyse_candidates,
     analyse_driver,
+    attach_review_thumbnails,
     collect_from_driver,
     extract_manifest_urls_from_text,
 )
@@ -105,6 +106,29 @@ class UniversalAnalysisTests(unittest.TestCase):
         self.assertLess(result.confidence, HIGH_CONFIDENCE)
         self.assertTrue(result.requires_review)
         self.assertFalse(result.can_download)
+
+    def test_review_thumbnails_are_bounded_data_uris_and_never_source_urls(self):
+        result = self.analyse([
+            page(1, container="", context="", width=800, height=1200),
+            page(2, container="", context="", width=800, height=1200),
+        ])
+        payload = "data:image/jpeg;base64," + ("QUJD" * 12)
+
+        class Driver:
+            def execute_script(self, _script, requested):
+                self.requested = requested
+                return [
+                    {"id": requested[0]["id"], "thumbnail": payload},
+                    {"id": requested[1]["id"], "thumbnail": "https://unsafe.example.test/thumb"},
+                ]
+
+        driver = Driver()
+        attached = attach_review_thumbnails(driver, result)
+        public = attached.public()
+        self.assertEqual(len(driver.requested), 2)
+        self.assertEqual(public["accepted"][0]["thumbnail"], payload)
+        self.assertNotIn("thumbnail", public["accepted"][1])
+        self.assertNotIn("page-001.webp", str(public))
 
     def test_scattered_small_images_are_low_confidence(self):
         result = self.analyse([
@@ -237,6 +261,24 @@ class UniversalAnalysisTests(unittest.TestCase):
             "https://webtoons.com/en/x/viewer", candidates, adapter=WEBTOONS,
         )
         self.assertEqual(result.outcome, SUPPORTED_SPECIFIC_ADAPTER)
+
+    def test_specific_adapter_needs_reader_evidence_not_just_one_large_image(self):
+        result = analyse_candidates(
+            "https://webtoons.com/en/x/viewer",
+            [page(1, url="https://webtoons.com/p/1.webp", container="", context="")],
+            adapter=WEBTOONS,
+        )
+        self.assertEqual(result.outcome, REVIEW_REQUIRED_MEDIUM_CONFIDENCE)
+        self.assertFalse(result.can_download)
+
+    def test_hidden_candidates_are_excluded_from_the_reader_manifest(self):
+        result = self.analyse([page(1), page(2), page(3, visible=False), page(4)])
+        self.assertFalse(any(candidate.order == 3 for candidate in result.accepted))
+        self.assertTrue(any(item["reason"] == "hidden_candidate" for item in result.discarded))
+
+    def test_vertical_order_signal_requires_dom_order_to_match_positions(self):
+        result = self.analyse([page(1, y=3000), page(2, y=1000), page(3, y=2000)])
+        self.assertNotIn("vertical_dom_order", result.clusters[0].signals)
 
     def test_unobserved_public_resource_is_not_authorized(self):
         adapter = UniversalChapterAdapter(PAGE)
@@ -408,6 +450,53 @@ class DriverCollectionTests(unittest.TestCase):
         manifest = adapter.build_page_manifest([{"id": "opaque-1"}])
         self.assertEqual(manifest["candidate_ids"], ["opaque-1"])
         self.assertEqual(manifest["adapter_version"], "1")
+
+    def test_adapter_hooks_share_one_observation_and_drive_the_analysis(self):
+        class HookAdapter(UniversalChapterAdapter):
+            def __init__(self):
+                super().__init__(PAGE)
+                self.calls = []
+
+            def collect_dom_candidates(self, browser, *, page_url=""):
+                self.calls.append("dom")
+                return [page(1), page(2), page(3)]
+
+            def collect_network_candidates(self, browser, *, page_url=""):
+                self.calls.append("network")
+                return []
+
+            def collect_json_candidates(self, browser, *, page_url=""):
+                self.calls.append("json")
+                return []
+
+            def cluster_candidates(self, candidates):
+                self.calls.append("cluster")
+                return candidates
+
+            def score_cluster(self, cluster):
+                self.calls.append("score")
+                return 0.91
+
+        class Driver:
+            current_url = PAGE
+
+            def __init__(self):
+                self.script_calls = 0
+
+            def execute_script(self, _script):
+                self.script_calls += 1
+                return {"candidates": [], "resources": [], "json": [], "warnings": [],
+                        "canvasDetected": 0, "canvasCaptured": 0, "pageText": ""}
+
+        adapter = HookAdapter()
+        driver = Driver()
+        result = adapter.analyze({"driver": driver, "page_url": PAGE})
+        self.assertEqual(driver.script_calls, 1)
+        self.assertEqual(adapter.calls, ["dom", "network", "json", "cluster", "score"])
+        self.assertEqual(result.outcome, SUPPORTED_GENERIC_HIGH_CONFIDENCE)
+        self.assertEqual(result.public()["adapter_version"], "1")
+        self.assertEqual(result.public()["page_manifest"]["candidate_ids"],
+                         [candidate.id for candidate in result.accepted])
 
 
 if __name__ == "__main__":

@@ -312,6 +312,20 @@ class BrowserSessionTests(unittest.TestCase):
         self.assertIn("session", names)
         self.assertNotIn("tracker", names)
 
+    def test_parent_domain_cookie_is_not_replayed_to_related_resource_hosts(self):
+        page = "https://reader.example.test/chapter/1"
+        driver = self._Driver([
+            {"name": "parent", "value": "secret", "domain": ".example.test"},
+            {"name": "reader", "value": "ok", "domain": "reader.example.test"},
+        ])
+        session = _Session([])
+        BrowserSessionTransport(
+            GenericImageChapterAdapter(name="reader", allowed_hosts=("reader.example.test",)),
+            driver, page, session=session,
+        )
+        names = [call.args[0] for call in session.cookies.set.call_args_list]
+        self.assertEqual(names, ["reader"])
+
     def test_cookies_are_cleared_on_close(self):
         session = _Session([])
         transport = BrowserSessionTransport(

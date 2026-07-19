@@ -41,6 +41,7 @@ from ui_helpers import (
 HEARTBEAT_SECONDS = 3.0
 CANCEL_GRACE_SECONDS = 8.0
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
+_PROVENANCE_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 
 # Set when the runner is signalled to stop (by the worker or the OS); the poll loop
 # observes it, stops the pipeline tree and interrupts the job instead of finishing.
@@ -77,6 +78,79 @@ def _safe_reason_code(value: object, fallback: str) -> str:
     return candidate if _REASON_CODE_RE.fullmatch(candidate) else fallback
 
 
+def _safe_provenance_text(value: object) -> str:
+    text = str(value or "").strip()
+    return text if _PROVENANCE_TEXT_RE.fullmatch(text) else ""
+
+
+def _safe_provenance_count(value: object) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if 0 <= number <= 10_000 else None
+
+
+def _safe_provenance_score(value: object) -> float | None:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    return score if 0.0 <= score <= 1.0 else None
+
+
+def _fresh_source_provenance(
+    download_report: object,
+    source_analysis: object,
+) -> dict[str, object]:
+    """Project a fresh, sanitized downloader diagnosis into indexed job fields."""
+
+    report = download_report if isinstance(download_report, dict) else {}
+    analysis = source_analysis if isinstance(source_analysis, dict) else {}
+    fields: dict[str, object] = {}
+    source_type = str(report.get("source_type") or "").strip()
+    if source_type in {"url", "local_folder"}:
+        fields["source_type"] = source_type
+    for field, value in (
+        ("adapter_name", report.get("adapter_name") or analysis.get("adapter")),
+        ("adapter_version", report.get("adapter_version") or analysis.get("adapter_version")),
+        ("transport_name", report.get("transport_name")),
+    ):
+        safe = _safe_provenance_text(value)
+        if safe:
+            fields[field] = safe
+    score = _safe_provenance_score(analysis.get("confidence"))
+    if score is not None:
+        fields["source_score"] = score
+    candidate_count = _safe_provenance_count(analysis.get("candidate_count"))
+    if candidate_count is not None:
+        fields["candidate_count"] = candidate_count
+        fields["input_count"] = candidate_count
+    accepted_count = _safe_provenance_count(analysis.get("accepted_count"))
+    if accepted_count is not None:
+        fields["accepted_count"] = accepted_count
+    rejected_count = _safe_provenance_count(analysis.get("discarded_count"))
+    if rejected_count is not None:
+        fields["rejected_count"] = rejected_count
+    return fields
+
+
+def _safe_job_provenance(job: object) -> dict[str, object]:
+    """Return the output-safe scalar source record, never URLs/cookies/selectors."""
+
+    row = job if isinstance(job, dict) else {}
+    return {
+        "source_type": "local_folder" if row.get("source_type") == "local_folder" else "url",
+        "adapter_name": _safe_provenance_text(row.get("adapter_name")),
+        "adapter_version": _safe_provenance_text(row.get("adapter_version")),
+        "transport_name": _safe_provenance_text(row.get("transport_name")),
+        "score": _safe_provenance_score(row.get("source_score")),
+        "candidate_count": _safe_provenance_count(row.get("candidate_count")) or 0,
+        "accepted_page_count": _safe_provenance_count(row.get("accepted_count")) or 0,
+        "rejected_page_count": _safe_provenance_count(row.get("rejected_count")) or 0,
+    }
+
+
 def _write_manifest(output_dir: Path, job: dict, **updates) -> None:
     manifest = {
         "job_manifest_version": 1,
@@ -89,6 +163,7 @@ def _write_manifest(output_dir: Path, job: dict, **updates) -> None:
         "commit_hash": job.get("commit_hash"),
         "branch": job.get("branch"),
         "attempt": job.get("attempt"),
+        "source_provenance": _safe_job_provenance(job),
         "configuration": _safe_manifest_configuration(job.get("configuration") or {}),
         "created_at": job.get("created_at"),
         "started_at": job.get("started_at"),
@@ -368,6 +443,7 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         fields["source_analysis_json"] = json.dumps(fresh_analysis, ensure_ascii=False)
     if isinstance(fresh_selection, dict):
         fields["source_selection_json"] = json.dumps(fresh_selection, ensure_ascii=False)
+    fields.update(_fresh_source_provenance(download_report, fresh_analysis))
     if target == JobStatus.FAILED:
         fields["error_type"] = "source" if source_reason != "pipeline_failed" else "pipeline"
         fields["error_message"] = reason_code

@@ -10,10 +10,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from output_manifest import build_run_manifest, load_verified_run_manifest, sanitize_source_url
+from chapter_source import SourceError
 from ui_helpers import (
     ProgressSnapshot,
     build_run_command,
     derive_final_run_status,
+    find_output_artifacts,
     infer_series_details,
     mask_secrets,
     parse_progress_line,
@@ -72,6 +74,19 @@ class UIHelpersTests(unittest.TestCase):
                 full=True,
                 max_images=None,
                 use_cache=True,
+                force=True,
+                use_context=True,
+            )
+
+    def test_specific_host_series_index_cannot_be_queued_as_a_chapter(self):
+        with self.assertRaisesRegex(SourceError, "not_a_chapter_url"):
+            build_run_command(
+                url="https://www.webtoons.com/en/action/jungle-juice/list",
+                mode="fast",
+                output="not-a-chapter",
+                full=True,
+                max_images=None,
+                use_cache=False,
                 force=True,
                 use_context=True,
             )
@@ -235,6 +250,95 @@ class UIHelpersTests(unittest.TestCase):
             self.assertEqual(record["status"], "review_required")
             self.assertFalse(record["quality_gate"])
             self.assertEqual(record["pdf_path"], str(pdf_path.resolve()))
+
+    def test_manifest_only_output_is_discovered_from_its_canonical_run_record(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            chapter = output_root / "verified_only"
+            chapter.mkdir(parents=True)
+            pdf_path = chapter / "chapter.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+            manifest = build_run_manifest(
+                run_id="verified-only",
+                created_at="2026-01-01T00:00:00+00:00",
+                source_url=LOOKISM_URL,
+                commit_hash="abc123",
+                branch="feature",
+                pipeline_version="pipeline-v1",
+                model="fake",
+                final_status="review_required",
+                quality_passed=False,
+                manual_review_count=1,
+                rejected_count=0,
+                pdf_path=str(pdf_path),
+                slug="verified_only",
+            )
+            (chapter / "run_manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            store = UIHistoryStore(root / "history.json")
+            with patch("ui_history.OUTPUT_ROOT", output_root):
+                records = store.discover_outputs()
+
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["output_verification"], "manifest_verified")
+            self.assertEqual(records[0]["slug"], "verified_only")
+            self.assertEqual(records[0]["status"], "review_required")
+            self.assertFalse(records[0]["quality_gate"])
+            self.assertEqual(records[0]["pdf_path"], str(pdf_path.resolve()))
+
+    def test_verified_manifest_is_authoritative_over_a_stale_timing_report(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            chapter = output_root / "canonical_status"
+            chapter.mkdir(parents=True)
+            pdf_path = chapter / "chapter.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+            (chapter / "timing_report.json").write_text(
+                json.dumps({
+                    "ocr_engine": "rapidocr",
+                    "pdf_path": str(pdf_path),
+                    "quality_validation": {"passed": True},
+                }), encoding="utf-8"
+            )
+            manifest = build_run_manifest(
+                run_id="canonical-status",
+                created_at="2026-01-01T00:00:00+00:00",
+                source_url=LOOKISM_URL,
+                commit_hash="abc123",
+                branch="feature",
+                pipeline_version="pipeline-v1",
+                model="fake",
+                final_status="review_required",
+                quality_passed=False,
+                manual_review_count=1,
+                rejected_count=0,
+                pdf_path=str(pdf_path),
+                slug="canonical_status",
+            )
+            (chapter / "run_manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            store = UIHistoryStore(root / "history.json")
+            with patch("ui_history.OUTPUT_ROOT", output_root):
+                record = store.discover_outputs()[0]
+
+            self.assertEqual(record["status"], "review_required")
+            self.assertFalse(record["quality_gate"])
+
+    def test_output_artifacts_refuse_a_manifest_path_outside_the_run_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run = root / "run"
+            run.mkdir()
+            outside = root / "outside.pdf"
+            outside.write_bytes(b"%PDF-1.4\n")
+            (run / "run_manifest.json").write_text(
+                json.dumps({"pdf_path": str(outside)}), encoding="utf-8"
+            )
+            self.assertFalse(find_output_artifacts(run)["pdf_path"])
 
     def test_discovered_history_maps_only_valid_runner_job_id(self):
         with tempfile.TemporaryDirectory() as folder:

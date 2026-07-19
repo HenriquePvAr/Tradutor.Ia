@@ -20,6 +20,7 @@
     historyRevision: 0,
     selectedScope: 'full',
     selectedMode: 'fast',
+    selectedSourceType: 'url',
     nameDirty: false,
     outputDirty: false,
     programmingFields: false,
@@ -309,6 +310,41 @@
     input.value = value;
     appState.programmingFields = false;
   }
+  function setSourceType(value) {
+    const sourceType = value === 'local_folder' ? 'local_folder' : 'url';
+    appState.selectedSourceType = sourceType;
+    const local = sourceType === 'local_folder';
+    $$('.source-type-card').forEach(card => {
+      const selected = card.dataset.sourceType === sourceType;
+      card.classList.toggle('selected', selected);
+      card.setAttribute('aria-pressed', String(selected));
+    });
+    $('#urlSourceField').hidden = local;
+    $('#localFolderSourceField').hidden = !local;
+    $('#urlInput').disabled = local;
+    $('#localFolderInput').disabled = !local;
+    const profileToggle = $('#sourceProfileToggle');
+    if (profileToggle) {
+      profileToggle.disabled = local;
+      if (local) profileToggle.checked = false;
+    }
+    $('#urlError')?.classList.remove('show');
+    $('#localFolderError')?.classList.remove('show');
+    // The local runner consumes a complete immutable snapshot. It deliberately does not
+    // accept a UI-selected subset, so make that constraint visible before submission.
+    if (local) {
+      appState.selectedScope = 'full';
+      $$('.scope-card').forEach(card => card.classList.toggle('selected', card.dataset.scope === 'full'));
+      $('#scopeCustom')?.classList.remove('open');
+    }
+    $$('.scope-card').forEach(card => {
+      const unavailable = local && card.dataset.scope !== 'full';
+      card.classList.toggle('disabled', unavailable);
+      card.setAttribute('aria-disabled', String(unavailable));
+    });
+  }
+  $$('.source-type-card').forEach(card => card.addEventListener('click', () => setSourceType(card.dataset.sourceType)));
+  setSourceType(appState.selectedSourceType);
   $('#urlInput')?.addEventListener('input', event => {
     const value = event.target.value.trim();
     if (!/^https?:\/\//i.test(value)) return;
@@ -317,6 +353,7 @@
     if (!appState.outputDirty) programField($('#outputInput'), guess.slug);
     $('#urlError')?.classList.remove('show');
   });
+  $('#localFolderInput')?.addEventListener('input', () => $('#localFolderError')?.classList.remove('show'));
   $('#nameInput')?.addEventListener('input', () => { if (!appState.programmingFields) appState.nameDirty = true; });
   $('#outputInput')?.addEventListener('input', event => {
     if (!appState.programmingFields) appState.outputDirty = true;
@@ -334,6 +371,7 @@
     if (label) label.textContent = 'Leitura do texto';
   }));
   $$('.scope-card').forEach(card => card.addEventListener('click', () => {
+    if (appState.selectedSourceType === 'local_folder' && card.dataset.scope !== 'full') return;
     $$('.scope-card').forEach(item => item.classList.remove('selected'));
     card.classList.add('selected');
     appState.selectedScope = card.dataset.scope;
@@ -346,18 +384,26 @@
     if (event.target.checked) $('#cacheToggle').checked = false;
   });
   function validateForm() {
+    const local = appState.selectedSourceType === 'local_folder';
     const url = $('#urlInput').value.trim();
+    const folder = $('#localFolderInput').value.trim();
     let message = '';
-    if (!url) message = 'informe a URL do capítulo antes de iniciar';
-    else if (!/^https?:\/\//i.test(url)) message = 'a URL precisa começar com http:// ou https://';
-    try { if (!message) new URL(url); } catch (_) { message = 'essa URL não parece válida'; }
-    const error = $('#urlError');
+    if (local) {
+      if (!folder) message = 'informe a pasta local antes de iniciar';
+    } else {
+      if (!url) message = 'informe a URL do capítulo antes de iniciar';
+      else if (!/^https?:\/\//i.test(url)) message = 'a URL precisa começar com http:// ou https://';
+      try { if (!message) new URL(url); } catch (_) { message = 'essa URL não parece válida'; }
+    }
+    const error = local ? $('#localFolderError') : $('#urlError');
     if (message) {
       error.textContent = message;
       error.classList.add('show');
-      shake($('#urlInput'));
+      shake(local ? $('#localFolderInput') : $('#urlInput'));
       return false;
     }
+    $('#urlError')?.classList.remove('show');
+    $('#localFolderError')?.classList.remove('show');
     error.classList.remove('show');
     if (appState.selectedScope === 'custom' && Number($('#scopeCustomInput').value) <= 0) {
       shake($('#scopeCustomInput'));
@@ -367,11 +413,12 @@
     return true;
   }
   function formPayload() {
+    const local = appState.selectedSourceType === 'local_folder';
     const full = appState.selectedScope === 'full';
     const maxImages = full ? null : Number(appState.selectedScope === 'custom' ? $('#scopeCustomInput').value : appState.selectedScope);
-    const guess = guessFromUrl($('#urlInput').value.trim());
-    return {
-      url: $('#urlInput').value.trim(),
+    const guess = local ? {title: 'Capítulo local', slug: 'capitulo_local'} : guessFromUrl($('#urlInput').value.trim());
+    const payload = {
+      source_type: appState.selectedSourceType,
       chapter_name: $('#nameInput').value.trim() || guess.title,
       slug: slugify($('#outputInput').value || guess.slug),
       mode: appState.selectedMode,
@@ -381,7 +428,11 @@
       force: $('#forceToggle').checked,
       use_context: $('#ctxToggle').checked,
       open_output: $('#openToggle').checked,
+      create_source_profile: !local && $('#sourceProfileToggle').checked,
     };
+    if (local) payload.local_folder = $('#localFolderInput').value.trim();
+    else payload.url = $('#urlInput').value.trim();
+    return payload;
   }
   function resetRunPreview() {
     const summary = $('#runSummary');
@@ -433,7 +484,11 @@
       const awaitingReview = Boolean(result.awaiting_source_review);
       setRunControls(true, awaitingReview);
       if (awaitingReview) {
-        renderSourceReview({id: result.job_id, source_analysis: result.analysis || {}});
+        renderSourceReview({
+          id: result.job_id,
+          source_analysis: result.analysis || {},
+          source_provenance: result.source_provenance || {},
+        });
         showToast('Revise as páginas encontradas antes de iniciar o OCR.', 'warn');
       } else if (result && result.worker && result.worker.online === false) {
         showToast('Job enfileirado, mas o worker não está online.', 'warn');
@@ -451,9 +506,11 @@
       if (button) delete button.dataset.busy;
     }
   }
-  async function cancelTranslation(queue = false) {
+  async function cancelTranslation(queue = false, jobId = '') {
     try {
-      await api('/api/ui/cancel', {method: 'POST', body: JSON.stringify({queue})});
+      const payload = {queue};
+      if (jobId) payload.job_id = jobId;
+      await api('/api/ui/cancel', {method: 'POST', body: JSON.stringify(payload)});
       showToast('Cancelamento solicitado.', 'warn');
     } catch (error) { showToast(error.message, 'error'); }
   }
@@ -463,8 +520,12 @@
     $('#cancelBtn').disabled = !active;
   }
   $('#startBtn')?.addEventListener('click', startTranslation);
-  $('#cancelBtn')?.addEventListener('click', () => cancelTranslation(false));
+  $('#cancelBtn')?.addEventListener('click', () => cancelTranslation(
+    false, appState.sourceReview?.job_id || ''));
   $('#urlInput')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); startTranslation(); }
+  });
+  $('#localFolderInput')?.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); startTranslation(); }
   });
 
@@ -484,7 +545,9 @@
     renderProgress(runtime.progress || {});
     renderQueue();
     appendLogs(runtime.logs || []);
-    if (awaitingReview && runtime.source_review) renderSourceReview(runtime.source_review);
+    if (awaitingReview && runtime.source_review && shouldRenderSourceReview(runtime.source_review)) {
+      renderSourceReview(runtime.source_review);
+    }
     else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
     if (runtime.latest && !awaitingReview) renderResult(runtime.latest);
     if (runtime.history_revision !== appState.historyRevision) refreshBootstrap();
@@ -533,17 +596,106 @@
       summary.innerHTML = '<strong>Revisão das páginas necessária</strong><br>O OCR ainda não foi iniciado.';
     }
   }
+  function shouldRenderSourceReview(record) {
+    const incomingJobId = String(record?.id || record?.job_id || '');
+    // Source analyses are frozen while awaiting review. Replacing this DOM on every polling
+    // tick would silently restore removed pages and discard an intentional manual reorder.
+    return !appState.sourceReview || appState.sourceReview.job_id !== incomingJobId;
+  }
   function renderSourceReview(record) {
     const analysis = record?.source_analysis || record?.analysis || {};
+    const provenance = record?.source_provenance || {};
     const panel = $('#sourceReviewPanel');
     if (!panel) return;
     const accepted = Array.isArray(analysis.accepted) ? analysis.accepted : [];
     appState.sourceReview = {job_id: record?.id || record?.job_id || '', analysis};
     panel.hidden = false;
     const warnings = Array.isArray(analysis.warnings) && analysis.warnings.length ? ` · avisos: ${analysis.warnings.map(escapeHtml).join(', ')}` : '';
-    $('#sourceReviewMeta').innerHTML = `Adapter: <strong>${escapeHtml(analysis.adapter || 'universal')}</strong> · confiança: <strong>${escapeHtml(analysis.confidence ?? '—')}</strong> · ${Number(analysis.accepted_count || accepted.length)} páginas aceitas · ${Number(analysis.discarded_count || 0)} descartadas${warnings}`;
+    const safeReason = value => /^[a-z][a-z0-9_]{0,79}$/.test(String(value || '')) ? String(value) : '';
+    const reasons = new Map();
+    (Array.isArray(analysis.discarded) ? analysis.discarded : []).forEach(item => {
+      const reason = safeReason(item?.reason);
+      if (reason) reasons.set(reason, (reasons.get(reason) || 0) + 1);
+    });
+    const reasonText = Array.from(reasons.entries()).slice(0, 6)
+      .map(([reason, count]) => `${escapeHtml(reason)} (${count})`).join(', ');
+    const outcome = safeReason(analysis.outcome);
+    const adapter = provenance.adapter_name || analysis.adapter || 'universal';
+    const version = provenance.adapter_version || analysis.adapter_version || '—';
+    const transport = provenance.transport_name || 'pending';
+    const score = provenance.score ?? analysis.confidence ?? '—';
+    const candidates = Number(provenance.candidate_count ?? analysis.candidate_count ?? accepted.length);
+    const acceptedCount = Number(provenance.accepted_page_count ?? analysis.accepted_count ?? accepted.length);
+    const rejectedCount = Number(provenance.rejected_page_count ?? analysis.discarded_count ?? 0);
+    $('#sourceReviewMeta').innerHTML = `Adapter: <strong>${escapeHtml(adapter)}</strong> v${escapeHtml(version)} · transporte: <strong>${escapeHtml(transport)}</strong> · confiança: <strong>${escapeHtml(score)}</strong> · ${candidates} candidatos · ${acceptedCount} páginas aceitas · ${rejectedCount} descartadas${outcome ? ` · resultado: <code>${escapeHtml(outcome)}</code>` : ''}${reasonText ? ` · motivos: ${reasonText}` : ''}${warnings}`;
     $('#sourceReviewList').innerHTML = accepted.length ? accepted.map((item, index) => `<label class="source-page-option"><input type="checkbox" data-source-candidate-id="${escapeAttr(item.id || '')}" checked><span><strong>Página ${escapeHtml(Number(item.order || index + 1))}</strong><span>${escapeHtml(item.width || '—')} × ${escapeHtml(item.height || '—')} · ${escapeHtml(item.origin || 'dom')}</span></span></label>`).join('') : '<div class="muted">Nenhuma página confirmável foi preservada.</div>';
+    prepareSourceReviewControls();
     $('#confirmSourcePages').disabled = !accepted.length;
+  }
+  function safeReviewThumbnail(value) {
+    const thumbnail = String(value || '').trim();
+    return /^data:image\/(?:jpeg|png);base64,[A-Za-z0-9+/=]{16,24000}$/i.test(thumbnail) ? thumbnail : '';
+  }
+  function prepareSourceReviewControls() {
+    const list = $('#sourceReviewList');
+    if (!list) return;
+    const thumbnails = new Map(
+      (appState.sourceReview?.analysis?.accepted || [])
+        .map(item => [String((item && item.id) || ''), safeReviewThumbnail((item && item.thumbnail) || '')])
+        .filter(([id, thumbnail]) => id && thumbnail));
+    $$('.source-page-option', list).forEach(option => {
+      const card = document.createElement('div');
+      card.className = 'source-page-review-card';
+      option.parentNode?.insertBefore(card, option);
+      option.classList.add('source-page-select');
+      card.appendChild(option);
+      const candidateId = option.querySelector('[data-source-candidate-id]')?.dataset.sourceCandidateId || '';
+      const thumbnail = thumbnails.get(candidateId);
+      if (thumbnail) {
+        const preview = document.createElement('img');
+        preview.className = 'source-page-thumbnail';
+        preview.src = thumbnail;
+        preview.alt = 'Miniatura local da pagina detectada';
+        preview.decoding = 'async';
+        preview.loading = 'lazy';
+        option.insertBefore(preview, option.querySelector('span'));
+      }
+      const position = document.createElement('small');
+      position.dataset.sourceReviewPosition = '';
+      option.querySelector('span')?.appendChild(position);
+      const controls = document.createElement('div');
+      controls.className = 'source-page-order-actions';
+      controls.setAttribute('aria-label', 'Ordem da pagina');
+      controls.innerHTML = '<button type="button" class="btn-ghost source-page-order-button" data-source-move="up" aria-label="Mover para cima">&uarr;</button><button type="button" class="btn-ghost source-page-order-button" data-source-move="down" aria-label="Mover para baixo">&darr;</button>';
+      card.appendChild(controls);
+    });
+    refreshSourceReviewOrder();
+  }
+  function refreshSourceReviewOrder() {
+    const entries = $$('.source-page-review-card', $('#sourceReviewList'));
+    entries.forEach((entry, index) => {
+      const position = entry.querySelector('[data-source-review-position]');
+      if (position) position.textContent = `Posicao de processamento ${index + 1}`;
+      const up = entry.querySelector('[data-source-move="up"]');
+      const down = entry.querySelector('[data-source-move="down"]');
+      if (up) up.disabled = index === 0;
+      if (down) down.disabled = index === entries.length - 1;
+    });
+  }
+  function moveSourceReviewPage(event) {
+    const button = event.target.closest('[data-source-move]');
+    if (!button) return;
+    const entry = button.closest('.source-page-review-card');
+    const list = $('#sourceReviewList');
+    if (!entry || !list) return;
+    if (button.dataset.sourceMove === 'up') {
+      const previous = entry.previousElementSibling;
+      if (previous) list.insertBefore(entry, previous);
+    } else if (button.dataset.sourceMove === 'down') {
+      const next = entry.nextElementSibling;
+      if (next) list.insertBefore(next, entry);
+    }
+    refreshSourceReviewOrder();
   }
   async function confirmSourcePages() {
     const review = appState.sourceReview;
@@ -562,8 +714,38 @@
       if (button) button.disabled = false;
     }
   }
+  async function retrySourceReview() {
+    const review = appState.sourceReview;
+    if (!review?.job_id) return;
+    const button = $('#retrySourceReview');
+    if (button) button.disabled = true;
+    try {
+      const result = await api('/api/ui/source/retry', {
+        method: 'POST', body: JSON.stringify({job_id: review.job_id}),
+      });
+      if (!result?.ok) throw new Error(result?.reason_code || 'A nova análise foi recusada.');
+      appState.sourceReview = null;
+      if (result.awaiting_source_review) {
+        renderSourceReview({
+          id: result.job_id,
+          source_analysis: result.analysis || {},
+          source_provenance: result.source_provenance || {},
+        });
+        showToast('Análise refeita. Revise as páginas novamente.', 'warn');
+      } else {
+        $('#sourceReviewPanel').hidden = true;
+        showToast('Análise refeita e processamento enfileirado.', 'ok');
+      }
+    } catch (error) {
+      showToast(error.message || 'Não foi possível repetir a análise.', 'error');
+      if (button) button.disabled = false;
+    }
+  }
   $('#confirmSourcePages')?.addEventListener('click', confirmSourcePages);
-  $('#cancelSourceReview')?.addEventListener('click', () => cancelTranslation(false));
+  $('#retrySourceReview')?.addEventListener('click', retrySourceReview);
+  $('#sourceReviewList')?.addEventListener('click', moveSourceReviewPage);
+  $('#cancelSourceReview')?.addEventListener('click', () => cancelTranslation(
+    false, appState.sourceReview?.job_id || ''));
   function renderResult(record) {
     const summary = $('#runSummary');
     if (!record || record.status === 'running' || record.status === 'staging' || record.status === 'awaiting_source_review') return;
@@ -729,8 +911,13 @@
       <div class="hm-actions"><a class="btn-ghost" href="${pdfUrl}" target="_blank" rel="noopener">Abrir PDF</a></div></div>`;
   }
   function loadRecordIntoForm(record) {
+    const local = record.source_type === 'local_folder';
+    setSourceType(local ? 'local_folder' : 'url');
     appState.programmingFields = true;
-    $('#urlInput').value = record.url || '';
+    // A persisted local job has only an opaque snapshot reference. Never reconstruct or
+    // display a source filesystem path when loading history back into the form.
+    $('#urlInput').value = local ? '' : (record.url || '');
+    $('#localFolderInput').value = '';
     $('#nameInput').value = record.chapter_name || '';
     $('#outputInput').value = record.slug || '';
     appState.programmingFields = false;
@@ -738,7 +925,7 @@
     appState.outputDirty = true;
     appState.selectedMode = record.mode === 'quality' ? 'quality' : 'fast';
     $$('.choice-card').forEach(card => card.classList.toggle('selected', card.dataset.mode === appState.selectedMode));
-    const scope = record.max_images ? String(record.max_images) : 'full';
+    const scope = local ? 'full' : (record.max_images ? String(record.max_images) : 'full');
     const direct = $(`.scope-card[data-scope="${scope}"]`);
     const chosen = direct || $('.scope-card[data-scope="custom"]');
     $$('.scope-card').forEach(card => card.classList.toggle('selected', card === chosen));

@@ -14,7 +14,7 @@ import re
 import base64
 import binascii
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse
 
@@ -45,6 +45,9 @@ MAX_JSON_SCRIPTS = 12
 MAX_CDP_EVENTS = 2_000
 MAX_CDP_JSON_RESPONSES = 8
 MAX_NETWORK_METADATA = 300
+MAX_REVIEW_THUMBNAILS = 64
+MAX_REVIEW_THUMBNAIL_CHARS = 24_000
+MAX_REVIEW_THUMBNAIL_TOTAL_CHARS = 1_000_000
 # Kept in sync with the shared transport default. A reader larger than this cannot be
 # downloaded completely in one run, so it must stop before OCR rather than truncate.
 MAX_AUTOMATIC_PAGES = 400
@@ -67,6 +70,10 @@ _COLLECTOR_WARNINGS = _INCOMPLETE_COVERAGE_WARNINGS | frozenset({
     "cross_origin_iframe", "cross_origin_reader",
 })
 _SAFE_REASON_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
+_REVIEW_THUMBNAIL_RE = re.compile(
+    r"^data:image/(?:jpeg|png);base64,[A-Za-z0-9+/=]{16," + str(MAX_REVIEW_THUMBNAIL_CHARS) + r"}$",
+    re.IGNORECASE,
+)
 
 
 def _number(value: Any) -> int:
@@ -88,6 +95,13 @@ def _signed_number(value: Any, default: int = -1) -> int:
 def _safe_reason(value: Any, fallback: str = "unsafe_resource") -> str:
     reason = str(value or "").strip().casefold()
     return reason if _SAFE_REASON_RE.fullmatch(reason) else fallback
+
+
+def _safe_review_thumbnail(value: Any) -> str:
+    """Accept only a small, locally generated image data URI for review presentation."""
+
+    thumbnail = str(value or "").strip()
+    return thumbnail if _REVIEW_THUMBNAIL_RE.fullmatch(thumbnail) else ""
 
 
 def _sanitize_warnings(values: Iterable[Any]) -> list[str]:
@@ -134,6 +148,12 @@ def _safe_path_fingerprint(url: str) -> str:
     path = parsed.path or "/"
     digest = hashlib.sha256(path.encode("utf-8", "ignore")).hexdigest()[:12]
     return f"{parsed.hostname or ''}:{digest}"
+
+
+def _safe_path_pattern_fingerprint(url: str) -> str:
+    """Opaque filename-family evidence suitable for an optional local profile."""
+    pattern = _filename_sequence_key(url)
+    return f"pattern:{hashlib.sha256(pattern.encode('utf-8', 'ignore')).hexdigest()[:20]}"
 
 
 def _candidate_id(url: str, source: str, order: int) -> str:
@@ -218,6 +238,9 @@ class ImageCandidate:
     # Canvas bytes are intentionally in-memory only.  The public/SQLite diagnostic carries
     # its opaque id and dimensions, never a data URI or pixels.
     canvas_data: bytes = field(default=b"", repr=False, compare=False)
+    # A review preview is an optional, bounded data URI generated from an already-visible DOM
+    # image. It is never a remote URL and is omitted for tainted/cross-origin image surfaces.
+    review_thumbnail: str = field(default="", repr=False, compare=False)
 
     @property
     def effective_width(self) -> int:
@@ -229,17 +252,23 @@ class ImageCandidate:
 
     @property
     def public(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.id,
             "host": urlparse(self.url).hostname or "",
             "path_fingerprint": _safe_path_fingerprint(self.url),
+            "path_pattern_fingerprint": _safe_path_pattern_fingerprint(self.url),
             "source": self.source,
             "order": self.order,
             "width": self.effective_width,
             "height": self.effective_height,
             "origin": self.origin,
             "visible": self.visible,
+            "attribute_names": list(self.attribute_names),
         }
+        thumbnail = _safe_review_thumbnail(self.review_thumbnail)
+        if thumbnail:
+            payload["thumbnail"] = thumbnail
+        return payload
 
 
 @dataclass
@@ -267,6 +296,7 @@ class SourceAnalysis:
     final_host: str
     outcome: str
     confidence: float
+    adapter_version: str = ""
     accepted: list[ImageCandidate] = field(default_factory=list)
     discarded: list[dict[str, Any]] = field(default_factory=list)
     clusters: list[CandidateCluster] = field(default_factory=list)
@@ -275,6 +305,9 @@ class SourceAnalysis:
     canvas_captured: int = 0
     profile_used: bool = False
     network_metadata: list[dict[str, Any]] = field(default_factory=list)
+    # The selection is deliberately opaque: candidate ids only, never a source URL or a
+    # signed query string.  It lets jobs and review UI share the adapter-owned manifest.
+    page_manifest: dict[str, Any] = field(default_factory=dict)
 
     @property
     def requires_review(self) -> bool:
@@ -287,6 +320,7 @@ class SourceAnalysis:
     def public(self) -> dict[str, Any]:
         return {
             "adapter": self.adapter,
+            "adapter_version": self.adapter_version,
             "final_host": self.final_host,
             "outcome": self.outcome,
             "confidence": round(self.confidence, 3),
@@ -302,6 +336,7 @@ class SourceAnalysis:
             "canvas_captured": self.canvas_captured,
             "profile_used": self.profile_used,
             "network_metadata": list(self.network_metadata),
+            "page_manifest": dict(self.page_manifest),
         }
 
 
@@ -343,6 +378,8 @@ def extract_manifest_urls_from_text(text: str, *, page_url: str) -> list[str]:
 
 
 def _negative_reason(candidate: ImageCandidate) -> str:
+    if not candidate.visible:
+        return "hidden_candidate"
     haystack = " ".join((candidate.url, candidate.class_name, candidate.element_id,
                            candidate.alt, candidate.context)).casefold()
     for token in _NEGATIVE_TOKENS:
@@ -365,7 +402,7 @@ def _cluster_key(candidate: ImageCandidate) -> str:
     return f"path:{parsed.hostname or ''}:{_filename_sequence_key(candidate.url)}"
 
 
-def _cluster_score(cluster: CandidateCluster) -> tuple[float, list[str]]:
+def _cluster_score(cluster: CandidateCluster, adapter: Any | None = None) -> tuple[float, list[str]]:
     candidates = cluster.candidates
     if not candidates:
         return 0.0, []
@@ -400,13 +437,30 @@ def _cluster_score(cluster: CandidateCluster) -> tuple[float, list[str]]:
     if len(patterns) == 1:
         score += 0.07
         signals.append("sequential_path_pattern")
-    ordered = sorted(candidates, key=lambda candidate: (candidate.y, candidate.order))
-    if len(ordered) >= 2 and all(
-        ordered[index].y <= ordered[index + 1].y
-        for index in range(len(ordered) - 1)
+    # Compare DOM order to vertical placement, rather than sorting by placement first (which
+    # would make the condition tautological and artificially inflate confidence).
+    dom_ordered = sorted(candidates, key=lambda candidate: candidate.order)
+    positioned = [candidate for candidate in dom_ordered if candidate.y > 0]
+    if len(positioned) >= 2 and all(
+        positioned[index].y <= positioned[index + 1].y
+        for index in range(len(positioned) - 1)
     ):
         score += 0.06
         signals.append("vertical_dom_order")
+    if getattr(adapter, "is_specific", False):
+        # A registered adapter still needs fresh reader evidence.  Matching the reader
+        # container supplies a bounded, explainable site-specific signal; it never accepts
+        # a lone unrelated large image.
+        selector = str(getattr(adapter, "container_selector", "") or "").casefold()
+        selector_tokens = tuple(token for token in re.findall(r"[a-z][a-z0-9_-]{2,}", selector)
+                                if token not in {"img", "div", "span"})
+        if selector_tokens and any(
+            any(token in candidate.container.casefold() or token in candidate.context.casefold()
+                for token in selector_tokens)
+            for candidate in candidates
+        ):
+            score += 0.18
+            signals.append("specific_reader_container")
     if sum(candidate.network_order >= 0 for candidate in candidates) >= max(1, count // 2):
         score += 0.08
         signals.append("observed_network_resources")
@@ -526,6 +580,7 @@ def analyse_candidates(
     canvas_captured: int = 0,
     profile: dict[str, Any] | None = None,
     network_metadata: Iterable[dict[str, Any]] = (),
+    cluster_score: Any | None = None,
 ) -> SourceAnalysis:
     """Cluster candidates and return an explainable, non-fetching decision."""
     final_url = final_url or page_url
@@ -534,14 +589,18 @@ def analyse_candidates(
     safe_network_metadata = [dict(item) for item in network_metadata
                              if isinstance(item, dict)][:MAX_NETWORK_METADATA]
     if looks_like_challenge(page_text):
-        return SourceAnalysis(adapter=adapter.name, final_host=final_host,
+        return SourceAnalysis(adapter=adapter.name,
+                              adapter_version=str(getattr(adapter, "adapter_version", "") or ""),
+                              final_host=final_host,
                               outcome=CHALLENGE_REQUIRED, confidence=0.0,
                               warnings=safe_warnings, canvas_detected=canvas_detected,
                               canvas_captured=canvas_captured,
                               network_metadata=safe_network_metadata)
     lowered_text = str(page_text or "").casefold()
     if any(marker in lowered_text for marker in _AUTH_MARKERS):
-        return SourceAnalysis(adapter=adapter.name, final_host=final_host,
+        return SourceAnalysis(adapter=adapter.name,
+                              adapter_version=str(getattr(adapter, "adapter_version", "") or ""),
+                              final_host=final_host,
                               outcome=AUTHENTICATION_REQUIRED, confidence=0.0,
                               warnings=safe_warnings, canvas_detected=canvas_detected,
                               canvas_captured=canvas_captured,
@@ -549,7 +608,9 @@ def analyse_candidates(
     # A cross-origin frame which itself carries reader evidence cannot be inspected safely.
     # Do not call a partial sibling DOM high-confidence just because it happens to score well.
     if "cross_origin_reader" in safe_warnings:
-        return SourceAnalysis(adapter=adapter.name, final_host=final_host,
+        return SourceAnalysis(adapter=adapter.name,
+                              adapter_version=str(getattr(adapter, "adapter_version", "") or ""),
+                              final_host=final_host,
                               outcome=UNSUPPORTED_CROSS_ORIGIN_READER, confidence=0.0,
                               warnings=safe_warnings, canvas_detected=canvas_detected,
                               canvas_captured=canvas_captured,
@@ -618,15 +679,46 @@ def analyse_candidates(
     cluster_list = list(clusters.values())
     profile_host = str((profile or {}).get("host") or "").casefold()
     profile_key = str((profile or {}).get("container_evidence") or "")
+    profile_adapter_version = str((profile or {}).get("adapter_version") or "")
+    current_adapter_version = str(getattr(adapter, "adapter_version", "") or "")
     profile_usable = bool(
-        not adapter.is_specific and profile_host == final_host.casefold() and profile_key
+        not adapter.is_specific
+        and profile_host == final_host.casefold()
+        and profile_key
+        and str((profile or {}).get("adapter_name") or "universal") == "universal"
+        and profile_adapter_version
+        and profile_adapter_version == current_adapter_version
     )
     profile_used = False
     for cluster in cluster_list:
-        cluster.score, cluster.signals = _cluster_score(cluster)
+        cluster.score, cluster.signals = _cluster_score(cluster, adapter)
+        if callable(cluster_score):
+            try:
+                override = cluster_score(cluster)
+                if override is not None:
+                    cluster.score = max(0.0, min(1.0, float(override)))
+                    cluster.signals.append("adapter_calibrated_score")
+            except (TypeError, ValueError, OverflowError):
+                # A bad optional calibration cannot promote or crash a source analysis.
+                pass
         # A profile only annotates a cluster that independently matches fresh DOM evidence.
         # It never authorises a host, changes fresh ranking, or promotes review to automatic.
-        if profile_usable and cluster_evidence_id(cluster.key) == profile_key:
+        try:
+            expected_pages = int((profile or {}).get("expected_page_count") or 0)
+        except (TypeError, ValueError):
+            expected_pages = 0
+        expected_pattern = str((profile or {}).get("path_pattern_fingerprint") or "")
+        observed_patterns = {
+            _safe_path_pattern_fingerprint(candidate.url) for candidate in cluster.candidates
+            if candidate.url.startswith(("http://", "https://"))
+        }
+        sample_matches = (
+            expected_pages >= 1
+            and len(cluster.candidates) >= min(2, expected_pages)
+            and (not expected_pattern or expected_pattern in observed_patterns)
+        )
+        if (profile_usable and sample_matches
+                and cluster_evidence_id(cluster.key) == profile_key):
             cluster.signals.append("validated_profile_evidence")
             profile_used = True
     # Select only from fresh reader evidence. A previously saved profile can annotate the
@@ -634,7 +726,9 @@ def analyse_candidates(
     cluster_list.sort(key=lambda cluster: (-cluster.score, -len(cluster.candidates), cluster.key))
     if not cluster_list:
         outcome = UNSUPPORTED_CANVAS_READER if canvas_detected else NO_CHAPTER_IMAGES
-        return SourceAnalysis(adapter=adapter.name, final_host=final_host, outcome=outcome,
+        return SourceAnalysis(adapter=adapter.name,
+                              adapter_version=str(getattr(adapter, "adapter_version", "") or ""),
+                              final_host=final_host, outcome=outcome,
                               confidence=0.0, discarded=discarded, clusters=[],
                               warnings=safe_warnings, canvas_detected=canvas_detected,
                               canvas_captured=canvas_captured,
@@ -649,8 +743,10 @@ def analyse_candidates(
         # We know there may be pages outside the observed set. Do not offer a misleading
         # confirmation of a partial chapter and never start OCR from a truncated surface.
         outcome = INCOMPLETE_DOWNLOAD
-    elif adapter.is_specific:
+    elif adapter.is_specific and selected.score >= MEDIUM_CONFIDENCE:
         outcome = SUPPORTED_SPECIFIC_ADAPTER
+    elif adapter.is_specific and selected.score >= 0.40:
+        outcome = REVIEW_REQUIRED_MEDIUM_CONFIDENCE
     elif selected.score >= HIGH_CONFIDENCE:
         outcome = SUPPORTED_GENERIC_HIGH_CONFIDENCE
     elif selected.score >= MEDIUM_CONFIDENCE:
@@ -666,6 +762,7 @@ def analyse_candidates(
                 adapter.authorize_related_url(candidate.url)
     return SourceAnalysis(
         adapter=adapter.name,
+        adapter_version=str(getattr(adapter, "adapter_version", "") or ""),
         final_host=final_host,
         outcome=outcome,
         confidence=selected.score,
@@ -722,6 +819,92 @@ const allResources = performance.getEntriesByType('resource'); const imageResour
 each(document, 'script[type="application/json"], script#__NEXT_DATA__', el => { const text=el.textContent || ''; if (text.length <= maxJsonChars && jsonChars + text.length <= maxJsonChars && json.length < maxJsonScripts) { json.push(text); jsonChars += text.length; } else { warn('json_manifest_limit'); } }, maxJsonScripts);
 return {candidates:out, resources, json, warnings:[...new Set(warnings)], canvasDetected, canvasCaptured, pageText:(document.body && document.body.innerText || '').slice(0,20000)};
 """
+
+
+_REVIEW_THUMBNAIL_SCRIPT = r"""
+const wanted = Array.isArray(arguments[0]) ? arguments[0].slice(0, 64) : [];
+const maxChars = 24000; const maxTotalChars = 1000000; let totalChars = 0;
+const resolve = value => { try { return new URL(value || '', document.baseURI).href; } catch (_) { return ''; } };
+const imageUrls = image => {
+  const values = [image.currentSrc || '', image.src || ''];
+  for (const name of ['src', 'data-src', 'data-lazy-src', 'data-original', 'data-url', 'data-image', 'data-image-url', 'data-page']) {
+    const value = image.getAttribute && image.getAttribute(name);
+    if (value) values.push(value);
+  }
+  return values.map(resolve).filter(Boolean);
+};
+const images = Array.from(document.images || []);
+const result = [];
+for (const item of wanted) {
+  const id = String(item && item.id || ''); const url = String(item && item.url || '');
+  if (!id || !url) continue;
+  const image = images.find(candidate => imageUrls(candidate).includes(url));
+  if (!image || !image.complete || !(image.naturalWidth > 0) || !(image.naturalHeight > 0)) continue;
+  const rect = image.getBoundingClientRect ? image.getBoundingClientRect() : {width: 0, height: 0};
+  const style = getComputedStyle(image);
+  if (!(rect.width > 0) || !(rect.height > 0) || style.display === 'none' || style.visibility === 'hidden') continue;
+  const scale = Math.min(1, 160 / image.naturalWidth, 220 / image.naturalHeight);
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  try {
+    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+    const context = canvas.getContext('2d', {alpha: false}); if (!context) continue;
+    context.drawImage(image, 0, 0, width, height);
+    const thumbnail = canvas.toDataURL('image/jpeg', 0.68);
+    if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/i.test(thumbnail)
+        || thumbnail.length > maxChars || totalChars + thumbnail.length > maxTotalChars) continue;
+    totalChars += thumbnail.length; result.push({id, thumbnail});
+  } catch (_) { /* Cross-origin/tainted images intentionally have no preview. */ }
+}
+return result;
+"""
+
+
+def attach_review_thumbnails(driver: Any, analysis: SourceAnalysis) -> SourceAnalysis:
+    """Attach best-effort local previews to a review result without fetching any resource.
+
+    The script draws only images the browser has already loaded. Cross-origin canvas taint,
+    missing/hidden DOM images and any malformed return simply leave a candidate without a
+    thumbnail; the reviewer still receives its safe dimensions and opaque ID.
+    """
+
+    if not bool(getattr(analysis, "requires_review", False)):
+        return analysis
+    accepted = list(getattr(analysis, "accepted", []) or [])
+    requested = [
+        {"id": candidate.id, "url": candidate.url}
+        for candidate in accepted[:MAX_REVIEW_THUMBNAILS]
+        if isinstance(candidate, ImageCandidate)
+        and str(candidate.url).startswith(("http://", "https://"))
+    ]
+    if not requested:
+        return analysis
+    try:
+        returned = driver.execute_script(_REVIEW_THUMBNAIL_SCRIPT, requested)
+    except Exception:  # noqa: BLE001 - preview is non-authoritative and must not alter analysis
+        return analysis
+    if not isinstance(returned, (list, tuple)):
+        return analysis
+    allowed_ids = {str(item["id"]) for item in requested}
+    previews: dict[str, str] = {}
+    total_chars = 0
+    for item in returned[:MAX_REVIEW_THUMBNAILS]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = str(item.get("id") or "")
+        thumbnail = _safe_review_thumbnail(item.get("thumbnail"))
+        if not candidate_id or candidate_id not in allowed_ids or not thumbnail:
+            continue
+        if total_chars + len(thumbnail) > MAX_REVIEW_THUMBNAIL_TOTAL_CHARS:
+            break
+        previews[candidate_id] = thumbnail
+        total_chars += len(thumbnail)
+    if previews:
+        analysis.accepted = [
+            replace(candidate, review_thumbnail=previews.get(candidate.id, candidate.review_thumbnail))
+            for candidate in accepted
+        ]
+    return analysis
 
 
 def _response_content_type(response: dict[str, Any]) -> str:
@@ -906,6 +1089,38 @@ def collect_from_driver(driver: Any, page_url: str) -> dict[str, Any]:
     }
 
 
+def analyse_collected(
+    page_url: str,
+    collected: dict[str, Any],
+    adapter: Any,
+    *,
+    profile: dict[str, Any] | None = None,
+    extra_warnings: Iterable[str] = (),
+    cluster_score: Any | None = None,
+) -> SourceAnalysis:
+    """Analyse one bounded browser observation without recollecting it.
+
+    ``BaseAdapter.analyze`` uses this seam after routing a single observation through its
+    adapter hooks.  It is also useful to fixture tests: no browser APIs and no network are
+    invoked here.
+    """
+    safe_collected = collected if isinstance(collected, dict) else {}
+    raw = safe_collected.get("candidates")
+    return analyse_candidates(
+        page_url,
+        raw if isinstance(raw, (list, tuple)) else [],
+        adapter=adapter,
+        final_url=page_url,
+        page_text=str(safe_collected.get("page_text") or ""),
+        warnings=[*(safe_collected.get("warnings") or []), *list(extra_warnings)],
+        canvas_detected=_number(safe_collected.get("canvas_detected")),
+        canvas_captured=_number(safe_collected.get("canvas_captured")),
+        profile=profile,
+        network_metadata=safe_collected.get("network_metadata") or [],
+        cluster_score=cluster_score,
+    )
+
+
 def analyse_driver(
     driver: Any,
     page_url: str,
@@ -917,10 +1132,6 @@ def analyse_driver(
     """Observe a loaded reader and produce the same pure analysis used by fixtures."""
     final_url = str(getattr(driver, "current_url", "") or page_url)
     adapter.validate_redirect(final_url)
-    collected = collect_from_driver(driver, final_url)
-    return analyse_candidates(final_url, collected["candidates"], adapter=adapter,
-                              final_url=final_url, page_text=collected["page_text"],
-                              warnings=[*collected["warnings"], *list(extra_warnings)],
-                              canvas_detected=collected["canvas_detected"],
-                              canvas_captured=collected["canvas_captured"], profile=profile,
-                              network_metadata=collected["network_metadata"])
+    return analyse_collected(final_url, collect_from_driver(driver, final_url), adapter,
+                             profile=profile, extra_warnings=extra_warnings,
+                             cluster_score=getattr(adapter, "score_cluster", None))

@@ -49,6 +49,8 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         pdf.write_bytes(b"%PDF-1.4\n")
         analysis = {
             "adapter": "universal", "final_host": "fresh.reader.test",
+            "adapter_version": "1", "confidence": 0.9, "candidate_count": 1,
+            "accepted_count": 1, "discarded_count": 0,
             "accepted": [{"id": "fresh-page"}],
             "clusters": [{"key": "cluster:0123456789abcdef0123", "score": 0.9,
                           "candidate_ids": ["fresh-page"]}],
@@ -58,7 +60,11 @@ class JobRunnerSanitizationTests(unittest.TestCase):
             encoding="utf-8",
         )
         (output / "downloaded_images.json").write_text(
-            json.dumps({"source_analysis": analysis, "source_selection": selection}),
+            json.dumps({
+                "source_type": "url", "adapter_name": "universal",
+                "adapter_version": "1", "transport_name": "browser_session",
+                "source_analysis": analysis, "source_selection": selection,
+            }),
             encoding="utf-8",
         )
         return analysis
@@ -128,8 +134,17 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         record.assert_called_once_with(fresh_analysis, fresh_selection)
         self.assertEqual(terminal["source_analysis"], fresh_analysis)
         self.assertEqual(terminal["source_selection"], fresh_selection)
+        self.assertEqual(terminal["source_type"], "url")
+        self.assertEqual(terminal["adapter_name"], "universal")
+        self.assertEqual(terminal["adapter_version"], "1")
+        self.assertEqual(terminal["transport_name"], "browser_session")
+        self.assertEqual(terminal["source_score"], 0.9)
+        self.assertEqual(terminal["candidate_count"], 1)
+        self.assertEqual(terminal["accepted_count"], 1)
+        self.assertEqual(terminal["rejected_count"], 0)
         manifest = json.loads((output / "job_manifest.json").read_text(encoding="utf-8"))
         self.assertIs(manifest["configuration"]["create_source_profile"], True)
+        self.assertEqual(manifest["source_provenance"]["transport_name"], "browser_session")
 
     def test_automatic_selection_never_records_profile_even_when_opted_in(self):
         job, output = self._running_job(

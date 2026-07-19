@@ -120,23 +120,43 @@ de um cluster vencedor observado no leitor, e cada redirect de imagem volta a se
 validado.
 
 O analisador em `universal_chapter_adapter.py` observa DOM, lazy loading, recursos já
-vistos pelo navegador, JSON inline e canvas capturável. A decisão é explícita: score
+vistos pelo navegador, JSON inline, metadados CDP/performance sanitizados e canvas capturável.
+JSON pequeno e reconhecido de respostas que o navegador já recebeu pode ser analisado em memória;
+texto não é executado nem persistido. A decisão é explícita: score
 `>= 0,85` permite seleção automática, `0,60–0,84` segura o job em revisão de páginas e
 score menor falha fechado. Limite de coleta/iframe, scroll não comprovadamente completo ou mais de
 400 páginas produz `incomplete_download`, antes de OCR e sem seleção parcial. A revisão
 ocorre antes de OCR; a confirmação usa IDs opacos e o worker reanalisa o leitor antes do
-download. O relatório guarda diagnósticos sanitizados, não URLs completas, cookies, queries
-ou pixels de canvas.
+download. Para imagem DOM já visível e carregada, o payload de revisão pode conter uma miniatura
+local `data:image` limitada; ele não leva URL de origem e a UI não faz fetch remoto para mostrá-la.
+Ausência de imagem DOM ou canvas CORS/tainted apenas omite a prévia, sem omitir os metadados do
+candidato. Enquanto o mesmo job aguarda revisão, o polling não substitui o DOM dessa revisão, para
+preservar exclusões e ordem manual na aba atual. O relatório guarda diagnósticos sanitizados, não
+URLs completas, cookies, queries ou pixels originais de canvas.
 
 Os transportes compartilham limites de redirects, tamanho, quantidade, bytes e duração
 por capítulo. A sessão com cookies do navegador é temporária e opcional; challenges,
-autenticação e canvas inacessível não são contornados. O fallback não clica paginação ou
-carrosséis, não lê XHR/fetch por CDP e não cria thumbnails reais; esses leitores pedem
-adapter específico. A validação protege a navegação e as imagens selecionadas, mas não é
+autenticação e canvas inacessível não são contornados. No fallback universal, um `href`
+explícito pode ser seguido sem clique somente quando prova mesma origem/path e avanço de query
+numérica N+1; a sequência é limitada e qualquer ambiguidade, ciclo, timeout ou cobertura parcial
+vira `pagination_incomplete`, que bloqueia a seleção inclusive pelo caminho de revisão manual.
+O sistema não aciona load more, handlers de botão, carrosséis,
+APIs privadas nem usa miniaturas remotas; a única prévia possível é uma data URI local e limitada
+derivada de imagem DOM já carregada. Leitores que dependam desses mecanismos pedem adapter
+específico. A validação protege a navegação e as imagens selecionadas, mas não é
 um sandbox de todos os subrecursos que o navegador pode carregar ao renderizar uma página,
 nem fixa o IP final de `requests`; para URLs não confiáveis, o deploy precisaria de uma
 política de egress/interceptação adicional. Consulte [Adaptador universal de capítulos](UNIVERSAL_CHAPTER_ADAPTER.md)
 para limites, perfis de evidência e limitações.
+
+### Pasta local
+
+Uma pasta local percorre uma fronteira separada: `LocalFolderChapterAdapter` valida uma raiz
+permitida, arquivos diretos e bytes de imagem, cria snapshot interno de nomes gerados e entrega
+ao job somente uma referência opaca. Ela não usa navegador, URL `file://` nem downloader HTTP
+para adquirir a origem. Como os arquivos são páginas lógicas completas, o Smart Split faz
+passthrough. A aquisição local é offline, mas OCR/tradução posteriores continuam sendo etapas
+normais do pipeline. Consulte [Entrada por pasta local](LOCAL_FOLDER_INPUT.md).
 
 ## Páginas lógicas
 

@@ -11,7 +11,7 @@ import threading
 import time
 from collections import Counter
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from PIL import Image, ImageStat
@@ -40,6 +40,18 @@ MIN_IMAGE_HEIGHT = 220
 MIN_IMAGE_AREA = 180_000
 MIN_CHAPTER_IMAGE_HEIGHT = 1
 MIN_CHAPTER_IMAGE_AREA = MIN_IMAGE_WIDTH
+
+# Generic pagination is deliberately a narrow, opt-in-by-evidence collector.  It does not
+# click arbitrary UI controls: only a same-origin URL whose *only* changing query parameter
+# is a conventional numeric page index can be followed.  These limits apply in addition to
+# Selenium's page/script timeouts and the global image/page budgets.
+MAX_PAGINATED_READER_FOLLOWS = 24
+MAX_PAGINATED_READER_SECONDS = 45.0
+MAX_PAGINATED_READER_SCROLL_ROUNDS = 18
+PAGINATED_READER_SETTLE_SECONDS = 0.35
+_PAGINATION_QUERY_KEYS = frozenset({
+    "page", "p", "pg", "page_no", "page_num", "page_number", "pageindex", "page_index",
+})
 
 
 def force_remove(path):
@@ -71,6 +83,9 @@ def download_images(
 
     report = {
         "url": _sanitized_url(url),
+        # Remote runs always declare their provenance explicitly.  Local-folder input
+        # materialises its own report and never passes through this browser downloader.
+        "source_type": "url",
         "total_dom_images": 0,
         "total_candidates": 0,
         "total_unique_urls": 0,
@@ -79,6 +94,22 @@ def download_images(
         "requested_max_images": max_images,
         "collection_strategy": "incremental_scroll",
         "adapter": "",
+        "adapter_name": "",
+        "adapter_version": "",
+        # Only the configured transport names are retained.  Cookie-bearing sessions,
+        # request URLs and headers remain in memory and are never report metadata.
+        "transport_metadata": {"configured": [], "count": 0},
+        # This is updated only from accepted image downloads.  It is deliberately
+        # distinct from ``transport_metadata.configured``: a configured browser
+        # fallback is not evidence that the fallback actually fetched a page.
+        "transport_name": "none",
+        "transport_usage": {"successful": [], "counts": {}, "count": 0},
+        "pagination": {
+            "status": "not_attempted",
+            "pages_observed": 1,
+            "followed_pages": 0,
+            "reason": "",
+        },
         "viewer_image_count": 0,
         "viewer_unique_urls": 0,
         "ignored": [],
@@ -104,7 +135,12 @@ def download_images(
         adapter.validate_path(url)
         url = adapter.normalize_url(url)
         report["url"] = _sanitized_url(url)
-        report["adapter"] = adapter.name
+        report["adapter"] = _safe_report_metadata(getattr(adapter, "name", ""), "unknown")
+        # Keep the legacy report key for existing consumers and the explicit provenance key
+        # consumed by the output manifest. Both are safe adapter identifiers only.
+        report["adapter_name"] = report["adapter"]
+        report["adapter_version"] = _safe_report_metadata(
+            getattr(adapter, "adapter_version", ""), "unknown")
         # Selenium would otherwise follow the chain before exposing ``current_url``. Resolve
         # and validate every top-level redirect with a bounded, cookie-free request first.
         navigation_url = preflight_browser_navigation(adapter, url)
@@ -142,63 +178,63 @@ def download_images(
             report["viewer_urls"] = [_sanitized_url(value) for value in viewer_snapshot["urls"]]
         if viewer_snapshot["complete_manifest"]:
             report["collection_strategy"] = "direct_viewer_manifest"
-        if not adapter.is_specific:
-            source_warnings = []
-            if not (scroll_diagnostics.get("reached_document_end")
-                    and scroll_diagnostics.get("stabilized")):
-                source_warnings.append("scroll_incomplete")
-            source_analysis = adapter.analyze(
-                {"driver": driver, "page_url": current_url},
-                profile=_load_source_profile(current_url, adapter),
-                extra_warnings=tuple(source_warnings))
-            report["source_analysis"] = source_analysis.public()
-            report["source_outcome"] = source_analysis.outcome
-            report["source_confidence"] = source_analysis.confidence
-            observed_candidate_count = len(source_analysis.accepted)
-            source_analysis.accepted = _selected_universal_candidates(
-                source_analysis, approved_candidate_ids)
-            selected_before_max_images = len(source_analysis.accepted)
-            if max_images:
-                source_analysis.accepted = source_analysis.accepted[:int(max_images)]
-            selected_ids = [candidate.id for candidate in source_analysis.accepted]
-            report["source_selection"] = {
-                "candidate_ids": selected_ids,
-                "automatic": not bool(approved_candidate_ids),
-                "observed_candidate_count": observed_candidate_count,
-                "confirmed_candidate_count": selected_before_max_images,
-                "manual_subset": bool(
-                    approved_candidate_ids
-                    and selected_before_max_images < observed_candidate_count
-                ),
-                "fresh_candidate_count": len(selected_ids),
-            }
-            candidates = [
-                {
-                    "candidate_id": candidate.id,
-                    "url": candidate.url,
-                    "source": candidate.source,
-                    "order": candidate.order,
-                    "y": candidate.y,
-                    "width": candidate.width,
-                    "height": candidate.height,
-                    "naturalWidth": candidate.natural_width,
-                    "naturalHeight": candidate.natural_height,
-                    "containerKey": candidate.container,
-                    "isChapterCandidate": True,
-                    "inContainer": bool(candidate.container),
-                    "canvas_data": candidate.canvas_data,
-                }
-                for candidate in source_analysis.accepted
-            ]
-            # The generic DOM can include UI/ad images. Completeness must be measured against
-            # the classified reader cluster (or confirmed subset), never every ``img`` seen.
-            # Opaque IDs preserve distinct signed URLs that intentionally share a path.
-            # Diagnostics retain only the sanitised URLs below, never the raw fetch URLs.
-            report["expected_chapter_candidate_ids"] = [item["candidate_id"] for item in candidates]
-            report["expected_chapter_urls"] = [_sanitized_url(item["url"]) for item in candidates]
-            report["collection_strategy"] = "universal_cluster_analysis"
-        else:
-            candidates = _collect_image_candidates(driver, current_url, adapter)
+        # Every adapter, including a registered specific reader, owns the same analysis
+        # contract.  This prevents an older DOM-only shortcut from bypassing coverage limits,
+        # network/JSON evidence, candidate IDs or the accepted-reader manifest.
+        source_warnings = _scroll_coverage_warnings(scroll_diagnostics)
+        source_analysis = adapter.analyze(
+            {"driver": driver, "page_url": current_url},
+            profile=_load_source_profile(current_url, adapter),
+            extra_warnings=source_warnings)
+        source_analysis, pagination_diagnostics = _maybe_collect_paginated_reader(
+            driver,
+            adapter,
+            source_analysis,
+            page_url=current_url,
+            profile=_load_source_profile(current_url, adapter),
+        )
+        report["pagination"] = pagination_diagnostics
+        if pagination_diagnostics.get("followed_pages"):
+            # BrowserSessionTransport must retain the browser's final same-origin reader
+            # context.  It is never persisted; reports expose only the safe counters above.
+            current_url = str(getattr(driver, "current_url", "") or current_url)
+            report["collection_strategy"] = "adapter_accepted_paginated_manifest"
+        report["source_analysis"] = _public_source_analysis(source_analysis)
+        report["source_outcome"] = _safe_report_metadata(
+            getattr(source_analysis, "outcome", ""), "source_not_ready")
+        report["source_confidence"] = _safe_float(getattr(source_analysis, "confidence", 0.0))
+        _fail_open_coverage_guard(source_analysis, source_warnings)
+        observed_candidates = list(getattr(source_analysis, "accepted", []) or [])
+        observed_candidate_count = len(observed_candidates)
+        selected_candidates = _selected_source_candidates(
+            source_analysis, approved_candidate_ids)
+        selected_before_max_images = len(selected_candidates)
+        if max_images:
+            selected_candidates = selected_candidates[:int(max_images)]
+        candidates = [_accepted_candidate_to_download(candidate) for candidate in selected_candidates]
+        if approved_candidate_ids:
+            # A reviewer's submitted opaque-id order is an intentional page order, not a
+            # set.  Preserve it through the legacy downloader shape without exposing URLs.
+            for selected_order, candidate in enumerate(candidates, start=1):
+                candidate["order"] = selected_order
+        selected_ids = [item["candidate_id"] for item in candidates]
+        report["source_selection"] = {
+            "candidate_ids": selected_ids,
+            "automatic": not bool(approved_candidate_ids),
+            "observed_candidate_count": observed_candidate_count,
+            "confirmed_candidate_count": selected_before_max_images,
+            "manual_subset": bool(
+                approved_candidate_ids
+                and selected_before_max_images < observed_candidate_count
+            ),
+            "fresh_candidate_count": len(selected_ids),
+        }
+        # Completeness is measured against the adapter's accepted reader manifest, never all
+        # images exposed by a page.  IDs remain opaque even when two signed URLs share a path.
+        report["expected_chapter_candidate_ids"] = selected_ids
+        report["expected_chapter_urls"] = [_sanitized_url(item["url"]) for item in candidates]
+        if not pagination_diagnostics.get("followed_pages"):
+            report["collection_strategy"] = "adapter_accepted_manifest"
         report["timings"]["collection_seconds"] = (
             time.perf_counter() - collection_started
         )
@@ -217,6 +253,7 @@ def download_images(
         # One transport set per chapter: file count, byte and duration budgets cannot reset
         # for every page, and BrowserSessionTransport is the only browser-backed fallback.
         transports = build_transports(adapter, driver=driver, page_url=current_url)
+        report["transport_metadata"] = _transport_report_metadata(transports)
         paths = _download_candidates(
             driver,
             unique_candidates,
@@ -308,15 +345,29 @@ def analyze_chapter_source(url, *, cancel_check=None):
         scroll_diagnostics = _scroll_incrementally(driver, cancel_check=cancel_check)
         if cancel_check and cancel_check():
             raise SourceError("cancelled", "during_source_analysis")
-        return adapter.analyze(
+        # Registered adapters do not get a weaker completeness policy than the universal
+        # fallback.  An incomplete scroll is a reviewable, terminal source outcome for every
+        # source; it must never become a partial chapter merely because its host is known.
+        source_warnings = _scroll_coverage_warnings(scroll_diagnostics)
+        source_analysis = adapter.analyze(
             {"driver": driver, "page_url": final_url},
             profile=_load_source_profile(final_url, adapter),
-            # Known adapters own their own extraction semantics. A generic scroll surface
-            # must not turn a specific reader into a false incomplete-download failure.
-            extra_warnings=tuple([] if getattr(adapter, "is_specific", False)
-                            or (scroll_diagnostics.get("reached_document_end")
-                                 and scroll_diagnostics.get("stabilized"))
-                            else ["scroll_incomplete"]))
+            extra_warnings=source_warnings)
+        source_analysis, _ = _maybe_collect_paginated_reader(
+            driver,
+            adapter,
+            source_analysis,
+            page_url=final_url,
+            profile=_load_source_profile(final_url, adapter),
+            cancel_check=cancel_check,
+        )
+        # A source review may show only small data-URI previews derived from already-visible
+        # DOM images. This performs no image request and failures leave the diagnosis intact.
+        from universal_chapter_adapter import attach_review_thumbnails
+
+        source_analysis = attach_review_thumbnails(driver, source_analysis)
+        _fail_open_coverage_guard(source_analysis, source_warnings)
+        return source_analysis
     finally:
         if driver is not None:
             _refresh_driver_ownership(ownership)
@@ -330,6 +381,15 @@ def _create_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--log-level=3")
     chrome_options.add_argument("--window-size=1400,2200")
+    # ``collect_from_driver`` can consume Chrome's bounded performance log as additional
+    # browser-observed evidence.  Old/embedded Selenium option objects need not support this,
+    # so capability setup is strictly best-effort and never changes browser behaviour otherwise.
+    set_capability = getattr(chrome_options, "set_capability", None)
+    if callable(set_capability):
+        try:
+            set_capability("goog:loggingPrefs", {"performance": "ALL"})
+        except Exception:
+            pass
 
     driver_path = CHROMEDRIVER_PATH if CHROMEDRIVER_PATH and os.path.isfile(CHROMEDRIVER_PATH) else (
         shutil.which("chromedriver") or shutil.which("chromedriver.exe")
@@ -366,8 +426,584 @@ def _load_source_profile(url, adapter):
         return None
 
 
-def _selected_universal_candidates(source_analysis, approved_candidate_ids=None):
-    """Validate the fresh generic-reader set before a download begins.
+_SAFE_REPORT_METADATA_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$")
+
+
+def _safe_report_metadata(value, fallback=""):
+    """Keep report labels bounded and free of page-controlled strings."""
+    text = str(value or "").strip()
+    return text if _SAFE_REPORT_METADATA_RE.fullmatch(text) else fallback
+
+
+def _safe_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
+
+
+def _safe_nonnegative_int(value):
+    try:
+        return max(0, int(float(value or 0)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _scroll_coverage_warnings(scroll_diagnostics):
+    """Return the only downloader-owned coverage warning, for every adapter type."""
+    diagnostics = scroll_diagnostics if isinstance(scroll_diagnostics, dict) else {}
+    if (diagnostics.get("reached_document_end") and diagnostics.get("stabilized")):
+        return ()
+    return ("scroll_incomplete",)
+
+
+def _source_analysis_warnings(source_analysis):
+    values = getattr(source_analysis, "warnings", ()) or ()
+    if isinstance(values, (str, bytes)):
+        values = (values,)
+    return {str(value or "").strip() for value in values if str(value or "").strip()}
+
+
+def _automatic_page_limit():
+    """Use the classifier's shared ceiling without duplicating the policy constant."""
+    try:
+        from universal_chapter_adapter import MAX_AUTOMATIC_PAGES
+
+        return max(1, int(MAX_AUTOMATIC_PAGES))
+    except (ImportError, TypeError, ValueError):  # pragma: no cover - defensive import seam
+        return 400
+
+
+def _coverage_failure_reason(source_analysis, scroll_warnings=()):
+    """Detect incomplete coverage even when a custom adapter accidentally says usable."""
+    if "scroll_incomplete" in set(scroll_warnings or ()):
+        return "scroll_incomplete"
+    warnings = _source_analysis_warnings(source_analysis)
+    for reason in ("page_limit_exceeded", "scroll_incomplete", "pagination_incomplete"):
+        if reason in warnings:
+            return reason
+    accepted = list(getattr(source_analysis, "accepted", []) or [])
+    if len(accepted) > _automatic_page_limit():
+        return "page_limit_exceeded"
+    return ""
+
+
+def _analysis_can_download(source_analysis):
+    return bool(getattr(source_analysis, "can_download", False))
+
+
+def _fail_open_coverage_guard(source_analysis, scroll_warnings=()):
+    """Stop automatic execution when a usable analysis conflicts with incomplete coverage.
+
+    Pre-analysis intentionally returns a non-usable diagnostic so the UI can persist a clear
+    terminal reason.  The later selection gate rejects the same evidence unconditionally,
+    including manual-review submissions, so returning the diagnostic here cannot permit a
+    partial download.
+    """
+    reason = _coverage_failure_reason(source_analysis, scroll_warnings)
+    if reason and _analysis_can_download(source_analysis):
+        from chapter_source import INCOMPLETE_DOWNLOAD, SourceError
+
+        raise SourceError(INCOMPLETE_DOWNLOAD, reason)
+
+
+def _public_source_analysis(source_analysis):
+    """Use adapter diagnostics when available, with a deliberately small safe fallback."""
+    public = getattr(source_analysis, "public", None)
+    if callable(public):
+        value = public()
+        if isinstance(value, dict):
+            return value
+    accepted = list(getattr(source_analysis, "accepted", []) or [])
+    return {
+        "adapter": _safe_report_metadata(getattr(source_analysis, "adapter", ""), "unknown"),
+        "outcome": _safe_report_metadata(getattr(source_analysis, "outcome", ""), "source_not_ready"),
+        "confidence": _safe_float(getattr(source_analysis, "confidence", 0.0)),
+        "accepted_count": len(accepted),
+        "warnings": sorted(
+            _safe_report_metadata(value, "collector_warning")
+            for value in _source_analysis_warnings(source_analysis)
+        )[:32],
+    }
+
+
+# This script never calls ``click`` nor evaluates a page-provided handler. It inspects explicit
+# anchors plus visible next-like buttons only to detect incomplete coverage: a button without a
+# verifiable href is never activated, but it cannot make the initial surface look complete.
+_PAGINATION_CONTROL_SCRIPT = r"""
+const controls = [];
+const nextLabel = /^(?:next|next page|page next|›|»|→)$/i;
+const numericPage = /^(?:page\s*)?[1-9][0-9]{0,4}$/i;
+for (const control of document.querySelectorAll('a[href], button, [role="button"]')) {
+  const isAnchor = control.tagName === 'A' && control.hasAttribute('href');
+  const rel = (control.getAttribute('rel') || '').toLowerCase().split(/\s+/);
+  const label = [
+    control.getAttribute('aria-label') || '',
+    control.getAttribute('title') || '',
+    control.textContent || '',
+  ].join(' ').replace(/\s+/g, ' ').trim();
+  const relNext = rel.includes('next');
+  const labelledNext = nextLabel.test(label);
+  const numbered = numericPage.test(label);
+  if (!relNext && !labelledNext && !numbered) continue;
+  const style = getComputedStyle(control);
+  const rect = control.getBoundingClientRect();
+  controls.push({
+    href: isAnchor ? (control.href || '') : '',
+    interactive: !isAnchor,
+    relNext,
+    labelledNext,
+    numbered,
+    visible: Boolean(rect.width > 0 && rect.height > 0 && style.display !== 'none'
+      && style.visibility !== 'hidden'),
+    disabled: Boolean(control.hasAttribute('disabled')
+      || control.getAttribute('aria-disabled') === 'true'),
+    target: control.getAttribute('target') || '',
+    download: control.hasAttribute('download'),
+  });
+  if (controls.length >= 32) break;
+}
+return controls;
+"""
+
+
+def _pagination_origin_key(url):
+    """Return the browser-origin tuple, or ``None`` for an unsafe control URL."""
+    try:
+        parsed = urlparse(str(url or ""))
+        scheme = parsed.scheme.casefold()
+        host = (parsed.hostname or "").casefold()
+        if scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+            return None
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return scheme, host, int(port)
+
+
+def _canonical_pagination_url(url):
+    """Normalize a safe reader URL only for in-memory cycle detection."""
+    origin = _pagination_origin_key(url)
+    if origin is None:
+        return ""
+    try:
+        parsed = urlparse(str(url or ""))
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    except (TypeError, ValueError):
+        return ""
+    scheme, host, port = origin
+    default_port = 443 if scheme == "https" else 80
+    netloc = host if port == default_port else f"{host}:{port}"
+    return urlunparse((
+        scheme,
+        netloc,
+        parsed.path or "/",
+        parsed.params,
+        urlencode(sorted(pairs)),
+        "",
+    ))
+
+
+def _pagination_query_parts(url):
+    """Return stable query evidence and one bounded numeric page index, if present."""
+    try:
+        parsed = urlparse(str(url or ""))
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    except (TypeError, ValueError):
+        return None
+    page_pairs = [
+        (key.casefold(), value)
+        for key, value in pairs
+        if key.casefold() in _PAGINATION_QUERY_KEYS
+    ]
+    if len(page_pairs) > 1:
+        return None
+    stable = tuple(sorted(
+        (key, value) for key, value in pairs
+        if key.casefold() not in _PAGINATION_QUERY_KEYS
+    ))
+    if not page_pairs:
+        return parsed, stable, "", 1
+    key, raw_page = page_pairs[0]
+    if not raw_page.isascii() or not raw_page.isdigit():
+        return None
+    page_number = int(raw_page)
+    if not 1 <= page_number <= 10_000:
+        return None
+    return parsed, stable, key, page_number
+
+
+def _same_chapter_pagination_target(current_url, candidate_url):
+    """Return a canonical target only for an unequivocal next page of this chapter.
+
+    Generic readers have no trustworthy site-specific chapter grammar.  Therefore the
+    accepted shape is deliberately narrow: identical browser origin and path, identical
+    non-page query pairs, and exactly the next value of one conventional numeric page key.
+    A ``next chapter`` link necessarily fails this proof and is never visited.
+    """
+    current_origin = _pagination_origin_key(current_url)
+    target_origin = _pagination_origin_key(candidate_url)
+    current = _pagination_query_parts(current_url)
+    target = _pagination_query_parts(candidate_url)
+    if not current_origin or current_origin != target_origin or not current or not target:
+        return ""
+    current_parsed, current_stable, current_key, current_page = current
+    target_parsed, target_stable, target_key, target_page = target
+    if current_parsed.path != target_parsed.path or current_parsed.params != target_parsed.params:
+        return ""
+    if current_stable != target_stable or not target_key:
+        return ""
+    if current_key and current_key != target_key:
+        return ""
+    if target_page != current_page + 1:
+        return ""
+    return _canonical_pagination_url(candidate_url)
+
+
+def _looks_like_unverified_pagination_control(current_url, candidate_url):
+    """Whether a page-shaped, same-origin control was present but could not be proven safe."""
+    if _pagination_origin_key(current_url) != _pagination_origin_key(candidate_url):
+        return False
+    target = _pagination_query_parts(candidate_url)
+    return bool(target and target[2])
+
+
+def _same_chapter_numbered_page_control(current_url, candidate_url):
+    """Whether a non-next numeric control belongs to this verified page set.
+
+    A normal pager exposes links for later page numbers alongside the immediate next page.
+    Those links are not ambiguity by themselves; only the immediate successor is followed.
+    """
+    if _pagination_origin_key(current_url) != _pagination_origin_key(candidate_url):
+        return False
+    current = _pagination_query_parts(current_url)
+    target = _pagination_query_parts(candidate_url)
+    if not current or not target:
+        return False
+    current_parsed, current_stable, current_key, _ = current
+    target_parsed, target_stable, target_key, _ = target
+    return bool(
+        target_key
+        and current_parsed.path == target_parsed.path
+        and current_parsed.params == target_parsed.params
+        and current_stable == target_stable
+        and (not current_key or current_key == target_key)
+    )
+
+
+def _read_pagination_controls(driver):
+    """Read a bounded, inert snapshot of explicit controls; never execute a page action."""
+    try:
+        raw_controls = driver.execute_script(_PAGINATION_CONTROL_SCRIPT)
+    except Exception:
+        return []
+    if not isinstance(raw_controls, (list, tuple)):
+        return []
+    controls = []
+    for raw in raw_controls[:32]:
+        if not isinstance(raw, dict):
+            continue
+        href = str(raw.get("href") or "").strip()
+        interactive = bool(raw.get("interactive"))
+        if (not href and not interactive) or len(href) > 4096:
+            continue
+        controls.append({
+            "href": href,
+            "interactive": interactive,
+            "rel_next": bool(raw.get("relNext")),
+            "labelled_next": bool(raw.get("labelledNext")),
+            "numbered": bool(raw.get("numbered")),
+            "visible": bool(raw.get("visible")),
+            "disabled": bool(raw.get("disabled")),
+            "target": str(raw.get("target") or ""),
+            "download": bool(raw.get("download")),
+        })
+    return controls
+
+
+def _select_safe_pagination_target(current_url, controls):
+    """Choose one non-ambiguous next page, or return a coded no-navigation decision."""
+    safe_targets = {}
+    unverified = False
+    for control in controls or ():
+        if not isinstance(control, dict):
+            continue
+        if (not control.get("visible") or control.get("disabled") or control.get("target")
+                or control.get("download")):
+            continue
+        candidate_url = str(control.get("href") or "")
+        if not candidate_url:
+            # A visible next/page button can indicate another reader surface, but it has no
+            # destination whose origin and chapter identity we can prove. Never click it;
+            # fail closed instead of reporting a potentially partial surface as complete.
+            if control.get("rel_next") or control.get("labelled_next") or control.get("numbered"):
+                unverified = True
+            continue
+        canonical = _same_chapter_pagination_target(current_url, candidate_url)
+        if canonical:
+            safe_targets.setdefault(canonical, candidate_url)
+        elif (control.get("numbered") and not control.get("rel_next")
+              and not control.get("labelled_next")
+              and _same_chapter_numbered_page_control(current_url, candidate_url)):
+            # Keep a conventional [1] [2] [3] pager deterministic: only page N+1 is
+            # navigated, while the other same-chapter numeric links are inert evidence.
+            continue
+        elif (_looks_like_unverified_pagination_control(current_url, candidate_url)
+              or control.get("rel_next") or control.get("labelled_next")
+              or control.get("numbered")):
+            # A visible next-like control that cannot prove the same chapter is evidence of
+            # an uncollected surface. A next-chapter link is never followed and cannot be
+            # misreported as a completed one-page reader.
+            unverified = True
+    if len(safe_targets) == 1:
+        canonical, target = next(iter(safe_targets.items()))
+        return "safe", target, canonical
+    if len(safe_targets) > 1 or unverified:
+        return "unverified", "", ""
+    return "none", "", ""
+
+
+def _pagination_analysis_eligible(source_analysis):
+    """Only build a multi-page manifest from accepted adapter-owned page evidence."""
+    if not list(getattr(source_analysis, "accepted", []) or []):
+        return False
+    if _analysis_can_download(source_analysis):
+        return True
+    try:
+        from chapter_source import REVIEW_REQUIRED_MEDIUM_CONFIDENCE
+
+        return str(getattr(source_analysis, "outcome", "") or "") == REVIEW_REQUIRED_MEDIUM_CONFIDENCE
+    except ImportError:  # pragma: no cover - chapter_source is always available at runtime
+        return False
+
+
+def _mark_pagination_incomplete(source_analysis):
+    """Attach the one public coverage warning without exposing a page-controlled target."""
+    warnings = list(getattr(source_analysis, "warnings", ()) or ())
+    if "pagination_incomplete" not in warnings:
+        warnings.append("pagination_incomplete")
+    try:
+        source_analysis.warnings = warnings
+    except Exception:
+        # The downloader still gets a fail-closed diagnostic from its local return value. A
+        # non-standard immutable adapter result cannot be rewritten safely.
+        pass
+    return source_analysis
+
+
+def _pagination_candidate_raw(candidate, page_index, order):
+    """Rebuild minimal in-memory evidence for the aggregate adapter analysis."""
+    y = _safe_nonnegative_int(_accepted_value(candidate, "y", 0))
+    return {
+        "url": str(_accepted_value(candidate, "url", "") or ""),
+        "source": str(_accepted_value(candidate, "source", "adapter_candidate") or "adapter_candidate"),
+        "order": int(order),
+        # Page-local Y positions must not interleave adjacent paginated views.
+        "y": page_index * 10_000_000 + y,
+        "width": _safe_nonnegative_int(_accepted_value(candidate, "width", 0)),
+        "height": _safe_nonnegative_int(_accepted_value(candidate, "height", 0)),
+        "naturalWidth": _safe_nonnegative_int(_accepted_value(candidate, "natural_width", 0)),
+        "naturalHeight": _safe_nonnegative_int(_accepted_value(candidate, "natural_height", 0)),
+        "container": str(_accepted_value(candidate, "container", "") or ""),
+        "className": str(_accepted_value(candidate, "class_name", "") or ""),
+        "id": str(_accepted_value(candidate, "element_id", "") or ""),
+        "alt": str(_accepted_value(candidate, "alt", "") or ""),
+        "context": str(_accepted_value(candidate, "context", "") or ""),
+        "network_order": _safe_nonnegative_int(_accepted_value(candidate, "network_order", 0)),
+        "contentType": str(_accepted_value(candidate, "content_type", "") or ""),
+        "origin": str(_accepted_value(candidate, "origin", "dom") or "dom"),
+        "visible": bool(_accepted_value(candidate, "visible", True)),
+        "attributeNames": list(_accepted_value(candidate, "attribute_names", ()) or ()),
+        "canvas_data": _accepted_value(candidate, "canvas_data", b""),
+    }
+
+
+def _aggregate_paginated_analyses(page_url, analyses, adapter, profile=None):
+    """Re-score only accepted page manifests into one complete adapter-owned selection."""
+    from universal_chapter_adapter import analyse_candidates
+
+    raw_candidates = []
+    seen_ids = set()
+    for page_index, analysis in enumerate(analyses):
+        for candidate in list(getattr(analysis, "accepted", []) or []):
+            candidate_id = _accepted_candidate_id(candidate)
+            # A canvas capture is valid within one inspected reader surface but cannot be
+            # reconstructed as a page-local browser observation after navigation.  Refuse
+            # the aggregate rather than silently dropping its pixels.
+            if (_accepted_value(candidate, "canvas_data", b"") or not candidate_id
+                    or candidate_id in seen_ids):
+                return None
+            seen_ids.add(candidate_id)
+            raw_candidates.append(_pagination_candidate_raw(
+                candidate, page_index, len(raw_candidates)))
+    if not raw_candidates:
+        return None
+    aggregate = analyse_candidates(
+        page_url,
+        raw_candidates,
+        adapter=adapter,
+        final_url=page_url,
+        profile=profile,
+        cluster_score=getattr(adapter, "score_cluster", None),
+    )
+    aggregate.page_manifest = adapter.build_page_manifest(aggregate.accepted)
+    return aggregate
+
+
+def _pagination_diagnostic(status, *, pages_observed=1, followed_pages=0, reason=""):
+    return {
+        "status": _safe_report_metadata(status, "blocked"),
+        "pages_observed": _safe_nonnegative_int(pages_observed),
+        "followed_pages": _safe_nonnegative_int(followed_pages),
+        "reason": _safe_report_metadata(reason, ""),
+    }
+
+
+def _maybe_collect_paginated_reader(
+        driver,
+        adapter,
+        source_analysis,
+        *,
+        page_url,
+        profile=None,
+        cancel_check=None,
+):
+    """Collect a small generic query-paginated reader without ever clicking arbitrary UI.
+
+    Site-specific adapters keep their own reader semantics.  The generic fallback may follow
+    only a page-shaped same-origin ``href`` proven by ``_same_chapter_pagination_target``.  A
+    cycle, ambiguous/unsafe page-shaped control, timeout, partial scroll, or unusable later
+    page turns into ``pagination_incomplete`` so the normal coverage gate refuses a partial
+    download rather than guessing.
+    """
+    if getattr(adapter, "is_specific", False):
+        return source_analysis, _pagination_diagnostic("not_applicable")
+    if _coverage_failure_reason(source_analysis):
+        return source_analysis, _pagination_diagnostic("blocked", reason="initial_coverage")
+    if not _pagination_analysis_eligible(source_analysis):
+        return source_analysis, _pagination_diagnostic("not_applicable")
+
+    control_state, target_url, target_key = _select_safe_pagination_target(
+        page_url, _read_pagination_controls(driver))
+    if control_state == "none":
+        return source_analysis, _pagination_diagnostic("not_needed")
+    if control_state != "safe":
+        return (_mark_pagination_incomplete(source_analysis),
+                _pagination_diagnostic("blocked", reason="unverified_control"))
+
+    from chapter_source import SourceError
+
+    started = time.monotonic()
+    deadline = started + MAX_PAGINATED_READER_SECONDS
+    analyses = [source_analysis]
+    seen_pages = {_canonical_pagination_url(page_url)}
+    followed = 0
+    current_url = page_url
+
+    def blocked(reason):
+        return (_mark_pagination_incomplete(source_analysis),
+                _pagination_diagnostic(
+                    "blocked", pages_observed=len(analyses), followed_pages=followed, reason=reason))
+
+    while target_url:
+        if cancel_check and cancel_check():
+            raise SourceError("cancelled", "during_source_analysis")
+        if followed >= MAX_PAGINATED_READER_FOLLOWS:
+            return blocked("page_limit")
+        if time.monotonic() >= deadline:
+            return blocked("time_limit")
+        if not target_key or target_key in seen_pages:
+            return blocked("cycle")
+        try:
+            adapter.validate_navigation_url(target_url)
+            adapter.validate_path(target_url)
+            # ``get`` is intentional: it avoids executing a page-controlled click handler.
+            driver.get(target_url)
+            followed += 1
+            time.sleep(PAGINATED_READER_SETTLE_SECONDS)
+            final_url = str(getattr(driver, "current_url", "") or "")
+            if _canonical_pagination_url(final_url) != target_key:
+                return blocked("redirected")
+            adapter.validate_redirect(final_url)
+        except SourceError as exc:
+            if exc.code == "cancelled":
+                raise
+            return blocked("invalid_target")
+        except Exception:
+            return blocked("navigation_failed")
+
+        stop_reason = {"value": ""}
+
+        def stop_for_budget():
+            if cancel_check and cancel_check():
+                stop_reason["value"] = "cancelled"
+                return True
+            if time.monotonic() >= deadline:
+                stop_reason["value"] = "time_limit"
+                return True
+            return False
+
+        try:
+            scroll = _scroll_incrementally(
+                driver,
+                max_rounds=MAX_PAGINATED_READER_SCROLL_ROUNDS,
+                stable_rounds=3,
+                cancel_check=stop_for_budget,
+            )
+        except SourceError:
+            if stop_reason["value"] == "cancelled":
+                raise
+            return blocked(stop_reason["value"] or "scroll_failed")
+        if _scroll_coverage_warnings(scroll):
+            return blocked("scroll_incomplete")
+        try:
+            page_analysis = adapter.analyze(
+                {"driver": driver, "page_url": final_url},
+                profile=_load_source_profile(final_url, adapter),
+                extra_warnings=(),
+            )
+        except SourceError as exc:
+            if exc.code == "cancelled":
+                raise
+            return blocked("page_analysis_failed")
+        except Exception:
+            return blocked("page_analysis_failed")
+        if _coverage_failure_reason(page_analysis) or not _pagination_analysis_eligible(page_analysis):
+            return blocked("page_analysis_unusable")
+        analyses.append(page_analysis)
+        seen_pages.add(target_key)
+        current_url = final_url
+        control_state, target_url, target_key = _select_safe_pagination_target(
+            current_url, _read_pagination_controls(driver))
+        if control_state == "none":
+            break
+        if control_state != "safe":
+            return blocked("unverified_control")
+
+    aggregate = _aggregate_paginated_analyses(page_url, analyses, adapter, profile=profile)
+    if aggregate is None:
+        return blocked("candidate_collision")
+    if _coverage_failure_reason(aggregate) or not _pagination_analysis_eligible(aggregate):
+        return blocked("aggregate_unusable")
+    return aggregate, _pagination_diagnostic(
+        "complete", pages_observed=len(analyses), followed_pages=followed)
+
+
+def _accepted_value(candidate, name, default=None):
+    if isinstance(candidate, dict):
+        return candidate.get(name, default)
+    return getattr(candidate, name, default)
+
+
+def _accepted_candidate_id(candidate):
+    return str(_accepted_value(candidate, "id", "") or "").strip()
+
+
+def _selected_source_candidates(source_analysis, approved_candidate_ids=None):
+    """Validate the fresh adapter-owned accepted set before a download begins.
 
     High-confidence analysis proceeds automatically. A medium-confidence result requires a
     non-empty UI-confirmed subset, which is checked against this fresh DOM snapshot. All
@@ -384,21 +1020,111 @@ def _selected_universal_candidates(source_analysis, approved_candidate_ids=None)
     ))
     outcome = str(getattr(source_analysis, "outcome", "") or "")
     accepted = list(getattr(source_analysis, "accepted", []) or [])
+    coverage_reason = _coverage_failure_reason(source_analysis)
+    if coverage_reason:
+        raise SourceError(INCOMPLETE_DOWNLOAD, coverage_reason)
+    if len(accepted) > _automatic_page_limit():
+        raise SourceError(INCOMPLETE_DOWNLOAD, "page_limit_exceeded")
     if outcome == REVIEW_REQUIRED_MEDIUM_CONFIDENCE and not selected_ids:
         raise SourceError(REVIEW_REQUIRED_MEDIUM_CONFIDENCE, "source_confirmation_required")
     if not getattr(source_analysis, "can_download", False) and outcome != REVIEW_REQUIRED_MEDIUM_CONFIDENCE:
         raise SourceError(outcome or "unsupported_low_confidence", "source_analysis")
+    if not accepted:
+        raise SourceError(INCOMPLETE_DOWNLOAD, "no_accepted_candidates")
+    accepted_ids = [_accepted_candidate_id(candidate) for candidate in accepted]
+    if not all(accepted_ids) or len(set(accepted_ids)) != len(accepted_ids):
+        # Approved IDs must address exactly one fresh reader page.  This applies to automatic
+        # and manual paths alike, so a buggy specific adapter cannot make the gate ambiguous.
+        raise SourceError(INCOMPLETE_DOWNLOAD, "ambiguous_candidate_ids")
     if not selected_ids:
         return accepted
-    if len({candidate.id for candidate in accepted}) != len(accepted):
-        # A client may only confirm opaque IDs when each one maps to exactly one freshly
-        # observed reader page. Refuse an ambiguous snapshot rather than silently selecting
-        # multiple assets for one checkbox.
-        raise SourceError(INCOMPLETE_DOWNLOAD, "ambiguous_candidate_ids")
-    selected = [candidate for candidate in accepted if candidate.id in selected_ids]
-    if len(selected) != len(selected_ids):
+    accepted_by_id = {candidate_id: candidate for candidate_id, candidate in
+                      zip(accepted_ids, accepted)}
+    if any(candidate_id not in accepted_by_id for candidate_id in selected_ids):
         raise SourceError(INCOMPLETE_DOWNLOAD, "approved_candidate_missing")
-    return selected
+    return [accepted_by_id[candidate_id] for candidate_id in selected_ids]
+
+
+def _selected_universal_candidates(source_analysis, approved_candidate_ids=None):
+    """Compatibility alias for callers predating the adapter-wide analysis contract."""
+    return _selected_source_candidates(source_analysis, approved_candidate_ids)
+
+
+def _accepted_candidate_to_download(candidate):
+    """Convert only an accepted opaque page into the legacy download input shape."""
+    from chapter_source import INCOMPLETE_DOWNLOAD, SourceError
+
+    candidate_id = _accepted_candidate_id(candidate)
+    # IDs are persisted and may later be submitted by the UI, so reject a page-controlled URL
+    # or whitespace-bearing identifier instead of attempting to rewrite it.
+    if not _SAFE_REPORT_METADATA_RE.fullmatch(candidate_id):
+        raise SourceError(INCOMPLETE_DOWNLOAD, "invalid_accepted_candidate_id")
+    url = str(_accepted_value(candidate, "url", "") or "").strip()
+    canvas_data = _accepted_value(candidate, "canvas_data", b"")
+    has_canvas = isinstance(canvas_data, (bytes, bytearray)) and bool(canvas_data)
+    scheme = urlparse(url).scheme.casefold()
+    if not url or (not has_canvas and scheme not in {"http", "https"}) or (has_canvas and scheme != "canvas"):
+        raise SourceError(INCOMPLETE_DOWNLOAD, "invalid_accepted_candidate")
+    origin = _safe_report_metadata(_accepted_value(candidate, "origin", ""), "")
+    return {
+        "candidate_id": candidate_id,
+        "url": url,
+        "source": _safe_report_metadata(_accepted_value(candidate, "source", ""), "adapter_candidate"),
+        "order": _safe_nonnegative_int(_accepted_value(candidate, "order", 0)),
+        "y": _safe_nonnegative_int(_accepted_value(candidate, "y", 0)),
+        "width": _safe_nonnegative_int(_accepted_value(candidate, "width", 0)),
+        "height": _safe_nonnegative_int(_accepted_value(candidate, "height", 0)),
+        "naturalWidth": _safe_nonnegative_int(_accepted_value(candidate, "natural_width", 0)),
+        "naturalHeight": _safe_nonnegative_int(_accepted_value(candidate, "natural_height", 0)),
+        "tag": "img" if origin == "dom" else "",
+        "isChapterCandidate": True,
+        "inContainer": bool(_accepted_value(candidate, "container", "")),
+        "canvas_data": bytes(canvas_data) if has_canvas else b"",
+    }
+
+
+def _transport_report_metadata(transports):
+    names = [
+        _safe_report_metadata(getattr(transport, "name", ""), "unknown")
+        for transport in (transports or [])
+    ]
+    return {"configured": names, "count": len(names)}
+
+
+def _primary_transport_name(metadata):
+    """Compatibility helper for callers that need a configured transport label.
+
+    Run provenance must use the observed ``transport_name`` populated by
+    ``_record_successful_transport`` instead.  Configuration order is not proof
+    that a fallback was used.
+    """
+    names = (metadata or {}).get("configured") if isinstance(metadata, dict) else ()
+    return _safe_report_metadata((names or ["none"])[0], "none")
+
+
+def _record_successful_transport(report, name):
+    """Record a safe, actually-used transport for one accepted chapter page.
+
+    Per-page report entries retain only a fixed transport label.  They never
+    include request URLs, cookies, headers or session metadata.  The run-level
+    name is the sole winner when all saved pages used it, otherwise ``mixed``.
+    """
+    safe_name = _safe_report_metadata(name, "unknown")
+    usage = report.get("transport_usage")
+    if not isinstance(usage, dict):
+        usage = {"successful": [], "counts": {}, "count": 0}
+        report["transport_usage"] = usage
+    successful = usage.get("successful")
+    if not isinstance(successful, list):
+        successful = []
+        usage["successful"] = successful
+    successful.append(safe_name)
+    counts = Counter(str(value) for value in successful if str(value))
+    usage["counts"] = dict(sorted(counts.items()))
+    usage["count"] = len(successful)
+    report["transport_name"] = (
+        next(iter(counts)) if len(counts) == 1 else "mixed" if counts else "none"
+    )
 
 
 def _pending_teardown_diagnostic(ownership):
@@ -876,9 +1602,18 @@ def _viewer_image_snapshot(driver, adapter=None):
     payload = driver.execute_script(
         r"""
         const images = [...document.querySelectorAll(arguments[0])];
-        const urls = images
-            .map((el) => el.getAttribute('data-url') || el.getAttribute('data-src') || '')
-            .filter(Boolean);
+        const lazyAttributes = [
+            'data-url', 'data-src', 'data-original', 'data-lazy-src', 'data-image-url',
+            'data-original-src', 'data-lazy', 'data-lazyload', 'data-actualsrc', 'data-cfsrc'
+        ];
+        const urls = images.flatMap((el) => {
+            const declaredSrc = el.getAttribute('src') || '';
+            // ``currentSrc`` is the browser's selected responsive image; retain the declared
+            // value too because a reader may swap it only after a lazy-load callback.
+            const values = [el.currentSrc || '', declaredSrc, declaredSrc ? (el.src || '') : ''];
+            lazyAttributes.forEach((name) => values.push(el.getAttribute(name) || ''));
+            return values;
+        }).filter(Boolean);
         return {
             imageCount: images.length,
             urls: [...new Set(urls)],
@@ -1044,7 +1779,10 @@ def _download_candidates(
 ):
     saved = []
     content_hashes: set[str] = set()
-    viewer_total = int(report.get("viewer_image_count") or 0)
+    # The adapter-owned accepted manifest is authoritative, including a completed bounded
+    # pagination pass; the raw DOM count only describes the first reader surface.
+    viewer_total = len(report.get("expected_chapter_candidate_ids") or []) or int(
+        report.get("viewer_image_count") or 0)
     if max_images and viewer_total:
         viewer_total = min(viewer_total, int(max_images))
     total = viewer_total or len(candidates)
@@ -1066,8 +1804,10 @@ def _download_candidates(
             from download_transport import reserve_local_content
 
             reserve_local_content(transports, len(data))
+            used_transport = "canvas"
         else:
             data = _download_url(url, referer, max_retries, transports=transports)
+            used_transport = getattr(_download_url, "last_transport_name", "")
         report["timings"]["download_seconds"] += time.perf_counter() - download_started
 
         if not data:
@@ -1104,6 +1844,7 @@ def _download_candidates(
             "candidate_id": str(candidate.get("candidate_id") or ""),
             "url": _sanitized_url(url),
             "path": file_path,
+            "transport_name": _safe_report_metadata(used_transport, "unknown"),
             "width": info_or_reason["width"],
             "height": info_or_reason["height"],
             "source": candidate.get("source"),
@@ -1112,6 +1853,7 @@ def _download_candidates(
             "is_chapter_candidate": bool(candidate.get("isChapterCandidate")),
         }
         report["downloaded"].append(item)
+        _record_successful_transport(report, item["transport_name"])
         report["total_downloaded"] = len(report["downloaded"])
         saved.append(file_path)
 
@@ -1183,11 +1925,19 @@ def _download_url(url, referer, max_retries, transports=None):
 
         transports = [RequestsTransport(select_adapter(url))]
 
+    # Function attributes are a narrow compatibility seam for the existing bytes-only
+    # caller. Reset them before every fetch so a previous candidate cannot be credited
+    # when this one fails or a test replaces the transport list.
+    _download_url.last_failure = ""
+    _download_url.last_transport_name = ""
     last_error = None
     for transport in transports:
         for _ in range(max(1, max_retries)):
             try:
-                return transport.fetch(url, referer=referer).content
+                result = transport.fetch(url, referer=referer)
+                _download_url.last_transport_name = _safe_report_metadata(
+                    getattr(transport, "name", ""), "unknown")
+                return result.content
             except LimitExceeded:
                 raise                     # chapter budget is terminal; never retry/fallback
             except ChallengeRequired:

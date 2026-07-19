@@ -23,7 +23,7 @@ from community_auth import (
 from community_api import CommunityApi
 from community_http import CommunityNetworkBoundaryMiddleware, create_community_router
 from local_environment import load_local_environment_for_entrypoint
-from ui_bridge import UiBridge
+from ui_bridge import UiBridge, local_folder_ui_allowed
 
 
 if not load_local_environment_for_entrypoint():
@@ -105,6 +105,13 @@ def _job_principal(request: Request) -> RequestPrincipal:
     return principal
 
 
+def _local_folder_submit_allowed(request: Request) -> bool:
+    """A browser may submit a filesystem folder only to a loopback-only UI server."""
+
+    peer = str(getattr(getattr(request, "client", None), "host", "") or "")
+    return local_folder_ui_allowed(bind_host=APP_HOST, peer_host=peer)
+
+
 @app.get("/auth/callback")
 def auth_callback() -> FileResponse:
     """Supabase e-mail confirmation/login landing page.
@@ -133,7 +140,23 @@ async def api_run(
     from chapter_source import SourceError, supported_hosts
 
     try:
-        return await BRIDGE.start(payload, principal=_job_principal(request))
+        requested_type = str(payload.get("source_type") or "").strip().casefold()
+        requests_local_folder = requested_type == "local_folder" or bool(
+            str(payload.get("local_folder") or "").strip())
+        if requests_local_folder and not _local_folder_submit_allowed(request):
+            # Do not pass the raw folder to the bridge, error handler, or logs when this
+            # server is externally bound. This feature is intentionally unavailable there.
+            raise HTTPException(status_code=403, detail={
+                "code": "local_folder_requires_loopback_ui",
+                "stage": "validacao_da_fonte",
+                "message": "A pasta local só pode ser enviada pelo painel em loopback.",
+                "action": "Abra o painel local em 127.0.0.1 ou localhost.",
+            })
+        return await BRIDGE.start(
+            payload,
+            principal=_job_principal(request),
+            local_folder_allowed=requests_local_folder,
+        )
     except SourceError as exc:
         # Source diagnostics are coded and deliberately generic: URL fragments, headers,
         # cookies and provider responses never reach the browser.
@@ -148,6 +171,11 @@ async def api_run(
             "unsupported_canvas_reader": ("O leitor em canvas não pôde ser capturado com integridade.", "Use uma fonte que exponha páginas visíveis sem proteção interativa."),
             "incomplete_download": ("As páginas não puderam ser baixadas por completo.", "Revise a fonte e tente novamente mais tarde."),
         }
+        if exc.code.startswith("local_"):
+            messages[exc.code] = (
+                "A pasta local não pôde ser usada com segurança.",
+                "Use uma pasta de capítulo permitida, sem links, e tente novamente.",
+            )
         message, action = messages.get(
             exc.code, ("Não foi possível analisar esta fonte com segurança.", "Revise a URL e tente novamente."))
         raise HTTPException(status_code=400, detail={
@@ -166,7 +194,10 @@ async def api_run(
 
 @app.post("/api/ui/cancel")
 async def api_cancel(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    return await BRIDGE.cancel(queue=bool(payload.get("queue", False)))
+    return await BRIDGE.cancel(
+        queue=bool(payload.get("queue", False)),
+        job_id=str(payload.get("job_id") or ""),
+    )
 
 
 @app.post("/api/ui/source/confirm")
@@ -181,6 +212,18 @@ def api_source_confirm(payload: dict[str, Any] = Body(default={})) -> dict[str, 
             "code": str(exc), "stage": "revisao_da_fonte",
             "message": "A seleção de páginas não é válida.",
             "action": "Selecione ao menos uma página encontrada e tente novamente.",
+        }) from exc
+
+
+@app.post("/api/ui/source/retry")
+async def api_source_retry(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return await BRIDGE.retry_source_review(str(payload.get("job_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc), "stage": "revisao_da_fonte",
+            "message": "Esta revisÃ£o de fonte nÃ£o pode mais ser repetida.",
+            "action": "Atualize a tela e escolha a revisÃ£o atualmente exibida.",
         }) from exc
 
 

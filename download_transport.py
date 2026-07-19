@@ -278,8 +278,10 @@ class BrowserSessionTransport(RequestsTransport):
             domain = str(cookie.get("domain") or "").lstrip(".").lower()
             if not name or value is None:
                 continue
-            # Scope: only cookies belonging to the page's own domain travel with us.
-            if domain and not (domain == self._domain or self._domain.endswith(f".{domain}")):
+            # Scope: only cookies set for the literal reader host travel with this fallback.
+            # A parent-domain cookie could otherwise be replayed by Requests to an authorised
+            # CDN sibling, even though the browser analysis never needed to disclose it there.
+            if domain and domain != self._domain:
                 continue
             self._session.cookies.set(
                 name, value, domain=domain or self._domain,
@@ -388,6 +390,10 @@ def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | 
     try:
         for _ in range(limits.max_redirects + 1):
             adapter.validate_navigation_url(current)
+            # Specific readers may only enter a chapter-shaped path.  Reject a redirect to a
+            # series, account or home page before Selenium is ever pointed at it; generic
+            # adapters deliberately have no path markers and remain unaffected.
+            adapter.validate_path(current)
             try:
                 response = session.get(
                     current,
@@ -406,6 +412,7 @@ def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | 
                         raise SourceError(SOURCE_NOT_READY, "redirect_without_location")
                     current = requests.compat.urljoin(current, location)
                     adapter.validate_navigation_url(current)
+                    adapter.validate_path(current)
                     continue
                 if status in (401, 403):
                     if looks_like_challenge(RequestsTransport._peek(response)):

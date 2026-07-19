@@ -23,6 +23,7 @@ def public_dns(*_args, **_kwargs):
 def analysis():
     return {
         "adapter": "universal", "final_host": "reader.example.test",
+        "adapter_version": "1",
         "outcome": SUPPORTED_GENERIC_HIGH_CONFIDENCE,
         "accepted": [{"id": "opaque-1"}, {"id": "opaque-2"}],
         "clusters": [{"key": cluster_evidence_id("container:chapter-reader"), "score": 0.9,
@@ -41,6 +42,8 @@ class SourceProfileTests(unittest.TestCase):
         self.assertEqual(profile["profile_version"], PROFILE_VERSION)
         self.assertEqual(profile["host"], "reader.example.test")
         self.assertEqual(profile["selection_mode"], "manual")
+        self.assertEqual(profile["adapter_name"], "universal")
+        self.assertEqual(profile["expected_page_count"], 2)
         self.assertNotIn("opaque-1", json.dumps(profile))
         self.assertNotIn("http", json.dumps(profile).casefold())
 
@@ -100,6 +103,56 @@ class SourceProfileTests(unittest.TestCase):
     def test_incomplete_analysis_cannot_create_a_profile_even_with_a_selection(self):
         incomplete = {**analysis(), "outcome": INCOMPLETE_DOWNLOAD}
         self.assertIsNone(profile_from_analysis(incomplete, selection()))
+
+    def test_profile_drops_and_rejects_unrecognised_signal_text(self):
+        untrusted = analysis()
+        untrusted["clusters"] = [{**untrusted["clusters"][0],
+                                  "signals": ["multiple_images", "token=private"]}]
+        profile = profile_from_analysis(untrusted, selection())
+        self.assertEqual(profile["positive_signals"], ["multiple_images"])
+        with tempfile.TemporaryDirectory() as folder:
+            store = SourceProfileStore(Path(folder) / "profiles.json")
+            malformed = {**profile, "positive_signals": ["token=private"]}
+            store.path.write_text(json.dumps({profile["host"]: malformed}), encoding="utf-8")
+            self.assertIsNone(store.load(profile["host"]))
+
+    def test_profile_pattern_mismatch_falls_back_to_fresh_universal_analysis(self):
+        raw = [
+            {"url": f"https://cdn.example.test/chapter/{index}.webp", "source": "currentSrc",
+             "order": index, "y": index * 1000, "width": 800, "height": 1200,
+             "naturalWidth": 800, "naturalHeight": 1200, "container": "chapter-reader",
+             "context": "reader chapter"}
+            for index in (1, 2)
+        ]
+        profile = profile_from_analysis(analysis(), selection())
+        profile["path_pattern_fingerprint"] = "pattern:" + "0" * 20
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            result = analyse_candidates(
+                "https://reader.example.test/chapter/1", raw,
+                adapter=UniversalChapterAdapter("https://reader.example.test/chapter/1"),
+                profile=profile,
+            )
+        self.assertFalse(result.profile_used)
+        self.assertTrue(result.accepted)
+
+    def test_profile_adapter_version_mismatch_falls_back_to_fresh_analysis(self):
+        raw = [
+            {"url": f"https://cdn.example.test/chapter/{index}.webp", "source": "currentSrc",
+             "order": index, "y": index * 1000, "width": 800, "height": 1200,
+             "naturalWidth": 800, "naturalHeight": 1200, "container": "chapter-reader",
+             "context": "reader chapter"}
+            for index in (1, 2)
+        ]
+        profile = profile_from_analysis(analysis(), selection())
+        profile["adapter_version"] = "other"
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            result = analyse_candidates(
+                "https://reader.example.test/chapter/1", raw,
+                adapter=UniversalChapterAdapter("https://reader.example.test/chapter/1"),
+                profile=profile,
+            )
+        self.assertFalse(result.profile_used)
+        self.assertTrue(result.accepted)
 
 
 if __name__ == "__main__":

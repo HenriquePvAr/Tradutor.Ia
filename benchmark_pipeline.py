@@ -60,7 +60,11 @@ from pipeline_cache import (
     valid_image,
 )
 from session_context import SessionContextStore
-from output_manifest import build_run_manifest, sanitize_source_url
+from output_manifest import (
+    build_run_manifest,
+    sanitize_source_provenance,
+    sanitize_source_url,
+)
 from pdf_naming import (
     build_pdf_filename,
     episode_number_from_url,
@@ -103,6 +107,91 @@ def _git_metadata():
     }
 
 
+def _first_source_value(*values):
+    """Return the first explicitly supplied source diagnostic without treating zero as absent."""
+
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _source_manifest_provenance(download_report):
+    """Reduce a downloader report to URL/path-free scalar run evidence.
+
+    The full downloader report is useful only inside its own restricted output directory and
+    contains opaque candidate ids plus per-image information.  The canonical run manifest is
+    an index/discovery artifact, so it records counts and decisions rather than a replayable
+    source manifest.  ``sanitize_source_provenance`` is the final allowlist before writing.
+    """
+
+    report = download_report if isinstance(download_report, dict) else {}
+    analysis = report.get("source_analysis")
+    analysis = analysis if isinstance(analysis, dict) else {}
+    selection = report.get("source_selection")
+    selection = selection if isinstance(selection, dict) else {}
+
+    candidate_ids = selection.get("candidate_ids")
+    selected_count_from_ids = (
+        len(candidate_ids) if isinstance(candidate_ids, (list, tuple)) else None
+    )
+    raw_selection = {
+        "automatic": selection.get("automatic"),
+        "selected_page_count": _first_source_value(
+            selection.get("fresh_candidate_count"),
+            selection.get("selected_candidate_count"),
+            selection.get("confirmed_candidate_count"),
+            selected_count_from_ids,
+        ),
+        "accepted_candidate_count": _first_source_value(
+            selection.get("accepted_candidate_count"),
+            selection.get("observed_candidate_count"),
+            analysis.get("accepted_count"),
+        ),
+        "manual_subset": selection.get("manual_subset"),
+        "manual_reordered": selection.get("manual_reordered"),
+        "reason_code": _first_source_value(
+            selection.get("reason_code"),
+            report.get("source_reason"),
+            report.get("source_outcome"),
+            analysis.get("outcome"),
+        ),
+    }
+    raw_provenance = {
+        "source_type": report.get("source_type"),
+        "adapter_name": _first_source_value(
+            report.get("adapter_name"), analysis.get("adapter")
+        ),
+        "adapter_version": _first_source_value(
+            report.get("adapter_version"), analysis.get("adapter_version")
+        ),
+        "transport_name": report.get("transport_name"),
+        "score": _first_source_value(
+            report.get("source_score"),
+            report.get("source_confidence"),
+            analysis.get("score"),
+            analysis.get("confidence"),
+        ),
+        "candidate_count": _first_source_value(
+            report.get("candidate_count"), analysis.get("candidate_count")
+        ),
+        "accepted_page_count": _first_source_value(
+            report.get("accepted_count"), analysis.get("accepted_count")
+        ),
+        "rejected_page_count": _first_source_value(
+            report.get("rejected_page_count"),
+            report.get("discarded_count"),
+            analysis.get("rejected_count"),
+            analysis.get("discarded_count"),
+        ),
+        "outcome": _first_source_value(
+            report.get("source_outcome"), analysis.get("outcome")
+        ),
+        "selection": raw_selection,
+    }
+    return sanitize_source_provenance(raw_provenance)
+
+
 def _output_run_manifest(output_folder, report, translator):
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     git = _git_metadata()
@@ -129,12 +218,18 @@ def _output_run_manifest(output_folder, report, translator):
         manual_review_count=int(quality.get("manual_review_required_groups") or 0),
         rejected_count=int(report.get("translation_rejections") or 0),
         pdf_path=str(report.get("pdf_path") or ""),
-        series_slug=series_slug_from_url(source_url),
-        episode_number=episode_number_from_url(source_url),
+        # ``source_url`` is deliberately sanitised before the timing report is written,
+        # so it cannot safely yield a semantic series/chapter identifier.  The run slug is
+        # the output directory identity; optional series metadata stays empty unless a
+        # future trusted source supplies it separately.
+        slug=Path(output_folder).name,
+        series_slug=str(report.get("series_slug") or ""),
+        episode_number=str(report.get("episode_number") or ""),
         source_type=source_type,
         adapter_name=str(report.get("adapter_name") or ""),
         adapter_version=str(report.get("adapter_version") or ""),
         transport_name=str(report.get("transport_name") or ""),
+        source_provenance=report.get("source_provenance"),
     )
 
 
@@ -1027,6 +1122,7 @@ def run_benchmark(args):
         technical_success=True,
         quality_validation=quality,
     )
+    source_provenance = _source_manifest_provenance(download_report)
 
     report = {
         "url": sanitize_source_url(args.url),
@@ -1034,6 +1130,10 @@ def run_benchmark(args):
         "adapter_name": str(download_report.get("adapter_name") or ""),
         "adapter_version": str(download_report.get("adapter_version") or ""),
         "transport_name": str(download_report.get("transport_name") or ""),
+        # The canonical run manifest and timing report share this small, non-replayable
+        # evidence block. It intentionally has no page URLs, local paths, candidate ids or
+        # transport/session details.
+        "source_provenance": source_provenance,
         "mode": "full" if args.full else "controlled",
         "force": bool(args.force),
         "fast": bool(args.fast),

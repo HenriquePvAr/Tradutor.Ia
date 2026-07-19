@@ -31,13 +31,23 @@ abaixo:
 | `supported_generic_high_confidence` | melhor cluster genérico com score `>= 0,85` | seleção automática; job pode entrar na fila |
 | `review_required_medium_confidence` | score `>= 0,60` e `< 0,85` | job fica em `awaiting_source_review`; o usuário confirma as páginas antes do OCR |
 | `unsupported_low_confidence` | score `< 0,60` | falha fechada; nenhum OCR ou download de capítulo é iniciado |
-| `incomplete_download` | a observação ou o conjunto excedeu um limite, ou o scroll não comprovou cobertura completa | falha fechada; não oferece seleção parcial nem inicia OCR |
+| `incomplete_download` | a observação, scroll ou paginação não comprovou cobertura completa, ou o conjunto excedeu um limite | falha fechada; não oferece seleção parcial nem inicia OCR |
 | `no_chapter_images`, `challenge_required`, `authentication_required`, `unsupported_canvas_reader` ou `unsupported_cross_origin_reader` | não há evidência utilizável ou há uma barreira | falha fechada com motivo codificado |
 
-Na revisão, o cliente recebe IDs opacos de candidatos, não URLs remotas. A confirmação
-precisa escolher um subconjunto não vazio desses IDs. Quando o worker for executar, ele
-observa o leitor novamente e confere a seleção contra a nova evidência; uma página que
-sumiu ou mudou não é buscada silenciosamente.
+Na revisão, o cliente recebe IDs opacos e metadados de candidatos, não URLs remotas. Para uma
+imagem DOM já visível e já carregada pelo navegador, pode receber também uma miniatura opcional:
+um `data:image` local gerado no próprio navegador de análise. Ela é limitada a 64 candidatos,
+24.000 caracteres por item e 1.000.000 de caracteres no conjunto; a UI aceita apenas URI JPEG/
+PNG base64 dentro desses limites e não faz fetch remoto para exibir a prévia. Imagem somente de
+rede, DOM ausente/oculto, CORS/canvas tainted ou qualquer falha de geração simplesmente deixam o
+candidato sem miniatura; ID, ordem e dimensões continuam disponíveis para revisão.
+
+A confirmação precisa escolher um subconjunto não vazio dos IDs. Enquanto o mesmo job permanece
+em `awaiting_source_review`, os ticks de polling não substituem o DOM já renderizado: exclusões e
+reordenação feitas na aba atual são preservadas até confirmar ou cancelar. Isso não é persistência
+de uma edição de revisão após recarregar a página ou trocar de job. Quando o worker for executar,
+ele observa o leitor novamente e confere a seleção contra a nova evidência; uma página que sumiu
+ou mudou não é buscada silenciosamente.
 
 Um resultado de revisão de fonte não é um PDF com `review_required`: é uma pausa anterior
 ao OCR. `review_required` continua sendo o estado terminal de qualidade de uma execução
@@ -74,12 +84,24 @@ o tempo da análise ou afirmar cobertura completa. Iframe cross-origin nunca é 
 quando há evidência de que ele seja o reader, o resultado é
 `unsupported_cross_origin_reader`, e não um sucesso baseado em parte visível da página.
 
-O adaptador não aciona paginação, “load more”, botões de próxima página, carrosséis ou
-sliders. Também não atravessa shadow DOM fechado ou iframe cross-origin e não mostra
-miniaturas reais. Pode ler metadados de respostas XHR/fetch que o navegador já recebeu e,
-sob limites, extrair somente URLs de estruturas JSON reconhecidas; não executa texto extraído
-nem persiste headers, query strings, request IDs ou corpos. Esses formatos interativos ainda
-precisam de adapter específico quando forem necessários.
+Há uma exceção estreita para paginação do fallback universal: ele pode seguir, sem clicar, um
+`a[href]` explícito quando a URL tem mesma origem e mesmo path, os parâmetros não relacionados
+à página permanecem idênticos e uma chave convencional de query numérica avança exatamente de
+N para N+1. A navegação usa `driver.get(href)` depois de revalidar URL/path; não executa handler
+fornecido pela página. Há no máximo 24 avanços, 45 segundos para a sequência e scroll limitado em
+cada superfície adicional. Somente candidatos aceitos de todas as superfícies reanalisadas podem
+formar o manifesto agregado.
+
+Controle ambíguo, query não comprovada, ciclo, redirect inesperado, timeout, scroll incompleto ou
+falha de análise posterior marca `pagination_incomplete`, que é uma falha de cobertura e não
+permite seleção, inclusive pelo caminho de revisão manual, nem resulta em capítulo parcial.
+O adaptador continua sem acionar `load more`, botões sem
+`href`, carrosséis ou sliders; também não atravessa shadow DOM fechado ou iframe cross-origin e
+não usa miniaturas remotas. A única prévia visual possível é o `data:image` local e limitado de
+uma imagem DOM já carregada, que não participa da seleção nem do download. Pode ler metadados de
+respostas XHR/fetch que o navegador já recebeu e, sob limites, extrair somente URLs de estruturas
+JSON reconhecidas; não executa texto extraído nem persiste headers, query strings, request IDs ou
+corpos. Esses formatos interativos ainda precisam de adapter específico quando forem necessários.
 
 ## Política de rede e limites
 
@@ -108,6 +130,7 @@ Os limites atuais de transporte são compartilhados pelo capítulo inteiro:
 | bytes totais | 1 GiB |
 | arquivos | 400 |
 | duração total de download | 900 s |
+| paginação genérica por query | até 24 avanços adicionais / 45 s; apenas `href` same-origin/same-path N+1 |
 
 As imagens passam por verificação de tipo, tamanho e decodificação. Respostas HTML,
 challenges e arquivos que não se comportam como imagem são rejeitados; um teto excedido
@@ -169,9 +192,9 @@ divergente ou associado a uma análise incompleta é ignorado.
 - Um score alto é evidência de coleta, não prova de direito de acesso, estabilidade do site
   ou qualidade da tradução posterior.
 - Leitores dependentes de autenticação, desafios, conteúdo protegido, canvas inacessível,
-  iframes cross-origin, APIs privadas, paginação interativa, carrosséis/sliders ou
-  estruturas não observáveis podem parar para revisão ou falhar fechados e normalmente
-  exigem adapter específico.
+  iframes cross-origin, APIs privadas, controles de paginação fora do `href` same-origin/
+  same-path N+1, carrosséis/sliders ou estruturas não observáveis podem parar para revisão ou
+  falhar fechados e normalmente exigem adapter específico.
 - Não há bypass de challenge, login, DRM ou bloqueio anti-bot.
 - A análise reabre um navegador porque o usuário submeteu uma URL; ela não é parte da suíte
   de testes padrão, que permanece hermética/offline.

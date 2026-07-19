@@ -95,8 +95,9 @@ class _Bridge(ui_bridge.UiBridge):
             accepted=[],
             public=lambda: {
                 "adapter": "webtoons", "final_host": "webtoons.com",
+                "adapter_version": "test-v1",
                 "outcome": SUPPORTED_SPECIFIC_ADAPTER, "confidence": 1.0,
-                "accepted": [], "accepted_count": 0, "discarded_count": 0,
+                "candidate_count": 0, "accepted": [], "accepted_count": 0, "discarded_count": 0,
             },
         )
 
@@ -142,6 +143,45 @@ class SubmitTests(unittest.TestCase):
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.QUEUED)
 
+    def test_remote_submission_persists_sanitized_adapter_provenance(self):
+        result = self.start()
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["source_type"], "url")
+        self.assertEqual(job["adapter_name"], "webtoons")
+        self.assertEqual(job["adapter_version"], "test-v1")
+        self.assertEqual(job["transport_name"], "pending")
+        self.assertEqual(job["source_score"], 1.0)
+        self.assertEqual(job["candidate_count"], 0)
+        self.assertEqual(job["input_count"], 0)
+        self.assertEqual(job["accepted_count"], 0)
+        self.assertEqual(job["rejected_count"], 0)
+
+    def test_remote_resume_preserves_analysis_selection_and_scalar_provenance(self):
+        result = self.start()
+        original = self.bridge.store.get_job(result["job_id"])
+        self.bridge.store.claim_next_job("remote-worker", 999999)
+        self.bridge.store.transition(original["id"], JobStatus.STARTING, expected_worker="remote-worker")
+        self.bridge.store.transition(original["id"], JobStatus.RUNNING, expected_worker="remote-worker")
+        self.bridge.store.transition(original["id"], JobStatus.INTERRUPTED, expected_worker="remote-worker")
+
+        resumed = self.bridge.resume(original["id"])
+        retry = self.bridge.store.get_job(resumed["job_id"])
+
+        self.assertEqual(retry["source_type"], "url")
+        self.assertEqual(retry["adapter_name"], "webtoons")
+        self.assertEqual(retry["adapter_version"], "test-v1")
+        self.assertEqual(retry["transport_name"], "pending")
+        self.assertEqual(retry["source_score"], 1.0)
+        self.assertEqual(retry["candidate_count"], 0)
+        self.assertEqual(retry["source_analysis"], original["source_analysis"])
+        self.assertEqual(retry["source_selection"], original["source_selection"])
+
+    def test_queue_item_starts_with_specific_adapter_provenance(self):
+        record = self.bridge.add_queue_item(self.payload())
+        self.assertEqual(record["source_provenance"]["adapter_name"], "webtoons")
+        self.assertEqual(record["source_provenance"]["transport_name"], "pending")
+        self.assertEqual(record["source_provenance"]["candidate_count"], 0)
+
     def test_submit_ensures_a_consumer_exists(self):
         # The original bug: a job was persisted with nobody to claim it.
         self.start()
@@ -182,6 +222,163 @@ class SubmitTests(unittest.TestCase):
     def test_conflicting_cache_and_force_is_rejected(self):
         with self.assertRaises(ValueError):
             self.start(use_cache=True, force=True)
+
+    def test_source_profile_creation_is_an_explicit_boolean_opt_in(self):
+        selected = self.start(create_source_profile=True)
+        job = self.bridge.store.get_job(selected["job_id"])
+        self.assertIs(job["configuration"]["create_source_profile"], True)
+
+        self.bridge.store.close()
+        self.bridge = _Bridge(self.tmp / "second-jobs.sqlite3")
+        rejected = self.start(create_source_profile="1")
+        job = self.bridge.store.get_job(rejected["job_id"])
+        self.assertIs(job["configuration"]["create_source_profile"], False)
+
+
+class LocalFolderSubmitTests(unittest.TestCase):
+    """The UI bridge must turn a raw local selection into opaque job provenance only."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.bridge = _Bridge(self.tmp / "jobs.sqlite3")
+        self.raw_folder = r"C:\\Users\\Example\\private chapter"
+        self.snapshot_calls: list[str] = []
+
+        async def fake_snapshot(raw_folder):
+            self.snapshot_calls.append(raw_folder)
+            return (
+                "snapshot_opaque_1",
+                {
+                    "source_type": "local_folder",
+                    "adapter_name": "local_folder",
+                    "adapter_version": "1",
+                    "folder_name": "private chapter",
+                    "input_root_fingerprint": "a" * 16,
+                    "input_count": 2,
+                    "accepted_count": 2,
+                    "rejected_count": 0,
+                    "duplicate_count": 0,
+                    "total_size_bytes": 2048,
+                    "logical_pages": True,
+                    "rejection_reasons": [],
+                },
+                ["local-0001", "local-0002"],
+            )
+
+        self.bridge._snapshot_local_folder = fake_snapshot
+
+    def tearDown(self):
+        self.bridge.store.close()
+
+    def payload(self, **over):
+        base = {
+            "source_type": "local_folder",
+            "local_folder": self.raw_folder,
+            "chapter_name": "Capítulo local de teste",
+            "slug": "capitulo_local_teste",
+            "mode": "fast",
+            "full": True,
+            "use_cache": False,
+            "force": True,
+            "use_context": True,
+            "open_output": False,
+        }
+        base.update(over)
+        return base
+
+    def start(self, **over):
+        with mock.patch.object(ui_bridge, "env_status",
+                               return_value={"env_exists": True, "nvidia_configured": True}):
+            return drive(self.bridge.start(self.payload(**over), local_folder_allowed=True))
+
+    def test_loopback_local_submission_persists_only_opaque_snapshot_provenance(self):
+        result = self.start()
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.snapshot_calls, [self.raw_folder])
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["status"], JobStatus.QUEUED)
+        self.assertEqual(job["source_type"], "local_folder")
+        self.assertEqual(job["snapshot_ref"], "snapshot_opaque_1")
+        self.assertEqual(job["transport_name"], "local_snapshot")
+        self.assertEqual(job["source_score"], 1.0)
+        self.assertEqual(job["candidate_count"], 2)
+        self.assertTrue(job["logical_pages"])
+        self.assertEqual(job["source_url"], "")
+        self.assertIn("run_local_folder.py", " ".join(job["command"]))
+        self.assertIn("--snapshot-ref", job["command"])
+        self.assertNotIn(self.raw_folder, str(job))
+        browser_record = self.bridge._job_record(job)
+        self.assertEqual(browser_record["source_type"], "local_folder")
+        self.assertEqual(browser_record["url"], "")
+        self.assertEqual(browser_record["source_provenance"], {
+            "source_type": "local_folder",
+            "adapter_name": "local_folder",
+            "adapter_version": "1",
+            "transport_name": "local_snapshot",
+            "score": 1.0,
+            "candidate_count": 2,
+            "accepted_page_count": 2,
+            "rejected_page_count": 0,
+            "reason_code": "",
+        })
+        self.assertNotIn(self.raw_folder, str(browser_record))
+
+    def test_local_source_is_denied_before_snapshot_without_loopback_authorization(self):
+        with self.assertRaisesRegex(ValueError, "local_folder_requires_loopback_ui"):
+            drive(self.bridge.start(self.payload()))
+        self.assertEqual(self.snapshot_calls, [])
+        self.assertEqual(self.bridge.store.list_jobs(limit=None), [])
+
+    def test_local_source_rejects_partial_scope_before_snapshot(self):
+        with self.assertRaisesRegex(ValueError, "local_folder_requires_full_scope"):
+            self.start(full=False, max_images=2)
+        self.assertEqual(self.snapshot_calls, [])
+        self.assertEqual(self.bridge.store.list_jobs(limit=None), [])
+
+    def test_local_source_failure_is_a_sanitized_terminal_job(self):
+        async def failure(_raw_folder):
+            raise SourceError("local_path_not_allowed", "outside_allowed_root")
+
+        self.bridge._snapshot_local_folder = failure
+        with mock.patch.object(ui_bridge, "env_status",
+                               return_value={"env_exists": True, "nvidia_configured": True}):
+            with self.assertRaises(SourceError) as ctx:
+                drive(self.bridge.start(self.payload(), local_folder_allowed=True))
+        self.assertEqual(ctx.exception.code, "local_path_not_allowed")
+        failed = self.bridge.store.list_jobs(statuses=[JobStatus.FAILED])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["source_type"], "local_folder")
+        self.assertEqual(failed[0]["reason_code"], "local_path_not_allowed")
+        self.assertNotIn(self.raw_folder, str(failed[0]))
+
+    def test_declared_source_type_must_match_the_populated_source_field(self):
+        with self.assertRaises(SourceError) as ctx:
+            self.start(source_type="url")
+        self.assertEqual(ctx.exception.code, "invalid_request")
+        self.assertEqual(self.snapshot_calls, [])
+
+    def test_resume_preserves_path_free_local_provenance(self):
+        result = self.start()
+        original = self.bridge.store.get_job(result["job_id"])
+        self.bridge.store.claim_next_job("local-worker", 999999)
+        self.bridge.store.transition(original["id"], JobStatus.STARTING, expected_worker="local-worker")
+        self.bridge.store.transition(original["id"], JobStatus.RUNNING, expected_worker="local-worker")
+        self.bridge.store.transition(original["id"], JobStatus.INTERRUPTED, expected_worker="local-worker")
+        resumed = self.bridge.resume(original["id"])
+        retry = self.bridge.store.get_job(resumed["job_id"])
+        self.assertEqual(retry["source_type"], "local_folder")
+        self.assertEqual(retry["snapshot_ref"], "snapshot_opaque_1")
+        self.assertTrue(retry["logical_pages"])
+        self.assertEqual(retry["source_analysis"]["folder_name"], "private chapter")
+        self.assertNotIn(self.raw_folder, str(retry))
+
+    def test_loopback_policy_requires_both_the_bind_and_peer_to_be_local(self):
+        self.assertTrue(ui_bridge.local_folder_ui_allowed(
+            bind_host="127.0.0.1", peer_host="::1"))
+        self.assertFalse(ui_bridge.local_folder_ui_allowed(
+            bind_host="0.0.0.0", peer_host="127.0.0.1"))
+        self.assertFalse(ui_bridge.local_folder_ui_allowed(
+            bind_host="localhost", peer_host="198.51.100.9"))
 
 
 class QueueVisibilityTests(unittest.TestCase):
@@ -269,6 +466,16 @@ class SourceReviewTests(unittest.TestCase):
         self.assertNotIn("https://", str(job["source_analysis"]))
         self.assertEqual(self.bridge.runtime_state()["source_review"]["id"], result["job_id"])
 
+    def test_known_incomplete_source_never_enters_manual_page_review(self):
+        self.public["warnings"] = ["pagination_incomplete"]
+        result = drive(self.bridge.start(self.payload()))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason_code"], "incomplete_download")
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["status"], JobStatus.FAILED)
+        self.assertEqual(job["reason_code"], "incomplete_download")
+        self.assertEqual(self.bridge.worker_calls, 0)
+
     def test_confirmation_requires_a_nonempty_known_subset_and_preserves_open_output(self):
         result = drive(self.bridge.start(self.payload()))
         with self.assertRaises(ValueError):
@@ -284,6 +491,17 @@ class SourceReviewTests(unittest.TestCase):
         self.assertIn("page-b", job["command"])
         self.assertIn("--open-output", job["command"])
         self.assertFalse(job["source_selection"]["automatic"])
+
+    def test_confirmation_records_explicit_manual_page_order(self):
+        result = drive(self.bridge.start(self.payload()))
+        with mock.patch.object(ui_bridge, "env_status", return_value={
+            "env_exists": True, "nvidia_configured": True,
+        }):
+            self.bridge.confirm_source_pages(result["job_id"], ["page-b", "page-a"])
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["source_selection"]["candidate_ids"], ["page-b", "page-a"])
+        self.assertTrue(job["source_selection"]["manual_reordered"])
+        self.assertLess(job["command"].index("page-b"), job["command"].index("page-a"))
 
     def test_staging_source_job_records_the_creating_ui_process(self):
         job = self.bridge._create_job(
@@ -330,10 +548,51 @@ class SourceReviewTests(unittest.TestCase):
 
     def test_cancel_review_freezes_it_without_queueing(self):
         result = drive(self.bridge.start(self.payload()))
-        drive(self.bridge.cancel())
+        drive(self.bridge.cancel(job_id=result["job_id"]))
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.CANCELLED)
         self.assertIsNotNone(job["finished_at"])
+
+    def test_cancelling_displayed_review_never_cancels_another_waiting_review(self):
+        first = self.bridge._create_job(
+            self.payload(slug="first-review"), require_environment=False,
+            initial_status=JobStatus.AWAITING_SOURCE_REVIEW,
+            source_analysis=self.public,
+        )
+        # Ensure the second job is the one the runtime would actually show in the review UI.
+        self.bridge.store.update_fields(first["id"], updated_at=time.time() - 1)
+        second = self.bridge._create_job(
+            self.payload(slug="second-review"), require_environment=False,
+            initial_status=JobStatus.AWAITING_SOURCE_REVIEW,
+            source_analysis=self.public,
+        )
+
+        result = drive(self.bridge.cancel(job_id=second["id"]))
+
+        self.assertEqual(result["job_id"], second["id"])
+        self.assertEqual(self.bridge.store.get_job(second["id"])["status"], JobStatus.CANCELLED)
+        self.assertEqual(
+            self.bridge.store.get_job(first["id"])["status"], JobStatus.AWAITING_SOURCE_REVIEW)
+
+    def test_stale_review_id_is_rejected_without_cancelling_any_waiting_review(self):
+        first = self.bridge._create_job(
+            self.payload(slug="first-stale-review"), require_environment=False,
+            initial_status=JobStatus.AWAITING_SOURCE_REVIEW,
+            source_analysis=self.public,
+        )
+        self.bridge.store.update_fields(first["id"], updated_at=time.time() - 1)
+        second = self.bridge._create_job(
+            self.payload(slug="second-stale-review"), require_environment=False,
+            initial_status=JobStatus.AWAITING_SOURCE_REVIEW,
+            source_analysis=self.public,
+        )
+
+        with self.assertRaisesRegex(ValueError, "source_review_not_available"):
+            drive(self.bridge.cancel(job_id=first["id"]))
+        self.assertEqual(
+            self.bridge.store.get_job(first["id"])["status"], JobStatus.AWAITING_SOURCE_REVIEW)
+        self.assertEqual(
+            self.bridge.store.get_job(second["id"])["status"], JobStatus.AWAITING_SOURCE_REVIEW)
 
     def test_coded_remote_source_failure_is_recorded_then_returned_to_the_api(self):
         self.bridge._analyze_source = lambda _url, **_kw: (_ for _ in ()).throw(
