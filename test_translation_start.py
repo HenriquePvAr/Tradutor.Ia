@@ -89,7 +89,7 @@ class _Bridge(ui_bridge.UiBridge):
         self.worker_calls += 1
         return {"online": False, "started": False}
 
-    def _analyze_source(self, _url, *, cancel_check=None):
+    def _analyze_source(self, _url, *, cancel_check=None, on_progress=None):
         return SimpleNamespace(
             outcome=SUPPORTED_SPECIFIC_ADAPTER,
             accepted=[],
@@ -129,7 +129,7 @@ class _PhaseWorker(Worker):
         self._analyzer = analyzer
         self.spawns = 0
 
-    def _analyze_source(self, url, *, cancel_check=None):
+    def _analyze_source(self, url, *, cancel_check=None, on_progress=None):
         return self._analyzer(url, cancel_check=cancel_check)
 
     def _spawn_runner(self, job):

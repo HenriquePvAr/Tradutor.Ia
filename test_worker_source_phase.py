@@ -72,7 +72,7 @@ class _Worker(Worker):
         self._error = error
         self.spawns = 0
 
-    def _analyze_source(self, url, *, cancel_check=None):
+    def _analyze_source(self, url, *, cancel_check=None, on_progress=None):
         if self._error is not None:
             raise self._error
         return self._analysis
