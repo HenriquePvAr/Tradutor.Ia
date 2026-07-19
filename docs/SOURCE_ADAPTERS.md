@@ -285,3 +285,46 @@ Isso explica os 90 aceitos do job real: parte das páginas ainda não havia reso
 
 Este ponto permanece **em aberto**: a coleta ainda não aguarda a resolução completa antes de
 contar candidatos.
+
+## Slots do leitor e lazy loading
+
+O leitor entrega primeiro elementos de *placeholder*: o slot existe, guarda seu índice no
+DOM e só depois troca pela página real. Classificar esse slot como descartado na primeira
+leitura encolhe o capítulo em silêncio.
+
+| Estado | Significado |
+| --- | --- |
+| `pending_lazy` | slot dentro do leitor que ainda não resolveu (sem URL, ou dimensões ≤ 2px) |
+| `resolved_page` | URL final, host autorizado, dimensões acima do mínimo |
+| `rejected` | mobília de interface, host não autorizado, ou imagem pequena já resolvida |
+
+Um placeholder 1×1 aciona a regra de `tracking_pixel` só pelo tamanho — isso não é evidência
+de que o slot é mobília, apenas de que ele não carregou. Por isso `slot_state` trata
+`tracking_pixel` de forma diferente dos demais motivos de exclusão.
+
+### Ordem
+
+A ordem vem do índice do elemento no leitor, nunca da ordem em que as imagens terminam de
+carregar. Há teste com slots resolvendo embaralhados e o manifesto saindo em ordem DOM.
+
+### Hosts
+
+`webtoon-phinf.pstatic.net` é host de página. `webtoons-static.pstatic.net` é o host dos
+placeholders e **não** está em `resource_hosts` — um slot que "resolva" com dimensões reais
+nesse host continua `rejected`, porque o host nunca foi autorizado.
+
+### Cobertura
+
+`reader_coverage_complete` exige pelo menos uma página resolvida e **zero** slots pendentes.
+Slots `rejected` (recomendações, rodapé) não bloqueiam. Quando sobram pendentes, o
+diagnóstico traz `total`, `resolved`, `pending`, `rejected` e os índices pendentes, e o
+código é `incomplete_source_coverage` — nunca `incomplete_download`, já que nenhum download
+ocorreu.
+
+### Limitação
+
+A classificação por estado está implementada e testada. O **laço de resolução** — rolar o
+leitor em passos, reler os slots e esperar o lazy loading concluir — não foi implementado
+nesta tarefa: percorrer o leitor inteiro força o carregamento das 167 imagens e produz o
+manifesto completo do capítulo, que é a peça imediatamente anterior à captura. A arquitetura
+está pronta para receber esse laço quando ele for aplicado a uma fonte com direitos.

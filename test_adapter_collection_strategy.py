@@ -38,7 +38,7 @@ class FakeDriver:
         if not self.found:
             return {"found": False, "candidates": []}
         return {"found": True, "candidates": [
-            {"tag": "img", "url": f"https://cdn.test/p{i:03}.jpg", "source": "currentSrc",
+            {"tag": "img", "url": f"https://webtoon-phinf.pstatic.net/p{i:03}.jpg", "source": "currentSrc",
              "order": i, "width": 800, "height": 1280, "naturalWidth": 800,
              "naturalHeight": 1280, "inContainer": True, "isChapterCandidate": True,
              "y": i * 1280, "className": "_images", "id": "", "alt": ""}
@@ -83,7 +83,9 @@ class ReaderCollectionTests(unittest.TestCase):
 
     def test_dom_order_is_preserved(self):
         payload = WEBTOONS.collect_reader_payload(FakeDriver(reader_images=5), PAGE)
+        # dom_candidates now carries resolved slots only; order still comes from the reader.
         self.assertEqual([c["order"] for c in payload["dom_candidates"]], [0, 1, 2, 3, 4])
+        self.assertEqual(payload["slot_counts"]["pending"], 0)
 
     def test_a_missing_reader_container_fails_closed(self):
         with self.assertRaises(SourceError) as ctx:
