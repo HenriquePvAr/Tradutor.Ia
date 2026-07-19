@@ -433,6 +433,9 @@ class BaseAdapter:
         # performance log three times (which can otherwise consume it on the first call).
         if self.collection_strategy == "adapter_specific":
             collected = self.collect_reader_payload(browser, page_url)
+            lazy_resolver = context.get("lazy_slot_resolver") if isinstance(context, dict) else None
+            if callable(lazy_resolver):
+                collected = lazy_resolver(self, browser, page_url, collected)
         else:
             collected = self._collected_payload(browser, page_url)
         key = (id(browser), page_url)

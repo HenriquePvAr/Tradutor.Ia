@@ -145,11 +145,11 @@ class Worker:
         return process_tree.is_alive(
             job.get("worker_pid"), create_time=job.get("worker_create_time"))
 
-    def _analyze_source(self, url: str, *, cancel_check=None):
+    def _analyze_source(self, url: str, *, cancel_check=None, on_progress=None):
         """Injection seam: tests replace this instead of driving a real browser."""
         from down import analyze_chapter_source
 
-        return analyze_chapter_source(url, cancel_check=cancel_check)
+        return analyze_chapter_source(url, cancel_check=cancel_check, on_progress=on_progress)
 
     def _prepare_source(self, job: dict) -> dict | None:
         """Run the source phase when needed. Returns None when no runner may start.
@@ -182,8 +182,23 @@ class Worker:
             counter_stage="source_validation")
         self.store.heartbeat(job["id"])
         try:
+            def progress(event: dict) -> None:
+                payload = event if isinstance(event, dict) else {}
+                stage = str(payload.get("stage") or "source_lazy_resolution")
+                self.store.update_progress(
+                    job["id"],
+                    stage=stage,
+                    current=int(payload.get("current") or 0),
+                    total=int(payload.get("total") or 0),
+                    message=str(payload.get("message") or ""),
+                    counter_stage=str(payload.get("counter_stage") or stage),
+                )
+                self.store.worker_heartbeat(self.worker_id)
+
             analysis = self._analyze_source(
-                str(current.get("source_url") or ""), cancel_check=cancelled)
+                str(current.get("source_url") or ""),
+                cancel_check=cancelled,
+                on_progress=progress)
         except Exception as exc:  # noqa: BLE001 - coded, sanitized terminal outcome
             return self._fail_source(job["id"], exc)
         if cancelled():
@@ -209,6 +224,11 @@ class Worker:
         """Record a sanitized terminal source failure; never start a runner after one."""
         code = getattr(exc, "code", None) or "source_not_ready"
         try:
+            if code == "cancelled":
+                self.store.transition(
+                    job_id, JobStatus.CANCELLED, reason_code=code, stage="cancelled",
+                    interrupted_reason="cancelled_source_analysis")
+                return None
             self.store.transition(
                 job_id, JobStatus.FAILED, reason_code=code, stage="source_analysis",
                 error_type="source_analysis", error_message=str(code))

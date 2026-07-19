@@ -64,7 +64,8 @@ _INCOMPLETE_COVERAGE_WARNINGS = frozenset({
     "candidate_limit", "dom_scan_limit", "json_manifest_limit", "canvas_capture_limit",
     "canvas_capture_too_large", "canvas_capture_unavailable", "scroll_incomplete",
     "page_limit_exceeded", "network_resource_limit", "iframe_limit", "iframe_depth_limit",
-    "network_log_limit", "network_json_limit",
+    "network_log_limit", "network_json_limit", "lazy_resolution_timeout",
+    "lazy_resolution_max_rounds", "reader_dom_changed",
 })
 _COLLECTOR_WARNINGS = _INCOMPLETE_COVERAGE_WARNINGS | frozenset({
     "cross_origin_iframe", "cross_origin_reader",
@@ -305,6 +306,7 @@ class SourceAnalysis:
     canvas_captured: int = 0
     profile_used: bool = False
     network_metadata: list[dict[str, Any]] = field(default_factory=list)
+    reader_diagnostics: dict[str, Any] = field(default_factory=dict)
     # The selection is deliberately opaque: candidate ids only, never a source URL or a
     # signed query string.  It lets jobs and review UI share the adapter-owned manifest.
     page_manifest: dict[str, Any] = field(default_factory=dict)
@@ -336,6 +338,7 @@ class SourceAnalysis:
             "canvas_captured": self.canvas_captured,
             "profile_used": self.profile_used,
             "network_metadata": list(self.network_metadata),
+            "reader_diagnostics": dict(self.reader_diagnostics),
             "page_manifest": dict(self.page_manifest),
         }
 
@@ -580,6 +583,7 @@ def analyse_candidates(
     canvas_captured: int = 0,
     profile: dict[str, Any] | None = None,
     network_metadata: Iterable[dict[str, Any]] = (),
+    reader_diagnostics: dict[str, Any] | None = None,
     cluster_score: Any | None = None,
 ) -> SourceAnalysis:
     """Cluster candidates and return an explainable, non-fetching decision."""
@@ -588,6 +592,7 @@ def analyse_candidates(
     safe_warnings = _sanitize_warnings(warnings)
     safe_network_metadata = [dict(item) for item in network_metadata
                              if isinstance(item, dict)][:MAX_NETWORK_METADATA]
+    safe_reader_diagnostics = dict(reader_diagnostics or {})
     if looks_like_challenge(page_text):
         return SourceAnalysis(adapter=adapter.name,
                               adapter_version=str(getattr(adapter, "adapter_version", "") or ""),
@@ -595,7 +600,8 @@ def analyse_candidates(
                               outcome=CHALLENGE_REQUIRED, confidence=0.0,
                               warnings=safe_warnings, canvas_detected=canvas_detected,
                               canvas_captured=canvas_captured,
-                              network_metadata=safe_network_metadata)
+                              network_metadata=safe_network_metadata,
+                              reader_diagnostics=safe_reader_diagnostics)
     lowered_text = str(page_text or "").casefold()
     if any(marker in lowered_text for marker in _AUTH_MARKERS):
         return SourceAnalysis(adapter=adapter.name,
@@ -604,7 +610,8 @@ def analyse_candidates(
                               outcome=AUTHENTICATION_REQUIRED, confidence=0.0,
                               warnings=safe_warnings, canvas_detected=canvas_detected,
                               canvas_captured=canvas_captured,
-                              network_metadata=safe_network_metadata)
+                              network_metadata=safe_network_metadata,
+                              reader_diagnostics=safe_reader_diagnostics)
     # A cross-origin frame which itself carries reader evidence cannot be inspected safely.
     # Do not call a partial sibling DOM high-confidence just because it happens to score well.
     if "cross_origin_reader" in safe_warnings:
@@ -614,7 +621,8 @@ def analyse_candidates(
                               outcome=UNSUPPORTED_CROSS_ORIGIN_READER, confidence=0.0,
                               warnings=safe_warnings, canvas_detected=canvas_detected,
                               canvas_captured=canvas_captured,
-                              network_metadata=safe_network_metadata)
+                              network_metadata=safe_network_metadata,
+                              reader_diagnostics=safe_reader_diagnostics)
 
     clusters: dict[str, CandidateCluster] = {}
     discarded: list[dict[str, Any]] = []
@@ -732,7 +740,8 @@ def analyse_candidates(
                               confidence=0.0, discarded=discarded, clusters=[],
                               warnings=safe_warnings, canvas_detected=canvas_detected,
                               canvas_captured=canvas_captured,
-                              network_metadata=safe_network_metadata)
+                              network_metadata=safe_network_metadata,
+                              reader_diagnostics=safe_reader_diagnostics)
 
     selected = cluster_list[0]
     accepted = sorted(selected.candidates, key=lambda candidate: (candidate.y, candidate.order))
@@ -774,6 +783,7 @@ def analyse_candidates(
         canvas_captured=canvas_captured,
         profile_used=profile_used,
         network_metadata=safe_network_metadata,
+        reader_diagnostics=safe_reader_diagnostics,
     )
 
 
@@ -1117,6 +1127,7 @@ def analyse_collected(
         canvas_captured=_number(safe_collected.get("canvas_captured")),
         profile=profile,
         network_metadata=safe_collected.get("network_metadata") or [],
+        reader_diagnostics=safe_collected.get("lazy_resolution") or {},
         cluster_score=cluster_score,
     )
 

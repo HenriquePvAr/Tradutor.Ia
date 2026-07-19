@@ -183,7 +183,14 @@ def download_images(
         # network/JSON evidence, candidate IDs or the accepted-reader manifest.
         source_warnings = _scroll_coverage_warnings(scroll_diagnostics, adapter)
         source_analysis = adapter.analyze(
-            {"driver": driver, "page_url": current_url},
+            {
+                "driver": driver,
+                "page_url": current_url,
+                "lazy_slot_resolver": _webtoons_lazy_resolver(
+                    cancel_check=None,
+                    on_progress=None,
+                ),
+            },
             profile=_load_source_profile(current_url, adapter),
             extra_warnings=source_warnings)
         source_analysis, pagination_diagnostics = _maybe_collect_paginated_reader(
@@ -310,7 +317,7 @@ def download_images(
             _write_download_report(debug_folder, report)
 
 
-def analyze_chapter_source(url, *, cancel_check=None):
+def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
     """Analyse a reader without creating output files or starting OCR.
 
     This is the UI preflight seam. It makes only the normal browser navigation requested by
@@ -350,7 +357,14 @@ def analyze_chapter_source(url, *, cancel_check=None):
         # source; it must never become a partial chapter merely because its host is known.
         source_warnings = _scroll_coverage_warnings(scroll_diagnostics, adapter)
         source_analysis = adapter.analyze(
-            {"driver": driver, "page_url": final_url},
+            {
+                "driver": driver,
+                "page_url": final_url,
+                "lazy_slot_resolver": _webtoons_lazy_resolver(
+                    cancel_check=cancel_check,
+                    on_progress=on_progress,
+                ),
+            },
             profile=_load_source_profile(final_url, adapter),
             extra_warnings=source_warnings)
         source_analysis, _ = _maybe_collect_paginated_reader(
@@ -366,12 +380,107 @@ def analyze_chapter_source(url, *, cancel_check=None):
         from universal_chapter_adapter import attach_review_thumbnails
 
         source_analysis = attach_review_thumbnails(driver, source_analysis)
-        _fail_open_coverage_guard(source_analysis, source_warnings)
         return source_analysis
     finally:
         if driver is not None:
             _refresh_driver_ownership(ownership)
             _bounded_driver_teardown(driver, ownership)
+
+
+def _webtoons_lazy_resolver(*, cancel_check=None, on_progress=None,
+                            limits=None, clock=None, sleep=None):
+    """Return a context resolver for the Webtoons reader, or a no-op for other adapters."""
+    def resolve(adapter, driver, page_url, collected):
+        strategy = str(getattr(adapter, "collection_strategy", "") or "")
+        coverage = str(getattr(adapter, "coverage_strategy", "") or "")
+        if (
+            str(getattr(adapter, "name", "") or "") != "webtoons"
+            or strategy != "adapter_specific"
+            or coverage != "reader_container"
+        ):
+            return collected
+        counts = collected.get("slot_counts") if isinstance(collected, dict) else {}
+        if not isinstance(counts, dict) or int(counts.get("pending") or 0) <= 0:
+            return collected
+
+        from chapter_source import SourceError, slot_counts
+        from lazy_slot_resolver import COUNTER_STAGE, resolve_lazy_reader_slots
+        from webtoons_reader_bridge import WebtoonsReaderBridge
+
+        bridge = WebtoonsReaderBridge(
+            driver,
+            adapter,
+            cancel_check=cancel_check,
+            on_progress=on_progress,
+            sleep=sleep or time.sleep,
+            clock=clock or time.monotonic,
+        )
+
+        def progress(event):
+            payload = dict(event or {})
+            payload["stage"] = COUNTER_STAGE
+            payload["counter_stage"] = COUNTER_STAGE
+            payload["pending_count"] = int(payload.get("pending") or 0)
+            payload["message"] = (
+                f"Carregando páginas do leitor: "
+                f"{int(payload.get('current') or 0)}/{int(payload.get('total') or 0)}"
+            )
+            if on_progress:
+                on_progress(payload)
+
+        bridge.on_progress = progress
+        result = resolve_lazy_reader_slots(
+            adapter=adapter,
+            read_slots=bridge.read_slots,
+            scroll_to=bridge.scroll_to,
+            reader_bounds=bridge.reader_bounds,
+            cancel_check=bridge.cancel_check,
+            on_progress=progress,
+            limits=limits,
+            clock=bridge.clock,
+            sleep=bridge.sleep,
+        )
+        if result.cancelled:
+            raise SourceError("cancelled", "during_lazy_resolution")
+        resolved_candidates = result.resolved_candidates
+        warnings = list((collected or {}).get("warnings") or [])
+        for warning in result.warnings:
+            if warning not in warnings:
+                warnings.append(warning)
+        counts_after = slot_counts(result.slots)
+        if counts_after["pending"] > 0 and "scroll_incomplete" not in warnings:
+            warnings.append("scroll_incomplete")
+        if result.cancelled and "cancelled" not in warnings:
+            warnings.append("cancelled")
+        payload = {
+            **dict(collected or {}),
+            "dom_candidates": resolved_candidates,
+            "reader_slots": result.slots,
+            "slot_counts": counts_after,
+            "lazy_resolution": result.public(),
+            "warnings": warnings,
+        }
+        if on_progress:
+            public = result.public()
+            on_progress({
+                "stage": COUNTER_STAGE,
+                "counter_stage": COUNTER_STAGE,
+                "current": public["slots_resolved"],
+                "total": public["slots_total"],
+                "pending_count": public["slots_pending"],
+                "rejected_count": public["slots_rejected"],
+                "rounds": public["rounds"],
+                "reached_reader_end": public["reached_reader_end"],
+                "stabilized": public["stabilized"],
+                "heartbeat_at": time.time(),
+                "message": (
+                    f"Carregando páginas do leitor: "
+                    f"{public['slots_resolved']}/{public['slots_total']}"
+                ),
+            })
+        return payload
+
+    return resolve
 
 
 
@@ -514,7 +623,14 @@ def _coverage_failure_reason(source_analysis, scroll_warnings=()):
     if "scroll_incomplete" in set(scroll_warnings or ()):
         return "scroll_incomplete"
     warnings = _source_analysis_warnings(source_analysis)
-    for reason in ("page_limit_exceeded", "scroll_incomplete", "pagination_incomplete"):
+    for reason in (
+        "page_limit_exceeded",
+        "scroll_incomplete",
+        "pagination_incomplete",
+        "lazy_resolution_timeout",
+        "lazy_resolution_max_rounds",
+        "reader_dom_changed",
+    ):
         if reason in warnings:
             return reason
     accepted = list(getattr(source_analysis, "accepted", []) or [])

@@ -116,7 +116,14 @@ def source_analysis_is_incomplete(public_analysis: dict[str, Any]) -> bool:
         warnings = (warnings,)
     return bool({
         str(value or "").strip() for value in (warnings or ())
-    } & {"page_limit_exceeded", "scroll_incomplete", "pagination_incomplete"})
+    } & {
+        "page_limit_exceeded",
+        "scroll_incomplete",
+        "pagination_incomplete",
+        "lazy_resolution_timeout",
+        "lazy_resolution_max_rounds",
+        "reader_dom_changed",
+    })
 
 
 def _dump(payload: dict[str, Any]) -> str:
