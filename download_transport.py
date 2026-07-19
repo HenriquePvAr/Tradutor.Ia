@@ -415,6 +415,14 @@ def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | 
                     adapter.validate_path(current)
                     continue
                 if status in (401, 403):
+                    # A registered browser-based reader routinely refuses a cookieless HTTP
+                    # client while serving the same page fine to Chrome. Vetoing navigation
+                    # here would break the adapter whose entire strategy is a real browser,
+                    # for no security gain: the host was already validated and every hop is
+                    # revalidated above. Generic sources keep failing closed, because there
+                    # is no vetted reader behind them to fall back on.
+                    if getattr(adapter, "browser_owned_readiness", False):
+                        return current
                     if looks_like_challenge(RequestsTransport._peek(response)):
                         raise ChallengeRequired(f"http_{status}")
                     raise SourceError(SOURCE_ACCESS_DENIED, str(status))

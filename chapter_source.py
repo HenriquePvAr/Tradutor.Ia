@@ -185,6 +185,11 @@ class BaseAdapter:
     min_image_width: int = 200
     min_image_height: int = 200
     is_specific: bool = True
+    # A registered reader whose whole strategy is a real browser owns its own readiness.
+    # The cookieless navigation preflight then serves only its SSRF purpose (revalidating
+    # each redirect hop); it must not veto navigation because the origin refused a bare
+    # HTTP client, which is exactly what such a site does by design.
+    browser_owned_readiness: bool = True
 
     @staticmethod
     def _matches_host(host: str, hosts: tuple[str, ...]) -> bool:
@@ -542,6 +547,7 @@ class UniversalChapterAdapter(BaseAdapter):
             min_image_width=200,
             min_image_height=200,
             is_specific=False,
+            browser_owned_readiness=False,
         )
         self._source_host = source_host
         self._related_hosts: set[str] = {source_host} if source_host else set()
