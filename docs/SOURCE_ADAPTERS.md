@@ -359,6 +359,33 @@ para ser conectada a uma fonte com direitos, inclusive à entrada por pasta loca
 
 ## Migração da análise para o worker — em andamento
 
+**Marcos concluídos (2 de 3):**
+
+1. `_apply_source_analysis` extraído do handler HTTP (refatoração pura).
+2. A decisão vive em `source_analysis_phase`, que depende só de um `JobStore` e de callables
+   explícitos — sem import de UI, framework web ou singleton de bridge. O resultado é uma
+   decisão tipada única (`ready_for_runner`, `awaiting_source_review`, `failed`,
+   `cancelled`), e `should_spawn_runner` deriva dela, então revisão ou estado terminal não
+   conseguem iniciar processo filho por acidente.
+3. `Worker._run_one` executa a fase **antes** de `_spawn_runner`. O runner é suprimido para
+   revisão, cobertura incompleta, erro de análise, pedido de cancelamento e qualquer estado
+   terminal. Job com seleção utilizável pula a reanálise; job de pasta local não passa pelo
+   caminho URL.
+
+Isso exigiu uma aresta aditiva no mapa de transições: `CLAIMING → AWAITING_SOURCE_REVIEW`,
+já que a análise agora roda com o worker segurando o claim. Nada removido.
+
+**Marco restante:** virar `ui_bridge.start()` para o caminho URL — criar o job em `queued`,
+garantir worker e devolver `job_id` sem abrir Selenium. O worker já sabe fazer o resto.
+
+O que torna esse último passo maior do que parece: `test_translation_start.py` tem 15
+chamadas a `bridge.start()` e 30 asserções sobre o resultado da análise, mais duas classes
+(`SourceReviewTests`, `SourceAnalysisTimeoutTests`) inteiramente construídas sobre o retorno
+síncrono. Todas mudam de significado quando o submit passa a responder antes da análise, e
+reescrevê-las às pressas arriscaria esconder uma regressão em vez de detectá-la.
+
+
+
 **Marco concluído:** o tratamento do resultado da análise foi extraído para
 `UiBridge._apply_source_analysis`. Ele decide o próximo estado do job — cobertura
 incompleta, revisão manual, resultado não suportado, ambiente não configurado, ou `queued` —
