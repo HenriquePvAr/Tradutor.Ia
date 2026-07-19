@@ -328,3 +328,47 @@ leitor em passos, reler os slots e esperar o lazy loading concluir — não foi 
 nesta tarefa: percorrer o leitor inteiro força o carregamento das 167 imagens e produz o
 manifesto completo do capítulo, que é a peça imediatamente anterior à captura. A arquitetura
 está pronta para receber esse laço quando ele for aplicado a uma fonte com direitos.
+
+## Resolvedor de slots lazy
+
+`lazy_slot_resolver.resolve_lazy_reader_slots` visita as regiões pendentes do leitor, relê os
+mesmos índices DOM e atualiza apenas aqueles slots, até nada ficar pendente ou o orçamento
+acabar.
+
+Todas as operações de navegador são injetadas — `read_slots`, `scroll_to`, `reader_bounds`,
+`clock`, `sleep` — então o algoritmo roda em teste sem Selenium e sem rede. Ele observa
+estado de elemento e **nunca busca bytes de imagem**.
+
+| Garantia | Como |
+| --- | --- |
+| Ordem | saída sempre por índice DOM, nunca pela ordem de carregamento |
+| Não regressão | slot já resolvido não volta a pendente numa releitura |
+| DOM instável | inserção inesperada gera `reader_dom_changed`, sem renumerar em silêncio |
+| Orçamento | `max_rounds`, `timeout_seconds`, `stable_rounds` — ao estourar, os slots ficam pendentes com índices reportados |
+| Cancelamento | checado antes do scroll, depois do scroll, durante a espera e antes da releitura |
+| Progresso | `counter_stage=source_lazy_resolution`, com `current`/`total` próprios — nunca contadores de download |
+
+Fim do leitor, não fim do documento: o scroll fica dentro de `reader_bounds`.
+
+### Não integrado
+
+O resolvedor **não** está ligado ao `collect_reader_payload`. Ligá-lo faria a análise
+percorrer o leitor inteiro forçando o carregamento de todas as páginas, o que produz o
+manifesto completo do capítulo — a peça imediatamente anterior à captura. A peça está pronta
+para ser conectada a uma fonte com direitos, inclusive à entrada por pasta local.
+
+## Dívida técnica: análise de fonte no submit
+
+`ui_bridge.start` continua executando a análise com Selenium dentro da requisição HTTP, o que
+mede 93–101s na prática e deixa a UI em "Analisando fonte" durante o await.
+
+A migração para o worker não foi feita: `start` tem 532 linhas e 23 pontos ligados ao caminho
+síncrono, e mover isso significa mudar o contrato STAGING→QUEUED, levar a análise para o laço
+de claim, tratar retomada de `awaiting_source_review` a partir de outro processo, idempotência
+após restart e cancelamento entre processos. É uma migração que merece uma sessão própria, não
+o fim de uma longa.
+
+Desenho pretendido: `start` valida payload, calcula fingerprint, bloqueia duplicidade, cria o
+job em `queued`, garante worker e devolve `job_id` imediatamente; o worker executa
+`source_validation` → `browser_loading` → `source_analysis` → `source_lazy_resolution` →
+`source_selection` e segue para o download.
