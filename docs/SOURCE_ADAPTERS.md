@@ -54,6 +54,19 @@ o transforma em fonte homologada nem cria allowlist global.
 não contém seletores do Webtoons; mudanças deste reader pertencem ao adapter e a fixtures
 herméticas correspondentes.
 
+O reader Webtoons usa lazy loading por slots. A coleta inicial registra todos os elementos do
+reader, mas placeholders 1x1 em `webtoons-static.pstatic.net` permanecem `pending_lazy` e nunca
+entram em `source_selection`, manifesto ou download. Enquanto o mesmo driver Selenium da análise
+ainda está aberto, `webtoons_reader_bridge.py` fornece ao resolvedor operações injetadas
+(`read_slots`, `scroll_to`, `reader_bounds`, cancelamento, progresso, clock e sleep) e
+`lazy_slot_resolver.resolve_lazy_reader_slots` relê os mesmos índices DOM até resolver o leitor
+ou esgotar o orçamento.
+
+O scroll é limitado aos bounds do reader, não ao fim do documento, para não entrar em
+recomendações, rodapé ou Next Episode. Se ainda houver slots pendentes, timeout ou DOM alterado,
+a fase de fonte encerra com `incomplete_source_coverage`; nenhum runner é iniciado e isso nunca é
+rotulado como `incomplete_download`, porque nenhum byte de página foi baixado nessa etapa.
+
 ### VortexScans
 
 `VortexScansAdapter` é deliberadamente restrito:
@@ -280,11 +293,8 @@ a distribuição nunca havia sido medida.
 
 Consequências: `webtoons-static.pstatic.net` **não** é autorizado em `resource_hosts` — é o
 host dos placeholders, e `exclude_candidate` já os descarta como `tracking_pixel`. E a
-coleta específica precisa ocorrer **depois** de o lazy-load resolver, não logo após o load.
-Isso explica os 90 aceitos do job real: parte das páginas ainda não havia resolvido.
-
-Este ponto permanece **em aberto**: a coleta ainda não aguarda a resolução completa antes de
-contar candidatos.
+coleta específica passa por resolução lazy antes de formar a seleção. Isso evita o caso em que
+apenas as poucas páginas já resolvidas logo após o load seriam contadas como capítulo completo.
 
 ## Slots do leitor e lazy loading
 
@@ -350,12 +360,12 @@ estado de elemento e **nunca busca bytes de imagem**.
 
 Fim do leitor, não fim do documento: o scroll fica dentro de `reader_bounds`.
 
-### Não integrado
+### Integração Webtoons
 
-O resolvedor **não** está ligado ao `collect_reader_payload`. Ligá-lo faria a análise
-percorrer o leitor inteiro forçando o carregamento de todas as páginas, o que produz o
-manifesto completo do capítulo — a peça imediatamente anterior à captura. A peça está pronta
-para ser conectada a uma fonte com direitos, inclusive à entrada por pasta local.
+Para `WEBTOONS`, a resolução ocorre entre `collect_reader_payload` e `source_selection`, dentro
+da análise executada pelo worker. O resolvedor usa o driver já aberto; não cria segundo Chrome e
+não baixa imagens. Quando completa, a seleção sai com páginas resolvidas em ordem DOM. Quando
+incompleta, os índices pendentes ficam em diagnóstico sanitizado e o runner não nasce.
 
 ## Análise de fonte pertence ao worker
 
@@ -424,9 +434,8 @@ submit não a produz mais.
 
 ### Limitações
 
-O `lazy_slot_resolver` continua **não integrado** à coleta do Webtoons. Ele está
-implementado, testado e com operações de browser injetáveis, pronto para ser conectado a uma
-fonte com direitos — inclusive à entrada por pasta local, que já está integrada.
+O `lazy_slot_resolver` está integrado ao Webtoons por uma ponte Selenium pequena e específica. A
+entrada por pasta local continua sem navegador; Universal e Vortex não usam essa ponte.
 
 Nenhum capítulo real foi processado: análises falsas, banco temporário, zero rede.
 

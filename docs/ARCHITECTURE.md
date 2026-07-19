@@ -149,6 +149,14 @@ nem fixa o IP final de `requests`; para URLs não confiáveis, o deploy precisar
 política de egress/interceptação adicional. Consulte [Adaptador universal de capítulos](UNIVERSAL_CHAPTER_ADAPTER.md)
 para limites, perfis de evidência e limitações.
 
+Para Webtoons, a análise específica resolve slots lazy antes de formar `source_selection`.
+`webtoons_reader_bridge.py` adapta o driver Selenium já aberto para
+`lazy_slot_resolver.resolve_lazy_reader_slots`, relendo apenas imagens descendentes do reader e
+rolando somente dentro dos bounds do container. Placeholders 1x1 permanecem pendentes, nunca
+autorizam o host `webtoons-static.pstatic.net` e nunca entram no manifesto. Se a resolução fica
+incompleta, a fase de fonte termina como `incomplete_source_coverage`, sem iniciar runner e sem
+usar `incomplete_download`.
+
 ### Pasta local
 
 Uma pasta local percorre uma fronteira separada: `LocalFolderChapterAdapter` valida uma raiz

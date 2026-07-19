@@ -31,7 +31,7 @@ abaixo:
 | `supported_generic_high_confidence` | melhor cluster genérico com score `>= 0,85` | seleção automática; job pode entrar na fila |
 | `review_required_medium_confidence` | score `>= 0,60` e `< 0,85` | job fica em `awaiting_source_review`; o usuário confirma as páginas antes do OCR |
 | `unsupported_low_confidence` | score `< 0,60` | falha fechada; nenhum OCR ou download de capítulo é iniciado |
-| `incomplete_download` | a observação, scroll ou paginação não comprovou cobertura completa, ou o conjunto excedeu um limite | falha fechada; não oferece seleção parcial nem inicia OCR |
+| cobertura incompleta | a observação, scroll, paginação ou resolução lazy não comprovou cobertura completa, ou o conjunto excedeu um limite | falha fechada; o worker persiste `incomplete_source_coverage`, não oferece seleção parcial nem inicia OCR |
 | `no_chapter_images`, `challenge_required`, `authentication_required`, `unsupported_canvas_reader` ou `unsupported_cross_origin_reader` | não há evidência utilizável ou há uma barreira | falha fechada com motivo codificado |
 
 Na revisão, o cliente recebe IDs opacos e metadados de candidatos, não URLs remotas. Para uma
@@ -75,12 +75,19 @@ domínio autorizado.
 
 Scroll incremental ajuda leitores com lazy loading. Se a coleta atingir um teto de DOM,
 JSON, canvas ou candidatos, exceder 400 páginas, ou não comprovar fim **e** estabilização
-do scroll, o resultado é `incomplete_download`; nunca se apresenta esse subconjunto como
-um capítulo completo.
+do scroll, a fase de fonte termina como `incomplete_source_coverage`; nunca se apresenta esse
+subconjunto como um capítulo completo.
+
+No Webtoons, que é um adapter específico de reader-container, placeholders 1x1 são tratados como
+slots `pending_lazy`, não como páginas nem como host de recurso. `webtoons_reader_bridge.py`
+conecta o driver Selenium já aberto a `lazy_slot_resolver.resolve_lazy_reader_slots`: ele relê
+apenas `#_imageList`/`img._images`, rola dentro dos bounds do reader e preserva a ordem DOM. Se
+todos os slots resolvem, a seleção contém somente páginas reais; se sobram pendentes, ocorre
+timeout ou o DOM muda, o runner não inicia e os índices pendentes ficam no diagnóstico público.
 
 Iframes de mesma origem têm conjunto de documentos visitados, profundidade e quantidade
-limitados. Um ciclo ou teto de iframe também vira `incomplete_download`, em vez de consumir
-o tempo da análise ou afirmar cobertura completa. Iframe cross-origin nunca é atravessado:
+limitados. Um ciclo ou teto de iframe também vira cobertura incompleta de fonte, em vez de
+consumir o tempo da análise ou afirmar cobertura completa. Iframe cross-origin nunca é atravessado:
 quando há evidência de que ele seja o reader, o resultado é
 `unsupported_cross_origin_reader`, e não um sucesso baseado em parte visível da página.
 
