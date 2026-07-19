@@ -666,86 +666,24 @@ class UiBridge:
                 return result
             result["worker"] = self.ensure_worker()
             return result
-        # Persist a controllable staging row before the browser work starts. The analysis is
-        # sent to a worker thread so the async UI can keep polling and cancel it; no OCR,
-        # downloader, output folder or pipeline worker starts at this point.
-        normalized = self._normalize_payload(payload, require_environment=False)
-        from universal_chapter_adapter import (
-            REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
-            SUPPORTED_GENERIC_HIGH_CONFIDENCE,
-            SUPPORTED_SPECIFIC_ADAPTER,
-        )
-
+        # The submit only enqueues. Source analysis needs a browser and takes as long as the
+        # reader does — measured at 93-101s — so running it here held the HTTP request open
+        # and left the UI on one static message for the whole time. The worker owns it now,
+        # and the browser never starts inside the web process.
         job = self._create_job(
             {**payload, "source_candidate_ids": []}, principal=principal,
-            require_environment=False, initial_status=JobStatus.STAGING,
+            require_environment=False, initial_status=JobStatus.QUEUED,
             source_analysis={"adapter": "", "outcome": "source_analysis_pending", "accepted": []},
         )
         self.store.update_fields(
-            job["id"], source_type="url", stage="source_analysis", reason_code="",
-            started_at=time.time(), heartbeat_at=time.time(),
+            job["id"], source_type="url", stage="queued", reason_code="",
+            heartbeat_at=time.time(),
         )
-
-        def analysis_cancelled() -> bool:
-            current = self.store.get_job(job["id"])
-            # ``asyncio.wait_for`` cannot kill a running thread. Once this staging row moves
-            # to *any* other state (timeout, cancellation or recovery), the browser helper
-            # must observe cancellation at its next safe boundary and tear itself down.
-            return (
-                not current
-                or current.get("status") != JobStatus.STAGING
-                or bool(current.get("cancel_requested") if current else False)
-            )
-
-        try:
-            analysis = await self._run_source_analysis(
-                normalized["url"], cancel_check=analysis_cancelled)
-        except asyncio.CancelledError:
-            current = self.store.get_job(job["id"])
-            if current and current.get("status") == JobStatus.STAGING:
-                self.store.transition(
-                    job["id"], JobStatus.CANCELLED, reason_code="cancelled",
-                    interrupted_reason="source_analysis_request_cancelled",
-                )
-            raise
-        except asyncio.TimeoutError as exc:
-            from chapter_source import SOURCE_NOT_READY, SourceError
-
-            source_error = SourceError(SOURCE_NOT_READY, "source_analysis_timeout")
-            current = self.store.get_job(job["id"])
-            if current and current.get("status") == JobStatus.STAGING:
-                self.store.transition(
-                    job["id"], JobStatus.FAILED, reason_code=source_error.code,
-                    stage="source_analysis", error_type="source_analysis",
-                    error_message=source_error.code,
-                )
-            raise source_error from exc
-        except Exception as exc:
-            # Remote source outcomes (challenge/access/auth/etc.) deserve an auditable,
-            # frozen terminal record.  Programming errors still propagate rather than being
-            # relabelled as an unsupported chapter.
-            from chapter_source import SOURCE_NOT_READY, SourceError
-
-            current = self.store.get_job(job["id"])
-            if current and current.get("status") == JobStatus.CANCELLED:
-                return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
-            if isinstance(exc, SourceError):
-                source_error = exc
-            else:
-                source_error = SourceError(SOURCE_NOT_READY, type(exc).__name__)
-            if current and current.get("status") == JobStatus.STAGING:
-                self.store.transition(
-                    job["id"], JobStatus.FAILED, reason_code=source_error.code,
-                    stage="source_analysis", error_type="source_analysis",
-                    error_message=source_error.code,
-                )
-            if isinstance(exc, SourceError):
-                raise
-            raise source_error from exc
-        current = self.store.get_job(job["id"])
-        if not current or current.get("status") == JobStatus.CANCELLED:
-            return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
-        return self._apply_source_analysis(job, analysis)
+        # Only after the payload is durably persisted: a worker that claimed earlier could
+        # otherwise analyse a row that is still missing fields it needs.
+        worker = self.ensure_worker()
+        return {"ok": True, "run_id": job["run_id"], "job_id": job["id"],
+                "status": JobStatus.QUEUED, "stage": "queued", "worker": worker}
 
 
     def _apply_source_analysis(self, job: dict[str, Any], analysis: Any) -> dict[str, Any]:
