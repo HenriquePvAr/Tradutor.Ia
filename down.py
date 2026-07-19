@@ -181,7 +181,7 @@ def download_images(
         # Every adapter, including a registered specific reader, owns the same analysis
         # contract.  This prevents an older DOM-only shortcut from bypassing coverage limits,
         # network/JSON evidence, candidate IDs or the accepted-reader manifest.
-        source_warnings = _scroll_coverage_warnings(scroll_diagnostics)
+        source_warnings = _scroll_coverage_warnings(scroll_diagnostics, adapter)
         source_analysis = adapter.analyze(
             {"driver": driver, "page_url": current_url},
             profile=_load_source_profile(current_url, adapter),
@@ -348,7 +348,7 @@ def analyze_chapter_source(url, *, cancel_check=None):
         # Registered adapters do not get a weaker completeness policy than the universal
         # fallback.  An incomplete scroll is a reviewable, terminal source outcome for every
         # source; it must never become a partial chapter merely because its host is known.
-        source_warnings = _scroll_coverage_warnings(scroll_diagnostics)
+        source_warnings = _scroll_coverage_warnings(scroll_diagnostics, adapter)
         source_analysis = adapter.analyze(
             {"driver": driver, "page_url": final_url},
             profile=_load_source_profile(final_url, adapter),
@@ -467,10 +467,27 @@ def _safe_nonnegative_int(value):
         return 0
 
 
-def _scroll_coverage_warnings(scroll_diagnostics):
-    """Return the only downloader-owned coverage warning, for every adapter type."""
+def _scroll_coverage_warnings(scroll_diagnostics, adapter=None):
+    """Downloader-owned coverage warning, using the strategy the adapter declares.
+
+    The document-end rule is right for an unknown page: anything below the last observed
+    image could still be chapter content, so stopping early must fail closed.
+
+    It is wrong for a registered reader. Such a page ends its reader and then continues with
+    recommendations and a footer, so the document end sits well past the last page and is
+    never reached — and a reader delivered fully loaded shows no growth at all. Both are
+    normal, and judging them by document end reported a complete chapter as truncated.
+
+    For "reader_container", stabilisation is the evidence: the collector watched the reader
+    stop changing for the required number of rounds. A run that merely exhausted its round
+    or time budget while still changing is not stabilised, so it still warns.
+    """
     diagnostics = scroll_diagnostics if isinstance(scroll_diagnostics, dict) else {}
-    if (diagnostics.get("reached_document_end") and diagnostics.get("stabilized")):
+    stabilized = bool(diagnostics.get("stabilized"))
+    strategy = str(getattr(adapter, "coverage_strategy", "generic_document") or "generic_document")
+    if strategy == "reader_container":
+        return () if stabilized else ("scroll_incomplete",)
+    if diagnostics.get("reached_document_end") and stabilized:
         return ()
     return ("scroll_incomplete",)
 
@@ -974,7 +991,7 @@ def _maybe_collect_paginated_reader(
             if stop_reason["value"] == "cancelled":
                 raise
             return blocked(stop_reason["value"] or "scroll_failed")
-        if _scroll_coverage_warnings(scroll):
+        if _scroll_coverage_warnings(scroll, adapter):
             return blocked("scroll_incomplete")
         try:
             page_analysis = adapter.analyze(

@@ -193,6 +193,15 @@ class BaseAdapter:
     # each redirect hop); it must not veto navigation because the origin refused a bare
     # HTTP client, which is exactly what such a site does by design.
     browser_owned_readiness: bool = True
+    # How the downloader decides the reader was fully observed.
+    #   "generic_document" — conservative default: the whole document must be reached and
+    #                        stable. Right for an unknown page, where anything below could
+    #                        still be chapter content.
+    #   "reader_container" — a registered reader whose container is known: stability of that
+    #                        container is the evidence. Requiring the document end would
+    #                        misjudge a reader followed by recommendations and a footer, and
+    #                        would demand growth from a reader that arrives fully loaded.
+    coverage_strategy: str = "generic_document"
 
     @staticmethod
     def _matches_host(host: str, hosts: tuple[str, ...]) -> bool:
@@ -420,6 +429,7 @@ WEBTOONS = BaseAdapter(
     resource_hosts=("webtoon-phinf.pstatic.net",),
     runner="run_webtoon.py",
     chapter_path_markers=("/viewer", "/episode"),
+    coverage_strategy="reader_container",
     container_selector="#_imageList, .viewer_img, .viewer_lst",
     image_selector="#_imageList img, .viewer_img img._images",
 )
@@ -551,6 +561,7 @@ class UniversalChapterAdapter(BaseAdapter):
             min_image_height=200,
             is_specific=False,
             browser_owned_readiness=False,
+            coverage_strategy="generic_document",
         )
         self._source_host = source_host
         self._related_hosts: set[str] = {source_host} if source_host else set()
