@@ -149,6 +149,49 @@ def run_source_phase(bridge, job_id, analyzer):
     return worker, prepared
 
 
+class WorkerCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.store = JobStore(self.tmp / "jobs.sqlite3")
+
+    def tearDown(self):
+        self.store.close()
+
+    def bridge(self):
+        bridge = object.__new__(ui_bridge.UiBridge)
+        bridge.store = self.store
+        bridge.history_revision = 1
+        return bridge
+
+    def test_ensure_worker_replaces_a_verified_environment_mismatch(self):
+        self.store.register_worker("old", 12345)
+        bridge = self.bridge()
+        with mock.patch.object(ui_bridge, "_worker_environment_matches_current",
+                               return_value=False), \
+                mock.patch("start_tradutor.stop_worker", return_value=0) as stop, \
+                mock.patch("start_tradutor.start_worker") as start:
+            start.side_effect = lambda: self.store.register_worker("new", 67890)
+            result = bridge.ensure_worker()
+        stop.assert_called_once()
+        start.assert_called_once()
+        self.assertTrue(result["online"])
+        self.assertTrue(result["restarted"])
+        self.assertEqual(result["reason"], "worker_environment_mismatch")
+
+    def test_ensure_worker_reuses_a_compatible_worker(self):
+        self.store.register_worker("ok", 12345)
+        bridge = self.bridge()
+        with mock.patch.object(ui_bridge, "_worker_environment_matches_current",
+                               return_value=True), \
+                mock.patch("start_tradutor.stop_worker") as stop, \
+                mock.patch("start_tradutor.start_worker") as start:
+            result = bridge.ensure_worker()
+        stop.assert_not_called()
+        start.assert_not_called()
+        self.assertTrue(result["online"])
+        self.assertFalse(result["started"])
+
+
 class SubmitTests(unittest.TestCase):
     def run_phase(self, job_id):
         return run_source_phase(self.bridge, job_id, self.bridge._analyze_source)

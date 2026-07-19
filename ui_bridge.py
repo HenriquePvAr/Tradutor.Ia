@@ -43,6 +43,7 @@ from ui_history import UIHistoryStore, utc_now
 PROFILE_PATH = REPO_ROOT / ".cache" / "ui_profile.json"
 PROFILE_MEDIA_DIR = REPO_ROOT / ".cache" / "ui_profile"
 JOBS_DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
+WORKER_ENV_COMPATIBILITY_KEYS = ("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "CHROMEDRIVER_PATH")
 JOB_LOG_DIR = REPO_ROOT / ".cache" / "runtime" / "logs"
 MAX_LOG_LINES = 3000
 SOURCE_ANALYSIS_TIMEOUT_SECONDS = 180
@@ -182,6 +183,32 @@ def _run_git(*args: str) -> str:
         return result.stdout.strip() if result.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def _worker_environment_matches_current(worker: dict[str, Any] | None) -> bool:
+    """Whether a registered worker can consume jobs requiring this UI environment.
+
+    Only non-secret operational toggles are compared.  If the current UI process does not
+    require a value, any worker is compatible.  If the worker environment cannot be read,
+    fail open rather than terminating an otherwise healthy process without proof.
+    """
+    required = {
+        key: os.environ.get(key, "")
+        for key in WORKER_ENV_COMPATIBILITY_KEYS
+        if os.environ.get(key)
+    }
+    if not required:
+        return True
+    pid = int((worker or {}).get("pid") or 0)
+    if not pid:
+        return False
+    try:
+        import psutil
+
+        values = psutil.Process(pid).environ()
+    except Exception:  # noqa: BLE001 - do not stop a worker if compatibility is unknowable
+        return True
+    return all(values.get(key, "") == value for key, value in required.items())
 
 
 def _current_commit() -> str:
@@ -1249,6 +1276,30 @@ class UiBridge:
         """
         healthy = self.store.healthy_worker(stale_seconds=15)
         if healthy:
+            if not _worker_environment_matches_current(healthy):
+                try:
+                    from start_tradutor import start_worker, stop_worker
+
+                    if stop_worker(timeout=10.0) != 0:
+                        return {
+                            "online": False,
+                            "started": False,
+                            "error": "worker_environment_mismatch",
+                        }
+                    start_worker()
+                except Exception:  # noqa: BLE001 - reported to the caller, never swallowed
+                    return {
+                        "online": False,
+                        "started": False,
+                        "error": "worker_environment_mismatch",
+                    }
+                healthy = self.store.healthy_worker(stale_seconds=15)
+                return {
+                    "online": bool(healthy),
+                    "started": bool(healthy),
+                    "restarted": bool(healthy),
+                    "reason": "worker_environment_mismatch",
+                }
             return {"online": True, "started": False}
         try:
             from start_tradutor import start_worker

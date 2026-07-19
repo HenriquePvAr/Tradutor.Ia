@@ -31,6 +31,7 @@ def _detached_flags() -> int:
     return (
         getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         | getattr(subprocess, "DETACHED_PROCESS", 0)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     )
 
 
@@ -46,7 +47,9 @@ def start_worker(*, force: bool = False) -> bool:
     if healthy and not force:
         print(f"worker already online: {healthy['worker_id']} (pid {healthy['pid']})")
         return False
-    kwargs: dict = {"cwd": str(REPO_ROOT)}
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    kwargs: dict = {"cwd": str(REPO_ROOT), "env": env}
     if os.name == "nt":
         kwargs["creationflags"] = _detached_flags()
     else:

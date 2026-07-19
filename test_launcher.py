@@ -38,6 +38,17 @@ class LauncherTests(unittest.TestCase):
         popen.assert_called_once()
         argv = popen.call_args.args[0]
         self.assertIn("worker_service.py", " ".join(argv))
+        self.assertEqual(popen.call_args.kwargs["env"]["PYTHONUNBUFFERED"], "1")
+
+    def test_start_worker_hides_the_detached_console_on_windows(self):
+        if start_tradutor.os.name != "nt":
+            self.skipTest("Windows-only creation flag")
+        with patch.object(start_tradutor.subprocess, "Popen") as popen, \
+                patch.object(start_tradutor.time, "sleep", lambda *_: None):
+            self.assertTrue(start_tradutor.start_worker())
+        flags = popen.call_args.kwargs["creationflags"]
+        self.assertTrue(flags & start_tradutor.subprocess.CREATE_NO_WINDOW)
+        self.assertTrue(flags & start_tradutor.subprocess.DETACHED_PROCESS)
 
     def test_main_dispatches_status(self):
         with patch.object(start_tradutor, "print_status") as status:
