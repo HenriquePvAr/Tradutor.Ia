@@ -191,6 +191,18 @@ class WorkerCompatibilityTests(unittest.TestCase):
         self.assertTrue(result["online"])
         self.assertFalse(result["started"])
 
+    def test_reconcile_keeps_worker_owned_source_analysis_in_flight(self):
+        bridge = self.bridge()
+        job_id = self.store.create_job(
+            source_url=WEBTOON_URL, output_dir=str(self.tmp / "out"),
+            configuration={"job_type": "translation"}, command=["python", "-c", "pass"])
+        self.store.transition(job_id, JobStatus.CLAIMING, worker_id="w1",
+                              worker_pid=12345, worker_create_time=456.0)
+        with mock.patch.object(ui_bridge, "_runner_still_alive", return_value=False), \
+                mock.patch.object(ui_bridge, "_worker_still_alive", return_value=True):
+            self.assertEqual(bridge.reconcile_orphans(), [])
+        self.assertEqual(self.store.get_job(job_id)["status"], JobStatus.CLAIMING)
+
 
 class SubmitTests(unittest.TestCase):
     def run_phase(self, job_id):

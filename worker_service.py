@@ -19,6 +19,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -195,10 +196,26 @@ class Worker:
                 )
                 self.store.worker_heartbeat(self.worker_id)
 
-            analysis = self._analyze_source(
-                str(current.get("source_url") or ""),
-                cancel_check=cancelled,
-                on_progress=progress)
+            result: dict[str, object] = {}
+
+            def run_analysis() -> None:
+                try:
+                    result["analysis"] = self._analyze_source(
+                        str(current.get("source_url") or ""),
+                        cancel_check=cancelled,
+                        on_progress=progress)
+                except BaseException as exc:  # noqa: BLE001 - re-raised on worker thread
+                    result["error"] = exc
+
+            thread = threading.Thread(target=run_analysis, daemon=True)
+            thread.start()
+            while thread.is_alive():
+                self.store.worker_heartbeat(self.worker_id)
+                self.store.heartbeat(job["id"])
+                thread.join(timeout=min(WORKER_HEARTBEAT_SECONDS, 1.0))
+            if "error" in result:
+                raise result["error"]  # type: ignore[misc]
+            analysis = result.get("analysis")
         except Exception as exc:  # noqa: BLE001 - coded, sanitized terminal outcome
             return self._fail_source(job["id"], exc)
         if cancelled():
@@ -743,7 +760,9 @@ class Worker:
                         return
                     time.sleep(self.poll_seconds)
                     continue
-                job = self.store.claim_next_job(self.worker_id, self.pid)
+                snap = process_tree.snapshot(self.pid) or {}
+                job = self.store.claim_next_job(
+                    self.worker_id, self.pid, worker_create_time=snap.get("create_time"))
                 if job is None:
                     if once:
                         return

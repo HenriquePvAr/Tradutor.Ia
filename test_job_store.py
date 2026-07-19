@@ -139,6 +139,12 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(claimed["status"], JobStatus.CLAIMING)
         self.assertEqual(claimed["worker_id"], "w1")
 
+    def test_claim_records_worker_create_time_for_ownership_checks(self):
+        jid = _new_job(self.store)
+        claimed = self.store.claim_next_job("w1", 111, worker_create_time=123.5)
+        self.assertEqual(claimed["id"], jid)
+        self.assertEqual(claimed["worker_create_time"], 123.5)
+
     def test_claim_returns_none_when_empty(self):
         self.assertIsNone(self.store.claim_next_job("w1", 111))
 

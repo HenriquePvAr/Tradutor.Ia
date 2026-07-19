@@ -232,6 +232,19 @@ def _runner_still_alive(job: dict[str, Any]) -> bool:
     )
 
 
+def _worker_still_alive(job: dict[str, Any]) -> bool:
+    """True while a claimed job is still owned by its worker before a runner exists."""
+    try:
+        import process_tree
+    except Exception:  # noqa: BLE001 - process checks are best-effort in the UI
+        return False
+    return process_tree.is_alive(
+        job.get("worker_pid"),
+        create_time=job.get("worker_create_time"),
+        substrings=["worker_service.py"],
+    )
+
+
 def _read_env_file() -> dict[str, str]:
     path = REPO_ROOT / ".env"
     values: dict[str, str] = {}
@@ -364,6 +377,8 @@ class UiBridge:
         for job in in_flight:
             if _runner_still_alive(job):
                 continue                      # a real, verified process owns this job
+            if not job.get("runner_pid") and _worker_still_alive(job):
+                continue                      # source analysis is still worker-owned
             job_id = job["id"]
             frozen = _normalize_epoch(job.get("heartbeat_at")) or \
                 _normalize_epoch(job.get("updated_at")) or time.time()

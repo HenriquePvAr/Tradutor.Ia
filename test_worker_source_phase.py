@@ -10,6 +10,8 @@ Hermetic: fake analyses, no browser, no network, no child process.
 import _test_bootstrap  # noqa: F401
 
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -180,6 +182,35 @@ class WorkerPhaseTests(unittest.TestCase):
         worker = _Worker(self.store, error=AssertionError("url analysis ran"))
         prepared = worker._prepare_source(self.store.get_job(job["id"]))
         self.assertIsNotNone(prepared)
+
+    def test_source_analysis_keeps_the_worker_lease_alive(self):
+        job = self.queued_url_job()
+        self.store.register_worker("w-test", 4321, create_time=1.0)
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_analysis(_url, *, cancel_check=None, on_progress=None):
+            started.set()
+            release.wait(timeout=5)
+            return FakeAnalysis(specific_outcome())
+
+        worker = _Worker(self.store)
+        worker._analyze_source = blocking_analysis
+        before = self.store.healthy_worker(stale_seconds=999)["heartbeat_at"]
+
+        thread = threading.Thread(target=lambda: worker._prepare_source(job))
+        thread.start()
+        self.assertTrue(started.wait(timeout=2))
+        deadline = time.time() + 3
+        after = before
+        while time.time() < deadline and after <= before:
+            row = self.store.healthy_worker(stale_seconds=999)
+            after = row["heartbeat_at"] if row else 0
+            time.sleep(0.05)
+        release.set()
+        thread.join(timeout=5)
+
+        self.assertGreater(after, before)
 
     def test_url_job_without_usable_selection_never_spawns_runner(self):
         job = self.queued_url_job(

@@ -442,7 +442,12 @@ class JobStore:
         return self._row_to_dict(row)
 
     # ---- atomic claim -------------------------------------------------------
-    def claim_next_job(self, worker_id: str, worker_pid: int) -> dict[str, Any] | None:
+    def claim_next_job(
+        self,
+        worker_id: str,
+        worker_pid: int,
+        worker_create_time: float | None = None,
+    ) -> dict[str, Any] | None:
         """Atomically move the oldest queued job to ``claiming`` for this worker.
 
         The UPDATE is guarded by ``status='queued'`` so two workers racing for the same
@@ -452,7 +457,8 @@ class JobStore:
         now = time.time()
         cur = self._conn.execute(
             """
-            UPDATE jobs SET status=?, worker_id=?, worker_pid=?, claimed_at=?, updated_at=?
+            UPDATE jobs SET status=?, worker_id=?, worker_pid=?, worker_create_time=?,
+                   claimed_at=?, updated_at=?
             WHERE id = (
                 SELECT id FROM jobs WHERE status=?
                 AND (queued_at IS NULL OR queued_at<=?)
@@ -460,7 +466,7 @@ class JobStore:
             ) AND status=?
             """,
             (
-                JobStatus.CLAIMING, worker_id, int(worker_pid), now, now,
+                JobStatus.CLAIMING, worker_id, int(worker_pid), worker_create_time, now, now,
                 JobStatus.QUEUED, now, JobStatus.QUEUED,
             ),
         )
