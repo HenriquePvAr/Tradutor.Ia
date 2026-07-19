@@ -14,7 +14,7 @@ import re
 import socket
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol
 from urllib.parse import urljoin, urlparse, urlunparse
 
 # Stable, sanitized failure codes. The UI maps these to messages; a job must always end on
@@ -165,6 +165,90 @@ def is_private_host(host: str) -> bool:
 def looks_like_challenge(text: str) -> bool:
     lowered = str(text or "").casefold()
     return any(marker in lowered for marker in CHALLENGE_MARKERS)
+
+
+
+# ---- reader slot states -----------------------------------------------------
+# A lazy reader hands out placeholder elements first: the slot exists, holds its DOM index,
+# and only later swaps in the real page. Classifying such a slot as rejected on the first
+# read loses pages that were always going to arrive.
+SLOT_PENDING = "pending_lazy"
+SLOT_RESOLVED = "resolved_page"
+SLOT_REJECTED = "rejected"
+
+# A rendered box this small is a placeholder or a tracking pixel, never a page.
+PLACEHOLDER_MAX_EDGE = 2
+
+
+def slot_state(candidate: dict[str, Any], *, adapter: Any = None) -> str:
+    """Classify one reader slot as pending, resolved or rejected.
+
+    Pending is the honest answer for an in-reader element that simply has not loaded yet:
+    it keeps its position so a later round can fill it, instead of silently shrinking the
+    chapter.
+    """
+    width = int(candidate.get("naturalWidth") or 0)
+    height = int(candidate.get("naturalHeight") or 0)
+    url = str(candidate.get("url") or "")
+    if not url:
+        return SLOT_PENDING
+    if adapter is not None:
+        reason = adapter.exclude_candidate(candidate)
+        # A placeholder trips the tracking-pixel rule by size alone; that is not evidence
+        # that the slot is furniture, only that it has not resolved.
+        if reason and reason != "tracking_pixel":
+            return SLOT_REJECTED
+    if width <= PLACEHOLDER_MAX_EDGE or height <= PLACEHOLDER_MAX_EDGE:
+        return SLOT_PENDING
+    if adapter is not None:
+        minimum_width = int(getattr(adapter, "min_image_width", 0) or 0)
+        minimum_height = int(getattr(adapter, "min_image_height", 0) or 0)
+        if width < minimum_width or height < minimum_height:
+            return SLOT_REJECTED
+        try:
+            adapter.authorize_related_url(url)
+        except SourceError:
+            # An unauthorized host is never a page, whatever its size.
+            return SLOT_REJECTED
+    return SLOT_RESOLVED
+
+
+def classify_reader_slots(candidates: Iterable[dict[str, Any]], *,
+                          adapter: Any = None) -> list[dict[str, Any]]:
+    """Slots in DOM order, each carrying its index and state.
+
+    Order comes from the element's position in the reader, never from the order in which
+    images happen to finish loading.
+    """
+    slots = []
+    for index, candidate in enumerate(candidates or ()):
+        item = dict(candidate)
+        item.setdefault("order", index)
+        slots.append({"index": int(item.get("order", index)),
+                      "state": slot_state(item, adapter=adapter),
+                      "candidate": item})
+    slots.sort(key=lambda slot: slot["index"])
+    return slots
+
+
+def slot_counts(slots: Iterable[dict[str, Any]]) -> dict[str, int]:
+    values = list(slots or ())
+    return {
+        "total": len(values),
+        "resolved": sum(1 for slot in values if slot["state"] == SLOT_RESOLVED),
+        "pending": sum(1 for slot in values if slot["state"] == SLOT_PENDING),
+        "rejected": sum(1 for slot in values if slot["state"] == SLOT_REJECTED),
+    }
+
+
+def pending_indices(slots: Iterable[dict[str, Any]]) -> list[int]:
+    return [slot["index"] for slot in (slots or ()) if slot["state"] == SLOT_PENDING]
+
+
+def reader_coverage_complete(slots: Iterable[dict[str, Any]]) -> bool:
+    """Complete when at least one page resolved and nothing is still waiting."""
+    counts = slot_counts(slots)
+    return counts["total"] > 0 and counts["resolved"] > 0 and counts["pending"] == 0
 
 
 @dataclass
@@ -440,10 +524,14 @@ class BaseAdapter:
         if not payload.get("found"):
             raise SourceError(NO_CHAPTER_IMAGES, "reader_container_absent")
         candidates = list(payload.get("candidates") or ())
+        slots = classify_reader_slots(candidates, adapter=self)
         return {
             "page_url": page_url,
             "collector": f"{self.name}_reader",
-            "dom_candidates": candidates,
+            "dom_candidates": [slot["candidate"] for slot in slots
+                               if slot["state"] == SLOT_RESOLVED],
+            "reader_slots": slots,
+            "slot_counts": slot_counts(slots),
             "network_candidates": [],
             "json_candidates": [],
             "warnings": [],
