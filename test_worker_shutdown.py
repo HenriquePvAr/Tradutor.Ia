@@ -89,6 +89,10 @@ class WorkerShutdownTests(unittest.TestCase):
         job = self.store.get_job(jid)
         runner_pids = self._runner_tree_pids(job)
         self.assertTrue(job["runner_pid"] and runner_pids, "runner tree not found")
+        # RUNNING only means the runner was launched; the pipeline still has to boot before
+        # it writes anything. Stopping inside that window made the checkpoint assertion race
+        # (it lost under a loaded machine), so wait for the state this test is about.
+        self.assertTrue(_wait(lambda: (out / "checkpoints").is_dir(), 30, "checkpoints dir"))
 
         # Request stop through the DB (as the launcher's stop-worker does).
         worker_row = self.store.healthy_worker(stale_seconds=15)

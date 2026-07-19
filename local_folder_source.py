@@ -765,6 +765,9 @@ def _snapshot_manifest(analysis: LocalFolderAnalysis, snapshot_id: str) -> dict[
     for page in analysis.pages:
         item = page.public()
         item["filename"] = page.snapshot_filename
+        # Per-page flag as well as the manifest-level one: the runner decides Smart Split
+        # per page, and materialize_snapshot already emits it, so both producers agree.
+        item["logical_page"] = True
         pages.append(item)
     return {
         "manifest_version": LOCAL_FOLDER_MANIFEST_VERSION,

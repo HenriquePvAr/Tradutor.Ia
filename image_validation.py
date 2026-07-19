@@ -80,6 +80,9 @@ def validate_image_bytes(data: bytes, *, min_width: int = MIN_WIDTH,
         raise SourceError(INVALID_IMAGE_RESPONSE, "empty")
     if max_bytes is not None and len(data) > max_bytes:
         raise SourceError(INVALID_IMAGE_RESPONSE, "too_large")
+    # A caller may lower its own byte floor for a genuine separator strip, but format
+    # sniffing itself needs the twelve-byte signature window.  Keep that invariant so
+    # truncated data gets one deterministic, sanitized rejection reason.
     if len(data) < max(12, int(min_bytes)):
         raise SourceError(INVALID_IMAGE_RESPONSE, "too_small_bytes")
     if looks_like_markup(data):
