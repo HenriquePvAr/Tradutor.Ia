@@ -202,6 +202,14 @@ class BaseAdapter:
     #                        misjudge a reader followed by recommendations and a footer, and
     #                        would demand growth from a reader that arrives fully loaded.
     coverage_strategy: str = "generic_document"
+    # Who collects the analysis candidates.
+    #   "generic_multisource" — default for an unknown page: wide DOM sweep plus network/CDP
+    #                           and JSON evidence, then clustering and scoring.
+    #   "adapter_specific"    — a registered reader collects only from its own container.
+    # Running the generic sweep for a registered reader mixed recommendations, footer and
+    # cross-origin network noise into the candidate set and produced warnings about
+    # collectors the adapter never needed.
+    collection_strategy: str = "generic_multisource"
 
     @staticmethod
     def _matches_host(host: str, hosts: tuple[str, ...]) -> bool:
@@ -339,13 +347,26 @@ class BaseAdapter:
         # Collect exactly once, then route that immutable observation through the public
         # adapter hooks.  This makes an adapter override effective without re-reading the
         # performance log three times (which can otherwise consume it on the first call).
-        collected = self._collected_payload(browser, page_url)
+        if self.collection_strategy == "adapter_specific":
+            collected = self.collect_reader_payload(browser, page_url)
+        else:
+            collected = self._collected_payload(browser, page_url)
         key = (id(browser), page_url)
         token = _ACTIVE_COLLECTION.set({key: collected})
         try:
-            dom = self.collect_dom_candidates(browser, page_url=page_url)
-            network = self.collect_network_candidates(browser, page_url=page_url)
-            json_candidates = self.collect_json_candidates(browser, page_url=page_url)
+            if self.collection_strategy == "adapter_specific":
+                # Only the reader's own container. Network/CDP and JSON evidence exists to
+                # find a reader on an unknown page; here the reader is already known, and
+                # sweeping them in mixed recommendations, footer and cross-origin noise into
+                # the candidate set — and raised limit warnings for collectors this adapter
+                # never needed.
+                dom = list(collected.get("dom_candidates") or ())
+                network: list[dict[str, Any]] = []
+                json_candidates: list[dict[str, Any]] = []
+            else:
+                dom = self.collect_dom_candidates(browser, page_url=page_url)
+                network = self.collect_network_candidates(browser, page_url=page_url)
+                json_candidates = self.collect_json_candidates(browser, page_url=page_url)
             raw_candidates = self.cluster_candidates([
                 *list(dom or ()), *list(network or ()), *list(json_candidates or ()),
             ])
@@ -371,6 +392,62 @@ class BaseAdapter:
             return analysis
         finally:
             _ACTIVE_COLLECTION.reset(token)
+
+
+    def collect_reader_payload(self, browser: Any, page_url: str) -> dict[str, Any]:
+        """Collect candidates from this adapter's reader container only.
+
+        Returns the same payload shape the generic collector produces, minus the sources a
+        registered reader does not need: no network/CDP sweep, no JSON manifest scan, no
+        iframe traversal. Consequently it never emits their limit warnings.
+        """
+        selectors = self.reader_selectors() or {}
+        container = str(selectors.get("container") or "")
+        image = str(selectors.get("image") or "img")
+        script = """
+            const CONTAINER = arguments[0] || "";
+            const IMAGE = arguments[1] || "img";
+            const root = CONTAINER ? document.querySelector(CONTAINER) : document;
+            if (!root) return {found: false, candidates: []};
+            const els = [...root.querySelectorAll(IMAGE)];
+            const out = els.map((el, index) => {
+                const rect = el.getBoundingClientRect();
+                return {
+                    tag: "img",
+                    url: el.currentSrc || el.getAttribute("src") ||
+                         el.getAttribute("data-url") || el.getAttribute("data-src") || "",
+                    source: el.currentSrc ? "currentSrc"
+                          : (el.getAttribute("src") ? "src" : "data"),
+                    order: index,
+                    width: Math.round(rect.width || 0),
+                    height: Math.round(rect.height || 0),
+                    naturalWidth: el.naturalWidth || 0,
+                    naturalHeight: el.naturalHeight || 0,
+                    inContainer: true,
+                    isChapterCandidate: true,
+                    y: Math.round((window.scrollY || 0) + rect.top),
+                    className: (el.className || "").toString(),
+                    id: el.id || "",
+                    alt: el.alt || ""
+                };
+            }).filter((item) => item.url);
+            return {found: true, candidates: out};
+        """
+        try:
+            payload = browser.execute_script(script, container, image) or {}
+        except Exception as exc:  # noqa: BLE001 - surfaced as a coded, sanitized failure
+            raise SourceError(SOURCE_NOT_READY, "reader_collection") from exc
+        if not payload.get("found"):
+            raise SourceError(NO_CHAPTER_IMAGES, "reader_container_absent")
+        candidates = list(payload.get("candidates") or ())
+        return {
+            "page_url": page_url,
+            "collector": f"{self.name}_reader",
+            "dom_candidates": candidates,
+            "network_candidates": [],
+            "json_candidates": [],
+            "warnings": [],
+        }
 
     @staticmethod
     def _collected_payload(browser: Any, page_url: str) -> dict[str, Any]:
@@ -430,6 +507,7 @@ WEBTOONS = BaseAdapter(
     runner="run_webtoon.py",
     chapter_path_markers=("/viewer", "/episode"),
     coverage_strategy="reader_container",
+    collection_strategy="adapter_specific",
     container_selector="#_imageList, .viewer_img, .viewer_lst",
     image_selector="#_imageList img, .viewer_img img._images",
 )
@@ -480,6 +558,8 @@ class VortexScansAdapter(BaseAdapter):
                 ".reading-content img, .chapter-content img, #chapter-content img, "
                 ".reader-area img"
             ),
+            coverage_strategy="reader_container",
+            collection_strategy="adapter_specific",
         )
         # Each selected adapter is a fresh instance, so these run-local grants cannot leak
         # across jobs.  A public CDN is never a selectable reader host; it becomes fetchable
@@ -562,6 +642,7 @@ class UniversalChapterAdapter(BaseAdapter):
             is_specific=False,
             browser_owned_readiness=False,
             coverage_strategy="generic_document",
+            collection_strategy="generic_multisource",
         )
         self._source_host = source_host
         self._related_hosts: set[str] = {source_host} if source_host else set()
