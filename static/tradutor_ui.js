@@ -234,8 +234,31 @@
   window.setTimeout(() => moveIndicator($('.rail-tab.active')), 60);
 
   /* ---------- visual feedback ---------- */
+  const reasonMessages = {
+    source_not_ready: 'Não foi possível abrir o navegador necessário para analisar a fonte.',
+    authentication_required: 'Essa fonte exige autenticação.',
+    challenge_required: 'A fonte exige uma verificação interativa.',
+    source_access_denied: 'A fonte recusou o acesso público.',
+    source_rate_limited: 'A fonte limitou temporariamente o acesso.',
+    incomplete_source_coverage: 'Não foi possível carregar todas as páginas do leitor.',
+    no_chapter_images: 'Nenhuma página do capítulo foi encontrada.',
+    // Kept distinct on purpose: a download error must never be shown for an analysis that
+    // never reached the download stage.
+    incomplete_download: 'Algumas páginas não puderam ser baixadas.',
+    unsupported_source: 'Esta fonte ainda não é suportada.',
+    environment_not_configured: 'Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.',
+  };
+  function reasonText(code) {
+    return reasonMessages[code] || '';
+  }
+
   const stageMessages = {
-    prepare: 'aguardando início', source_validation: 'validando fonte', source_analysis: 'analisando fonte', browser_loading: 'abrindo leitor', collecting_candidates: 'coletando páginas', clustering_candidates: 'validando páginas', awaiting_source_review: 'aguardando revisão das páginas', downloading_pages: 'baixando páginas', validating_pages: 'validando páginas', download: 'baixando páginas', validation: 'detectando balões',
+    prepare: 'aguardando início',
+    queued: 'na fila', worker_starting: 'iniciando processamento',
+    source_lazy_resolution: 'carregando páginas do leitor',
+    source_selection: 'preparando a ordem das páginas',
+    preparing: 'preparando processamento', quality_gate: 'validando resultado',
+    source_validation: 'validando a fonte', source_analysis: 'localizando páginas', browser_loading: 'abrindo o leitor', collecting_candidates: 'coletando páginas', clustering_candidates: 'validando páginas', awaiting_source_review: 'aguardando revisão das páginas', downloading_pages: 'baixando páginas', validating_pages: 'validando páginas', download: 'baixando páginas', validation: 'detectando balões',
     ocr: 'lendo texto', classification: 'organizando regiões', translate: 'traduzindo',
     render: 'redesenhando balões', pdf: 'gerando PDF', reports: 'finalizando', final: 'concluído',
   };
@@ -448,6 +471,8 @@
     if (!box) { showToast(error.message, 'error'); return; }
     const parts = [`<strong>Não foi possível iniciar</strong>`];
     if (error.stage) parts.push(`Etapa: ${escapeHtml(error.stage)}`);
+    const coded = reasonText(error.code);
+    if (coded) parts.push(escapeHtml(coded));
     parts.push(escapeHtml(error.message || 'Erro desconhecido.'));
     if (Array.isArray(error.hosts) && error.hosts.length) {
       parts.push(`Fontes suportadas: ${escapeHtml(error.hosts.join(', '))}`);
@@ -467,9 +492,10 @@
     const previousLabel = button ? button.textContent : '';
     if (button) { button.dataset.busy = '1'; button.disabled = true; button.textContent = 'Iniciando processamento…'; }
     $('#startError') && ($('#startError').hidden = true);
-    // The request performs source analysis in a worker thread. Keep cancel/polling active
-    // while it is running rather than waiting for the response to expose the stage.
-    setRunControls(true);
+    // The submit only enqueues now, so the response arrives with a job to poll. Controls
+    // are flipped after it, not before, and the screen shows whatever stage the worker
+    // actually reports rather than guessing at "analisando fonte".
+
     try {
       const result = await api('/api/ui/run', {method: 'POST', body: JSON.stringify(formPayload())});
       if (!result || result.ok === false) {
@@ -585,7 +611,11 @@
     const summary = $('#runSummary');
     if (appState.status === 'running') {
       summary.hidden = false;
-      const count = progress.total ? `${progress.current}/${progress.total}` : 'contador indisponível';
+      const counterOwner = progress.counter_stage || progress.stage_key || '';
+      const ownsCounter = !counterOwner || counterOwner === (progress.stage_key || '');
+      const count = (ownsCounter && progress.total)
+        ? `${progress.current}/${progress.total}`
+        : 'contador indisponível';
       // elapsed_label is authoritative: the server freezes it and emits 'Tempo indisponível'
       // for an unusable timestamp. Never substitute a locally computed number here.
       const elapsed = progress.elapsed_label || 'Tempo indisponível';
