@@ -167,3 +167,53 @@ isso, use somente fontes confiáveis e autorizadas.
 
 Consulte também [Adaptador universal](UNIVERSAL_CHAPTER_ADAPTER.md),
 [Transportes de download](DOWNLOAD_TRANSPORTS.md) e [Segurança](SECURITY.md).
+
+## Análise de fonte × cobertura de download
+
+São dois conceitos distintos, e confundi-los produziu um diagnóstico enganoso.
+
+**Análise completa** significa: adapter selecionado, fonte reconhecida, reader/container
+identificado, candidatos coletados e aceitos, ordem disponível, sem paginação pendente e sem
+falha de segurança. **Não** significa arquivos baixados, bytes validados, hashes ou PDF.
+
+**Download completo** significa: todos os itens esperados foram tentados, os necessários
+foram baixados, `Content-Type` válido, magic bytes válidos, imagem decodificável, hashes
+produzidos e nenhuma página obrigatória faltando.
+
+| Situação | stage | reason_code |
+| --- | --- | --- |
+| Driver ausente | `source_analysis` | `source_not_ready` |
+| Nenhum candidato | `source_analysis` | `no_chapter_images` |
+| Coletor não viu o leitor inteiro | `source_analysis` | `incomplete_source_coverage` |
+| Confiança média | `awaiting_source_review` | — (não é `failed`) |
+| Download parcial | `downloading_pages` / `validating_pages` | `incomplete_download` |
+
+A combinação `stage=source_analysis` + `reason_code=incomplete_download` é proibida e há
+teste que falha se ela reaparecer.
+
+### O defeito corrigido
+
+Um submit real aceitou 167 candidatos e então falhou com `incomplete_download` **dentro de
+`source_analysis`** — culpando um download que o runner nem havia iniciado. O sinal do
+coletor (`page_limit_exceeded`, `scroll_incomplete`, `pagination_incomplete`) é legítimo,
+mas descreve o que o coletor conseguiu enxergar, não bytes que nunca foram buscados. O
+rótulo passou a ser `incomplete_source_coverage`; `incomplete_download` continua sendo
+produzido apenas pelo downloader (`down.py`).
+
+### Estado verificado do Webtoons
+
+Medido contra o leitor oficial: adapter, normalização (com `title_no`/`episode_no`),
+preflight (200), container, seletores (167 imagens), lazy loading, autorização de CDN e o
+transport funcionam — comprovado até **duas** imagens baixadas e validadas. O capítulo
+inteiro **não** foi processado, e nada aqui afirma suporte completo ao Webtoons.
+
+O driver é opt-in: `TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1` permite ao Selenium Manager oficial
+resolver o ChromeDriver. Sem driver e sem a flag, o submit falha com `source_not_ready` —
+era essa a causa de ambiente.
+
+### Dívida técnica registrada
+
+`ui_bridge.start()` roda a análise de fonte com Selenium **sincronamente dentro do submit**.
+Isso prende a requisição, arrisca timeout e inicia um driver no processo web. Separar isso
+(criar o job `queued` e analisar no worker) é uma migração arquitetural com testes próprios,
+deliberadamente fora do escopo desta correção.

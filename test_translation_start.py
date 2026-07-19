@@ -470,10 +470,15 @@ class SourceReviewTests(unittest.TestCase):
         self.public["warnings"] = ["pagination_incomplete"]
         result = drive(self.bridge.start(self.payload()))
         self.assertFalse(result["ok"])
-        self.assertEqual(result["reason_code"], "incomplete_download")
+        # The intent is unchanged — a known-incomplete source must not reach manual review —
+        # but the code now names analysis coverage instead of a download that never ran.
+        self.assertEqual(result["reason_code"], "incomplete_source_coverage")
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.FAILED)
-        self.assertEqual(job["reason_code"], "incomplete_download")
+        self.assertEqual(job["reason_code"], "incomplete_source_coverage")
+        self.assertEqual(job["stage"], "source_analysis")
+        # The invariant the bug violated: a download verdict cannot be born in analysis.
+        self.assertNotEqual(job["reason_code"], "incomplete_download")
         self.assertEqual(self.bridge.worker_calls, 0)
 
     def test_confirmation_requires_a_nonempty_known_subset_and_preserves_open_output(self):
