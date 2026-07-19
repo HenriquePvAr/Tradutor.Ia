@@ -29,14 +29,27 @@ No Windows há também `start_tradutor.bat`.
 
 ## Estados do job
 
-`queued → claiming → starting → running → finished | review_required`, com
-`cancelling → cancelled`, `running → interrupted → resumable → queued` (retomada) e
-`failed`. Transições inválidas são rejeitadas (fail-closed).
+Uma análise genérica de fonte pode começar em `awaiting_source_review`. Esse estado não
+está em voo: não há runner, download de capítulo ou OCR. O usuário confirma os IDs opacos
+das páginas encontradas e o job então segue para `queued`; também pode ser cancelado.
+
+Depois da confirmação, o fluxo é `queued → claiming → starting → running → finished |
+review_required`, com `cancelling → cancelled`, `running → interrupted → resumable →
+queued` (retomada) e `failed`. Transições inválidas são rejeitadas (fail-closed).
+
+`review_required` é diferente de `awaiting_source_review`: o primeiro é terminal e só
+existe após uma execução que gerou artefatos com revisão de qualidade pendente. O segundo
+é uma revisão de seleção de páginas anterior ao OCR.
+
+O registro do job pode guardar `reason_code`, análise sanitizada da fonte e seleção de
+candidatos para auditoria. Ele não deve guardar URL completa de recurso, query, cookie ou
+pixel de canvas.
 
 ## Worker offline
 
-Se nenhum worker estiver online, um novo job fica `queued` e a UI mostra “aguardando
-worker”. A UI **nunca** executa o pipeline como fallback. Ao iniciar um worker, ele
+Se nenhum worker estiver online, um novo job confirmado fica `queued` e a UI mostra
+“aguardando worker”. Um job em `awaiting_source_review` não precisa de worker até a
+confirmação. A UI **nunca** executa o pipeline como fallback. Ao iniciar um worker, ele
 drena a fila.
 
 ## Cancelamento
@@ -84,6 +97,8 @@ de `output/`. Nada é migrado automaticamente.
 - **UI abriu, worker offline** → `python start_tradutor.py worker`; o job sai de `queued`
   sozinho.
 - **Job preso em `queued`** → confirme o worker com `status`.
+- **Job em `awaiting_source_review`** → revise e confirme as páginas encontradas; o OCR
+  ainda não foi iniciado.
 - **Job `interrupted`** → use “Retomar” na UI (cria `attempt 2`).
 - **Worker duplicado** → o segundo sai limpo; verifique com `status`.
 - **Porta 8080 ocupada** → outra UI já está rodando.

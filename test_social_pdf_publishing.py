@@ -1,5 +1,7 @@
 """Explicit publishing orchestration + endpoints — offline, no Drive, no remote Supabase."""
 
+import _test_bootstrap  # noqa: F401
+
 import socket
 import tempfile
 import unittest

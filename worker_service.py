@@ -40,10 +40,20 @@ COMMUNITY_RUNNER_RETRY_BACKOFF_SECONDS = 2.0
 
 class Worker:
     def __init__(self, db_path: Path, *, poll_seconds: float = POLL_SECONDS,
-                 stale_seconds: float = STALE_SECONDS):
+                 stale_seconds: float = STALE_SECONDS, log_dir: Path | None = None):
         self.worker_id = uuid.uuid4().hex
         self.pid = os.getpid()
         self.db_path = Path(db_path)
+        # Production keeps its established runtime log directory. A worker pointed at a
+        # separate database (tests, maintenance, isolated smoke) writes beside that database
+        # instead of silently creating logs in the project's production cache.
+        try:
+            is_default_db = self.db_path.resolve() == DEFAULT_DB.resolve()
+        except OSError:
+            is_default_db = self.db_path == DEFAULT_DB
+        self.log_dir = Path(log_dir) if log_dir is not None else (
+            LOG_DIR if is_default_db else self.db_path.parent / "logs"
+        )
         self.poll_seconds = poll_seconds
         self.stale_seconds = stale_seconds
         self.store = JobStore(self.db_path)
@@ -89,11 +99,11 @@ class Worker:
         return [runner, job_id]
 
     def _spawn_runner(self, job: dict) -> subprocess.Popen:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log_path = LOG_DIR / f"{job['id']}.log"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = self.log_dir / f"{job['id']}.log"
         job_type = (job.get("configuration") or {}).get("job_type", "translation")
         runner = self._RUNNERS.get(job_type, "job_runner.py")
-        gate_path = LOG_DIR / f".{job['id']}.{uuid.uuid4().hex}.start"
+        gate_path = self.log_dir / f".{job['id']}.{uuid.uuid4().hex}.start"
         command = [
             sys.executable, "-u", str(REPO_ROOT / runner),
             "--job-id", job["id"],
@@ -122,6 +132,18 @@ class Worker:
             return self.store.worker_stop_requested(self.worker_id)
         except Exception:  # noqa: BLE001 - a transient read must not crash the loop
             return False
+
+    @staticmethod
+    def _staging_owner_alive(job: dict) -> bool:
+        """Whether the process that created a non-claimable staging job still owns it.
+
+        Translation source analysis runs in the UI process before a worker may claim the
+        job.  ``worker_pid``/``worker_create_time`` therefore hold the staging owner during
+        that short phase; the creation time prevents a reused PID from keeping an abandoned
+        row alive.
+        """
+        return process_tree.is_alive(
+            job.get("worker_pid"), create_time=job.get("worker_create_time"))
 
     def _run_one(self, job: dict) -> None:
         proc = self._spawn_runner(job)
@@ -516,12 +538,12 @@ class Worker:
         for current in self.store.list_jobs(statuses=[JobStatus.STAGING], limit=None):
             if float(current.get("created_at") or 0) > cutoff:
                 continue
-            owner_alive = process_tree.is_alive(
-                current.get("worker_pid"),
-                create_time=current.get("worker_create_time"),
-            )
+            owner_alive = self._staging_owner_alive(current)
             config = current.get("configuration") or {}
             if config.get("job_type") != "community_publish":
+                # A live source-analysis owner is still deciding whether this row should
+                # become QUEUED.  Its wall time may legitimately exceed the short staging
+                # recovery grace, so only an absent/dead owner makes it recoverable here.
                 if owner_alive:
                     continue
                 try:

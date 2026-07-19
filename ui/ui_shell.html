@@ -305,6 +305,8 @@
           <div class="panel">
             <div class="panel-label">Pipeline</div>
             <div class="stage-list" id="stageList">
+              <div class="stage-item" data-stage="source_analysis"><div class="stage-fill"></div><span class="stage-dot"></span><span>Análise segura da fonte</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="awaiting_source_review"><div class="stage-fill"></div><span class="stage-dot"></span><span>Revisão das páginas</span><span class="stage-pct">—</span></div>
               <div class="stage-item" data-stage="download"><div class="stage-fill"></div><span class="stage-dot"></span><span>Download das páginas</span><span class="stage-pct">—</span></div>
               <div class="stage-item" data-stage="validation"><div class="stage-fill"></div><span class="stage-dot"></span><span>Detecção de balões</span><span class="stage-pct">—</span></div>
               <div class="stage-item" data-stage="ocr"><div class="stage-fill"></div><span class="stage-dot"></span><span>Leitura do texto</span><span class="stage-pct">—</span></div>
@@ -313,6 +315,15 @@
               <div class="stage-item" data-stage="pdf"><div class="stage-fill"></div><span class="stage-dot"></span><span>Geração do PDF</span><span class="stage-pct">—</span></div>
             </div>
             <div class="run-summary" id="runSummary" hidden></div>
+            <div class="source-review" id="sourceReviewPanel" hidden>
+              <div class="panel-label">Páginas encontradas</div>
+              <div class="source-review-meta" id="sourceReviewMeta"></div>
+              <div class="source-review-list" id="sourceReviewList"></div>
+              <div class="cta-row source-review-actions">
+                <button class="btn-primary" type="button" id="confirmSourcePages">Confirmar páginas</button>
+                <button class="btn-ghost" type="button" id="cancelSourceReview">Cancelar</button>
+              </div>
+            </div>
             <div class="artifact-actions" id="artifactActions"></div>
           </div>
         </div>

@@ -1,0 +1,3 @@
+# Optional source transports. The application imports these lazily and keeps them disabled
+# unless their documented feature flag is explicitly set.
+cloudscraper==1.2.71

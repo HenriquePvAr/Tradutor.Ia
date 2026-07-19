@@ -1,8 +1,11 @@
 ﻿"""The UI creates and reads jobs through the persistent store, never running them."""
 
+import _test_bootstrap  # noqa: F401
+
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import ui_bridge
@@ -24,11 +27,21 @@ class UiPersistentQueueTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.db = self.tmp / "jobs.sqlite3"
+        async def fake_source_analysis(_bridge, _url, *, cancel_check=None):
+            return SimpleNamespace(
+                outcome="supported_specific_adapter", accepted=[],
+                public=lambda: {
+                    "adapter": "webtoons", "final_host": "webtoons.com",
+                    "outcome": "supported_specific_adapter", "confidence": 1.0,
+                    "accepted": [], "accepted_count": 0, "discarded_count": 0,
+                },
+            )
         self._patches = [
             patch.object(ui_bridge, "JOBS_DB_PATH", self.db),
             patch.object(ui_bridge, "env_status", lambda *a, **k: {"env_exists": True, "nvidia_configured": True}),
             patch.object(ui_bridge, "_current_commit", lambda: "deadbeef"),
             patch.object(ui_bridge, "_current_branch", lambda: "main"),
+            patch.object(ui_bridge.UiBridge, "_run_source_analysis", new=fake_source_analysis),
         ]
         for p in self._patches:
             p.start()

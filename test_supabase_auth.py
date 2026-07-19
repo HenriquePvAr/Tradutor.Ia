@@ -4,6 +4,8 @@ Temporary EC keys are generated in-process; a fake JWKS transport serves the pub
 No network, no real Supabase, no import-time I/O.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import json
 import time
 import unittest

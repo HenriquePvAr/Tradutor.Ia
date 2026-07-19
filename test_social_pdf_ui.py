@@ -1,5 +1,7 @@
 """Contract/security tests for the explicit-publishing + reader frontend (source-level)."""
 
+import _test_bootstrap  # noqa: F401
+
 import re
 import unittest
 from pathlib import Path

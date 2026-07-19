@@ -1,19 +1,16 @@
-"""Explicit per-source adapter selection and validation for chapter URLs.
+"""Safe source adapters for public chapter URLs.
 
-Every source owns its own reader knowledge — selectors, readiness, candidate classification
-and exclusion — so the generic downloader holds no site-specific rules. Selection is
-fail-closed: a host is either claimed by a registered adapter or rejected with
-``unsupported_source`` before any job exists.
-
-There is deliberately no universal fallback. Fetching from a host nobody registered is an
-SSRF-shaped risk, and "try it and see" is exactly how a downloader ends up pointed at an
-internal address or at a site the operator has no right to read. Registering a source is an
-explicit act that asserts both support and permission.
+Known sources keep their own reader knowledge. Public HTTP(S) URLs without a known adapter
+may use ``UniversalChapterAdapter``, but it is a controlled fallback: the submitted host
+passes the same SSRF checks as a known source and image/CDN hosts are authorised only after
+reader analysis observes them. The generic adapter never promises support for every site and
+never bypasses a challenge or authentication wall.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -29,9 +26,17 @@ SOURCE_RATE_LIMITED = "source_rate_limited"
 NO_CHAPTER_IMAGES = "no_chapter_images"
 INVALID_IMAGE_RESPONSE = "invalid_image_response"
 INCOMPLETE_DOWNLOAD = "incomplete_download"
+AUTHENTICATION_REQUIRED = "authentication_required"
+UNSUPPORTED_CANVAS_READER = "unsupported_canvas_reader"
+UNSUPPORTED_CROSS_ORIGIN_READER = "unsupported_cross_origin_reader"
+SUPPORTED_SPECIFIC_ADAPTER = "supported_specific_adapter"
+SUPPORTED_GENERIC_HIGH_CONFIDENCE = "supported_generic_high_confidence"
+REVIEW_REQUIRED_MEDIUM_CONFIDENCE = "review_required_medium_confidence"
+UNSUPPORTED_LOW_CONFIDENCE = "unsupported_low_confidence"
 
 ALLOWED_SCHEMES = ("http", "https")
 ALLOWED_IMAGE_MIME = ("image/jpeg", "image/png", "image/webp", "image/avif", "image/gif")
+MAX_OBSERVED_RESOURCE_HOSTS = 64
 
 # Interactive challenges we refuse to work around. Detecting one is a terminal, honest stop.
 CHALLENGE_MARKERS = (
@@ -64,37 +69,57 @@ class ChallengeRequired(SourceError):
 
 class ChapterSourceAdapter(Protocol):
     name: str
+    adapter_version: str
     allowed_hosts: tuple[str, ...]
 
     def supports(self, url: str) -> bool: ...
     def normalize_url(self, url: str) -> str: ...
     def validate_url(self, url: str) -> None: ...
+    def validate_navigation_url(self, url: str) -> None: ...
+    def validate_observed_url(self, url: str) -> None: ...
     def validate_path(self, url: str) -> None: ...
     def reader_selectors(self) -> dict[str, str]: ...
     def classify_candidate(self, candidate: dict[str, Any]) -> str: ...
     def exclude_candidate(self, candidate: dict[str, Any]) -> str: ...
+    def authorize_related_url(self, url: str) -> None: ...
+    def analyze(self, context: Any, *, profile: dict[str, Any] | None = None,
+                extra_warnings: tuple[str, ...] = ()) -> Any: ...
+    def wait_until_ready(self, browser: Any) -> None: ...
+    def collect_dom_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]: ...
+    def collect_network_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]: ...
+    def collect_json_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]: ...
+    def cluster_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
+    def score_cluster(self, cluster: Any) -> float: ...
+    def build_page_manifest(self, cluster: Any) -> dict[str, Any]: ...
+    def build_command(self, job: dict[str, Any]) -> dict[str, str]: ...
+    def sanitize_error(self, error: BaseException) -> str: ...
+
+
+def raw_host_of(url: str) -> str:
+    """Lowercased hostname as it appears in a URL, or ``''`` when unparseable."""
+    try:
+        return (urlparse(str(url or "")).hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 def host_of(url: str) -> str:
-    """Lowercased hostname without a leading www., or '' when unparseable."""
-    try:
-        host = (urlparse(str(url or "")).hostname or "").lower()
-    except ValueError:
-        return ""
+    """Canonical host for registered adapters (``www.`` aliases their root host)."""
+    host = raw_host_of(url)
     return host[4:] if host.startswith("www.") else host
 
 
-def is_private_host(host: str) -> bool:
-    """True for loopback/private/link-local/reserved targets, by literal or by DNS.
+def resolved_public_addresses(host: str) -> tuple[str, ...]:
+    """Return a stable public DNS answer, or ``()`` for an unsafe/unresolved host.
 
-    Blocking only literals would miss a hostname that resolves inward, which is the usual
-    shape of an SSRF. Resolution failures count as unsafe: we do not fetch what we cannot
-    place.
+    The result is deliberately re-evaluated whenever an adapter validates a URL.  The
+    universal adapter remembers the first answer per host and rejects a changed answer as a
+    DNS-rebinding signal.  Callers never persist the addresses.
     """
     if not host:
-        return True
+        return ()
     if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
-        return True
+        return ()
     candidates: list[str] = []
     try:
         ipaddress.ip_address(host)
@@ -103,17 +128,26 @@ def is_private_host(host: str) -> bool:
         try:
             infos = socket.getaddrinfo(host, None)
         except (socket.gaierror, UnicodeError, OSError):
-            return True                     # cannot resolve → refuse
+            return ()                       # cannot resolve → refuse
         candidates.extend(str(info[4][0]) for info in infos)
+    public: set[str] = set()
     for raw in candidates:
         try:
             address = ipaddress.ip_address(raw)
         except ValueError:
-            return True
-        if (address.is_private or address.is_loopback or address.is_link_local
-                or address.is_reserved or address.is_multicast or address.is_unspecified):
-            return True
-    return False
+            return ()
+        # ``is_global`` is stricter than a hand-maintained collection of special ranges and
+        # covers loopback, private, link-local, multicast, documentation/reserved and
+        # unspecified addresses.
+        if not address.is_global:
+            return ()
+        public.add(str(address))
+    return tuple(sorted(public))
+
+
+def is_private_host(host: str) -> bool:
+    """True for loopback/private/link-local/reserved targets, by literal or DNS."""
+    return not bool(resolved_public_addresses(host))
 
 
 def looks_like_challenge(text: str) -> bool:
@@ -126,7 +160,14 @@ class BaseAdapter:
     """Default behaviour. A concrete source overrides only what differs."""
 
     name: str = "base"
+    # This small, non-sensitive contract version lets a later retry/review distinguish
+    # adapter behaviour without persisting a reader URL, cookie or selector payload.
+    adapter_version: str = "1"
     allowed_hosts: tuple[str, ...] = field(default_factory=tuple)
+    # Resource CDNs are explicit adapter-owned policy, distinct from reader hosts.  They are
+    # valid only after a candidate is classified as chapter content; they never make a CDN a
+    # selectable chapter source.
+    resource_hosts: tuple[str, ...] = field(default_factory=tuple)
     runner: str = "run_webtoon.py"
     chapter_path_markers: tuple[str, ...] = field(default_factory=tuple)
     # Selectors are per-source data, not downloader logic.
@@ -134,14 +175,34 @@ class BaseAdapter:
     image_selector: str = "img"
     min_image_width: int = 200
     min_image_height: int = 200
+    is_specific: bool = True
+
+    @staticmethod
+    def _matches_host(host: str, hosts: tuple[str, ...]) -> bool:
+        return any(host == allowed or host.endswith(f".{allowed}") for allowed in hosts)
+
+    @staticmethod
+    def _validate_public_url(url: str) -> str:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme.casefold() not in ALLOWED_SCHEMES:
+            raise SourceError(UNSUPPORTED_SOURCE, "scheme")
+        if parsed.username or parsed.password:
+            raise SourceError(UNSUPPORTED_SOURCE, "credentials_in_url")
+        # ``www`` is an allowed-host alias for specific adapters, but it is not a DNS
+        # alias.  Resolve the literal hostname that the browser/transport will connect to.
+        raw_host = raw_host_of(url)
+        if not raw_host:
+            raise SourceError(UNSUPPORTED_SOURCE, "missing_host")
+        if is_private_host(raw_host):
+            raise SourceError(UNSUPPORTED_SOURCE, "private_host")
+        return host_of(url)
 
     # ---- host / url ---------------------------------------------------------
     def supports(self, url: str) -> bool:
         host = host_of(url)
         # Exact host or a dot-suffix subdomain. Never a raw string suffix, which would let
         # "evil-webtoons.com" or "webtoons.com.evil.net" impersonate an allowed host.
-        return any(host == allowed or host.endswith(f".{allowed}")
-                   for allowed in self.allowed_hosts)
+        return self._matches_host(host, self.allowed_hosts)
 
     def normalize_url(self, url: str) -> str:
         parsed = urlparse(str(url or "").strip())
@@ -151,16 +212,20 @@ class BaseAdapter:
         ))
 
     def validate_url(self, url: str) -> None:
-        parsed = urlparse(str(url or "").strip())
-        if parsed.scheme not in ALLOWED_SCHEMES:
-            raise SourceError(UNSUPPORTED_SOURCE, "scheme")   # file:, data:, ftp:, …
-        if parsed.username or parsed.password:
-            raise SourceError(UNSUPPORTED_SOURCE, "credentials_in_url")
-        host = host_of(url)
-        if not self.supports(url):
+        host = self._validate_public_url(url)
+        if not (self._matches_host(host, self.allowed_hosts)
+                or self._matches_host(host, self.resource_hosts)):
             raise UnsupportedSource(host)
-        if is_private_host(host):
-            raise SourceError(UNSUPPORTED_SOURCE, "private_host")
+
+    def validate_navigation_url(self, url: str) -> None:
+        """Only a registered reader host may be the top-level browser destination."""
+        host = self._validate_public_url(url)
+        if not self._matches_host(host, self.allowed_hosts):
+            raise UnsupportedSource(host)
+
+    def validate_observed_url(self, url: str) -> None:
+        """Validate a browser-observed resource without granting it new authority."""
+        self.validate_url(url)
 
     def validate_path(self, url: str) -> None:
         """The URL must look like a chapter, not a series index or a profile."""
@@ -172,7 +237,11 @@ class BaseAdapter:
 
     def validate_redirect(self, final_url: str) -> None:
         """A redirect must land somewhere this adapter still claims."""
-        self.validate_url(final_url)
+        self.validate_navigation_url(final_url)
+
+    def authorize_related_url(self, url: str) -> None:
+        """Known adapters only authorise resources on their registered hosts."""
+        self.validate_url(url)
 
     # ---- reader knowledge ---------------------------------------------------
     def reader_selectors(self) -> dict[str, str]:
@@ -216,11 +285,88 @@ class BaseAdapter:
         """Only the class name or a known code — never a message that may carry a URL."""
         return getattr(error, "code", None) or type(error).__name__
 
+    # ---- analysis contract -------------------------------------------------
+    # The default delegates to the bounded generic collector. Site adapters can override
+    # individual hooks without making the downloader contain per-site branches. Imports are
+    # local because universal_chapter_adapter imports the stable constants from this module.
+    def wait_until_ready(self, browser: Any) -> None:
+        """Optional readiness hook for a specific reader; the safe default does nothing."""
+
+    def analyze(self, context: Any, *, profile: dict[str, Any] | None = None,
+                extra_warnings: tuple[str, ...] = ()) -> Any:
+        """Analyse a driver/context without fetching any selected page image.
+
+        Callers may pass a browser directly or a small mapping with ``driver``/``page_url``.
+        That boundary keeps adapter-specific analysis independent from downloader internals.
+        """
+        if isinstance(context, dict):
+            browser = context.get("driver") or context.get("browser")
+            page_url = str(context.get("page_url") or context.get("url") or "")
+        else:
+            browser = context
+            page_url = str(getattr(browser, "current_url", "") or "")
+        if browser is None or not page_url:
+            raise SourceError(SOURCE_NOT_READY, "analysis_context")
+        self.wait_until_ready(browser)
+        from universal_chapter_adapter import analyse_driver
+
+        return analyse_driver(browser, page_url, self, profile=profile,
+                              extra_warnings=extra_warnings)
+
+    @staticmethod
+    def _collected_payload(browser: Any, page_url: str) -> dict[str, Any]:
+        from universal_chapter_adapter import collect_from_driver
+
+        return collect_from_driver(
+            browser, page_url or str(getattr(browser, "current_url", "") or ""))
+
+    def collect_dom_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]:
+        """Expose bounded DOM evidence to an adapter override or an offline fixture."""
+        return list(self._collected_payload(browser, page_url).get("dom_candidates") or [])
+
+    def collect_network_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]:
+        """Expose bounded browser-observed network image evidence only."""
+        return list(self._collected_payload(browser, page_url).get("network_candidates") or [])
+
+    def collect_json_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]:
+        """Expose only recognised JSON/data candidates; arbitrary script text is never eval'd."""
+        return list(self._collected_payload(browser, page_url).get("json_candidates") or [])
+
+    def cluster_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Compatibility hook for a specific adapter with its own deterministic grouping."""
+        return list(candidates)
+
+    def score_cluster(self, cluster: Any) -> float:
+        """Compatibility hook for calibrated site-specific clusters."""
+        try:
+            return float(getattr(cluster, "score", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def build_page_manifest(self, cluster: Any) -> dict[str, Any]:
+        """Produce an opaque selection manifest, never raw candidate URLs."""
+        values = getattr(cluster, "candidates", cluster)
+        ids: list[str] = []
+        for value in values if isinstance(values, (list, tuple)) else ():
+            candidate_id = getattr(value, "id", "")
+            if not candidate_id and isinstance(value, dict):
+                candidate_id = value.get("id") or ""
+            if candidate_id:
+                ids.append(str(candidate_id))
+        return {"adapter": self.name, "adapter_version": self.adapter_version,
+                "candidate_ids": ids}
+
+    def build_command(self, job: dict[str, Any]) -> dict[str, str]:
+        """Describe the adapter-owned runner selection without producing shell syntax."""
+        return {"runner": self.runner, "adapter": self.name,
+                "adapter_version": self.adapter_version}
+
 
 # Webtoons keeps its own selectors; the downloader no longer knows about them.
 WEBTOONS = BaseAdapter(
     name="webtoons",
     allowed_hosts=("webtoons.com", "webtoon.com"),
+    resource_hosts=("webtoon-phinf.pstatic.net",),
     runner="run_webtoon.py",
     chapter_path_markers=("/viewer", "/episode"),
     container_selector="#_imageList, .viewer_img, .viewer_lst",
@@ -244,15 +390,169 @@ class GenericImageChapterAdapter(BaseAdapter):
         )
 
 
-# Registry order is resolution order. Only these hosts are ever fetched.
-ADAPTERS: tuple[BaseAdapter, ...] = (WEBTOONS,)
+_VORTEXSCANS_HOST = "vortexscans.org"
+_VORTEXSCANS_CHAPTER_PATH = re.compile(
+    r"^/series/[a-z0-9][a-z0-9-]*/chapter-[a-z0-9][a-z0-9._-]*/?$",
+    re.IGNORECASE,
+)
+
+
+class VortexScansAdapter(BaseAdapter):
+    """Conservative adapter for VortexScans chapter URLs.
+
+    The adapter intentionally claims only the literal public reader host.  It does not
+    promote arbitrary CDNs merely because a page refers to them: an additional resource host
+    can be added only after its reader behaviour is separately verified and covered by tests.
+    """
+
+    adapter_version = "1"
+
+    def __init__(self):
+        super().__init__(
+            name="vortexscans",
+            allowed_hosts=(_VORTEXSCANS_HOST,),
+            runner="run_webtoon.py",
+            container_selector=(
+                ".reading-content, .chapter-content, #chapter-content, .reader-area"
+            ),
+            image_selector=(
+                ".reading-content img, .chapter-content img, #chapter-content img, "
+                ".reader-area img"
+            ),
+        )
+
+    @staticmethod
+    def _has_exact_host(url: str) -> bool:
+        return raw_host_of(url) == _VORTEXSCANS_HOST
+
+    def supports(self, url: str) -> bool:
+        # Unlike BaseAdapter's shared suffix rule, this source is intentionally not a
+        # wildcard for unverified subdomains or a ``www`` alias.
+        return self._has_exact_host(url)
+
+    def _validate_exact_vortex_url(self, url: str) -> None:
+        self._validate_public_url(url)
+        if not self._has_exact_host(url):
+            raise UnsupportedSource(raw_host_of(url))
+
+    def validate_url(self, url: str) -> None:
+        self._validate_exact_vortex_url(url)
+
+    def validate_navigation_url(self, url: str) -> None:
+        self._validate_exact_vortex_url(url)
+
+    def validate_path(self, url: str) -> None:
+        """Accept only a normal, generic ``/series/<slug>/chapter-<slug>`` path."""
+        try:
+            path = urlparse(str(url or "")).path
+        except ValueError:
+            path = ""
+        if not _VORTEXSCANS_CHAPTER_PATH.fullmatch(path):
+            raise SourceError(UNSUPPORTED_SOURCE, "not_a_chapter_url")
+
+
+class UniversalChapterAdapter(BaseAdapter):
+    """A public-reader fallback with an ephemeral, evidence-based resource policy.
+
+    It is instantiated per submitted URL. It accepts the public source host and resource
+    hosts observed in the selected reader cluster; it never turns a generic public URL into
+    permission to fetch arbitrary public hosts.
+    """
+
+    def __init__(self, source_url: str):
+        parsed = urlparse(str(source_url or "").strip())
+        source_host = raw_host_of(source_url)
+        super().__init__(
+            name="universal",
+            allowed_hosts=(),
+            runner="run_webtoon.py",
+            container_selector="",
+            image_selector="img",
+            min_image_width=200,
+            min_image_height=200,
+            is_specific=False,
+        )
+        self._source_host = source_host
+        self._related_hosts: set[str] = {source_host} if source_host else set()
+        self._source_scheme = parsed.scheme.casefold()
+        self._dns_answers: dict[str, tuple[str, ...]] = {}
+
+    def supports(self, url: str) -> bool:
+        parsed = urlparse(str(url or "").strip())
+        return bool(parsed.hostname and parsed.scheme.casefold() in ALLOWED_SCHEMES)
+
+    @staticmethod
+    def _url_host(url: str) -> str:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme.casefold() not in ALLOWED_SCHEMES:
+            raise SourceError(UNSUPPORTED_SOURCE, "scheme")
+        if parsed.username or parsed.password:
+            raise SourceError(UNSUPPORTED_SOURCE, "credentials_in_url")
+        host = raw_host_of(url)
+        if not host:
+            raise SourceError(UNSUPPORTED_SOURCE, "missing_host")
+        return host
+
+    def _validate_public(self, url: str) -> str:
+        host = self._url_host(url)
+        addresses = resolved_public_addresses(host)
+        if not addresses:
+            raise SourceError(UNSUPPORTED_SOURCE, "private_host")
+        previous = self._dns_answers.get(host)
+        if previous is not None and previous != addresses:
+            raise SourceError(UNSUPPORTED_SOURCE, "dns_rebinding")
+        self._dns_answers[host] = addresses
+        return host
+
+    def validate_url(self, url: str) -> None:
+        host = self._validate_public(url)
+        if host not in self._related_hosts:
+            raise SourceError(UNSUPPORTED_SOURCE, "unrelated_resource_host")
+
+    def validate_observed_url(self, url: str) -> None:
+        # Observation can see hundreds of DOM resources. Validate each new host once here;
+        # selected resources and every actual fetch are revalidated later, so this bounds
+        # DNS work without turning a transient observation into an access grant.
+        host = self._url_host(url)
+        if host in self._dns_answers:
+            return
+        if len(self._dns_answers) >= MAX_OBSERVED_RESOURCE_HOSTS:
+            raise SourceError(UNSUPPORTED_SOURCE, "too_many_resource_hosts")
+        self._validate_public(url)
+
+    def validate_navigation_url(self, url: str) -> None:
+        # The submitted/redirected reader itself is allowed to change hosts only after the
+        # public DNS answer is checked.  Resource hosts never become navigation targets.
+        self._validate_public(url)
+
+    def validate_redirect(self, final_url: str) -> None:
+        # A top-level redirect comes from the user-supplied navigation. It may move to a
+        # different public reader host, but each hop is revalidated and scoped to this run.
+        self.validate_navigation_url(final_url)
+        host = raw_host_of(final_url)
+        self._source_host = host
+        self._related_hosts.add(host)
+
+    def authorize_related_url(self, url: str) -> None:
+        """Grant one observed public reader resource to this in-memory run only."""
+        host = self._validate_public(url)
+        self._related_hosts.add(host)
+
+    @property
+    def related_hosts(self) -> tuple[str, ...]:
+        return tuple(sorted(self._related_hosts))
+
+
+# Registry order is resolution order. Specific adapters always win over the fallback.
+VORTEXSCANS = VortexScansAdapter()
+ADAPTERS: tuple[BaseAdapter, ...] = (WEBTOONS, VORTEXSCANS)
 
 
 def select_adapter(url: str) -> BaseAdapter:
     for adapter in ADAPTERS:
         if adapter.supports(url):
             return adapter
-    raise UnsupportedSource(host_of(url))
+    return UniversalChapterAdapter(url)
 
 
 def supported_hosts() -> list[str]:

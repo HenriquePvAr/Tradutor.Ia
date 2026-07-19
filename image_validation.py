@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import warnings
 from dataclasses import dataclass
 
 from chapter_source import INVALID_IMAGE_RESPONSE, SourceError
@@ -30,6 +31,7 @@ MARKUP_PREFIXES = (b"<!doctype", b"<html", b"<?xml", b"<svg", b"{", b"[")
 MIN_WIDTH = 64
 MIN_HEIGHT = 64
 MIN_BYTES = 1024
+MAX_IMAGE_PIXELS = 50_000_000
 
 
 @dataclass(frozen=True)
@@ -71,13 +73,14 @@ def looks_like_markup(data: bytes) -> bool:
 
 def validate_image_bytes(data: bytes, *, min_width: int = MIN_WIDTH,
                          min_height: int = MIN_HEIGHT,
+                         min_bytes: int = MIN_BYTES,
                          max_bytes: int | None = None) -> ValidatedImage:
     """Accept only bytes that really are a decodable image. Raises SourceError otherwise."""
     if not data:
         raise SourceError(INVALID_IMAGE_RESPONSE, "empty")
     if max_bytes is not None and len(data) > max_bytes:
         raise SourceError(INVALID_IMAGE_RESPONSE, "too_large")
-    if len(data) < MIN_BYTES:
+    if len(data) < max(12, int(min_bytes)):
         raise SourceError(INVALID_IMAGE_RESPONSE, "too_small_bytes")
     if looks_like_markup(data):
         # HTML/JSON disguised as a JPEG — an error page or a challenge.
@@ -89,11 +92,15 @@ def validate_image_bytes(data: bytes, *, min_width: int = MIN_WIDTH,
     try:
         from PIL import Image
 
-        with Image.open(io.BytesIO(data)) as probe:
-            probe.verify()                       # structural check
-        with Image.open(io.BytesIO(data)) as image:
-            image.load()                         # full decode; catches truncation
-            width, height = image.size
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as probe:
+                width, height = probe.size
+                if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                    raise SourceError(INVALID_IMAGE_RESPONSE, "too_many_pixels")
+                probe.verify()                   # structural check without a full decode
+            with Image.open(io.BytesIO(data)) as image:
+                image.load()                     # full decode; catches truncation
     except SourceError:
         raise
     except Exception as exc:  # noqa: BLE001 - decoder errors are sanitized by class name

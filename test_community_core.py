@@ -1,5 +1,7 @@
 """Community model, storage abstraction, validation and publish flow — all offline."""
 
+import _test_bootstrap  # noqa: F401
+
 import hashlib
 import tempfile
 import unittest

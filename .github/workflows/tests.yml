@@ -77,10 +77,23 @@ jobs:
             benchmark_pipeline.py `
             run_webtoon.py `
             process_launcher.py `
+            job_runner.py `
+            worker_service.py `
             app_ui.py `
             adaptive_scheduler.py `
             resource_monitor.py `
             ocr_parallel.py `
+            chapter_source.py `
+            universal_chapter_adapter.py `
+            source_profile.py `
+            down.py `
+            download_transport.py `
+            image_validation.py `
+            job_store.py `
+            ui_bridge.py `
+            ui_helpers.py `
             conftest.py `
+            sitecustomize.py `
+            _test_bootstrap.py `
             scripts/manual_webtoon_smoke.py `
             scripts/manual_nvidia_smoke.py

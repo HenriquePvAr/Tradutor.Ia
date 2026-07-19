@@ -1,5 +1,7 @@
 """Stale in-flight jobs, frozen timers, stage-bound progress and cancel without a process."""
 
+import _test_bootstrap  # noqa: F401
+
 import os
 import tempfile
 import time

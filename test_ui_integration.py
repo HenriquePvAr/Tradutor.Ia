@@ -76,6 +76,17 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn("review_required", source)
         self.assertIn("revisão necessária", source)
 
+    def test_frontend_has_a_sanitized_source_review_confirmation_path(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        app_source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        self.assertIn("awaiting_source_review", source)
+        self.assertIn("/api/ui/source/confirm", source)
+        self.assertIn("data-source-candidate-id", source)
+        self.assertIn('id="sourceReviewPanel"', shell)
+        self.assertIn("api_source_confirm", app_source)
+        self.assertNotIn("item.url", source[source.index("function renderSourceReview"):source.index("function renderResult")])
+
     def test_frontend_never_uses_presentation_record_id_as_source_job(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertNotIn("record.job_id || record.id", source)

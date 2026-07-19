@@ -77,7 +77,10 @@ O fallback não substitui palavras por regras fixas. Ele pede novas leituras e c
 | `SELENIUM_QUIT_TIMEOUT_SECONDS` | `20` | Limite para o encerramento normal do driver, restrito internamente a 1–300 s |
 | `SELENIUM_CLEANUP_TIMEOUT_SECONDS` | `3` | Janela do cleanup seletivo, restrita a 0,25–30 s |
 
-`CHROMEDRIVER_PATH` é suportada pelo código, mas não aparece no template. Deixe vazia para tentar `webdriver-manager` e Selenium Manager. Defina um caminho somente quando a descoberta automática falhar.
+`CHROMEDRIVER_PATH` é suportada pelo código, mas não aparece no template. Se estiver vazia,
+o código procura apenas `chromedriver`/`chromedriver.exe` já presentes no `PATH`; ele não
+usa webdriver-manager nem Selenium Manager para baixar um driver. Defina um caminho local
+quando o `PATH` não tiver um driver compatível.
 
 ## Máscara, texto e reconstrução
 

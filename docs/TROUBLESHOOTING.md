@@ -129,7 +129,9 @@ Reduzir o limite de requisições é mais seguro do que aumentar retries sem evi
 
 ## Chrome ou ChromeDriver não inicia
 
-Atualize o Chrome e confirme que ele abre normalmente. O downloader tenta `CHROMEDRIVER_PATH`, depois `webdriver-manager` e por fim Selenium Manager.
+Atualize o Chrome e confirme que ele abre normalmente. O downloader tenta
+`CHROMEDRIVER_PATH` e depois apenas `chromedriver`/`chromedriver.exe` já presente no
+`PATH`; ele não baixa drivers automaticamente.
 
 Quando a descoberta automática falhar, configure um driver compatível:
 

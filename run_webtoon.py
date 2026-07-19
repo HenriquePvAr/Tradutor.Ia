@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
+from output_manifest import sanitize_source_url
+
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -61,6 +63,12 @@ def build_parser():
         action="store_true",
         help="Coleta, valida e audita imagens sem executar OCR, traducao ou PDF.",
     )
+    parser.add_argument(
+        "--source-candidate-id",
+        action="append",
+        default=[],
+        help="ID de uma pagina aprovada na revisao de fonte (uso interno da UI).",
+    )
     return parser
 
 
@@ -107,9 +115,10 @@ def main(argv=None):
         ocr_engine=engine,
         use_context=not args.no_context,
         session_context_path=str(context_path),
+        source_candidate_ids=list(args.source_candidate_id or []),
     )
 
-    print(f"Capitulo: {args.url}")
+    print(f"Capitulo: {sanitize_source_url(args.url)}")
     print(f"Modo: {args.mode} ({engine})")
     print(f"Cache: {'ignorado' if args.force else 'ativado'}")
     print(f"Contexto: {'desativado' if args.no_context else context_path}")
@@ -149,7 +158,7 @@ def _run_download_only(args, output_folder):
     input_folder = output_folder / "input"
     output_folder.mkdir(parents=True, exist_ok=True)
     max_images = args.max_images
-    print(f"Download-only: {args.url}")
+    print(f"Download-only: {sanitize_source_url(args.url)}")
     print(f"Escopo: {'capitulo completo' if max_images is None else f'{max_images} imagens'}")
     print(f"Saida: {output_folder}")
     image_paths = download_images(
@@ -158,6 +167,7 @@ def _run_download_only(args, output_folder):
         debug_folder=str(output_folder),
         target_folder=str(input_folder),
         force=bool(args.force),
+        approved_candidate_ids=list(args.source_candidate_id or []),
         progress_callback=lambda current, total, message: print(
             f"{message}: {current}/{total}",
             flush=True,

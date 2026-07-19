@@ -22,6 +22,9 @@ SMOKE_TEXTS = (
 def run_smoke(texts: tuple[str, ...] = SMOKE_TEXTS) -> int:
     """Create the real client only after both explicit opt-ins succeeded."""
 
+    # ``run_smoke`` is importable for manual orchestration, so it must enforce the
+    # same boundary as ``main`` before it can import or instantiate the client.
+    require_network_smoke(NVIDIA_SMOKE_OPT_IN)
     from translator_nvidia import TranslatorNvidiaBatch
 
     # Smoke traffic never reads or writes the production translation cache.

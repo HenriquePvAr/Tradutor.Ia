@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 
 MANIFEST_FILENAME = "run_manifest.json"
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
+_SUPPORTED_MANIFEST_VERSIONS = frozenset({1, MANIFEST_VERSION})
 _REQUIRED_FIELDS = {
     "manifest_version",
     "run_id",
@@ -28,12 +31,37 @@ _REQUIRED_FIELDS = {
 
 
 def sanitize_source_url(url: str) -> str:
-    """Keep only the non-sensitive origin and path in output metadata."""
+    """Keep an auditable origin and opaque path fingerprint in output metadata.
 
-    parsed = urlparse(str(url or "").strip())
-    if not parsed.scheme or not parsed.netloc:
+    Query strings and userinfo are obvious credential carriers, but signed readers sometimes
+    place a token directly in the path as well. Outputs only need to correlate a source with
+    its host/path shape, never to recreate the request, so retain a short one-way fingerprint
+    instead of the literal path.
+    """
+
+    raw = str(url or "").strip()
+    local = re.fullmatch(r"local-folder:([0-9a-fA-F]{16,64})", raw)
+    if local:
+        # A local input is represented only by an opaque content/source fingerprint.  It is
+        # not a URI and must never fall through to a filesystem path or a browser address.
+        return f"local-folder:{local.group(1).casefold()[:24]}"
+    try:
+        parsed = urlparse(raw)
+        scheme = parsed.scheme.casefold()
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except (TypeError, ValueError):
         return ""
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    if scheme not in {"http", "https"} or not host:
+        return ""
+    # ``parsed.netloc`` retains userinfo.  Rebuild it from hostname/port so a malformed
+    # submitted URL can never copy credentials into an output manifest or diagnostic.
+    display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    default_port = 80 if scheme == "http" else 443
+    netloc = display_host if not port or port == default_port else f"{display_host}:{port}"
+    raw_path = parsed.path or "/"
+    path_fingerprint = hashlib.sha256(raw_path.encode("utf-8", "ignore")).hexdigest()[:12]
+    return urlunparse((scheme, netloc, f"/path-{path_fingerprint}", "", "", ""))
 
 
 def build_run_manifest(
@@ -52,6 +80,10 @@ def build_run_manifest(
     pdf_path: str,
     series_slug: str = "",
     episode_number: str = "",
+    source_type: str = "url",
+    adapter_name: str = "",
+    adapter_version: str = "",
+    transport_name: str = "",
 ) -> dict[str, Any]:
     # The descriptive fields are optional so a manifest written before they
     # existed stays valid; readers fall back to the path when they are absent.
@@ -69,6 +101,10 @@ def build_run_manifest(
         "manual_review_count": max(0, int(manual_review_count or 0)),
         "rejected_count": max(0, int(rejected_count or 0)),
         "pdf_path": str(pdf_path or ""),
+        "source_type": "local_folder" if source_type == "local_folder" else "url",
+        "adapter_name": str(adapter_name or "")[:80],
+        "adapter_version": str(adapter_version or "")[:40],
+        "transport_name": str(transport_name or "")[:80],
     }
     pdf_filename = Path(str(pdf_path or "")).name
     if pdf_filename:
@@ -90,7 +126,7 @@ def load_verified_run_manifest(output_folder: Path) -> dict[str, Any]:
         return {}
     if not isinstance(payload, dict):
         return {}
-    if payload.get("manifest_version") != MANIFEST_VERSION:
+    if payload.get("manifest_version") not in _SUPPORTED_MANIFEST_VERSIONS:
         return {}
     if not _REQUIRED_FIELDS.issubset(payload):
         return {}

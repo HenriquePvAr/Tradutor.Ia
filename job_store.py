@@ -12,13 +12,15 @@ writer (worker/runner) work concurrently without a global lock.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+_REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
 class JobStatus:
@@ -34,11 +36,13 @@ class JobStatus:
     FAILED = "failed"
     FINISHED = "finished"
     REVIEW_REQUIRED = "review_required"
+    AWAITING_SOURCE_REVIEW = "awaiting_source_review"
 
     ALL = frozenset(
         {
             STAGING, QUEUED, CLAIMING, STARTING, RUNNING, CANCELLING, CANCELLED,
             INTERRUPTED, RESUMABLE, FAILED, FINISHED, REVIEW_REQUIRED,
+            AWAITING_SOURCE_REVIEW,
         }
     )
     TERMINAL = frozenset({CANCELLED, FAILED, FINISHED, REVIEW_REQUIRED})
@@ -46,10 +50,21 @@ class JobStatus:
     IN_FLIGHT = frozenset({CLAIMING, STARTING, RUNNING, CANCELLING})
 
 
+_DEFAULT_TERMINAL_REASONS = {
+    JobStatus.CANCELLED: "cancelled",
+    JobStatus.FAILED: "pipeline_failed",
+    JobStatus.FINISHED: "completed",
+    JobStatus.REVIEW_REQUIRED: "quality_review_required",
+    JobStatus.INTERRUPTED: "interrupted",
+}
+
+
 # Allowed transitions. A transition not listed here is rejected (fail-closed), so a
 # stray write can never move a job into a nonsensical state from another module.
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
-    JobStatus.STAGING: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED}),
+    JobStatus.STAGING: frozenset({
+        JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW, JobStatus.CANCELLED, JobStatus.FAILED,
+    }),
     JobStatus.QUEUED: frozenset({JobStatus.CLAIMING, JobStatus.CANCELLED}),
     JobStatus.CLAIMING: frozenset(
         {JobStatus.STARTING, JobStatus.QUEUED, JobStatus.FAILED, JobStatus.INTERRUPTED}
@@ -62,6 +77,9 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
             JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED, JobStatus.CANCELLING,
             JobStatus.INTERRUPTED, JobStatus.FAILED,
         }
+    ),
+    JobStatus.AWAITING_SOURCE_REVIEW: frozenset(
+        {JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED}
     ),
     JobStatus.CANCELLING: frozenset({JobStatus.CANCELLED, JobStatus.INTERRUPTED, JobStatus.FAILED}),
     JobStatus.INTERRUPTED: frozenset({JobStatus.RESUMABLE, JobStatus.FAILED, JobStatus.CANCELLED}),
@@ -95,6 +113,7 @@ _JOB_COLUMNS = (
     "attempt", "previous_job_id", "commit_hash", "branch",
     "manifest_path", "progress_path", "quality_report_path", "pdf_path", "log_path",
     "error_type", "error_message", "error_trace_path", "updated_at",
+    "reason_code", "source_analysis_json", "source_selection_json",
 )
 
 
@@ -128,6 +147,8 @@ class JobStore:
             self._create_v1()
         if version < 2:
             self._migrate_v2()
+        if version < 3:
+            self._migrate_v3()
         # Idempotent: record the current version.
         self._conn.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
@@ -151,6 +172,13 @@ class JobStore:
             self._conn.execute("ALTER TABLE workers ADD COLUMN create_time REAL")
         if "stop_requested" not in worker_cols:
             self._conn.execute("ALTER TABLE workers ADD COLUMN stop_requested INTEGER DEFAULT 0")
+
+    def _migrate_v3(self) -> None:
+        """Persist a sanitised source diagnosis without turning a review hold into a job run."""
+        job_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        for column in ("reason_code", "source_analysis_json", "source_selection_json"):
+            if column not in job_cols:
+                self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
 
     def _create_v1(self) -> None:
         self._conn.executescript(
@@ -197,6 +225,9 @@ class JobStore:
                 error_type TEXT,
                 error_message TEXT,
                 error_trace_path TEXT,
+                reason_code TEXT,
+                source_analysis_json TEXT,
+                source_selection_json TEXT,
                 updated_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);
@@ -229,6 +260,15 @@ class JobStore:
                 data["command"] = []
         else:
             data["command"] = []
+        for column, key in (("source_analysis_json", "source_analysis"),
+                            ("source_selection_json", "source_selection")):
+            if data.get(column):
+                try:
+                    data[key] = json.loads(data[column])
+                except (ValueError, TypeError):
+                    data[key] = {}
+            else:
+                data[key] = {}
         return data
 
     # ---- job CRUD -----------------------------------------------------------
@@ -256,7 +296,8 @@ class JobStore:
         job_id = str(job_id or uuid.uuid4().hex)
         if len(job_id) != 32 or any(char not in "0123456789abcdef" for char in job_id):
             raise ValueError("invalid_job_id")
-        if initial_status not in {JobStatus.QUEUED, JobStatus.STAGING}:
+        if initial_status not in {JobStatus.QUEUED, JobStatus.STAGING,
+                                  JobStatus.AWAITING_SOURCE_REVIEW}:
             raise ValueError("invalid_initial_job_status")
         now = time.time()
         self._conn.execute(
@@ -388,10 +429,20 @@ class JobStore:
                 f"job {job_id} owned by {row['worker_id']!r}, not {expected_worker!r}"
             )
         assignments = {"status": target, "updated_at": time.time()}
+        if target == JobStatus.QUEUED and row["queued_at"] is None:
+            assignments["queued_at"] = time.time()
         if target == JobStatus.RUNNING and row["started_at"] is None:
             assignments["started_at"] = time.time()
         if target in JobStatus.TERMINAL:
             assignments["finished_at"] = time.time()
+        if target in _DEFAULT_TERMINAL_REASONS and "reason_code" not in fields:
+            fields["reason_code"] = _DEFAULT_TERMINAL_REASONS[target]
+        if "reason_code" in fields:
+            candidate = str(fields["reason_code"] or "").strip().casefold()
+            fields["reason_code"] = (
+                candidate if _REASON_CODE_RE.fullmatch(candidate)
+                else _DEFAULT_TERMINAL_REASONS.get(target, "invalid_reason_code")
+            )
         for key, value in fields.items():
             if key not in _JOB_COLUMNS:
                 raise TransitionError(f"unknown job column: {key}")

@@ -60,7 +60,7 @@ from pipeline_cache import (
     valid_image,
 )
 from session_context import SessionContextStore
-from output_manifest import build_run_manifest
+from output_manifest import build_run_manifest, sanitize_source_url
 from pdf_naming import (
     build_pdf_filename,
     episode_number_from_url,
@@ -115,6 +115,7 @@ def _output_run_manifest(output_folder, report, translator):
     )[:24]
     quality = report.get("quality_validation") or {}
     source_url = str(report.get("url") or "")
+    source_type = str(report.get("source_type") or "url")
     return build_run_manifest(
         run_id=run_id,
         created_at=created_at,
@@ -130,6 +131,10 @@ def _output_run_manifest(output_folder, report, translator):
         pdf_path=str(report.get("pdf_path") or ""),
         series_slug=series_slug_from_url(source_url),
         episode_number=episode_number_from_url(source_url),
+        source_type=source_type,
+        adapter_name=str(report.get("adapter_name") or ""),
+        adapter_version=str(report.get("adapter_version") or ""),
+        transport_name=str(report.get("transport_name") or ""),
     )
 
 
@@ -195,8 +200,10 @@ def run_benchmark(args):
 
     effective_debug = bool(config.DEBUG_VISUAL and not args.fast)
     max_images = None if args.full else args.max_images
-    download_max_images = None if config.SMART_WEBTOON_PDF_SPLIT else max_images
-    if selected_page_indices and not args.full and not config.SMART_WEBTOON_PDF_SPLIT:
+    local_manifest_path = str(getattr(args, "local_manifest_path", "") or "")
+    download_max_images = None if config.SMART_WEBTOON_PDF_SPLIT and not local_manifest_path else max_images
+    if selected_page_indices and not args.full and (
+            not config.SMART_WEBTOON_PDF_SPLIT or local_manifest_path):
         download_max_images = max(max(selected_page_indices), max_images or 0)
     run_signature = stable_hash(
         {
@@ -205,6 +212,7 @@ def run_benchmark(args):
             "full": args.full,
             "fast": args.fast,
             "page_indices": selected_page_indices,
+            "source_candidate_ids": list(getattr(args, "source_candidate_ids", []) or []),
             "pipeline": "benchmark-v2-smart-pages",
             "ocr_engine": config.OCR_ENGINE,
             "ocr_fallback_engine": config.OCR_FALLBACK_ENGINE,
@@ -218,7 +226,9 @@ def run_benchmark(args):
     pipeline_fingerprint = fingerprint_files(PIPELINE_FILES)
     relevant_config = _relevant_output_config(pipeline_fingerprint)
 
-    print(f"Benchmark: {args.url}", flush=True)
+    # Console output is captured by the job runner, so never place signed reader queries in
+    # it. The raw URL remains in memory only for the actual, validated download.
+    print(f"Benchmark: {sanitize_source_url(args.url)}", flush=True)
     print(f"Imagens: {'capitulo completo' if args.full else max_images}", flush=True)
     if selected_page_indices:
         print(f"Paginas selecionadas: {selected_page_indices}", flush=True)
@@ -233,6 +243,8 @@ def run_benchmark(args):
         download_max_images,
         output_folder,
         force=bool(getattr(args, "force_download", False)),
+        source_candidate_ids=list(getattr(args, "source_candidate_ids", []) or []),
+        local_manifest_path=local_manifest_path,
     )
     download_wall_seconds = time.perf_counter() - download_started
     if not all_image_paths:
@@ -244,7 +256,10 @@ def run_benchmark(args):
             + ", ".join(download_gate.get("reasons") or ["motivo desconhecido"])
         )
     resource_monitor.set_stage("validation")
-    source_selection = [] if config.SMART_WEBTOON_PDF_SPLIT else selected_page_indices
+    source_selection = [] if (
+        config.SMART_WEBTOON_PDF_SPLIT
+        and bool(download_report.get("requires_smart_split", True))
+    ) else selected_page_indices
     source_entries, missing_page_indices = _select_image_entries(
         all_image_paths,
         source_selection,
@@ -270,6 +285,7 @@ def run_benchmark(args):
     should_rebuild_pages = bool(
         config.SMART_WEBTOON_PDF_SPLIT
         and download_report.get("viewer_image_count")
+        and download_report.get("requires_smart_split", True)
     )
     if should_rebuild_pages:
         resource_monitor.set_stage("smart_split")
@@ -1013,7 +1029,11 @@ def run_benchmark(args):
     )
 
     report = {
-        "url": args.url,
+        "url": sanitize_source_url(args.url),
+        "source_type": str(download_report.get("source_type") or "url"),
+        "adapter_name": str(download_report.get("adapter_name") or ""),
+        "adapter_version": str(download_report.get("adapter_version") or ""),
+        "transport_name": str(download_report.get("transport_name") or ""),
         "mode": "full" if args.full else "controlled",
         "force": bool(args.force),
         "fast": bool(args.fast),
@@ -1317,20 +1337,40 @@ def _retry_layout_overflow_translations(
     return retried
 
 
-def _download_with_cache(url, max_images, output_folder, force):
+def _download_with_cache(url, max_images, output_folder, force, source_candidate_ids=None,
+                         local_manifest_path=""):
+    approved_ids = list(dict.fromkeys(str(value) for value in (source_candidate_ids or []) if value))
+    input_folder = output_folder / "input"
+    output_report_path = output_folder / "downloaded_images.json"
+    if local_manifest_path:
+        # Local input is already an immutable, validated snapshot.  It is deliberately never
+        # entered in the remote-download cache and it declares logical pages so Webtoon smart
+        # splitting cannot alter a user-supplied page sequence.
+        from local_folder_input import materialize_snapshot
+
+        paths, manifest = materialize_snapshot(
+            local_manifest_path,
+            input_folder,
+            max_images=max_images,
+            clear_existing=bool(force),
+        )
+        atomic_write_json(output_report_path, manifest)
+        print(f"Entrada local: {len(paths)} paginas logicas", flush=True)
+        return paths, manifest, False
     key = stable_hash(
         {
             "url": url,
             "max_images": max_images,
-            "download_rules": "webtoon-download-v3",
+            # A manually confirmed subset must never reuse the cache for a different reader
+            # snapshot or automatic selection.
+            "source_candidate_ids": approved_ids,
+            "download_rules": "chapter-download-v4",
         }
     )
     download_folder = cache_folder("downloads") / key
     manifest_path = download_folder / "manifest.json"
-    input_folder = output_folder / "input"
-    output_report_path = output_folder / "downloaded_images.json"
 
-    if config.ENABLE_DOWNLOAD_CACHE and not force:
+    if _download_cache_reuse_allowed(url, force=force, approved_ids=approved_ids):
         manifest = load_json(manifest_path)
         cached_paths = _valid_download_paths(manifest)
         if cached_paths:
@@ -1360,6 +1400,7 @@ def _download_with_cache(url, max_images, output_folder, force):
         debug_folder=str(output_folder),
         target_folder=str(input_folder),
         force=True,
+        approved_candidate_ids=approved_ids,
         progress_callback=lambda current, total, message: print(
             f"{message}: {current}/{total}",
             flush=True,
@@ -1367,19 +1408,24 @@ def _download_with_cache(url, max_images, output_folder, force):
     )
     manifest = load_json(output_report_path)
     valid_items = _chapter_download_items(manifest)
-    if download_folder.exists():
-        force_remove(str(download_folder))
-    download_folder.mkdir(parents=True, exist_ok=True)
+    from chapter_source import select_adapter
+
+    cacheable_source = select_adapter(url).is_specific and not approved_ids
+    if cacheable_source:
+        if download_folder.exists():
+            force_remove(str(download_folder))
+        download_folder.mkdir(parents=True, exist_ok=True)
     cache_items = []
     for item in valid_items:
         path = item.get("path")
         if _valid_download_item(item, path):
             file_hash = file_sha256(path)
-            cache_path = download_folder / Path(path).name
-            atomic_copy(path, cache_path)
+            cache_path = download_folder / Path(path).name if cacheable_source else None
+            if cache_path is not None:
+                atomic_copy(path, cache_path)
             item["sha256"] = file_hash
             cache_item = dict(item)
-            cache_item["path"] = str(cache_path)
+            cache_item["path"] = str(cache_path) if cache_path is not None else ""
             cache_item["active_path"] = path
             cache_items.append(cache_item)
     manifest["downloaded"] = valid_items
@@ -1389,12 +1435,22 @@ def _download_with_cache(url, max_images, output_folder, force):
         for item in valid_items
         if _valid_download_item(item, item.get("path"))
     ]
-    cache_manifest = dict(manifest)
-    cache_manifest["downloaded"] = cache_items
-    cache_manifest["total_downloaded"] = len(cache_items)
-    atomic_write_json(manifest_path, cache_manifest)
+    if cacheable_source:
+        cache_manifest = dict(manifest)
+        cache_manifest["downloaded"] = cache_items
+        cache_manifest["total_downloaded"] = len(cache_items)
+        atomic_write_json(manifest_path, cache_manifest)
     atomic_write_json(output_report_path, manifest)
     return paths, manifest, False
+
+
+def _download_cache_reuse_allowed(url, *, force, approved_ids) -> bool:
+    """Generic readers must be observed afresh; cache never substitutes source review."""
+    if not config.ENABLE_DOWNLOAD_CACHE or force or approved_ids:
+        return False
+    from chapter_source import select_adapter
+
+    return bool(select_adapter(url).is_specific)
 
 
 def _parse_page_indices(raw):
@@ -2047,8 +2103,11 @@ def _chapter_download_items(manifest):
     chapter_items = []
     excluded = []
     for item in items:
+        # New reports mark the classified reader pages explicitly.  The old hostname check
+        # silently discarded every generic reader and also could not survive URL sanitising.
+        # Keep it only as a compatibility fallback for legacy cached manifests.
         host = (urlparse(item.get("url", "")).hostname or "").lower()
-        if "webtoons.com" in host or "webtoon-phinf.pstatic.net" in host:
+        if item.get("is_chapter_candidate") or "webtoons.com" in host or "webtoon-phinf.pstatic.net" in host:
             chapter_items.append(item)
         else:
             excluded.append(item)
@@ -2158,7 +2217,10 @@ def _complete_page_with_error(state, error, errors_folder, stage_seconds):
     stage_seconds["image_save"] += elapsed
     page_folder = errors_folder / f"page_{state['index']:03}"
     page_folder.mkdir(parents=True, exist_ok=True)
-    (page_folder / "error.txt").write_text(str(error), encoding="utf-8")
+    # Provider/library exception messages often echo a request URL. Persist a stable code
+    # instead of a raw message; detailed diagnostics stay in the live process only.
+    safe_error = str(getattr(error, "code", "") or type(error).__name__)
+    (page_folder / "error.txt").write_text(safe_error, encoding="utf-8")
 
 
 def _write_progress(
@@ -2176,7 +2238,7 @@ def _write_progress(
         {
             "status": status,
             "run_signature": run_signature,
-            "url": args.url,
+            "url": sanitize_source_url(args.url),
             "full": bool(args.full),
             "fast": bool(args.fast),
             "force": bool(args.force),

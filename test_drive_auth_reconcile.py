@@ -1,5 +1,7 @@
 """OAuth token source (fakes) and reconciliation — no real OAuth, no network."""
 
+import _test_bootstrap  # noqa: F401
+
 import json
 import os
 import tempfile

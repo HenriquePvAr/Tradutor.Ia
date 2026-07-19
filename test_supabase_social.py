@@ -5,6 +5,8 @@ from the principal, client identity fields rejected, DTO shaping, pagination/cur
 fail-closed provider selection.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import json
 import socket
 import unittest

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ocr_balloon import COMMON_ENGLISH_WORDS, SFX_WORDS
 from ocr_engine import COMMON_ENGLISH_WORDS as OCR_ENGLISH_WORDS
+from output_manifest import sanitize_source_url
 from pipeline_cache import atomic_write_json, load_json, stable_hash
 
 
@@ -49,7 +50,9 @@ def _is_known_english_word(token):
 class SessionContextStore:
     def __init__(self, path, chapter_url):
         self.path = Path(path).resolve()
-        self.chapter_url = str(chapter_url)
+        # Context is an output-side convenience artifact, not a credential store. The
+        # downloader retains the raw URL in memory; this persisted record never needs it.
+        self.chapter_url = sanitize_source_url(str(chapter_url))
         self.data = load_json(self.path, default={})
 
     def prepare(self, groups):

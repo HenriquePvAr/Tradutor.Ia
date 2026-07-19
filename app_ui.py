@@ -130,18 +130,32 @@ async def api_run(
     request: Request,
     payload: dict[str, Any] = Body(default={}),
 ) -> dict[str, Any]:
-    from chapter_source import UnsupportedSource, supported_hosts
+    from chapter_source import SourceError, supported_hosts
 
     try:
         return await BRIDGE.start(payload, principal=_job_principal(request))
-    except UnsupportedSource as exc:
-        # Structured so the UI can render a real message instead of a bare 400.
+    except SourceError as exc:
+        # Source diagnostics are coded and deliberately generic: URL fragments, headers,
+        # cookies and provider responses never reach the browser.
+        messages = {
+            "unsupported_source": ("Esta URL não pode ser aberta com segurança.", "Use uma URL pública HTTP(S) de capítulo."),
+            "challenge_required": ("O site exige uma verificação interativa.", "Conclua a verificação no site ou use uma fonte sem desafio."),
+            "authentication_required": ("Esta fonte exige autenticação.", "Use uma página pública, sem login."),
+            "source_access_denied": ("A fonte recusou o acesso público.", "Verifique a URL ou tente novamente mais tarde."),
+            "source_rate_limited": ("A fonte limitou temporariamente o acesso.", "Aguarde antes de tentar novamente."),
+            "no_chapter_images": ("Nenhuma página de capítulo foi encontrada.", "Confirme que a URL abre o leitor do capítulo."),
+            "unsupported_low_confidence": ("Não foi possível reconhecer o leitor com segurança.", "Use uma fonte com leitor visível ou um adapter específico."),
+            "unsupported_canvas_reader": ("O leitor em canvas não pôde ser capturado com integridade.", "Use uma fonte que exponha páginas visíveis sem proteção interativa."),
+            "incomplete_download": ("As páginas não puderam ser baixadas por completo.", "Revise a fonte e tente novamente mais tarde."),
+        }
+        message, action = messages.get(
+            exc.code, ("Não foi possível analisar esta fonte com segurança.", "Revise a URL e tente novamente."))
         raise HTTPException(status_code=400, detail={
             "code": exc.code,
             "stage": "validacao_da_fonte",
-            "message": "Esta fonte ainda não é suportada.",
+            "message": message,
             "hosts": supported_hosts(),
-            "action": "Use uma URL de uma fonte suportada.",
+            "action": action,
         }) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={
@@ -153,6 +167,21 @@ async def api_run(
 @app.post("/api/ui/cancel")
 async def api_cancel(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     return await BRIDGE.cancel(queue=bool(payload.get("queue", False)))
+
+
+@app.post("/api/ui/source/confirm")
+def api_source_confirm(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return BRIDGE.confirm_source_pages(
+            str(payload.get("job_id") or ""),
+            payload.get("candidate_ids") if isinstance(payload.get("candidate_ids"), list) else [],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc), "stage": "revisao_da_fonte",
+            "message": "A seleção de páginas não é válida.",
+            "action": "Selecione ao menos uma página encontrada e tente novamente.",
+        }) from exc
 
 
 @app.post("/api/ui/queue/add")

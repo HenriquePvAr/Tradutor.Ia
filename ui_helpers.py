@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from output_manifest import MANIFEST_FILENAME
+from output_manifest import MANIFEST_FILENAME, sanitize_source_url
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -56,6 +56,7 @@ _SECRET_PATTERNS = (
     re.compile(r"\b(nvapi-[A-Za-z0-9_-]{12,})\b"),
     re.compile(r"\b(sk-[A-Za-z0-9_-]{12,})\b"),
 )
+_URL_IN_DIAGNOSTIC = re.compile(r"(?i)https?://[^\s<>\"'\]\[(){}]+")
 
 
 def clean_url(value: str) -> str:
@@ -174,6 +175,7 @@ def build_run_command(
     use_cache: bool,
     force: bool,
     use_context: bool,
+    source_candidate_ids: list[str] | tuple[str, ...] | None = None,
     open_output: bool = False,
     python_executable: str | None = None,
 ) -> list[str]:
@@ -211,6 +213,10 @@ def build_run_command(
         command.extend(["--max-images", str(int(max_images))])
     if not use_context:
         command.append("--no-context")
+    for candidate_id in source_candidate_ids or []:
+        value = str(candidate_id or "").strip()
+        if value:
+            command.extend(["--source-candidate-id", value])
     if open_output:
         command.append("--open-output")
     return command
@@ -224,6 +230,17 @@ def mask_secrets(text: str) -> str:
         else:
             masked = pattern.sub("[SEGREDO MASCARADO]", masked)
     return masked
+
+
+def sanitize_diagnostic_text(text: str) -> str:
+    """Mask secrets and strip URL query/credential material from persisted diagnostics."""
+    masked = mask_secrets(text)
+
+    def replace_url(match: re.Match[str]) -> str:
+        value = sanitize_source_url(match.group(0))
+        return value or "[URL PROTEGIDA]"
+
+    return _URL_IN_DIAGNOSTIC.sub(replace_url, masked)
 
 
 def env_status(env_path: Path | None = None) -> dict[str, bool]:
@@ -333,7 +350,7 @@ _STAGE_RANK = {stage: index for index, (_, stage, _) in enumerate(_STAGES)}
 
 
 def parse_progress_line(line: str, snapshot: ProgressSnapshot) -> ProgressSnapshot:
-    clean = mask_secrets(line).strip()
+    clean = sanitize_diagnostic_text(line).strip()
     if not clean:
         return snapshot
     lowered = clean.casefold()

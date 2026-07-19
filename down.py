@@ -1,5 +1,5 @@
-import base64
 import html
+import hashlib
 import io
 import json
 import math
@@ -11,7 +11,7 @@ import threading
 import time
 from collections import Counter
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from PIL import Image, ImageStat
@@ -26,6 +26,7 @@ from config import (
     SELENIUM_QUIT_TIMEOUT_SECONDS,
     TEMP_FOLDER,
 )
+from download_transport import preflight_browser_navigation
 from pipeline_cache import atomic_write_json
 
 try:
@@ -60,29 +61,16 @@ def download_images(
     debug_folder=None,
     target_folder=None,
     force=True,
+    approved_candidate_ids=None,
 ):
-    from chapter_source import select_adapter
-
-    # Fail-closed source selection. An unregistered host raises here, before a driver is
-    # ever opened, so the job ends on a coded failure instead of half-running.
-    adapter = select_adapter(url)
-    adapter.validate_url(url)
-    adapter.validate_path(url)
-    url = adapter.normalize_url(url)
+    from chapter_source import SourceError, select_adapter
 
     max_retries = max_retries or MAX_RETRIES_DOWNLOAD
     target_folder = target_folder or TEMP_FOLDER
     total_started = time.perf_counter()
 
-    if force and os.path.exists(target_folder):
-        force_remove(target_folder)
-
-    os.makedirs(target_folder, exist_ok=True)
-    if debug_folder:
-        os.makedirs(debug_folder, exist_ok=True)
-
     report = {
-        "url": url,
+        "url": _sanitized_url(url),
         "total_dom_images": 0,
         "total_candidates": 0,
         "total_unique_urls": 0,
@@ -90,7 +78,7 @@ def download_images(
         "total_ignored": 0,
         "requested_max_images": max_images,
         "collection_strategy": "incremental_scroll",
-        "adapter": adapter.name,
+        "adapter": "",
         "viewer_image_count": 0,
         "viewer_unique_urls": 0,
         "ignored": [],
@@ -105,16 +93,37 @@ def download_images(
         },
     }
 
-    driver = _create_driver()
-    ownership = _capture_driver_ownership(driver)
+    driver = None
+    ownership = {}
+    transports = []
     try:
+        # Fail-closed source selection. Invalid URLs and preflight failures are recorded as
+        # coded download outcomes when this is the runner's fresh re-analysis.
+        adapter = select_adapter(url)
+        adapter.validate_url(url)
+        adapter.validate_path(url)
+        url = adapter.normalize_url(url)
+        report["url"] = _sanitized_url(url)
+        report["adapter"] = adapter.name
+        # Selenium would otherwise follow the chain before exposing ``current_url``. Resolve
+        # and validate every top-level redirect with a bounded, cookie-free request first.
+        navigation_url = preflight_browser_navigation(adapter, url)
+        driver = _create_driver()
+        ownership = _capture_driver_ownership(driver)
         collection_started = time.perf_counter()
-        driver.get(url)
+        _set_browser_timeouts(driver)
+        driver.get(navigation_url)
         time.sleep(4)
+        current_url = getattr(driver, "current_url", "")
+        if not isinstance(current_url, str) or not current_url.startswith(("http://", "https://")):
+            raise SourceError("unsupported_source", "invalid_browser_final_url")
+        # Selenium follows the navigation itself; validate its final public destination before
+        # looking at any reader content. Universal adapters scope it to this in-memory run.
+        adapter.validate_redirect(current_url)
         viewer_snapshot = _viewer_image_snapshot(driver, adapter)
         report["viewer_image_count"] = viewer_snapshot["image_count"]
         report["viewer_unique_urls"] = len(viewer_snapshot["urls"])
-        report["viewer_urls"] = viewer_snapshot["urls"]
+        report["viewer_urls"] = [_sanitized_url(value) for value in viewer_snapshot["urls"]]
         report["viewer_manifest_complete"] = bool(viewer_snapshot["complete_manifest"])
         scroll_diagnostics = _scroll_incrementally(driver)
         report["scroll_diagnostics"] = scroll_diagnostics
@@ -130,10 +139,66 @@ def download_images(
             viewer_snapshot = viewer_snapshot_after_scroll
             report["viewer_image_count"] = viewer_snapshot["image_count"]
             report["viewer_unique_urls"] = len(viewer_snapshot["urls"])
-            report["viewer_urls"] = viewer_snapshot["urls"]
+            report["viewer_urls"] = [_sanitized_url(value) for value in viewer_snapshot["urls"]]
         if viewer_snapshot["complete_manifest"]:
             report["collection_strategy"] = "direct_viewer_manifest"
-        candidates = _collect_image_candidates(driver, url, adapter)
+        if not adapter.is_specific:
+            source_warnings = []
+            if not (scroll_diagnostics.get("reached_document_end")
+                    and scroll_diagnostics.get("stabilized")):
+                source_warnings.append("scroll_incomplete")
+            source_analysis = adapter.analyze(
+                {"driver": driver, "page_url": current_url},
+                profile=_load_source_profile(current_url, adapter),
+                extra_warnings=tuple(source_warnings))
+            report["source_analysis"] = source_analysis.public()
+            report["source_outcome"] = source_analysis.outcome
+            report["source_confidence"] = source_analysis.confidence
+            observed_candidate_count = len(source_analysis.accepted)
+            source_analysis.accepted = _selected_universal_candidates(
+                source_analysis, approved_candidate_ids)
+            selected_before_max_images = len(source_analysis.accepted)
+            if max_images:
+                source_analysis.accepted = source_analysis.accepted[:int(max_images)]
+            selected_ids = [candidate.id for candidate in source_analysis.accepted]
+            report["source_selection"] = {
+                "candidate_ids": selected_ids,
+                "automatic": not bool(approved_candidate_ids),
+                "observed_candidate_count": observed_candidate_count,
+                "confirmed_candidate_count": selected_before_max_images,
+                "manual_subset": bool(
+                    approved_candidate_ids
+                    and selected_before_max_images < observed_candidate_count
+                ),
+                "fresh_candidate_count": len(selected_ids),
+            }
+            candidates = [
+                {
+                    "candidate_id": candidate.id,
+                    "url": candidate.url,
+                    "source": candidate.source,
+                    "order": candidate.order,
+                    "y": candidate.y,
+                    "width": candidate.width,
+                    "height": candidate.height,
+                    "naturalWidth": candidate.natural_width,
+                    "naturalHeight": candidate.natural_height,
+                    "containerKey": candidate.container,
+                    "isChapterCandidate": True,
+                    "inContainer": bool(candidate.container),
+                    "canvas_data": candidate.canvas_data,
+                }
+                for candidate in source_analysis.accepted
+            ]
+            # The generic DOM can include UI/ad images. Completeness must be measured against
+            # the classified reader cluster (or confirmed subset), never every ``img`` seen.
+            # Opaque IDs preserve distinct signed URLs that intentionally share a path.
+            # Diagnostics retain only the sanitised URLs below, never the raw fetch URLs.
+            report["expected_chapter_candidate_ids"] = [item["candidate_id"] for item in candidates]
+            report["expected_chapter_urls"] = [_sanitized_url(item["url"]) for item in candidates]
+            report["collection_strategy"] = "universal_cluster_analysis"
+        else:
+            candidates = _collect_image_candidates(driver, current_url, adapter)
         report["timings"]["collection_seconds"] = (
             time.perf_counter() - collection_started
         )
@@ -141,6 +206,17 @@ def download_images(
         report["total_candidates"] = len(candidates)
         unique_candidates = _dedupe_candidates(candidates)
         report["total_unique_urls"] = len(unique_candidates)
+        if force and os.path.exists(target_folder):
+            force_remove(target_folder)
+        os.makedirs(target_folder, exist_ok=True)
+        if debug_folder:
+            os.makedirs(debug_folder, exist_ok=True)
+
+        from download_transport import build_transports
+
+        # One transport set per chapter: file count, byte and duration budgets cannot reset
+        # for every page, and BrowserSessionTransport is the only browser-backed fallback.
+        transports = build_transports(adapter, driver=driver, page_url=current_url)
         paths = _download_candidates(
             driver,
             unique_candidates,
@@ -149,17 +225,42 @@ def download_images(
             max_images,
             debug_folder,
             report,
-            referer=url,
+            referer=current_url,
             target_folder=target_folder,
+            transports=transports,
         )
+        if not report.get("download_valid"):
+            raise SourceError("incomplete_download", "download_gate")
         report["teardown"] = _pending_teardown_diagnostic(ownership)
         report["timings"]["total_seconds"] = time.perf_counter() - total_started
         if debug_folder:
             _persist_download_metadata(debug_folder, report)
         return paths
+    except SourceError as exc:
+        # The job runner consumes this code to distinguish a controlled source/download
+        # outcome from a generic pipeline crash. Deliberately omit ``detail``: it may have
+        # come from a server or browser and is not an output-side diagnostic contract.
+        report["failure"] = {"code": str(exc.code)}
+        raise
+    except Exception:
+        # Browser/driver faults have no stable external detail, but they still need a
+        # terminal, sanitised reason for the runner and UI rather than a stuck job.
+        report["failure"] = {"code": "source_not_ready"}
+        raise
     finally:
-        _refresh_driver_ownership(ownership)
-        report["teardown"] = _bounded_driver_teardown(driver, ownership)
+        for transport in transports:
+            try:
+                transport.close()
+            except Exception:
+                pass
+        if driver is not None:
+            _refresh_driver_ownership(ownership)
+            report["teardown"] = _bounded_driver_teardown(driver, ownership)
+        else:
+            report["teardown"] = {
+                "status": "not_started", "timeout_occurred": False,
+                "fallback_status": "not_needed",
+            }
         if report["teardown"].get("status") != "success":
             print(
                 "Aviso: teardown Selenium concluido com diagnostico "
@@ -172,36 +273,132 @@ def download_images(
             _write_download_report(debug_folder, report)
 
 
+def analyze_chapter_source(url, *, cancel_check=None):
+    """Analyse a reader without creating output files or starting OCR.
+
+    This is the UI preflight seam. It makes only the normal browser navigation requested by
+    the user, performs the same SSRF/redirect checks as the downloader, and returns a
+    sanitised ``SourceAnalysis``. No candidate is downloaded here.
+    """
+    from chapter_source import SourceError, select_adapter
+
+    adapter = select_adapter(url)
+    adapter.validate_url(url)
+    adapter.validate_path(url)
+    normalized = adapter.normalize_url(url)
+    navigation_url = preflight_browser_navigation(adapter, normalized)
+    if cancel_check and cancel_check():
+        raise SourceError("cancelled", "before_source_analysis")
+    driver = None
+    ownership = {}
+    try:
+        driver = _create_driver()
+        ownership = _capture_driver_ownership(driver)
+        _set_browser_timeouts(driver)
+        driver.get(navigation_url)
+        if cancel_check and cancel_check():
+            raise SourceError("cancelled", "during_source_analysis")
+        final_url = getattr(driver, "current_url", "")
+        if not isinstance(final_url, str) or not final_url.startswith(("http://", "https://")):
+            raise SourceError("unsupported_source", "invalid_browser_final_url")
+        # The preflight has no browser cookies. Revalidate Chrome's actual final destination
+        # before scrolling or inspecting its DOM.
+        adapter.validate_redirect(final_url)
+        time.sleep(4)
+        scroll_diagnostics = _scroll_incrementally(driver, cancel_check=cancel_check)
+        if cancel_check and cancel_check():
+            raise SourceError("cancelled", "during_source_analysis")
+        return adapter.analyze(
+            {"driver": driver, "page_url": final_url},
+            profile=_load_source_profile(final_url, adapter),
+            # Known adapters own their own extraction semantics. A generic scroll surface
+            # must not turn a specific reader into a false incomplete-download failure.
+            extra_warnings=tuple([] if getattr(adapter, "is_specific", False)
+                            or (scroll_diagnostics.get("reached_document_end")
+                                 and scroll_diagnostics.get("stabilized"))
+                            else ["scroll_incomplete"]))
+    finally:
+        if driver is not None:
+            _refresh_driver_ownership(ownership)
+            _bounded_driver_teardown(driver, ownership)
+
+
 def _create_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--log-level=3")
     chrome_options.add_argument("--window-size=1400,2200")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option("useAutomationExtension", False)
 
-    if CHROMEDRIVER_PATH and os.path.isfile(CHROMEDRIVER_PATH):
-        return webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=chrome_options)
-
-    manager_error = None
-    try:
-        from webdriver_manager.chrome import ChromeDriverManager
-
-        driver_path = ChromeDriverManager().install()
-        return webdriver.Chrome(service=Service(driver_path), options=chrome_options)
-    except Exception as exc:
-        manager_error = exc
-
-    try:
-        return webdriver.Chrome(options=chrome_options)
-    except Exception as selenium_error:
+    driver_path = CHROMEDRIVER_PATH if CHROMEDRIVER_PATH and os.path.isfile(CHROMEDRIVER_PATH) else (
+        shutil.which("chromedriver") or shutil.which("chromedriver.exe")
+    )
+    if not driver_path:
+        # Selenium Manager/WebDriver Manager may download a binary implicitly. Source
+        # analysis must not gain an unrelated network side effect, so require a local driver.
         raise RuntimeError(
-            "Nao foi possivel iniciar o ChromeDriver automaticamente. "
-            "Defina CHROMEDRIVER_PATH no .env se necessario."
-        ) from (manager_error or selenium_error)
+            "ChromeDriver local indisponivel. Defina CHROMEDRIVER_PATH ou instale-o no PATH."
+        )
+    return webdriver.Chrome(service=Service(driver_path), options=chrome_options)
+
+
+def _set_browser_timeouts(driver, timeout_seconds=45):
+    """Bound browser calls without requiring a Selenium-specific driver in unit tests."""
+    for method_name in ("set_page_load_timeout", "set_script_timeout"):
+        method = getattr(driver, method_name, None)
+        if callable(method):
+            try:
+                method(timeout_seconds)
+            except Exception:
+                pass
+
+
+def _load_source_profile(url, adapter):
+    """Return an exact-host hint only for the generic fallback; profiles grant no access."""
+    if getattr(adapter, "is_specific", False):
+        return None
+    try:
+        from source_profile import SourceProfileStore
+
+        return SourceProfileStore().load(urlparse(str(url or "")).hostname or "")
+    except Exception:
+        return None
+
+
+def _selected_universal_candidates(source_analysis, approved_candidate_ids=None):
+    """Validate the fresh generic-reader set before a download begins.
+
+    High-confidence analysis proceeds automatically. A medium-confidence result requires a
+    non-empty UI-confirmed subset, which is checked against this fresh DOM snapshot. All
+    other outcomes stop before a transport is constructed.
+    """
+    from chapter_source import (
+        INCOMPLETE_DOWNLOAD,
+        REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
+        SourceError,
+    )
+
+    selected_ids = list(dict.fromkeys(
+        str(value).strip() for value in (approved_candidate_ids or []) if str(value).strip()
+    ))
+    outcome = str(getattr(source_analysis, "outcome", "") or "")
+    accepted = list(getattr(source_analysis, "accepted", []) or [])
+    if outcome == REVIEW_REQUIRED_MEDIUM_CONFIDENCE and not selected_ids:
+        raise SourceError(REVIEW_REQUIRED_MEDIUM_CONFIDENCE, "source_confirmation_required")
+    if not getattr(source_analysis, "can_download", False) and outcome != REVIEW_REQUIRED_MEDIUM_CONFIDENCE:
+        raise SourceError(outcome or "unsupported_low_confidence", "source_analysis")
+    if not selected_ids:
+        return accepted
+    if len({candidate.id for candidate in accepted}) != len(accepted):
+        # A client may only confirm opaque IDs when each one maps to exactly one freshly
+        # observed reader page. Refuse an ambiguous snapshot rather than silently selecting
+        # multiple assets for one checkbox.
+        raise SourceError(INCOMPLETE_DOWNLOAD, "ambiguous_candidate_ids")
+    selected = [candidate for candidate in accepted if candidate.id in selected_ids]
+    if len(selected) != len(selected_ids):
+        raise SourceError(INCOMPLETE_DOWNLOAD, "approved_candidate_missing")
+    return selected
 
 
 def _pending_teardown_diagnostic(ownership):
@@ -603,7 +800,7 @@ def _collect_owned_processes(ownership, process_api):
     return matched, descendant_pids, skipped
 
 
-def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5):
+def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5, cancel_check=None):
     stable = 0
     last_height = 0
     last_image_count = 0
@@ -614,6 +811,10 @@ def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5):
     )
 
     for round_index in range(max_rounds):
+        if cancel_check and cancel_check():
+            from chapter_source import SourceError
+
+            raise SourceError("cancelled", "during_source_analysis")
         rounds = round_index + 1
         height = int(driver.execute_script("return document.body.scrollHeight || 0") or 0)
         image_count = int(
@@ -637,6 +838,10 @@ def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5):
         time.sleep(1.0)
 
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    if cancel_check and cancel_check():
+        from chapter_source import SourceError
+
+        raise SourceError("cancelled", "during_source_analysis")
     time.sleep(2.0)
     final_height = int(driver.execute_script("return document.body.scrollHeight || 0") or 0)
     final_image_count = int(
@@ -810,6 +1015,21 @@ def _normalize_url(url):
     return (url or "").strip()
 
 
+def _sanitized_url(url):
+    """Stable diagnostic reference without query strings, signed paths or credentials."""
+    try:
+        parsed = urlparse(str(url or ""))
+    except ValueError:
+        return ""
+    if parsed.scheme.casefold() == "canvas":
+        return f"canvas:{(parsed.netloc or parsed.path or '')[:24]}"
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return ""
+    fingerprint = hashlib.sha256((parsed.path or "/").encode("utf-8", "ignore")).hexdigest()[:12]
+    return f"{parsed.scheme.casefold()}://{host}/{fingerprint}"
+
+
 def _download_candidates(
     driver,
     candidates,
@@ -820,8 +1040,10 @@ def _download_candidates(
     report,
     referer,
     target_folder,
+    transports=None,
 ):
     saved = []
+    content_hashes: set[str] = set()
     viewer_total = int(report.get("viewer_image_count") or 0)
     if max_images and viewer_total:
         viewer_total = min(viewer_total, int(max_images))
@@ -838,13 +1060,19 @@ def _download_candidates(
             continue
 
         download_started = time.perf_counter()
-        data = _download_url(url, referer, max_retries)
-        if not data:
-            data = _fetch_with_browser(driver, url)
+        canvas_data = candidate.get("canvas_data")
+        if isinstance(canvas_data, (bytes, bytearray)):
+            data = bytes(canvas_data)
+            from download_transport import reserve_local_content
+
+            reserve_local_content(transports, len(data))
+        else:
+            data = _download_url(url, referer, max_retries, transports=transports)
         report["timings"]["download_seconds"] += time.perf_counter() - download_started
 
         if not data:
-            _report_ignored(report, candidate, "download_failed")
+            reason = getattr(_download_url, "last_failure", "download_failed")
+            _report_ignored(report, candidate, str(reason or "download_failed"))
             continue
 
         validation_started = time.perf_counter()
@@ -859,6 +1087,13 @@ def _download_candidates(
             _report_ignored(report, candidate, info_or_reason)
             continue
 
+        digest = hashlib.sha256(data).hexdigest()
+        if digest in content_hashes:
+            image.close()
+            _report_ignored(report, candidate, "duplicate_image_bytes")
+            continue
+        content_hashes.add(digest)
+
         file_path = os.path.join(target_folder, f"{len(saved) + 1:03}.png")
         save_started = time.perf_counter()
         image.save(file_path, "PNG")
@@ -866,12 +1101,14 @@ def _download_candidates(
         report["timings"]["image_save_seconds"] += time.perf_counter() - save_started
 
         item = {
-            "url": url,
+            "candidate_id": str(candidate.get("candidate_id") or ""),
+            "url": _sanitized_url(url),
             "path": file_path,
             "width": info_or_reason["width"],
             "height": info_or_reason["height"],
             "source": candidate.get("source"),
             "order": candidate.get("order"),
+            "sha256": digest,
             "is_chapter_candidate": bool(candidate.get("isChapterCandidate")),
         }
         report["downloaded"].append(item)
@@ -888,6 +1125,8 @@ def _download_candidates(
 
 
 def _candidate_skip_reason(candidate):
+    if isinstance(candidate.get("canvas_data"), (bytes, bytearray)):
+        return None
     url = (candidate.get("url") or "").lower()
     label = " ".join(
         str(candidate.get(key) or "").lower() for key in ("className", "id", "alt", "source")
@@ -937,7 +1176,7 @@ def _download_url(url, referer, max_retries, transports=None):
     challenge) propagate instead of being retried blindly.
     """
     from chapter_source import ChallengeRequired, SourceError
-    from download_transport import RequestsTransport
+    from download_transport import LimitExceeded, RequestsTransport
 
     if transports is None:
         from chapter_source import select_adapter
@@ -949,6 +1188,8 @@ def _download_url(url, referer, max_retries, transports=None):
         for _ in range(max(1, max_retries)):
             try:
                 return transport.fetch(url, referer=referer).content
+            except LimitExceeded:
+                raise                     # chapter budget is terminal; never retry/fallback
             except ChallengeRequired:
                 raise                     # interactive challenge: stop, never work around
             except SourceError as exc:
@@ -965,38 +1206,34 @@ def _download_url(url, referer, max_retries, transports=None):
     return None
 
 
-def _fetch_with_browser(driver, url):
-    script = """
-        const url = arguments[0];
-        const callback = arguments[1];
-        fetch(url)
-            .then(r => r.blob())
-            .then(b => {
-                const reader = new FileReader();
-                reader.onloadend = () => callback(reader.result.split(',')[1]);
-                reader.readAsDataURL(b);
-            })
-            .catch(() => callback(null));
-    """
-    try:
-        b64 = driver.execute_async_script(script, url)
-        if b64:
-            return base64.b64decode(b64)
-    except Exception:
-        return None
-    return None
-
-
 def _validate_image_bytes(data, chapter_candidate=False):
+    """Validate actual bytes before the legacy visual-quality checks.
+
+    ``image_validation`` owns signature, markup and full-decode validation.  The remaining
+    checks are chapter-contextual (large page vs. incidental DOM image), so they stay here.
+    """
+    from chapter_source import SourceError
+    from image_validation import validate_image_bytes
+
+    minimum_height = MIN_CHAPTER_IMAGE_HEIGHT if chapter_candidate else MIN_IMAGE_HEIGHT
     try:
-        image = Image.open(io.BytesIO(data))
+        validated = validate_image_bytes(
+            data,
+            min_width=MIN_IMAGE_WIDTH,
+            min_height=minimum_height,
+            # A proven chapter strip may be short and compress to well below one KiB. It
+            # still passes magic, full decode, width and contextual visual checks below.
+            min_bytes=12 if chapter_candidate else 1024,
+        )
+        image = Image.open(io.BytesIO(validated.data))
         image.load()
         image = image.convert("RGB")
-    except Exception as exc:
-        return False, f"invalid_image: {exc}", None
+    except SourceError as exc:
+        return False, f"{exc.code}:{exc.detail}", None
+    except Exception as exc:  # pragma: no cover - Pillow errors are covered above
+        return False, f"invalid_image:{type(exc).__name__}", None
 
     width, height = image.size
-    minimum_height = MIN_CHAPTER_IMAGE_HEIGHT if chapter_candidate else MIN_IMAGE_HEIGHT
     minimum_area = MIN_CHAPTER_IMAGE_AREA if chapter_candidate else MIN_IMAGE_AREA
     if width < MIN_IMAGE_WIDTH or height < minimum_height or width * height < minimum_area:
         image.close()
@@ -1021,7 +1258,7 @@ def _is_nearly_blank(image):
 def _report_ignored(report, candidate, reason):
     report["ignored"].append(
         {
-            "url": candidate.get("url"),
+            "url": _sanitized_url(candidate.get("url")),
             "reason": reason,
             "width": candidate.get("naturalWidth") or candidate.get("width"),
             "height": candidate.get("naturalHeight") or candidate.get("height"),
@@ -1052,7 +1289,45 @@ def _write_download_report(debug_folder, report):
 
 
 def _build_download_gate(report):
-    viewer_urls = list(dict.fromkeys(report.get("viewer_urls") or []))
+    expected_candidate_ids = report.get("expected_chapter_candidate_ids")
+    if isinstance(expected_candidate_ids, list):
+        expected_ids = [str(value or "") for value in expected_candidate_ids if str(value or "")]
+        downloaded_ids = {
+            str(item.get("candidate_id") or "")
+            for item in (report.get("downloaded") or [])
+            if str(item.get("candidate_id") or "")
+        }
+        chapter_downloaded = [
+            item for item in (report.get("downloaded") or [])
+            if item.get("is_chapter_candidate")
+        ]
+        missing_ids = [candidate_id for candidate_id in expected_ids if candidate_id not in downloaded_ids]
+        reasons = []
+        if not chapter_downloaded:
+            reasons.append("no_valid_images")
+        if missing_ids:
+            reasons.append("viewer_images_missing")
+        if len(chapter_downloaded) != len(expected_ids):
+            reasons.append("viewer_count_mismatch")
+        orders = [int(item.get("order") or 0) for item in chapter_downloaded]
+        if orders and orders != sorted(orders):
+            reasons.append("chapter_order_not_monotonic")
+        return {
+            "passed": not reasons,
+            "reasons": reasons,
+            "expected_viewer_images": len(expected_ids),
+            "total_viewer_images": len(expected_ids),
+            "downloaded_viewer_images": len(chapter_downloaded),
+            "missing_viewer_images": len(missing_ids),
+            "missing_candidate_id_samples": missing_ids[:12],
+            "order_monotonic": not orders or orders == sorted(orders),
+        }
+    raw_expected = (
+        report.get("expected_chapter_urls")
+        if "expected_chapter_urls" in report
+        else report.get("viewer_urls") or []
+    )
+    viewer_urls = list(dict.fromkeys(raw_expected or []))
     requested_max = report.get("requested_max_images")
     expected_urls = viewer_urls[: int(requested_max)] if requested_max else viewer_urls
     downloaded = report.get("downloaded") or []

@@ -6,6 +6,8 @@ a reader we drop and reopen. Every wait has a deadline; workers are torn down by
 PID in a finally, so a failure never leaks a process or hangs.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import os
 import subprocess
 import sys

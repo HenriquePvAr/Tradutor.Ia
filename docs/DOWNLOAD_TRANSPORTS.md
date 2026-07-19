@@ -22,21 +22,35 @@ dentro da rede. Validar a URL inicial não vale nada se um hop posterior não é
 | --- | --- | --- |
 | `RequestsTransport` | HTTP direto, cada hop revalidado | sim |
 | `BrowserSessionTransport` | leitores que só servem imagem para a sessão que abriu a página | quando há driver |
-| CloudscraperTransport | — | **não implementado** |
+| `CloudscraperTransport` | transporte requests-compatível opcional, com a mesma validação e o mesmo orçamento | somente com `ENABLE_CLOUDSCRAPER_TRANSPORT=1` |
 
-`build_transports()` devolve na ordem `requests` → `browser_session`, compartilhando o mesmo
-orçamento (um transporte não zera o limite do outro).
+`build_transports()` devolve na ordem `requests` → `browser_session` → `cloudscraper`
+quando este último foi autorizado. Todos compartilham o mesmo orçamento: um transporte não
+zera o limite do outro.
 
-### Cloudscraper
+### Cloudscraper opcional
 
-Não foi implementado nem adicionado como dependência. Não é omissão: um site que exige
-contorno de anti-bot é um site pedindo para não ser buscado. Existe a costura para quem
-quiser plugar um transporte próprio, mas trazer isso por padrão significaria embarcar um
-contornador de proteção para todos os usuários.
+`CloudscraperTransport` é desativado por padrão. Ele só é criado se a variável de ambiente
+tiver exatamente este valor:
 
-Desafio interativo (Cloudflare, Turnstile, CAPTCHA) devolve `challenge_required` e encerra o
-job. Não há solver, proxy rotation, stealth nem fingerprint rotation — há teste que falha se
-qualquer um desses termos aparecer no módulo.
+```text
+ENABLE_CLOUDSCRAPER_TRANSPORT=1
+```
+
+Valor ausente, `true`, `yes`, `0` ou qualquer outro texto mantém a ordem normal e não
+importa o pacote opcional. O import é tardio: a suíte padrão e a execução normal não requerem
+nem inicializam `cloudscraper`. Se a flag for autorizada mas o pacote não estiver disponível,
+o resultado é `source_not_ready` com motivo sanitizado; o sistema não instala dependência em
+tempo de execução.
+
+O transporte opcional herda redirects manuais, revalidação de URL/DNS, timeout, limites de
+bytes, orçamento compartilhado, validação por bytes e limpeza de sessão. Ele não habilita proxy
+rotation, stealth, fingerprint rotation, CAPTCHA solver, Turnstile solver ou serviços de
+terceiros. Desafio interativo continua como `challenge_required` e encerra o job.
+
+Antes de habilitar o pacote em uma distribuição, a dependência deve ser instalada por meio
+controlado e versionado pelo operador. A flag não transforma o transporte em mecanismo para
+contornar proteção interativa.
 
 ### Cookies do navegador
 
@@ -91,8 +105,9 @@ Erro de rede é reduzido ao nome da classe da exceção.
 
 ## Limitações
 
-- `RequestsTransport` e `BrowserSessionTransport` estão implementados e testados, mas ainda
-  não substituíram todos os caminhos de fetch dentro do pipeline completo.
+- `RequestsTransport`, `BrowserSessionTransport` e o `CloudscraperTransport` opt-in
+  compartilham as barreiras do caminho de download, mas não substituem política de egress do
+  navegador para URLs arbitrárias não confiáveis.
 - A validação por bytes é usada no caminho de download; a integração com o relatório de QA
   ainda não expõe os motivos de rejeição na UI.
 - Nenhum destes módulos foi exercitado contra um site real nesta tarefa: toda a cobertura é

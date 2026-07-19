@@ -6,6 +6,8 @@ API directly, no secret or ownership field is ever sent, user content is rendere
 (no innerHTML with user data), and the module only mounts under the Supabase provider.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import re
 import unittest
 from pathlib import Path

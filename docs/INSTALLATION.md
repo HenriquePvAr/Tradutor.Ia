@@ -91,10 +91,11 @@ Tesseract está presente apenas como caminho opcional de compatibilidade. Ele n�
 O downloader inicia o Chrome em modo headless. A resolução do driver segue esta ordem:
 
 1. `CHROMEDRIVER_PATH`, quando configurado e válido;
-2. `webdriver-manager`;
-3. Selenium Manager, como alternativa automática.
+2. `chromedriver` ou `chromedriver.exe` já disponível no `PATH`.
 
-Na maioria dos ambientes basta ter o Chrome atualizado. Se a detecção automática falhar, defina um caminho genérico no `.env`:
+Não há download automático por webdriver-manager ou Selenium Manager: a análise de fonte
+não deve introduzir uma requisição implícita. Se o driver local não for encontrado, defina
+um caminho genérico no `.env`:
 
 ```dotenv
 CHROMEDRIVER_PATH=C:\ferramentas\chromedriver.exe

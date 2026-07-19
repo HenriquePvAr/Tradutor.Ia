@@ -4,17 +4,20 @@ Hermetic: no real site is ever contacted. Host resolution is stubbed where a DNS
 would otherwise be needed.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import unittest
 from unittest import mock
 
 import chapter_source
 from chapter_source import (
     ALLOWED_IMAGE_MIME, CHALLENGE_REQUIRED, GenericImageChapterAdapter, SourceError,
-    UNSUPPORTED_SOURCE, UnsupportedSource, WEBTOONS, host_of, is_private_host,
-    looks_like_challenge, select_adapter, supported_hosts,
+    UNSUPPORTED_SOURCE, UnsupportedSource, UniversalChapterAdapter, WEBTOONS, host_of, is_private_host,
+    VORTEXSCANS, VortexScansAdapter, looks_like_challenge, select_adapter, supported_hosts,
 )
 
 WEBTOON_URL = "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer?title_no=1&episode_no=1"
+VORTEX_CHAPTER_URL = "https://vortexscans.org/series/demo-series/chapter-42"
 
 
 def public_dns(*_args, **_kwargs):
@@ -30,19 +33,63 @@ class HostTests(unittest.TestCase):
     def test_lookalike_hosts_rejected(self):
         for impostor in ("https://evil-webtoons.com/x", "https://webtoons.com.evil.net/x",
                          "https://notwebtoons.com/x"):
-            with self.assertRaises(UnsupportedSource, msg=impostor):
-                select_adapter(impostor)
+            adapter = select_adapter(impostor)
+            self.assertIsInstance(adapter, UniversalChapterAdapter, impostor)
+            self.assertNotEqual(adapter.name, WEBTOONS.name)
 
     def test_subdomain_allowed(self):
         self.assertEqual(select_adapter("https://m.webtoons.com/x").name, "webtoons")
 
     def test_supported_hosts_exposed(self):
         self.assertIn("webtoons.com", supported_hosts())
+        self.assertIn("vortexscans.org", supported_hosts())
 
-    def test_registry_has_no_universal_fallback(self):
-        # An unknown host must never resolve to some catch-all adapter.
-        with self.assertRaises(UnsupportedSource):
-            select_adapter("https://example.org/series/x/chapter-1")
+    def test_unknown_public_host_uses_controlled_universal_fallback(self):
+        adapter = select_adapter("https://example.org/series/x/chapter-1")
+        self.assertIsInstance(adapter, UniversalChapterAdapter)
+        self.assertFalse(adapter.is_specific)
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            adapter.validate_url("https://example.org/series/x/chapter-1")
+
+
+class VortexScansAdapterTests(unittest.TestCase):
+    def test_literal_host_and_valid_chapter_path_select_specific_adapter(self):
+        adapter = select_adapter(VORTEX_CHAPTER_URL)
+        self.assertIs(adapter, VORTEXSCANS)
+        self.assertIsInstance(adapter, VortexScansAdapter)
+        self.assertEqual(adapter.name, "vortexscans")
+        self.assertEqual(adapter.adapter_version, "1")
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            adapter.validate_url(VORTEX_CHAPTER_URL)
+            adapter.validate_navigation_url(VORTEX_CHAPTER_URL)
+        adapter.validate_path(VORTEX_CHAPTER_URL)
+
+    def test_only_literal_vortex_host_is_claimed(self):
+        for url in (
+            "https://www.vortexscans.org/series/demo-series/chapter-42",
+            "https://cdn.vortexscans.org/series/demo-series/chapter-42",
+            "https://vortexscans.org.example.test/series/demo-series/chapter-42",
+        ):
+            self.assertIsInstance(select_adapter(url), UniversalChapterAdapter, url)
+            self.assertFalse(VORTEXSCANS.supports(url), url)
+
+    def test_path_requires_series_slug_and_chapter_slug(self):
+        for url in (
+            "https://vortexscans.org/",
+            "https://vortexscans.org/series/demo-series",
+            "https://vortexscans.org/series/demo-series/chapter-",
+            "https://vortexscans.org/chapter-42",
+            "https://vortexscans.org/series/demo_series/chapter-42",
+        ):
+            with self.assertRaises(SourceError) as ctx:
+                VORTEXSCANS.validate_path(url)
+            self.assertEqual(ctx.exception.detail, "not_a_chapter_url", url)
+
+    def test_reader_selectors_are_owned_by_vortex_adapter(self):
+        selectors = VORTEXSCANS.reader_selectors()
+        self.assertIn("reading-content", selectors["container"])
+        self.assertIn("reading-content", selectors["image"])
+        self.assertNotIn("_imageList", selectors["image"])
 
 
 class SsrfTests(unittest.TestCase):
@@ -70,6 +117,17 @@ class SsrfTests(unittest.TestCase):
                                return_value=[(2, 1, 6, "", ("10.1.1.1", 0))]):
             with self.assertRaises(SourceError) as ctx:
                 adapter.validate_url("https://intranet.test/chapter-1")
+        self.assertEqual(ctx.exception.detail, "private_host")
+
+    def test_registered_www_alias_resolves_its_literal_host_before_acceptance(self):
+        """Host policy can alias www; DNS policy must validate the literal destination."""
+        def split_dns(host, _port):
+            address = "127.0.0.1" if host == "www.webtoons.com" else "93.184.216.34"
+            return [(2, 1, 6, "", (address, 0))]
+
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", side_effect=split_dns):
+            with self.assertRaises(SourceError) as ctx:
+                WEBTOONS.validate_url("https://www.webtoons.com/en/viewer")
         self.assertEqual(ctx.exception.detail, "private_host")
 
     def test_non_http_schemes_rejected(self):
@@ -202,14 +260,10 @@ class SanitizationTests(unittest.TestCase):
 
 
 class DownloaderGateTests(unittest.TestCase):
-    def test_unregistered_host_fails_before_any_browser_opens(self):
-        import down
-
-        with mock.patch.object(down, "_create_driver") as driver:
-            with self.assertRaises(SourceError) as ctx:
-                down.download_images("https://example.org/series/x/chapter-1")
-        self.assertEqual(ctx.exception.code, UNSUPPORTED_SOURCE)
-        driver.assert_not_called()          # no Selenium, no network
+    def test_unregistered_host_is_not_claimed_by_a_specific_adapter(self):
+        adapter = select_adapter("https://example.org/series/x/chapter-1")
+        self.assertEqual(adapter.name, "universal")
+        self.assertNotIn("example.org", supported_hosts())
 
     def test_private_target_fails_before_any_browser_opens(self):
         import down
@@ -217,6 +271,15 @@ class DownloaderGateTests(unittest.TestCase):
         with mock.patch.object(down, "_create_driver") as driver:
             with self.assertRaises(SourceError):
                 down.download_images("http://127.0.0.1:8080/series/x/chapter-1")
+        driver.assert_not_called()
+
+    def test_unsafe_scheme_fails_before_any_browser_opens_even_with_fallback(self):
+        import down
+
+        with mock.patch.object(down, "_create_driver") as driver:
+            with self.assertRaises(SourceError) as ctx:
+                down.download_images("file:///C:/secret.txt")
+        self.assertEqual(ctx.exception.code, UNSUPPORTED_SOURCE)
         driver.assert_not_called()
 
 

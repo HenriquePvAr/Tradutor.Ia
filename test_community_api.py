@@ -1,5 +1,7 @@
 """Community API layer: publish, feed, read streaming, range, authorization — offline."""
 
+import _test_bootstrap  # noqa: F401
+
 import tempfile
 import threading
 import unittest

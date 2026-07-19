@@ -1,5 +1,7 @@
 """community_publish job: upload via worker, resume, cancel, verification — offline."""
 
+import _test_bootstrap  # noqa: F401
+
 import subprocess
 import sqlite3
 import sys

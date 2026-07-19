@@ -8,12 +8,19 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from run_webtoon import _chapter_slug, _clean_url, _resolve_output_folder
+from run_webtoon import _chapter_slug, _clean_url, _resolve_output_folder, build_parser
 from session_context import CONTEXT_VERSION, SessionContextStore
 from translator_nvidia import TranslatorNvidiaBatch
 
 
 class RunWebtoonTests(unittest.TestCase):
+    def test_source_candidate_ids_are_repeatable_internal_arguments(self):
+        args = build_parser().parse_args([
+            "https://example.test/chapter/1", "--source-candidate-id", "opaque-a",
+            "--source-candidate-id", "opaque-b",
+        ])
+        self.assertEqual(args.source_candidate_id, ["opaque-a", "opaque-b"])
+
     def test_chapter_slug_uses_title_and_episode(self):
         url = "https://m.webtoons.com/en/drama/lookism/ep-50/viewer?title_no=1049"
         self.assertEqual(_chapter_slug(url), "lookism_ep-50")
@@ -69,6 +76,17 @@ class RunWebtoonTests(unittest.TestCase):
             self.assertIn("Contexto temporario", prompt)
             self.assertIn("Jay", prompt)
             self.assertTrue(translator.stats["context_enabled"])
+
+    def test_session_context_never_persists_a_signed_query(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session_context.json"
+            data = SessionContextStore(
+                path, "https://example.com/chapter?token=secret-value"
+            ).prepare([])
+            persisted = path.read_text(encoding="utf-8")
+        self.assertRegex(data["chapter_url"], r"^https://example\.com/path-[0-9a-f]{12}$")
+        self.assertNotIn("/chapter", data["chapter_url"])
+        self.assertNotIn("secret-value", persisted)
 
     def test_repeated_dialogue_tokens_are_not_promoted_to_proper_names(self):
         groups = [

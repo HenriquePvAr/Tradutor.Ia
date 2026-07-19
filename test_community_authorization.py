@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import _test_bootstrap  # noqa: F401
+
 from dataclasses import FrozenInstanceError
 from concurrent.futures import ThreadPoolExecutor
 import json

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from output_manifest import build_run_manifest, load_verified_run_manifest
+from output_manifest import build_run_manifest, load_verified_run_manifest, sanitize_source_url
 from ui_helpers import (
     ProgressSnapshot,
     build_run_command,
@@ -19,6 +19,7 @@ from ui_helpers import (
     parse_progress_line,
     quality_requires_review,
     sanitize_output_name,
+    sanitize_diagnostic_text,
     suggest_chapter_details,
 )
 from ui_history import UIHistoryStore
@@ -80,6 +81,20 @@ class UIHelpersTests(unittest.TestCase):
         masked = mask_secrets(text)
         self.assertNotIn("valor_de_teste_nao_secreto", masked)
         self.assertIn("MASCARADO", masked)
+
+    def test_diagnostic_url_redaction_removes_query_and_credentials(self):
+        text = "erro em https://user:pass@example.test/chapter?token=secret-value"
+        safe = sanitize_diagnostic_text(text)
+        self.assertNotIn("secret-value", safe)
+        self.assertNotIn("user:pass", safe)
+        self.assertNotIn("/chapter", safe)
+        self.assertRegex(safe, r"https://example\.test/path-[0-9a-f]{12}")
+        sanitized = sanitize_source_url(
+            "https://user:pass@example.test/chapter?token=secret-value")
+        self.assertNotIn("user:pass", sanitized)
+        self.assertNotIn("secret-value", sanitized)
+        self.assertNotIn("/chapter", sanitized)
+        self.assertRegex(sanitized, r"^https://example\.test/path-[0-9a-f]{12}$")
 
     def test_progress_parser_extracts_stage_and_fraction(self):
         snapshot = parse_progress_line(
@@ -368,10 +383,8 @@ class UIHelpersTests(unittest.TestCase):
 
             loaded = load_verified_run_manifest(output_folder)
 
-            self.assertEqual(
-                loaded["source_url"],
-                "https://example.test/series/chapter",
-            )
+            self.assertNotIn("/series/chapter", loaded["source_url"])
+            self.assertRegex(loaded["source_url"], r"^https://example\.test/path-[0-9a-f]{12}$")
             self.assertTrue(loaded["quality_passed"])
 
     def test_saved_history_with_failed_quality_gate_is_not_clean_success(self):

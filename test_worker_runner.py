@@ -5,14 +5,18 @@ spawns the fake pipeline subprocess - so the survival and recovery guarantees ar
 against actual processes, not mocks. No network, NVIDIA, OCR or heavy PDF is involved.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import os
 from pathlib import Path
 
 from job_store import JobStatus, JobStore
+import process_tree
 from worker_service import Worker
 
 REPO = Path(__file__).resolve().parent
@@ -80,9 +84,27 @@ class WorkerRunnerTests(unittest.TestCase):
         jid, out = self._job(outcome="finished")
         self._run_worker_once()
         self.assertTrue((out / "job_manifest.json").is_file())
-        log = REPO / ".cache" / "runtime" / "logs" / f"{jid}.log"
+        log = self.tmp / "logs" / f"{jid}.log"
         self.assertTrue(log.is_file())
         self.assertTrue(log.read_text(encoding="utf-8").strip())
+        self.assertFalse((REPO / ".cache" / "runtime" / "logs" / f"{jid}.log").exists())
+
+    def test_live_ui_owned_source_analysis_is_not_cancelled_by_staging_recovery(self):
+        """A worker must not race a still-running UI source-analysis request."""
+        process = process_tree.snapshot(os.getpid()) or {}
+        jid = self.store.create_job(
+            source_url="https://example/x", output_dir=str(self.tmp / "staging"),
+            command=["python", "runner"], configuration={"job_type": "translation"},
+            initial_status=JobStatus.STAGING, staging_owner_pid=os.getpid(),
+            staging_owner_create_time=process.get("create_time"),
+        )
+        self.store.update_fields(jid, stage="source_analysis")
+        worker = Worker(self.db, poll_seconds=0.01, stale_seconds=5)
+        try:
+            worker._recover_staged_community_publishes(grace_seconds=0)
+        finally:
+            worker.close()
+        self.assertEqual(self.store.get_job(jid)["status"], JobStatus.STAGING)
 
     def test_checkpoints_written(self):
         jid, out = self._job(outcome="finished")
@@ -180,7 +202,7 @@ class CancelAndRecoveryTests(unittest.TestCase):
         self.assertEqual(resumed["attempt"], 2)
         self.assertEqual(resumed["previous_job_id"], jid)
         # The download checkpoint from attempt 1 was reused (log records it).
-        log = REPO / ".cache" / "runtime" / "logs" / f"{resume_id}.log"
+        log = self.tmp / "logs" / f"{resume_id}.log"
         self.assertIn("reaproveitado", log.read_text(encoding="utf-8"))
 
     def test_stale_running_job_is_recovered_on_next_worker(self):

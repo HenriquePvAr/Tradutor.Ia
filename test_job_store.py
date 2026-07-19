@@ -1,5 +1,7 @@
 """Unit tests for the persistent SQLite job store."""
 
+import _test_bootstrap  # noqa: F401
+
 import threading
 import time
 import unittest
@@ -48,6 +50,19 @@ class JobStoreBasicsTests(unittest.TestCase):
         job = self.store.get_job(jid)
         self.assertEqual(job["configuration"]["mode"], "fast")
         self.assertTrue(job["configuration"]["force"])
+
+    def test_source_analysis_fields_roundtrip_without_leaking_into_configuration(self):
+        jid = _new_job(self.store)
+        self.store.update_fields(
+            jid,
+            reason_code="review_required_medium_confidence",
+            source_analysis_json='{"adapter":"universal","accepted":[{"id":"opaque"}]}',
+            source_selection_json='{"candidate_ids":["opaque"],"automatic":false}',
+        )
+        job = self.store.get_job(jid)
+        self.assertEqual(job["reason_code"], "review_required_medium_confidence")
+        self.assertEqual(job["source_analysis"]["accepted"][0]["id"], "opaque")
+        self.assertFalse(job["source_selection"]["automatic"])
 
     def test_no_secrets_stored(self):
         jid = _new_job(self.store, configuration={"mode": "fast"})
@@ -165,6 +180,29 @@ class TransitionTests(unittest.TestCase):
         self.assertTrue(transition_allowed(JobStatus.RUNNING, JobStatus.FINISHED))
         self.assertFalse(transition_allowed(JobStatus.FINISHED, JobStatus.RUNNING))
         self.assertFalse(transition_allowed(JobStatus.QUEUED, JobStatus.RUNNING))
+
+    def test_source_review_is_not_claimable_and_can_be_confirmed_or_cancelled(self):
+        jid = _new_job(self.store, initial_status=JobStatus.AWAITING_SOURCE_REVIEW)
+        self.assertIsNone(self.store.claim_next_job("w1", 1))
+        waiting = self.store.get_job(jid)
+        self.assertEqual(waiting["status"], JobStatus.AWAITING_SOURCE_REVIEW)
+        queued = self.store.transition(jid, JobStatus.QUEUED)
+        self.assertIsNotNone(queued["queued_at"])
+        self.assertEqual(self.store.claim_next_job("w1", 1)["id"], jid)
+
+    def test_source_review_can_be_cancelled_as_a_terminal_state(self):
+        jid = _new_job(self.store, initial_status=JobStatus.AWAITING_SOURCE_REVIEW)
+        job = self.store.transition(jid, JobStatus.CANCELLED, reason_code="cancelled")
+        self.assertEqual(job["status"], JobStatus.CANCELLED)
+        self.assertIsNotNone(job["finished_at"])
+
+    def test_terminal_transitions_receive_safe_default_reason_codes(self):
+        jid = _new_job(self.store)
+        self.store.claim_next_job("w1", 1)
+        self.store.transition(jid, JobStatus.STARTING, expected_worker="w1")
+        self.store.transition(jid, JobStatus.RUNNING, expected_worker="w1")
+        failed = self.store.transition(jid, JobStatus.FAILED, expected_worker="w1")
+        self.assertEqual(failed["reason_code"], "pipeline_failed")
 
 
 class HeartbeatRecoveryTests(unittest.TestCase):

@@ -5,6 +5,8 @@ a verified Supabase token instead of a local session: owner 200/206, other user 
 anonymous 401, forged headers ignored, and denied requests never touch storage.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import json
 import socket
 import time

@@ -1,5 +1,7 @@
 """Launcher dispatch and the single-worker guard, without spawning real processes."""
 
+import _test_bootstrap  # noqa: F401
+
 import tempfile
 import unittest
 from pathlib import Path

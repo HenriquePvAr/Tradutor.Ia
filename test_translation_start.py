@@ -1,16 +1,26 @@
 """Start-translation submit path: source selection, queue visibility, idempotency, errors."""
 
+import _test_bootstrap  # noqa: F401
+
+import asyncio
+import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import ui_bridge
 from chapter_source import (
-    UnsupportedSource, host_of, select_adapter, supported_hosts,
+    REVIEW_REQUIRED_MEDIUM_CONFIDENCE, SOURCE_NOT_READY, SUPPORTED_SPECIFIC_ADAPTER,
+    UNSUPPORTED_LOW_CONFIDENCE,
+    SourceError, UniversalChapterAdapter, host_of, select_adapter, supported_hosts,
 )
 from job_store import JobStatus, JobStore
 from ui_helpers import build_run_command
+from worker_service import Worker
 
 WEBTOON_URL = "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer?title_no=1&episode_no=1"
 
@@ -20,17 +30,16 @@ class SourceSelectionTests(unittest.TestCase):
         self.assertEqual(select_adapter(WEBTOON_URL).name, "webtoons")
         self.assertEqual(select_adapter("https://webtoons.com/x").name, "webtoons")
 
-    def test_unknown_host_is_rejected_with_a_stable_code(self):
-        with self.assertRaises(UnsupportedSource) as ctx:
-            select_adapter("https://example.org/series/x/chapter-1")
-        self.assertEqual(ctx.exception.code, "unsupported_source")
-        self.assertEqual(ctx.exception.host, "example.org")
+    def test_unknown_public_host_uses_the_controlled_fallback(self):
+        adapter = select_adapter("https://example.org/series/x/chapter-1")
+        self.assertIsInstance(adapter, UniversalChapterAdapter)
+        self.assertFalse(adapter.is_specific)
 
     def test_lookalike_host_cannot_impersonate_an_allowed_one(self):
         # Suffix matching on the raw string would let this through.
         for impostor in ("https://evil-webtoons.com/x", "https://webtoons.com.evil.net/x"):
-            with self.assertRaises(UnsupportedSource, msg=impostor):
-                select_adapter(impostor)
+            adapter = select_adapter(impostor)
+            self.assertIsInstance(adapter, UniversalChapterAdapter, impostor)
 
     def test_subdomains_of_allowed_hosts_are_accepted(self):
         self.assertEqual(select_adapter("https://m.webtoons.com/x").name, "webtoons")
@@ -60,11 +69,11 @@ class SourceSelectionTests(unittest.TestCase):
         self.assertTrue(command[1].endswith("run_webtoon.py"))
         self.assertIn("--force", command)
 
-    def test_unsupported_host_fails_before_a_command_exists(self):
-        with self.assertRaises(UnsupportedSource):
-            build_run_command(
-                url="https://example.org/series/x/chapter-1", mode="fast", output="cap",
-                full=True, max_images=None, use_cache=False, force=True, use_context=True)
+    def test_unknown_public_host_builds_the_universal_runner_command(self):
+        command = build_run_command(
+            url="https://example.org/series/x/chapter-1", mode="fast", output="cap",
+            full=True, max_images=None, use_cache=False, force=True, use_context=True)
+        self.assertTrue(command[1].endswith("run_webtoon.py"))
 
 
 class _Bridge(ui_bridge.UiBridge):
@@ -79,6 +88,22 @@ class _Bridge(ui_bridge.UiBridge):
     def ensure_worker(self):
         self.worker_calls += 1
         return {"online": False, "started": False}
+
+    def _analyze_source(self, _url, *, cancel_check=None):
+        return SimpleNamespace(
+            outcome=SUPPORTED_SPECIFIC_ADAPTER,
+            accepted=[],
+            public=lambda: {
+                "adapter": "webtoons", "final_host": "webtoons.com",
+                "outcome": SUPPORTED_SPECIFIC_ADAPTER, "confidence": 1.0,
+                "accepted": [], "accepted_count": 0, "discarded_count": 0,
+            },
+        )
+
+    async def _run_source_analysis(self, url, *, cancel_check=None):
+        # Keep the hermetic bridge synchronous to the tiny manual coroutine driver below;
+        # production uses asyncio.to_thread so Selenium never blocks the UI event loop.
+        return self._analyze_source(url, cancel_check=cancel_check)
 
 
 def drive(coro):
@@ -125,6 +150,17 @@ class SubmitTests(unittest.TestCase):
     def test_worker_offline_is_reported_not_hidden(self):
         self.assertIs(self.start()["worker"]["online"], False)
 
+    def test_automatic_source_never_queues_the_pipeline_without_configured_environment(self):
+        with mock.patch.object(ui_bridge, "env_status",
+                               return_value={"env_exists": False, "nvidia_configured": False}):
+            result = drive(self.bridge.start(self.payload()))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason_code"], "environment_not_configured")
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["status"], JobStatus.FAILED)
+        self.assertEqual(job["reason_code"], "environment_not_configured")
+        self.assertEqual(self.bridge.worker_calls, 0)
+
     def test_double_submit_creates_only_one_job(self):
         first = self.start()
         second = self.start()
@@ -133,9 +169,9 @@ class SubmitTests(unittest.TestCase):
         queued = self.bridge.store.list_jobs(statuses=[JobStatus.QUEUED])
         self.assertEqual(len(queued), 1)
 
-    def test_unsupported_source_raises_before_persisting_anything(self):
-        with self.assertRaises(UnsupportedSource):
-            self.start(url="https://example.org/series/x/chapter-1")
+    def test_unsafe_source_raises_before_persisting_anything(self):
+        with self.assertRaises(ValueError):
+            self.start(url="file:///C:/secret.txt")
         self.assertEqual(self.bridge.store.list_jobs(statuses=[JobStatus.QUEUED]), [])
 
     def test_invalid_url_raises_and_persists_nothing(self):
@@ -181,6 +217,177 @@ class QueueVisibilityTests(unittest.TestCase):
         self.assertEqual(state["status"], "ready")
         self.assertFalse(state["pending"])
         self.assertFalse(state["blocked"])
+
+    def test_public_job_record_redacts_query_but_store_keeps_execution_url(self):
+        job_id = self.bridge.store.create_job(
+            source_url="https://reader.example.test/chapter?token=secret-value",
+            output_dir=str(self.tmp / "out"), command=["python", "runner"],
+        )
+        job = self.bridge.store.get_job(job_id)
+        record = self.bridge._job_record(job)
+        self.assertIn("secret-value", job["source_url"])
+        self.assertNotIn("secret-value", record["url"])
+
+
+class SourceReviewTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.bridge = _Bridge(self.tmp / "jobs.sqlite3")
+        candidates = [SimpleNamespace(id="page-a"), SimpleNamespace(id="page-b")]
+        self.public = {
+            "adapter": "universal", "final_host": "reader.example.test",
+            "outcome": REVIEW_REQUIRED_MEDIUM_CONFIDENCE, "confidence": 0.72,
+            "accepted": [
+                {"id": "page-a", "order": 1, "width": 800, "height": 1200, "origin": "dom"},
+                {"id": "page-b", "order": 2, "width": 800, "height": 1200, "origin": "dom"},
+            ],
+            "accepted_count": 2, "discarded_count": 1, "warnings": [],
+        }
+        self.bridge._analyze_source = lambda _url, **_kw: SimpleNamespace(
+            outcome=REVIEW_REQUIRED_MEDIUM_CONFIDENCE, accepted=candidates,
+            public=lambda: dict(self.public),
+        )
+
+    def tearDown(self):
+        self.bridge.store.close()
+
+    def payload(self, **over):
+        base = {"url": "https://reader.example.test/chapter/1", "chapter_name": "Reader 1",
+                "slug": "reader_1", "mode": "fast", "full": True, "use_cache": False,
+                "force": True, "use_context": True, "open_output": True}
+        base.update(over)
+        return base
+
+    def test_medium_confidence_waits_without_a_worker_and_exposes_sanitized_review(self):
+        result = drive(self.bridge.start(self.payload()))
+        self.assertTrue(result["awaiting_source_review"])
+        self.assertEqual(self.bridge.worker_calls, 0)
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["status"], JobStatus.AWAITING_SOURCE_REVIEW)
+        self.assertEqual(job["stage"], "awaiting_source_review")
+        self.assertEqual(job["source_analysis"]["accepted"][0]["id"], "page-a")
+        self.assertNotIn("https://", str(job["source_analysis"]))
+        self.assertEqual(self.bridge.runtime_state()["source_review"]["id"], result["job_id"])
+
+    def test_confirmation_requires_a_nonempty_known_subset_and_preserves_open_output(self):
+        result = drive(self.bridge.start(self.payload()))
+        with self.assertRaises(ValueError):
+            self.bridge.confirm_source_pages(result["job_id"], [])
+        with self.assertRaises(ValueError):
+            self.bridge.confirm_source_pages(result["job_id"], ["not-observed"])
+        with mock.patch.object(ui_bridge, "env_status", return_value={"env_exists": True, "nvidia_configured": True}):
+            confirmed = self.bridge.confirm_source_pages(result["job_id"], ["page-b"])
+        self.assertTrue(confirmed["ok"])
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["status"], JobStatus.QUEUED)
+        self.assertIn("--source-candidate-id", job["command"])
+        self.assertIn("page-b", job["command"])
+        self.assertIn("--open-output", job["command"])
+        self.assertFalse(job["source_selection"]["automatic"])
+
+    def test_staging_source_job_records_the_creating_ui_process(self):
+        job = self.bridge._create_job(
+            self.payload(), require_environment=False, initial_status=JobStatus.STAGING)
+        self.assertEqual(job["status"], JobStatus.STAGING)
+        self.assertEqual(job["worker_pid"], os.getpid())
+        self.assertIsNotNone(job["worker_create_time"])
+        worker = Worker(self.tmp / "jobs.sqlite3", poll_seconds=0.01, stale_seconds=5)
+        try:
+            # This is the former race: recovery ran while the UI was still analysing and
+            # treated the row as ownerless after its short grace period.
+            worker._recover_staged_community_publishes(grace_seconds=0)
+        finally:
+            worker.close()
+        self.assertEqual(self.bridge.store.get_job(job["id"])["status"], JobStatus.STAGING)
+
+    def test_controlled_manual_selection_keeps_max_images_and_subset_provenance(self):
+        result = drive(self.bridge.start(self.payload(full=False, max_images=2)))
+        with mock.patch.object(ui_bridge, "env_status", return_value={
+            "env_exists": True, "nvidia_configured": True,
+        }):
+            self.bridge.confirm_source_pages(result["job_id"], ["page-b"])
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertIn("--max-images", job["command"])
+        self.assertIn("2", job["command"])
+        self.assertEqual(job["configuration"]["max_images"], 2)
+        self.assertTrue(job["source_selection"]["manual_subset"])
+        self.assertEqual(job["source_selection"]["accepted_candidate_count"], 2)
+        self.assertEqual(job["source_selection"]["selected_candidate_count"], 1)
+
+    def test_low_confidence_is_a_frozen_sanitized_failure_without_a_worker(self):
+        self.bridge._analyze_source = lambda _url, **_kw: SimpleNamespace(
+            outcome=UNSUPPORTED_LOW_CONFIDENCE, accepted=[],
+            public=lambda: {"adapter": "universal", "outcome": UNSUPPORTED_LOW_CONFIDENCE,
+                            "accepted": [], "accepted_count": 0, "discarded_count": 0},
+        )
+        result = drive(self.bridge.start(self.payload()))
+        self.assertFalse(result["ok"])
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["status"], JobStatus.FAILED)
+        self.assertEqual(job["reason_code"], UNSUPPORTED_LOW_CONFIDENCE)
+        self.assertIsNotNone(job["finished_at"])
+        self.assertEqual(self.bridge.worker_calls, 0)
+
+    def test_cancel_review_freezes_it_without_queueing(self):
+        result = drive(self.bridge.start(self.payload()))
+        drive(self.bridge.cancel())
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["status"], JobStatus.CANCELLED)
+        self.assertIsNotNone(job["finished_at"])
+
+    def test_coded_remote_source_failure_is_recorded_then_returned_to_the_api(self):
+        self.bridge._analyze_source = lambda _url, **_kw: (_ for _ in ()).throw(
+            SourceError("challenge_required", "sanitized"))
+        with self.assertRaises(SourceError):
+            drive(self.bridge.start(self.payload()))
+        failed = self.bridge.store.list_jobs(statuses=[JobStatus.FAILED])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["reason_code"], "challenge_required")
+        self.assertIsNotNone(failed[0]["finished_at"])
+        self.assertEqual(self.bridge.worker_calls, 0)
+
+
+class _TimeoutBridge(_Bridge):
+    def __init__(self, db_path):
+        super().__init__(db_path)
+        self.cancel_seen = threading.Event()
+
+    def _analyze_source(self, _url, *, cancel_check=None):
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not (cancel_check and cancel_check()):
+            time.sleep(0.002)
+        if cancel_check and cancel_check():
+            self.cancel_seen.set()
+            raise SourceError("cancelled", "timeout_observed")
+        raise AssertionError("analysis thread did not observe cancellation")
+
+    async def _run_source_analysis(self, url, *, cancel_check=None):
+        return await ui_bridge.UiBridge._run_source_analysis(
+            self, url, cancel_check=cancel_check)
+
+
+class SourceAnalysisTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.bridge = _TimeoutBridge(self.tmp / "jobs.sqlite3")
+
+    async def asyncTearDown(self):
+        self.bridge.store.close()
+
+    async def test_timeout_changes_staging_state_so_background_analysis_cancels_itself(self):
+        payload = {
+            "url": WEBTOON_URL, "slug": "timeout_probe", "mode": "fast", "full": True,
+            "use_cache": False, "force": True, "use_context": True,
+        }
+        with mock.patch.object(ui_bridge, "SOURCE_ANALYSIS_TIMEOUT_SECONDS", 0.02):
+            with self.assertRaises(SourceError) as ctx:
+                await self.bridge.start(payload)
+        self.assertEqual(ctx.exception.code, SOURCE_NOT_READY)
+        failed = self.bridge.store.list_jobs(statuses=[JobStatus.FAILED])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["reason_code"], SOURCE_NOT_READY)
+        self.assertTrue(await asyncio.to_thread(self.bridge.cancel_seen.wait, 1.0))
+        self.assertEqual(self.bridge.worker_calls, 0)
 
 
 class FixtureFilteringTests(unittest.TestCase):
@@ -231,10 +438,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Iniciando processamento…", self.js)
 
     def test_controls_are_not_flipped_before_the_backend_accepts(self):
-        # setRunControls(true) must come after the awaited call, not before it.
+        # Source analysis is a persisted, cancelable staging state before the request settles.
         start = self.js[self.js.index("async function startTranslation"):]
         body = start[:start.index("\n  async function cancelTranslation")]
-        self.assertLess(body.index("await api('/api/ui/run'"), body.index("setRunControls(true)"))
+        self.assertLess(body.index("setRunControls(true);"), body.index("await api('/api/ui/run'"))
 
     def test_double_click_guard(self):
         self.assertIn("button.dataset.busy", self.js)

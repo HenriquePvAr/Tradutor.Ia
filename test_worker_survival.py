@@ -11,6 +11,8 @@ what hung an earlier run for hours. Every external wait has a monotonic deadline
 diagnostic dump, so the test fails fast and loud instead of hanging.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import os
 import signal
 import subprocess

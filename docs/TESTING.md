@@ -12,12 +12,32 @@ Instale a dependência de desenvolvimento antes de usar pytest:
 python -m pip install -r requirements-dev.txt
 ```
 
-Os comandos padrão não executam smokes de rede:
+O comando padrão garantido para a suíte hermética é:
 
 ```powershell
-python -m unittest discover -p "test_*.py"
-pytest
+python -m pytest
 ```
+
+Cada módulo descoberto por `unittest` importa o bootstrap offline como primeiro passo de
+execução. Processos Python descendentes herdam um marcador e o `PYTHONPATH` necessários para
+que `sitecustomize.py` reinstale a mesma barreira antes de carregar o pipeline. A CI e a
+documentação usam `pytest` para collection, marcadores e a garantia central antes da
+importação dos módulos.
+
+Workers usados por testes com banco temporário escrevem logs ao lado desse banco, nunca em
+`.cache/runtime/logs` da execução de produção. Processos-filho desses testes herdam o guard
+offline; conexões externas falham antes de qualquer request.
+
+O guard é uma proteção Python em nível de processo, não um firewall do sistema operacional.
+Um teste novo não pode iniciar navegador, `curl` ou outro binário de rede sem uma revisão
+explícita; a suíte atual usa somente filhos Python/fakes. A execução externa real continua
+reservada aos smokes manuais com opt-in.
+
+Os testes do adapter universal, da política de redirects, dos limites de transporte e da
+revisão de páginas usam drivers, sessões e respostas falsas. Eles não submetem uma URL de
+capítulo, não abrem Chrome nem fazem a análise real de fonte. Qualquer teste novo desse
+fluxo deve injetar essas dependências locais; a análise real só ocorre após uma submissão
+explícita do usuário na UI/CLI e não pertence à suíte padrão.
 
 No GitHub Actions, o workflow **Hermetic Tests** roda em `windows-latest` a
 cada push para `main` e pull request destinado a `main`. Ele instala somente
@@ -69,3 +89,9 @@ python -m scripts.manual_webtoon_smoke `
 Sem ambas as variáveis específicas, cada script encerra com código não zero
 antes de importar cliente NVIDIA, Selenium, downloader ou configuração do
 pipeline.
+
+Os smokes manuais de rede não são um atalho para validar o fallback universal. Caso uma
+análise real de fonte seja autorizada fora da suíte hermética, ela deve respeitar o contrato
+de segurança, limites e revisão descrito em
+[Adaptador universal de capítulos](UNIVERSAL_CHAPTER_ADAPTER.md), e nunca deve ser usada
+como descoberta automática de testes.

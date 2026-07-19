@@ -28,11 +28,12 @@
     logs: [],
     visualLogClearedAt: 0,
     lastFinishedId: '',
+    sourceReview: null,
     expandedFolders: new Set(),
     seriesQuery: '',
     seriesSort: 'recent',
   };
-  const runStatusLabels = {ready: 'pronto', running: 'rodando', finished: 'finalizado', review_required: 'revisão necessária', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
+  const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required']);
   const boolish = value => {
     if (value === true || value === false) return value;
@@ -233,7 +234,7 @@
 
   /* ---------- visual feedback ---------- */
   const stageMessages = {
-    prepare: 'aguardando início', download: 'baixando páginas', validation: 'detectando balões',
+    prepare: 'aguardando início', source_validation: 'validando fonte', source_analysis: 'analisando fonte', browser_loading: 'abrindo leitor', collecting_candidates: 'coletando páginas', clustering_candidates: 'validando páginas', awaiting_source_review: 'aguardando revisão das páginas', downloading_pages: 'baixando páginas', validating_pages: 'validando páginas', download: 'baixando páginas', validation: 'detectando balões',
     ocr: 'lendo texto', classification: 'organizando regiões', translate: 'traduzindo',
     render: 'redesenhando balões', pdf: 'gerando PDF', reports: 'finalizando', final: 'concluído',
   };
@@ -387,6 +388,8 @@
     if (summary) { summary.hidden = true; summary.innerHTML = ''; }
     appState.lastFinishedId = '';
     appState.previewJobId = '';
+    appState.sourceReview = null;
+    $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
   }
 
   function showStartError(error) {
@@ -413,12 +416,26 @@
     const previousLabel = button ? button.textContent : '';
     if (button) { button.dataset.busy = '1'; button.disabled = true; button.textContent = 'Iniciando processamento…'; }
     $('#startError') && ($('#startError').hidden = true);
+    // The request performs source analysis in a worker thread. Keep cancel/polling active
+    // while it is running rather than waiting for the response to expose the stage.
+    setRunControls(true);
     try {
       const result = await api('/api/ui/run', {method: 'POST', body: JSON.stringify(formPayload())});
+      if (!result || result.ok === false) {
+        const error = new Error((result && (result.message || result.reason_code)) || 'Não foi possível analisar esta fonte com segurança.');
+        error.code = result && result.reason_code;
+        error.stage = (result && result.stage) || 'análise da fonte';
+        error.action = (result && result.action) || 'Revise a URL e tente novamente.';
+        throw error;
+      }
       appState.lastFinishedId = '';
       resetRunPreview();                            // never carry the previous job's card over
-      setRunControls(true);
-      if (result && result.worker && result.worker.online === false) {
+      const awaitingReview = Boolean(result.awaiting_source_review);
+      setRunControls(true, awaitingReview);
+      if (awaitingReview) {
+        renderSourceReview({id: result.job_id, source_analysis: result.analysis || {}});
+        showToast('Revise as páginas encontradas antes de iniciar o OCR.', 'warn');
+      } else if (result && result.worker && result.worker.online === false) {
         showToast('Job enfileirado, mas o worker não está online.', 'warn');
       } else {
         showToast(result && result.duplicate
@@ -440,10 +457,10 @@
       showToast('Cancelamento solicitado.', 'warn');
     } catch (error) { showToast(error.message, 'error'); }
   }
-  function setRunControls(running) {
-    $('#startBtn').disabled = running;
-    $('#startBtn').textContent = running ? 'Processando…' : 'Iniciar tradução';
-    $('#cancelBtn').disabled = !running;
+  function setRunControls(active, awaitingReview = false) {
+    $('#startBtn').disabled = active;
+    $('#startBtn').textContent = awaitingReview ? 'Aguardando revisão…' : active ? 'Processando…' : 'Iniciar tradução';
+    $('#cancelBtn').disabled = !active;
   }
   $('#startBtn')?.addEventListener('click', startTranslation);
   $('#cancelBtn')?.addEventListener('click', () => cancelTranslation(false));
@@ -452,20 +469,24 @@
   });
 
   /* ---------- real pipeline presentation ---------- */
-  const stageOrder = ['download', 'validation', 'ocr', 'translate', 'render', 'pdf'];
-  const visualStageKey = key => ({classification: 'ocr', reports: 'pdf'}[key] || key);
+  const stageOrder = ['source_analysis', 'awaiting_source_review', 'download', 'validation', 'ocr', 'translate', 'render', 'pdf'];
+  const visualStageKey = key => ({source_validation: 'source_analysis', browser_loading: 'source_analysis', collecting_candidates: 'source_analysis', clustering_candidates: 'source_analysis', downloading_pages: 'download', validating_pages: 'download', classification: 'ocr', reports: 'pdf'}[key] || key);
   function renderRuntime(runtime) {
     appState.status = runtime.status || 'ready';
     appState.queue = runtime.queue || [];
+    const awaitingReview = appState.status === 'awaiting_source_review';
     const running = appState.status === 'running';
-    setRunControls(running);
+    const analyzing = appState.status === 'staging';
+    setRunControls(running || awaitingReview || analyzing, awaitingReview);
     const status = $('#appStatus');
     status.textContent = runStatusLabels[appState.status] || appState.status;
     status.dataset.state = appState.status;
     renderProgress(runtime.progress || {});
     renderQueue();
     appendLogs(runtime.logs || []);
-    if (runtime.latest) renderResult(runtime.latest);
+    if (awaitingReview && runtime.source_review) renderSourceReview(runtime.source_review);
+    else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
+    if (runtime.latest && !awaitingReview) renderResult(runtime.latest);
     if (runtime.history_revision !== appState.historyRevision) refreshBootstrap();
     if (terminalRunStatuses.has(appState.status) && runtime.latest?.id && runtime.latest.id !== appState.lastFinishedId) {
       appState.lastFinishedId = runtime.latest.id;
@@ -482,7 +503,7 @@
       const pct = $('.stage-pct', item);
       const fill = $('.stage-fill', item);
       item.classList.toggle('done', key === 'final' || (activeIndex >= 0 && index < activeIndex));
-      item.classList.toggle('active', item.dataset.stage === key && appState.status === 'running');
+      item.classList.toggle('active', item.dataset.stage === key && (appState.status === 'running' || appState.status === 'staging' || appState.status === 'awaiting_source_review'));
       item.classList.toggle('indeterminate', item.classList.contains('active') && progress.indeterminate);
       if (item.classList.contains('done')) { pct.textContent = '100%'; fill.style.width = '100%'; }
       else if (item.classList.contains('active') && progress.fraction != null) {
@@ -507,11 +528,45 @@
       const elapsed = progress.elapsed_label || 'Tempo indisponível';
       const stale = progress.stale ? `<br><em>${escapeHtml(progress.stale_label || 'Sem atualização recente')}</em>` : '';
       summary.innerHTML = `<strong>${escapeHtml(progress.stage || 'Preparando')}</strong><br>${escapeHtml(count)} · ${escapeHtml(elapsed)}${stale}<br>${escapeHtml(progress.last_message || '')}`;
+    } else if (appState.status === 'awaiting_source_review') {
+      summary.hidden = false;
+      summary.innerHTML = '<strong>Revisão das páginas necessária</strong><br>O OCR ainda não foi iniciado.';
     }
   }
+  function renderSourceReview(record) {
+    const analysis = record?.source_analysis || record?.analysis || {};
+    const panel = $('#sourceReviewPanel');
+    if (!panel) return;
+    const accepted = Array.isArray(analysis.accepted) ? analysis.accepted : [];
+    appState.sourceReview = {job_id: record?.id || record?.job_id || '', analysis};
+    panel.hidden = false;
+    const warnings = Array.isArray(analysis.warnings) && analysis.warnings.length ? ` · avisos: ${analysis.warnings.map(escapeHtml).join(', ')}` : '';
+    $('#sourceReviewMeta').innerHTML = `Adapter: <strong>${escapeHtml(analysis.adapter || 'universal')}</strong> · confiança: <strong>${escapeHtml(analysis.confidence ?? '—')}</strong> · ${Number(analysis.accepted_count || accepted.length)} páginas aceitas · ${Number(analysis.discarded_count || 0)} descartadas${warnings}`;
+    $('#sourceReviewList').innerHTML = accepted.length ? accepted.map((item, index) => `<label class="source-page-option"><input type="checkbox" data-source-candidate-id="${escapeAttr(item.id || '')}" checked><span><strong>Página ${escapeHtml(Number(item.order || index + 1))}</strong><span>${escapeHtml(item.width || '—')} × ${escapeHtml(item.height || '—')} · ${escapeHtml(item.origin || 'dom')}</span></span></label>`).join('') : '<div class="muted">Nenhuma página confirmável foi preservada.</div>';
+    $('#confirmSourcePages').disabled = !accepted.length;
+  }
+  async function confirmSourcePages() {
+    const review = appState.sourceReview;
+    const ids = $$('.source-page-option input:checked').map(input => input.dataset.sourceCandidateId).filter(Boolean);
+    if (!review?.job_id || !ids.length) { showToast('Selecione ao menos uma página.', 'warn'); return; }
+    const button = $('#confirmSourcePages');
+    if (button) button.disabled = true;
+    try {
+      const result = await api('/api/ui/source/confirm', {method: 'POST', body: JSON.stringify({job_id: review.job_id, candidate_ids: ids})});
+      if (!result?.ok) throw new Error('Não foi possível confirmar as páginas.');
+      $('#sourceReviewPanel').hidden = true;
+      appState.sourceReview = null;
+      showToast('Páginas confirmadas. O processamento foi enfileirado.', 'ok');
+    } catch (error) {
+      showToast(error.message || 'Não foi possível confirmar as páginas.', 'error');
+      if (button) button.disabled = false;
+    }
+  }
+  $('#confirmSourcePages')?.addEventListener('click', confirmSourcePages);
+  $('#cancelSourceReview')?.addEventListener('click', () => cancelTranslation(false));
   function renderResult(record) {
     const summary = $('#runSummary');
-    if (!record || record.status === 'running') return;
+    if (!record || record.status === 'running' || record.status === 'staging' || record.status === 'awaiting_source_review') return;
     summary.hidden = false;
     const gateValue = boolish(record.quality_gate);
     const gate = gateValue === true ? 'aprovado' : gateValue === false ? 'reprovado' : 'não informado';

@@ -7,6 +7,8 @@ re-OCR left no event at all, and an unsafe smart split left a count with no list
 Nothing here touches the network, a chapter, or an existing output.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import json
 import unittest
 

@@ -9,6 +9,7 @@ The local history/profile persistence is unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import importlib.util
 import json
@@ -24,13 +25,14 @@ from typing import Any
 
 from community_auth import RequestPrincipal
 from job_store import JobStatus, JobStore
+from output_manifest import sanitize_source_url
 from ui_helpers import (
     OUTPUT_ROOT,
     REPO_ROOT,
     build_run_command,
     clean_url,
     env_status,
-    mask_secrets,
+    sanitize_diagnostic_text,
     sanitize_output_name,
     suggest_chapter_details,
 )
@@ -42,8 +44,17 @@ PROFILE_MEDIA_DIR = REPO_ROOT / ".cache" / "ui_profile"
 JOBS_DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
 JOB_LOG_DIR = REPO_ROOT / ".cache" / "runtime" / "logs"
 MAX_LOG_LINES = 3000
+SOURCE_ANALYSIS_TIMEOUT_SECONDS = 180
 _UI_STAGE_LABELS = {
     "created": "Preparando",
+    "source_validation": "Validando fonte",
+    "source_analysis": "Analisando fonte",
+    "browser_loading": "Abrindo leitor",
+    "collecting_candidates": "Coletando páginas",
+    "clustering_candidates": "Validando páginas",
+    "awaiting_source_review": "Aguardando revisão das páginas",
+    "downloading_pages": "Baixando imagens",
+    "validating_pages": "Validando imagens",
     "download": "Baixando imagens",
     "smart_split": "Reconstrução",
     "ocr": "OCR",
@@ -228,9 +239,30 @@ class UiBridge:
         self.store = JobStore(JOBS_DB_PATH)
         self.history_revision = 1
         # A job left in flight by a crash must not come back as PROCESSANDO after a restart.
+        self._recover_staged_source_analyses()
         self.reconcile_orphans()
 
     # ---- orphan reconciliation ----------------------------------------------
+    def _recover_staged_source_analyses(self) -> None:
+        """A staging analysis belongs to the UI process, never to the worker.
+
+        On a fresh UI instance no in-memory source-analysis coroutine can own a persisted
+        staging row. Freeze it instead of showing an indefinitely live browser analysis.
+        """
+        try:
+            staged = self.store.list_jobs(statuses=[JobStatus.STAGING], limit=None)
+        except Exception:  # noqa: BLE001 - startup remains best effort
+            return
+        for job in staged:
+            try:
+                self.store.transition(
+                    job["id"], JobStatus.FAILED,
+                    reason_code="source_analysis_interrupted", stage="source_analysis",
+                    error_type="source_analysis", error_message="source_analysis_interrupted",
+                )
+            except Exception:  # noqa: BLE001 - concurrent submit/cancel wins
+                continue
+
     def _success_evidence(self, job: dict[str, Any]) -> bool:
         """Complete proof the run really finished: exit code 0, a manifest and a real PDF.
 
@@ -293,7 +325,9 @@ class UiBridge:
             "job_id": job["id"],
             "chapter_name": config.get("chapter_name") or job.get("series_title") or job.get("series_slug") or "",
             "slug": Path(job.get("output_dir") or "").name,
-            "url": job.get("source_url") or "",
+            # The queue retains the raw URL only to execute the job. The browser-facing
+            # record is diagnostic data and must not echo signed query material.
+            "url": sanitize_source_url(str(job.get("source_url") or "")),
             "mode": config.get("mode") or "fast",
             "scope": "full" if config.get("full", True) else "partial",
             "cache_mode": "force" if config.get("force") else "cache",
@@ -304,7 +338,10 @@ class UiBridge:
             "attempt": job.get("attempt") or 1,
             "recoverable": bool(job.get("recoverable")),
             "interrupted_reason": job.get("interrupted_reason") or "",
-            "error_message": mask_secrets(job.get("error_message") or ""),
+            "reason_code": job.get("reason_code") or "",
+            "error_message": sanitize_diagnostic_text(job.get("error_message") or ""),
+            "source_analysis": job.get("source_analysis") or {},
+            "source_selection": job.get("source_selection") or {},
             "started_at": _epoch_to_iso(job.get("started_at")),
             "finished_at": _epoch_to_iso(job.get("finished_at")),
             "total_seconds": _duration(job),
@@ -342,24 +379,40 @@ class UiBridge:
             key=lambda job: float(job.get("claimed_at") or 0),
             default=None,
         )
-        record = self._job_record(active)
-        status = (active["status"] if active else "ready")
-        stage = str((active or {}).get("stage") or "created")
-        current = int((active or {}).get("progress_current") or 0)
-        total = int((active or {}).get("progress_total") or 0)
+        waiting_reviews = self.store.list_jobs(
+            statuses=[JobStatus.AWAITING_SOURCE_REVIEW], limit=None)
+        waiting = max(
+            (job for job in waiting_reviews if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+        staging_jobs = self.store.list_jobs(statuses=[JobStatus.STAGING], limit=None)
+        staging = max(
+            (job for job in staging_jobs if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+        present_job = active or waiting or staging
+        record = self._job_record(present_job)
+        status = (present_job["status"] if present_job else "ready")
+        stage = str((present_job or {}).get("stage") or "created")
+        current = int((present_job or {}).get("progress_current") or 0)
+        total = int((present_job or {}).get("progress_total") or 0)
         # The counter only belongs to the stage that produced it; otherwise a download's
         # 99/99 would be rendered under the translation label.
-        counter_stage = str((active or {}).get("progress_counter_stage") or "")
+        counter_stage = str((present_job or {}).get("progress_counter_stage") or "")
         counter_matches = (not counter_stage) or counter_stage == stage
         if not counter_matches:
             current = total = 0
         stage_fraction = (current / total) if current and total else None
-        running = status in JobStatus.IN_FLIGHT
+        running = status in JobStatus.IN_FLIGHT or status == JobStatus.STAGING
         # "running" now means a verified live process, because reconcile_orphans() already
         # demoted every in-flight job whose runner is gone.
-        live = running and bool(active) and _runner_still_alive(active)
-        elapsed = _duration(active, live=live) if active else None
-        last_update = _normalize_epoch((active or {}).get("updated_at"))
+        # Staging is owned by this async request and bounded by ``_run_source_analysis``;
+        # it is therefore live while present. Worker stages still require a verified runner.
+        live = running and (
+            bool(staging) or (bool(active) and _runner_still_alive(active))
+        )
+        elapsed = _duration(present_job, live=live) if present_job else None
+        last_update = _normalize_epoch((present_job or {}).get("updated_at"))
         stale_updates = bool(
             running and last_update is not None and (time.time() - last_update) > 120
         )
@@ -375,7 +428,7 @@ class UiBridge:
         logs = self._tail_job_logs(active, cursor)
         # A queued job is pending work, not "pronto". Reporting it as ready is what made a
         # successful submit look like nothing happened.
-        pending = bool(queued) and not running
+        pending = bool(queued) and not running and waiting is None and staging is None
         if pending:
             status = JobStatus.QUEUED
         blocked = pending and not worker
@@ -394,9 +447,9 @@ class UiBridge:
                 "fraction": stage_fraction,
                 "indeterminate": stage_fraction is None and running,
                 "pages": current,
-                "groups": int((active or {}).get("progress_current") or 0),
+                "groups": int((present_job or {}).get("progress_current") or 0),
                 "errors": 0,
-                "last_message": (active or {}).get("progress_message") or "",
+                "last_message": (present_job or {}).get("progress_message") or "",
                 "elapsed_seconds": elapsed,
                 "elapsed_label": _format_seconds(elapsed),
                 "updated_at": last_update,
@@ -409,6 +462,7 @@ class UiBridge:
             "queue": queued,
             "queue_running": running or pending,   # a queued job is still "em andamento"
             "resumable": resumable,
+            "source_review": self._job_record(waiting),
             "worker": {
                 "online": bool(worker),
                 "worker_id": (worker or {}).get("worker_id", ""),
@@ -452,7 +506,7 @@ class UiBridge:
             return {"entries": [], "cursor": int(cursor or 0)}
         start = int(cursor or 0)
         entries = [
-            {"seq": index + 1, "time": "", "kind": "info", "text": mask_secrets(line)}
+            {"seq": index + 1, "time": "", "kind": "info", "text": sanitize_diagnostic_text(line)}
             for index, line in enumerate(lines[-MAX_LOG_LINES:])
             if index + 1 > start
         ]
@@ -503,13 +557,163 @@ class UiBridge:
         # A double click (or a retried request) must not queue the same chapter twice.
         duplicate = self._pending_duplicate(payload)
         if duplicate:
-            return {"ok": True, "duplicate": True, "run_id": duplicate.get("run_id") or "",
-                    "job_id": duplicate["id"], "worker": self.ensure_worker()}
-        job = self._create_job(payload, principal=principal)
+            result = {"ok": True, "duplicate": True, "run_id": duplicate.get("run_id") or "",
+                      "job_id": duplicate["id"]}
+            if duplicate.get("status") == JobStatus.AWAITING_SOURCE_REVIEW:
+                result["awaiting_source_review"] = True
+                result["analysis"] = duplicate.get("source_analysis") or {}
+                return result
+            result["worker"] = self.ensure_worker()
+            return result
+        # Persist a controllable staging row before the browser work starts. The analysis is
+        # sent to a worker thread so the async UI can keep polling and cancel it; no OCR,
+        # downloader, output folder or pipeline worker starts at this point.
+        normalized = self._normalize_payload(payload, require_environment=False)
+        from universal_chapter_adapter import (
+            REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
+            SUPPORTED_GENERIC_HIGH_CONFIDENCE,
+            SUPPORTED_SPECIFIC_ADAPTER,
+        )
+
+        job = self._create_job(
+            {**payload, "source_candidate_ids": []}, principal=principal,
+            require_environment=False, initial_status=JobStatus.STAGING,
+            source_analysis={"adapter": "", "outcome": "source_analysis_pending", "accepted": []},
+        )
+        self.store.update_fields(
+            job["id"], stage="source_analysis", reason_code="",
+            started_at=time.time(), heartbeat_at=time.time(),
+        )
+
+        def analysis_cancelled() -> bool:
+            current = self.store.get_job(job["id"])
+            # ``asyncio.wait_for`` cannot kill a running thread. Once this staging row moves
+            # to *any* other state (timeout, cancellation or recovery), the browser helper
+            # must observe cancellation at its next safe boundary and tear itself down.
+            return (
+                not current
+                or current.get("status") != JobStatus.STAGING
+                or bool(current.get("cancel_requested") if current else False)
+            )
+
+        try:
+            analysis = await self._run_source_analysis(
+                normalized["url"], cancel_check=analysis_cancelled)
+        except asyncio.CancelledError:
+            current = self.store.get_job(job["id"])
+            if current and current.get("status") == JobStatus.STAGING:
+                self.store.transition(
+                    job["id"], JobStatus.CANCELLED, reason_code="cancelled",
+                    interrupted_reason="source_analysis_request_cancelled",
+                )
+            raise
+        except asyncio.TimeoutError as exc:
+            from chapter_source import SOURCE_NOT_READY, SourceError
+
+            source_error = SourceError(SOURCE_NOT_READY, "source_analysis_timeout")
+            current = self.store.get_job(job["id"])
+            if current and current.get("status") == JobStatus.STAGING:
+                self.store.transition(
+                    job["id"], JobStatus.FAILED, reason_code=source_error.code,
+                    stage="source_analysis", error_type="source_analysis",
+                    error_message=source_error.code,
+                )
+            raise source_error from exc
+        except Exception as exc:
+            # Remote source outcomes (challenge/access/auth/etc.) deserve an auditable,
+            # frozen terminal record.  Programming errors still propagate rather than being
+            # relabelled as an unsupported chapter.
+            from chapter_source import SOURCE_NOT_READY, SourceError
+
+            current = self.store.get_job(job["id"])
+            if current and current.get("status") == JobStatus.CANCELLED:
+                return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
+            if isinstance(exc, SourceError):
+                source_error = exc
+            else:
+                source_error = SourceError(SOURCE_NOT_READY, type(exc).__name__)
+            if current and current.get("status") == JobStatus.STAGING:
+                self.store.transition(
+                    job["id"], JobStatus.FAILED, reason_code=source_error.code,
+                    stage="source_analysis", error_type="source_analysis",
+                    error_message=source_error.code,
+                )
+            if isinstance(exc, SourceError):
+                raise
+            raise source_error from exc
+        current = self.store.get_job(job["id"])
+        if not current or current.get("status") == JobStatus.CANCELLED:
+            return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
+        public_analysis = analysis.public()
+        selected_ids = [candidate.id for candidate in analysis.accepted]
+        if analysis.outcome == REVIEW_REQUIRED_MEDIUM_CONFIDENCE:
+            job = self.store.transition(
+                job["id"], JobStatus.AWAITING_SOURCE_REVIEW,
+                reason_code=analysis.outcome,
+                source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
+                stage="awaiting_source_review",
+            )
+            return {"ok": True, "awaiting_source_review": True, "run_id": job["run_id"],
+                    "job_id": job["id"], "analysis": public_analysis}
+        if analysis.outcome not in {SUPPORTED_SPECIFIC_ADAPTER, SUPPORTED_GENERIC_HIGH_CONFIDENCE}:
+            # Record a terminal, sanitised outcome so the user never sees a source failure as
+            # a silently abandoned submission.  No worker or child process is started.
+            job = self.store.transition(
+                job["id"], JobStatus.FAILED, reason_code=analysis.outcome,
+                source_analysis_json=json.dumps(public_analysis, ensure_ascii=False), stage="source_analysis",
+                error_type="source_analysis", error_message=analysis.outcome,
+            )
+            return {"ok": False, "run_id": job["run_id"], "job_id": job["id"],
+                    "analysis": public_analysis, "reason_code": analysis.outcome}
+
+        # Automatic high-confidence extraction is re-analysed by the runner. Storing the
+        # opaque IDs gives auditability, but does not pin a volatile DOM order in its command.
+        status = env_status()
+        if not status["env_exists"] or not status["nvidia_configured"]:
+            reason_code = "environment_not_configured"
+            job = self.store.transition(
+                job["id"], JobStatus.FAILED, reason_code=reason_code,
+                source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
+                stage="source_analysis", error_type="configuration", error_message=reason_code,
+            )
+            return {
+                "ok": False, "run_id": job["run_id"], "job_id": job["id"],
+                "analysis": public_analysis, "reason_code": reason_code,
+                "message": "Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.",
+                "stage": "configuração", "action": "Configure o ambiente e envie a fonte novamente.",
+            }
+        automatic_selection = {
+            "candidate_ids": selected_ids,
+            "automatic": True,
+            "accepted_candidate_count": len(selected_ids),
+            "selected_candidate_count": len(selected_ids),
+            "manual_subset": False,
+        }
+        job = self.store.transition(
+            job["id"], JobStatus.QUEUED,
+            source_analysis_json=json.dumps(public_analysis, ensure_ascii=False),
+            source_selection_json=json.dumps(automatic_selection, ensure_ascii=False),
+            stage="created",
+        )
         # Persisting a job nobody claims is the whole bug: make the consumer exist, and
         # report honestly when it could not be started instead of looking like a no-op.
         worker = self.ensure_worker()
-        return {"ok": True, "run_id": job["run_id"], "job_id": job["id"], "worker": worker}
+        return {"ok": True, "run_id": job["run_id"], "job_id": job["id"], "worker": worker,
+                "analysis": public_analysis}
+
+    @staticmethod
+    def _analyze_source(url: str, *, cancel_check=None):
+        """Late import keeps UI bootstrap/import hermetic; only a user submit navigates."""
+        from down import analyze_chapter_source
+
+        return analyze_chapter_source(url, cancel_check=cancel_check)
+
+    async def _run_source_analysis(self, url: str, *, cancel_check=None):
+        """Run Selenium analysis off the UI loop while retaining cancellation visibility."""
+        return await asyncio.wait_for(
+            asyncio.to_thread(self._analyze_source, url, cancel_check=cancel_check),
+            timeout=SOURCE_ANALYSIS_TIMEOUT_SECONDS,
+        )
 
     def _pending_duplicate(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """An identical chapter already queued or in flight, if any."""
@@ -521,7 +725,8 @@ class UiBridge:
         if not url:
             return None
         pending = self.store.list_jobs(
-            statuses=[JobStatus.QUEUED, *JobStatus.IN_FLIGHT], limit=None)
+            statuses=[JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
+                      *JobStatus.IN_FLIGHT], limit=None)
         for job in pending:
             if not self._is_translation_job(job):
                 continue
@@ -530,12 +735,75 @@ class UiBridge:
                 return job
         return None
 
+    def confirm_source_pages(self, job_id: str, candidate_ids: list[str]) -> dict[str, Any]:
+        """Queue a medium-confidence reader only after an explicit, validated selection.
+
+        The client sends opaque IDs, never remote URLs.  IDs must be a non-empty subset of the
+        sanitised analysis stored with this job; the worker re-analyses at execution and rejects
+        a changed reader instead of trusting stale source data.
+        """
+        if not isinstance(candidate_ids, list):
+            raise ValueError("invalid_source_candidate_selection")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or job.get("status") != JobStatus.AWAITING_SOURCE_REVIEW:
+            raise ValueError("source_review_not_available")
+        analysis = job.get("source_analysis") or {}
+        allowed = {
+            str(item.get("id") or "")
+            for item in (analysis.get("accepted") or [])
+            if isinstance(item, dict)
+        }
+        selected = list(dict.fromkeys(str(value or "") for value in candidate_ids if value))
+        if not selected or not set(selected).issubset(allowed):
+            raise ValueError("invalid_source_candidate_selection")
+        status = env_status()
+        if not status["env_exists"] or not status["nvidia_configured"]:
+            raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
+        config = job.get("configuration") or {}
+        command = build_run_command(
+            url=str(job.get("source_url") or ""),
+            mode=str(config.get("mode") or "fast"),
+            output=Path(str(job.get("output_dir") or "chapter")).name,
+            full=bool(config.get("full", True)),
+            max_images=config.get("max_images"),
+            use_cache=bool(config.get("use_cache")),
+            force=bool(config.get("force")),
+            use_context=bool(config.get("use_context", True)),
+            source_candidate_ids=selected,
+            open_output=bool(config.get("open_output", False)),
+            python_executable=sys.executable,
+        )
+        selection = {
+            "candidate_ids": selected,
+            "automatic": False,
+            "accepted_candidate_count": len(allowed),
+            "selected_candidate_count": len(selected),
+            # The selection itself is an explicit user acknowledgement that excluded pages
+            # are not chapter pages. Persist it so a completed output is never mistaken for
+            # an untouched automatic cluster.
+            "manual_subset": len(selected) < len(allowed),
+        }
+        config["source_selection"] = selection
+        self.store.update_fields(
+            job["id"], command_json=json.dumps(command, ensure_ascii=False),
+            source_selection_json=json.dumps(selection, ensure_ascii=False),
+            configuration_json=json.dumps(config, ensure_ascii=False),
+            reason_code="",
+            stage="created",
+        )
+        job = self.store.transition(job["id"], JobStatus.QUEUED)
+        self.history_revision += 1
+        return {"ok": True, "job_id": job["id"], "worker": self.ensure_worker()}
+
     def _create_job(
         self,
         payload: dict[str, Any],
         *,
         require_environment: bool = True,
         principal: RequestPrincipal | None = None,
+        initial_status: str = JobStatus.QUEUED,
+        source_analysis: dict[str, Any] | None = None,
+        source_selection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if principal is not None and not isinstance(principal, RequestPrincipal):
             raise TypeError("principal must be a RequestPrincipal")
@@ -549,6 +817,7 @@ class UiBridge:
             use_cache=normalized["use_cache"],
             force=normalized["force"],
             use_context=normalized["use_context"],
+            source_candidate_ids=list(payload.get("source_candidate_ids") or []),
             open_output=normalized["open_output"],
             python_executable=sys.executable,
         )
@@ -558,13 +827,35 @@ class UiBridge:
             "job_type": "translation",
             "mode": normalized["mode"],
             "full": normalized["full"],
+            "max_images": normalized["max_images"],
             "force": normalized["force"],
             "use_cache": normalized["use_cache"],
             "use_context": normalized["use_context"],
             "chapter_name": normalized["chapter_name"],
+            "open_output": normalized["open_output"],
+            "source_analysis": source_analysis or {},
+            "source_selection": source_selection or {},
         }
         if principal is not None and principal.authenticated:
             configuration["community_owner_id"] = principal.user_id
+        # Source analysis is an intentionally non-claimable STAGING job owned by this UI
+        # process, not by the background worker.  Persist the process identity before the
+        # browser thread starts so worker recovery can distinguish a live analysis from a
+        # staging row abandoned by a crashed UI.
+        staging_owner_pid: int | None = None
+        staging_owner_create_time: float | None = None
+        if initial_status == JobStatus.STAGING:
+            staging_owner_pid = os.getpid()
+            try:
+                import process_tree
+
+                snapshot = process_tree.snapshot(staging_owner_pid) or {}
+                value = snapshot.get("create_time")
+                staging_owner_create_time = float(value) if value is not None else None
+            except (ImportError, OSError, TypeError, ValueError):
+                # PID ownership without a creation time is weaker, but still lets the
+                # recovery loop preserve an analysis whose creating UI is demonstrably live.
+                staging_owner_create_time = None
         job_id = self.store.create_job(
             source_url=normalized["url"],
             output_dir=str(output_folder),
@@ -576,7 +867,16 @@ class UiBridge:
             episode_number=str(details.get("episode") or ""),
             commit_hash=_current_commit(),
             branch=_current_branch(),
+            initial_status=initial_status,
+            staging_owner_pid=staging_owner_pid,
+            staging_owner_create_time=staging_owner_create_time,
         )
+        if source_analysis is not None or source_selection is not None:
+            self.store.update_fields(
+                job_id,
+                source_analysis_json=json.dumps(source_analysis or {}, ensure_ascii=False),
+                source_selection_json=json.dumps(source_selection or {}, ensure_ascii=False),
+            )
         self.history_revision += 1
         return self.store.get_job(job_id)  # type: ignore[return-value]
 
@@ -616,6 +916,24 @@ class UiBridge:
                                               finished_at=frozen)
                     except Exception:  # noqa: BLE001 - already settled by another path
                         pass
+        for review in self.store.list_jobs(statuses=[JobStatus.AWAITING_SOURCE_REVIEW]):
+            if not self._is_translation_job(review):
+                continue
+            try:
+                self.store.transition(review["id"], JobStatus.CANCELLED,
+                                      interrupted_reason="cancelled_source_review",
+                                      reason_code="cancelled")
+            except Exception:  # noqa: BLE001 - a concurrent confirmation wins
+                pass
+        for staging in self.store.list_jobs(statuses=[JobStatus.STAGING]):
+            if not self._is_translation_job(staging):
+                continue
+            try:
+                self.store.transition(staging["id"], JobStatus.CANCELLED,
+                                      interrupted_reason="cancelled_source_analysis",
+                                      reason_code="cancelled")
+            except Exception:  # noqa: BLE001 - a completed analysis wins
+                pass
         if queue:
             for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
                 if not self._is_translation_job(job):
@@ -667,6 +985,14 @@ class UiBridge:
         *,
         principal: RequestPrincipal | None = None,
     ) -> dict[str, Any]:
+        # A generic page cannot enter the background queue before its reader cluster is
+        # confirmed.  Specific adapters retain the existing batch flow; a generic source is
+        # intentionally directed through the interactive source-analysis screen.
+        from chapter_source import select_adapter
+
+        url = clean_url(str(payload.get("url") or ""))
+        if not select_adapter(url).is_specific:
+            raise ValueError("generic_sources_require_interactive_review")
         job = self._create_job(
             {**payload, "full": True},
             require_environment=False,

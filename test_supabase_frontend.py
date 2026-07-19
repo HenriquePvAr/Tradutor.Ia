@@ -5,6 +5,8 @@ appears, only the publishable config is fetched, the Bearer token is attached fr
 SDK-owned cache, the callback cannot open-redirect, and no token is logged.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import unittest
 from pathlib import Path
 

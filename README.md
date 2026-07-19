@@ -17,6 +17,7 @@ O fluxo principal atual é voltado a capítulos web com texto-fonte em inglês e
 ## Principais recursos
 
 - **Aquisição auditável:** coleta páginas com Selenium, valida quantidade, integridade e ordem e registra o teardown do navegador.
+- **Análise de fonte controlada:** adapters específicos têm prioridade; uma URL pública sem adapter pode ser analisada por evidências e, conforme o score, seguir, pedir confirmação das páginas ou falhar fechada.
 - **OCR híbrido:** o modo rápido combina RapidOCR com análise de qualidade e fallbacks seletivos para PaddleOCR Mobile e PaddleOCR completo.
 - **Classificação contextual:** diferencia fala, narração, SFX e elementos decorativos antes de decidir o que deve ser traduzido.
 - **Tradução em lote:** usa por padrão uma API compatível com OpenAI hospedada pela NVIDIA, com cache, controle de requisições e retries.
@@ -78,6 +79,14 @@ python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast --no-context
 ```
 
 O cache é reutilizado por padrão. Use `--force` somente quando quiser reprocessar download, OCR, tradução e renderização. Consulte o [guia de instalação](docs/INSTALLATION.md) antes da primeira execução completa e a [referência de configuração](docs/CONFIGURATION.md) para ajustar recursos e qualidade.
+
+Uma URL HTTP(S) pública sem adapter específico pode passar pela análise universal, mas isso
+não significa que o site seja suportado. O sistema só continua quando encontra evidência
+suficiente **e completa dentro dos limites** para o conjunto de páginas; em confiança média,
+a UI pede confirmação antes do OCR. Cobertura incompleta, autenticação, challenges, conteúdo
+protegido e leitores não observáveis falham fechados. Consulte as limitações de segurança e
+de formatos em [Adaptador universal de capítulos](docs/UNIVERSAL_CHAPTER_ADAPTER.md) antes de
+usar esse fallback.
 
 ## Modos de execução
 
@@ -151,6 +160,7 @@ Ainda assim, a revisão humana continua importante. SFX com tipografia complexa,
 - [Instalação](docs/INSTALLATION.md) — ambiente, dependências, modelos e primeiro teste.
 - [Configuração](docs/CONFIGURATION.md) — variáveis do `.env.example`, defaults e ajustes avançados.
 - [Arquitetura](docs/ARCHITECTURE.md) — módulos, fluxos, cache, launcher e artefatos.
+- [Adaptador universal de capítulos](docs/UNIVERSAL_CHAPTER_ADAPTER.md) — fallback controlado, revisão de páginas, limites e restrições.
 - [Qualidade e validação](docs/QUALITY_AND_VALIDATION.md) — fallbacks, retries, quality gate e estados.
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — diagnóstico seguro para falhas conhecidas.
 

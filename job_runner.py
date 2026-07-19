@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -26,18 +27,20 @@ from pathlib import Path
 
 import process_tree
 from job_store import JobStatus, JobStore, TransitionError
+from output_manifest import sanitize_source_url
 from runner_start_gate import wait_for_start_gate
 from ui_helpers import (
     ProgressSnapshot,
     derive_final_run_status,
     find_output_artifacts,
     load_json,
-    mask_secrets,
     parse_progress_line,
+    sanitize_diagnostic_text,
 )
 
 HEARTBEAT_SECONDS = 3.0
 CANCEL_GRACE_SECONDS = 8.0
+_REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 # Set when the runner is signalled to stop (by the worker or the OS); the poll loop
 # observes it, stops the pipeline tree and interrupts the job instead of finishing.
@@ -68,6 +71,12 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     os.replace(tmp, path)
 
 
+def _safe_reason_code(value: object, fallback: str) -> str:
+    """Return only a bounded machine reason, never provider text or a request URL."""
+    candidate = str(value or "").strip().casefold()
+    return candidate if _REASON_CODE_RE.fullmatch(candidate) else fallback
+
+
 def _write_manifest(output_dir: Path, job: dict, **updates) -> None:
     manifest = {
         "job_manifest_version": 1,
@@ -75,18 +84,62 @@ def _write_manifest(output_dir: Path, job: dict, **updates) -> None:
         "run_id": job["run_id"],
         "status": job["status"],
         "stage": job.get("stage"),
-        "source_url": job.get("source_url"),
+        "source_url": sanitize_source_url(str(job.get("source_url") or "")),
         "output_dir": str(output_dir),
         "commit_hash": job.get("commit_hash"),
         "branch": job.get("branch"),
         "attempt": job.get("attempt"),
-        "configuration": job.get("configuration", {}),
+        "configuration": _safe_manifest_configuration(job.get("configuration") or {}),
         "created_at": job.get("created_at"),
         "started_at": job.get("started_at"),
         "updated_at": time.time(),
     }
     manifest.update(updates)
     _atomic_write_json(output_dir / "job_manifest.json", manifest)
+
+
+def _safe_manifest_configuration(configuration: object) -> dict:
+    """Whitelist harmless run settings before copying them to an output artifact."""
+    if not isinstance(configuration, dict):
+        return {}
+    allowed = {
+        "job_type", "mode", "full", "max_images", "use_cache", "force",
+        "use_context", "chapter_name", "open_output", "create_source_profile",
+    }
+    safe = {key: configuration[key] for key in allowed if key in configuration}
+    if "create_source_profile" in safe:
+        safe["create_source_profile"] = configuration.get("create_source_profile") is True
+    if "chapter_name" in safe:
+        # A title is user-controlled and can itself be an accidental signed URL. It remains
+        # readable when ordinary text, but receives the same diagnostic redaction as logs.
+        safe["chapter_name"] = sanitize_diagnostic_text(str(safe["chapter_name"]))[:120]
+    return safe
+
+
+def _profile_creation_is_authorized(
+    configuration: object,
+    source_selection: object,
+) -> bool:
+    """Return whether a completed job may create a reusable source profile.
+
+    An automatic source selection can be used for the current run, but is not
+    reusable evidence.  Creating a profile requires a strict, explicit opt-in
+    and a confirmed manual selection from the completed download report.
+    """
+    if not isinstance(configuration, dict):
+        return False
+    if configuration.get("create_source_profile") is not True:
+        return False
+    if not isinstance(source_selection, dict):
+        return False
+    if source_selection.get("automatic") is not False:
+        return False
+
+    candidate_ids = source_selection.get("candidate_ids")
+    return isinstance(candidate_ids, list) and any(
+        isinstance(candidate_id, str) and candidate_id.strip()
+        for candidate_id in candidate_ids
+    )
 
 
 class _OutputPump(threading.Thread):
@@ -105,7 +158,7 @@ class _OutputPump(threading.Thread):
     def run(self) -> None:
         for raw in iter(self.stream.readline, b""):
             line = raw.decode("utf-8", errors="replace").rstrip()
-            masked = mask_secrets(line)
+            masked = sanitize_diagnostic_text(line)
             timestamp = time.strftime("%H:%M:%S")
             self.log_handle.write(f"{timestamp} {masked}\n")
             self.log_handle.flush()
@@ -166,7 +219,8 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
             return 2
         if store.cancel_requested(job_id):
             store.transition(job_id, JobStatus.CANCELLING, expected_worker=job.get("worker_id"))
-            store.transition(job_id, JobStatus.CANCELLED, expected_worker=job.get("worker_id"))
+            store.transition(job_id, JobStatus.CANCELLED, expected_worker=job.get("worker_id"),
+                             reason_code="cancelled")
             return 0
 
         output_dir = Path(job["output_dir"]).resolve()
@@ -174,7 +228,8 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         command = list(job.get("command") or [])
         if not command:
             store.transition(job_id, JobStatus.FAILED, error_type="config",
-                             error_message="empty command")
+                             error_message="invalid_job_command",
+                             reason_code="invalid_job_command")
             return 2
 
         # Ensure the job is STARTING then RUNNING, and write the initial manifest. The
@@ -197,12 +252,24 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         env["PYTHONUNBUFFERED"] = "1"
 
         with log_file.open("a", encoding="utf-8") as handle:
-            handle.write(f"{time.strftime('%H:%M:%S')} $ {' '.join(command)}\n")
+            # The command contains the submitted URL and can contain signed query values.
+            # Keep an auditable event without persisting protected process arguments.
+            handle.write(f"{time.strftime('%H:%M:%S')} pipeline iniciado (argumentos protegidos)\n")
             handle.flush()
-            proc = subprocess.Popen(
-                command, cwd=str(Path.cwd()), stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, creationflags=creationflags, env=env,
-            )
+            try:
+                proc = subprocess.Popen(
+                    command, cwd=str(Path.cwd()), stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, creationflags=creationflags, env=env,
+                )
+            except OSError:
+                failed = store.transition(
+                    job_id, JobStatus.FAILED, expected_worker=job.get("worker_id"),
+                    exit_code=127, error_type="runner", error_message="runner_start_failed",
+                    reason_code="runner_start_failed",
+                )
+                _write_manifest(output_dir, failed, status=JobStatus.FAILED,
+                                exit_code=127, reason_code="runner_start_failed")
+                return 2
             store.update_fields(job_id, runner_pid=os.getpid())
             pump = _OutputPump(proc.stdout, handle, store, job_id)
             pump.start()
@@ -251,6 +318,7 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
               *, interrupted: bool = False) -> int:
     artifacts = find_output_artifacts(output_dir)
     report = load_json(output_dir / "timing_report.json")
+    download_report = load_json(output_dir / "downloaded_images.json")
     quality = report.get("quality_validation") or {}
     technical_ok = (
         return_code == 0 and bool(artifacts.get("pdf_path"))
@@ -272,16 +340,37 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
             "error": JobStatus.FAILED,
         }.get(status, JobStatus.FAILED)
 
+    failure = download_report.get("failure") if isinstance(download_report, dict) else {}
+    source_reason = _safe_reason_code(
+        failure.get("code") if isinstance(failure, dict) else "", "pipeline_failed")
+    if cancelled:
+        reason_code = "cancelled"
+    elif interrupted:
+        reason_code = "worker_stop"
+    elif target == JobStatus.FINISHED:
+        reason_code = "completed"
+    elif target == JobStatus.REVIEW_REQUIRED:
+        reason_code = "quality_review_required"
+    else:
+        reason_code = source_reason
+
     fields = {
         "exit_code": int(return_code),
         "pdf_path": artifacts.get("pdf_path") or "",
         "quality_report_path": artifacts.get("quality_report_path") or "",
         "manifest_path": artifacts.get("manifest_path") or "",
         "progress_path": str(output_dir / "progress.json"),
+        "reason_code": reason_code,
     }
+    fresh_analysis = download_report.get("source_analysis") if isinstance(download_report, dict) else None
+    fresh_selection = download_report.get("source_selection") if isinstance(download_report, dict) else None
+    if isinstance(fresh_analysis, dict):
+        fields["source_analysis_json"] = json.dumps(fresh_analysis, ensure_ascii=False)
+    if isinstance(fresh_selection, dict):
+        fields["source_selection_json"] = json.dumps(fresh_selection, ensure_ascii=False)
     if target == JobStatus.FAILED:
-        fields["error_type"] = "pipeline"
-        fields["error_message"] = f"exit_code={return_code}, pdf={'yes' if artifacts.get('pdf_path') else 'no'}"
+        fields["error_type"] = "source" if source_reason != "pipeline_failed" else "pipeline"
+        fields["error_message"] = reason_code
     if target == JobStatus.INTERRUPTED:
         fields["interrupted_reason"] = "worker_stop"
         fields["recoverable"] = 1
@@ -291,7 +380,25 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         print(f"finalize transition failed: {exc}", file=sys.stderr)
         return 1
     _write_manifest(output_dir, job, status=target,
-                    pdf_path=artifacts.get("pdf_path") or "", exit_code=int(return_code))
+                    pdf_path=artifacts.get("pdf_path") or "", exit_code=int(return_code),
+                    reason_code=reason_code)
+    if (
+        target == JobStatus.FINISHED
+        and isinstance(fresh_analysis, dict)
+        and isinstance(fresh_selection, dict)
+        and _profile_creation_is_authorized(job.get("configuration"), fresh_selection)
+    ):
+        # A profile is created only after a technically complete, quality-approved generic
+        # run.  It stores fresh evidence, never a URL/cookie/query or an access grant.
+        try:
+            from source_profile import SourceProfileStore
+
+            SourceProfileStore().record_success(
+                fresh_analysis,
+                fresh_selection,
+            )
+        except Exception:
+            pass
     return 0
 
 

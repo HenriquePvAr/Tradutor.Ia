@@ -15,17 +15,24 @@ from types import SimpleNamespace
 from unittest import mock
 
 from PIL import Image, ImageDraw
-from benchmark_pipeline import _valid_download_paths
+from benchmark_pipeline import _download_cache_reuse_allowed, _valid_download_paths
+import chapter_source
+import down
+from chapter_source import GenericImageChapterAdapter, REVIEW_REQUIRED_MEDIUM_CONFIDENCE, SourceError
+from download_transport import DownloadLimits, LimitExceeded, RequestsTransport
 
 from down import (
     _bounded_driver_teardown,
     _build_download_gate,
     _capture_driver_ownership,
     _candidate_skip_reason,
+    _download_candidates,
     _persist_download_metadata,
     _process_matches_ownership,
+    _selected_universal_candidates,
     _validate_image_bytes,
     _viewer_image_snapshot,
+    analyze_chapter_source,
     download_images,
 )
 
@@ -42,6 +49,7 @@ class _QuitDriver:
     def __init__(self, action=None):
         self.action = action
         self.quit_calls = 0
+        self.current_url = "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer"
 
     def get(self, _url):
         return None
@@ -119,6 +127,246 @@ class _FakeProcessApi:
 
 
 class DownloaderRegressionTests(unittest.TestCase):
+    def test_local_driver_keeps_chrome_sandbox_enabled(self):
+        class OptionsProbe:
+            def __init__(self):
+                self.arguments = []
+
+            def add_argument(self, value):
+                self.arguments.append(value)
+
+        options = OptionsProbe()
+        with mock.patch.object(down, "Options", return_value=options), \
+             mock.patch.object(down, "CHROMEDRIVER_PATH", "C:/local/chromedriver.exe"), \
+             mock.patch.object(down.os.path, "isfile", return_value=True), \
+             mock.patch.object(down, "Service", return_value=object()), \
+             mock.patch.object(down.webdriver, "Chrome", return_value=object()):
+            down._create_driver()
+        self.assertNotIn("--no-sandbox", options.arguments)
+
+    def test_confirmed_medium_confidence_selection_can_continue_with_fresh_subset(self):
+        selected = _selected_universal_candidates(
+            SimpleNamespace(
+                outcome=REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
+                can_download=False,
+                accepted=[SimpleNamespace(id="page-a"), SimpleNamespace(id="page-b")],
+            ),
+            ["page-b"],
+        )
+        self.assertEqual([candidate.id for candidate in selected], ["page-b"])
+
+    def test_medium_confidence_without_confirmation_stops_before_download(self):
+        with self.assertRaises(SourceError) as ctx:
+            _selected_universal_candidates(
+                SimpleNamespace(
+                    outcome=REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
+                    can_download=False,
+                    accepted=[SimpleNamespace(id="page-a")],
+                ),
+                [],
+            )
+        self.assertEqual(ctx.exception.code, REVIEW_REQUIRED_MEDIUM_CONFIDENCE)
+
+    def test_generic_gate_uses_confirmed_cluster_not_all_dom_images(self):
+        report = {
+            "viewer_urls": ["ad", "chosen-a", "chosen-b"],
+            "expected_chapter_urls": ["chosen-a", "chosen-b"],
+            "downloaded": [
+                {"url": "chosen-a", "order": 1, "is_chapter_candidate": True},
+                {"url": "chosen-b", "order": 2, "is_chapter_candidate": True},
+            ],
+        }
+        gate = _build_download_gate(report)
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["expected_viewer_images"], 2)
+
+    def test_generic_gate_uses_opaque_ids_so_signed_path_collisions_cannot_hide_missing_pages(self):
+        report = {
+            "expected_chapter_candidate_ids": ["page-a", "page-b"],
+            # Both remote URLs intentionally have the same path fingerprint. The gate must
+            # still identify the unfulfilled second selected candidate.
+            "downloaded": [
+                {"candidate_id": "page-a", "url": "https://cdn.test/abcdef",
+                 "order": 1, "is_chapter_candidate": True},
+            ],
+        }
+        gate = _build_download_gate(report)
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["missing_candidate_id_samples"], ["page-b"])
+
+    def test_source_error_writes_only_a_coded_failure_report(self):
+        with tempfile.TemporaryDirectory() as folder:
+            debug = Path(folder) / "debug"
+            with (
+                mock.patch("down.preflight_browser_navigation",
+                           side_effect=SourceError("challenge_required", "https://bad/?secret")),
+                mock.patch.object(chapter_source.socket, "getaddrinfo",
+                                  return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]),
+            ):
+                with self.assertRaises(SourceError):
+                    download_images(
+                        "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer?token=secret",
+                        debug_folder=str(debug), target_folder=str(Path(folder) / "input"),
+                    )
+            report = json.loads((debug / "downloaded_images.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["failure"], {"code": "challenge_required"})
+        self.assertNotIn("secret", json.dumps(report))
+
+    def test_canvas_capture_charges_the_shared_transport_budget(self):
+        image = Image.new("RGB", (800, 1200), "navy")
+        buffer = io.BytesIO()
+        image.save(buffer, "PNG")
+        transport = RequestsTransport(
+            GenericImageChapterAdapter(name="reader", allowed_hosts=("reader.test",)),
+            limits=DownloadLimits(max_bytes_per_file=20),
+        )
+        self.addCleanup(transport.close)
+        report = {"viewer_image_count": 0, "ignored": [], "downloaded": [],
+                  "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                              "image_save_seconds": 0.0}}
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(LimitExceeded):
+                _download_candidates(
+                    None, [{"url": "canvas://oversize", "canvas_data": buffer.getvalue(),
+                            "source": "canvas_capture", "order": 1, "width": 800, "height": 1200,
+                            "isChapterCandidate": True}],
+                    None, 1, None, None, report, "https://reader.test/chapter/1", folder,
+                    transports=[transport],
+                )
+
+    def test_generic_source_never_uses_download_cache_as_reader_review(self):
+        with mock.patch("benchmark_pipeline.config.ENABLE_DOWNLOAD_CACHE", True):
+            self.assertFalse(_download_cache_reuse_allowed(
+                "https://reader.example.test/chapter/1", force=False, approved_ids=[]))
+            self.assertFalse(_download_cache_reuse_allowed(
+                "https://www.webtoons.com/en/viewer", force=False, approved_ids=["opaque"]))
+            self.assertTrue(_download_cache_reuse_allowed(
+                "https://www.webtoons.com/en/viewer", force=False, approved_ids=[]))
+
+    def test_preanalysis_rejects_invalid_browser_destination_before_scroll(self):
+        class Driver:
+            current_url = "file:///C:/private.html"
+
+            @staticmethod
+            def get(_url):
+                return None
+
+            @staticmethod
+            def execute_script(*_args):
+                raise AssertionError("scroll or DOM analysis must not run")
+
+            @staticmethod
+            def quit():
+                return None
+
+        with (
+            mock.patch("down.preflight_browser_navigation", return_value="https://reader.example.test/chapter/1"),
+            mock.patch("down._create_driver", return_value=Driver()),
+            mock.patch("down._capture_driver_ownership", return_value={}),
+            mock.patch("down._refresh_driver_ownership"),
+            mock.patch("down._bounded_driver_teardown", return_value={}),
+            mock.patch.object(chapter_source.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]),
+        ):
+            with self.assertRaises(SourceError):
+                analyze_chapter_source("https://reader.example.test/chapter/1")
+
+    def test_specific_adapter_preanalysis_does_not_apply_generic_scroll_coverage(self):
+        adapter = SimpleNamespace(
+            is_specific=True,
+            validate_url=lambda _url: None,
+            validate_path=lambda _url: None,
+            normalize_url=lambda value: value,
+            validate_redirect=lambda _url: None,
+        )
+        driver = _QuitDriver()
+        result = object()
+        with (
+            mock.patch("chapter_source.select_adapter", return_value=adapter),
+            mock.patch("down.preflight_browser_navigation", return_value="https://known.example.test/chapter/1"),
+            mock.patch("down._create_driver", return_value=driver),
+            mock.patch("down._capture_driver_ownership", return_value={}),
+            mock.patch("down._refresh_driver_ownership"),
+            mock.patch("down._bounded_driver_teardown", return_value={}),
+            mock.patch("down._scroll_incrementally", return_value={"reached_document_end": False, "stabilized": False}),
+            mock.patch("down._load_source_profile", return_value=None),
+            mock.patch("down.time.sleep"),
+            mock.patch("universal_chapter_adapter.analyse_driver", return_value=result) as analyse,
+        ):
+            self.assertIs(analyze_chapter_source("https://known.example.test/chapter/1"), result)
+
+        self.assertEqual(analyse.call_args.kwargs["extra_warnings"], [])
+
+    def test_generic_adapter_preanalysis_keeps_scroll_coverage_protection(self):
+        adapter = SimpleNamespace(
+            is_specific=False,
+            validate_url=lambda _url: None,
+            validate_path=lambda _url: None,
+            normalize_url=lambda value: value,
+            validate_redirect=lambda _url: None,
+        )
+        driver = _QuitDriver()
+        result = object()
+        with (
+            mock.patch("chapter_source.select_adapter", return_value=adapter),
+            mock.patch("down.preflight_browser_navigation", return_value="https://reader.example.test/chapter/1"),
+            mock.patch("down._create_driver", return_value=driver),
+            mock.patch("down._capture_driver_ownership", return_value={}),
+            mock.patch("down._refresh_driver_ownership"),
+            mock.patch("down._bounded_driver_teardown", return_value={}),
+            mock.patch("down._scroll_incrementally", return_value={"reached_document_end": False, "stabilized": False}),
+            mock.patch("down._load_source_profile", return_value=None),
+            mock.patch("down.time.sleep"),
+            mock.patch("universal_chapter_adapter.analyse_driver", return_value=result) as analyse,
+        ):
+            self.assertIs(analyze_chapter_source("https://reader.example.test/chapter/1"), result)
+
+        self.assertEqual(analyse.call_args.kwargs["extra_warnings"], ["scroll_incomplete"])
+
+    def test_canvas_capture_is_saved_without_a_network_transport(self):
+        image = Image.new("RGB", (800, 1200), "navy")
+        buffer = io.BytesIO()
+        image.save(buffer, "PNG")
+        with tempfile.TemporaryDirectory() as folder:
+            report = {
+                "viewer_image_count": 0, "ignored": [], "downloaded": [],
+                "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                            "image_save_seconds": 0.0},
+            }
+            paths = _download_candidates(
+                None,
+                [{"url": "canvas://opaque", "canvas_data": buffer.getvalue(),
+                  "source": "canvas_capture", "order": 1, "width": 800, "height": 1200,
+                  "isChapterCandidate": True}],
+                None, 1, None, None, report, "https://reader.example.test/chapter/1",
+                folder, transports=[],
+            )
+            self.assertEqual(len(paths), 1)
+            self.assertTrue(Path(paths[0]).is_file())
+            self.assertEqual(report["downloaded"][0]["url"], "canvas:opaque")
+
+    def test_duplicate_image_bytes_are_not_saved_twice(self):
+        image = Image.new("RGB", (800, 1200), "navy")
+        buffer = io.BytesIO()
+        image.save(buffer, "PNG")
+        with tempfile.TemporaryDirectory() as folder:
+            report = {
+                "viewer_image_count": 0, "ignored": [], "downloaded": [],
+                "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                            "image_save_seconds": 0.0},
+            }
+            paths = _download_candidates(
+                None,
+                [
+                    {"url": "canvas://one", "canvas_data": buffer.getvalue(), "source": "canvas_capture", "order": 1,
+                     "width": 800, "height": 1200, "isChapterCandidate": True},
+                    {"url": "canvas://two", "canvas_data": buffer.getvalue(), "source": "canvas_capture", "order": 2,
+                     "width": 800, "height": 1200, "isChapterCandidate": True},
+                ],
+                None, 1, None, None, report, "https://reader.example.test/chapter/1", folder, transports=[],
+            )
+            self.assertEqual(len(paths), 1)
+            self.assertIn("duplicate_image_bytes", [item["reason"] for item in report["ignored"]])
+
     def test_lazy_placeholder_uses_declared_chapter_dimensions(self):
         candidate = {
             "url": "https://example.test/chapter-page.jpg",
@@ -298,6 +546,7 @@ class DownloaderRegressionTests(unittest.TestCase):
     def test_download_metadata_is_persisted_before_teardown_starts(self):
         events = []
         driver = mock.Mock()
+        driver.current_url = "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer"
 
         def fake_candidates(*args, **kwargs):
             report = args[6]
@@ -325,6 +574,7 @@ class DownloaderRegressionTests(unittest.TestCase):
                 mock.patch("down._collect_image_candidates", return_value=[{"url": "one"}]),
                 mock.patch("down._dedupe_candidates", side_effect=lambda items: items),
                 mock.patch("down._download_candidates", side_effect=fake_candidates),
+                mock.patch("down.preflight_browser_navigation", side_effect=lambda _adapter, request_url: request_url),
                 mock.patch("down._persist_download_metadata", side_effect=fake_persist),
                 mock.patch("down._bounded_driver_teardown", side_effect=fake_teardown),
                 mock.patch("down._write_download_report"),
@@ -361,6 +611,7 @@ class DownloaderRegressionTests(unittest.TestCase):
                 mock.patch("down._collect_image_candidates", return_value=[{"url": "one"}]),
                 mock.patch("down._dedupe_candidates", side_effect=lambda items: items),
                 mock.patch("down._download_candidates", side_effect=fake_candidates),
+                mock.patch("down.preflight_browser_navigation", side_effect=lambda _adapter, request_url: request_url),
                 mock.patch("down._write_download_artifacts"),
                 mock.patch("down.time.sleep"),
             ):
@@ -404,6 +655,7 @@ class DownloaderRegressionTests(unittest.TestCase):
                     mock.patch("down._collect_image_candidates", return_value=[{"url": "one"}]),
                     mock.patch("down._dedupe_candidates", side_effect=lambda items: items),
                     mock.patch("down._download_candidates", side_effect=fake_candidates),
+                    mock.patch("down.preflight_browser_navigation", side_effect=lambda _adapter, request_url: request_url),
                     mock.patch("down._write_download_artifacts"),
                     mock.patch("down.SELENIUM_QUIT_TIMEOUT_SECONDS", 0.02),
                     mock.patch("down.SELENIUM_CLEANUP_TIMEOUT_SECONDS", 0.01),

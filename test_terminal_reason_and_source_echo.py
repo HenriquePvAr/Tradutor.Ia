@@ -11,6 +11,8 @@
 Real chapter text appears only as fixtures; nothing in production keys off any word.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import unittest
 from unittest.mock import patch
 

@@ -1,5 +1,7 @@
 """Retention / restore / trash / reconcile — offline, fake clock, no Drive, no Supabase."""
 
+import _test_bootstrap  # noqa: F401
+
 import tempfile
 import unittest
 from pathlib import Path

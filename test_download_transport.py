@@ -1,19 +1,26 @@
 """Bounded transports and byte-level image validation. Fully hermetic: no real network."""
 
+import _test_bootstrap  # noqa: F401
+
 import io
+import struct
 import unittest
+import zlib
 from unittest import mock
 
 from PIL import Image
+import requests
 
 import chapter_source
 from chapter_source import (
     CHALLENGE_REQUIRED, ChallengeRequired, INVALID_IMAGE_RESPONSE, SOURCE_ACCESS_DENIED,
-    SOURCE_RATE_LIMITED, SourceError, GenericImageChapterAdapter,
+    INCOMPLETE_DOWNLOAD, SOURCE_RATE_LIMITED, SourceError, GenericImageChapterAdapter,
+    UniversalChapterAdapter, WEBTOONS,
 )
 from download_transport import (
-    BrowserSessionTransport, DownloadLimits, LimitExceeded, RequestsTransport,
-    build_transports,
+    BrowserSessionTransport, CloudscraperTransport, DownloadLimits, LimitExceeded,
+    RequestsTransport, build_transports, cloudscraper_transport_enabled,
+    preflight_browser_navigation,
 )
 from image_validation import (
     DuplicateTracker, looks_like_markup, sniff_format, validate_image_bytes,
@@ -31,6 +38,16 @@ def png_bytes(width=800, height=1200):
     buf = io.BytesIO()
     Image.new("RGB", (width, height), (12, 34, 56)).save(buf, "PNG")
     return buf.getvalue()
+
+
+def png_header(width, height):
+    def chunk(kind, payload):
+        return (struct.pack(">I", len(payload)) + kind + payload
+                + struct.pack(">I", zlib.crc32(kind + payload) & 0xffffffff))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IEND", b""))
 
 
 class _Response:
@@ -79,6 +96,49 @@ class TransportTests(unittest.TestCase):
             result = self.transport([_Response(content=data)]).fetch(PAGE)
         self.assertEqual(result.content, data)
         self.assertEqual(result.status, 200)
+
+    def test_referer_is_reduced_to_safe_origin(self):
+        headers = self.transport([])._headers(
+            "https://reader.test/chapter/1?signature=secret-token#fragment")
+        self.assertEqual(headers["Referer"], "https://reader.test/")
+        self.assertNotIn("secret-token", headers["Referer"])
+        self.assertNotIn("?", headers["Referer"])
+
+    def test_credentials_are_never_replayed_in_referer(self):
+        headers = self.transport([])._headers("https://user:secret@reader.test/chapter/1")
+        self.assertNotIn("Referer", headers)
+
+    def test_owned_requests_session_does_not_inherit_environment_proxy_or_netrc(self):
+        transport = RequestsTransport(adapter())
+        self.addCleanup(transport.close)
+        self.assertFalse(transport._session.trust_env)
+
+    def test_browser_cookie_scope_preserves_www_path_and_secure_attribute(self):
+        class Driver:
+            @staticmethod
+            def get_cookies():
+                return [{"name": "reader", "value": "ok", "domain": "www.reader.test",
+                         "path": "/chapter", "secure": True}]
+
+        transport = BrowserSessionTransport(
+            GenericImageChapterAdapter(name="reader", allowed_hosts=("reader.test",)),
+            Driver(), "https://www.reader.test/chapter/1",
+        )
+        self.addCleanup(transport.close)
+        cookie = next(cookie for cookie in transport._session.cookies if cookie.name == "reader")
+        self.assertTrue(cookie.secure)
+        self.assertEqual(cookie.path, "/chapter")
+        secure_request = transport._session.prepare_request(
+            requests.Request("GET", "https://www.reader.test/chapter/2"))
+        insecure_request = transport._session.prepare_request(
+            requests.Request("GET", "http://www.reader.test/chapter/2"))
+        self.assertIn("reader=ok", secure_request.headers.get("Cookie", ""))
+        self.assertNotIn("reader=ok", insecure_request.headers.get("Cookie", ""))
+
+    def test_pixel_ceiling_rejects_compressed_image_bomb_before_full_decode(self):
+        with self.assertRaises(SourceError) as ctx:
+            validate_image_bytes(png_header(8000, 8000), min_bytes=12)
+        self.assertEqual(ctx.exception.detail, "too_many_pixels")
 
     def test_redirect_is_followed_and_revalidated(self):
         data = png_bytes()
@@ -177,6 +237,61 @@ class TransportTests(unittest.TestCase):
                 transport.fetch(PAGE)
         self.assertEqual(ctx.exception.detail, "max_files")
 
+    def test_total_byte_ceiling_is_terminal_during_streaming(self):
+        data = png_bytes()
+        transport = self.transport(
+            [_Response(content=data), _Response(content=data)],
+            limits=DownloadLimits(max_total_bytes=len(data) + 5, max_files=10),
+        )
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            transport.fetch(PAGE)
+            with self.assertRaises(LimitExceeded) as ctx:
+                transport.fetch(PAGE)
+        self.assertEqual(ctx.exception.code, INCOMPLETE_DOWNLOAD)
+        self.assertEqual(ctx.exception.detail, "max_total_bytes")
+
+    def test_duration_ceiling_is_checked_before_a_new_fetch(self):
+        transport = self.transport(
+            [_Response(content=png_bytes())], limits=DownloadLimits(max_duration_seconds=0.01))
+        transport.budget.started -= 1.0
+        with self.assertRaises(LimitExceeded) as ctx:
+            transport.fetch(PAGE)
+        self.assertEqual(ctx.exception.detail, "max_duration")
+
+    def test_specific_adapter_explicitly_allows_its_resource_cdn(self):
+        page = "https://webtoon-phinf.pstatic.net/chapter/001.webp"
+        transport = RequestsTransport(WEBTOONS, session=_Session([_Response(content=png_bytes())]))
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            self.assertEqual(transport.fetch(page).status, 200)
+
+
+class NavigationPreflightTests(unittest.TestCase):
+    def test_each_navigation_redirect_is_checked_before_browser_use(self):
+        session = _Session([
+            _Response(status=302, headers={"Location": "/reader"}),
+            _Response(status=200, content=b"<html>reader</html>", content_type="text/html"),
+        ])
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            final = preflight_browser_navigation(adapter(), PAGE, session=session)
+        self.assertEqual(final, f"https://{HOST}/reader")
+        self.assertEqual(session.requests, [PAGE, final])
+
+    def test_navigation_redirect_to_private_or_non_http_target_fails_closed(self):
+        for location in ("http://127.0.0.1/admin", "file:///C:/secret.txt"):
+            session = _Session([_Response(status=302, headers={"Location": location})])
+            with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+                with self.assertRaises(SourceError):
+                    preflight_browser_navigation(adapter(), PAGE, session=session)
+
+    def test_universal_adapter_rejects_dns_rebinding_between_validations(self):
+        universal = UniversalChapterAdapter("https://reader.example.test/chapter/1")
+        answers = [public_dns(), [(2, 1, 6, "", ("93.184.216.35", 0))]]
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", side_effect=answers):
+            universal.validate_url("https://reader.example.test/chapter/1")
+            with self.assertRaises(SourceError) as ctx:
+                universal.validate_url("https://reader.example.test/chapter/1")
+        self.assertEqual(ctx.exception.detail, "dns_rebinding")
+
 
 class BrowserSessionTests(unittest.TestCase):
     class _Driver:
@@ -233,6 +348,30 @@ class TransportSelectionTests(unittest.TestCase):
         self.assertNotIn("import cloudscraper", source)
         for banned in ("proxy_rotation", "stealth", "fingerprint", "captcha", "solver"):
             self.assertNotIn(banned, source.lower().replace("captcha solver", ""), banned)
+
+    def test_optional_cloudscraper_requires_exact_feature_flag_and_shares_budget(self):
+        factory = mock.Mock(return_value=_Session([]))
+        self.assertFalse(cloudscraper_transport_enabled({}))
+        self.assertFalse(cloudscraper_transport_enabled({"ENABLE_CLOUDSCRAPER_TRANSPORT": "true"}))
+        self.assertTrue(cloudscraper_transport_enabled({"ENABLE_CLOUDSCRAPER_TRANSPORT": "1"}))
+        disabled = build_transports(adapter(), driver=mock.MagicMock(), page_url=PAGE,
+                                    enable_cloudscraper=False, cloudscraper_factory=factory)
+        self.assertEqual([item.name for item in disabled], ["requests", "browser_session"])
+        factory.assert_not_called()
+        enabled = build_transports(adapter(), driver=mock.MagicMock(), page_url=PAGE,
+                                   enable_cloudscraper=True, cloudscraper_factory=factory)
+        self.assertEqual([item.name for item in enabled], [
+            "requests", "browser_session", "cloudscraper",
+        ])
+        self.assertIsInstance(enabled[-1], CloudscraperTransport)
+        self.assertIs(enabled[0].budget, enabled[-1].budget)
+        factory.assert_called_once_with()
+
+    def test_optional_cloudscraper_unavailable_fails_closed_when_explicitly_enabled(self):
+        with mock.patch("download_transport.importlib.import_module", side_effect=ImportError):
+            with self.assertRaises(SourceError) as ctx:
+                build_transports(adapter(), enable_cloudscraper=True)
+        self.assertEqual(ctx.exception.detail, "cloudscraper_unavailable")
 
     def test_budget_is_shared_between_transports(self):
         transports = build_transports(adapter(), driver=mock.MagicMock(), page_url=PAGE)

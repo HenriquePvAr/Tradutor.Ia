@@ -1,5 +1,7 @@
 """Ownership validation and tree termination in the process helper."""
 
+import _test_bootstrap  # noqa: F401
+
 import subprocess
 import sys
 import time

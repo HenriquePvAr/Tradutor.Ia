@@ -4,6 +4,8 @@ Proves authorization precedes storage: a denied read never constructs or calls t
 provider, no file id/path/checksum leaks, and ownership always comes from the principal.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import tempfile
 import unittest
 from pathlib import Path

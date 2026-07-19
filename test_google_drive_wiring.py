@@ -5,6 +5,8 @@ session drives the transport, a fake HTTP transport drives the provider through 
 factories, and OAuth is never invoked interactively. Credentials never appear in output.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import io
 import tempfile
 import unittest

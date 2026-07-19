@@ -5,6 +5,8 @@ pipeline. Every wait has a monotonic deadline; every worker is torn down in a fi
 its verified PID tree, so a failing test never leaks a process or hangs.
 """
 
+import _test_bootstrap  # noqa: F401
+
 import os
 import subprocess
 import sys

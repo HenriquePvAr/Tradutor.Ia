@@ -1,5 +1,7 @@
 """Google Drive provider tests via a fake HTTP transport — no network, no OAuth."""
 
+import _test_bootstrap  # noqa: F401
+
 import json
 import unittest
 

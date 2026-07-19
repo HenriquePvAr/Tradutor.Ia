@@ -110,6 +110,34 @@ O separador `--` encerra os argumentos do launcher. Tudo o que vem depois perten
 
 Quando habilitado, o cache de download evita nova coleta para a mesma origem. O manifest é copiado para o output ativo, mantendo evidência da origem dos arquivos.
 
+### Fonte específica e fallback controlado
+
+`chapter_source.py` sempre tenta primeiro um adapter específico. Quando não há adapter
+registrado, uma URL HTTP(S) pública pode passar por `UniversalChapterAdapter`; isso é uma
+análise controlada, não uma declaração de suporte ao site. A URL, DNS e redirects são
+validados antes do navegador. Os recursos de imagem só são autorizados em memória depois
+de um cluster vencedor observado no leitor, e cada redirect de imagem volta a ser
+validado.
+
+O analisador em `universal_chapter_adapter.py` observa DOM, lazy loading, recursos já
+vistos pelo navegador, JSON inline e canvas capturável. A decisão é explícita: score
+`>= 0,85` permite seleção automática, `0,60–0,84` segura o job em revisão de páginas e
+score menor falha fechado. Limite de coleta/iframe, scroll não comprovadamente completo ou mais de
+400 páginas produz `incomplete_download`, antes de OCR e sem seleção parcial. A revisão
+ocorre antes de OCR; a confirmação usa IDs opacos e o worker reanalisa o leitor antes do
+download. O relatório guarda diagnósticos sanitizados, não URLs completas, cookies, queries
+ou pixels de canvas.
+
+Os transportes compartilham limites de redirects, tamanho, quantidade, bytes e duração
+por capítulo. A sessão com cookies do navegador é temporária e opcional; challenges,
+autenticação e canvas inacessível não são contornados. O fallback não clica paginação ou
+carrosséis, não lê XHR/fetch por CDP e não cria thumbnails reais; esses leitores pedem
+adapter específico. A validação protege a navegação e as imagens selecionadas, mas não é
+um sandbox de todos os subrecursos que o navegador pode carregar ao renderizar uma página,
+nem fixa o IP final de `requests`; para URLs não confiáveis, o deploy precisaria de uma
+política de egress/interceptação adicional. Consulte [Adaptador universal de capítulos](UNIVERSAL_CHAPTER_ADAPTER.md)
+para limites, perfis de evidência e limitações.
+
 ## Páginas lógicas
 
 Webtoons podem fornecer fatias muito altas ou com divisões inadequadas para OCR e PDF. `pdf.py` implementa o smart split, que reconstrói páginas lógicas com limites configuráveis de altura e preserva um relatório das fronteiras escolhidas.
