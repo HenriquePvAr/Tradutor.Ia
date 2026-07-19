@@ -145,7 +145,85 @@ class Worker:
         return process_tree.is_alive(
             job.get("worker_pid"), create_time=job.get("worker_create_time"))
 
+    def _analyze_source(self, url: str, *, cancel_check=None):
+        """Injection seam: tests replace this instead of driving a real browser."""
+        from down import analyze_chapter_source
+
+        return analyze_chapter_source(url, cancel_check=cancel_check)
+
+    def _prepare_source(self, job: dict) -> dict | None:
+        """Run the source phase when needed. Returns None when no runner may start.
+
+        Returning None is the whole point of doing this before ``_spawn_runner``: a review,
+        a failed analysis or a cancellation must not produce a child process that outlives
+        the decision.
+        """
+        from source_analysis_phase import (
+            has_usable_selection, should_spawn_runner,
+        )
+
+        current = self.store.get_job(job["id"]) or job
+        if not should_spawn_runner(current):
+            return None
+        if str(current.get("source_type") or "") != "url":
+            return current                      # local folder keeps its existing flow
+        if has_usable_selection(current):
+            # A previous attempt already produced a selection; re-analysing would reopen a
+            # browser and could contradict the order already persisted.
+            return current
+
+        def cancelled() -> bool:
+            row = self.store.get_job(job["id"])
+            return not row or bool(row.get("cancel_requested")) or row.get("status") in (
+                JobStatus.CANCELLED, JobStatus.FAILED)
+
+        self.store.update_progress(
+            job["id"], stage="source_validation", message="Validando fonte…",
+            counter_stage="source_validation")
+        self.store.heartbeat(job["id"])
+        try:
+            analysis = self._analyze_source(
+                str(current.get("source_url") or ""), cancel_check=cancelled)
+        except Exception as exc:  # noqa: BLE001 - coded, sanitized terminal outcome
+            return self._fail_source(job["id"], exc)
+        if cancelled():
+            return None
+        return self._apply_phase(job["id"])(analysis)
+
+    def _apply_phase(self, job_id: str):
+        """Apply the shared decision and translate it into a runner/no-runner answer."""
+        from source_analysis_phase import apply_source_analysis
+
+        def apply(analysis):
+            row = self.store.get_job(job_id)
+            if row is None:
+                return None
+            result = apply_source_analysis(self.store, row, analysis)
+            if not result.should_spawn_runner:
+                return None
+            return self.store.get_job(job_id)
+
+        return apply
+
+    def _fail_source(self, job_id: str, exc: BaseException) -> None:
+        """Record a sanitized terminal source failure; never start a runner after one."""
+        code = getattr(exc, "code", None) or "source_not_ready"
+        try:
+            self.store.transition(
+                job_id, JobStatus.FAILED, reason_code=code, stage="source_analysis",
+                error_type="source_analysis", error_message=str(code))
+        except Exception:  # noqa: BLE001 - a concurrent owner already settled it
+            pass
+        return None
+
+
     def _run_one(self, job: dict) -> None:
+        # A URL job whose source has not been analysed yet is analysed here, in the worker,
+        # before any child process exists. The submit request must not own a browser, and a
+        # review or terminal outcome must not leave a runner behind.
+        job = self._prepare_source(job)
+        if job is None:
+            return
         proc = self._spawn_runner(job)
         # Own the unambiguously spawned child immediately.  There is a small but real
         # window before runner_pid reaches SQLite; if that write fails, this handle is
