@@ -374,6 +374,17 @@ def analyze_chapter_source(url, *, cancel_check=None):
             _bounded_driver_teardown(driver, ownership)
 
 
+
+def driver_download_allowed(env=None) -> bool:
+    """Whether the official Selenium Manager may resolve a missing ChromeDriver.
+
+    Opt-in and exact-match: only the literal "1" enables it, so a stray "true" or "0" in an
+    environment file cannot silently turn a browser download on.
+    """
+    values = os.environ if env is None else env
+    return str(values.get("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "")).strip() == "1"
+
+
 def _create_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -394,13 +405,19 @@ def _create_driver():
     driver_path = CHROMEDRIVER_PATH if CHROMEDRIVER_PATH and os.path.isfile(CHROMEDRIVER_PATH) else (
         shutil.which("chromedriver") or shutil.which("chromedriver.exe")
     )
-    if not driver_path:
-        # Selenium Manager/WebDriver Manager may download a binary implicitly. Source
-        # analysis must not gain an unrelated network side effect, so require a local driver.
-        raise RuntimeError(
-            "ChromeDriver local indisponivel. Defina CHROMEDRIVER_PATH ou instale-o no PATH."
-        )
-    return webdriver.Chrome(service=Service(driver_path), options=chrome_options)
+    if driver_path:
+        return webdriver.Chrome(service=Service(driver_path), options=chrome_options)
+    if driver_download_allowed():
+        # Opt-in only. Selenium Manager is the official resolver bundled with Selenium; it
+        # fetches from Chrome for Testing and caches under Selenium's own directory. Left
+        # implicit this would give source analysis an unrelated network side effect, which
+        # is why the default below still fails closed.
+        return webdriver.Chrome(service=Service(), options=chrome_options)
+    raise RuntimeError(
+        "ChromeDriver local indisponivel. Defina CHROMEDRIVER_PATH, instale-o no PATH, "
+        "ou habilite explicitamente TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1 para permitir que o "
+        "Selenium Manager oficial resolva o driver."
+    )
 
 
 def _set_browser_timeouts(driver, timeout_seconds=45):
