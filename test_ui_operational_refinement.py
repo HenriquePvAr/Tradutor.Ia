@@ -7,7 +7,9 @@ from offline_test_guard import install_offline_network_guard
 install_offline_network_guard()
 
 import json
+import asyncio
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -18,6 +20,8 @@ import _test_bootstrap  # noqa: F401
 import ui_bridge
 from job_store import JobStatus, JobStore
 from process_options import build_background_process_options
+from download_transport import preflight_browser_navigation
+from chapter_source import SourceError
 from ui_bridge import UiBridge
 
 
@@ -87,8 +91,76 @@ class QualityReviewTests(unittest.TestCase):
         self.assertTrue(confirmed["confirmed"])
         self.assertEqual(self.bridge.store.review_actions(self.job_id)["p1:iBALAO_1"], "preserved_original")
 
+    def test_quality_review_falls_back_to_structured_json_next_to_html_report(self):
+        html_path = self.output / "quality_report.html"
+        html_path.write_text("<html>visual report</html>", encoding="utf-8")
+        structured_path = html_path.with_suffix(".json")
+        structured_path.write_text(json.dumps({
+            "pages": [{
+                "index": 2,
+                "output_path": str(self.output / "page_001.png"),
+                "translation_terminal_items": [{
+                    "id": "FIXTURE_2", "classification": "speech",
+                    "text": "Original fixture", "translation": "Tradução fixture",
+                    "manual_review_required": True,
+                }],
+            }],
+        }), encoding="utf-8")
+        self.bridge.store.update_fields(self.job_id, quality_report_path=str(html_path))
+        review = self.bridge.quality_review(self.job_id)
+        self.assertEqual(review["pending_count"], 1)
+        self.assertEqual(review["items"][0]["page"], 2)
+
 
 class LifecycleAndProcessTests(unittest.TestCase):
+    def test_source_preflight_stops_when_cancellation_is_requested(self):
+        started = threading.Event()
+        released = threading.Event()
+
+        class Adapter:
+            def validate_navigation_url(self, url):
+                return None
+
+            def validate_path(self, url):
+                return None
+
+        class Session:
+            def get(self, *args, **kwargs):
+                started.set()
+                released.wait(10)
+                raise RuntimeError("request released")
+
+            def close(self):
+                released.set()
+
+        session = Session()
+        with self.assertRaisesRegex(SourceError, "cancelled"):
+            preflight_browser_navigation(
+                Adapter(), "https://example.test/chapter", session=session,
+                cancel_check=started.is_set,
+            )
+
+    def test_cancel_accepts_active_translation_job_id(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bridge = OperationalBridge(Path(folder) / "jobs.sqlite3")
+            try:
+                job_id = bridge.store.create_job(
+                    source_url="https://example.test/chapter", output_dir="", command=["python"],
+                    configuration={"job_type": "translation"},
+                )
+                bridge.store.transition(job_id, JobStatus.CLAIMING, worker_id="w")
+                bridge.store.transition(job_id, JobStatus.STARTING)
+                bridge.store.transition(job_id, JobStatus.RUNNING)
+                result = asyncio.run(bridge.cancel(job_id=job_id))
+                row = bridge.store.get_job(job_id)
+                self.assertTrue(result["ok"])
+                self.assertEqual(row["status"], JobStatus.CANCELLED)
+                self.assertEqual(row["reason_code"], "user_cancelled")
+                self.assertIsNotNone(row["cancellation_requested_at"])
+                self.assertIsNotNone(row["cancellation_completed_at"])
+            finally:
+                bridge.close()
+
     def test_cancel_timestamps_are_persisted(self):
         with tempfile.TemporaryDirectory() as folder:
             store = JobStore(Path(folder) / "jobs.sqlite3")

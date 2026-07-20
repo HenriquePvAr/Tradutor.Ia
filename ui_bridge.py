@@ -473,7 +473,22 @@ class UiBridge:
             report_path = report_path.resolve()
             if not output_dir or output_dir not in report_path.parents or not report_path.is_file():
                 return None
-            return json.loads(report_path.read_text(encoding="utf-8"))
+            candidates = [report_path]
+            # The worker records the human-facing HTML report, while the structured
+            # quality data is persisted beside it as JSON.  Prefer the recorded path
+            # but fall back to that sibling when the recorded artifact is not JSON.
+            if report_path.suffix.casefold() in {".html", ".htm"}:
+                candidates.append(report_path.with_suffix(".json"))
+            for candidate in candidates:
+                if not candidate.is_file() or output_dir not in candidate.resolve().parents:
+                    continue
+                try:
+                    payload = json.loads(candidate.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    continue
+                if isinstance(payload, dict):
+                    return payload
+            return None
         except (OSError, ValueError, TypeError):
             return None
 
@@ -1472,15 +1487,23 @@ class UiBridge:
         if requested_review_id:
             displayed = self._displayed_source_review()
             # The source-review panel represents exactly the newest waiting job. Refuse a
-            # stale/forged id rather than cancelling another pending chapter behind it.
-            if not displayed or displayed.get("id") != requested_review_id:
+            # stale/forged id rather than cancelling another pending chapter behind it. A
+            # running translation also carries its job id from the UI, so accept it only
+            # when it is the currently active translation; do not treat it as source review.
+            if displayed and displayed.get("id") == requested_review_id:
+                self.store.transition(
+                    requested_review_id, JobStatus.CANCELLED,
+                    interrupted_reason="cancelled_source_review", reason_code="user_cancelled",
+                )
+                self.history_revision += 1
+                return {"ok": True, "job_id": requested_review_id}
+            active_requested = self.store.active_job()
+            if (
+                not active_requested
+                or active_requested.get("id") != requested_review_id
+                or not self._is_translation_job(active_requested)
+            ):
                 raise ValueError("source_review_not_available")
-            self.store.transition(
-                requested_review_id, JobStatus.CANCELLED,
-                interrupted_reason="cancelled_source_review", reason_code="user_cancelled",
-            )
-            self.history_revision += 1
-            return {"ok": True, "job_id": requested_review_id}
         active = self.store.active_job()
         if self._is_translation_job(active):
             self.store.request_cancel(active["id"])
