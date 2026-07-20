@@ -234,6 +234,27 @@ class SubmitTests(unittest.TestCase):
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.QUEUED)
 
+    def test_submit_uses_slug_for_output_directory(self):
+        result = self.start(slug="daytime_in_the_bunker_episode_17_smoke_9")
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(
+            Path(job["output_dir"]).name,
+            "daytime_in_the_bunker_episode_17_smoke_9",
+        )
+        self.assertIn("daytime_in_the_bunker_episode_17_smoke_9", job["command"])
+
+    def test_legacy_output_field_does_not_replace_slug(self):
+        result = self.start(
+            slug="daytime_in_the_bunker_episode_17_smoke_9",
+            output="wrong_output_field",
+        )
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(
+            Path(job["output_dir"]).name,
+            "daytime_in_the_bunker_episode_17_smoke_9",
+        )
+        self.assertNotIn("wrong_output_field", job["command"])
+
     def test_remote_submission_persists_sanitized_adapter_provenance(self):
         result = self.start()
         # Provenance is produced by the analysis, which the worker now owns.

@@ -754,7 +754,7 @@ class DownloaderRegressionTests(unittest.TestCase):
 
             @staticmethod
             def fetch(_url, *, referer=""):
-                raise ValueError("offline fixture transport fault")
+                raise ValueError("offline fixture transport fault https://secret.example/path?token=abc")
 
         report = {
             "viewer_image_count": 0,
@@ -780,6 +780,72 @@ class DownloaderRegressionTests(unittest.TestCase):
         self.assertEqual(item["reason_code"], "transport_error")
         self.assertEqual(item["transport"], "requests")
         self.assertEqual(item["exception"], "ValueError")
+        self.assertEqual(item["operation"], "fetch")
+        self.assertIs(item["before_request"], True)
+        self.assertIs(item["request_started"], False)
+        self.assertIs(item["response_received"], False)
+        self.assertEqual(item["source_function"], "fetch")
+        self.assertGreater(item["source_line"], 0)
+        self.assertTrue(item["source_file"].endswith(".py"))
+        self.assertTrue(item["traceback_fingerprint"])
+        self.assertIn("<URL>", item["exception_message"])
+        self.assertNotIn("secret.example", item["exception_message"])
+        self.assertNotIn("token=abc", item["exception_message"])
+
+    def test_download_report_replay_reaches_stub_boundary_for_real_shaped_candidates(self):
+        class BoundaryTransport:
+            name = "requests"
+
+            def __init__(self):
+                self.calls = []
+                self.last_diagnostic_context = {}
+
+            def fetch(self, url, *, referer=""):
+                self.calls.append((url, referer))
+                self.last_diagnostic_context = {
+                    "phase": "transport",
+                    "operation": "request",
+                    "before_request": False,
+                    "request_started": True,
+                    "response_received": False,
+                }
+                raise RuntimeError("offline boundary stop")
+
+        transport = BoundaryTransport()
+        report = {
+            "viewer_image_count": 2,
+            "expected_chapter_candidate_ids": ["18fb0c6fc5cb2878f9cb", "aa3502ed018b2ae8655a"],
+            "ignored": [],
+            "downloaded": [],
+            "transport_metadata": {"configured": ["requests"], "count": 1},
+            "transport_name": "none",
+            "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                        "image_save_seconds": 0.0},
+        }
+        candidates = [
+            {"candidate_id": "18fb0c6fc5cb2878f9cb",
+             "url": "https://webtoon-phinf.pstatic.net/page-001.png?sig=redacted",
+             "source": "currentSrc", "order": 1, "width": 800, "height": 1280,
+             "isChapterCandidate": True},
+            {"candidate_id": "aa3502ed018b2ae8655a",
+             "url": "https://webtoon-phinf.pstatic.net/page-002.png?sig=redacted",
+             "source": "currentSrc", "order": 2, "width": 800, "height": 1280,
+             "isChapterCandidate": True},
+        ]
+
+        with tempfile.TemporaryDirectory() as folder:
+            paths = _download_candidates(
+                None, candidates, None, 1, 2, None, report,
+                "https://www.webtoons.com/en/drama/example/viewer?title_no=1&episode_no=1",
+                folder, transports=[transport],
+            )
+
+        self.assertEqual(paths, [])
+        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(report["ignored"]), 2)
+        self.assertTrue(all(item["request_started"] for item in report["ignored"]))
+        self.assertTrue(all(item["operation"] == "request" for item in report["ignored"]))
+        self.assertNotIn("sig=redacted", json.dumps(report["ignored"]))
 
     def test_duplicate_image_bytes_are_not_saved_twice(self):
         image = Image.new("RGB", (800, 1200), "navy")

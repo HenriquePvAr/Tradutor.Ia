@@ -138,6 +138,23 @@ class RequestsTransport:
             self._session.trust_env = False
         # Redirects are followed manually so each hop can be revalidated.
         self._session.max_redirects = self.limits.max_redirects
+        self.last_diagnostic_context: dict[str, Any] = {}
+
+    def _mark(
+        self,
+        operation: str,
+        *,
+        before_request: bool,
+        request_started: bool = False,
+        response_received: bool = False,
+    ) -> None:
+        self.last_diagnostic_context = {
+            "phase": "transport",
+            "operation": operation,
+            "before_request": before_request,
+            "request_started": request_started,
+            "response_received": response_received,
+        }
 
     def _headers(self, referer: str) -> dict[str, str]:
         headers = {
@@ -161,21 +178,35 @@ class RequestsTransport:
         self.budget.reserve_bytes(size)
 
     def fetch(self, url: str, *, referer: str = "") -> FetchResult:
+        self._mark("budget", before_request=True)
         self.budget.begin_file()
+        self._mark("validate_hop", before_request=True)
         self._validate_hop(url)
+        self._mark("build_headers", before_request=True)
+        headers = self._headers(referer)
         current = url
         for _ in range(self.limits.max_redirects + 1):
+            self._mark("request", before_request=False, request_started=True)
             response = self._session.get(
-                current, headers=self._headers(referer), timeout=self.limits.timeout,
+                current, headers=headers, timeout=self.limits.timeout,
                 stream=True, allow_redirects=False)
+            self._mark(
+                "response", before_request=False, request_started=True,
+                response_received=True)
             if response.status_code in (301, 302, 303, 307, 308):
                 location = response.headers.get("Location") or ""
                 response.close()
                 if not location:
                     raise SourceError(INVALID_IMAGE_RESPONSE, "redirect_without_location")
                 current = requests.compat.urljoin(current, location)
+                self._mark(
+                    "redirect_validation", before_request=False, request_started=True,
+                    response_received=True)
                 self._validate_hop(current)          # a 302 must not walk us inward
                 continue
+            self._mark(
+                "finish_response", before_request=False, request_started=True,
+                response_received=True)
             return self._finish(response, current)
         raise LimitExceeded("max_redirects")
 

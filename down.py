@@ -9,6 +9,7 @@ import shutil
 import stat
 import threading
 import time
+import traceback
 from collections import Counter
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
@@ -555,6 +556,19 @@ def _safe_report_metadata(value, fallback=""):
     """Keep report labels bounded and free of page-controlled strings."""
     text = str(value or "").strip()
     return text if _SAFE_REPORT_METADATA_RE.fullmatch(text) else fallback
+
+
+def _safe_report_text(value, fallback="", *, limit=180):
+    """Bound free-form diagnostics after removing URL/path-like sensitive material."""
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    text = re.sub(r"https?://\S+", "<URL>", text)
+    text = re.sub(r"[A-Za-z]:\\Users\\[^\\\s]+\\[^\s]+", "<PATH>", text)
+    text = re.sub(r"([?&][A-Za-z0-9_.-]{1,40}=)[^\s&]+", r"\1<redacted>", text)
+    text = "".join(ch if ch.isprintable() else " " for ch in text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit] if text else fallback
 
 
 def _safe_float(value):
@@ -2175,6 +2189,34 @@ def _download_failure_reason(error):
     return "transport_error"
 
 
+def _exception_location(error):
+    frames = traceback.extract_tb(error.__traceback__) if getattr(error, "__traceback__", None) else []
+    frame = frames[-1] if frames else None
+    if frame is None:
+        return {
+            "source_file": "",
+            "source_function": "",
+            "source_line": 0,
+            "traceback_fingerprint": "",
+        }
+    source_file = Path(str(frame.filename or "")).name
+    source_function = _safe_report_metadata(frame.name, "unknown")
+    try:
+        source_line = int(frame.lineno or 0)
+    except (TypeError, ValueError):
+        source_line = 0
+    fingerprint = hashlib.sha256(
+        f"{source_file}:{source_function}:{source_line}:{type(error).__name__}".encode(
+            "utf-8", "replace")
+    ).hexdigest()[:16]
+    return {
+        "source_file": source_file,
+        "source_function": source_function,
+        "source_line": source_line,
+        "traceback_fingerprint": fingerprint,
+    }
+
+
 def _download_attempt_diagnostics(url, referer, transport, *, result=None, error=None):
     parsed = urlparse(str(url or ""))
     final_url = getattr(result, "final_url", "") if result is not None else ""
@@ -2191,9 +2233,23 @@ def _download_attempt_diagnostics(url, referer, transport, *, result=None, error
         content_type = detail.split(":", 1)[1].strip()
     content = getattr(result, "content", b"") if result is not None else b""
     transport_name = _safe_report_metadata(getattr(transport, "name", ""), "unknown")
+    context = getattr(transport, "last_diagnostic_context", {}) if transport is not None else {}
+    context = context if isinstance(context, dict) else {}
+    request_started = bool(context.get("request_started", False))
+    response_received = bool(result is not None or context.get("response_received", False))
+    location = _exception_location(error) if error is not None else {
+        "source_file": "", "source_function": "", "source_line": 0,
+        "traceback_fingerprint": "",
+    }
     return {
         "reason_code": _download_failure_reason(error) if error is not None else "",
         "transport": transport_name,
+        "phase": _safe_report_metadata(context.get("phase"), "transport"),
+        "operation": _safe_report_metadata(
+            context.get("operation") or location.get("source_function"), "unknown"),
+        "before_request": bool(context.get("before_request", not request_started)),
+        "request_started": request_started,
+        "response_received": response_received,
         "scheme": parsed.scheme.casefold(),
         "host": (parsed.hostname or "").lower(),
         "query_preserved": bool(parsed.query),
@@ -2207,7 +2263,9 @@ def _download_attempt_diagnostics(url, referer, transport, *, result=None, error
         "user_agent_sent": True,
         "cookies_possible": transport_name == "browser_session",
         "exception": type(error).__name__ if error is not None else "",
+        "exception_message": _safe_report_text(error, "") if error is not None else "",
         "detail": _safe_report_metadata(detail, ""),
+        **location,
     }
 
 
@@ -2287,6 +2345,11 @@ def _report_ignored(report, candidate, reason, diagnostics=None):
         for key in (
             "reason_code",
             "transport",
+            "phase",
+            "operation",
+            "before_request",
+            "request_started",
+            "response_received",
             "scheme",
             "host",
             "query_preserved",
@@ -2300,7 +2363,12 @@ def _report_ignored(report, candidate, reason, diagnostics=None):
             "user_agent_sent",
             "cookies_possible",
             "exception",
+            "exception_message",
             "detail",
+            "source_file",
+            "source_function",
+            "source_line",
+            "traceback_fingerprint",
         ):
             if key in diagnostics:
                 item[key] = diagnostics.get(key)
