@@ -5,15 +5,25 @@ install_offline_network_guard()
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
-from run_webtoon import _chapter_slug, _clean_url, _resolve_output_folder, build_parser
+from run_webtoon import _chapter_slug, _clean_url, _configure_mode, _resolve_output_folder, build_parser
 from session_context import CONTEXT_VERSION, SessionContextStore
 from translator_nvidia import TranslatorNvidiaBatch
 
 
 class RunWebtoonTests(unittest.TestCase):
+    def test_engine_override_is_explicit_and_generic(self):
+        import config
+        previous = config.OCR_ENGINE
+        try:
+            with patch.dict("os.environ", {"TRADUTOR_OCR_ENGINE_OVERRIDE": "rapidocr"}, clear=False):
+                self.assertEqual(_configure_mode("quality"), "rapidocr")
+        finally:
+            config.OCR_ENGINE = previous
+
     def test_source_candidate_ids_are_repeatable_internal_arguments(self):
         args = build_parser().parse_args([
             "https://example.test/chapter/1", "--source-candidate-id", "opaque-a",

@@ -405,7 +405,10 @@ def _interactive_args(parser):
 
 
 def _configure_mode(mode):
-    engine = "rapidocr" if mode == "fast" else "paddle"
+    override = os.getenv("TRADUTOR_OCR_ENGINE_OVERRIDE", "").strip().lower()
+    engine = override if override in {"rapidocr", "paddle", "paddle_mobile"} else (
+        "rapidocr" if mode == "fast" else "paddle"
+    )
     os.environ["OCR_ENGINE"] = engine
     os.environ["OCR_FALLBACK_ENGINE"] = "paddle"
     os.environ["OCR_HYBRID_FALLBACK"] = "True"
