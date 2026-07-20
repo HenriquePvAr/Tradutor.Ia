@@ -51,4 +51,3 @@ def build_background_process_options(
     elif new_session:
         options["start_new_session"] = True
     return options
-
