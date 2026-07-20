@@ -748,6 +748,39 @@ class DownloaderRegressionTests(unittest.TestCase):
         self.assertEqual(item["transport"], "requests")
         self.assertEqual(item["exception"], "TimeoutError")
 
+    def test_download_report_classifies_unexpected_transport_error(self):
+        class BrokenTransport:
+            name = "requests"
+
+            @staticmethod
+            def fetch(_url, *, referer=""):
+                raise ValueError("offline fixture transport fault")
+
+        report = {
+            "viewer_image_count": 0,
+            "ignored": [],
+            "downloaded": [],
+            "transport_metadata": {"configured": ["requests"], "count": 1},
+            "transport_name": "none",
+            "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                        "image_save_seconds": 0.0},
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            paths = _download_candidates(
+                None,
+                [{"candidate_id": "page-005", "url": "https://reader.example.test/page.png",
+                  "source": "currentSrc", "order": 5, "width": 800, "height": 1200,
+                  "isChapterCandidate": True}],
+                None, 1, 1, None, report, "https://reader.example.test/chapter/1",
+                folder, transports=[BrokenTransport()],
+            )
+
+        self.assertEqual(paths, [])
+        item = report["ignored"][0]
+        self.assertEqual(item["reason_code"], "transport_error")
+        self.assertEqual(item["transport"], "requests")
+        self.assertEqual(item["exception"], "ValueError")
+
     def test_duplicate_image_bytes_are_not_saved_twice(self):
         image = Image.new("RGB", (800, 1200), "navy")
         buffer = io.BytesIO()

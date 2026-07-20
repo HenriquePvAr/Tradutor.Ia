@@ -2167,7 +2167,12 @@ def _download_failure_reason(error):
         return "timeout"
     if "connection" in name:
         return "connection_error"
-    return code or type(error).__name__
+    if code:
+        return code
+    # A raw exception class is an implementation detail, not an operator-facing download
+    # cause. Keep the class in the separate ``exception`` field and use a stable,
+    # sanitised bucket for unexpected transport failures.
+    return "transport_error"
 
 
 def _download_attempt_diagnostics(url, referer, transport, *, result=None, error=None):
@@ -2256,6 +2261,8 @@ def _is_nearly_blank(image):
 
 
 def _report_ignored(report, candidate, reason, diagnostics=None):
+    from chapter_source import SourceError
+
     item = {
         "candidate_id": str(candidate.get("candidate_id") or ""),
         "url": _sanitized_url(candidate.get("url")),
@@ -2274,7 +2281,7 @@ def _report_ignored(report, candidate, reason, diagnostics=None):
             candidate.get("url"),
             "",
             None,
-            error=ValueError("download_failed"),
+            error=SourceError("invalid_image_response", "download_failed"),
         )
     if isinstance(diagnostics, dict):
         for key in (
