@@ -3258,6 +3258,9 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertGreater(np.count_nonzero(mask), 0)
         self.assertEqual(np.count_nonzero(changed & (mask == 0)), 0)
         self.assertGreater(float(np.std(overlaid[mask > 0])), 0.0)
+        # Caption cleanup must reconstruct the local artwork, never paint a
+        # synthetic near-black backing over the glyph region.
+        self.assertGreater(float(np.mean(overlaid[mask > 0])), 50.0)
 
     def test_generic_production_credit_is_preserved_as_decorative(self):
         image = np.full((300, 400, 3), 255, dtype=np.uint8)

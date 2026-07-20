@@ -5698,18 +5698,11 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
         return current_bgr.copy(), cleanup_mask, metrics
 
     textured_group_ratio_limit = (
-        1.15
-        if strategy == "caption_overlay"
-        else
         min(0.30, config.MAX_TEXTURED_MASK_GROUP_RATIO + 0.12)
-        if strategy == "glyph_overlay"
+        if strategy in {"glyph_overlay", "caption_overlay"}
         else config.MAX_TEXTURED_MASK_GROUP_RATIO
     )
-    textured_component_ratio_limit = (
-        1.15
-        if strategy == "caption_overlay"
-        else config.MAX_TEXTURED_MASK_COMPONENT_RATIO
-    )
+    textured_component_ratio_limit = config.MAX_TEXTURED_MASK_COMPONENT_RATIO
     if tight_background and (
         shape_metrics["mask_to_group_area_ratio"]
         > textured_group_ratio_limit
@@ -5717,7 +5710,7 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
         > textured_component_ratio_limit
         or (
             shape_metrics["broad_rectangular_mask"]
-            and strategy != "caption_overlay"
+            and strategy not in {"caption_overlay"}
         )
     ):
         metrics["mask_valid"] = False
@@ -5731,6 +5724,8 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
         cleanup_mask,
         strategy=strategy,
     )
+    if strategy == "caption_overlay":
+        metrics["reconstruction_method"] = "glyph_inpaint_telea"
     white_patch_metrics = _white_patch_artifact_metrics(
         original_bgr,
         cleaned,
@@ -5902,10 +5897,7 @@ def _dark_blotch_artifact_metrics(
     strategy,
 ):
     """Reject new opaque dark islands created while cleaning textured artwork."""
-    if (
-        strategy == "caption_overlay"
-        or background_type not in {"textured_art", "speed_lines", "unknown"}
-    ):
+    if background_type not in {"textured_art", "speed_lines", "unknown"}:
         return {
             "new_dark_patch_pixels": 0,
             "largest_new_dark_component_area": 0,
@@ -6123,9 +6115,21 @@ def _outlined_light_text_mask(img_bgr, group, maximum_mask):
 
 
 def _caption_overlay_mask(img_bgr, group, maximum_mask):
-    """Build separate OCR-line backings, never a single group rectangle."""
-    del img_bgr
-    result = np.zeros_like(maximum_mask)
+    """Build a tight glyph mask for captions over artwork.
+
+    The former implementation used each OCR polygon as an opaque backing.  That
+    made a fallback intended for difficult lettering paint dark rectangles over
+    the illustration.  Caption cleanup now uses the same component-level
+    foreground detector as the normal textured-art path; if no glyph evidence is
+    available, returning an empty mask fails closed and lets the caller preserve
+    the original for review.
+    """
+    result, component_metrics = _component_text_mask(
+        img_bgr,
+        group,
+        maximum_mask=maximum_mask,
+        strategy="conservative",
+    )
     line_areas = []
     for line in _cleanup_lines_for_group(group):
         polygon = np.asarray(line.polygon, dtype=np.int32)
@@ -6133,16 +6137,13 @@ def _caption_overlay_mask(img_bgr, group, maximum_mask):
             continue
         line_mask = np.zeros_like(maximum_mask)
         cv2.fillPoly(line_mask, [polygon], 255)
-        line_mask = cv2.dilate(line_mask, np.ones((3, 3), np.uint8), iterations=1)
         line_mask = cv2.bitwise_and(line_mask, maximum_mask)
-        area = int(np.count_nonzero(line_mask))
-        if area <= 0:
-            continue
-        line_areas.append(area)
-        result = cv2.bitwise_or(result, line_mask)
+        if np.any(result & line_mask):
+            line_areas.append(int(np.count_nonzero(result & line_mask)))
     pixels = int(np.count_nonzero(result))
     return result, {
-        "text_component_pixels": max(1, pixels),
+        **component_metrics,
+        "text_component_pixels": pixels,
         "accepted_text_components": len(line_areas),
         "component_based": True,
         "caption_overlay_mask": True,
@@ -6394,12 +6395,19 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
 
 
 def _apply_textured_caption_overlay(img_bgr, mask):
-    """Suppress source lettering without synthesizing or flat-filling the artwork."""
+    """Remove caption glyphs while retaining the local artwork texture.
+
+    This function deliberately never creates a synthetic dark backing.  A small
+    dilation closes antialiased edges and Telea inpainting reconstructs pixels
+    from the surrounding illustration.  If the mask is empty the input is
+    returned unchanged, allowing the caller to preserve the source safely.
+    """
+    if mask is None or not np.any(mask):
+        return img_bgr.copy()
+    inpaint_mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
+    repaired = cv2.inpaint(img_bgr, inpaint_mask, 3, cv2.INPAINT_TELEA)
     result = img_bgr.copy()
-    blurred = cv2.GaussianBlur(result, (41, 41), 0)
-    dark_scale = max(0.10, (1.0 - config.CAPTION_OVERLAY_OPACITY) * 2.0)
-    backing = np.clip(blurred.astype(np.float32) * dark_scale, 10, 48).astype(np.uint8)
-    result[mask > 0] = backing[mask > 0]
+    result[mask > 0] = repaired[mask > 0]
     return result
 
 
@@ -7032,7 +7040,6 @@ def _enforce_visual_bounds(
         reasons.append("mask_area_exceeds_text_area_limit")
     if (
         metrics.get("broad_rectangular_mask")
-        and not metrics.get("caption_overlay_mask")
         and metrics.get("background_type")
         not in {"white_balloon", "dark_balloon", "narration_box"}
     ):
