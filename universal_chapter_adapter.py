@@ -307,6 +307,8 @@ class SourceAnalysis:
     profile_used: bool = False
     network_metadata: list[dict[str, Any]] = field(default_factory=list)
     reader_diagnostics: dict[str, Any] = field(default_factory=dict)
+    collection_strategy: str = ""
+    coverage_strategy: str = ""
     # The selection is deliberately opaque: candidate ids only, never a source URL or a
     # signed query string.  It lets jobs and review UI share the adapter-owned manifest.
     page_manifest: dict[str, Any] = field(default_factory=dict)
@@ -320,12 +322,23 @@ class SourceAnalysis:
         return self.outcome in {SUPPORTED_SPECIFIC_ADAPTER, SUPPORTED_GENERIC_HIGH_CONFIDENCE}
 
     def public(self) -> dict[str, Any]:
+        reader = dict(self.reader_diagnostics)
+        slots_total = reader.get("slots_total")
+        resolved_count = reader.get("slots_resolved")
+        pending_count = reader.get("slots_pending")
+        rejected_count = reader.get("slots_rejected")
         return {
             "adapter": self.adapter,
             "adapter_version": self.adapter_version,
             "final_host": self.final_host,
             "outcome": self.outcome,
             "confidence": round(self.confidence, 3),
+            "collection_strategy": self.collection_strategy,
+            "coverage_strategy": self.coverage_strategy,
+            "slots_total": slots_total,
+            "resolved_count": resolved_count,
+            "pending_count": pending_count,
+            "rejected_count": rejected_count,
             "candidate_count": sum(len(cluster.candidates) for cluster in self.clusters)
             + len(self.discarded),
             "accepted_count": len(self.accepted),
@@ -338,7 +351,7 @@ class SourceAnalysis:
             "canvas_captured": self.canvas_captured,
             "profile_used": self.profile_used,
             "network_metadata": list(self.network_metadata),
-            "reader_diagnostics": dict(self.reader_diagnostics),
+            "reader_diagnostics": reader,
             "page_manifest": dict(self.page_manifest),
         }
 
@@ -784,6 +797,8 @@ def analyse_candidates(
         profile_used=profile_used,
         network_metadata=safe_network_metadata,
         reader_diagnostics=safe_reader_diagnostics,
+        collection_strategy=str(getattr(adapter, "collection_strategy", "") or ""),
+        coverage_strategy=str(getattr(adapter, "coverage_strategy", "") or ""),
     )
 
 

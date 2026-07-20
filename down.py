@@ -399,10 +399,6 @@ def _webtoons_lazy_resolver(*, cancel_check=None, on_progress=None,
             or coverage != "reader_container"
         ):
             return collected
-        counts = collected.get("slot_counts") if isinstance(collected, dict) else {}
-        if not isinstance(counts, dict) or int(counts.get("pending") or 0) <= 0:
-            return collected
-
         from chapter_source import SourceError, slot_counts
         from lazy_slot_resolver import COUNTER_STAGE, resolve_lazy_reader_slots
         from webtoons_reader_bridge import WebtoonsReaderBridge

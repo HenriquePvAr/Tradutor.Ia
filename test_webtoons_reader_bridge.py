@@ -140,6 +140,25 @@ class FakeWebtoonsDriver:
         return slots
 
 
+class PreLazyMediumConfidenceDriver(FakeWebtoonsDriver):
+    """Smoke-shaped reader: generic pre-lazy collection sees 1/90, bridge sees all slots."""
+
+    def __init__(self):
+        super().__init__(total=90, resolved=1)
+        self.generic_collection_calls = 0
+        self.reader_slot_calls = 0
+
+    def execute_script(self, script, *args):
+        text = str(script)
+        if "slots: images.map" in text:
+            self.reader_slot_calls += 1
+            return {"found": True, "slots": self._slots()}
+        if "candidates: out" in text:
+            self.generic_collection_calls += 1
+            return {"found": True, "candidates": [self._slots()[0]]}
+        return super().execute_script(script, *args)
+
+
 def analyse_with_bridge(driver, *, cancel_check=None, limits=None, events=None):
     adapter = select_adapter(PAGE)
     resolver = down._webtoons_lazy_resolver(
@@ -174,12 +193,33 @@ class BridgeOperationTests(unittest.TestCase):
 
 
 class LazyIntegrationTests(unittest.TestCase):
+    def test_pre_lazy_medium_confidence_resolves_before_review(self):
+        events = []
+        driver = PreLazyMediumConfidenceDriver()
+        analysis = analyse_with_bridge(driver, events=events)
+        public = analysis.public()
+
+        self.assertEqual(analysis.outcome, chapter_source.SUPPORTED_SPECIFIC_ADAPTER)
+        self.assertEqual(len(analysis.accepted), 90)
+        self.assertEqual(public["slots_total"], 90)
+        self.assertEqual(public["resolved_count"], 90)
+        self.assertEqual(public["pending_count"], 0)
+        self.assertEqual(public["collection_strategy"], "adapter_specific")
+        self.assertEqual(public["coverage_strategy"], "reader_container")
+        self.assertGreater(driver.reader_slot_calls, 0)
+        self.assertTrue(any(event.get("counter_stage") == "source_lazy_resolution"
+                            for event in events))
+
     def test_webtoons_adapter_resolves_all_slots_before_selection(self):
         events = []
         analysis = analyse_with_bridge(FakeWebtoonsDriver(), events=events)
         self.assertEqual(len(analysis.accepted), 20)
         self.assertEqual([candidate.order for candidate in analysis.accepted], list(range(20)))
         self.assertEqual(analysis.reader_diagnostics["slots_pending"], 0)
+        public = analysis.public()
+        self.assertEqual(public["slots_total"], 20)
+        self.assertEqual(public["resolved_count"], 20)
+        self.assertEqual(public["pending_count"], 0)
         self.assertNotIn(PLACEHOLDER_HOST, str(analysis.public()))
         self.assertTrue(any(event.get("counter_stage") == "source_lazy_resolution"
                             for event in events))
@@ -192,6 +232,7 @@ class LazyIntegrationTests(unittest.TestCase):
         )
         self.assertGreater(analysis.reader_diagnostics["slots_pending"], 0)
         self.assertIn("scroll_incomplete", analysis.warnings)
+        self.assertNotEqual(analysis.outcome, chapter_source.REVIEW_REQUIRED_MEDIUM_CONFIDENCE)
         from source_analysis_phase import source_analysis_is_incomplete
 
         self.assertTrue(source_analysis_is_incomplete(analysis.public()))

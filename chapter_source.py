@@ -517,7 +517,7 @@ class BaseAdapter:
                     id: el.id || "",
                     alt: el.alt || ""
                 };
-            }).filter((item) => item.url);
+            });
             return {found: true, candidates: out};
         """
         try:
