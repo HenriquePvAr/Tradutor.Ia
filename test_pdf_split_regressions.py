@@ -5,14 +5,51 @@ install_offline_network_guard()
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image, ImageDraw
 
-from benchmark_pipeline import _select_image_entries
+import benchmark_pipeline
+from benchmark_pipeline import _resolve_download_max_images, _select_image_entries
 from pdf import generate_smart_webtoon_pdf, prepare_smart_webtoon_pages
 
 
 class SmartWebtoonSplitTests(unittest.TestCase):
+    def test_confirmed_reader_selection_keeps_limited_download_scope(self):
+        with mock.patch.object(benchmark_pipeline.config, "SMART_WEBTOON_PDF_SPLIT", True):
+            self.assertEqual(
+                _resolve_download_max_images(
+                    2,
+                    selected_page_indices=[],
+                    local_manifest_path="",
+                    source_candidate_ids=["slot-1", "slot-2", "slot-3"],
+                ),
+                2,
+            )
+
+    def test_unconfirmed_remote_smart_split_still_collects_full_chapter(self):
+        with mock.patch.object(benchmark_pipeline.config, "SMART_WEBTOON_PDF_SPLIT", True):
+            self.assertIsNone(
+                _resolve_download_max_images(
+                    2,
+                    selected_page_indices=[],
+                    local_manifest_path="",
+                    source_candidate_ids=[],
+                )
+            )
+
+    def test_local_manifest_page_selection_preserves_required_source_extent(self):
+        with mock.patch.object(benchmark_pipeline.config, "SMART_WEBTOON_PDF_SPLIT", True):
+            self.assertEqual(
+                _resolve_download_max_images(
+                    2,
+                    selected_page_indices=[4],
+                    local_manifest_path="snapshot.json",
+                    source_candidate_ids=[],
+                ),
+                4,
+            )
+
     def test_logical_page_indices_are_selected_after_split(self):
         logical_pages = [f"page_{index:03d}.png" for index in range(1, 8)]
         selected, missing = _select_image_entries(logical_pages, [2, 6])

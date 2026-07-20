@@ -296,10 +296,12 @@ def run_benchmark(args):
     effective_debug = bool(config.DEBUG_VISUAL and not args.fast)
     max_images = None if args.full else args.max_images
     local_manifest_path = str(getattr(args, "local_manifest_path", "") or "")
-    download_max_images = None if config.SMART_WEBTOON_PDF_SPLIT and not local_manifest_path else max_images
-    if selected_page_indices and not args.full and (
-            not config.SMART_WEBTOON_PDF_SPLIT or local_manifest_path):
-        download_max_images = max(max(selected_page_indices), max_images or 0)
+    download_max_images = _resolve_download_max_images(
+        max_images,
+        selected_page_indices,
+        local_manifest_path,
+        getattr(args, "source_candidate_ids", []) or [],
+    )
     run_signature = stable_hash(
         {
             "url": args.url,
@@ -1575,6 +1577,24 @@ def _parse_page_indices(raw):
             indices.append(index)
             seen.add(index)
     return indices
+
+
+def _resolve_download_max_images(
+    max_images,
+    selected_page_indices,
+    local_manifest_path,
+    source_candidate_ids,
+):
+    approved_ids = list(source_candidate_ids or [])
+    if approved_ids:
+        # A submitted source_selection is already a concrete reader snapshot. Keep bounded
+        # runs bounded instead of expanding them to a full smart-split chapter download.
+        return max_images
+    if config.SMART_WEBTOON_PDF_SPLIT and not local_manifest_path:
+        return None
+    if selected_page_indices and (not config.SMART_WEBTOON_PDF_SPLIT or local_manifest_path):
+        return max(max(selected_page_indices), max_images or 0)
+    return max_images
 
 
 def _select_image_entries(image_paths, selected_page_indices):
