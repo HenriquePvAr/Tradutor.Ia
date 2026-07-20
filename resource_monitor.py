@@ -43,6 +43,9 @@ class ResourceMonitor:
         self.queue_depth = 0
         self.active_workers = 0
         self.worker_roles: dict[int, str] = {}
+        self.memory_mode = "normal"
+        self.memory_pressure = "unknown"
+        self.ocr_workers = 0
         self.samples: list[dict[str, Any]] = []
         self.events: list[dict[str, Any]] = []
         self._started = 0.0
@@ -115,6 +118,13 @@ class ResourceMonitor:
                 except (TypeError, ValueError):
                     continue
 
+    def set_memory_policy(self, *, mode: str, pressure: str, ocr_workers: int) -> None:
+        """Record coarse policy state without exposing host-specific internals."""
+        with self._lock:
+            self.memory_mode = str(mode or "normal")
+            self.memory_pressure = str(pressure or "unknown")
+            self.ocr_workers = max(0, int(ocr_workers or 0))
+
     def record_event(self, name: str, payload: dict[str, Any] | None = None) -> None:
         with self._lock:
             self.events.append(self._event(name, payload or {}))
@@ -155,6 +165,9 @@ class ResourceMonitor:
                 queue_depth = self.queue_depth
                 active_workers = self.active_workers
                 worker_roles = dict(self.worker_roles)
+                memory_mode = self.memory_mode
+                memory_pressure = self.memory_pressure
+                ocr_workers = self.ocr_workers
             system = self._system_metrics()
             parent = self._process_metrics(self._parent)
             children = []
@@ -178,6 +191,13 @@ class ResourceMonitor:
                 "parent_cpu_percent": parent.get("cpu_percent", 0.0),
                 "parent_threads": parent.get("threads", 0),
                 "child_count": len(children),
+                "memory_mode": memory_mode,
+                "memory_pressure": memory_pressure,
+                "ocr_workers": ocr_workers or active_workers or len(children),
+                "process_rss_mb": parent.get("rss_mb", 0.0),
+                "tree_rss_mb": round(float(parent.get("rss_mb") or 0.0) + children_rss_mb, 3),
+                "available_memory_mb": system.get("system_available_mb", 0.0),
+                "last_memory_sample_at": time.time(),
                 "children_rss_mb": round(children_rss_mb, 3),
                 "total_pipeline_rss_mb": round(
                     float(parent.get("rss_mb") or 0.0) + children_rss_mb,

@@ -577,14 +577,36 @@ def run_benchmark(args):
             state["ocr_source"] = "run"
         page_states.append(state)
 
+    state_by_index = {state["index"]: state for state in page_states}
+
+    def _persist_ocr_result(result):
+        """Checkpoint one OCR page as soon as its worker returns."""
+        state = state_by_index.get(int(result.get("index", -1)))
+        if state is None:
+            return
+        state["raw_lines"] = result.get("lines", [])
+        state["ocr_metadata"] = result.get("ocr_metadata", {})
+        elapsed = float(result.get("elapsed_seconds", 0.0))
+        state["timings"]["ocr"] = elapsed
+        if result.get("error"):
+            state["ocr_error"] = result["error"]
+        elif config.ENABLE_OCR_CACHE:
+            save_ocr_cache(
+                state["ocr_cache_key"], state["image_hash"], ocr_lang,
+                state["raw_lines"], elapsed, state.get("precheck", {}),
+                ocr_metadata=state.get("ocr_metadata", {}),
+            )
+        _write_progress(progress_path, run_signature, args, len(image_paths), page_states)
+
     resource_monitor.set_stage("ocr")
-    resource_monitor.set_progress(queue_depth=len(ocr_jobs), active_workers=config.OCR_WORKERS)
+    resource_monitor.set_progress(queue_depth=len(ocr_jobs), active_workers=min(config.OCR_WORKERS, 1))
     ocr_wall_started = time.perf_counter()
     ocr_results, ocr_parallel_info = detect_ocr_jobs(
         ocr_jobs,
         ocr_lang,
         parallel=config.OCR_PARALLEL,
         workers=config.OCR_WORKERS,
+        result_callback=_persist_ocr_result,
     )
     stage_seconds["ocr"] = time.perf_counter() - ocr_wall_started
     counters["ocr_runs"] = len(ocr_jobs)
@@ -592,9 +614,16 @@ def run_benchmark(args):
         ocr_parallel_info.get("worker_pids", []),
         "ocr-worker",
     )
+    policy = ocr_parallel_info.get("memory_policy") or {}
+    set_memory_policy = getattr(resource_monitor, "set_memory_policy", None)
+    if callable(set_memory_policy):
+        set_memory_policy(
+            mode=policy.get("memory_mode", "normal"),
+            pressure=policy.get("memory_pressure", "unknown"),
+            ocr_workers=policy.get("workers", 0),
+        )
     resource_monitor.set_progress(queue_depth=0, active_workers=0)
 
-    state_by_index = {state["index"]: state for state in page_states}
     for index, result in ocr_results.items():
         state = state_by_index[index]
         elapsed = float(result.get("elapsed_seconds", 0.0))
@@ -605,16 +634,6 @@ def run_benchmark(args):
         if result.get("error"):
             state["ocr_error"] = result["error"]
             continue
-        if config.ENABLE_OCR_CACHE:
-            save_ocr_cache(
-                state["ocr_cache_key"],
-                state["image_hash"],
-                ocr_lang,
-                state["raw_lines"],
-                elapsed,
-                state.get("precheck", {}),
-                ocr_metadata=state.get("ocr_metadata", {}),
-            )
 
     translation_targets = []
     analyzable_states = []
