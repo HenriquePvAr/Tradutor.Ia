@@ -709,7 +709,11 @@ class DownloaderRegressionTests(unittest.TestCase):
 
         self.assertEqual(paths, [])
         item = report["ignored"][0]
-        self.assertEqual(item["reason_code"], "download_failed")
+        self.assertEqual(item["reason_code"], "no_transport_attempted")
+        self.assertEqual(item["operation"], "no_transport_attempted")
+        self.assertEqual(item["transport_attempt_count"], 0)
+        self.assertEqual(item["attempted_transports"], [])
+        self.assertEqual(item["configured_transport_count"], 0)
         self.assertEqual(item["host"], "reader.example.test")
         self.assertEqual(item["scheme"], "https")
         self.assertTrue(item["query_preserved"])

@@ -2096,14 +2096,18 @@ def _download_url(url, referer, max_retries, transports=None):
     _download_url.last_failure = ""
     _download_url.last_transport_name = ""
     _download_url.last_diagnostics = {}
+    _download_url.last_attempt_count = 0
+    _download_url.last_attempted_transports = []
     last_error = None
     last_attempt = {}
     for transport in transports:
         for _ in range(max(1, max_retries)):
+            transport_name = _safe_report_metadata(getattr(transport, "name", ""), "unknown")
+            _download_url.last_attempt_count += 1
+            _download_url.last_attempted_transports.append(transport_name)
             try:
                 result = transport.fetch(url, referer=referer)
-                _download_url.last_transport_name = _safe_report_metadata(
-                    getattr(transport, "name", ""), "unknown")
+                _download_url.last_transport_name = transport_name
                 if result is None:
                     raise SourceError("invalid_image_response", "empty_response")
                 last_attempt = _download_attempt_diagnostics(
@@ -2144,7 +2148,11 @@ def _download_url(url, referer, max_retries, transports=None):
                 "reason_code": _download_url.last_failure,
             }
     if not _download_url.last_failure:
-        _download_url.last_failure = "download_failed"
+        _download_url.last_failure = (
+            "download_failed"
+            if getattr(_download_url, "last_attempt_count", 0)
+            else "no_transport_attempted"
+        )
     if not _download_url.last_diagnostics:
         _download_url.last_diagnostics = _download_attempt_diagnostics(
             url,
@@ -2152,6 +2160,12 @@ def _download_url(url, referer, max_retries, transports=None):
             None,
             error=SourceError("invalid_image_response", _download_url.last_failure),
         )
+        _download_url.last_diagnostics.update({
+            "operation": _download_url.last_failure,
+            "transport_attempt_count": int(getattr(_download_url, "last_attempt_count", 0) or 0),
+            "attempted_transports": list(getattr(_download_url, "last_attempted_transports", []) or []),
+            "configured_transport_count": len(list(transports or [])),
+        })
     return None
 
 
@@ -2369,6 +2383,9 @@ def _report_ignored(report, candidate, reason, diagnostics=None):
             "source_function",
             "source_line",
             "traceback_fingerprint",
+            "transport_attempt_count",
+            "attempted_transports",
+            "configured_transport_count",
         ):
             if key in diagnostics:
                 item[key] = diagnostics.get(key)
