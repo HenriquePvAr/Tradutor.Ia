@@ -957,6 +957,17 @@
     display:flex; align-items:center; justify-content:center; transition:all .15s;
   }
   .modal-close:hover{border-color:var(--vermillion); color:var(--vermillion);}
+  .publication-card{max-width:560px;}
+  .publication-card h2{font-family:'Space Grotesk',sans-serif; font-size:22px; margin:6px 0 16px;}
+  .publication-summary{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-bottom:12px;}
+  .publication-summary .pub-meta{border:1px solid var(--line); border-radius:3px; padding:9px 10px; background:rgba(239,231,216,.025);}
+  .publication-summary .pub-meta small{display:block; color:var(--muted); font:10px 'JetBrains Mono',monospace; text-transform:uppercase; letter-spacing:.08em;}
+  .publication-summary .pub-meta strong{display:block; margin-top:4px; font-size:12px; overflow-wrap:anywhere;}
+  .publication-pending{border:1px solid rgba(201,162,39,.55); color:var(--paper); background:rgba(201,162,39,.08); border-radius:3px; padding:10px 12px; margin:10px 0 14px; font-size:12px; line-height:1.55;}
+  .publication-confirm{display:flex; gap:8px; align-items:flex-start; color:var(--muted); font-size:12px; line-height:1.45; margin:4px 0 12px;}
+  .publication-confirm input{margin-top:3px; accent-color:var(--gold);}
+  .publication-error{border:1px solid rgba(197,55,44,.55); color:#f0aaa2; background:rgba(197,55,44,.1); border-radius:3px; padding:9px 10px; font-size:12px; margin-bottom:10px;}
+  .publication-card .sc-modal-actions{justify-content:flex-end;}
   .vm-head{display:flex; align-items:center; gap:14px; margin-bottom:18px; padding-right:30px;}
   .vm-avatar{
     width:56px; height:56px; border-radius:50%; flex:none; position:relative; overflow:hidden;

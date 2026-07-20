@@ -123,8 +123,25 @@ def auth_callback() -> FileResponse:
 
 
 @app.get("/api/ui/bootstrap")
-def api_bootstrap(cursor: int = Query(0, ge=0)) -> dict[str, Any]:
-    return BRIDGE.bootstrap(cursor)
+def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, Any]:
+    payload = BRIDGE.bootstrap(cursor)
+    try:
+        principal = AUTH.authenticate_request(request)
+        payload["community"] = {
+            **(payload.get("community") or {}),
+            "authenticated": bool(principal.authenticated),
+            "available": True,
+        }
+    except Exception:
+        # Bootstrap is read-only; an expired or malformed credential must not prevent
+        # the local library from loading. Publication itself remains fail-closed in
+        # the community API.
+        payload["community"] = {
+            **(payload.get("community") or {}),
+            "authenticated": False,
+            "available": True,
+        }
+    return payload
 
 
 @app.get("/api/ui/state")

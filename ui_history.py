@@ -195,8 +195,14 @@ class UIHistoryStore:
             "pipeline_version": manifest.get("pipeline_version", ""),
             "pages_processed": report.get("processed_images", 0),
             "groups_translated": report.get("groups_translated", 0),
+            "manual_review_count": report.get("manual_review_required_groups", 0),
+            "rejected_count": report.get("translations_rejected", report.get("rejected_count", 0)),
             "errors": report.get("pages_with_error", 0),
             "quality_gate": manifest.get("quality_passed"),
+            "pdf_sha256": manifest.get("pdf_sha256", ""),
+            "publication_status": manifest.get("publication_status", ""),
+            "publication_pdf_sha256": manifest.get("publication_pdf_sha256", ""),
+            "published_at": manifest.get("published_at", ""),
         }
 
     @classmethod
@@ -291,6 +297,12 @@ class UIHistoryStore:
             "timing_report_path",
             "pages_processed",
             "groups_translated",
+            "manual_review_count",
+            "rejected_count",
+            "pdf_sha256",
+            "publication_status",
+            "publication_pdf_sha256",
+            "published_at",
             "sfx_preserved",
             "errors",
             "quality_gate",

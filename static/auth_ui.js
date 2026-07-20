@@ -49,6 +49,10 @@ function renderSession(session) {
   if (!area) return;
   area.hidden = false;
   window.__tradutorAccessToken = session?.access_token || '';
+  window.__tradutorCommunityAuthenticated = Boolean(session?.user?.id || session?.user?.email);
+  window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
+    detail: {authenticated: window.__tradutorCommunityAuthenticated},
+  }));
   const email = session?.user?.email || '';
   if (session && email) {
     status.textContent = email;
@@ -66,6 +70,8 @@ async function init() {
   if (!client) {
     // Local-session provider (or unconfigured): no Supabase auth UI.
     window.__tradutorAccessToken = '';
+    window.__tradutorCommunityAuthenticated = false;
+    window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {detail: {authenticated: false}}));
     return;
   }
   document.querySelectorAll('.auth-tab').forEach((tab) => {

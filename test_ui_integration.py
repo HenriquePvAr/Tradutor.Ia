@@ -76,6 +76,28 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn("review_required", source)
         self.assertIn("revisão necessária", source)
 
+    def test_history_publication_is_explicit_and_metadata_driven(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        for marker in (
+            "publicationEligibility",
+            "publicationModalOverlay",
+            "publicationConfirm",
+            "publicationBusy",
+            "Atualizar publicação",
+            "manifest_verified",
+            "manual_review_count",
+        ):
+            self.assertIn(marker, source + shell, marker)
+        self.assertNotIn("window.prompt", source)
+
+    def test_publication_payload_has_no_local_or_secret_fields(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        publish = source[source.index("async function publishToCommunity"):source.index("async function loadCommunityFeed")]
+        for forbidden in ("output_folder", "pdf_path", "NVIDIA_API_KEY", "cookie", "local_path"):
+            self.assertNotIn(forbidden, publish, forbidden)
+        self.assertIn("source_job_id", publish)
+
     def test_frontend_has_a_sanitized_source_review_confirmation_path(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")

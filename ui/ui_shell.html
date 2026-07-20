@@ -732,6 +732,26 @@
   </div>
 </div>
 
+<!-- COMMUNITY PUBLICATION CONFIRMATION -->
+<div class="modal-overlay" id="publicationModalOverlay" aria-hidden="true">
+  <div class="modal-card publication-card" role="dialog" aria-modal="true" aria-labelledby="publicationModalTitle">
+    <button type="button" class="modal-close" id="publicationModalClose" aria-label="fechar">✕</button>
+    <div class="panel-label">publicação explícita</div>
+    <h2 id="publicationModalTitle">Publicar na comunidade</h2>
+    <div class="publication-summary" id="publicationSummary"></div>
+    <div class="publication-pending" id="publicationPending" hidden></div>
+    <form id="publicationForm" autocomplete="off">
+      <div class="field"><label for="publicationTitle">Título</label><input id="publicationTitle" maxlength="180" required /></div>
+      <div class="field"><label for="publicationDescription">Descrição</label><textarea id="publicationDescription" maxlength="2000" rows="3"></textarea></div>
+      <div class="field"><label for="publicationTags">Tags</label><input id="publicationTags" maxlength="240" placeholder="separe por vírgulas" /></div>
+      <div class="field"><label for="publicationVisibility">Visibilidade</label><select id="publicationVisibility"><option value="public">Comunidade</option><option value="private">Privado</option></select></div>
+      <label class="publication-confirm"><input type="checkbox" id="publicationConfirm" required /> <span>Confirmo que posso publicar este PDF e que a revisão pendente foi conferida.</span></label>
+      <div class="publication-error" id="publicationError" hidden></div>
+      <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="publicationCancel">Cancelar</button><button type="submit" class="btn-primary" id="publicationSubmit">Publicar</button></div>
+    </form>
+  </div>
+</div>
+
 <!-- AUTH MODAL (Supabase) -->
 <div class="modal-overlay" id="authModalOverlay">
   <div class="modal-card auth-card">

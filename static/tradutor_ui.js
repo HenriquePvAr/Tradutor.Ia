@@ -36,6 +36,8 @@
     expandedFolders: new Set(),
     seriesQuery: '',
     seriesSort: 'recent',
+    publicationRecord: null,
+    publicationBusy: false,
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required']);
@@ -935,6 +937,29 @@
     if (!path && action !== 'reprocess') return '';
     return `<button class="btn-ghost" data-action="${action}" data-path="${encodeURIComponent(path || '')}">${label}</button>`;
   }
+  function publicationEligibility(record) {
+    const terminal = terminalRunStatuses.has(String(record.status || '').toLowerCase());
+    const hasPdf = Boolean(record.pdf_path);
+    const manifest = record.output_verification === 'manifest_verified' || Boolean(record.manifest_path);
+    const authenticated = Boolean(
+      appState.bootstrap?.community?.authenticated ||
+      window.__tradutorCommunityAuthenticated ||
+      window.__tradutorAccessToken,
+    );
+    const review = String(record.status || '').toLowerCase() === 'review_required' || boolish(record.quality_gate) === false;
+    const published = String(record.publication_status || '').toLowerCase() === 'published';
+    const changed = published && record.publication_pdf_sha256 && record.pdf_sha256 && record.publication_pdf_sha256 !== record.pdf_sha256;
+    return {terminal, hasPdf, manifest, authenticated, review, published, changed,
+      eligible: hasPdf && manifest && terminal && authenticated};
+  }
+  function publicationAction(record) {
+    const eligibility = publicationEligibility(record);
+    if (!eligibility.hasPdf) return '';
+    if (!eligibility.authenticated) return '<button class="btn-ghost" data-action="publish" disabled title="Entre para publicar">Publicação indisponível</button>';
+    if (!eligibility.manifest || !eligibility.terminal) return '<button class="btn-ghost" data-action="publish" disabled>Publicação indisponível</button>';
+    if (eligibility.published && !eligibility.changed) return '<button class="btn-ghost" data-action="publish">Publicado</button>';
+    return `<button class="btn-ghost" data-action="publish">${eligibility.changed ? 'Atualizar publicação' : 'Publicar na comunidade'}</button>`;
+  }
   function renderHistoryCard(record) {
     const title = record.chapter_name || record.slug || 'Capítulo';
     const engine = record.mode === 'fast' ? 'rapid' : 'paddle';
@@ -946,7 +971,7 @@
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(runStatusLabels[record.status] || record.status || 'local')}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
-      <div class="hm-actions">${actionButton('Abrir PDF', 'open', record.pdf_path)}${actionButton('Pasta', 'open', record.output_folder)}${actionButton('Relatório', 'open', record.quality_report_path)}${actionButton('Compare', 'open', record.compare_sheet_path)}${actionButton('Contexto', 'open', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${record.pdf_path ? actionButton('Publicar na comunidade', 'publish') : ''}</div>
+      <div class="hm-actions">${actionButton('Abrir PDF', 'open', record.pdf_path)}${actionButton('Pasta', 'open', record.output_folder)}${actionButton('Relatório', 'open', record.quality_report_path)}${actionButton('Compare', 'open', record.compare_sheet_path)}${actionButton('Contexto', 'open', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${publicationAction(record)}</div>
     </div>`;
   }
   function renderHistory() {
@@ -973,6 +998,7 @@
     }).join('');
   }
   $('#histSearch')?.addEventListener('input', renderHistory);
+  window.addEventListener('tradutor-auth-changed', () => renderHistory());
   $('#histList')?.addEventListener('click', async event => {
     const folder = event.target.closest('.cf-header');
     if (folder) {
@@ -986,35 +1012,97 @@
     const record = appState.history.find(item => String(item.id) === String(button.closest('.hist-item')?.dataset.id));
     if (!record) return;
     if (button.dataset.action === 'reprocess') { loadRecordIntoForm(record); return; }
-    if (button.dataset.action === 'publish') { await publishToCommunity(record); return; }
+    if (button.dataset.action === 'publish') { openPublicationModal(record); return; }
     await openArtifact(decodeURIComponent(button.dataset.path || ''));
   });
 
   /* ---------- community publishing ---------- */
+  function closePublicationModal() {
+    const overlay = $('#publicationModalOverlay');
+    if (overlay) { overlay.classList.remove('show'); overlay.setAttribute('aria-hidden', 'true'); }
+    appState.publicationRecord = null;
+    appState.publicationBusy = false;
+  }
+  function openPublicationModal(record) {
+    const eligibility = publicationEligibility(record);
+    if (!eligibility.eligible) {
+      showToast(eligibility.authenticated ? 'Publicação indisponível para este resultado.' : 'Entre para publicar na comunidade.', 'warn');
+      return;
+    }
+    const overlay = $('#publicationModalOverlay');
+    const summary = $('#publicationSummary');
+    const pending = $('#publicationPending');
+    const form = $('#publicationForm');
+    if (!overlay || !summary || !form) return;
+    appState.publicationRecord = record;
+    appState.publicationBusy = false;
+    const review = eligibility.review;
+    const pendingCount = Number(record.manual_review_count || record.rejected_count || 0);
+    summary.innerHTML = [
+      ['Obra', record.series_name || record.chapter_name || '—'],
+      ['Capítulo', record.chapter_name || record.slug || '—'],
+      ['Páginas', Number(record.pages_processed || 0)],
+      ['Qualidade', review ? 'revisão necessária' : 'gate aprovado'],
+    ].map(([label, value]) => `<div class="pub-meta"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('');
+    pending.hidden = !review;
+    pending.textContent = review
+      ? `Este capítulo tem ${pendingCount || 'pendências de'} revisão. Confirme que você conferiu o resultado antes de publicar.`
+      : '';
+    $('#publicationTitle').value = record.chapter_name || record.slug || '';
+    $('#publicationDescription').value = '';
+    $('#publicationTags').value = '';
+    $('#publicationVisibility').value = 'public';
+    $('#publicationConfirm').checked = false;
+    $('#publicationSubmit').textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar';
+    $('#publicationError').hidden = true;
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+    $('#publicationTitle')?.focus();
+  }
   async function publishToCommunity(record) {
-    const guess = guessFromUrl(record.url || '');
-    const description = (window.prompt('Descrição (opcional) — publique apenas conteúdo cuja publicação você tem direito de fazer:', '') || '').slice(0, 2000);
-    if (description === null) return;
+    if (appState.publicationBusy) return;
+    const eligibility = publicationEligibility(record);
+    if (!eligibility.eligible) return;
     const trustedJobId = /^[0-9a-f]{32}$/.test(String(record.job_id || '')) ? String(record.job_id) : '';
+    const guess = guessFromUrl(record.url || '');
     const payload = {
       slug: record.slug || guess.slug,
       series_title: record.series_name || record.chapter_name || '',
       series_slug: record.series_slug || guess.slug,
       episode_number: record.episode_number || '',
-      title: record.chapter_name || '',
-      description,
-      visibility: 'public',
+      title: String($('#publicationTitle')?.value || record.chapter_name || '').trim(),
+      description: String($('#publicationDescription')?.value || '').slice(0, 2000),
+      tags: String($('#publicationTags')?.value || '').split(',').map(value => value.trim()).filter(Boolean).slice(0, 20),
+      visibility: $('#publicationVisibility')?.value === 'private' ? 'private' : 'public',
     };
-    // Discovered legacy ids (for example "discovered-series") are presentation ids,
-    // never job identities.  Omitting source_job_id lets the server apply its explicit
-    // admin-only legacy slug policy instead of turning every old record into a false 404.
     if (trustedJobId) payload.source_job_id = trustedJobId;
+    appState.publicationBusy = true;
+    const submit = $('#publicationSubmit');
+    if (submit) { submit.disabled = true; submit.textContent = 'Publicando…'; }
     try {
       await api('/api/community/publish', {method: 'POST', body: JSON.stringify(payload)});
+      record.publication_status = 'published';
+      closePublicationModal();
       showToast('Publicação enviada à fila. O worker fará o upload.', 'ok');
+      renderHistory();
       await loadCommunityFeed();
-    } catch (error) { showToast(error.message, 'error'); }
+    } catch (errorValue) {
+      const error = $('#publicationError');
+      if (error) { error.textContent = errorValue.message || 'Não foi possível publicar.'; error.hidden = false; }
+      appState.publicationBusy = false;
+      if (submit) { submit.disabled = false; submit.textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar'; }
+    }
   }
+  $('#publicationCancel')?.addEventListener('click', closePublicationModal);
+  $('#publicationModalClose')?.addEventListener('click', closePublicationModal);
+  $('#publicationModalOverlay')?.addEventListener('click', event => {
+    if (event.target === $('#publicationModalOverlay')) closePublicationModal();
+  });
+  $('#publicationForm')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!$('#publicationConfirm')?.checked) return;
+    if (appState.publicationRecord) await publishToCommunity(appState.publicationRecord);
+  });
 
   async function loadCommunityFeed() {
     const container = $('#communityFeed');
