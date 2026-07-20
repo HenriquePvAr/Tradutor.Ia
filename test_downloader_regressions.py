@@ -560,6 +560,52 @@ class DownloaderRegressionTests(unittest.TestCase):
             self.assertEqual(report["downloaded"][0]["transport_name"], "canvas")
             self.assertEqual(report["transport_name"], "canvas")
 
+    def test_empty_canvas_marker_falls_back_to_url_transport(self):
+        image = Image.new("RGB", (800, 1200), "navy")
+        buffer = io.BytesIO()
+        image.save(buffer, "PNG")
+
+        class RecordingTransport:
+            name = "requests"
+
+            def __init__(self):
+                self.calls = []
+
+            def fetch(self, url, *, referer=""):
+                self.calls.append((url, referer))
+                return SimpleNamespace(
+                    content=buffer.getvalue(),
+                    content_type="image/png",
+                    final_url=url,
+                    status=200,
+                )
+
+        transport = RecordingTransport()
+        with tempfile.TemporaryDirectory() as folder:
+            report = {
+                "viewer_image_count": 0,
+                "ignored": [],
+                "downloaded": [],
+                "transport_metadata": {"configured": ["requests"], "count": 1},
+                "transport_name": "none",
+                "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                            "image_save_seconds": 0.0},
+            }
+            paths = _download_candidates(
+                None,
+                [{"url": "https://reader.example.test/page.png?sig=1", "canvas_data": b"",
+                  "source": "currentSrc", "order": 1, "width": 800, "height": 1200,
+                  "isChapterCandidate": True}],
+                None, 1, 1, None, report, "https://reader.example.test/chapter/1",
+                folder, transports=[transport],
+            )
+
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(transport.calls[0][0], "https://reader.example.test/page.png?sig=1")
+        self.assertEqual(transport.calls[0][1], "https://reader.example.test/chapter/1")
+        self.assertEqual(report["downloaded"][0]["transport_name"], "requests")
+
     def test_download_report_records_the_fallback_that_actually_saved_the_page(self):
         image = Image.new("RGB", (800, 1200), "navy")
         buffer = io.BytesIO()

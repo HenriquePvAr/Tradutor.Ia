@@ -1959,7 +1959,7 @@ def _download_candidates(
 
         download_started = time.perf_counter()
         canvas_data = candidate.get("canvas_data")
-        if isinstance(canvas_data, (bytes, bytearray)):
+        if isinstance(canvas_data, (bytes, bytearray)) and canvas_data:
             data = bytes(canvas_data)
             from download_transport import reserve_local_content
 
@@ -2032,7 +2032,8 @@ def _download_candidates(
 
 
 def _candidate_skip_reason(candidate):
-    if isinstance(candidate.get("canvas_data"), (bytes, bytearray)):
+    canvas_data = candidate.get("canvas_data")
+    if isinstance(canvas_data, (bytes, bytearray)) and canvas_data:
         return None
     url = (candidate.get("url") or "").lower()
     label = " ".join(
