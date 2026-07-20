@@ -195,10 +195,77 @@ async def api_run(
 
 @app.post("/api/ui/cancel")
 async def api_cancel(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    return await BRIDGE.cancel(
-        queue=bool(payload.get("queue", False)),
-        job_id=str(payload.get("job_id") or ""),
-    )
+    try:
+        return await BRIDGE.cancel(
+            queue=bool(payload.get("queue", False)),
+            job_id=str(payload.get("job_id") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "stage": "cancelamento",
+            "message": "Não foi possível cancelar este processamento.",
+            "action": "Atualize o painel e tente novamente.",
+        }) from exc
+
+
+@app.get("/api/ui/quality-review/{job_id}")
+def api_quality_review(job_id: str) -> dict[str, Any]:
+    review = BRIDGE.quality_review(job_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "quality_review_not_available",
+            "message": "Não há uma revisão de qualidade disponível.",
+        })
+    return review
+
+
+@app.get("/api/ui/quality-review/{job_id}/page/{page_number}")
+def api_quality_review_page(job_id: str, page_number: int) -> FileResponse:
+    path = BRIDGE.quality_review_page(job_id, page_number)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Página de revisão não encontrada.")
+    return FileResponse(path)
+
+
+@app.post("/api/ui/quality-review/action")
+def api_quality_review_action(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return BRIDGE.quality_review_action(
+            str(payload.get("job_id") or ""),
+            str(payload.get("item_key") or ""),
+            str(payload.get("action") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "message": "Não foi possível atualizar este item de revisão.",
+            "action": "Tente novamente.",
+        }) from exc
+
+
+@app.post("/api/ui/quality-review/confirm")
+def api_quality_review_confirm(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return BRIDGE.confirm_quality_review(str(payload.get("job_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "message": "Ainda há itens que precisam ser revisados.",
+            "action": "Revise cada item ou mantenha o original antes de confirmar.",
+        }) from exc
+
+
+@app.post("/api/ui/retry")
+def api_retry(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return BRIDGE.retry_job(str(payload.get("job_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "message": "Esta execução não pode ser repetida automaticamente.",
+            "action": "Envie uma nova tradução para criar uma tentativa separada.",
+        }) from exc
 
 
 @app.post("/api/ui/source/confirm")

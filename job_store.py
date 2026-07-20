@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
@@ -118,10 +118,12 @@ _JOB_COLUMNS = (
     "worker_id", "worker_pid", "worker_create_time", "runner_pid", "runner_create_time",
     "exit_code",
     "cancel_requested", "interrupted_reason", "recoverable", "resume_from_stage",
+    "cancellation_requested_at", "cancellation_completed_at",
     "attempt", "previous_job_id", "commit_hash", "branch",
     "manifest_path", "progress_path", "quality_report_path", "pdf_path", "log_path",
     "error_type", "error_message", "error_trace_path", "updated_at",
     "reason_code", "source_analysis_json", "source_selection_json",
+    "review_actions_json", "review_confirmed_at", "stage_started_at",
 )
 
 
@@ -161,6 +163,8 @@ class JobStore:
             self._migrate_v4()
         if version < 5:
             self._migrate_v5()
+        if version < 6:
+            self._migrate_v6()
         self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
@@ -182,6 +186,7 @@ class JobStore:
         self._migrate_v3()
         self._migrate_v4()
         self._migrate_v5()
+        self._migrate_v6()
 
     def _migrate_v2(self) -> None:
         # Additive: process start times let recovery tell a live runner from a reused PID,
@@ -245,6 +250,19 @@ class JobStore:
             if column not in job_cols:
                 self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {kind}")
 
+    def _migrate_v6(self) -> None:
+        """Persist cancellation/review lifecycle and the active-stage clock."""
+        job_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        for column, kind in (
+            ("cancellation_requested_at", "REAL"),
+            ("cancellation_completed_at", "REAL"),
+            ("review_actions_json", "TEXT"),
+            ("review_confirmed_at", "REAL"),
+            ("stage_started_at", "REAL"),
+        ):
+            if column not in job_cols:
+                self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {kind}")
+
     def _create_v1(self) -> None:
         self._conn.executescript(
             """
@@ -275,6 +293,8 @@ class JobStore:
                 runner_pid INTEGER,
                 exit_code INTEGER,
                 cancel_requested INTEGER DEFAULT 0,
+                cancellation_requested_at REAL,
+                cancellation_completed_at REAL,
                 interrupted_reason TEXT,
                 recoverable INTEGER DEFAULT 0,
                 resume_from_stage TEXT,
@@ -293,6 +313,9 @@ class JobStore:
                 reason_code TEXT,
                 source_analysis_json TEXT,
                 source_selection_json TEXT,
+                review_actions_json TEXT,
+                review_confirmed_at REAL,
+                stage_started_at REAL,
                 updated_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);
@@ -504,8 +527,11 @@ class JobStore:
             assignments["queued_at"] = time.time()
         if target == JobStatus.RUNNING and row["started_at"] is None:
             assignments["started_at"] = time.time()
+            assignments["stage_started_at"] = time.time()
         if target in JobStatus.TERMINAL:
             assignments["finished_at"] = time.time()
+        if target == JobStatus.CANCELLED:
+            assignments["cancellation_completed_at"] = time.time()
         if target in _DEFAULT_TERMINAL_REASONS and "reason_code" not in fields:
             fields["reason_code"] = _DEFAULT_TERMINAL_REASONS[target]
         if "reason_code" in fields:
@@ -553,7 +579,16 @@ class JobStore:
         message: str | None = None,
         counter_stage: str | None = None,
     ) -> None:
-        fields: dict[str, Any] = {"heartbeat_at": time.time()}
+        now = time.time()
+        fields: dict[str, Any] = {"heartbeat_at": now}
+        if stage is not None:
+            current_row = self._conn.execute(
+                "SELECT stage, stage_started_at FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            if current_row is not None and current_row["stage"] != stage:
+                fields["stage_started_at"] = now
+            elif current_row is not None and current_row["stage_started_at"] is None:
+                fields["stage_started_at"] = now
         if stage is not None:
             fields["stage"] = stage
         if current is not None:
@@ -571,10 +606,37 @@ class JobStore:
         if row is None or row["status"] in JobStatus.TERMINAL:
             return False
         self._conn.execute(
-            "UPDATE jobs SET cancel_requested=1, updated_at=? WHERE id=?",
-            (time.time(), job_id),
+            "UPDATE jobs SET cancel_requested=1, cancellation_requested_at=?, updated_at=? WHERE id=?",
+            (time.time(), time.time(), job_id),
         )
         return True
+
+    def review_actions(self, job_id: str) -> dict[str, str]:
+        row = self._conn.execute(
+            "SELECT review_actions_json FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if not row or not row["review_actions_json"]:
+            return {}
+        try:
+            value = json.loads(row["review_actions_json"])
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def record_review_action(self, job_id: str, item_key: str, action: str) -> dict[str, str]:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", str(item_key or "")):
+            raise TransitionError("invalid_review_item")
+        if action not in {"reviewed", "preserved_original"}:
+            raise TransitionError("invalid_review_action")
+        actions = self.review_actions(job_id)
+        actions[str(item_key)] = action
+        self.update_fields(job_id, review_actions_json=json.dumps(actions, ensure_ascii=False))
+        return actions
+
+    def confirm_review(self, job_id: str) -> dict[str, str]:
+        actions = self.review_actions(job_id)
+        self.update_fields(job_id, review_confirmed_at=time.time())
+        return actions
 
     def cancel_requested(self, job_id: str) -> bool:
         row = self._conn.execute(

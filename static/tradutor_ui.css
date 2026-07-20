@@ -1404,3 +1404,24 @@
   .source-page-order-button{min-width:28px; min-height:28px; padding:2px 6px; line-height:1;}
   .source-page-order-button:disabled{opacity:.38; cursor:not-allowed;}
   .source-review-actions{margin-top:12px;}
+  .run-status-card{margin-top:14px; padding:14px; border:1px solid var(--line); border-radius:7px;
+    display:flex; flex-direction:column; gap:6px; color:var(--muted); font-size:12px; line-height:1.45;}
+  .run-status-card strong{font-family:'Space Grotesk',sans-serif; color:var(--paper); font-size:15px;}
+  .run-status-card button{align-self:flex-start; margin-top:6px;}
+  .quality-review{margin-top:16px; padding-top:14px; border-top:1px solid var(--line);}
+  .quality-review-meta{font-size:12px; color:var(--muted); margin:8px 0 12px;}
+  .quality-review-filters{display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;}
+  .quality-review-filters .selected{border-color:var(--rose); color:var(--paper);}
+  .quality-review-list{display:flex; flex-direction:column; gap:10px; max-height:480px; overflow-y:auto;}
+  .quality-review-item{border:1px solid var(--line); border-radius:7px; padding:11px; background:var(--ink-soft);}
+  .quality-review-item[data-state="pending"]{border-color:rgba(201,162,39,.65);}
+  .quality-review-item-head{display:flex; justify-content:space-between; gap:8px; align-items:flex-start;}
+  .quality-review-item-head strong{font-size:12px; color:var(--paper);}
+  .quality-review-state{font-size:10px; color:var(--gold); text-transform:uppercase; letter-spacing:.04em;}
+  .quality-review-reason{font-size:11px; color:var(--muted); margin:7px 0;}
+  .quality-review-text{display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11px;}
+  .quality-review-text div{border:1px solid var(--line); border-radius:5px; padding:7px; min-height:32px; white-space:pre-wrap; overflow-wrap:anywhere;}
+  .quality-review-text small{display:block; color:var(--muted); margin-bottom:4px; text-transform:uppercase; font-size:9px;}
+  .quality-review-thumb{display:block; max-width:100%; max-height:180px; object-fit:contain; margin:8px auto 0; border-radius:4px; border:1px solid var(--line);}
+  .quality-review-actions{margin-top:12px;}
+  @media (max-width:620px){ .quality-review-text{grid-template-columns:1fr;} }

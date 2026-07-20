@@ -30,12 +30,16 @@
     visualLogClearedAt: 0,
     lastFinishedId: '',
     sourceReview: null,
+    qualityReview: null,
+    qualityReviewFilter: 'pending',
+    cancelBusy: false,
     expandedFolders: new Set(),
     seriesQuery: '',
     seriesSort: 'recent',
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required']);
+  const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
   const boolish = value => {
     if (value === true || value === false) return value;
     if (value === 1 || value === '1') return true;
@@ -244,6 +248,12 @@
     no_chapter_images: 'Nenhuma página do capítulo foi encontrada.',
     // Kept distinct on purpose: a download error must never be shown for an analysis that
     // never reached the download stage.
+    worker_unavailable: 'Servico de processamento indisponivel.',
+    user_cancelled: 'O processamento foi cancelado.',
+    review_required: 'O PDF foi criado, mas alguns itens precisam de revisao.',
+    timeout: 'O site demorou demais para responder.',
+    connection_error: 'Nao foi possivel conectar ao site.',
+    transport_error: 'Ocorreu um problema ao baixar as imagens.',
     incomplete_download: 'Algumas páginas não puderam ser baixadas.',
     unsupported_source: 'Esta fonte ainda não é suportada.',
     environment_not_configured: 'Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.',
@@ -533,21 +543,35 @@
     }
   }
   async function cancelTranslation(queue = false, jobId = '') {
+    if (appState.cancelBusy) return;
+    if (!window.confirm('Deseja cancelar este processamento? Os arquivos ja produzidos serao preservados.')) return;
+    appState.cancelBusy = true;
+    const button = $('#runCancelAction') || $('#cancelBtn') || $('#cancelSourceReview');
+    if (button) { button.disabled = true; button.textContent = 'Cancelando...'; }
     try {
       const payload = {queue};
       if (jobId) payload.job_id = jobId;
       await api('/api/ui/cancel', {method: 'POST', body: JSON.stringify(payload)});
-      showToast('Cancelamento solicitado.', 'warn');
-    } catch (error) { showToast(error.message, 'error'); }
+      showToast('Cancelamento solicitado. Os arquivos parciais serao preservados.', 'warn');
+      pollState();
+    } catch (error) {
+      showToast(error.message || 'Nao foi possivel cancelar.', 'error');
+      appState.cancelBusy = false;
+      if (button) { button.disabled = false; button.textContent = 'Cancelar processamento'; }
+    }
   }
   function setRunControls(active, awaitingReview = false) {
     $('#startBtn').disabled = active;
     $('#startBtn').textContent = awaitingReview ? 'Aguardando revisão…' : active ? 'Processando…' : 'Iniciar tradução';
     $('#cancelBtn').disabled = !active;
+    const action = $('#runCancelAction');
+    if (action && !appState.cancelBusy) { action.hidden = !active; action.disabled = !active; action.textContent = 'Cancelar processamento'; }
+    if (!active) appState.cancelBusy = false;
   }
   $('#startBtn')?.addEventListener('click', startTranslation);
   $('#cancelBtn')?.addEventListener('click', () => cancelTranslation(
     false, appState.sourceReview?.job_id || ''));
+  $('#runCancelAction')?.addEventListener('click', () => cancelTranslation(false, appState.activeJobId || ''));
   $('#urlInput')?.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); startTranslation(); }
   });
@@ -562,19 +586,24 @@
     appState.status = runtime.status || 'ready';
     appState.queue = runtime.queue || [];
     const awaitingReview = appState.status === 'awaiting_source_review';
-    const running = appState.status === 'running';
+    const running = inFlightStatuses.has(appState.status);
     const analyzing = appState.status === 'staging';
-    setRunControls(running || awaitingReview || analyzing, awaitingReview);
+    appState.activeJobId = runtime.active?.id || runtime.source_review?.id || '';
+    appState.latestJobId = runtime.latest?.id || '';
+    setRunControls(running || analyzing, awaitingReview);
     const status = $('#appStatus');
     status.textContent = runStatusLabels[appState.status] || appState.status;
     status.dataset.state = appState.status;
     renderProgress(runtime.progress || {});
+    renderRunStatus(runtime);
     renderQueue();
     appendLogs(runtime.logs || []);
     if (awaitingReview && runtime.source_review && shouldRenderSourceReview(runtime.source_review)) {
       renderSourceReview(runtime.source_review);
     }
     else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
+    if (runtime.quality_review) renderQualityReview(runtime.quality_review);
+    else if ($('#qualityReviewPanel')) $('#qualityReviewPanel').hidden = true;
     if (runtime.latest && !awaitingReview) renderResult(runtime.latest);
     if (runtime.history_revision !== appState.historyRevision) refreshBootstrap();
     if (terminalRunStatuses.has(appState.status) && runtime.latest?.id && runtime.latest.id !== appState.lastFinishedId) {
@@ -583,6 +612,71 @@
       showToast(appState.status === 'review_required' ? 'PDF gerado, mas requer revisão de qualidade.' : 'PDF finalizado e registrado no histórico.', appState.status === 'review_required' ? 'warn' : 'ok');
     }
   }
+  function renderRunStatus(runtime) {
+    const card = $('#runStatusCard');
+    if (!card) return;
+    const active = inFlightStatuses.has(runtime.status);
+    const record = runtime.active || runtime.latest || null;
+    const status = runtime.status === 'ready' && record ? record.status : runtime.status;
+    const progress = runtime.progress || {};
+    card.hidden = !active && !record;
+    if (card.hidden) return;
+    const failed = status === 'failed';
+    $('#runStatusHuman').textContent = failed ? 'Ocorreu um problema' : (stageMessages[progress.stage_key] || runStatusLabels[status] || 'Processamento');
+    const count = progress.total ? `${progress.current || 0} de ${progress.total}` : 'progresso sendo calculado';
+    $('#runProgressHuman').textContent = active ? count : (status === 'finished' ? 'PDF pronto' : status === 'review_required' ? 'Alguns itens precisam de revisao' : failed ? (reasonText(record?.reason_code) || 'O processamento nao foi concluido.') : runStatusLabels[status] || '');
+    $('#runEtaHuman').textContent = active ? (progress.eta_label || 'Tempo variavel nesta etapa') : '';
+    const updated = progress.updated_at ? new Date(Number(progress.updated_at) * 1000) : null;
+    $('#runUpdatedHuman').textContent = updated && !Number.isNaN(updated.getTime()) ? `Atualizado ha ${Math.max(0, Math.floor((Date.now() - updated.getTime()) / 1000))}s` : '';
+    $('#runNextHuman').textContent = progress.stale ? 'O processamento esta demorando mais que o esperado.' : (active ? 'Processamento em andamento' : failed ? 'Voce pode tentar novamente.' : '');
+    const retry = $('#runRetryAction');
+    if (retry) retry.hidden = !record || !['failed', 'cancelled'].includes(status);
+    const cancel = $('#runCancelAction');
+    if (cancel && !appState.cancelBusy) cancel.hidden = !active;
+  }
+
+  function renderQualityReview(review) {
+    const panel = $('#qualityReviewPanel');
+    const list = $('#qualityReviewList');
+    if (!panel || !list) return;
+    appState.qualityReview = review;
+    panel.hidden = false;
+    const items = Array.isArray(review.items) ? review.items : [];
+    const filter = appState.qualityReviewFilter || 'pending';
+    const visible = items.filter(item => filter === 'all' || (filter === 'pending' ? item.state === 'pending' : item.state !== 'pending'));
+    $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · ${review.confirmed ? 'revisao confirmada' : 'confirmacao necessaria'}`;
+    list.innerHTML = visible.length ? visible.map(item => `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span></div><div class="quality-review-reason">${escapeHtml(item.reason)}</div><div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div></div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="cta-row"><button type="button" class="btn-ghost review-mark" data-review-action="reviewed">Marcar como revisado</button><button type="button" class="btn-ghost review-preserve" data-review-action="preserved_original">Manter original</button></div></article>`).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
+    const confirm = $('#confirmQualityReview');
+    if (confirm) { confirm.disabled = Number(review.pending_count || 0) > 0; confirm.title = confirm.disabled ? 'Revise cada item ou mantenha o original antes de confirmar.' : ''; }
+  }
+
+  async function qualityReviewAction(event) {
+    const button = event.target.closest('[data-review-action]');
+    if (!button || button.dataset.busy === '1') return;
+    const item = button.closest('[data-review-key]');
+    if (!item || !appState.qualityReview?.job_id) return;
+    button.dataset.busy = '1'; button.disabled = true;
+    try {
+      const review = await api('/api/ui/quality-review/action', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id, item_key: item.dataset.reviewKey, action: button.dataset.reviewAction})});
+      renderQualityReview(review); showToast(button.dataset.reviewAction === 'preserved_original' ? 'Texto original mantido.' : 'Item marcado como revisado.', 'ok');
+    } catch (error) { showToast(error.message || 'Nao foi possivel atualizar o item.', 'error'); button.disabled = false; }
+    finally { delete button.dataset.busy; }
+  }
+
+  async function confirmQualityReview() {
+    const button = $('#confirmQualityReview');
+    if (!appState.qualityReview?.job_id || !button || button.disabled || button.dataset.busy === '1') return;
+    button.dataset.busy = '1'; button.disabled = true;
+    try { await api('/api/ui/quality-review/confirm', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id})}); showToast('Revisao confirmada.', 'ok'); pollState(); }
+    catch (error) { showToast(error.message || 'Nao foi possivel confirmar a revisao.', 'error'); button.disabled = false; }
+    finally { delete button.dataset.busy; }
+  }
+
+  $('#qualityReviewList')?.addEventListener('click', qualityReviewAction);
+  $$('[data-review-filter]').forEach(button => button.addEventListener('click', () => { appState.qualityReviewFilter = button.dataset.reviewFilter || 'pending'; $$('[data-review-filter]').forEach(item => item.classList.toggle('selected', item === button)); if (appState.qualityReview) renderQualityReview(appState.qualityReview); }));
+  $('#confirmQualityReview')?.addEventListener('click', confirmQualityReview);
+  $('#runRetryAction')?.addEventListener('click', async () => { const id = appState.latestJobId || ''; if (!id) return; try { await api('/api/ui/retry', {method: 'POST', body: JSON.stringify({job_id: id})}); showToast('Nova tentativa iniciada.', 'ok'); pollState(); } catch (error) { showToast(error.message || 'Nao foi possivel tentar novamente.', 'error'); } });
+
   function renderProgress(progress) {
     const runtimeKey = progress.stage_key || 'prepare';
     const key = visualStageKey(runtimeKey);

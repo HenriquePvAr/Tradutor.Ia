@@ -334,7 +334,16 @@
               <div class="stage-item" data-stage="render"><div class="stage-fill"></div><span class="stage-dot"></span><span>Redesenho dos balões</span><span class="stage-pct">—</span></div>
               <div class="stage-item" data-stage="pdf"><div class="stage-fill"></div><span class="stage-dot"></span><span>Geração do PDF</span><span class="stage-pct">—</span></div>
             </div>
-            <div class="run-summary" id="runSummary" hidden></div>
+            <div class="run-summary" id="runSummary" hidden aria-live="polite"></div>
+            <div class="run-status-card" id="runStatusCard" hidden aria-live="polite">
+              <strong id="runStatusHuman">Aguardando para começar</strong>
+              <span id="runProgressHuman"></span>
+              <span id="runEtaHuman">Calculando estimativa…</span>
+              <span id="runUpdatedHuman"></span>
+              <span id="runNextHuman"></span>
+              <button class="btn-ghost" type="button" id="runCancelAction">Cancelar processamento</button>
+              <button class="btn-ghost" type="button" id="runRetryAction" hidden>Tentar novamente</button>
+            </div>
             <div class="source-review" id="sourceReviewPanel" hidden>
               <div class="panel-label">Páginas encontradas</div>
               <div class="source-review-meta" id="sourceReviewMeta"></div>
@@ -343,6 +352,19 @@
                 <button class="btn-primary" type="button" id="confirmSourcePages">Confirmar páginas</button>
                 <button class="btn-ghost" type="button" id="retrySourceReview">Tentar nova anÃ¡lise</button>
                 <button class="btn-ghost" type="button" id="cancelSourceReview">Cancelar</button>
+              </div>
+            </div>
+            <div class="quality-review" id="qualityReviewPanel" hidden>
+              <div class="panel-label">Revisão de qualidade</div>
+              <div class="quality-review-meta" id="qualityReviewMeta"></div>
+              <div class="quality-review-filters" role="group" aria-label="Filtrar revisão">
+                <button type="button" class="btn-ghost selected" data-review-filter="pending">Pendentes</button>
+                <button type="button" class="btn-ghost" data-review-filter="all">Todos</button>
+                <button type="button" class="btn-ghost" data-review-filter="completed">Concluídos</button>
+              </div>
+              <div class="quality-review-list" id="qualityReviewList"></div>
+              <div class="cta-row quality-review-actions">
+                <button class="btn-primary" type="button" id="confirmQualityReview">Confirmar revisão</button>
               </div>
             </div>
             <div class="artifact-actions" id="artifactActions"></div>

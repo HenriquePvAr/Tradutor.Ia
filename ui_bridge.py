@@ -55,22 +55,22 @@ _UI_STAGE_LABELS = {
     "worker_starting": "Iniciando processamento",
     "source_lazy_resolution": "Carregando páginas do leitor",
     "source_selection": "Preparando páginas",
-    "source_validation": "Validando fonte",
-    "source_analysis": "Analisando fonte",
+    "source_validation": "Validando a fonte",
+    "source_analysis": "Encontrando as páginas",
     "validating_local_source": "Validando pasta local",
     "creating_snapshot": "Criando cópia segura",
-    "browser_loading": "Abrindo leitor",
-    "collecting_candidates": "Coletando páginas",
-    "clustering_candidates": "Validando páginas",
-    "awaiting_source_review": "Aguardando revisão das páginas",
-    "downloading_pages": "Baixando imagens",
-    "validating_pages": "Validando imagens",
-    "download": "Baixando imagens",
-    "smart_split": "Reconstrução",
-    "ocr": "OCR",
-    "translate": "Tradução NVIDIA",
-    "render": "Renderização",
-    "pdf": "Geração de PDF",
+    "browser_loading": "Abrindo o leitor",
+    "collecting_candidates": "Encontrando as páginas",
+    "clustering_candidates": "Preparando as páginas",
+    "awaiting_source_review": "Aguardando sua revisão",
+    "downloading_pages": "Baixando as imagens",
+    "validating_pages": "Validando as imagens",
+    "download": "Baixando as imagens",
+    "smart_split": "Preparando as páginas",
+    "ocr": "Lendo os textos",
+    "translate": "Traduzindo os textos",
+    "render": "Redesenhando as páginas",
+    "pdf": "Gerando o PDF",
     "final": "Finalizado",
 }
 MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
@@ -446,7 +446,132 @@ class UiBridge:
             "started_at": _epoch_to_iso(job.get("started_at")),
             "finished_at": _epoch_to_iso(job.get("finished_at")),
             "total_seconds": _duration(job),
+            "review_confirmed": bool(job.get("review_confirmed_at")),
+            "cancellation_requested_at": _epoch_to_iso(job.get("cancellation_requested_at")),
+            "cancellation_completed_at": _epoch_to_iso(job.get("cancellation_completed_at")),
         }
+
+    @staticmethod
+    def _quality_review_reason(item: dict[str, Any], page: dict[str, Any]) -> str:
+        visual = item.get("visual_validation") or {}
+        if float(item.get("text_overflow_ratio") or 0.0) > 0:
+            return "O texto traduzido pode ultrapassar o espaço do balão."
+        if visual and not visual.get("visual_validation_passed", True):
+            return "A aparência desta região precisa ser conferida."
+        if page.get("smart_split_unsafe") or page.get("unsafe_split"):
+            return "Este corte de página precisa de conferência."
+        if item.get("classification") == "sfx" and item.get("preserved_original"):
+            return "Este efeito sonoro foi mantido no original."
+        if item.get("preserved_original") or item.get("translation_final_state") == "preserved_original":
+            return "O sistema preservou este texto por segurança."
+        return "A tradução precisa de confirmação."
+
+    def _quality_report_data(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        report_path = Path(str(job.get("quality_report_path") or ""))
+        output_dir = Path(str(job.get("output_dir") or "")).resolve()
+        try:
+            report_path = report_path.resolve()
+            if not output_dir or output_dir not in report_path.parents or not report_path.is_file():
+                return None
+            return json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def quality_review(self, job_id: str) -> dict[str, Any] | None:
+        job = self.store.get_job(str(job_id or ""))
+        if not job or job.get("status") != JobStatus.REVIEW_REQUIRED:
+            return None
+        report = self._quality_report_data(job)
+        if not report:
+            return {"job_id": job["id"], "items": [], "pending_count": 0,
+                    "confirmed": bool(job.get("review_confirmed_at"))}
+        actions = self.store.review_actions(job["id"])
+        items: list[dict[str, Any]] = []
+        for page in report.get("pages", []) or []:
+            if not isinstance(page, dict):
+                continue
+            page_number = int(page.get("index") or page.get("sequence_index") or 0)
+            page_image = str(page.get("output_path") or page.get("image_path") or "")
+            raw_items: list[dict[str, Any]] = []
+            for collection_name in (
+                "translation_terminal_items", "text_overflow_items",
+                "visual_validation_failures", "suspicious_groups",
+            ):
+                raw_items.extend(item for item in (page.get(collection_name, []) or [])
+                                 if isinstance(item, dict))
+            seen_keys: set[str] = set()
+            for raw in raw_items:
+                if not isinstance(raw, dict):
+                    continue
+                if not (raw.get("manual_review_required") or raw.get("preserved_original")
+                        or raw.get("text_overflow_ratio")
+                        or raw.get("quality_reasons")
+                        or not (raw.get("visual_validation") or {}).get("visual_validation_passed", True)):
+                    continue
+                item_id = str(raw.get("id") or raw.get("region_id") or "item")
+                key = f"p{page_number}:i{item_id}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                action = actions.get(key, "pending")
+                items.append({
+                    "key": key,
+                    "page": page_number,
+                    "label": f"Balão {item_id}" if item_id else "Texto da página",
+                    "classification": str(raw.get("classification") or "speech"),
+                    "original": str(raw.get("text") or ""),
+                    "translation": str(raw.get("translation") or raw.get("translation_candidate") or ""),
+                    "reason": self._quality_review_reason(raw, page),
+                    "state": action,
+                    "preserved_original": bool(raw.get("preserved_original")),
+                    "page_url": f"/api/ui/quality-review/{job['id']}/page/{page_number}",
+                })
+        return {
+            "job_id": job["id"],
+            "items": items,
+            "pending_count": sum(1 for item in items if item["state"] == "pending"),
+            "confirmed": bool(job.get("review_confirmed_at")),
+            "status": job.get("status"),
+        }
+
+    def quality_review_action(self, job_id: str, item_key: str, action: str) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload or not any(item["key"] == item_key for item in payload["items"]):
+            raise ValueError("quality_review_item_not_found")
+        if action not in {"reviewed", "preserved_original"}:
+            raise ValueError("quality_review_action_invalid")
+        self.store.record_review_action(job_id, item_key, action)
+        self.history_revision += 1
+        return self.quality_review(job_id) or payload
+
+    def confirm_quality_review(self, job_id: str) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        if payload["pending_count"]:
+            raise ValueError("quality_review_items_pending")
+        self.store.confirm_review(job_id)
+        self.history_revision += 1
+        return self.quality_review(job_id) or payload
+
+    def quality_review_page(self, job_id: str, page_number: int) -> Path | None:
+        job = self.store.get_job(str(job_id or ""))
+        if not job:
+            return None
+        report = self._quality_report_data(job)
+        if not report:
+            return None
+        for page in report.get("pages", []) or []:
+            if int(page.get("index") or page.get("sequence_index") or 0) != int(page_number):
+                continue
+            output_dir = Path(str(job.get("output_dir") or "")).resolve()
+            for candidate in (page.get("output_path"), page.get("image_path")):
+                if not candidate:
+                    continue
+                path = Path(str(candidate)).resolve()
+                if output_dir in path.parents and path.is_file():
+                    return path
+        return None
 
     @staticmethod
     def _public_job_source_provenance(job: dict[str, Any]) -> dict[str, Any]:
@@ -551,6 +676,13 @@ class UiBridge:
             bool(staging) or (bool(active) and _runner_still_alive(active))
         )
         elapsed = _duration(present_job, live=live) if present_job else None
+        stage_started = _normalize_epoch((present_job or {}).get("stage_started_at"))
+        stage_elapsed = (time.time() - stage_started) if live and stage_started else None
+        eta_seconds: float | None = None
+        if stage_elapsed is not None and current > 0 and total > current and stage_elapsed >= 2:
+            rate = current / stage_elapsed
+            if rate > 0:
+                eta_seconds = max(0.0, (total - current) / rate)
         last_update = _normalize_epoch((present_job or {}).get("updated_at"))
         stale_updates = bool(
             running and last_update is not None and (time.time() - last_update) > 120
@@ -571,13 +703,16 @@ class UiBridge:
         if pending:
             status = JobStatus.QUEUED
         blocked = pending and not worker
+        latest_job = self._latest_terminal_job()
+        latest_record = record or self._job_record(latest_job)
+        quality_review = self.quality_review(latest_job["id"]) if latest_job else None
         return {
             "status": status if status in JobStatus.ALL else "ready",
             "pending": pending,
             "blocked": blocked,
             "blocked_reason": "worker_offline" if blocked else "",
             "active": record,
-            "latest": record or self._job_record(self._latest_terminal_job()),
+            "latest": latest_record,
             "progress": {
                 "stage": _UI_STAGE_LABELS.get(stage, stage),
                 "stage_key": stage,
@@ -591,6 +726,11 @@ class UiBridge:
                 "last_message": (present_job or {}).get("progress_message") or "",
                 "elapsed_seconds": elapsed,
                 "elapsed_label": _format_seconds(elapsed),
+                "stage_elapsed_seconds": stage_elapsed,
+                "eta_seconds": eta_seconds,
+                "eta_label": _format_seconds(eta_seconds) if eta_seconds is not None else (
+                    "Calculando estimativa…" if live and total > 0 else "Tempo variável nesta etapa"
+                ),
                 "updated_at": last_update,
                 "stale": stale_updates,
                 "stale_label": "Sem atualização recente" if stale_updates else "",
@@ -602,6 +742,7 @@ class UiBridge:
             "queue_running": running or pending,   # a queued job is still "em andamento"
             "resumable": resumable,
             "source_review": self._job_record(waiting),
+            "quality_review": quality_review,
             "worker": {
                 "online": bool(worker),
                 "worker_id": (worker or {}).get("worker_id", ""),
@@ -878,7 +1019,7 @@ class UiBridge:
             current = self.store.get_job(job["id"])
             if current and current.get("status") == JobStatus.STAGING:
                 self.store.transition(
-                    job["id"], JobStatus.CANCELLED, reason_code="cancelled",
+                    job["id"], JobStatus.CANCELLED, reason_code="user_cancelled",
                     interrupted_reason="local_snapshot_request_cancelled",
                 )
             raise
@@ -1336,7 +1477,7 @@ class UiBridge:
                 raise ValueError("source_review_not_available")
             self.store.transition(
                 requested_review_id, JobStatus.CANCELLED,
-                interrupted_reason="cancelled_source_review", reason_code="cancelled",
+                interrupted_reason="cancelled_source_review", reason_code="user_cancelled",
             )
             self.history_revision += 1
             return {"ok": True, "job_id": requested_review_id}
@@ -1353,7 +1494,7 @@ class UiBridge:
                     try:
                         self.store.transition(active["id"], target,
                                               interrupted_reason="cancelled_process_not_found",
-                                              finished_at=frozen)
+                                              reason_code="user_cancelled")
                     except Exception:  # noqa: BLE001 - already settled by another path
                         pass
         # A source review needs its explicit displayed job id above. For a source-analysis
@@ -1367,7 +1508,7 @@ class UiBridge:
             try:
                 self.store.transition(staging["id"], JobStatus.CANCELLED,
                                       interrupted_reason="cancelled_source_analysis",
-                                      reason_code="cancelled")
+                                      reason_code="user_cancelled")
             except Exception:  # noqa: BLE001 - a completed analysis wins
                 pass
         if queue:
@@ -1376,7 +1517,8 @@ class UiBridge:
                     continue
                 try:
                     self.store.transition(job["id"], JobStatus.CANCELLED,
-                                          interrupted_reason="queue_cleared")
+                                          interrupted_reason="queue_cleared",
+                                          reason_code="user_cancelled")
                 except Exception:  # noqa: BLE001 - best effort per queued job
                     pass
         self.history_revision += 1
@@ -1413,6 +1555,40 @@ class UiBridge:
             "create_source_profile": config.get("create_source_profile") is True,
         }
         return await self.start(payload)
+
+    def retry_job(self, job_id: str) -> dict[str, Any]:
+        """Create a fresh, isolated attempt for a terminal URL job.
+
+        A retry never reuses a dead runner or the previous output directory.  The
+        previous row and its artifacts remain available in history.
+        """
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_retryable")
+        if job.get("status") not in {JobStatus.FAILED, JobStatus.CANCELLED}:
+            raise ValueError("job_not_retryable")
+        if not str(job.get("source_url") or "").strip():
+            raise ValueError("local_retry_requires_new_submit")
+        config = dict(job.get("configuration") or {})
+        attempt = int(job.get("attempt") or 1) + 1
+        old_output = Path(str(job.get("output_dir") or "chapter"))
+        base_slug = sanitize_output_name(old_output.name or "chapter")
+        slug = sanitize_output_name(f"{base_slug}_retry_{attempt}")
+        payload = {
+            "url": str(job.get("source_url") or ""),
+            "chapter_name": config.get("chapter_name") or job.get("series_title") or "",
+            "slug": slug,
+            "mode": config.get("mode") or "fast",
+            "full": bool(config.get("full", True)),
+            "max_images": config.get("max_images"),
+            "use_cache": bool(config.get("use_cache", True)),
+            "force": bool(config.get("force", False)),
+            "use_context": bool(config.get("use_context", True)),
+            "open_output": bool(config.get("open_output", False)),
+            "create_source_profile": bool(config.get("create_source_profile", False)),
+        }
+        return self._job_record(self._create_job(payload, require_environment=False,
+                                                 initial_status=JobStatus.QUEUED)) or {}
 
     def resume(self, job_id: str) -> dict[str, Any]:
         job = self.store.get_job(job_id)
