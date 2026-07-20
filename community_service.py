@@ -24,7 +24,7 @@ from community_auth import (
     ResourceNotFound,
 )
 from community_authorization import authorize_delete_file, authorize_manage_post, authorize_read_post
-from community_store import CommunityStore, FileStatus, PostStatus, Visibility
+from community_store import CommunityStore, FileStatus, PostStatus, Visibility, normalize_tags
 from job_store import JobStatus
 import process_tree
 
@@ -102,6 +102,7 @@ class CommunityService:
                      reuse_source_post: bool = True,
                      series_title: str = "", series_slug: str = "", episode_number: str = "",
                      title: str = "", description: str = "", visibility: str = Visibility.PUBLIC,
+                     tags: Any = None,
                      ) -> dict[str, Any]:
         self._require_authenticated(principal)
         if visibility not in Visibility.ALL:
@@ -117,6 +118,10 @@ class CommunityService:
         else:
             pdf = self._resolve_pdf(out)
         validate_local_pdf(pdf, self.output_root)
+        try:
+            normalized_tags = normalize_tags(tags)
+        except ValueError as exc:
+            raise CommunityError(str(exc)) from exc
         post_fields = {
             "user_id": principal.user_id,
             "source_job_id": source_job_id,
@@ -128,6 +133,7 @@ class CommunityService:
             "title": title or series_title,
             "description": description,
             "visibility": visibility,
+            "tags": normalized_tags,
         }
         if source_job_id and reuse_source_post:
             post_id, created = self.store.create_or_get_source_post(**post_fields)
@@ -142,6 +148,7 @@ class CommunityService:
                     "title",
                     "description",
                     "visibility",
+                    "tags",
                 )
                 if any(
                     str(existing.get(key) or "") != str(post_fields.get(key) or "")
@@ -353,6 +360,7 @@ class CommunityService:
             "episode_number": post["episode_number"],
             "title": post["title"],
             "description": post["description"],
+            "tags": list(post.get("tags") or []),
             "cover_reference": post["cover_reference"],
             "user_id": post["user_id"],
             "views": post["views"],

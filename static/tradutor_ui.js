@@ -1050,7 +1050,9 @@
       : '';
     $('#publicationTitle').value = record.chapter_name || record.slug || '';
     $('#publicationDescription').value = '';
-    $('#publicationTags').value = '';
+    $('#publicationTags').value = Array.isArray(record.publication_tags || record.tags)
+      ? (record.publication_tags || record.tags).join(', ')
+      : String(record.publication_tags || record.tags || '');
     $('#publicationVisibility').value = 'public';
     $('#publicationConfirm').checked = false;
     $('#publicationSubmit').textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar';
@@ -1082,6 +1084,7 @@
     try {
       await api('/api/community/publish', {method: 'POST', body: JSON.stringify(payload)});
       record.publication_status = 'published';
+      record.publication_tags = payload.tags;
       closePublicationModal();
       showToast('Publicação enviada à fila. O worker fará o upload.', 'ok');
       renderHistory();

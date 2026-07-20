@@ -126,6 +126,7 @@ class CommunityApi:
                 episode_number=str(payload.get("episode_number") or ""),
                 title=str(payload.get("title") or ""),
                 description=str(payload.get("description") or "")[:2000],
+                tags=payload.get("tags"),
                 visibility=str(payload.get("visibility") or "public"))
             return self.service.request_publish(
                 draft["post_id"],
@@ -247,7 +248,11 @@ class CommunityApi:
         self._require_authenticated_principal(principal)
         with self._community_lock:
             posts = self.store.list_user_posts(principal.user_id)
-        return {"posts": [self.service._card(p) | {"visibility": p["visibility"]} for p in posts]}
+        return {"posts": [self.service._card(p) | {
+            "visibility": p["visibility"],
+            "source_job_id": p.get("source_job_id") or "",
+            "tags": list(p.get("tags") or []),
+        } for p in posts]}
 
     def open_pdf(self, post_id: str, *, principal: RequestPrincipal, range_header: str = ""):
         """Return (metadata, StorageStream) for the read endpoint, or raise CommunityError."""

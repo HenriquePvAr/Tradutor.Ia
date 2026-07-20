@@ -9,13 +9,43 @@ ever stored as a BLOB - only a reference to the file in the storage provider.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+MAX_TAGS = 20
+MAX_TAG_LENGTH = 40
+_TAG_PATTERN = re.compile(r"^[\wÀ-ÿ][\wÀ-ÿ ._-]*$", re.UNICODE)
+
+
+def normalize_tags(tags: Any) -> list[str]:
+    """Normalize publication tags deterministically at the server boundary."""
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        tags = tags.split(",")
+    if not isinstance(tags, (list, tuple)):
+        raise ValueError("invalid_tags")
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in tags:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        if len(value) > MAX_TAG_LENGTH or not _TAG_PATTERN.fullmatch(value):
+            raise ValueError("invalid_tags")
+        folded = value.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        result.append(value)
+        if len(result) > MAX_TAGS:
+            raise ValueError("too_many_tags")
+    return result
 
 
 class PostStatus:
@@ -75,6 +105,11 @@ class CommunityStore:
         row = self._conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if (int(row["value"]) if row else 0) < 1:
             self._create_v1()
+        columns = {str(item["name"]) for item in self._conn.execute("PRAGMA table_info(community_posts)")}
+        if "tags_json" not in columns:
+            self._conn.execute(
+                "ALTER TABLE community_posts ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'"
+            )
         self._conn.execute(
             "INSERT INTO meta(key,value) VALUES('schema_version',?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),))
@@ -157,18 +192,21 @@ class CommunityStore:
     def create_post(self, *, user_id: str, source_job_id: str = "", source_run_id: str = "",
                     series_title: str = "", series_slug: str = "", episode_number: str = "",
                     output_dir: str = "", title: str = "", description: str = "",
-                    cover_reference: str = "", visibility: str = Visibility.PUBLIC) -> str:
+                    cover_reference: str = "", visibility: str = Visibility.PUBLIC,
+                    tags: Any = None) -> str:
         if visibility not in Visibility.ALL:
             raise ValueError(f"invalid visibility: {visibility}")
         post_id = uuid.uuid4().hex
         now = time.time()
+        normalized_tags = normalize_tags(tags)
         self._conn.execute(
             """INSERT INTO community_posts(id,user_id,source_job_id,source_run_id,series_title,
-               series_slug,episode_number,output_dir,title,description,cover_reference,status,
+               series_slug,episode_number,output_dir,title,description,cover_reference,tags_json,status,
                visibility,moderation_status,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (post_id, user_id, source_job_id, source_run_id, series_title, series_slug,
-             episode_number, output_dir, title, description, cover_reference, PostStatus.DRAFT,
+             episode_number, output_dir, title, description, cover_reference,
+             json.dumps(normalized_tags, ensure_ascii=False, separators=(',', ':')), PostStatus.DRAFT,
              visibility, Moderation.PENDING, now, now))
         self.add_event(post_id, user_id, "post_created", {"series_slug": series_slug})
         return post_id
@@ -198,17 +236,17 @@ class CommunityStore:
             raise
 
     def get_post(self, post_id: str) -> dict[str, Any] | None:
-        return self._row(self._conn.execute(
-            "SELECT * FROM community_posts WHERE id=?", (post_id,)).fetchone())
+        return self._with_decoded_tags(self._row(self._conn.execute(
+            "SELECT * FROM community_posts WHERE id=?", (post_id,)).fetchone()))
 
     def post_for_owner_source(self, user_id: str, source_job_id: str) -> dict[str, Any] | None:
         if not source_job_id:
             return None
-        return self._row(self._conn.execute(
+        return self._with_decoded_tags(self._row(self._conn.execute(
             "SELECT * FROM community_posts WHERE user_id=? AND source_job_id=? "
             "ORDER BY created_at ASC,rowid ASC LIMIT 1",
             (user_id, source_job_id),
-        ).fetchone())
+        ).fetchone()))
 
     def set_post_status(self, post_id: str, status: str, *, actor_id: str = "",
                         moderation_status: str | None = None) -> None:
@@ -265,12 +303,24 @@ class CommunityStore:
         cur = self._conn.execute(
             f"SELECT * FROM community_posts WHERE {' AND '.join(where)} "
             "ORDER BY published_at DESC LIMIT ? OFFSET ?", params)
-        return self._rows(cur)
+        return [self._with_decoded_tags(row) for row in self._rows(cur)]
 
     def list_user_posts(self, user_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
-        return self._rows(self._conn.execute(
+        return [self._with_decoded_tags(row) for row in self._rows(self._conn.execute(
             "SELECT * FROM community_posts WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
-            (user_id, int(limit))))
+            (user_id, int(limit))))]
+
+    @staticmethod
+    def _with_decoded_tags(row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        raw = row.get("tags_json", "[]")
+        try:
+            decoded = json.loads(raw) if isinstance(raw, str) else raw
+            row["tags"] = normalize_tags(decoded)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            row["tags"] = []
+        return row
 
     def active_publish_exists(self, post_id: str) -> bool:
         row = self._conn.execute(
