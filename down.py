@@ -1958,7 +1958,12 @@ def _download_candidates(
 
         if not data:
             reason = getattr(_download_url, "last_failure", "download_failed")
-            _report_ignored(report, candidate, str(reason or "download_failed"))
+            _report_ignored(
+                report,
+                candidate,
+                str(reason or "download_failed"),
+                getattr(_download_url, "last_diagnostics", None),
+            )
             continue
 
         validation_started = time.perf_counter()
@@ -2076,13 +2081,25 @@ def _download_url(url, referer, max_retries, transports=None):
     # when this one fails or a test replaces the transport list.
     _download_url.last_failure = ""
     _download_url.last_transport_name = ""
+    _download_url.last_diagnostics = {}
     last_error = None
+    last_attempt = {}
     for transport in transports:
         for _ in range(max(1, max_retries)):
             try:
                 result = transport.fetch(url, referer=referer)
                 _download_url.last_transport_name = _safe_report_metadata(
                     getattr(transport, "name", ""), "unknown")
+                last_attempt = _download_attempt_diagnostics(
+                    url, referer, transport, result=result)
+                _download_url.last_diagnostics = last_attempt
+                if not result.content:
+                    _download_url.last_failure = "empty_response"
+                    _download_url.last_diagnostics = {
+                        **last_attempt,
+                        "reason_code": "empty_response",
+                    }
+                    return None
                 return result.content
             except LimitExceeded:
                 raise                     # chapter budget is terminal; never retry/fallback
@@ -2090,16 +2107,92 @@ def _download_url(url, referer, max_retries, transports=None):
                 raise                     # interactive challenge: stop, never work around
             except SourceError as exc:
                 last_error = exc
+                last_attempt = _download_attempt_diagnostics(
+                    url, referer, transport, error=exc)
+                _download_url.last_diagnostics = last_attempt
                 if exc.code != "invalid_image_response":
                     break                 # denied/rate-limited: retrying will not help
                 time.sleep(0.3)
             except Exception as exc:  # noqa: BLE001 - transport-level fault, try the next
                 last_error = exc
+                last_attempt = _download_attempt_diagnostics(
+                    url, referer, transport, error=exc)
+                _download_url.last_diagnostics = last_attempt
                 time.sleep(0.3)
     if last_error is not None:
         # Sanitized: only the failure code or class name — never a URL, cookie or header.
-        _download_url.last_failure = getattr(last_error, "code", None) or type(last_error).__name__
+        _download_url.last_failure = _download_failure_reason(last_error)
+        if last_attempt:
+            _download_url.last_diagnostics = {
+                **last_attempt,
+                "reason_code": _download_url.last_failure,
+            }
     return None
+
+
+def _download_failure_reason(error):
+    from chapter_source import (
+        INVALID_IMAGE_RESPONSE,
+        SOURCE_ACCESS_DENIED,
+        SOURCE_RATE_LIMITED,
+    )
+
+    code = getattr(error, "code", "") or ""
+    detail = str(getattr(error, "detail", "") or "")
+    if code == SOURCE_ACCESS_DENIED and detail.isdigit():
+        return f"http_{detail}"
+    if code == SOURCE_RATE_LIMITED and detail.isdigit():
+        return f"http_{detail}"
+    if code == INVALID_IMAGE_RESPONSE:
+        status = re.fullmatch(r"status_(\d{3})", detail)
+        if status:
+            return f"http_{status.group(1)}"
+        if detail.startswith("content_type:"):
+            content_type = detail.split(":", 1)[1].strip().lower()
+            return "html_response" if content_type.startswith("text/html") else "invalid_content_type"
+        return detail or INVALID_IMAGE_RESPONSE
+    name = type(error).__name__.lower()
+    if "timeout" in name:
+        return "timeout"
+    if "connection" in name:
+        return "connection_error"
+    return code or type(error).__name__
+
+
+def _download_attempt_diagnostics(url, referer, transport, *, result=None, error=None):
+    parsed = urlparse(str(url or ""))
+    final_url = getattr(result, "final_url", "") if result is not None else ""
+    final = urlparse(str(final_url or "")) if final_url else None
+    detail = str(getattr(error, "detail", "") or "")
+    status = getattr(result, "status", None) if result is not None else None
+    if status is None and detail.isdigit():
+        status = int(detail)
+    status_match = re.fullmatch(r"status_(\d{3})", detail)
+    if status is None and status_match:
+        status = int(status_match.group(1))
+    content_type = getattr(result, "content_type", "") if result is not None else ""
+    if not content_type and detail.startswith("content_type:"):
+        content_type = detail.split(":", 1)[1].strip()
+    content = getattr(result, "content", b"") if result is not None else b""
+    transport_name = _safe_report_metadata(getattr(transport, "name", ""), "unknown")
+    return {
+        "reason_code": _download_failure_reason(error) if error is not None else "",
+        "transport": transport_name,
+        "scheme": parsed.scheme.casefold(),
+        "host": (parsed.hostname or "").lower(),
+        "query_preserved": bool(parsed.query),
+        "final_host": ((final.hostname or "").lower() if final else ""),
+        "status": status,
+        "content_type": str(content_type or "").split(";")[0].strip().lower(),
+        "content_length": len(content) if isinstance(content, (bytes, bytearray)) else None,
+        "bytes_received": len(content) if isinstance(content, (bytes, bytearray)) else None,
+        "magic_bytes": bytes(content[:8]).hex() if isinstance(content, (bytes, bytearray)) and content else "",
+        "referer_sent": bool(str(referer or "").strip()),
+        "user_agent_sent": True,
+        "cookies_possible": transport_name == "browser_session",
+        "exception": type(error).__name__ if error is not None else "",
+        "detail": _safe_report_metadata(detail, ""),
+    }
 
 
 def _validate_image_bytes(data, chapter_candidate=False):
@@ -2151,20 +2244,42 @@ def _is_nearly_blank(image):
     return variance < 18 and (mean < 12 or mean > 243 or (extrema[1] - extrema[0]) < 10)
 
 
-def _report_ignored(report, candidate, reason):
-    report["ignored"].append(
-        {
-            "url": _sanitized_url(candidate.get("url")),
-            "reason": reason,
-            "width": candidate.get("naturalWidth") or candidate.get("width"),
-            "height": candidate.get("naturalHeight") or candidate.get("height"),
-            "declared_width": candidate.get("declaredWidth"),
-            "declared_height": candidate.get("declaredHeight"),
-            "is_chapter_candidate": bool(candidate.get("isChapterCandidate")),
-            "source": candidate.get("source"),
-            "order": candidate.get("order"),
-        }
-    )
+def _report_ignored(report, candidate, reason, diagnostics=None):
+    item = {
+        "candidate_id": str(candidate.get("candidate_id") or ""),
+        "url": _sanitized_url(candidate.get("url")),
+        "reason": reason,
+        "reason_code": reason,
+        "width": candidate.get("naturalWidth") or candidate.get("width"),
+        "height": candidate.get("naturalHeight") or candidate.get("height"),
+        "declared_width": candidate.get("declaredWidth"),
+        "declared_height": candidate.get("declaredHeight"),
+        "is_chapter_candidate": bool(candidate.get("isChapterCandidate")),
+        "source": candidate.get("source"),
+        "order": candidate.get("order"),
+    }
+    if isinstance(diagnostics, dict):
+        for key in (
+            "reason_code",
+            "transport",
+            "scheme",
+            "host",
+            "query_preserved",
+            "final_host",
+            "status",
+            "content_type",
+            "content_length",
+            "bytes_received",
+            "magic_bytes",
+            "referer_sent",
+            "user_agent_sent",
+            "cookies_possible",
+            "exception",
+            "detail",
+        ):
+            if key in diagnostics:
+                item[key] = diagnostics.get(key)
+    report["ignored"].append(item)
     report["total_ignored"] = len(report["ignored"])
 
 

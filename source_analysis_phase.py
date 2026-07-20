@@ -144,6 +144,7 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
     from ui_helpers import build_run_command
 
     config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+    command_selection = _bounded_command_selection(config, selection)
     return build_run_command(
         url=str(job.get("source_url") or ""),
         mode=str(config.get("mode") or "fast"),
@@ -153,10 +154,27 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
         use_cache=bool(config.get("use_cache")),
         force=bool(config.get("force")),
         use_context=bool(config.get("use_context", True)),
-        source_candidate_ids=list(selection.get("candidate_ids") or []),
+        source_candidate_ids=command_selection,
         open_output=bool(config.get("open_output", False)),
         python_executable=sys.executable,
     )
+
+
+def _bounded_command_selection(config: dict[str, Any], selection: dict[str, Any]) -> list[str]:
+    candidate_ids = [
+        str(value or "")
+        for value in list(selection.get("candidate_ids") or [])
+        if str(value or "")
+    ]
+    if bool(config.get("full", True)):
+        return candidate_ids
+    try:
+        max_images = int(config.get("max_images") or 0)
+    except (TypeError, ValueError):
+        max_images = 0
+    if max_images > 0:
+        return candidate_ids[:max_images]
+    return candidate_ids
 
 
 def ensure_command_has_source_selection(store: Any, job: dict[str, Any]) -> dict[str, Any]:

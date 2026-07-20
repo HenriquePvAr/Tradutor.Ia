@@ -608,6 +608,85 @@ class DownloaderRegressionTests(unittest.TestCase):
             "count": 1,
         })
 
+    def test_download_report_records_specific_http_failure_for_ignored_page(self):
+        class DeniedTransport:
+            name = "requests"
+
+            @staticmethod
+            def fetch(_url, *, referer=""):
+                raise SourceError("source_access_denied", "403")
+
+        report = {
+            "viewer_image_count": 0,
+            "ignored": [],
+            "downloaded": [],
+            "transport_metadata": {"configured": ["requests"], "count": 1},
+            "transport_name": "none",
+            "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                        "image_save_seconds": 0.0},
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            paths = _download_candidates(
+                None,
+                [{"candidate_id": "page-001", "url": "https://reader.example.test/page.png?sig=1",
+                  "source": "currentSrc", "order": 1, "width": 800, "height": 1200,
+                  "isChapterCandidate": True}],
+                None, 1, 1, None, report, "https://reader.example.test/chapter/1",
+                folder, transports=[DeniedTransport()],
+            )
+
+        self.assertEqual(paths, [])
+        item = report["ignored"][0]
+        self.assertEqual(item["candidate_id"], "page-001")
+        self.assertEqual(item["reason"], "http_403")
+        self.assertEqual(item["reason_code"], "http_403")
+        self.assertEqual(item["status"], 403)
+        self.assertEqual(item["transport"], "requests")
+        self.assertEqual(item["host"], "reader.example.test")
+        self.assertTrue(item["query_preserved"])
+        self.assertTrue(item["referer_sent"])
+        self.assertTrue(item["user_agent_sent"])
+
+    def test_download_report_records_empty_response_diagnostics(self):
+        class EmptyTransport:
+            name = "browser_session"
+
+            @staticmethod
+            def fetch(url, *, referer=""):
+                return SimpleNamespace(
+                    content=b"",
+                    content_type="image/png",
+                    final_url=url,
+                    status=200,
+                )
+
+        report = {
+            "viewer_image_count": 0,
+            "ignored": [],
+            "downloaded": [],
+            "transport_metadata": {"configured": ["browser_session"], "count": 1},
+            "transport_name": "none",
+            "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                        "image_save_seconds": 0.0},
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            paths = _download_candidates(
+                None,
+                [{"candidate_id": "page-002", "url": "https://reader.example.test/empty.png",
+                  "source": "currentSrc", "order": 2, "width": 800, "height": 1200,
+                  "isChapterCandidate": True}],
+                None, 1, 1, None, report, "https://reader.example.test/chapter/1",
+                folder, transports=[EmptyTransport()],
+            )
+
+        self.assertEqual(paths, [])
+        item = report["ignored"][0]
+        self.assertEqual(item["reason_code"], "empty_response")
+        self.assertEqual(item["status"], 200)
+        self.assertEqual(item["content_type"], "image/png")
+        self.assertEqual(item["bytes_received"], 0)
+        self.assertTrue(item["cookies_possible"])
+
     def test_duplicate_image_bytes_are_not_saved_twice(self):
         image = Image.new("RGB", (800, 1200), "navy")
         buffer = io.BytesIO()
