@@ -27,6 +27,7 @@ from pathlib import Path
 
 import process_tree
 from job_store import JobStatus, JobStore, TransitionError
+from process_options import build_background_process_options
 from output_manifest import sanitize_source_url
 from runner_start_gate import wait_for_start_gate
 from ui_helpers import (
@@ -295,7 +296,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         if store.cancel_requested(job_id):
             store.transition(job_id, JobStatus.CANCELLING, expected_worker=job.get("worker_id"))
             store.transition(job_id, JobStatus.CANCELLED, expected_worker=job.get("worker_id"),
-                             reason_code="cancelled")
+                             reason_code="user_cancelled")
             return 0
 
         output_dir = Path(job["output_dir"]).resolve()
@@ -322,7 +323,6 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
 
         log_file = Path(log_path)
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
@@ -332,10 +332,10 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
             handle.write(f"{time.strftime('%H:%M:%S')} pipeline iniciado (argumentos protegidos)\n")
             handle.flush()
             try:
-                proc = subprocess.Popen(
-                    command, cwd=str(Path.cwd()), stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, creationflags=creationflags, env=env,
-                )
+                proc = subprocess.Popen(command, **build_background_process_options(
+                    cwd=str(Path.cwd()), stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, env=env,
+                ))
             except OSError:
                 failed = store.transition(
                     job_id, JobStatus.FAILED, expected_worker=job.get("worker_id"),
@@ -419,7 +419,7 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
     source_reason = _safe_reason_code(
         failure.get("code") if isinstance(failure, dict) else "", "pipeline_failed")
     if cancelled:
-        reason_code = "cancelled"
+        reason_code = "user_cancelled"
     elif interrupted:
         reason_code = "worker_stop"
     elif target == JobStatus.FINISHED:

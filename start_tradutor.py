@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 from local_environment import load_local_environment_for_entrypoint
+from process_options import build_background_process_options
 
 REPO_ROOT = Path(__file__).resolve().parent
 DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
@@ -49,9 +50,12 @@ def start_worker(*, force: bool = False) -> bool:
         return False
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
-    kwargs: dict = {"cwd": str(REPO_ROOT), "env": env}
+    kwargs: dict = build_background_process_options(
+        cwd=str(REPO_ROOT), env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
     if os.name == "nt":
-        kwargs["creationflags"] = _detached_flags()
+        kwargs["creationflags"] = _detached_flags() | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     else:
         kwargs["start_new_session"] = True
     subprocess.Popen(

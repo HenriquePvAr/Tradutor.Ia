@@ -13,6 +13,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from process_options import build_background_process_options
+
 
 LAUNCH_FAILURE_EXIT_CODE = 251
 CLEANUP_FAILURE_EXIT_CODE = 252
@@ -340,15 +342,11 @@ class _WindowsManagedProcess:
         runtime,
     ):
         # No child instruction can run before Job assignment and ResumeThread.
-        self.process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            env=environment,
-            shell=False,
-            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED),
+        options = build_background_process_options(
+            cwd=cwd, stdout=stdout_handle, stderr=stderr_handle, env=environment,
         )
+        options["creationflags"] = int(options.get("creationflags", 0)) | _CREATE_SUSPENDED
+        self.process = subprocess.Popen(command, **options)
         atomic_write_text(runtime / "child_pid.txt", f"{self.process.pid}\n")
         _append_event(
             self.events_path,
@@ -441,15 +439,10 @@ class _PosixManagedProcess:
         environment,
         runtime,
     ):
-        self.process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            env=environment,
-            shell=False,
-            start_new_session=True,
-        )
+        self.process = subprocess.Popen(command, **build_background_process_options(
+            cwd=cwd, stdout=stdout_handle, stderr=stderr_handle, env=environment,
+            new_session=True,
+        ))
         atomic_write_text(runtime / "child_pid.txt", f"{self.process.pid}\n")
         _append_event(
             self.events_path,

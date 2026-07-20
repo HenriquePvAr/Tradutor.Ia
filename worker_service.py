@@ -27,6 +27,7 @@ from pathlib import Path
 import process_tree
 from job_store import JobStatus, JobStore
 from local_environment import load_local_environment_for_entrypoint
+from process_options import build_background_process_options
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
@@ -113,16 +114,15 @@ class Worker:
             "--log", str(log_path),
             "--start-gate", str(gate_path),
         ]
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         # The runner writes everything worth keeping to its own per-job log file, so its
         # stdout/stderr are silenced. Inheriting them would hand the runner (and the
         # pipeline it spawns) a handle to whatever console launched the worker, and a
         # tool capturing that console would then block on EOF until every descendant
         # exits - the cause of an earlier multi-hour hang.
-        proc = subprocess.Popen(
-            command, cwd=str(REPO_ROOT), creationflags=creationflags,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        proc = subprocess.Popen(command, **build_background_process_options(
+            cwd=str(REPO_ROOT), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ))
         proc._tradutor_start_gate = gate_path  # type: ignore[attr-defined]
         return proc
 
@@ -245,15 +245,14 @@ class Worker:
         try:
             if code == "cancelled":
                 self.store.transition(
-                    job_id, JobStatus.CANCELLED, reason_code=code, stage="cancelled",
+                    job_id, JobStatus.CANCELLED, reason_code="user_cancelled", stage="cancelled",
                     interrupted_reason="cancelled_source_analysis")
-                return None
+                return
             self.store.transition(
                 job_id, JobStatus.FAILED, reason_code=code, stage="source_analysis",
                 error_type="source_analysis", error_message=str(code))
         except Exception:  # noqa: BLE001 - a concurrent owner already settled it
             pass
-        return None
 
 
     def _run_one(self, job: dict) -> None:
