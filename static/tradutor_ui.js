@@ -38,6 +38,7 @@
     seriesSort: 'recent',
     publicationRecord: null,
     publicationBusy: false,
+    publicationDrafts: Object.create(null),
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required']);
@@ -1019,6 +1020,15 @@
   /* ---------- community publishing ---------- */
   function closePublicationModal() {
     const overlay = $('#publicationModalOverlay');
+    if (appState.publicationRecord && overlay?.classList.contains('show')) {
+      const key = String(appState.publicationRecord.id || appState.publicationRecord.slug || '');
+      if (key) appState.publicationDrafts[key] = {
+        title: String($('#publicationTitle')?.value || ''),
+        description: String($('#publicationDescription')?.value || ''),
+        tags: String($('#publicationTags')?.value || ''),
+        visibility: $('#publicationVisibility')?.value === 'private' ? 'private' : 'public',
+      };
+    }
     if (overlay) { overlay.classList.remove('show'); overlay.setAttribute('aria-hidden', 'true'); }
     appState.publicationRecord = null;
     appState.publicationBusy = false;
@@ -1036,6 +1046,8 @@
     if (!overlay || !summary || !form) return;
     appState.publicationRecord = record;
     appState.publicationBusy = false;
+    const draftKey = String(record.id || record.slug || '');
+    const draft = appState.publicationDrafts[draftKey] || {};
     const review = eligibility.review;
     const pendingCount = Number(record.manual_review_count || record.rejected_count || 0);
     summary.innerHTML = [
@@ -1048,12 +1060,12 @@
     pending.textContent = review
       ? `Este capítulo tem ${pendingCount || 'pendências de'} revisão. Confirme que você conferiu o resultado antes de publicar.`
       : '';
-    $('#publicationTitle').value = record.chapter_name || record.slug || '';
-    $('#publicationDescription').value = '';
-    $('#publicationTags').value = Array.isArray(record.publication_tags || record.tags)
+    $('#publicationTitle').value = draft.title || record.chapter_name || record.slug || '';
+    $('#publicationDescription').value = draft.description || '';
+    $('#publicationTags').value = draft.tags || (Array.isArray(record.publication_tags || record.tags)
       ? (record.publication_tags || record.tags).join(', ')
-      : String(record.publication_tags || record.tags || '');
-    $('#publicationVisibility').value = 'public';
+      : String(record.publication_tags || record.tags || ''));
+    $('#publicationVisibility').value = draft.visibility || 'public';
     $('#publicationConfirm').checked = false;
     $('#publicationSubmit').textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar';
     $('#publicationError').hidden = true;
@@ -1085,6 +1097,8 @@
       await api('/api/community/publish', {method: 'POST', body: JSON.stringify(payload)});
       record.publication_status = 'published';
       record.publication_tags = payload.tags;
+      const key = String(record.id || record.slug || '');
+      if (key) delete appState.publicationDrafts[key];
       closePublicationModal();
       showToast('Publicação enviada à fila. O worker fará o upload.', 'ok');
       renderHistory();
