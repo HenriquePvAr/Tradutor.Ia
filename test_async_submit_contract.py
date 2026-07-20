@@ -121,6 +121,20 @@ class DuplicateGuardTests(SubmitEnqueuesOnlyTests):
         self.assertNotEqual(second["job_id"], first["job_id"])
         self.assertEqual(len(self.bridge.store.list_jobs(statuses=[JobStatus.QUEUED])), 2)
 
+    def test_same_url_with_new_output_is_a_new_attempt(self):
+        first = self.submit(slug="cap")
+        second = self.submit(slug="cap_retry")
+        self.assertFalse(second.get("duplicate"))
+        self.assertNotEqual(second["job_id"], first["job_id"])
+        self.assertEqual(len(self.bridge.store.list_jobs(statuses=[JobStatus.QUEUED])), 2)
+
+    def test_same_output_still_blocks_a_duplicate(self):
+        first = self.submit(slug="shared_output")
+        second = self.submit(url=OTHER, slug="shared_output")
+        self.assertTrue(second.get("duplicate"))
+        self.assertEqual(second["job_id"], first["job_id"])
+        self.assertEqual(len(self.bridge.store.list_jobs(statuses=[JobStatus.QUEUED])), 1)
+
     def test_a_terminal_job_does_not_block_a_new_submission(self):
         first = self.submit()
         self.bridge.store.transition(first["job_id"], JobStatus.CANCELLED)

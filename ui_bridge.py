@@ -1113,7 +1113,8 @@ class UiBridge:
             if not self._is_translation_job(job):
                 continue
             same_slug = slug and Path(str(job.get("output_dir") or "")).name == slug
-            if job.get("source_url") == url or same_slug:
+            same_url = job.get("source_url") == url
+            if same_slug or (same_url and not slug):
                 return job
         return None
 
