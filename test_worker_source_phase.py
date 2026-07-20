@@ -169,12 +169,49 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertIsNotNone(prepared)
         self.assertEqual(prepared["id"], job["id"])
 
+    def test_automatic_selection_is_forwarded_to_limited_runner_command(self):
+        job = self.queued_url_job(
+            configuration_json='{"job_type":"translation","mode":"fast","full":false,'
+                               '"max_images":2,"force":true,"use_cache":false,'
+                               '"use_context":true}',
+            command_json='["python","run_webtoon.py","url","--max-images","2"]',
+        )
+        worker = _Worker(self.store, analysis=FakeAnalysis(specific_outcome(), accepted=3))
+
+        prepared = worker._prepare_source(job)
+
+        self.assertIsNotNone(prepared)
+        row = self.store.get_job(job["id"])
+        self.assertEqual(row["configuration"]["max_images"], 2)
+        self.assertIn("--max-images", row["command"])
+        self.assertIn("2", row["command"])
+        self.assertEqual(row["command"].count("--source-candidate-id"), 3)
+        self.assertIn("c000", row["command"])
+        self.assertIn("c002", row["command"])
+
     def test_an_existing_selection_skips_reanalysis(self):
         job = self.queued_url_job(
             source_selection_json='{"candidate_ids": ["c001", "c002"]}')
         worker = _Worker(self.store, error=AssertionError("re-analysed"))
         prepared = worker._prepare_source(job)
         self.assertIsNotNone(prepared)          # goes straight to the runner
+
+    def test_existing_selection_refreshes_runner_command_before_reuse(self):
+        job = self.queued_url_job(
+            configuration_json='{"job_type":"translation","mode":"fast","full":false,'
+                               '"max_images":2,"force":true,"use_cache":false,'
+                               '"use_context":true}',
+            command_json='["python","run_webtoon.py","url","--max-images","2"]',
+            source_selection_json='{"candidate_ids": ["c001", "c002"], "automatic": true}',
+        )
+        worker = _Worker(self.store, error=AssertionError("re-analysed"))
+
+        prepared = worker._prepare_source(job)
+
+        self.assertIsNotNone(prepared)
+        self.assertEqual(prepared["command"].count("--source-candidate-id"), 2)
+        self.assertIn("c001", prepared["command"])
+        self.assertIn("c002", prepared["command"])
 
     def test_a_local_folder_job_skips_url_analysis(self):
         job = self.queued_url_job()

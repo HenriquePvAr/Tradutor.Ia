@@ -130,6 +130,51 @@ def _dump(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]) -> list[str]:
+    """Rebuild the runner command so the downloader receives the persisted selection.
+
+    The submit-time command is intentionally created before browser analysis.  Once the
+    worker has a concrete set of opaque candidate IDs, the command must carry them to
+    ``run_webtoon.py``; otherwise a bounded selected run looks like an unconfirmed generic
+    smart-split run and can expand back to the whole chapter.
+    """
+    from pathlib import Path
+    import sys
+
+    from ui_helpers import build_run_command
+
+    config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+    return build_run_command(
+        url=str(job.get("source_url") or ""),
+        mode=str(config.get("mode") or "fast"),
+        output=Path(str(job.get("output_dir") or "chapter")).name,
+        full=bool(config.get("full", True)),
+        max_images=config.get("max_images"),
+        use_cache=bool(config.get("use_cache")),
+        force=bool(config.get("force")),
+        use_context=bool(config.get("use_context", True)),
+        source_candidate_ids=list(selection.get("candidate_ids") or []),
+        open_output=bool(config.get("open_output", False)),
+        python_executable=sys.executable,
+    )
+
+
+def ensure_command_has_source_selection(store: Any, job: dict[str, Any]) -> dict[str, Any]:
+    raw = job.get("source_selection_json") if isinstance(job, dict) else None
+    try:
+        selection = json.loads(raw) if isinstance(raw, (str, bytes)) else dict(raw or {})
+    except (TypeError, ValueError):
+        return job
+    if not selection.get("candidate_ids"):
+        return job
+    command = command_with_source_selection(job, selection)
+    existing = list(job.get("command") or [])
+    if existing == command:
+        return job
+    store.update_fields(job["id"], command_json=json.dumps(command, ensure_ascii=False))
+    return store.get_job(job["id"]) or job
+
+
 def apply_source_analysis(
     store: Any,
     job: dict[str, Any],
@@ -224,9 +269,16 @@ def apply_source_analysis(
         "selected_candidate_count": len(selected_ids),
         "manual_subset": False,
     }
+    configuration = dict(job.get("configuration") or {})
+    configuration["source_analysis"] = public_analysis
+    configuration["source_selection"] = selection
+    command = command_with_source_selection(job, selection)
     row = store.transition(
         job_id, JobStatus.QUEUED, source_analysis_json=_dump(public_analysis),
-        source_selection_json=_dump(selection), stage="created", **provenance)
+        source_selection_json=_dump(selection),
+        configuration_json=_dump(configuration),
+        command_json=json.dumps(command, ensure_ascii=False),
+        stage="created", **provenance)
     return SourceAnalysisPhaseResult(
         outcome=READY_FOR_RUNNER, job_id=job_id, status=JobStatus.QUEUED, stage="created",
         analysis=public_analysis, selection=selection,

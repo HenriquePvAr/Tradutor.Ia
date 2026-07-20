@@ -120,6 +120,10 @@ class UIHelpersTests(unittest.TestCase):
         self.assertEqual((snapshot.current, snapshot.total), (81, 713))
         self.assertGreater(snapshot.percent, 0)
 
+    def test_progress_parser_does_not_treat_engine_name_as_ocr_stage(self):
+        snapshot = parse_progress_line("Modo: fast (rapidocr)", ProgressSnapshot())
+        self.assertEqual(snapshot.stage, "Preparando")
+
     def test_progress_does_not_regress_to_download(self):
         snapshot = ProgressSnapshot(stage="Tradução NVIDIA", percent=0.64)
         parse_progress_line("Baixando um modelo auxiliar", snapshot)

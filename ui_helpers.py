@@ -354,7 +354,7 @@ class ProgressSnapshot:
 _STAGES = (
     (("selenium", "coleta", "baixando", "download"), "Baixando imagens", 0.08),
     (("validando", "validação", "validacao"), "Validando imagens", 0.18),
-    (("rapidocr", "paddleocr", " ocr", "ocr "), "OCR", 0.28),
+    ((" ocr", "ocr "), "OCR", 0.28),
     (("classifica", "agrup"), "Classificação", 0.48),
     (("nvidia", "tradução nvidia", "traducao nvidia", "traduzindo"), "Tradução NVIDIA", 0.58),
     (("inpaint", "render", "redesen", "salvando página", "pagina ", "página "), "Renderização", 0.78),

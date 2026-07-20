@@ -169,9 +169,11 @@ class Worker:
         if str(current.get("source_type") or "") != "url":
             return current                      # local folder keeps its existing flow
         if has_usable_selection(current):
+            from source_analysis_phase import ensure_command_has_source_selection
+
             # A previous attempt already produced a selection; re-analysing would reopen a
             # browser and could contradict the order already persisted.
-            return current
+            return ensure_command_has_source_selection(self.store, current)
 
         def cancelled() -> bool:
             row = self.store.get_job(job["id"])
