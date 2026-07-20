@@ -60,7 +60,7 @@ class VortexScansAdapterTests(unittest.TestCase):
         # CDN authority so a previous chapter cannot leak resource-host grants.
         self.assertIsNot(adapter, VORTEXSCANS)
         self.assertEqual(adapter.name, "vortexscans")
-        self.assertEqual(adapter.adapter_version, "1")
+        self.assertEqual(adapter.adapter_version, "2")
         with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
             adapter.validate_url(VORTEX_CHAPTER_URL)
             adapter.validate_navigation_url(VORTEX_CHAPTER_URL)
@@ -89,8 +89,10 @@ class VortexScansAdapterTests(unittest.TestCase):
 
     def test_reader_selectors_are_owned_by_vortex_adapter(self):
         selectors = VORTEXSCANS.reader_selectors()
-        self.assertIn("reading-content", selectors["container"])
-        self.assertIn("reading-content", selectors["image"])
+        self.assertIn("immersive-reader", selectors["container"])
+        self.assertIn("articleBody", selectors["container"])
+        self.assertIn("image-container", selectors["image"])
+        self.assertIn("data-reader-page-image", selectors["image"])
         self.assertNotIn("_imageList", selectors["image"])
 
     def test_observed_vortex_cdn_requires_selected_run_authorization(self):

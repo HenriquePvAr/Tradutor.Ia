@@ -206,6 +206,11 @@ def slot_state(candidate: dict[str, Any], *, adapter: Any = None) -> str:
         if width < minimum_width or height < minimum_height:
             return SLOT_REJECTED
         try:
+            # A DOM candidate is the first observation of a dynamic reader resource.  Record
+            # that observation before asking the adapter to grant fetch authority; adapters
+            # with ephemeral CDN grants (for example Vortex) otherwise reject every valid
+            # page because the host has not yet entered their run-local evidence set.
+            adapter.validate_observed_url(url)
             adapter.authorize_related_url(url)
         except SourceError:
             # An unauthorized host is never a page, whatever its size.
@@ -635,19 +640,21 @@ class VortexScansAdapter(BaseAdapter):
     can be added only after its reader behaviour is separately verified and covered by tests.
     """
 
-    adapter_version = "1"
+    adapter_version = "2"
 
     def __init__(self):
         super().__init__(
             name="vortexscans",
+            adapter_version="2",
             allowed_hosts=(_VORTEXSCANS_HOST,),
             runner="run_webtoon.py",
             container_selector=(
-                ".reading-content, .chapter-content, #chapter-content, .reader-area"
+                'article.immersive-reader section[itemprop="articleBody"]:not(.hidden), '
+                "article.immersive-reader [data-reader-pages], article.immersive-reader"
             ),
             image_selector=(
-                ".reading-content img, .chapter-content img, #chapter-content img, "
-                ".reader-area img"
+                "figure.image-container img[data-reader-page-image], "
+                "figure.image-container img, img[data-reader-page-image]"
             ),
             coverage_strategy="reader_container",
             collection_strategy="adapter_specific",

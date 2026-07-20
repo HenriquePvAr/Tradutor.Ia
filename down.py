@@ -390,14 +390,19 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
 
 def _webtoons_lazy_resolver(*, cancel_check=None, on_progress=None,
                             limits=None, clock=None, sleep=None):
-    """Return a context resolver for the Webtoons reader, or a no-op for other adapters."""
+    """Return a resolver for any registered lazy reader with a known container.
+
+    The historical name is kept for compatibility with callers and persisted diagnostics;
+    the behavior is adapter-generic so a specific reader cannot silently lose pages merely
+    because its site is not Webtoons.
+    """
     def resolve(adapter, driver, page_url, collected):
         strategy = str(getattr(adapter, "collection_strategy", "") or "")
         coverage = str(getattr(adapter, "coverage_strategy", "") or "")
         if (
-            str(getattr(adapter, "name", "") or "") != "webtoons"
-            or strategy != "adapter_specific"
+            strategy != "adapter_specific"
             or coverage != "reader_container"
+            or not callable(getattr(adapter, "reader_selectors", None))
         ):
             return collected
         from chapter_source import SourceError, slot_counts

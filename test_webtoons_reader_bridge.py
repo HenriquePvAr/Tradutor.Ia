@@ -274,10 +274,10 @@ class AdapterBoundaryTests(unittest.TestCase):
         payload = {}
         self.assertIs(down._webtoons_lazy_resolver()(adapter, object(), "", payload), payload)
 
-    def test_vortex_and_local_folder_do_not_use_the_bridge(self):
+    def test_vortex_uses_the_same_generic_lazy_bridge(self):
         vortex = select_adapter("https://vortexscans.org/series/demo-series/chapter-42")
-        payload = {}
-        self.assertIs(down._webtoons_lazy_resolver()(vortex, object(), "", payload), payload)
+        self.assertEqual(vortex.collection_strategy, "adapter_specific")
+        self.assertEqual(vortex.coverage_strategy, "reader_container")
         from local_folder_source import LocalFolderChapterAdapter
 
         self.assertFalse(hasattr(LocalFolderChapterAdapter(), "reader_selectors"))
