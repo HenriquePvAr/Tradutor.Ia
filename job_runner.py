@@ -41,6 +41,7 @@ from ui_helpers import (
 
 HEARTBEAT_SECONDS = 3.0
 CANCEL_GRACE_SECONDS = 8.0
+CANCELLED_EXIT_CODE = 130
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 _PROVENANCE_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 
@@ -391,6 +392,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
 
 def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
               *, interrupted: bool = False) -> int:
+    effective_return_code = CANCELLED_EXIT_CODE if cancelled else int(return_code)
     artifacts = find_output_artifacts(output_dir)
     report = load_json(output_dir / "timing_report.json")
     download_report = load_json(output_dir / "downloaded_images.json")
@@ -430,7 +432,7 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         reason_code = source_reason
 
     fields = {
-        "exit_code": int(return_code),
+        "exit_code": effective_return_code,
         "pdf_path": artifacts.get("pdf_path") or "",
         "quality_report_path": artifacts.get("quality_report_path") or "",
         "manifest_path": artifacts.get("manifest_path") or "",
@@ -456,7 +458,7 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         print(f"finalize transition failed: {exc}", file=sys.stderr)
         return 1
     _write_manifest(output_dir, job, status=target,
-                    pdf_path=artifacts.get("pdf_path") or "", exit_code=int(return_code),
+                    pdf_path=artifacts.get("pdf_path") or "", exit_code=effective_return_code,
                     reason_code=reason_code)
     if (
         target == JobStatus.FINISHED
@@ -475,6 +477,9 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
             )
         except Exception:
             pass
+    # The runner process completed its terminalization successfully. The job's
+    # persisted exit_code carries the normalized cancellation contract; the
+    # supervisor itself keeps the historical zero return for handled outcomes.
     return 0
 
 
