@@ -687,6 +687,67 @@ class DownloaderRegressionTests(unittest.TestCase):
         self.assertEqual(item["bytes_received"], 0)
         self.assertTrue(item["cookies_possible"])
 
+    def test_download_report_keeps_sanitized_context_when_no_transport_runs(self):
+        report = {
+            "viewer_image_count": 0,
+            "ignored": [],
+            "downloaded": [],
+            "transport_metadata": {"configured": [], "count": 0},
+            "transport_name": "none",
+            "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                        "image_save_seconds": 0.0},
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            paths = _download_candidates(
+                None,
+                [{"candidate_id": "page-003", "url": "https://reader.example.test/page.png?sig=1",
+                  "source": "currentSrc", "order": 3, "width": 800, "height": 1200,
+                  "isChapterCandidate": True}],
+                None, 1, 1, None, report, "https://reader.example.test/chapter/1",
+                folder, transports=[],
+            )
+
+        self.assertEqual(paths, [])
+        item = report["ignored"][0]
+        self.assertEqual(item["reason_code"], "download_failed")
+        self.assertEqual(item["host"], "reader.example.test")
+        self.assertEqual(item["scheme"], "https")
+        self.assertTrue(item["query_preserved"])
+        self.assertNotIn("sig=1", json.dumps(item))
+
+    def test_download_report_classifies_plain_timeout(self):
+        class TimeoutTransport:
+            name = "requests"
+
+            @staticmethod
+            def fetch(_url, *, referer=""):
+                raise TimeoutError("offline fixture timeout")
+
+        report = {
+            "viewer_image_count": 0,
+            "ignored": [],
+            "downloaded": [],
+            "transport_metadata": {"configured": ["requests"], "count": 1},
+            "transport_name": "none",
+            "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                        "image_save_seconds": 0.0},
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            paths = _download_candidates(
+                None,
+                [{"candidate_id": "page-004", "url": "https://reader.example.test/page.png",
+                  "source": "currentSrc", "order": 4, "width": 800, "height": 1200,
+                  "isChapterCandidate": True}],
+                None, 1, 1, None, report, "https://reader.example.test/chapter/1",
+                folder, transports=[TimeoutTransport()],
+            )
+
+        self.assertEqual(paths, [])
+        item = report["ignored"][0]
+        self.assertEqual(item["reason_code"], "timeout")
+        self.assertEqual(item["transport"], "requests")
+        self.assertEqual(item["exception"], "TimeoutError")
+
     def test_duplicate_image_bytes_are_not_saved_twice(self):
         image = Image.new("RGB", (800, 1200), "navy")
         buffer = io.BytesIO()

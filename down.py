@@ -2090,6 +2090,8 @@ def _download_url(url, referer, max_retries, transports=None):
                 result = transport.fetch(url, referer=referer)
                 _download_url.last_transport_name = _safe_report_metadata(
                     getattr(transport, "name", ""), "unknown")
+                if result is None:
+                    raise SourceError("invalid_image_response", "empty_response")
                 last_attempt = _download_attempt_diagnostics(
                     url, referer, transport, result=result)
                 _download_url.last_diagnostics = last_attempt
@@ -2127,6 +2129,15 @@ def _download_url(url, referer, max_retries, transports=None):
                 **last_attempt,
                 "reason_code": _download_url.last_failure,
             }
+    if not _download_url.last_failure:
+        _download_url.last_failure = "download_failed"
+    if not _download_url.last_diagnostics:
+        _download_url.last_diagnostics = _download_attempt_diagnostics(
+            url,
+            referer,
+            None,
+            error=SourceError("invalid_image_response", _download_url.last_failure),
+        )
     return None
 
 
@@ -2258,6 +2269,13 @@ def _report_ignored(report, candidate, reason, diagnostics=None):
         "source": candidate.get("source"),
         "order": candidate.get("order"),
     }
+    if not isinstance(diagnostics, dict) and reason == "download_failed":
+        diagnostics = _download_attempt_diagnostics(
+            candidate.get("url"),
+            "",
+            None,
+            error=ValueError("download_failed"),
+        )
     if isinstance(diagnostics, dict):
         for key in (
             "reason_code",
