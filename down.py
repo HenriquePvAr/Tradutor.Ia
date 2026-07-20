@@ -331,7 +331,8 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
     adapter.validate_url(url)
     adapter.validate_path(url)
     normalized = adapter.normalize_url(url)
-    navigation_url = preflight_browser_navigation(adapter, normalized)
+    navigation_url = preflight_browser_navigation(
+        adapter, normalized, cancel_check=cancel_check)
     if cancel_check and cancel_check():
         raise SourceError("cancelled", "before_source_analysis")
     driver = None

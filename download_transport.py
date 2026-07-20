@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Protocol
@@ -404,7 +405,7 @@ def reserve_local_content(transports: Iterable[DownloadTransport] | None, size: 
 
 
 def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | None = None,
-                                 session: Any = None) -> str:
+                                 session: Any = None, cancel_check=None) -> str:
     """Resolve and revalidate each top-level HTTP redirect before Chrome navigates.
 
     Selenium exposes a final URL only after it has followed redirects.  A bounded ordinary
@@ -426,13 +427,42 @@ def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | 
             # adapters deliberately have no path markers and remain unaffected.
             adapter.validate_path(current)
             try:
-                response = session.get(
-                    current,
-                    headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "text/html,application/xhtml+xml"},
-                    timeout=limits.timeout,
-                    stream=True,
-                    allow_redirects=False,
-                )
+                request_args = {
+                    "headers": {"User-Agent": DEFAULT_USER_AGENT,
+                                "Accept": "text/html,application/xhtml+xml"},
+                    "timeout": limits.timeout,
+                    "stream": True,
+                    "allow_redirects": False,
+                }
+                if not cancel_check:
+                    response = session.get(current, **request_args)
+                else:
+                    result: dict[str, Any] = {}
+
+                    def fetch() -> None:
+                        try:
+                            result["response"] = session.get(current, **request_args)
+                        except BaseException as exc:  # noqa: BLE001 - re-raised below
+                            result["error"] = exc
+
+                    request_thread = threading.Thread(target=fetch, daemon=True)
+                    request_thread.start()
+                    while request_thread.is_alive():
+                        if cancel_check():
+                            try:
+                                session.close()
+                            except Exception:  # noqa: BLE001 - cancellation is fail-closed
+                                pass
+                            request_thread.join(timeout=1.0)
+                            raise SourceError("cancelled", "during_navigation_preflight")
+                        request_thread.join(timeout=0.1)
+                    if "error" in result:
+                        raise result["error"]
+                    response = result.get("response")
+                    if response is None:
+                        raise SourceError(SOURCE_NOT_READY, "navigation_preflight")
+            except SourceError:
+                raise
             except Exception as exc:  # noqa: BLE001 - do not leak network internals to UI
                 raise SourceError(SOURCE_NOT_READY, "navigation_preflight") from exc
             try:

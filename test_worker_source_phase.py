@@ -93,6 +93,20 @@ class _WorkerWithPreparedJob(_Worker):
         return self._prepared
 
 
+class _BlockingCancellationWorker(_Worker):
+    def __init__(self, store):
+        super().__init__(store)
+        self.started = threading.Event()
+
+    def _analyze_source(self, url, *, cancel_check=None, on_progress=None):
+        from chapter_source import SourceError
+
+        self.started.set()
+        while not cancel_check():
+            time.sleep(0.01)
+        raise SourceError("cancelled", "test_cancel")
+
+
 class WorkerPhaseTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -150,6 +164,22 @@ class WorkerPhaseTests(unittest.TestCase):
         worker = _Worker(self.store, error=AssertionError("analysis ran"))
         self.assertIsNone(worker._prepare_source(job))
         self.assertEqual(worker.spawns, 0)
+
+    def test_cancellation_during_source_analysis_terminalizes_claim(self):
+        job = self.queued_url_job()
+        worker = _BlockingCancellationWorker(self.store)
+        result = {}
+        thread = threading.Thread(target=lambda: result.setdefault("job", worker._prepare_source(job)))
+        thread.start()
+        self.assertTrue(worker.started.wait(5), "analysis did not start")
+        self.store.request_cancel(job["id"])
+        thread.join(5)
+        self.assertFalse(thread.is_alive(), "analysis cancellation did not return")
+        self.assertIsNone(result.get("job"))
+        row = self.store.get_job(job["id"])
+        self.assertEqual(row["status"], JobStatus.CANCELLED)
+        self.assertEqual(row["stage"], "cancelled")
+        self.assertEqual(row["reason_code"], "user_cancelled")
 
     def test_a_terminal_job_never_reaches_analysis(self):
         job = self.queued_url_job()

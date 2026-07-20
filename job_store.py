@@ -71,7 +71,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
         # result has to reach review from here. Additive: nothing previously allowed was
         # removed, and a claimed job still cannot jump straight to a running state.
         {JobStatus.STARTING, JobStatus.QUEUED, JobStatus.FAILED, JobStatus.INTERRUPTED,
-         JobStatus.AWAITING_SOURCE_REVIEW}
+         JobStatus.AWAITING_SOURCE_REVIEW, JobStatus.CANCELLING}
     ),
     JobStatus.STARTING: frozenset(
         {JobStatus.RUNNING, JobStatus.INTERRUPTED, JobStatus.FAILED, JobStatus.CANCELLING}

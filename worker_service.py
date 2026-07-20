@@ -244,6 +244,14 @@ class Worker:
         code = getattr(exc, "code", None) or "source_not_ready"
         try:
             if code == "cancelled":
+                current = self.store.get_job(job_id)
+                if current and current.get("status") in {
+                    JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING,
+                }:
+                    self.store.transition(
+                        job_id, JobStatus.CANCELLING,
+                        reason_code="user_cancelled", stage="cancelling",
+                        interrupted_reason="cancelled_source_analysis")
                 self.store.transition(
                     job_id, JobStatus.CANCELLED, reason_code="user_cancelled", stage="cancelled",
                     interrupted_reason="cancelled_source_analysis")
@@ -476,8 +484,27 @@ class Worker:
                 # PID belongs to some other process now: fail closed, do not terminate it.
                 reason = "ownership_mismatch"
             try:
-                self.store.transition(job_id, JobStatus.INTERRUPTED,
-                                      interrupted_reason=reason, recoverable=1)
+                if job.get("cancel_requested"):
+                    current = self.store.get_job(job_id)
+                    if current and current.get("status") in {
+                        JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING,
+                    }:
+                        self.store.transition(
+                            job_id, JobStatus.CANCELLING,
+                            interrupted_reason="cancelled_worker_gone",
+                            reason_code="user_cancelled",
+                            stage="cancelling",
+                        )
+                    self.store.transition(
+                        job_id, JobStatus.CANCELLED,
+                        interrupted_reason="cancelled_worker_gone",
+                        reason_code="user_cancelled",
+                        stage="cancelled",
+                        recoverable=0,
+                    )
+                else:
+                    self.store.transition(job_id, JobStatus.INTERRUPTED,
+                                          interrupted_reason=reason, recoverable=1)
             except Exception:  # noqa: BLE001 - another worker may have won the reconcile
                 pass
         return safe_to_continue
