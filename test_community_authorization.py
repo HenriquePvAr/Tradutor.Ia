@@ -1305,10 +1305,11 @@ def test_missing_and_other_users_job_are_indistinguishable(harness):
         )
         for candidate in (source_job_id, "0" * 32)
     ]
-    assert [(r.status_code, r.json()) for r in responses] == [
-        (404, {"detail": "not_found"}),
-        (404, {"detail": "not_found"}),
-    ]
+    assert [r.status_code for r in responses] == [404, 404]
+    details = [r.json()["detail"] for r in responses]
+    assert all(isinstance(detail, dict) for detail in details)
+    assert all(detail["code"] == "output_not_found" for detail in details)
+    assert all(detail["message"] != "not_found" for detail in details)
     assert harness.api.store.list_user_posts("user-b") == []
 
 

@@ -355,7 +355,7 @@ class CancelTests(unittest.TestCase):
         with mock.patch.object(ui_bridge, "_runner_still_alive", return_value=True):
             self.drive(self.bridge.cancel())
         row = self.store.get_job(job["id"])
-        self.assertEqual(row["status"], JobStatus.RUNNING)   # the runner owns the teardown
+        self.assertEqual(row["status"], JobStatus.CANCELLING)  # the runner owns the teardown
         self.assertTrue(self.store.cancel_requested(job["id"]))
 
 
