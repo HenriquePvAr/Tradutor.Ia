@@ -1310,7 +1310,7 @@
     const activity = $('#dashActivityList');
     activity.className = 'activity-list';
     activity.innerHTML = appState.history.length ? appState.history.slice(0, 7).map(record => {
-      const status = record.status === 'error' ? 'erro no processamento' : record.review_status === 'completed' ? 'revisão concluída' : record.status === 'review_required' || boolish(record.quality_gate) === false ? 'revisão necessária' : record.pdf_path ? 'PDF gerado' : 'tradução concluída';
+      const status = record.status === 'error' ? 'erro no processamento' : (record.review_status === 'completed' || record.review_confirmed === true) ? 'revisão concluída' : record.status === 'review_required' || boolish(record.quality_gate) === false ? 'revisão necessária' : record.pdf_path ? 'PDF gerado' : 'tradução concluída';
       const date = record.finished_at || record.started_at;
       const when = date ? new Date(date).toLocaleDateString('pt-BR', {day:'2-digit', month:'short'}) : 'local';
       return `<div class="activity-item"><span class="activity-mark"></span><span class="activity-copy"><strong>${escapeHtml(record.chapter_name || record.slug || 'Capítulo')}</strong><span>${escapeHtml(status)}</span></span><span class="activity-time">${escapeHtml(when)}</span></div>`;
