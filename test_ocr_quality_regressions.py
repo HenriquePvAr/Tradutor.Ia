@@ -3,7 +3,9 @@ from offline_test_guard import install_offline_network_guard
 install_offline_network_guard()
 
 import json
+import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -73,6 +75,7 @@ from benchmark_pipeline import (
 )
 from ocr_engine import (
     OCRLine,
+    OCREngine,
     assess_ocr_repair,
     repair_ocr_text,
     segment_compact_english_word,
@@ -281,6 +284,25 @@ class _StrictRetryTranslator:
 
 
 class OCRQualityRegressionTests(unittest.TestCase):
+    def test_paddle_constructor_disables_native_onednn_path(self):
+        captured = {}
+
+        class FakePaddleOCR:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        previous = dict(OCREngine._paddle_instances)
+        OCREngine._paddle_instances.clear()
+        try:
+            fake_module = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
+            with patch.dict(sys.modules, {"paddleocr": fake_module}):
+                OCREngine("en", engine="paddle")._get_paddle()
+        finally:
+            OCREngine._paddle_instances.clear()
+            OCREngine._paddle_instances.update(previous)
+
+        self.assertIs(captured.get("enable_mkldnn"), False)
+
     def test_page_fallback_preserves_better_regional_ocr_winner(self):
         regional = _line("BUG", confidence=0.96)
         regional.box = (100, 100, 80, 30)

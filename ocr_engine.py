@@ -297,6 +297,12 @@ class OCREngine:
             }.get(self.engine, "PaddleOCR")
             print(f"Inicializando {label} ({self.paddle_lang})...")
             self._paddle_instances[cache_key] = PaddleOCR(
+                # PaddleOCR's oneDNN path can terminate the Windows process in native
+                # code (rather than raising a Python exception) on some CPU/model
+                # combinations.  Keep the OCR worker fail-safe and let Paddle use its
+                # regular CPU kernels; this is a generic runtime safeguard, not a
+                # chapter-specific workaround.
+                enable_mkldnn=False,
                 **kwargs,
             )
         return self._paddle_instances[cache_key]
