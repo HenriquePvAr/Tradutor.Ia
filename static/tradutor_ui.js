@@ -40,8 +40,8 @@
     publicationBusy: false,
     publicationDrafts: Object.create(null),
   };
-  const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
-  const terminalRunStatuses = new Set(['finished', 'review_required']);
+  const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
+  const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed']);
   const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
   const boolish = value => {
     if (value === true || value === false) return value;
@@ -71,8 +71,25 @@
     // lives only in the auth module's cache; this never persists or logs it.
     const bearer = window.__tradutorAccessToken || '';
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
+    const timeoutMs = Number(options.timeoutMs || 15000);
+    const controller = options.signal ? null : new AbortController();
+    const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
     const init = {...options, method, headers, credentials: 'same-origin'};
-    const response = await fetch(path, init);
+    delete init.timeoutMs;
+    if (controller) init.signal = controller.signal;
+    let response;
+    try {
+      response = await fetch(path, init);
+    } catch (cause) {
+      if (cause?.name === 'AbortError') {
+        const error = new Error('O serviço demorou para responder. Verificando o estado…');
+        error.code = 'timeout'; error.status = 408; throw error;
+      }
+      const error = new Error('Não foi possível conectar ao serviço local.');
+      error.code = 'connection_error'; throw error;
+    } finally {
+      if (timer) window.clearTimeout(timer);
+    }
     let payload = {};
     try { payload = await response.json(); } catch (_) { /* empty response */ }
     if (!response.ok) {
@@ -554,13 +571,16 @@
     try {
       const payload = {queue};
       if (jobId) payload.job_id = jobId;
-      await api('/api/ui/cancel', {method: 'POST', body: JSON.stringify(payload)});
-      showToast('Cancelamento solicitado. Os arquivos parciais serao preservados.', 'warn');
+      const endpoint = jobId ? `/api/ui/jobs/${encodeURIComponent(jobId)}/cancel` : '/api/ui/cancel';
+      const result = await api(endpoint, {method: 'POST', body: JSON.stringify(payload), timeoutMs: 10000});
+      showToast(result?.message || 'Cancelamento solicitado. Os arquivos parciais serao preservados.', 'warn');
       pollState();
     } catch (error) {
       showToast(error.message || 'Nao foi possivel cancelar.', 'error');
-      appState.cancelBusy = false;
       if (button) { button.disabled = false; button.textContent = 'Cancelar processamento'; }
+    } finally {
+      appState.cancelBusy = false;
+      if (button && !button.hidden) { button.disabled = false; button.textContent = 'Cancelar processamento'; }
     }
   }
   function setRunControls(active, awaitingReview = false) {
@@ -647,13 +667,17 @@
     const items = Array.isArray(review.items) ? review.items : [];
     const filter = appState.qualityReviewFilter || 'pending';
     const visible = items.filter(item => filter === 'all' || (filter === 'pending' ? item.state === 'pending' : item.state !== 'pending'));
-    $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · ${review.confirmed ? 'revisao confirmada' : 'confirmacao necessaria'}`;
+    $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
     list.innerHTML = visible.length ? visible.map(item => {
       const actionClass = item.state === 'pending' ? ' show' : '';
       return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span></div><div class="quality-review-reason">${escapeHtml(item.reason)}</div><div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div></div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="cta-row"><button type="button" class="btn-ghost review-mark${actionClass}" data-review-action="reviewed">Marcar como revisado</button><button type="button" class="btn-ghost review-preserve${actionClass}" data-review-action="preserved_original">Manter original</button></div></article>`;
     }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
     const confirm = $('#confirmQualityReview');
-    if (confirm) { confirm.disabled = Number(review.pending_count || 0) > 0; confirm.title = confirm.disabled ? 'Revise cada item ou mantenha o original antes de confirmar.' : ''; }
+    if (confirm) {
+      confirm.hidden = Boolean(review.confirmed);
+      confirm.disabled = Boolean(review.confirmed) || Number(review.pending_count || 0) > 0;
+      confirm.title = confirm.disabled && !review.confirmed ? 'Revise cada item ou mantenha o original antes de confirmar.' : '';
+    }
   }
 
   async function qualityReviewAction(event) {
@@ -947,7 +971,7 @@
       window.__tradutorCommunityAuthenticated ||
       window.__tradutorAccessToken,
     );
-    const review = String(record.status || '').toLowerCase() === 'review_required' || boolish(record.quality_gate) === false;
+    const review = record.review_status !== 'completed' && (String(record.status || '').toLowerCase() === 'review_required' || boolish(record.quality_gate) === false);
     const published = String(record.publication_status || '').toLowerCase() === 'published';
     const changed = published && record.publication_pdf_sha256 && record.pdf_sha256 && record.publication_pdf_sha256 !== record.pdf_sha256;
     return {terminal, hasPdf, manifest, authenticated, review, published, changed,
@@ -964,6 +988,7 @@
   function renderHistoryCard(record) {
     const title = record.chapter_name || record.slug || 'Capítulo';
     const engine = record.mode === 'fast' ? 'rapid' : 'paddle';
+    const statusLabel = record.review_status === 'completed' ? 'revisão concluída' : (runStatusLabels[record.status] || record.status || 'local');
     const gateValue = boolish(record.quality_gate);
     const gate = gateValue === true ? 'gate aprovado' : gateValue === false ? 'gate reprovado' : 'gate pendente';
     const provenance = record.output_verification === 'legacy_unverified' ? 'origem não verificada' : record.output_verification === 'e2e_evidence' ? 'evidência E2E' : record.output_verification === 'manifest_verified' ? 'manifest verificado' : 'origem não informada';
@@ -971,7 +996,7 @@
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
-      <div class="hm-badges"><span class="badge ep">${escapeHtml(runStatusLabels[record.status] || record.status || 'local')}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
+      <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
       <div class="hm-actions">${actionButton('Abrir PDF', 'open', record.pdf_path)}${actionButton('Pasta', 'open', record.output_folder)}${actionButton('Relatório', 'open', record.quality_report_path)}${actionButton('Compare', 'open', record.compare_sheet_path)}${actionButton('Contexto', 'open', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${publicationAction(record)}</div>
     </div>`;
   }
@@ -1544,4 +1569,8 @@
   refreshBootstrap();
   const pollingTimer = window.setInterval(pollState, 850);
   window.addEventListener('beforeunload', () => { window.clearInterval(pollingTimer); cancelAnimationFrame(animationFrame); });
+  window.addEventListener('unhandledrejection', event => {
+    const reason = event.reason || {};
+    showToast(reason.message || 'Uma operação não foi concluída.', 'error');
+  });
 })();

@@ -187,6 +187,14 @@ class CommunityApi:
             if not isinstance(config, dict) or config.get("job_type") != "translation":
                 raise ValueError
             owner_id = str(config.get("community_owner_id") or "")
+            legacy_owner = False
+            if not owner_id and principal.auth_source == "local_session":
+                # Jobs created before community ownership was introduced are still local
+                # artifacts. Bind them to the authenticated local operator only after all
+                # manifest/PDF checks below succeed; external principals remain fail-closed.
+                owner_id = principal.user_id
+                config["community_owner_id"] = owner_id
+                legacy_owner = True
             if not principal.has_role("admin") and owner_id != principal.user_id:
                 raise ValueError
             if job.get("status") not in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED}:
@@ -207,15 +215,24 @@ class CommunityApi:
             if not isinstance(manifest, dict):
                 raise ValueError
             manifest_pdf = _resolve_recorded_path(manifest.get("pdf_path"), output_dir)
+            manifest_status = str(manifest.get("status") or "")
+            status_matches = manifest_status == job["status"] or (
+                job.get("status") == JobStatus.FINISHED
+                and job.get("review_confirmed_at")
+                and manifest_status == JobStatus.REVIEW_REQUIRED
+            )
             if (
                 manifest.get("job_id") != job["id"]
                 or manifest.get("run_id") != job["run_id"]
-                or manifest.get("status") != job["status"]
+                or not status_matches
                 or int(manifest.get("exit_code")) != 0
                 or manifest_pdf != pdf_path
             ):
                 raise ValueError
             validate_local_pdf(pdf_path, root)
+            if legacy_owner:
+                self.service.job_store.update_fields(
+                    job["id"], configuration_json=json.dumps(config, ensure_ascii=False))
             return {
                 "output_dir": str(output_dir),
                 "pdf_path": str(pdf_path),

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import Body, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from nicegui import app, ui
 
 from community_auth import (
@@ -224,6 +224,25 @@ async def api_cancel(payload: dict[str, Any] = Body(default={})) -> dict[str, An
             "message": "Não foi possível cancelar este processamento.",
             "action": "Atualize o painel e tente novamente.",
         }) from exc
+
+
+@app.post("/api/ui/jobs/{job_id}/cancel")
+async def api_job_cancel(job_id: str) -> JSONResponse:
+    """Cancel exactly the job named by the caller without waiting for its runner."""
+    try:
+        result = await BRIDGE.cancel(job_id=str(job_id or ""))
+    except ValueError as exc:
+        code = str(exc)
+        messages = {
+            "job_not_found": "O processamento solicitado não foi encontrado.",
+            "job_not_active": "Esse processamento não está ativo.",
+        }
+        raise HTTPException(status_code=404 if code == "job_not_found" else 409,
+                            detail={"code": code, "stage": "cancelamento",
+                                    "message": messages.get(code, "Não foi possível cancelar este processamento."),
+                                    "action": "Atualize o painel e tente novamente."}) from exc
+    status_code = 202 if result.get("status") == "cancelling" else 200
+    return JSONResponse(result, status_code=status_code)
 
 
 @app.get("/api/ui/quality-review/{job_id}")

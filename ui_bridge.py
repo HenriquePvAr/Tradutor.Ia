@@ -299,6 +299,7 @@ class UiBridge:
         self.profile = self._load_profile()
         self.store = JobStore(JOBS_DB_PATH)
         self.history_revision = 1
+        self.store.reconcile_confirmed_reviews()
         # A job left in flight by a crash must not come back as PROCESSANDO after a restart.
         self._recover_staged_source_analyses()
         self.reconcile_orphans()
@@ -447,6 +448,11 @@ class UiBridge:
             "finished_at": _epoch_to_iso(job.get("finished_at")),
             "total_seconds": _duration(job),
             "review_confirmed": bool(job.get("review_confirmed_at")),
+            "review_status": (
+                "completed" if job.get("review_confirmed_at") else
+                "required" if job.get("status") == JobStatus.REVIEW_REQUIRED else "none"
+            ),
+            "review_confirmed_at": _epoch_to_iso(job.get("review_confirmed_at")),
             "cancellation_requested_at": _epoch_to_iso(job.get("cancellation_requested_at")),
             "cancellation_completed_at": _epoch_to_iso(job.get("cancellation_completed_at")),
         }
@@ -494,7 +500,9 @@ class UiBridge:
 
     def quality_review(self, job_id: str) -> dict[str, Any] | None:
         job = self.store.get_job(str(job_id or ""))
-        if not job or job.get("status") != JobStatus.REVIEW_REQUIRED:
+        if not job or job.get("status") not in {JobStatus.REVIEW_REQUIRED, JobStatus.FINISHED}:
+            return None
+        if job.get("status") == JobStatus.FINISHED and not job.get("review_confirmed_at"):
             return None
         report = self._quality_report_data(job)
         if not report:
@@ -546,6 +554,7 @@ class UiBridge:
             "items": items,
             "pending_count": sum(1 for item in items if item["state"] == "pending"),
             "confirmed": bool(job.get("review_confirmed_at")),
+            "review_status": "completed" if job.get("review_confirmed_at") else "required",
             "status": job.get("status"),
         }
 
@@ -553,6 +562,8 @@ class UiBridge:
         payload = self.quality_review(job_id)
         if not payload or not any(item["key"] == item_key for item in payload["items"]):
             raise ValueError("quality_review_item_not_found")
+        if payload.get("confirmed"):
+            raise ValueError("quality_review_already_completed")
         if action not in {"reviewed", "preserved_original"}:
             raise ValueError("quality_review_action_invalid")
         self.store.record_review_action(job_id, item_key, action)
@@ -565,6 +576,9 @@ class UiBridge:
             raise ValueError("quality_review_not_available")
         if payload["pending_count"]:
             raise ValueError("quality_review_items_pending")
+        if payload.get("confirmed"):
+            payload["message"] = "Esta revisão já foi concluída."
+            return payload
         self.store.confirm_review(job_id)
         self.history_revision += 1
         return self.quality_review(job_id) or payload
@@ -651,11 +665,31 @@ class UiBridge:
     def _history_payload(self) -> list[dict[str, Any]]:
         # Terminal jobs from the store, plus legacy output discovery for old runs.
         self.history = self.history_store.discover_outputs()
+        # Overlay the authoritative lifecycle state onto discovered output cards.  A
+        # manifest still records the automated gate as review_required, while the job row
+        # records a later human confirmation.
+        jobs = {
+            str(job.get("id")): job
+            for job in self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=None)
+            if job.get("id")
+        }
+        for record in self.history:
+            job = jobs.get(str(record.get("job_id") or ""))
+            if not job:
+                continue
+            record["status"] = job.get("status") or record.get("status")
+            record["review_confirmed"] = bool(job.get("review_confirmed_at"))
+            record["review_status"] = (
+                "completed" if job.get("review_confirmed_at") else
+                "required" if job.get("status") == JobStatus.REVIEW_REQUIRED else "none"
+            )
+            record["review_confirmed_at"] = _epoch_to_iso(job.get("review_confirmed_at"))
         return self.history
 
     def runtime_state(self, cursor: int = 0) -> dict[str, Any]:
         # Reconcile on every poll, not only at startup: a runner can die at any moment and
         # the UI must stop claiming PROCESSANDO within one polling interval.
+        self.store.reconcile_confirmed_reviews()
         self.reconcile_orphans()
         active_jobs = self.store.list_jobs(statuses=JobStatus.IN_FLIGHT, limit=None)
         active = max(
@@ -850,6 +884,8 @@ class UiBridge:
         principal: RequestPrincipal | None = None,
         local_folder_allowed: bool = False,
     ) -> dict[str, Any]:
+        self.store.reconcile_confirmed_reviews()
+        self.reconcile_orphans()
         source_type = self._requested_source_type(payload)
         if source_type == "local_folder":
             # The HTTP boundary calculates this from both the bind address and the peer.
@@ -1485,6 +1521,32 @@ class UiBridge:
     async def cancel(self, *, queue: bool = False, job_id: str = "") -> dict[str, Any]:
         requested_review_id = str(job_id or "").strip()
         if requested_review_id:
+            requested = self.store.get_job(requested_review_id)
+            if not requested or not self._is_translation_job(requested):
+                raise ValueError("job_not_found")
+            if requested.get("status") in JobStatus.TERMINAL:
+                return {
+                    "ok": True, "job_id": requested_review_id,
+                    "previous_status": requested.get("status"),
+                    "status": requested.get("status"), "cancelable": False,
+                    "message": "Não há processamento ativo para cancelar.",
+                }
+            if requested.get("status") in {JobStatus.QUEUED, JobStatus.STAGING}:
+                target = requested.get("status")
+                try:
+                    self.store.transition(
+                        requested_review_id, JobStatus.CANCELLED,
+                        interrupted_reason="cancelled_before_runner",
+                        reason_code="user_cancelled",
+                    )
+                except Exception as exc:  # noqa: BLE001 - concurrent terminalization wins
+                    if self.store.get_job(requested_review_id) and self.store.get_job(requested_review_id).get("status") not in JobStatus.TERMINAL:
+                        raise exc
+                result = self.store.get_job(requested_review_id) or requested
+                self.history_revision += 1
+                return {"ok": True, "job_id": requested_review_id,
+                        "previous_status": target, "status": result.get("status"),
+                        "cancelable": False, "message": "Processamento cancelado."}
             displayed = self._displayed_source_review()
             # The source-review panel represents exactly the newest waiting job. Refuse a
             # stale/forged id rather than cancelling another pending chapter behind it. A
@@ -1496,30 +1558,62 @@ class UiBridge:
                     interrupted_reason="cancelled_source_review", reason_code="user_cancelled",
                 )
                 self.history_revision += 1
-                return {"ok": True, "job_id": requested_review_id}
+                return {"ok": True, "job_id": requested_review_id,
+                        "previous_status": JobStatus.AWAITING_SOURCE_REVIEW,
+                         "status": JobStatus.CANCELLED, "cancelable": False,
+                         "message": "Processamento cancelado."}
+            if requested.get("status") == JobStatus.AWAITING_SOURCE_REVIEW:
+                raise ValueError("source_review_not_available")
             active_requested = self.store.active_job()
             if (
                 not active_requested
                 or active_requested.get("id") != requested_review_id
                 or not self._is_translation_job(active_requested)
             ):
-                raise ValueError("source_review_not_available")
+                raise ValueError("job_not_active")
         active = self.store.active_job()
         if self._is_translation_job(active):
+            previous_status = str(active.get("status") or "")
             self.store.request_cancel(active["id"])
             # The runner honours the flag and tears down only its own process tree. When the
             # runner is already gone nobody would ever act on the flag, so settle the job
             # here instead of leaving it in flight forever. Outputs are left untouched.
-            if not _runner_still_alive(active):
-                frozen = (_normalize_epoch(active.get("heartbeat_at"))
-                          or _normalize_epoch(active.get("updated_at")) or time.time())
-                for target in (JobStatus.CANCELLING, JobStatus.CANCELLED):
-                    try:
-                        self.store.transition(active["id"], target,
-                                              interrupted_reason="cancelled_process_not_found",
+            if _runner_still_alive(active):
+                try:
+                    if previous_status != JobStatus.CANCELLING:
+                        self.store.transition(active["id"], JobStatus.CANCELLING,
+                                              interrupted_reason="user_cancelled",
                                               reason_code="user_cancelled")
-                    except Exception:  # noqa: BLE001 - already settled by another path
-                        pass
+                except Exception:  # noqa: BLE001 - a concurrent terminalization wins
+                    pass
+                result = self.store.get_job(active["id"]) or active
+                self.history_revision += 1
+                return {"ok": True, "job_id": active["id"],
+                        "previous_status": previous_status,
+                        "status": result.get("status", JobStatus.CANCELLING),
+                        "cancelable": True,
+                        "cancellation_requested_at": _epoch_to_iso(result.get("cancellation_requested_at")),
+                        "message": "Cancelamento solicitado."}
+            frozen = (_normalize_epoch(active.get("heartbeat_at"))
+                      or _normalize_epoch(active.get("updated_at")) or time.time())
+            try:
+                if previous_status != JobStatus.CANCELLING:
+                    self.store.transition(active["id"], JobStatus.CANCELLING,
+                                          interrupted_reason="cancelled_process_not_found",
+                                          reason_code="user_cancelled")
+                self.store.transition(active["id"], JobStatus.CANCELLED,
+                                      interrupted_reason="cancelled_process_not_found",
+                                      reason_code="user_cancelled", finished_at=frozen)
+            except Exception:  # noqa: BLE001 - already settled by another path
+                pass
+            result = self.store.get_job(active["id"]) or active
+            self.history_revision += 1
+            return {"ok": True, "job_id": active["id"],
+                    "previous_status": previous_status,
+                    "status": result.get("status", JobStatus.CANCELLED),
+                    "cancelable": False,
+                    "cancellation_requested_at": _epoch_to_iso(result.get("cancellation_requested_at")),
+                    "message": "Processamento cancelado."}
         # A source review needs its explicit displayed job id above. For a source-analysis
         # request that has not yet returned a review id, cancel at most the newest staging row;
         # never fan one browser action out to unrelated submissions.
@@ -1545,7 +1639,8 @@ class UiBridge:
                 except Exception:  # noqa: BLE001 - best effort per queued job
                     pass
         self.history_revision += 1
-        return {"ok": True}
+        return {"ok": True, "status": "ready", "cancelable": False,
+                "message": "Nenhum processamento ativo para cancelar."}
 
     async def retry_source_review(self, job_id: str) -> dict[str, Any]:
         """Discard one displayed review hold and rerun only its safe source analysis."""

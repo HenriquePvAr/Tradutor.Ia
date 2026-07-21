@@ -634,9 +634,62 @@ class JobStore:
         return actions
 
     def confirm_review(self, job_id: str) -> dict[str, str]:
-        actions = self.review_actions(job_id)
-        self.update_fields(job_id, review_confirmed_at=time.time())
-        return actions
+        self.complete_review(job_id)
+        return self.review_actions(job_id)
+
+    def complete_review(self, job_id: str) -> dict[str, Any]:
+        """Commit the human review decision as an operationally terminal outcome.
+
+        The quality report remains the immutable record of the automated gate.  The job
+        status, however, must stop looking active/review-blocked after the user has
+        explicitly confirmed every item.  Repeating the operation is intentionally
+        idempotent and never rewrites the original completion timestamp.
+        """
+        row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise TransitionError(f"unknown job: {job_id}")
+        now = time.time()
+        if row["status"] == JobStatus.REVIEW_REQUIRED:
+            fields = {
+                "status": JobStatus.FINISHED,
+                "stage": "review_completed",
+                "reason_code": "quality_review_completed",
+                "review_confirmed_at": row["review_confirmed_at"] or now,
+                "finished_at": row["finished_at"] or now,
+                "worker_id": None,
+                "worker_pid": None,
+                "worker_create_time": None,
+                "runner_pid": None,
+                "runner_create_time": None,
+                "cancel_requested": 0,
+                "updated_at": now,
+            }
+            columns = ", ".join(f"{key}=?" for key in fields)
+            self._conn.execute(
+                f"UPDATE jobs SET {columns} WHERE id=? AND status=?",
+                (*fields.values(), job_id, JobStatus.REVIEW_REQUIRED),
+            )
+        elif row["status"] == JobStatus.FINISHED and row["review_confirmed_at"]:
+            # Already completed: do not alter timestamps or reopen the quality review.
+            return self.get_job(job_id) or {}
+        else:
+            raise TransitionError("quality_review_not_confirmable")
+        return self.get_job(job_id) or {}
+
+    def reconcile_confirmed_reviews(self) -> list[str]:
+        """Repair rows from the old timestamp-only confirmation implementation."""
+        rows = self._conn.execute(
+            "SELECT id FROM jobs WHERE status=? AND review_confirmed_at IS NOT NULL",
+            (JobStatus.REVIEW_REQUIRED,),
+        ).fetchall()
+        repaired: list[str] = []
+        for row in rows:
+            try:
+                self.complete_review(str(row["id"]))
+            except TransitionError:
+                continue
+            repaired.append(str(row["id"]))
+        return repaired
 
     def cancel_requested(self, job_id: str) -> bool:
         row = self._conn.execute(

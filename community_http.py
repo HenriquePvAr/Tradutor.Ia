@@ -83,8 +83,21 @@ def _community_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> 
             headers={"WWW-Authenticate": "Session", **_NO_STORE_HEADERS},
         ) from exc
     except ResourceNotFound as exc:
+        code = str(exc or "not_found")
+        messages = {
+            "chapter_not_found": "Não encontramos este capítulo no histórico local. Atualize a biblioteca e tente novamente.",
+            "output_not_found": "O PDF ou processamento deste capítulo não foi encontrado.",
+            "pdf_not_found": "O PDF deste capítulo não foi encontrado.",
+            "manifest_not_found": "O manifesto do capítulo não foi encontrado.",
+            "post_not_found": "A publicação anterior não existe mais. Você pode criar uma nova publicação.",
+            "user_not_found": "Seu perfil da comunidade não foi localizado. Saia e entre novamente.",
+        }
         raise HTTPException(
-            status_code=404, detail="not_found", headers=_NO_STORE_HEADERS
+            status_code=404,
+            detail={"code": code, "message": messages.get(
+                code, "Não foi possível localizar o recurso necessário para publicar."),
+                    "action": "Atualize o histórico e tente novamente."},
+            headers=_NO_STORE_HEADERS,
         ) from exc
     except CsrfRejected as exc:
         raise HTTPException(
