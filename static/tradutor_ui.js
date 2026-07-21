@@ -74,7 +74,7 @@
     const timeoutMs = Number(options.timeoutMs || 15000);
     const controller = options.signal ? null : new AbortController();
     const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
-    const init = {...options, method, headers, credentials: 'same-origin'};
+    const init = {...options, method, headers, credentials: 'same-origin', cache: 'no-store'};
     delete init.timeoutMs;
     if (controller) init.signal = controller.signal;
     let response;
