@@ -255,9 +255,10 @@ class SupabaseFrontendTests(unittest.TestCase):
 
     def test_shell_has_auth_controls(self):
         shell = _read("ui/ui_shell.html")
-        for anchor in ("authModalOverlay", "authOpenBtn", "authLogoutBtn",
+        for anchor in ("authSurface", "authOpenBtn", "authLogoutBtn",
                        "authForm", "authStatus"):
             self.assertIn(anchor, shell)
+        self.assertNotIn("authModalOverlay", shell)
 
     def test_callback_route_registered(self):
         app_source = _read("app_ui.py")

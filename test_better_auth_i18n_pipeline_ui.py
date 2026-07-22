@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from PIL import Image
+
 from community_auth import (
     AuthConfigurationError,
     BetterAuthProvider,
@@ -136,6 +138,113 @@ class PipelineIdentityUiTests(unittest.TestCase):
         self.assertIn("const payload = formPayload();", src)
         self.assertIn("resetActivePipelineIdentity(payload.url || payload.local_folder || '')", src)
         self.assertIn("JSON.stringify(payload)", src)
+
+
+class AuthLoadingVisualContractTests(unittest.TestCase):
+    def setUp(self):
+        self.shell = read("ui/ui_shell.html")
+        self.css = read("static/tradutor_ui.css")
+        self.auth_js = read("static/auth_ui.js")
+        self.ui_js = read("static/tradutor_ui.js")
+
+    def test_login_is_full_page_surface_not_modal(self):
+        self.assertIn('id="authSurface"', self.shell)
+        self.assertIn('class="auth-login-page"', self.shell)
+        self.assertNotIn('id="authModalOverlay"', self.shell)
+        self.assertNotIn('id="authModalClose"', self.shell)
+        self.assertNotIn("auth-reference-card", self.shell)
+        self.assertNotIn('role="dialog" aria-modal="true" aria-labelledby="authTitle"', self.shell)
+        self.assertNotIn("authModalOverlay", self.auth_js)
+        self.assertNotIn("authModalClose", self.auth_js)
+
+    def test_login_has_single_full_page_form_and_prefixed_reference_classes(self):
+        self.assertEqual(self.shell.count("data-auth-login"), 1)
+        self.assertEqual(self.shell.count('id="authForm"'), 1)
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        for generic in (
+            'class="card"', 'class="grid"', 'class="logo"', 'class="stage"',
+            'class="side"', 'class="pipeline"', 'class="badge"', 'class="row"',
+            'class="footer"', 'class="title"', 'class="subtitle"',
+        ):
+            self.assertNotIn(generic, auth_fragment, generic)
+        for expected in (
+            "auth-login-stage", "auth-login-side", "auth-login-card",
+            "auth-login-compare", "auth-login-pipeline", "auth-login-submit",
+        ):
+            self.assertIn(expected, auth_fragment)
+
+    def test_login_responsive_contract_matches_reference_breakpoint(self):
+        self.assertIn(".auth-login-page{position:fixed;inset:0", self.css)
+        self.assertIn(".auth-login-stage{position:relative;flex:1.2", self.css)
+        self.assertIn(".auth-login-side{flex:1", self.css)
+        self.assertIn("@media (max-width:900px){.auth-login-stage{display:none}", self.css)
+        self.assertIn("min-height:100dvh", self.css)
+
+    def test_loading_uses_real_reference_images_and_original_structure(self):
+        boot = self.shell[: self.shell.index('<div class="shell">')]
+        for expected in (
+            "app-loading-page", "app-loading-frame", "app-loading-compare",
+            "app-loading-before", "app-loading-after", "app-loading-scanline",
+            "app-loading-nodes", "app-loading-status-line",
+            "app-loading-footer-row",
+        ):
+            self.assertIn(expected, boot)
+        self.assertIn("app-loading-connector", self.ui_js + self.css)
+        self.assertIn('/static/assets/reference-ui/original.jpg', boot)
+        self.assertIn('/static/assets/reference-ui/translated.jpg', boot)
+        surface_css = self.css[self.css.index("full-page auth/loading surfaces"):self.css.index("/* ---------- auth ---------- */")]
+        self.assertNotIn("filter:url(#inkRough)", surface_css)
+        self.assertNotIn("rl-compare::before", surface_css)
+
+    def test_reference_assets_are_valid_distinct_jpegs(self):
+        original = ROOT / "static/assets/reference-ui/original.jpg"
+        translated = ROOT / "static/assets/reference-ui/translated.jpg"
+        self.assertTrue(original.exists())
+        self.assertTrue(translated.exists())
+        original_bytes = original.read_bytes()
+        translated_bytes = translated.read_bytes()
+        self.assertGreater(len(original_bytes), 60000)
+        self.assertGreater(len(translated_bytes), 60000)
+        self.assertNotEqual(original_bytes, translated_bytes)
+        self.assertEqual(original_bytes[:3], b"\xff\xd8\xff")
+        self.assertEqual(translated_bytes[:3], b"\xff\xd8\xff")
+        with Image.open(original) as img:
+            self.assertEqual(img.size, (495, 550))
+        with Image.open(translated) as img:
+            self.assertEqual(img.size, (495, 550))
+
+    def test_reference_asset_hashes_match_extracted_html_images(self):
+        import hashlib
+        self.assertEqual(
+            hashlib.sha256((ROOT / "static/assets/reference-ui/original.jpg").read_bytes()).hexdigest(),
+            "bfc1e5f1a9ca420dc685324d15a00ff06893fe311fc6b3b568aa9d14516af261",
+        )
+        self.assertEqual(
+            hashlib.sha256((ROOT / "static/assets/reference-ui/translated.jpg").read_bytes()).hexdigest(),
+            "04af5b3dfafd7b00c5f5791d62ad98caca95b762b0adabe3385e758df3085540",
+        )
+
+    def test_shell_state_machine_prevents_private_flash(self):
+        self.assertIn('html:not([data-shell-state="authenticated"]) .shell{display:none;}', self.css)
+        for state in ("booting", "unauthenticated", "authenticating", "authenticated", "boot_failed"):
+            self.assertIn(state, self.ui_js + self.auth_js)
+        self.assertIn("showLoginSurface", self.auth_js)
+        self.assertIn("hideLoginSurface", self.auth_js)
+        self.assertIn("setShellState", self.auth_js)
+
+    def test_loading_advances_by_bootstrap_stage_and_fails_closed(self):
+        self.assertIn("bootStageMeta", self.ui_js)
+        self.assertIn("setBootStage(7)", self.ui_js)
+        self.assertIn("setBootFailed", self.ui_js)
+        self.assertIn("bootActions", self.shell)
+        self.assertNotIn("bootEl?.addEventListener('click'", self.ui_js)
+        self.assertIn("O carregamento demorou para responder.", self.ui_js)
+
+    def test_auth_compare_slider_is_bound_without_extra_submit_listener(self):
+        self.assertEqual(self.auth_js.count("$('#authForm')?.addEventListener('submit'"), 1)
+        self.assertIn("authCompare", self.auth_js)
+        self.assertIn("authCompareHandle", self.auth_js)
+        self.assertIn("setComparePosition", self.auth_js)
 
 
 if __name__ == "__main__":
