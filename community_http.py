@@ -219,6 +219,17 @@ def create_community_router(community, auth) -> APIRouter:
         principal = authenticated_mutation(request)
         return _community_call(community.publish, payload, principal=principal)
 
+    @router.post("/artifacts/{job_id}/claim")
+    def claim_artifact(
+        job_id: str,
+        request: Request,
+        payload: dict[str, Any] = Body(default={}),
+    ) -> dict[str, Any]:
+        """Claim one eligible ownerless local artifact for the current session."""
+        principal = authenticated_mutation(request)
+        return _community_call(community.claim_legacy_artifact, job_id, payload,
+                               principal=principal)
+
     @router.get("/posts")
     def feed(
         request: Request,

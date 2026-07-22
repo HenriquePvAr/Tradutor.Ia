@@ -96,6 +96,89 @@ class CommunityApi:
     def close(self) -> None:
         self.store.close()
 
+    def claim_legacy_artifact(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal,
+    ) -> dict[str, Any]:
+        """Let an authenticated user claim one eligible, currently unowned artifact."""
+        if not isinstance(principal, RequestPrincipal) or not principal.authenticated:
+            raise AuthenticationRequired("authentication_required")
+        if not isinstance(payload, dict) or payload.get("confirm") is not True:
+            raise ArtifactBindingError("confirmation_required", status_code=422)
+        # A self-claim never accepts a client-selected identity.  Reject the field
+        # explicitly so a copied admin payload cannot accidentally widen this path.
+        if "target_user_id" in payload:
+            raise ArtifactBindingError("target_user_id_not_allowed", status_code=422)
+        expected_run = str(payload.get("expected_run_id") or "").strip()
+        expected_hash = str(payload.get("expected_pdf_sha256") or "").strip().lower()
+        if not expected_run or len(expected_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in expected_hash
+        ):
+            raise ArtifactBindingError("invalid_claim_request", status_code=422)
+
+        try:
+            job = self.service.job_store.get_job(str(job_id or ""))
+        except (OSError, TypeError, ValueError):
+            job = None
+        if not job:
+            self._record_binding_audit(
+                principal=principal, target_user_id=principal.user_id,
+                job_id=str(job_id or ""), run_id=expected_run,
+                pdf_sha256=expected_hash, reason="self_claim", result="artifact_not_found",
+                event_type="legacy_artifact_self_claimed")
+            raise ArtifactBindingError("artifact_not_found", status_code=404)
+        config = job.get("configuration") or {}
+        owner = str(config.get("community_owner_id") or "") if isinstance(config, dict) else ""
+        if isinstance(config, dict) and config.get("ownership_schema_version"):
+            self._record_binding_audit(
+                principal=principal, target_user_id=principal.user_id,
+                job_id=str(job_id), run_id=expected_run, pdf_sha256=expected_hash,
+                reason="self_claim", result="artifact_not_legacy",
+                event_type="legacy_artifact_self_claimed")
+            raise ArtifactBindingError("artifact_not_legacy", status_code=409)
+        if owner and owner != principal.user_id:
+            self._record_binding_audit(
+                principal=principal, target_user_id=principal.user_id,
+                job_id=str(job_id), run_id=expected_run, pdf_sha256=expected_hash,
+                reason="self_claim", result="artifact_owned_by_another_user",
+                previous_owner_id=owner, event_type="legacy_artifact_self_claimed")
+            raise ArtifactBindingError("artifact_owned_by_another_user", status_code=403)
+
+        source = self._resolve_unowned_binding_source(
+            str(job_id), expected_run=expected_run, expected_hash=expected_hash)
+        if self.store.post_for_any_source(str(job_id)):
+            self._record_binding_audit(
+                principal=principal, target_user_id=principal.user_id,
+                job_id=str(job_id), run_id=expected_run, pdf_sha256=expected_hash,
+                reason="self_claim", result="publication_exists",
+                event_type="legacy_artifact_self_claimed")
+            raise ArtifactBindingError("publication_exists", status_code=409)
+
+        outcome, _ = self.service.job_store.bind_community_owner(
+            str(job_id), principal.user_id, bound_by=principal.user_id)
+        if outcome == "already_bound_to_target":
+            return {
+                "code": "already_owned_by_current_user",
+                "message": "Este capítulo já pertence à sua conta.",
+            }
+        if outcome == "owner_already_assigned":
+            raise ArtifactBindingError("artifact_owned_by_another_user", status_code=403)
+        if outcome != "owner_bound":
+            raise ArtifactBindingError("artifact_not_found", status_code=404)
+        self._record_binding_audit(
+            principal=principal, target_user_id=principal.user_id,
+            job_id=str(job_id), run_id=expected_run, pdf_sha256=source["pdf_sha256"],
+            reason="self_claim", result="artifact_claimed",
+            event_type="legacy_artifact_self_claimed")
+        return {
+            "code": "artifact_claimed",
+            "owner_user_id": principal.user_id,
+            "message": "Capítulo vinculado à sua conta.",
+        }
+
     # ---- explicit legacy ownership migration ------------------------------
     def bind_legacy_artifact_owner(
         self,
@@ -195,12 +278,13 @@ class CommunityApi:
         reason: str,
         result: str,
         previous_owner_id: str | None = None,
+        event_type: str = "legacy_artifact_owner_bound",
     ) -> None:
         self.store.add_admin_audit_event(
             actor_id=principal.user_id,
-            event_type="legacy_artifact_owner_bound",
+            event_type=event_type,
             metadata={
-                "action": "legacy_artifact_owner_bound",
+                "action": event_type,
                 "executor_user_id": principal.user_id,
                 "target_user_id": target_user_id,
                 "job_id": job_id,
@@ -388,8 +472,11 @@ class CommunityApi:
                 owner_id = principal.user_id
                 config["community_owner_id"] = owner_id
                 legacy_owner = True
-            if not principal.has_role("admin") and owner_id != principal.user_id:
-                raise ValueError
+            if not principal.has_role("admin"):
+                if not owner_id:
+                    raise ArtifactBindingError("artifact_has_no_owner", status_code=422)
+                if owner_id != principal.user_id:
+                    raise ArtifactBindingError("artifact_not_owned", status_code=403)
             if job.get("status") not in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED}:
                 raise ValueError
             if int(job.get("exit_code")) != 0:
@@ -470,6 +557,8 @@ class CommunityApi:
                 "run_manifest_path": str(run_manifest_path),
                 "pdf_sha256": digest.hexdigest(),
             }
+        except ArtifactBindingError:
+            raise
         except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
             raise ResourceNotFound("output_not_found") from None
 

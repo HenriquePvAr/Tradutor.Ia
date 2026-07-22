@@ -50,6 +50,7 @@ class BindingHarness:
         )
         self.admin = self.auth.issue_session(user_id="admin-user", roles=("admin",))
         self.member = self.auth.issue_session(user_id="member-user")
+        self.other = self.auth.issue_session(user_id="other-user")
         app = FastAPI()
         app.add_middleware(CommunityNetworkBoundaryMiddleware, auth=self.auth)
         app.include_router(create_community_router(self.api, self.auth))
@@ -217,5 +218,107 @@ def test_existing_owner_is_never_overwritten(tmp_path):
         assert response.status_code == 409
         assert response.json()["detail"] == "owner_already_assigned"
         assert h.jobs.get_job(h.job_id)["configuration"]["community_owner_id"] == "other-user"
+    finally:
+        h.close()
+
+
+def claim_payload(harness: BindingHarness, *, sha=None, run=None, **extra):
+    value = {
+        "expected_run_id": run or harness.run_id,
+        "expected_pdf_sha256": sha or harness.sha,
+        "confirm": True,
+    }
+    value.update(extra)
+    return value
+
+
+def test_authenticated_member_can_self_claim_legacy_artifact(tmp_path):
+    h = BindingHarness(tmp_path)
+    try:
+        response = h.client.post(
+            f"/api/community/artifacts/{h.job_id}/claim",
+            json=claim_payload(h), headers=h.headers(h.member))
+        assert response.status_code == 200
+        assert response.json()["code"] == "artifact_claimed"
+        config = h.jobs.get_job(h.job_id)["configuration"]
+        assert config["community_owner_id"] == "member-user"
+        assert len(h.jobs.list_jobs(limit=None)) == 1
+        rows = h.api.store._rows(h.api.store._conn.execute(
+            "SELECT * FROM community_events WHERE event_type=?",
+            ("legacy_artifact_self_claimed",)))
+        assert rows and json.loads(rows[-1]["metadata_json"])["result"] == "artifact_claimed"
+    finally:
+        h.close()
+
+
+def test_self_claim_is_auth_bound_idempotent_and_never_overwritten(tmp_path):
+    h = BindingHarness(tmp_path)
+    try:
+        url = f"/api/community/artifacts/{h.job_id}/claim"
+        first = h.client.post(url, json=claim_payload(h), headers=h.headers(h.member))
+        repeat = h.client.post(url, json=claim_payload(h), headers=h.headers(h.member))
+        other = h.client.post(url, json=claim_payload(h), headers=h.headers(h.other))
+        visitor = h.client.post(url, json=claim_payload(h))
+        assert first.status_code == 200
+        assert repeat.status_code == 200
+        assert repeat.json()["code"] == "already_owned_by_current_user"
+        assert other.status_code == 403
+        assert other.json()["detail"] == "artifact_owned_by_another_user"
+        assert visitor.status_code == 401
+        assert h.jobs.get_job(h.job_id)["configuration"]["community_owner_id"] == "member-user"
+    finally:
+        h.close()
+
+
+def test_self_claim_rejects_admin_identity_and_exact_preconditions(tmp_path):
+    h = BindingHarness(tmp_path)
+    try:
+        url = f"/api/community/artifacts/{h.job_id}/claim"
+        target = h.client.post(
+            url, json=claim_payload(h, target_user_id="other-user"), headers=h.headers(h.member))
+        bad_hash = h.client.post(url, json=claim_payload(h, sha="0" * 64), headers=h.headers(h.member))
+        bad_run = h.client.post(url, json=claim_payload(h, run="wrong-run"), headers=h.headers(h.member))
+        assert target.status_code == 422
+        assert target.json()["detail"] == "target_user_id_not_allowed"
+        assert bad_hash.status_code == 409
+        assert bad_hash.json()["detail"] == "hash_mismatch"
+        assert bad_run.status_code == 409
+        assert bad_run.json()["detail"] == "run_mismatch"
+        assert not h.jobs.get_job(h.job_id)["configuration"].get("community_owner_id")
+    finally:
+        h.close()
+
+
+def test_self_claim_rejects_existing_publication_without_mutating_owner(tmp_path):
+    h = BindingHarness(tmp_path)
+    try:
+        h.api.store.create_post(
+            user_id="someone", source_job_id=h.job_id, source_run_id=h.run_id,
+            output_dir=str(h.pdf.parent), title="existing")
+        response = h.client.post(
+            f"/api/community/artifacts/{h.job_id}/claim",
+            json=claim_payload(h), headers=h.headers(h.member))
+        assert response.status_code == 409
+        assert response.json()["detail"] == "publication_exists"
+        assert not h.jobs.get_job(h.job_id)["configuration"].get("community_owner_id")
+    finally:
+        h.close()
+
+
+def test_new_schema_job_is_not_eligible_for_legacy_self_claim(tmp_path):
+    h = BindingHarness(tmp_path)
+    try:
+        h.jobs.update_fields(
+            h.job_id,
+            configuration_json=json.dumps({
+                "job_type": "translation", "ownership_schema_version": 1,
+            }),
+        )
+        response = h.client.post(
+            f"/api/community/artifacts/{h.job_id}/claim",
+            json=claim_payload(h), headers=h.headers(h.member))
+        assert response.status_code == 409
+        assert response.json()["detail"] == "artifact_not_legacy"
+        assert not h.jobs.get_job(h.job_id)["configuration"].get("community_owner_id")
     finally:
         h.close()

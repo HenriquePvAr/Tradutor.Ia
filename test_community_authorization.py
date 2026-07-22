@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
-from community_api import CommunityApi
+from community_api import ArtifactBindingError, CommunityApi
 from community_auth import (
     AuthenticationRequired,
     AuthConfigurationError,
@@ -1027,6 +1027,30 @@ def test_owned_source_job_publishes_as_session_principal(harness):
     assert publish_job["configuration"]["local_pdf_path"] == pdf_path
 
 
+def test_ownerless_source_job_reports_missing_owner_not_generic_pdf_error(harness):
+    source_job_id, _ = harness.create_finished_translation_job(owner="", name="ownerless-job")
+    principal = RequestPrincipal(
+        "user-b", True, auth_source="supabase", session_id="supabase-session")
+    with pytest.raises(ArtifactBindingError) as exc_info:
+        harness.api.publish(
+            {"source_job_id": source_job_id, "series_slug": "ownerless"},
+            principal=principal,
+        )
+    assert exc_info.value.code == "artifact_has_no_owner"
+
+
+def test_non_owner_source_job_reports_ownership_boundary(harness):
+    source_job_id, _ = harness.create_finished_translation_job(
+        owner="owner-a", name="another-users-job")
+    response = harness.client.post(
+        "/api/community/publish",
+        json={"source_job_id": source_job_id, "series_slug": "not-owned"},
+        headers=harness.headers(harness.other, csrf=True),
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "artifact_not_owned"
+
+
 def test_duplicate_publish_requests_are_idempotent_per_owner_and_source_job(harness):
     source_job_id, _ = harness.create_finished_translation_job(
         owner="user-b",
@@ -1294,7 +1318,7 @@ def test_queued_owned_job_cannot_adopt_preexisting_pdf(harness):
     assert harness.api.store.list_user_posts("user-b") == []
 
 
-def test_missing_and_other_users_job_are_indistinguishable(harness):
+def test_missing_and_other_users_job_expose_distinct_ownership_boundary(harness):
     source_job_id, _ = harness.create_finished_translation_job(
         owner="owner-a", name="other-owner-job")
     responses = [
@@ -1305,11 +1329,12 @@ def test_missing_and_other_users_job_are_indistinguishable(harness):
         )
         for candidate in (source_job_id, "0" * 32)
     ]
-    assert [r.status_code for r in responses] == [404, 404]
+    assert [r.status_code for r in responses] == [403, 404]
+    assert responses[0].json()["detail"] == "artifact_not_owned"
     details = [r.json()["detail"] for r in responses]
-    assert all(isinstance(detail, dict) for detail in details)
-    assert all(detail["code"] == "output_not_found" for detail in details)
-    assert all(detail["message"] != "not_found" for detail in details)
+    assert isinstance(details[1], dict)
+    assert details[1]["code"] == "output_not_found"
+    assert details[1]["message"] != "not_found"
     assert harness.api.store.list_user_posts("user-b") == []
 
 
