@@ -140,7 +140,8 @@ class UiIntegrationTests(unittest.TestCase):
             "response.blob()",
             "URL.createObjectURL",
             "URL.revokeObjectURL",
-            "window.open('', '_blank', 'noopener')",
+            "window.open('', '_blank')",
+            "viewer.opener = null",
             "Abrindo...",
             "authorization_header_present",
         ):
@@ -337,6 +338,48 @@ class UiIntegrationTests(unittest.TestCase):
             self.assertIn(marker, app_source, marker)
         for marker in ("open-publication", "Abrir publicação existente", "Publicado"):
             self.assertIn(marker, ui_source, marker)
+
+    def test_bootstrap_reconciles_canonical_community_auth_state(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        for marker in (
+            "syncCanonicalAuthFromBootstrap(data)",
+            "bootstrapCommunityAuthenticated",
+            "window.__tradutorAuthState = 'authenticated'",
+            "window.__tradutorCommunityAuthenticated = true",
+            "window.__tradutorAuthStore = {status: 'authenticated'",
+            "canonical_auth_bootstrap_applied",
+            "applyCanonicalAuthSurface(authState)",
+        ):
+            self.assertIn(marker, source, marker)
+
+    def test_backend_unauthenticated_bootstrap_clears_stale_identity(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        unauth_block = source[
+            source.index("if (backendUnauthenticated")
+            :source.index("return currentCanonicalAuthState();")
+        ]
+        for marker in (
+            "window.__tradutorAuthState = 'unauthenticated'",
+            "window.__tradutorCommunityAuthenticated = false",
+            "window.__tradutorCommunityUserId = ''",
+            "window.__tradutorAuthStore = {status: 'unauthenticated'",
+        ):
+            self.assertIn(marker, unauth_block, marker)
+
+    def test_existing_publication_pdf_never_fails_silently_without_auth(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        pdf_block = source[
+            source.index("async function openAuthenticatedCommunityPdf")
+            :source.index("async function loadCommunityFeed")
+        ]
+        self.assertIn("if (!isCanonicalCommunityAuthenticated())", pdf_block)
+        self.assertIn("Sua sessão expirou. Entre novamente.", pdf_block)
+        self.assertIn("community_pdf_open_failed", pdf_block)
+        self.assertIn("authentication_required", pdf_block)
+        self.assertLess(
+            pdf_block.index("if (!isCanonicalCommunityAuthenticated())"),
+            pdf_block.index("window.open('', '_blank')"),
+        )
 
     def test_standard_emoji_are_not_embedded_in_ui(self):
         sources = "\n".join(

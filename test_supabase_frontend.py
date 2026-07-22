@@ -210,7 +210,8 @@ class SupabaseFrontendTests(unittest.TestCase):
     def test_pdf_popup_flow_does_not_replace_the_authenticated_tab(self):
         source = _read("static/tradutor_ui.js")
         helper = source[source.index("async function openAuthenticatedCommunityPdf"):source.index("async function loadCommunityFeed")]
-        self.assertIn("window.open('', '_blank', 'noopener')", helper)
+        self.assertIn("window.open('', '_blank')", helper)
+        self.assertIn("viewer.opener = null", helper)
         self.assertIn("viewer.location.href = objectUrl", helper)
         self.assertNotIn("window.location", helper)
         self.assertIn("viewer.close()", helper)

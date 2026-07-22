@@ -18,6 +18,7 @@ models/
 .paddlex/
 .paddleocr/
 .cache/
+.runtime/
 
 *.pdf
 *.png

@@ -74,6 +74,48 @@
   function correlationId() {
     try { return crypto.randomUUID(); } catch (_) { return `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
   }
+  function bootstrapCommunityAuthenticated(data = appState.bootstrap) {
+    return data?.community?.authenticated === true;
+  }
+  function currentCanonicalAuthState() {
+    if (String(window.__tradutorAuthState || '') === 'authenticated') return 'authenticated';
+    if (bootstrapCommunityAuthenticated()) return 'authenticated';
+    return String(window.__tradutorAuthState || 'auth_loading');
+  }
+  function isCanonicalCommunityAuthenticated() {
+    if (bootstrapCommunityAuthenticated()) return true;
+    return String(window.__tradutorAuthState || '') === 'authenticated' && Boolean(
+      window.__tradutorCommunityAuthenticated ||
+      window.__tradutorAccessToken ||
+      window.__tradutorAuthStore?.authenticated,
+    );
+  }
+  function syncCanonicalAuthFromBootstrap(data) {
+    const community = data?.community || {};
+    const backendAuthenticated = community.authenticated === true;
+    const backendUnauthenticated = community.authenticated === false;
+    if (backendAuthenticated) {
+      const userId = String(community.user_id || data?.profile?.user_id || window.__tradutorCommunityUserId || '');
+      window.__tradutorAuthState = 'authenticated';
+      window.__tradutorCommunityAuthenticated = true;
+      if (userId) window.__tradutorCommunityUserId = userId;
+      window.__tradutorAuthStore = {status: 'authenticated', authenticated: true, user_id: userId};
+      if (document.body) document.body.dataset.authState = 'authenticated';
+      uiTrace('canonical_auth_bootstrap_applied', {authenticated: true});
+      return 'authenticated';
+    }
+    const rawAuthState = String(window.__tradutorAuthState || '');
+    if (backendUnauthenticated && !window.__tradutorAccessToken && rawAuthState !== 'auth_loading') {
+      window.__tradutorAuthState = 'unauthenticated';
+      window.__tradutorCommunityAuthenticated = false;
+      window.__tradutorCommunityUserId = '';
+      window.__tradutorAuthStore = {status: 'unauthenticated', authenticated: false, user_id: ''};
+      if (document.body) document.body.dataset.authState = 'unauthenticated';
+      uiTrace('canonical_auth_bootstrap_applied', {authenticated: false});
+      return 'unauthenticated';
+    }
+    return currentCanonicalAuthState();
+  }
 
   function cookieValue(name) {
     const prefix = `${encodeURIComponent(name)}=`;
@@ -1022,12 +1064,7 @@
     const terminal = terminalRunStatuses.has(String(record.status || '').toLowerCase());
     const hasPdf = Boolean(record.pdf_path);
     const manifest = record.output_verification === 'manifest_verified' || Boolean(record.manifest_path);
-    const authState = String(window.__tradutorAuthState || 'auth_loading');
-    const authenticated = authState === 'authenticated' && Boolean(
-      appState.bootstrap?.community?.authenticated ||
-      window.__tradutorCommunityAuthenticated ||
-      window.__tradutorAccessToken,
-    );
+    const authenticated = isCanonicalCommunityAuthenticated();
     const technicalGatePassed = boolish(record.quality_gate) === true;
     const reviewCompleted = record.review_status === 'completed' || record.review_confirmed === true;
     const review = !technicalGatePassed;
@@ -1390,11 +1427,17 @@
   }
 
   async function openAuthenticatedCommunityPdf(postId, trigger) {
-    const viewer = window.open('', '_blank', 'noopener');
+    if (!isCanonicalCommunityAuthenticated()) {
+      showToast('Sua sessão expirou. Entre novamente.', 'warn');
+      uiTrace('community_pdf_open_failed', {status: 401, code: 'authentication_required'});
+      return;
+    }
+    const viewer = window.open('', '_blank');
     if (!viewer) {
       showToast('O navegador bloqueou a nova aba do PDF.', 'warn');
       return;
     }
+    try { viewer.opener = null; } catch (_) { /* best-effort opener isolation */ }
     const originalLabel = trigger?.textContent || 'Abrir PDF';
     if (trigger) { trigger.disabled = true; trigger.textContent = 'Abrindo...'; }
     const correlation = correlationId();
@@ -1681,7 +1724,7 @@
   /* ---------- local profile ---------- */
   function applyProfileToForm(profile) {
     window.__tradutorDisplayName = String(profile.display_name || '').trim();
-    if (window.__tradutorAuthState === 'authenticated' && $('#authStatus')) {
+    if (currentCanonicalAuthState() === 'authenticated' && $('#authStatus')) {
       $('#authStatus').textContent = window.__tradutorDisplayName || 'Usuário';
     }
     $('#profileName').value = profile.display_name || '';
@@ -1864,13 +1907,14 @@
       const data = await api(`/api/ui/bootstrap?cursor=${appState.cursor}`);
       appState.bootstrap = data;
       appState.history = Array.isArray(data.history) ? data.history : [];
-      const authenticated = String(window.__tradutorAuthState || '') === 'authenticated';
+      const authState = syncCanonicalAuthFromBootstrap(data);
+      const authenticated = authState === 'authenticated';
       appState.profile = authenticated ? (data.profile || {}) : {};
       window.__tradutorDisplayName = authenticated ? String(appState.profile.display_name || '').trim() : '';
       appState.settings = data.settings || {};
       appState.historyRevision = data.history_revision || appState.historyRevision;
       renderSettings(appState.settings);
-      applyCanonicalAuthSurface(window.__tradutorAuthState || 'auth_loading');
+      applyCanonicalAuthSurface(authState);
       if (authenticated) applyProfileToForm(appState.profile);
       renderHistory();
       renderDashboard();
