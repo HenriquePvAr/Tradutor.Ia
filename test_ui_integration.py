@@ -285,6 +285,98 @@ class UiIntegrationTests(unittest.TestCase):
         for marker in ("def _ui_principal", "AUTH.require_authenticated", "api_profile_media", "profile_for_user"):
             self.assertIn(marker, source, marker)
 
+    def test_profile_media_actions_use_canonical_api_transport(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        media_block = source[
+            source.index("async function uploadProfileMedia")
+            :source.index("function bindDropzone")
+        ]
+        for marker in (
+            "await api(`/api/ui/profile/media/${kind}",
+            "headers: {'Content-Type': file.type}",
+            "method:'DELETE'",
+        ):
+            self.assertIn(marker, media_block, marker)
+        self.assertNotIn("await fetch(`/api/ui/profile/media/${kind}", media_block)
+        handler_block = source[
+            source.index("function bindDropzone")
+            :source.index("bindDropzone('avatar')")
+        ]
+        self.assertIn("humanCommunityError(error", handler_block)
+
+    def test_private_profile_media_uses_authenticated_blob_flow(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        media_block = source[
+            source.index("function setMedia")
+            :source.index("async function uploadProfileMedia")
+        ]
+        for marker in (
+            "String(source).startsWith('/api/')",
+            "loadAuthenticatedMediaElement",
+            "rawResponse: true",
+            "response.blob()",
+            "URL.createObjectURL",
+            "URL.revokeObjectURL",
+            "revokeElementMedia",
+            "dataset.objectUrl",
+            "profile_media_load_failed",
+        ):
+            self.assertIn(marker, media_block, marker)
+
+    def test_profile_media_remove_requires_confirmation(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        remove_block = source[
+            source.index("async function removeProfileMedia")
+            :source.index("function bindDropzone")
+        ]
+        self.assertIn("window.confirm", remove_block)
+        self.assertIn("method:'DELETE'", remove_block)
+
+    def test_community_feed_errors_are_human_not_raw_reason_codes(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("function humanCommunityError", source)
+        self.assertIn("Sua sessão expirou. Entre novamente.", source)
+        feed_block = source[
+            source.index("async function loadCommunityFeed")
+            :source.index("$('#communityRefreshBtn')")
+        ]
+        self.assertIn("humanCommunityError(error", feed_block)
+        self.assertIn("skeleton-card", feed_block)
+        self.assertIn("community_schema_invalid", feed_block)
+        self.assertIn("retry-community", feed_block)
+        self.assertNotIn("escapeHtml(error.message)", feed_block)
+
+    def test_community_author_avatar_does_not_use_protected_url_directly(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        card_block = source[
+            source.index("function renderCommunityCard")
+            :source.index("function loadRecordIntoForm")
+        ]
+        self.assertIn("data-community-author-avatar-url", card_block)
+        self.assertIn("hydrateCommunityAuthorMedia", card_block)
+        self.assertIn("loadAuthenticatedMediaElement", card_block)
+        self.assertNotIn("<img class=\"community-author-avatar\" src=", card_block)
+
+    def test_community_card_visuals_avoid_motion_heavy_hover(self):
+        css = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
+        card_css = css[
+            css.index(".community-publication-card")
+            :css.index("/* série folders */")
+        ]
+        self.assertIn("community-quality-chip", card_css)
+        self.assertIn("community-card-tags", card_css)
+        self.assertNotRegex(card_css, r"(?<!text-)transform:")
+
+    def test_social_module_does_not_replace_local_verified_feed(self):
+        source = (ROOT / "static" / "social_community.js").read_text(encoding="utf-8")
+        boot_block = source[source.index("async function boot"):]
+        self.assertIn("document.getElementById('communityFeed')", boot_block)
+        self.assertIn("__socialCommunitySkipped", boot_block)
+        self.assertLess(
+            boot_block.index("document.getElementById('communityFeed')"),
+            boot_block.index("getSupabaseClient()"),
+        )
+
     def test_community_profile_join_is_public_metadata_only(self):
         source = (ROOT / "community_service.py").read_text(encoding="utf-8")
         store = (ROOT / "community_store.py").read_text(encoding="utf-8")

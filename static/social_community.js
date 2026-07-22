@@ -801,6 +801,13 @@ function readerModal(chapter) {
 // ---- boot: only when the Supabase auth provider is active ----
 async function boot() {
   if (!root()) return;
+  // The classic local UI owns this panel when it exposes the verified-PDF feed.
+  // Do not mount the optional social experience over it: doing so hides local
+  // publications and duplicates the global Kayden/Sair controls.
+  if (document.getElementById('communityFeed')) {
+    window.__socialCommunitySkipped = 'local_verified_feed_present';
+    return;
+  }
   // In local-session mode there is no Supabase client; leave the existing (SQLite)
   // community UI untouched and do not mount the social experience.
   const client = await getSupabaseClient();

@@ -413,6 +413,16 @@
   }
   // Bridge so ES modules (e.g. the social community UI) reuse the same toast component.
   window.__tradutorToast = (message, kind) => showToast(message, kind === 'err' ? 'error' : kind || 'ok');
+  function humanCommunityError(errorValue, fallback = 'Não foi possível concluir a ação.') {
+    const code = String(errorValue?.code || errorValue?.message || '').trim();
+    const status = Number(errorValue?.status || 0);
+    if (status === 401 || code === 'authentication_required') return 'Sua sessão expirou. Entre novamente.';
+    if (status === 403 || code === 'csrf_rejected' || code === 'forbidden') return 'Você não tem permissão para esta ação.';
+    if (status === 404) return 'Este conteúdo não está disponível.';
+    if (code === 'timeout') return 'O serviço demorou para responder. Tente novamente.';
+    if (code === 'connection_error') return 'Não foi possível conectar ao serviço local.';
+    return fallback;
+  }
   function shake(element) {
     if (!element) return;
     element.style.animation = 'none';
@@ -1504,12 +1514,24 @@
   async function loadCommunityFeed() {
     const container = $('#communityFeed');
     if (!container) return;
+    container.innerHTML = '<div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div><div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>';
     try {
       const data = await api('/api/community/posts');
-      const posts = (data && data.posts) || [];
+      if (!data || !Array.isArray(data.posts)) {
+        const schemaError = new Error('community_schema_invalid');
+        schemaError.code = 'community_schema_invalid';
+        throw schemaError;
+      }
+      const posts = data.posts;
       if (!posts.length) { container.innerHTML = '<div class="empty-real-state">nenhuma publicação na comunidade ainda</div>'; return; }
       container.innerHTML = posts.map(renderCommunityCard).join('');
-    } catch (error) { container.innerHTML = `<div class="empty-real-state">${escapeHtml(error.message)}</div>`; }
+      hydrateCommunityAuthorMedia(container);
+    } catch (error) {
+      const message = error?.code === 'community_schema_invalid'
+        ? 'A Comunidade ainda não está disponível neste ambiente.'
+        : humanCommunityError(error, 'Não foi possível carregar a Comunidade.');
+      container.innerHTML = `<div class="empty-real-state community-error-state"><span>${escapeHtml(message)}</span><button type="button" class="btn-ghost" data-action="retry-community">Tentar novamente</button></div>`;
+    }
   }
 
   $('#communityRefreshBtn')?.addEventListener('click', loadCommunityFeed);
@@ -1520,18 +1542,33 @@
     const author = post.author || {};
     const authorName = escapeHtml(author.display_name || 'Usuário');
     const authorRole = author.public_role ? ` · ${escapeHtml(author.public_role)}` : '';
-    const avatar = author.avatar_url
-      ? `<img class="community-author-avatar" src="${escapeAttr(author.avatar_url)}" alt="">`
-      : `<span class="community-author-avatar community-author-letter">${escapeHtml((author.display_name || 'U').slice(0, 1).toUpperCase())}</span>`;
-    return `<div class="hist-item"><div class="hist-cover" style="background:#b8557a">${escapeHtml(title.slice(0,1).toUpperCase())}</div>
-      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}</div><div class="hm-sub community-author">${avatar}<span>${authorName}${authorRole}</span></div></div>
-      <div class="hm-actions"><button class="btn-ghost" type="button" data-community-pdf-id="${escapeAttr(post.post_id)}">Abrir PDF</button></div></div>`;
+    const initial = escapeHtml((author.display_name || 'U').slice(0, 1).toUpperCase());
+    const avatarAttrs = author.avatar_url ? ` data-community-author-avatar-url="${escapeAttr(author.avatar_url)}"` : '';
+    const pages = Number(post.page_count || post.pages || 0);
+    const quality = post.quality || post.quality_status || post.review_status || '';
+    const tags = Array.isArray(post.tags) && post.tags.length
+      ? `<div class="community-card-tags">${post.tags.slice(0, 6).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}</div>`
+      : '';
+    return `<article class="hist-item community-publication-card" data-publication-id="${escapeAttr(post.post_id || post.publication_id || '')}" tabindex="0">
+      <div class="hist-cover community-publication-cover" style="background:#b8557a">${escapeHtml(title.slice(0,1).toUpperCase())}</div>
+      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}${pages ? ` · ${pages} páginas` : ''}</div><div class="hm-sub community-author"><span class="community-author-avatar community-author-letter"${avatarAttrs}>${initial}</span><span>${authorName}${authorRole}</span></div>${quality ? `<div class="community-quality-chip">${escapeHtml(String(quality))}</div>` : ''}${tags}</div>
+      <div class="hm-actions"><button class="btn-ghost" type="button" data-community-pdf-id="${escapeAttr(post.post_id)}" aria-label="Abrir PDF da publicação" title="Abrir PDF">Abrir PDF</button></div></article>`;
   }
   $('#communityFeed')?.addEventListener('click', event => {
+    const retry = event.target.closest('[data-action="retry-community"]');
+    if (retry) { void loadCommunityFeed(); return; }
     const button = event.target.closest('[data-community-pdf-id]');
     if (!button || button.disabled) return;
     void openAuthenticatedCommunityPdf(button.dataset.communityPdfId || '', button);
   });
+  function hydrateCommunityAuthorMedia(container) {
+    $$('[data-community-author-avatar-url]', container).forEach(element => {
+      const source = element.dataset.communityAuthorAvatarUrl || '';
+      if (!source) return;
+      revokeElementMedia(element);
+      void loadAuthenticatedMediaElement(element, source, 'image/*', element.textContent || 'U');
+    });
+  }
   function loadRecordIntoForm(record) {
     const local = record.source_type === 'local_folder';
     setSourceType(local ? 'local_folder' : 'url');
@@ -1757,13 +1794,57 @@
     };
   }
   function setMedia(element, source, mediaType, fallback) {
+    revokeElementMedia(element);
     element.innerHTML = '';
     element.style.backgroundImage = '';
     if (source && String(mediaType).startsWith('image/')) {
-      const image = document.createElement('img');
-      image.src = source; image.alt = '';
-      element.appendChild(image);
+      if (String(source).startsWith('/api/')) {
+        element.textContent = fallback || '';
+        void loadAuthenticatedMediaElement(element, source, mediaType, fallback);
+      } else {
+        const image = document.createElement('img');
+        image.src = source; image.alt = '';
+        element.appendChild(image);
+      }
     } else element.textContent = fallback;
+  }
+  async function loadAuthenticatedMediaElement(element, source, mediaType, fallback) {
+    const requestKey = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    element.dataset.mediaRequest = requestKey;
+    try {
+      const response = await api(source, {rawResponse: true, timeoutMs: 12000});
+      const blob = await response.blob();
+      if (!String(blob.type || mediaType || '').startsWith('image/')) throw new Error('invalid_media_type');
+      if (element.dataset.mediaRequest !== requestKey) return;
+      const objectUrl = URL.createObjectURL(blob);
+      appState.communityObjectUrls.add(objectUrl);
+      element.dataset.objectUrl = objectUrl;
+      const image = document.createElement('img');
+      image.src = objectUrl; image.alt = '';
+      image.addEventListener('load', () => {
+        window.setTimeout(() => {
+          try { URL.revokeObjectURL(objectUrl); } catch (_) { /* best effort */ }
+          appState.communityObjectUrls.delete(objectUrl);
+          if (element.dataset.objectUrl === objectUrl) delete element.dataset.objectUrl;
+        }, 300000);
+      }, {once: true});
+      element.innerHTML = '';
+      element.appendChild(image);
+      uiTrace('profile_media_loaded', {status: 200});
+    } catch (errorValue) {
+      if (element.dataset.mediaRequest === requestKey) element.textContent = fallback || '';
+      uiTrace('profile_media_load_failed', {
+        status: errorValue?.status || 0,
+        code: errorValue?.code || errorValue?.message || 'media_load_failed',
+      });
+    }
+  }
+  function revokeElementMedia(element) {
+    const current = element?.dataset?.objectUrl || '';
+    if (!current) return;
+    try { URL.revokeObjectURL(current); } catch (_) { /* best effort */ }
+    appState.communityObjectUrls.delete(current);
+    delete element.dataset.objectUrl;
   }
   function renderProfile(profile = profileFromForm()) {
     const authenticated = String(window.__tradutorAuthState || '') === 'authenticated';
@@ -1831,19 +1912,16 @@
       showToast('Use PNG, JPG, WEBP ou GIF de até 12 MB.', 'error');
       return;
     }
-    const response = await fetch(`/api/ui/profile/media/${kind}?filename=${encodeURIComponent(file.name)}&content_type=${encodeURIComponent(file.type)}`, {
-      method: 'POST', headers: {'Content-Type': file.type}, body: file,
+    const payload = await api(`/api/ui/profile/media/${kind}?filename=${encodeURIComponent(file.name)}&content_type=${encodeURIComponent(file.type)}`, {
+      method: 'POST', headers: {'Content-Type': file.type}, body: file, timeoutMs: 20000,
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Não foi possível salvar a mídia.');
     appState.profile = payload.profile;
     applyProfileToForm(appState.profile);
     showToast('Mídia salva neste computador.', 'ok');
   }
   async function removeProfileMedia(kind) {
-    const response = await fetch(`/api/ui/profile/media/${kind}`, {method:'DELETE'});
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Não foi possível remover a mídia.');
+    if (!window.confirm('Remover esta imagem do perfil?')) return;
+    const payload = await api(`/api/ui/profile/media/${kind}`, {method:'DELETE', timeoutMs: 12000});
     appState.profile = payload.profile;
     applyProfileToForm(appState.profile);
     showToast('Mídia removida.', 'ok');
@@ -1853,17 +1931,17 @@
     const input = $(`#${kind}ImageInput`);
     if (!dropzone || !input) return;
     input.addEventListener('change', async () => {
-      try { await uploadProfileMedia(kind, input.files?.[0]); } catch (error) { showToast(error.message, 'error'); }
+      try { await uploadProfileMedia(kind, input.files?.[0]); } catch (error) { showToast(humanCommunityError(error, 'Não foi possível salvar a mídia.'), 'error'); }
       input.value = '';
     });
     ['dragenter','dragover'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.add('dragging'); }));
     ['dragleave','drop'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.remove('dragging'); }));
     dropzone.addEventListener('drop', async event => {
-      try { await uploadProfileMedia(kind, event.dataTransfer?.files?.[0]); } catch (error) { showToast(error.message, 'error'); }
+      try { await uploadProfileMedia(kind, event.dataTransfer?.files?.[0]); } catch (error) { showToast(humanCommunityError(error, 'Não foi possível salvar a mídia.'), 'error'); }
     });
     dropzone.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); input.click(); } });
     $(`#${kind}MediaReplace`)?.addEventListener('click', () => input.click());
-    $(`#${kind}MediaRemove`)?.addEventListener('click', async () => { try { await removeProfileMedia(kind); } catch (error) { showToast(error.message, 'error'); } });
+    $(`#${kind}MediaRemove`)?.addEventListener('click', async () => { try { await removeProfileMedia(kind); } catch (error) { showToast(humanCommunityError(error, 'Não foi possível remover a mídia.'), 'error'); } });
   }
   bindDropzone('avatar');
   bindDropzone('banner');
