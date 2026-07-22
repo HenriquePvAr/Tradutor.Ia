@@ -162,9 +162,9 @@ class SupabaseFrontendTests(unittest.TestCase):
             "get_user_finished",
             "/auth/v1/user",
             "getCanonicalAccessToken",
-            "__tradutorGetCanonicalAccessToken",
         ):
             self.assertIn(marker, source)
+        self.assertIn("__tradutorGetCanonicalAccessToken", _read("static/auth_ui.js"))
 
     def test_community_helper_resolves_token_asynchronously(self):
         source = _read("static/tradutor_ui.js")
