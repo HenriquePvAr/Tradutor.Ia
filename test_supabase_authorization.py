@@ -270,6 +270,12 @@ class SupabaseAuthorizationTests(unittest.TestCase):
         r = self.client.get(url, headers={"Authorization": "Bearer not.a.jwt"})
         self.assertEqual(r.status_code, 401)
 
+    def test_invalid_bearer_exposes_sanitized_reason_code(self):
+        r = self.client.get("/api/community/posts",
+                             headers={"Authorization": "Bearer not.a.jwt"})
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.json()["detail"]["code"], "invalid_token")
+
     def test_feed_requires_authentication_and_hides_private(self):
         # Anonymous cannot list the community feed at all.
         anon = self.client.get("/api/community/posts")

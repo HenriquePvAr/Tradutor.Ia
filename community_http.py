@@ -77,9 +77,15 @@ def _community_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> 
     try:
         return callback(*args, **kwargs)
     except AuthenticationRequired as exc:
+        code = str(exc or "authentication_required")
+        detail = (
+            "authentication_required"
+            if code == "authentication_required"
+            else {"code": code, "message": "Autenticação necessária.", "action": "Entre novamente."}
+        )
         raise HTTPException(
             status_code=401,
-            detail="authentication_required",
+            detail=detail,
             headers={"WWW-Authenticate": "Session", **_NO_STORE_HEADERS},
         ) from exc
     except ResourceNotFound as exc:
