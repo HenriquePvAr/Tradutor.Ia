@@ -241,7 +241,10 @@ async function init() {
   setAuthState('auth_loading');
   renderAuthShell('auth_loading');
   try {
-    authApi = await withTimeout(import('/static/supabase_auth.js'));
+    // The module is loaded dynamically, so include a per-document cache key;
+    // otherwise a restarted local UI can keep an older persistence implementation
+    // even though auth_ui.js itself was versioned by the server.
+    authApi = await withTimeout(import(`/static/supabase_auth.js?v=${Date.now()}`));
   } catch (_) {
     setAuthState('auth_error');
     window.__tradutorCommunityAuthenticated = false;
@@ -275,7 +278,14 @@ async function init() {
     if (event.target === $('#authModalOverlay')) closeModal();
   });
   $('#authLogoutBtn')?.addEventListener('click', async () => {
-    await authApi.signOut();
+    try { await withTimeout(authApi.signOut(), AUTH_BOOTSTRAP_TIMEOUT_MS); } catch (_) { /* local cleanup below is authoritative */ }
+    window.__tradutorAccessToken = '';
+    window.__tradutorCommunityAuthenticated = false;
+    setAuthState('unauthenticated');
+    renderAuthShell('unauthenticated');
+    window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
+      detail: {authenticated: false, state: 'unauthenticated'},
+    }));
   });
   $('#authForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();

@@ -107,62 +107,32 @@ export async function signIn(email, password, { signal } = {}) {
   if (cfg.provider !== 'supabase' || !cfg.supabase_url || !cfg.publishable_key) {
     throw new Error('supabase not configured');
   }
-  const response = await fetch(`${cfg.supabase_url}/auth/v1/token?grant_type=password`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json', apikey: cfg.publishable_key},
-    body: JSON.stringify({email, password}),
-    signal,
-  });
-  transportTrace('sign_in_response_received', {status: response.status, source: 'supabase_password'});
-  let payload = {};
-  try { payload = await response.json(); } catch (_) { /* invalid response */ }
-  if (!response.ok || !payload.access_token || !payload.refresh_token) {
-    const error = new Error(String(payload.error_description || payload.msg || 'authentication_failed'));
-    error.status = response.status;
-    error.code = String(payload.error_code || payload.error || 'authentication_failed');
-    transportTrace('sign_in_error_received', {status: response.status, code: error.code, source: 'supabase_password'});
-    throw error;
-  }
-  memorySession = {
-    access_token: String(payload.access_token),
-    refresh_token: String(payload.refresh_token),
-    token_type: payload.token_type || 'bearer',
-    expires_in: payload.expires_in,
-    expires_at: Math.floor(Date.now() / 1000) + Number(payload.expires_in || 3600),
-    user: payload.user || null,
-  };
-  window.__tradutorAuthTransport = 'supabase_rest';
   const client = await getSupabaseClient();
   if (!client) throw new Error('supabase not configured');
-  transportTrace('sdk_session_set_started', {source: 'supabase_password'});
-  sessionPersistencePromise = client.auth.setSession({
-    access_token: payload.access_token,
-    refresh_token: payload.refresh_token,
-  });
+  // Let the official SDK own the password exchange and persistence.  This avoids
+  // leaving a second REST request and an unresolved storage lock competing with
+  // setSession across tabs and reloads.
+  transportTrace('sdk_sign_in_started', {source: 'supabase_password'});
+  let sdkSessionEstablished = false;
   try {
     const result = await Promise.race([
-      sessionPersistencePromise,
+      client.auth.signInWithPassword({email, password}),
       new Promise((_, reject) => setTimeout(() => {
-        const timeout = new Error('sdk_session_timeout');
-        timeout.code = 'sdk_session_timeout';
+        const timeout = new Error('sdk_sign_in_timeout');
+        timeout.code = 'sdk_sign_in_timeout';
         reject(timeout);
       }, SDK_SESSION_TIMEOUT_MS)),
     ]);
-    if (result?.error) throw result.error;
+    transportTrace('sign_in_response_received', {status: result?.error?.status || 200, source: 'supabase_password'});
+    if (result?.error || !result?.data?.session?.access_token) {
+      const error = result?.error || new Error('authentication_failed');
+      transportTrace('sign_in_error_received', {status: error.status || 0, code: error.code || 'authentication_failed', source: 'supabase_password'});
+      throw error;
+    }
+    memorySession = result.data.session;
+    sdkSessionEstablished = true;
     window.__tradutorAuthTransport = 'supabase_sdk';
-    transportTrace('sdk_session_set_finished', {source: 'supabase_password'});
-  } catch (error) {
-    // The token came from the verified Auth endpoint. Keep the official SDK
-    // persistence promise alive; the backend exchange may finish before a slow
-    // storage lock releases, but a later load must still restore this session.
-    transportTrace('sdk_session_set_deferred', {code: error?.code || 'sdk_session_error', source: 'supabase_password'});
-    void sessionPersistencePromise.then(() => {
-      transportTrace('sdk_session_persisted', {source: 'supabase_password'});
-    }).catch((persistError) => {
-      transportTrace('sdk_session_persist_failed', {code: persistError?.code || 'sdk_session_persist_failed', source: 'supabase_password'});
-    });
-  }
-  try {
+    transportTrace('sdk_sign_in_finished', {authenticated: true, source: 'supabase_password'});
     const identity = await Promise.race([
       client.auth.getUser(),
       new Promise((_, reject) => setTimeout(() => {
@@ -177,28 +147,52 @@ export async function signIn(email, password, { signal } = {}) {
       transportTrace('get_user_error', {code: error.code, source: 'supabase_password'});
       throw error;
     }
+    memorySession = {...memorySession, user: identity.data.user};
     transportTrace('get_user_finished', {authenticated: true, source: 'supabase_password'});
+    return memorySession;
   } catch (error) {
+    if (sdkSessionEstablished || error?.code === 'sdk_sign_in_timeout' || error?.name === 'AbortError') throw error;
+    if (Number(error?.status || 0) >= 400 && Number(error?.status || 0) < 500) throw error;
     transportTrace('get_user_error', {code: error?.code || 'get_user_failed', source: 'supabase_password'});
-    // The SDK identity call can be blocked by its storage lock even though the
-    // Auth endpoint returned a valid session. Verify the same user directly over
-    // the authenticated REST endpoint before failing the login.
+    // Keep a narrowly-scoped REST fallback for SDK implementations that reject the
+    // call before producing a session. It is immediately handed back to the SDK via
+    // setSession, so it is never a memory-only authentication path.
     try {
-      const identityResponse = await fetch(`${cfg.supabase_url}/auth/v1/user`, {
-        headers: {apikey: cfg.publishable_key, Authorization: `Bearer ${memorySession.access_token}`},
+      const response = await fetch(`${cfg.supabase_url}/auth/v1/token?grant_type=password`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', apikey: cfg.publishable_key},
+        body: JSON.stringify({email, password}),
         signal,
       });
-      const identityPayload = await identityResponse.json().catch(() => ({}));
-      if (identityResponse.ok && identityPayload?.id) {
-        memorySession.user = identityPayload;
-        window.__tradutorAuthTransport = 'supabase_rest';
-        transportTrace('get_user_finished', {authenticated: true, source: 'supabase_rest'});
-        return memorySession;
+      transportTrace('sign_in_response_received', {status: response.status, source: 'supabase_rest'});
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.access_token || !payload.refresh_token) {
+        const restError = new Error(String(payload.error_description || payload.msg || 'authentication_failed'));
+        restError.status = response.status;
+        restError.code = String(payload.error_code || payload.error || 'authentication_failed');
+        transportTrace('sign_in_error_received', {status: response.status, code: restError.code, source: 'supabase_rest'});
+        throw restError;
       }
-      const identityError = new Error('user_not_available');
-      identityError.status = identityResponse.status;
-      identityError.code = identityPayload?.code || 'user_not_available';
-      throw identityError;
+      transportTrace('rest_sign_in_fallback', {source: 'supabase_rest'});
+      sessionPersistencePromise = client.auth.setSession({
+        access_token: payload.access_token,
+        refresh_token: payload.refresh_token,
+      });
+      const persisted = await Promise.race([
+        sessionPersistencePromise,
+        new Promise((_, reject) => setTimeout(() => {
+          const timeout = new Error('sdk_session_timeout');
+          timeout.code = 'sdk_session_timeout';
+          reject(timeout);
+        }, SDK_SESSION_TIMEOUT_MS)),
+      ]);
+      if (persisted?.error) throw persisted.error;
+      const identity = await client.auth.getUser();
+      if (identity?.error || !identity?.data?.user?.id) throw identity?.error || new Error('user_not_available');
+      memorySession = {...(persisted.data?.session || {}), user: identity.data.user};
+      window.__tradutorAuthTransport = 'supabase_sdk';
+      transportTrace('sdk_session_persisted', {source: 'supabase_rest'});
+      return memorySession;
     } catch (fallbackError) {
       transportTrace('get_user_error', {code: fallbackError?.code || 'user_not_available', status: fallbackError?.status || 0, source: 'supabase_rest'});
       throw fallbackError;
@@ -213,7 +207,12 @@ export async function signOut() {
   window.__tradutorAccessToken = '';
   window.__tradutorAuthTransport = '';
   const client = await getSupabaseClient();
-  if (client) await client.auth.signOut();
+  if (client) {
+    await Promise.race([
+      client.auth.signOut({scope: 'local'}),
+      new Promise((resolve) => setTimeout(resolve, SDK_SESSION_TIMEOUT_MS)),
+    ]);
+  }
 }
 
 // Subscribe to session changes so the shell can re-render on login/logout/refresh.

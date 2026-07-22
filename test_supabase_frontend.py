@@ -72,7 +72,7 @@ class SupabaseFrontendTests(unittest.TestCase):
     def test_auth_bootstrap_defines_state_before_dynamic_dependency_import(self):
         source = _read("static/auth_ui.js")
         self.assertIn("window.__tradutorAuthState = 'auth_loading'", source)
-        self.assertIn("import('/static/supabase_auth.js')", source)
+        self.assertIn("import(`/static/supabase_auth.js?v=${Date.now()}`)", source)
         self.assertIn("AUTH_BOOTSTRAP_TIMEOUT_MS", source)
         self.assertIn("withTimeout", source)
         self.assertIn("renderAuthShell('auth_error')", source)
@@ -129,6 +129,15 @@ class SupabaseFrontendTests(unittest.TestCase):
         self.assertIn("window.__tradutorActiveLoginController = controller", source)
         self.assertIn("auth_ui:canonical-submit-v3", source)
 
+    def test_logout_clears_local_auth_even_when_sdk_signout_is_slow(self):
+        auth = _read("static/auth_ui.js")
+        sdk = _read("static/supabase_auth.js")
+        self.assertIn("withTimeout(authApi.signOut(), AUTH_BOOTSTRAP_TIMEOUT_MS)", auth)
+        self.assertIn("window.__tradutorAccessToken = ''", auth)
+        self.assertIn("state: 'unauthenticated'", auth)
+        self.assertIn("client.auth.signOut({scope: 'local'})", sdk)
+        self.assertIn("SDK_SESSION_TIMEOUT_MS", sdk)
+
     def test_auth_asset_exposes_sanitized_build_marker(self):
         source = _read("static/auth_ui.js")
         self.assertIn("window.__tradutorAuthBuild", source)
@@ -164,15 +173,24 @@ class SupabaseFrontendTests(unittest.TestCase):
             "sign_in_response_received",
             "sign_in_error_received",
             "SDK_SESSION_TIMEOUT_MS",
-            "sdk_session_set_deferred",
+            "sdk_sign_in_started",
+            "sdk_sign_in_finished",
+            "rest_sign_in_fallback",
             "memorySession",
             "getUser",
             "get_user_finished",
-            "/auth/v1/user",
             "getCanonicalAccessToken",
         ):
             self.assertIn(marker, source)
         self.assertIn("__tradutorGetCanonicalAccessToken", _read("static/auth_ui.js"))
+
+    def test_supabase_signin_uses_official_sdk_persistence_before_rest_fallback(self):
+        source = _read("static/supabase_auth.js")
+        self.assertIn("client.auth.signInWithPassword", source)
+        self.assertIn("sdk_sign_in_started", source)
+        self.assertIn("sdk_sign_in_finished", source)
+        self.assertIn("rest_sign_in_fallback", source)
+        self.assertIn("client.auth.setSession", source)
 
     def test_supabase_session_uses_stable_official_storage_and_restores_identity(self):
         source = _read("static/supabase_auth.js")
