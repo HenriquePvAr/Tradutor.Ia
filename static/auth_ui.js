@@ -28,6 +28,7 @@ let mode = 'login';
 let authApi = null;
 let authHeartbeatTimer = 0;
 let authHeartbeatBusy = false;
+let loginAttemptCounter = 0;
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 10000;
 const AUTH_LOGIN_TIMEOUT_MS = 20000;
 const AUTH_HANDLER_ID = 'auth_ui:canonical-submit-v3';
@@ -260,13 +261,14 @@ async function init() {
     setError(''); setNote('');
     const email = $('#authEmail').value.trim();
     const password = $('#authPassword').value;
+    const attemptId = ++loginAttemptCounter;
     const controller = new AbortController();
     window.__tradutorActiveLoginController = controller;
     const timeoutId = setTimeout(() => controller.abort(), AUTH_LOGIN_TIMEOUT_MS);
     // Keep a UI-level escape hatch independent of the promise returned by a
     // provider SDK.  A misbehaving thenable must never leave the button locked.
     const watchdogId = setTimeout(() => {
-      if (submit.dataset.busy !== '1') return;
+      if (attemptId !== loginAttemptCounter || submit.dataset.busy !== '1') return;
       controller.abort();
       const message = 'O login demorou para responder. Tente novamente.';
       setAuthState('auth_timeout');
@@ -306,6 +308,7 @@ async function init() {
         authTrace('login_completed', {authenticated: true});
       }
     } catch (err) {
+      if (attemptId !== loginAttemptCounter) return;
       if (controller.signal.aborted || err?.code === 'auth_timeout') {
         try {
           await establishCanonicalSession();
@@ -334,10 +337,12 @@ async function init() {
       clearTimeout(timeoutId);
       clearTimeout(watchdogId);
       if (window.__tradutorActiveLoginController === controller) window.__tradutorActiveLoginController = null;
-      submit.dataset.busy = '';
-      submit.disabled = false;
-      submit.textContent = mode === 'signup' ? 'Criar conta' : 'Entrar';
-      authTrace('login_finally_executed', {source: AUTH_HANDLER_ID});
+      if (attemptId === loginAttemptCounter) {
+        submit.dataset.busy = '';
+        submit.disabled = false;
+        submit.textContent = mode === 'signup' ? 'Criar conta' : 'Entrar';
+        authTrace('login_finally_executed', {source: AUTH_HANDLER_ID});
+      }
     }
   });
   // Keeps token fresh across login, logout and SDK auto-refresh.
