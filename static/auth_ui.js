@@ -457,42 +457,78 @@ async function init() {
   const after = compare?.querySelector('.auth-login-after');
   const handle = $('#authCompareHandle');
   if (compare && after && handle) {
-    let dragging = false;
-    let interacted = false;
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
     function setComparePosition(pct) {
-      const bounded = Math.max(4, Math.min(96, Number(pct) || 52));
+      const bounded = Math.max(20, Math.min(80, Number(pct) || 50));
       after.style.clipPath = `inset(0 0 0 ${bounded}%)`;
       handle.style.left = `${bounded}%`;
     }
-    function positionFromEvent(event) {
-      const pointer = event.touches ? event.touches[0] : event;
-      const rect = compare.getBoundingClientRect();
-      return ((pointer.clientX - rect.left) / rect.width) * 100;
-    }
-    function move(event) {
-      if (!dragging) return;
-      setComparePosition(positionFromEvent(event));
-    }
-    compare.addEventListener('mousedown', (event) => {
-      dragging = true; interacted = true; setComparePosition(positionFromEvent(event));
-    });
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', () => { dragging = false; });
-    compare.addEventListener('touchstart', (event) => {
-      dragging = true; interacted = true; setComparePosition(positionFromEvent(event));
-    }, {passive: true});
-    window.addEventListener('touchmove', move, {passive: true});
-    window.addEventListener('touchend', () => { dragging = false; });
-    let t = 0;
-    function autoSweep() {
-      if (!interacted && window.__tradutorAuthState !== 'authenticated') {
-        t += 0.012;
-        setComparePosition(52 + Math.sin(t) * 28);
+    if (reducedMotion) {
+      setComparePosition(50);
+    } else {
+      const start = performance.now();
+      const forwardMs = 5200;
+      const pauseStartMs = 750;
+      const backMs = 5200;
+      const pauseEndMs = 850;
+      const cycleMs = forwardMs + pauseStartMs + backMs + pauseEndMs;
+      function easeInOut(value) {
+        return 0.5 - Math.cos(Math.PI * value) / 2;
       }
-      requestAnimationFrame(autoSweep);
+      function autoSweep(now) {
+        if (window.__tradutorAuthState === 'authenticated') return;
+        const elapsed = (now - start) % cycleMs;
+        let pct = 20;
+        if (elapsed < forwardMs) {
+          pct = 20 + easeInOut(elapsed / forwardMs) * 60;
+        } else if (elapsed < forwardMs + pauseStartMs) {
+          pct = 80;
+        } else if (elapsed < forwardMs + pauseStartMs + backMs) {
+          pct = 80 - easeInOut((elapsed - forwardMs - pauseStartMs) / backMs) * 60;
+        }
+        setComparePosition(pct);
+        window.__tradutorAuthCompareFrame = requestAnimationFrame(autoSweep);
+      }
+      setComparePosition(20);
+      if (window.__tradutorAuthCompareFrame) cancelAnimationFrame(window.__tradutorAuthCompareFrame);
+      window.__tradutorAuthCompareFrame = requestAnimationFrame(autoSweep);
     }
-    setComparePosition(52);
-    requestAnimationFrame(autoSweep);
+  }
+  const pipeline = $('#authMarketingPipeline');
+  const pipelineFill = $('#authMarketingPipelineFill');
+  const pipelineSteps = Array.from(pipeline?.querySelectorAll('[data-auth-pipeline-step]') || []);
+  if (pipeline && pipelineSteps.length === 6) {
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    const applyPipelineStep = (activeIndex) => {
+      const bounded = Math.max(0, Math.min(pipelineSteps.length - 1, activeIndex));
+      pipelineSteps.forEach((node, index) => {
+        node.classList.toggle('is-active', index === bounded);
+        node.classList.toggle('is-past', index < bounded);
+      });
+      if (pipelineFill) pipelineFill.style.width = `${(bounded / (pipelineSteps.length - 1)) * 100}%`;
+      pipeline.dataset.activeStep = String(bounded + 1);
+    };
+    if (window.__tradutorAuthPipelineTimer) clearTimeout(window.__tradutorAuthPipelineTimer);
+    if (reducedMotion) {
+      pipelineSteps.forEach((node) => {
+        node.classList.add('is-past');
+        node.classList.remove('is-active');
+      });
+      if (pipelineFill) pipelineFill.style.width = '100%';
+      pipeline.dataset.activeStep = 'all';
+    } else {
+      const sequence = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0];
+      let position = 0;
+      const tick = () => {
+        if (window.__tradutorAuthState === 'authenticated') return;
+        applyPipelineStep(sequence[position]);
+        const atEnd = position === 5;
+        const atStart = position === 10;
+        position = (position + 1) % sequence.length;
+        window.__tradutorAuthPipelineTimer = setTimeout(tick, atEnd ? 900 : atStart ? 700 : 900);
+      };
+      tick();
+    }
   }
   // Keeps token fresh across login, logout and SDK auto-refresh.
   await withTimeout(authApi.onAuthChange((session, event) => renderSession(session, event)));
