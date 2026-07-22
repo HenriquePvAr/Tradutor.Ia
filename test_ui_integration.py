@@ -264,17 +264,45 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertNotEqual(bridge.profile_for_user("user-b")["display_name"], "Alice")
 
     def test_profile_display_name_is_normalized_and_reserved_names_rejected(self):
-        bridge = UiBridge.__new__(UiBridge)
-        bridge.profile = _profile_default()
-        saved = bridge.save_profile({"display_name": "  Alice   Example  "}, user_id="user-test")
-        self.assertEqual(saved["display_name"], "Alice Example")
-        with self.assertRaisesRegex(ValueError, "display_name_reserved"):
-            bridge.save_profile({"display_name": "ADMIN"}, user_id="user-test")
+        with tempfile.TemporaryDirectory() as folder:
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.profile = _profile_default()
+            with patch("ui_bridge.PROFILE_PATH", Path(folder) / "ui_profile.json"):
+                saved = bridge.save_profile({"display_name": "  Alice   Example  "}, user_id="user-test")
+                self.assertEqual(saved["display_name"], "Alice Example")
+                with self.assertRaisesRegex(ValueError, "display_name_reserved"):
+                    bridge.save_profile({"display_name": "ADMIN"}, user_id="user-test")
 
     def test_profile_routes_require_canonical_authentication(self):
         source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
         for marker in ("def _ui_principal", "AUTH.require_authenticated", "api_profile_media", "profile_for_user"):
             self.assertIn(marker, source, marker)
+
+    def test_community_profile_join_is_public_metadata_only(self):
+        source = (ROOT / "community_service.py").read_text(encoding="utf-8")
+        store = (ROOT / "community_store.py").read_text(encoding="utf-8")
+        for marker in ("author_display_name", "author_avatar_object_key", "author_public_role", "avatar_url"):
+            self.assertIn(marker, source + store, marker)
+        self.assertNotIn('"email"', source)
+        self.assertIn("uq_community_profiles_display_name", store)
+
+    def test_profile_migration_has_unique_normalized_identity(self):
+        migration = (ROOT / "supabase" / "migrations" / "20260722120000_public_profile_identity.sql").read_text(encoding="utf-8")
+        for marker in ("display_name_normalized", "profiles_display_name_normalized_uq", "normalize_profile_identity", "display_name_reserved"):
+            self.assertIn(marker, migration, marker)
+
+    def test_community_card_uses_public_author_and_no_private_identity(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        for marker in ("post.author", "author.display_name", "author.avatar_url", "community-author-avatar"):
+            self.assertIn(marker, source, marker)
+        self.assertNotIn("author.email", source)
+
+    def test_enter_and_real_progress_surfaces_remain_structural(self):
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn('<form id="authForm"', shell)
+        self.assertIn("progress.stage_key", source)
+        self.assertIn("terminalRunStatuses", source)
 
     def test_standard_emoji_are_not_embedded_in_ui(self):
         sources = "\n".join(

@@ -577,6 +577,8 @@
   }
   .hist-meta .hm-title{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:14px;}
   .hist-meta .hm-sub{font-size:10.5px; color:var(--muted); margin-top:4px; font-family:'JetBrains Mono',monospace;}
+  .community-author{display:flex; align-items:center; gap:6px; font-family:'Inter',sans-serif;}
+  .community-author-avatar{width:18px; height:18px; border-radius:50%; object-fit:cover; display:inline-flex; align-items:center; justify-content:center; background:var(--ink); color:var(--paper); font-size:10px; font-weight:700;}
   .hm-badges{display:flex; gap:6px; margin-top:8px;}
   .badge{font-size:9.5px; padding:3px 8px; border-radius:10px; font-family:'JetBrains Mono',monospace; letter-spacing:.04em;}
   .badge.ep{background:rgba(239,231,216,0.07); color:var(--paper); border:1px solid var(--line); font-family:'Black Han Sans',sans-serif; letter-spacing:.02em;}

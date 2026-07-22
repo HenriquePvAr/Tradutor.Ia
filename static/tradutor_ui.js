@@ -1452,8 +1452,14 @@
   function renderCommunityCard(post) {
     const title = post.title || post.series_title || 'Capítulo';
     const sub = `${escapeHtml(post.series_title || '')} · ep ${escapeHtml(String(post.episode_number || ''))} · ${Number(post.views || 0)} leituras`;
+    const author = post.author || {};
+    const authorName = escapeHtml(author.display_name || 'Usuário');
+    const authorRole = author.public_role ? ` · ${escapeHtml(author.public_role)}` : '';
+    const avatar = author.avatar_url
+      ? `<img class="community-author-avatar" src="${escapeAttr(author.avatar_url)}" alt="">`
+      : `<span class="community-author-avatar community-author-letter">${escapeHtml((author.display_name || 'U').slice(0, 1).toUpperCase())}</span>`;
     return `<div class="hist-item"><div class="hist-cover" style="background:#b8557a">${escapeHtml(title.slice(0,1).toUpperCase())}</div>
-      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}</div></div>
+      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}</div><div class="hm-sub community-author">${avatar}<span>${authorName}${authorRole}</span></div></div>
       <div class="hm-actions"><button class="btn-ghost" type="button" data-community-pdf-id="${escapeAttr(post.post_id)}">Abrir PDF</button></div></div>`;
   }
   $('#communityFeed')?.addEventListener('click', event => {

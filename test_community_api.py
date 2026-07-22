@@ -88,6 +88,34 @@ class CommunityApiTests(unittest.TestCase):
         self.assertEqual(feed["count"], 1)
         self.assertNotIn("storage_file_id", feed["posts"][0])
 
+    def test_public_profile_name_is_normalized_and_atomically_unique(self):
+        saved = self.api.store.upsert_profile("user-a", {
+            "display_name": "  Kayden   Rivers  ", "public_role": "Translator",
+        })
+        self.assertEqual(saved["display_name"], "Kayden Rivers")
+        normalized = self.api.store._conn.execute(
+            "SELECT display_name_normalized FROM community_profiles WHERE user_id='user-a'"
+        ).fetchone()[0]
+        self.assertEqual(normalized, "kayden rivers")
+        with self.assertRaisesRegex(ValueError, "display_name_taken"):
+            self.api.store.upsert_profile("user-b", {"display_name": "KAYDEN RIVERS"})
+        self.assertEqual(self.api.store.profile_public("user-a")["display_name"], "Kayden Rivers")
+
+    def test_feed_card_joins_public_author_without_private_fields(self):
+        result = self._publish_and_run()
+        self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
+                                       moderation_status=Moderation.APPROVED)
+        self.api.store.upsert_profile(OWNER.user_id, {
+            "display_name": "Kayden", "public_role": "Translator",
+            "avatar_object_key": "local:avatar",
+        })
+        card = self.api.feed(principal=MEMBER)["posts"][0]
+        self.assertEqual(card["author"]["display_name"], "Kayden")
+        self.assertEqual(card["author"]["public_role"], "Translator")
+        self.assertTrue(card["author"]["avatar_url"].endswith(f"/{OWNER.user_id}/avatar"))
+        self.assertNotIn("email", str(card).lower())
+        self.assertNotIn("object_key", card["author"])
+
     def test_read_streams_full_and_range(self):
         result = self._publish_and_run()
         self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,

@@ -60,7 +60,10 @@ class PublicationTagTests(unittest.TestCase):
         store = CommunityStore(path)
         try:
             self.assertEqual(store.get_post("p1")["tags"], [])
-            self.assertEqual(store._conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], "2")
+            self.assertEqual(store._conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], "3")
+            self.assertIsNotNone(store._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='community_profiles'"
+            ).fetchone())
         finally:
             store.close()
 
