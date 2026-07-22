@@ -172,6 +172,7 @@ export async function signIn(email, password, { signal } = {}) {
 
 export async function signOut() {
   memorySession = null;
+  window.__tradutorAccessToken = '';
   const client = await getSupabaseClient();
   if (client) await client.auth.signOut();
 }

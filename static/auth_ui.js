@@ -208,6 +208,13 @@ function renderSession(session, authEvent = '') {
     });
     return;
   }
+  if (!session && authEvent === 'SIGNED_OUT' && window.__tradutorAccessToken) {
+    // A late SDK event can report sign-out when setSession persistence timed out;
+    // retain the verified in-memory bearer until the canonical session rejects it.
+    authTrace('sdk_signout_deferred', {authenticated: true, source: 'memory_session'});
+    void syncBackendSession(window.__tradutorAccessToken);
+    return;
+  }
   window.__tradutorAccessToken = session?.access_token || '';
   authTrace('sdk_session_changed', {authenticated: Boolean(session)});
   startAuthHeartbeat();
