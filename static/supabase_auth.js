@@ -7,6 +7,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.58.0';
 
 let clientPromise = null;
+let publicConfigPromise = null;
 
 async function fetchPublicConfig() {
   const response = await fetch('/api/community/auth/config', { credentials: 'same-origin' });
@@ -14,12 +15,17 @@ async function fetchPublicConfig() {
   return response.json();
 }
 
+function publicConfig() {
+  if (!publicConfigPromise) publicConfigPromise = fetchPublicConfig();
+  return publicConfigPromise;
+}
+
 // Resolves to a configured Supabase client, or null when the backend is not running
 // the Supabase provider (e.g. local-session mode). Cached so the SDK loads once.
 export function getSupabaseClient() {
   if (clientPromise) return clientPromise;
   clientPromise = (async () => {
-    const cfg = await fetchPublicConfig();
+    const cfg = await publicConfig();
     if (cfg.provider !== 'supabase' || !cfg.supabase_url || !cfg.publishable_key) {
       return null;
     }
@@ -61,10 +67,30 @@ export async function signUp(email, password) {
   return { needsConfirmation: !data.session };
 }
 
-export async function signIn(email, password) {
+export async function signIn(email, password, { signal } = {}) {
+  const cfg = await publicConfig();
+  if (cfg.provider !== 'supabase' || !cfg.supabase_url || !cfg.publishable_key) {
+    throw new Error('supabase not configured');
+  }
+  const response = await fetch(`${cfg.supabase_url}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', apikey: cfg.publishable_key},
+    body: JSON.stringify({email, password}),
+    signal,
+  });
+  let payload = {};
+  try { payload = await response.json(); } catch (_) { /* invalid response */ }
+  if (!response.ok || !payload.access_token || !payload.refresh_token) {
+    const error = new Error(String(payload.error_description || payload.msg || 'authentication_failed'));
+    error.status = response.status;
+    throw error;
+  }
   const client = await getSupabaseClient();
   if (!client) throw new Error('supabase not configured');
-  const { error } = await client.auth.signInWithPassword({ email, password });
+  const { error } = await client.auth.setSession({
+    access_token: payload.access_token,
+    refresh_token: payload.refresh_token,
+  });
   if (error) throw error;
 }
 

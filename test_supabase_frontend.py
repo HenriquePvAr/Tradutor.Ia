@@ -84,6 +84,31 @@ class SupabaseFrontendTests(unittest.TestCase):
         self.assertIn("window.__tradutorAccessToken = ''", source)
         self.assertIn("logoutBtn.hidden = state !== 'authenticated'", source)
 
+    def test_login_submission_is_abortable_and_always_restores_button(self):
+        source = _read("static/auth_ui.js")
+        self.assertIn("new AbortController()", source)
+        self.assertIn("controller.abort()", source)
+        self.assertIn("finally", source)
+        self.assertIn("submit.disabled = false", source)
+        self.assertIn("submit.dataset.busy", source)
+
+    def test_login_errors_have_stable_user_messages(self):
+        source = _read("static/auth_ui.js")
+        for message in (
+            "E-mail ou senha inválidos.",
+            "Esta conta não tem permissão para entrar.",
+            "O login demorou para responder. Tente novamente.",
+            "Não foi possível conectar ao serviço de autenticação.",
+            "Não foi possível concluir o login.",
+        ):
+            self.assertIn(message, source)
+
+    def test_sign_in_passes_abort_signal_to_auth_request(self):
+        source = _read("static/supabase_auth.js")
+        self.assertIn("export async function signIn(email, password, { signal } = {})", source)
+        self.assertIn("signal,", source)
+        self.assertIn("grant_type=password", source)
+
     def test_auth_asset_is_versioned_by_file_mtime(self):
         app_source = _read("app_ui.py")
         self.assertIn("AUTH_UI_ASSET", app_source)

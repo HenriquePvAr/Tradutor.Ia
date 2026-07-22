@@ -169,12 +169,18 @@ async function init() {
   });
   $('#authForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const submit = $('#authSubmit');
+    if (!submit) return;
+    if (submit.dataset.busy === '1') return;
     setError(''); setNote('');
     const email = $('#authEmail').value.trim();
     const password = $('#authPassword').value;
-    const submit = $('#authSubmit');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), AUTH_BOOTSTRAP_TIMEOUT_MS * 2);
+    submit.dataset.busy = '1';
     submit.disabled = true;
     submit.textContent = 'Aguarde…';
+    setAuthState('auth_submitting');
     try {
       if (mode === 'signup') {
         const { needsConfirmation } = await authApi.signUp(email, password);
@@ -185,12 +191,24 @@ async function init() {
           closeModal();
         }
       } else {
-        await authApi.signIn(email, password);
+        await authApi.signIn(email, password, {signal: controller.signal});
         closeModal();
       }
     } catch (err) {
-      setError(err?.message ? String(err.message) : 'Falha na autenticação.');
+      const status = Number(err?.status || 0);
+      const message = controller.signal.aborted || err?.name === 'AbortError'
+        ? 'O login demorou para responder. Tente novamente.'
+        : status === 401 ? 'E-mail ou senha inválidos.'
+          : status === 403 ? 'Esta conta não tem permissão para entrar.'
+            : status >= 500 ? 'Não foi possível concluir o login.'
+              : 'Não foi possível conectar ao serviço de autenticação.';
+      setAuthState(controller.signal.aborted ? 'auth_timeout' : status === 401 ? 'invalid_credentials' : 'auth_error');
+      window.__tradutorCommunityAuthenticated = false;
+      renderAuthShell('auth_error', message);
+      setError(message);
     } finally {
+      clearTimeout(timeoutId);
+      submit.dataset.busy = '';
       submit.disabled = false;
       submit.textContent = mode === 'signup' ? 'Criar conta' : 'Entrar';
     }
