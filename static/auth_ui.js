@@ -26,16 +26,51 @@ function closeModal() {
 
 let mode = 'login';
 let authApi = null;
+let authHeartbeatTimer = 0;
+let authHeartbeatBusy = false;
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 10000;
+const AUTH_LOGIN_TIMEOUT_MS = 20000;
 // The shell must not infer "visitor" while the backend session is still being
 // resolved.  The backend response is authoritative for local-session and Supabase
 // providers alike; the SDK session only supplies the bearer when applicable.
 window.__tradutorAuthState = 'auth_loading';
 window.__tradutorCommunityUserId = '';
+window.__tradutorAuthTrace = Array.isArray(window.__tradutorAuthTrace)
+  ? window.__tradutorAuthTrace : [];
+
+function authTrace(event, fields = {}) {
+  const safe = {event: String(event || ''), at: Date.now()};
+  for (const key of ['status', 'code', 'authenticated', 'source']) {
+    if (fields[key] !== undefined) safe[key] = fields[key];
+  }
+  window.__tradutorAuthTrace.push(safe);
+  if (window.__tradutorAuthTrace.length > 40) window.__tradutorAuthTrace.shift();
+}
 
 function setAuthState(state, userId = '') {
   window.__tradutorAuthState = state;
   window.__tradutorCommunityUserId = state === 'authenticated' ? String(userId || '') : '';
+  window.__tradutorAuthStore = {
+    status: state,
+    authenticated: state === 'authenticated',
+    user_id: state === 'authenticated' ? String(userId || '') : '',
+  };
+  authTrace('auth_state_changed', {status: state, authenticated: state === 'authenticated'});
+}
+
+function startAuthHeartbeat() {
+  if (authHeartbeatTimer) return;
+  authHeartbeatTimer = window.setInterval(async () => {
+    if (authHeartbeatBusy || window.__tradutorAuthState !== 'authenticated' || !authApi) return;
+    authHeartbeatBusy = true;
+    try {
+      const token = await authApi.currentAccessToken();
+      const canonical = await syncBackendSession(token);
+      if (!canonical?.authenticated) authTrace('auth_heartbeat_lost', {authenticated: false});
+    } catch (_) {
+      authTrace('auth_heartbeat_error', {code: 'refresh_failed'});
+    } finally { authHeartbeatBusy = false; }
+  }, 60000);
 }
 
 function renderAuthShell(state, message = '') {
@@ -61,18 +96,20 @@ function withTimeout(promise, timeoutMs = AUTH_BOOTSTRAP_TIMEOUT_MS) {
   ]);
 }
 
-async function syncBackendSession(accessToken = '') {
+async function syncBackendSession(accessToken = '', {signal} = {}) {
   const headers = {};
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   try {
+    authTrace('canonical_session_request', {source: accessToken ? 'bearer' : 'cookie'});
     const response = await withTimeout(fetch('/api/community/auth/session', {
-      headers, credentials: 'same-origin', cache: 'no-store',
+      headers, credentials: 'same-origin', cache: 'no-store', signal,
     }));
     let payload = {};
     try { payload = await response.json(); } catch (_) { /* empty response */ }
     if (response.ok && payload.authenticated) {
       setAuthState('authenticated', payload.user_id);
       window.__tradutorCommunityAuthenticated = true;
+      authTrace('canonical_session_confirmed', {authenticated: true});
       window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
         detail: {authenticated: true, user_id: String(payload.user_id || ''), state: 'authenticated'},
       }));
@@ -82,6 +119,7 @@ async function syncBackendSession(accessToken = '') {
     else if (response.status === 403) setAuthState('auth_error');
     else setAuthState('unauthenticated');
     window.__tradutorCommunityAuthenticated = false;
+    authTrace('canonical_session_rejected', {status: response.status, authenticated: false});
     window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
       detail: {authenticated: false, state: window.__tradutorAuthState},
     }));
@@ -89,11 +127,22 @@ async function syncBackendSession(accessToken = '') {
   } catch (_) {
     setAuthState('auth_error');
     window.__tradutorCommunityAuthenticated = false;
+    authTrace('canonical_session_error', {code: 'network_or_timeout'});
     window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
       detail: {authenticated: false, state: 'auth_error'},
     }));
     return null;
   }
+}
+
+async function establishCanonicalSession(signal) {
+  let accessToken = '';
+  try { accessToken = await authApi.currentAccessToken(); } catch (_) { /* backend remains authoritative */ }
+  const payload = await syncBackendSession(accessToken, {signal});
+  if (payload?.authenticated) return payload;
+  const error = new Error('session_not_established');
+  error.code = 'session_not_established';
+  throw error;
 }
 
 function setMode(next) {
@@ -116,6 +165,8 @@ function renderSession(session) {
   if (!area) return;
   area.hidden = false;
   window.__tradutorAccessToken = session?.access_token || '';
+  authTrace('sdk_session_changed', {authenticated: Boolean(session)});
+  startAuthHeartbeat();
   setAuthState('auth_loading');
   const email = session?.user?.email || '';
   if (session && email) {
@@ -176,11 +227,12 @@ async function init() {
     const email = $('#authEmail').value.trim();
     const password = $('#authPassword').value;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), AUTH_BOOTSTRAP_TIMEOUT_MS * 2);
+    const timeoutId = setTimeout(() => controller.abort(), AUTH_LOGIN_TIMEOUT_MS);
     submit.dataset.busy = '1';
     submit.disabled = true;
     submit.textContent = 'Aguarde…';
     setAuthState('auth_submitting');
+    authTrace('login_submit_started');
     try {
       if (mode === 'signup') {
         const { needsConfirmation } = await authApi.signUp(email, password);
@@ -192,11 +244,26 @@ async function init() {
         }
       } else {
         await authApi.signIn(email, password, {signal: controller.signal});
+        await establishCanonicalSession(controller.signal);
         closeModal();
+        if (typeof window.__tradutorToast === 'function') window.__tradutorToast('Login realizado.', 'ok');
+        authTrace('login_completed', {authenticated: true});
       }
     } catch (err) {
+      if (controller.signal.aborted) {
+        try {
+          await establishCanonicalSession();
+          closeModal();
+          if (typeof window.__tradutorToast === 'function') window.__tradutorToast('Login realizado.', 'ok');
+          authTrace('login_reconciled_after_timeout', {authenticated: true});
+          return;
+        } catch (_) { /* retain the timeout message below */ }
+      }
       const status = Number(err?.status || 0);
-      const message = controller.signal.aborted || err?.name === 'AbortError'
+      const sessionFailure = err?.code === 'session_not_established';
+      const message = sessionFailure
+        ? 'O login foi aceito, mas a sessão não pôde ser confirmada.'
+        : controller.signal.aborted || err?.name === 'AbortError'
         ? 'O login demorou para responder. Tente novamente.'
         : status === 401 ? 'E-mail ou senha inválidos.'
           : status === 403 ? 'Esta conta não tem permissão para entrar.'
@@ -206,6 +273,7 @@ async function init() {
       window.__tradutorCommunityAuthenticated = false;
       renderAuthShell('auth_error', message);
       setError(message);
+      authTrace('login_failed', {code: err?.code || (status ? `http_${status}` : 'auth_error')});
     } finally {
       clearTimeout(timeoutId);
       submit.dataset.busy = '';

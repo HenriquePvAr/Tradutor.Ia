@@ -92,6 +92,25 @@ class SupabaseFrontendTests(unittest.TestCase):
         self.assertIn("submit.disabled = false", source)
         self.assertIn("submit.dataset.busy", source)
 
+    def test_login_reconciles_canonical_session_without_reload(self):
+        source = _read("static/auth_ui.js")
+        for marker in (
+            "AUTH_LOGIN_TIMEOUT_MS",
+            "establishCanonicalSession",
+            "session_not_established",
+            "canonical_session_confirmed",
+            "login_completed",
+            "login_reconciled_after_timeout",
+            "__tradutorAuthStore",
+        ):
+            self.assertIn(marker, source)
+
+    def test_auth_heartbeat_keeps_refresh_and_canonical_state_in_sync(self):
+        source = _read("static/auth_ui.js")
+        self.assertIn("startAuthHeartbeat", source)
+        self.assertIn("currentAccessToken", source)
+        self.assertIn("auth_heartbeat_lost", source)
+
     def test_login_errors_have_stable_user_messages(self):
         source = _read("static/auth_ui.js")
         for message in (
