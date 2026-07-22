@@ -21,7 +21,11 @@ from community_auth import (
     validate_bind_security,
 )
 from community_api import CommunityApi
-from community_http import CommunityNetworkBoundaryMiddleware, create_community_router
+from community_http import (
+    CommunityNetworkBoundaryMiddleware,
+    create_admin_community_router,
+    create_community_router,
+)
 from local_environment import load_local_environment_for_entrypoint
 from ui_bridge import UiBridge, local_folder_ui_allowed
 
@@ -52,6 +56,7 @@ AUTH = build_auth_provider()
 app.add_middleware(CommunityNetworkBoundaryMiddleware, auth=AUTH)
 app.add_static_files("/static", STATIC_DIR)
 app.include_router(create_community_router(COMMUNITY, AUTH))
+app.include_router(create_admin_community_router(COMMUNITY, AUTH))
 
 # Supabase social API (works/chapters/comments/…). Mounted only when the social provider
 # is configured; the browser never reaches the tables directly — every call forwards the

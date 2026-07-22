@@ -248,6 +248,16 @@ class CommunityStore:
             (user_id, source_job_id),
         ).fetchone()))
 
+    def post_for_any_source(self, source_job_id: str) -> dict[str, Any] | None:
+        """Return the first publication linked to a source job, regardless of owner."""
+        if not source_job_id:
+            return None
+        return self._with_decoded_tags(self._row(self._conn.execute(
+            "SELECT * FROM community_posts WHERE source_job_id=? "
+            "ORDER BY created_at ASC,rowid ASC LIMIT 1",
+            (source_job_id,),
+        ).fetchone()))
+
     def set_post_status(self, post_id: str, status: str, *, actor_id: str = "",
                         moderation_status: str | None = None) -> None:
         if status not in PostStatus.ALL:
@@ -874,6 +884,26 @@ class CommunityStore:
             "VALUES(?,?,?,?,?,?)",
             (uuid.uuid4().hex, post_id, actor_id, event_type,
              json.dumps(metadata, ensure_ascii=False), time.time()))
+
+    def add_admin_audit_event(
+        self,
+        *,
+        actor_id: str,
+        event_type: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Persist an administrative audit event without tying it to a post.
+
+        The event table is append-only from the service perspective.  Sensitive
+        credentials are never accepted by this helper; callers provide only the
+        sanitized identifiers and outcome metadata needed for reconciliation.
+        """
+        self._conn.execute(
+            "INSERT INTO community_events(id,post_id,actor_id,event_type,metadata_json,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (uuid.uuid4().hex, None, str(actor_id or ""), str(event_type or ""),
+             json.dumps(metadata, ensure_ascii=False, separators=(",", ":")), time.time()),
+        )
 
     def events_for_post(self, post_id: str) -> list[dict[str, Any]]:
         return self._rows(self._conn.execute(

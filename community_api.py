@@ -16,7 +16,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Callable
 
-from community_auth import AuthenticationRequired, RequestPrincipal, ResourceNotFound
+from community_auth import AuthenticationRequired, RequestPrincipal, ResourceNotFound, normalize_user_id
 from community_service import (
     CommunityService,
     CommunityError,
@@ -39,6 +39,15 @@ class RangeNotSatisfiable(CommunityError):
     def __init__(self, total_size: int):
         super().__init__("range_not_satisfiable")
         self.total_size = max(0, int(total_size))
+
+
+class ArtifactBindingError(CommunityError):
+    """Controlled failure for the explicit legacy-artifact owner migration API."""
+
+    def __init__(self, code: str, *, status_code: int = 422):
+        super().__init__(str(code))
+        self.code = str(code)
+        self.status_code = int(status_code)
 
 
 def storage_provider_name() -> str:
@@ -86,6 +95,189 @@ class CommunityApi:
 
     def close(self) -> None:
         self.store.close()
+
+    # ---- explicit legacy ownership migration ------------------------------
+    def bind_legacy_artifact_owner(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal,
+        target_user_exists: Callable[[str], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Bind one validated legacy translation to one explicit community owner.
+
+        This path is deliberately separate from publication.  It is admin-only,
+        requires the exact run/hash supplied by the operator, and never falls back
+        to a slug or filesystem path.  The job-store claim is atomic and the audit
+        event is append-only in the community store.
+        """
+        if not isinstance(principal, RequestPrincipal) or not principal.authenticated:
+            raise AuthenticationRequired("authentication_required")
+        if not principal.has_role("admin"):
+            raise ArtifactBindingError("admin_required", status_code=403)
+        if not isinstance(payload, dict) or payload.get("confirm") is not True:
+            raise ArtifactBindingError("confirmation_required", status_code=422)
+        try:
+            normalized_job = str(job_id or "").strip()
+            if len(normalized_job) != 32 or any(
+                character not in "0123456789abcdef" for character in normalized_job
+            ):
+                raise ValueError
+            target = normalize_user_id(str(payload.get("target_user_id") or ""))
+            expected_run = str(payload.get("expected_run_id") or "").strip()
+            expected_hash = str(payload.get("expected_pdf_sha256") or "").strip().lower()
+            reason = str(payload.get("reason") or "").strip()
+            if not expected_run or len(expected_hash) != 64 or any(
+                character not in "0123456789abcdef" for character in expected_hash
+            ) or not reason or len(reason) > 1000:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ArtifactBindingError("invalid_binding_request", status_code=422) from None
+
+        # A target equal to the authenticated principal is proven to exist by the
+        # trusted auth provider.  Binding to another user requires an injected,
+        # server-side existence check; client-supplied identity fields are ignored.
+        if target != principal.user_id and not (
+            callable(target_user_exists) and bool(target_user_exists(target))
+        ):
+            raise ArtifactBindingError("target_user_not_found", status_code=404)
+
+        source = self._resolve_unowned_binding_source(
+            normalized_job, expected_run=expected_run, expected_hash=expected_hash)
+        existing = self.store.post_for_any_source(normalized_job)
+        if existing:
+            self._record_binding_audit(
+                principal=principal, target_user_id=target, job_id=normalized_job,
+                run_id=expected_run, pdf_sha256=expected_hash, reason=reason,
+                result="publication_already_exists")
+            raise ArtifactBindingError("publication_already_exists", status_code=409)
+
+        outcome, claimed = self.service.job_store.bind_community_owner(
+            normalized_job, target, bound_by=principal.user_id)
+        if outcome == "owner_already_assigned":
+            self._record_binding_audit(
+                principal=principal, target_user_id=target, job_id=normalized_job,
+                run_id=expected_run, pdf_sha256=expected_hash, reason=reason,
+                result=outcome, previous_owner_id=str(
+                    ((claimed or {}).get("configuration") or {}).get("community_owner_id") or ""))
+            raise ArtifactBindingError(outcome, status_code=409)
+        if outcome == "already_bound_to_target":
+            return {
+                "status": outcome,
+                "job_id": normalized_job,
+                "run_id": expected_run,
+                "target_user_id": target,
+                "pdf_sha256": source["pdf_sha256"],
+            }
+        if outcome != "owner_bound":
+            raise ArtifactBindingError("artifact_not_found", status_code=404)
+        self._record_binding_audit(
+            principal=principal, target_user_id=target, job_id=normalized_job,
+            run_id=expected_run, pdf_sha256=source["pdf_sha256"], reason=reason,
+            result=outcome, previous_owner_id="")
+        return {
+            "status": outcome,
+            "job_id": normalized_job,
+            "run_id": expected_run,
+            "target_user_id": target,
+            "pdf_sha256": source["pdf_sha256"],
+        }
+
+    def _record_binding_audit(
+        self,
+        *,
+        principal: RequestPrincipal,
+        target_user_id: str,
+        job_id: str,
+        run_id: str,
+        pdf_sha256: str,
+        reason: str,
+        result: str,
+        previous_owner_id: str | None = None,
+    ) -> None:
+        self.store.add_admin_audit_event(
+            actor_id=principal.user_id,
+            event_type="legacy_artifact_owner_bound",
+            metadata={
+                "action": "legacy_artifact_owner_bound",
+                "executor_user_id": principal.user_id,
+                "target_user_id": target_user_id,
+                "job_id": job_id,
+                "run_id": run_id,
+                "previous_owner_id": previous_owner_id,
+                "new_owner_id": target_user_id if result == "owner_bound" else None,
+                "pdf_sha256": pdf_sha256,
+                "reason": reason,
+                "result": result,
+            },
+        )
+
+    def _resolve_unowned_binding_source(
+        self,
+        job_id: str,
+        *,
+        expected_run: str,
+        expected_hash: str,
+    ) -> dict[str, str]:
+        """Validate the exact terminal job without assigning ownership."""
+        try:
+            job = self.service.job_store.get_job(job_id)
+            if not job:
+                raise ValueError
+            config = job.get("configuration") or {}
+            if not isinstance(config, dict) or config.get("job_type") != "translation":
+                raise ValueError
+            current_owner = str(config.get("community_owner_id") or "")
+            if current_owner:
+                # The caller may still receive an idempotent response, but the
+                # caller must prove the same target through the atomic claim below.
+                pass
+            if job.get("run_id") != expected_run:
+                raise ArtifactBindingError("run_mismatch", status_code=409)
+            if job.get("status") not in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED}:
+                raise ArtifactBindingError("artifact_not_publishable", status_code=422)
+            if int(job.get("exit_code")) != 0 or not job.get("review_confirmed_at"):
+                raise ArtifactBindingError("artifact_not_publishable", status_code=422)
+            output_dir = Path(str(job.get("output_dir") or "")).resolve()
+            root = self.service.output_root.resolve()
+            if not _is_within(output_dir, root):
+                raise ValueError
+            pdf_path = _resolve_recorded_path(job.get("pdf_path"), output_dir)
+            if not _is_within(pdf_path, output_dir) or not _is_within(pdf_path, root):
+                raise ValueError
+            recorded_manifest = str(job.get("manifest_path") or "").strip()
+            manifest_path = Path(recorded_manifest) if recorded_manifest else output_dir / "job_manifest.json"
+            if not manifest_path.is_absolute():
+                manifest_path = output_dir / manifest_path
+            manifest_path = manifest_path.resolve()
+            if not _is_within(manifest_path, output_dir) or not manifest_path.is_file():
+                manifest_path = output_dir / "job_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict) or manifest.get("job_id") != job_id \
+                    or manifest.get("run_id") != expected_run \
+                    or int(manifest.get("exit_code")) != 0:
+                raise ValueError
+            manifest_pdf = _resolve_recorded_path(manifest.get("pdf_path"), output_dir)
+            if manifest_pdf != pdf_path:
+                raise ValueError
+            digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+            if digest != expected_hash:
+                raise ArtifactBindingError("hash_mismatch", status_code=409)
+            validate_local_pdf(pdf_path, root)
+            run_manifest_path = output_dir / "run_manifest.json"
+            if run_manifest_path.is_file():
+                run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+                run_pdf = _resolve_recorded_path(
+                    run_manifest.get("pdf_path") or run_manifest.get("pdf_filename"), output_dir)
+                if not isinstance(run_manifest, dict) or not run_manifest.get("run_id") \
+                        or run_pdf != pdf_path:
+                    raise ValueError
+            return {"pdf_path": str(pdf_path), "pdf_sha256": digest}
+        except ArtifactBindingError:
+            raise
+        except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
+            raise ArtifactBindingError("artifact_not_found", status_code=404) from None
 
     # ---- operations for the endpoints --------------------------------------
     def publish(self, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:

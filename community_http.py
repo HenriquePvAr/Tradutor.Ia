@@ -27,7 +27,7 @@ from community_auth import (
     request_is_loopback,
     set_session_cookies,
 )
-from community_api import RangeNotSatisfiable
+from community_api import ArtifactBindingError, RangeNotSatisfiable
 from community_service import CommunityError
 from community_storage import StorageError
 
@@ -117,6 +117,12 @@ def _community_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> 
                 "Content-Range": f"bytes */{exc.total_size}",
                 **_NO_STORE_HEADERS,
             },
+        ) from exc
+    except ArtifactBindingError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.code,
+            headers=_NO_STORE_HEADERS,
         ) from exc
     except CommunityError as exc:
         raise HTTPException(
@@ -281,6 +287,50 @@ def create_community_router(community, auth) -> APIRouter:
             status_code=status,
             media_type="application/pdf",
             headers=headers,
+        )
+
+    return router
+
+
+def create_admin_community_router(community, auth) -> APIRouter:
+    """Return the separate, explicit admin router for legacy artifact migration."""
+    router = APIRouter(prefix="/api/admin/community", tags=["community-admin"])
+
+    @router.post("/artifacts/{job_id}/bind-owner")
+    def bind_legacy_artifact_owner(
+        job_id: str,
+        request: Request,
+        payload: dict[str, Any] = Body(default={}),
+    ) -> dict[str, Any]:
+        principal = _community_call(auth.authenticate_request, request)
+        if not principal.authenticated:
+            raise HTTPException(
+                status_code=401,
+                detail="authentication_required",
+                headers={"WWW-Authenticate": "Bearer", **_NO_STORE_HEADERS},
+            )
+        _community_call(auth.require_csrf, request, principal)
+        if not principal.has_role("admin"):
+            # A trusted authenticated refusal is still auditable; no credential or
+            # request headers are copied into the event.
+            try:
+                community._record_binding_audit(
+                    principal=principal,
+                    target_user_id=str(payload.get("target_user_id") or "")[:128],
+                    job_id=str(job_id or "")[:64],
+                    run_id=str(payload.get("expected_run_id") or "")[:128],
+                    pdf_sha256=str(payload.get("expected_pdf_sha256") or "")[:64],
+                    reason=str(payload.get("reason") or "")[:1000],
+                    result="admin_required",
+                )
+            finally:
+                raise HTTPException(
+                    status_code=403, detail="admin_required", headers=_NO_STORE_HEADERS)
+        return _community_call(
+            community.bind_legacy_artifact_owner,
+            job_id,
+            payload,
+            principal=principal,
         )
 
     return router

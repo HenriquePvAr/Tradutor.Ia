@@ -566,6 +566,63 @@ class JobStore:
             f"UPDATE jobs SET {columns} WHERE id=?", (*fields.values(), job_id)
         )
 
+    def bind_community_owner(
+        self,
+        job_id: str,
+        target_user_id: str,
+        *,
+        bound_by: str,
+        bound_at: float | None = None,
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Atomically claim an unowned translation job for community publication.
+
+        Ownership is stored in the job configuration because it is optional metadata
+        for older rows.  The transaction prevents two administrative requests from
+        claiming the same legacy artifact concurrently; an existing owner is never
+        overwritten.
+        """
+        now = time.time() if bound_at is None else float(bound_at)
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE id=?", (str(job_id),)
+            ).fetchone()
+            if row is None:
+                self._conn.execute("ROLLBACK")
+                return "not_found", None
+            record = self._row_to_dict(row)
+            config = record.get("configuration") or {}
+            if not isinstance(config, dict):
+                self._conn.execute("ROLLBACK")
+                return "invalid_configuration", record
+            current = str(config.get("community_owner_id") or "")
+            if current:
+                self._conn.execute("ROLLBACK")
+                return (
+                    "already_bound_to_target" if current == str(target_user_id)
+                    else "owner_already_assigned",
+                    record,
+                )
+            config = dict(config)
+            config.update({
+                "community_owner_id": str(target_user_id),
+                "owner_bound_at": now,
+                "owner_bound_by": str(bound_by),
+            })
+            self._conn.execute(
+                "UPDATE jobs SET configuration_json=?,updated_at=? WHERE id=?",
+                (json.dumps(config, ensure_ascii=False), now, str(job_id)),
+            )
+            self._conn.execute("COMMIT")
+            record["configuration"] = config
+            record["configuration_json"] = json.dumps(config, ensure_ascii=False)
+            record["updated_at"] = now
+            return "owner_bound", record
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.execute("ROLLBACK")
+            raise
+
     def heartbeat(self, job_id: str, **fields: Any) -> None:
         self.update_fields(job_id, heartbeat_at=time.time(), **fields)
 
