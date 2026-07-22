@@ -9,6 +9,7 @@ ever stored as a BLOB - only a reference to the file in the storage provider.
 from __future__ import annotations
 
 import json
+import html
 import re
 import sqlite3
 import time
@@ -16,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_TAGS = 20
 MAX_TAG_LENGTH = 40
 _DISPLAY_NAME_PATTERN = re.compile(r"^[\w][\w .'-]{0,59}$", re.UNICODE)
@@ -122,6 +123,12 @@ class CommunityStore:
             self._conn.execute(
                 "ALTER TABLE community_posts ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'"
             )
+        if "deleted_at" not in columns:
+            self._conn.execute("ALTER TABLE community_posts ADD COLUMN deleted_at REAL")
+        if "deleted_by" not in columns:
+            self._conn.execute("ALTER TABLE community_posts ADD COLUMN deleted_by TEXT NOT NULL DEFAULT ''")
+        if "delete_reason" not in columns:
+            self._conn.execute("ALTER TABLE community_posts ADD COLUMN delete_reason TEXT NOT NULL DEFAULT ''")
         self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS community_profiles (
@@ -141,6 +148,69 @@ class CommunityStore:
             );
             CREATE UNIQUE INDEX IF NOT EXISTS uq_community_profiles_display_name
                 ON community_profiles(display_name_normalized);
+
+            CREATE TABLE IF NOT EXISTS community_favorites (
+                user_id TEXT NOT NULL,
+                publication_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY(user_id, publication_id),
+                FOREIGN KEY(publication_id) REFERENCES community_posts(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_community_favorites_user
+                ON community_favorites(user_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_community_favorites_publication
+                ON community_favorites(publication_id);
+
+            CREATE TABLE IF NOT EXISTS community_reading_progress (
+                user_id TEXT NOT NULL,
+                publication_id TEXT NOT NULL,
+                current_page INTEGER NOT NULL DEFAULT 0,
+                total_pages INTEGER NOT NULL DEFAULT 0,
+                progress_percent REAL NOT NULL DEFAULT 0,
+                last_read_at REAL NOT NULL,
+                completed_at REAL,
+                PRIMARY KEY(user_id, publication_id),
+                FOREIGN KEY(publication_id) REFERENCES community_posts(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_community_reading_user
+                ON community_reading_progress(user_id, last_read_at DESC);
+
+            CREATE TABLE IF NOT EXISTS community_comments (
+                comment_id TEXT PRIMARY KEY,
+                publication_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                body TEXT NOT NULL,
+                parent_comment_id TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                deleted_at REAL,
+                FOREIGN KEY(publication_id) REFERENCES community_posts(id),
+                FOREIGN KEY(parent_comment_id) REFERENCES community_comments(comment_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_community_comments_publication
+                ON community_comments(publication_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_community_comments_user
+                ON community_comments(user_id);
+
+            CREATE TABLE IF NOT EXISTS community_notifications (
+                notification_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                actor_user_id TEXT NOT NULL DEFAULT '',
+                publication_id TEXT NOT NULL DEFAULT '',
+                comment_id TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                read_at REAL,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_community_notifications_user
+                ON community_notifications(user_id, read_at, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS community_user_settings (
+                user_id TEXT PRIMARY KEY,
+                settings_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
             """
         )
         self._conn.execute(
@@ -380,7 +450,7 @@ class CommunityStore:
              require_verified_file: bool = False,
              limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         """Published posts for the feed. Reads only this database - never the provider."""
-        where = ["community_posts.status=?"]
+        where = ["community_posts.status=?", "community_posts.deleted_at IS NULL"]
         params: list[Any] = [PostStatus.PUBLISHED]
         visibilities = [Visibility.PUBLIC] + ([Visibility.UNLISTED] if include_unlisted else [])
         where.append("community_posts.visibility IN (%s)" % ",".join("?" for _ in visibilities))
@@ -423,8 +493,322 @@ class CommunityStore:
 
     def list_user_posts(self, user_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
         return [self._with_decoded_tags(row) for row in self._rows(self._conn.execute(
-            "SELECT * FROM community_posts WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
-            (user_id, int(limit))))]
+            "SELECT * FROM community_posts WHERE user_id=? AND status != ? AND deleted_at IS NULL "
+            "ORDER BY created_at DESC LIMIT ?",
+            (user_id, PostStatus.DELETED, int(limit))))]
+
+    def soft_delete_own_post(self, post_id: str, *, user_id: str, reason: str = "") -> dict[str, Any]:
+        post = self.get_post(post_id)
+        if not post:
+            return {"code": "publication_not_found"}
+        if str(post.get("user_id") or "") != str(user_id or ""):
+            return {"code": "publication_not_owned"}
+        if str(post.get("status") or "") == PostStatus.DELETED or post.get("deleted_at"):
+            return {"code": "publication_already_deleted", "publication_id": post_id}
+        now = time.time()
+        self._conn.execute(
+            "UPDATE community_posts SET status=?,deleted_at=?,deleted_by=?,delete_reason=?,updated_at=? WHERE id=?",
+            (PostStatus.DELETED, now, str(user_id), str(reason or "")[:240], now, post_id),
+        )
+        self.add_event(post_id, user_id, "publication_deleted", {"reason": str(reason or "")[:240]})
+        return {"code": "publication_deleted", "publication_id": post_id, "deleted_at": now}
+
+    # ---- community engagement ---------------------------------------------
+    def _published_post_exists(self, post_id: str) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM community_posts WHERE id=? AND status=? AND deleted_at IS NULL",
+            (str(post_id), PostStatus.PUBLISHED),
+        ).fetchone() is not None
+
+    def favorite_post(self, user_id: str, post_id: str) -> dict[str, Any]:
+        if not self._published_post_exists(post_id):
+            return {"code": "publication_not_found"}
+        now = time.time()
+        self._conn.execute(
+            "INSERT OR IGNORE INTO community_favorites(user_id,publication_id,created_at) VALUES(?,?,?)",
+            (str(user_id), str(post_id), now),
+        )
+        return {"favorited": True, "publication_id": post_id}
+
+    def unfavorite_post(self, user_id: str, post_id: str) -> dict[str, Any]:
+        self._conn.execute(
+            "DELETE FROM community_favorites WHERE user_id=? AND publication_id=?",
+            (str(user_id), str(post_id)),
+        )
+        return {"favorited": False, "publication_id": post_id}
+
+    def list_favorite_posts(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT p.*, f.created_at AS favorited_at, cp.display_name AS author_display_name, "
+            "cp.avatar_object_key AS author_avatar_object_key, cp.public_role AS author_public_role "
+            "FROM community_favorites f JOIN community_posts p ON p.id=f.publication_id "
+            "LEFT JOIN community_profiles cp ON cp.user_id=p.user_id "
+            "WHERE f.user_id=? AND p.status=? AND p.deleted_at IS NULL "
+            "ORDER BY f.created_at DESC LIMIT ?",
+            (str(user_id), PostStatus.PUBLISHED, int(limit)),
+        )
+        return [self._with_decoded_tags(row) for row in self._rows(cur)]
+
+    def favorite_counts(self, post_ids: Iterable[str]) -> dict[str, int]:
+        ids = [str(value or "") for value in post_ids if str(value or "")]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._rows(self._conn.execute(
+            f"SELECT publication_id, COUNT(*) AS count FROM community_favorites "
+            f"WHERE publication_id IN ({placeholders}) GROUP BY publication_id", ids))
+        return {str(row["publication_id"]): int(row["count"] or 0) for row in rows}
+
+    def user_favorite_flags(self, user_id: str, post_ids: Iterable[str]) -> set[str]:
+        ids = [str(value or "") for value in post_ids if str(value or "")]
+        if not ids:
+            return set()
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._rows(self._conn.execute(
+            f"SELECT publication_id FROM community_favorites WHERE user_id=? "
+            f"AND publication_id IN ({placeholders})", [str(user_id), *ids]))
+        return {str(row["publication_id"]) for row in rows}
+
+    def upsert_reading_progress(self, user_id: str, post_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self._published_post_exists(post_id):
+            return {"code": "publication_not_found"}
+        current_page = max(0, int(payload.get("current_page") or 0))
+        total_pages = max(0, int(payload.get("total_pages") or 0))
+        if total_pages and current_page > total_pages:
+            current_page = total_pages
+        if total_pages:
+            percent = round((current_page / total_pages) * 100, 2)
+        else:
+            percent = max(0.0, min(100.0, float(payload.get("progress_percent") or 0)))
+        completed = bool(payload.get("completed")) or (total_pages > 0 and current_page >= total_pages)
+        now = time.time()
+        self._conn.execute(
+            "INSERT INTO community_reading_progress(user_id,publication_id,current_page,total_pages,progress_percent,last_read_at,completed_at) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,publication_id) DO UPDATE SET "
+            "current_page=excluded.current_page,total_pages=excluded.total_pages,progress_percent=excluded.progress_percent,"
+            "last_read_at=excluded.last_read_at,completed_at=excluded.completed_at",
+            (str(user_id), str(post_id), current_page, total_pages, percent, now, now if completed else None),
+        )
+        return {
+            "publication_id": post_id,
+            "current_page": current_page,
+            "total_pages": total_pages,
+            "progress_percent": percent,
+            "last_read_at": now,
+            "completed_at": now if completed else None,
+        }
+
+    def list_reading_progress(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT p.*, r.current_page, r.total_pages, r.progress_percent, r.last_read_at, r.completed_at, "
+            "cp.display_name AS author_display_name, cp.avatar_object_key AS author_avatar_object_key, cp.public_role AS author_public_role "
+            "FROM community_reading_progress r JOIN community_posts p ON p.id=r.publication_id "
+            "LEFT JOIN community_profiles cp ON cp.user_id=p.user_id "
+            "WHERE r.user_id=? AND p.status=? AND p.deleted_at IS NULL "
+            "ORDER BY r.last_read_at DESC LIMIT ?",
+            (str(user_id), PostStatus.PUBLISHED, int(limit)),
+        )
+        return [self._with_decoded_tags(row) for row in self._rows(cur)]
+
+    def create_comment(self, user_id: str, post_id: str, body: str, *, parent_comment_id: str = "") -> dict[str, Any]:
+        if not self._published_post_exists(post_id):
+            return {"code": "publication_not_found"}
+        clean = html.escape(" ".join(str(body or "").split()), quote=False)
+        if not clean or len(clean) > 1000:
+            return {"code": "invalid_comment"}
+        parent = str(parent_comment_id or "")
+        if parent and not self._row(self._conn.execute(
+            "SELECT comment_id FROM community_comments WHERE comment_id=? AND publication_id=?",
+            (parent, str(post_id)),
+        ).fetchone()):
+            return {"code": "parent_comment_not_found"}
+        now = time.time()
+        comment_id = uuid.uuid4().hex
+        self._conn.execute(
+            "INSERT INTO community_comments(comment_id,publication_id,user_id,body,parent_comment_id,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (comment_id, str(post_id), str(user_id), clean, parent or None, now, now),
+        )
+        post = self.get_post(post_id) or {}
+        owner = str(post.get("user_id") or "")
+        if owner and owner != str(user_id):
+            self.create_notification(
+                owner,
+                "comment_created",
+                actor_user_id=str(user_id),
+                publication_id=str(post_id),
+                comment_id=comment_id,
+                payload={"title": str(post.get("title") or post.get("series_title") or "")[:180]},
+            )
+        return self.get_comment(comment_id) or {"comment_id": comment_id}
+
+    def get_comment(self, comment_id: str) -> dict[str, Any] | None:
+        row = self._row(self._conn.execute(
+            "SELECT c.*, cp.display_name AS author_display_name, cp.avatar_object_key AS author_avatar_object_key, "
+            "cp.public_role AS author_public_role FROM community_comments c "
+            "LEFT JOIN community_profiles cp ON cp.user_id=c.user_id WHERE c.comment_id=?",
+            (str(comment_id),),
+        ).fetchone())
+        return self._shape_comment(row)
+
+    def list_comments(self, post_id: str, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT c.*, cp.display_name AS author_display_name, cp.avatar_object_key AS author_avatar_object_key, "
+            "cp.public_role AS author_public_role FROM community_comments c "
+            "LEFT JOIN community_profiles cp ON cp.user_id=c.user_id "
+            "WHERE c.publication_id=? ORDER BY c.created_at ASC LIMIT ? OFFSET ?",
+            (str(post_id), int(limit), int(offset)),
+        )
+        return [item for item in (self._shape_comment(row) for row in self._rows(cur)) if item]
+
+    def update_comment(self, user_id: str, comment_id: str, body: str) -> dict[str, Any]:
+        row = self._row(self._conn.execute(
+            "SELECT * FROM community_comments WHERE comment_id=?", (str(comment_id),)).fetchone())
+        if not row:
+            return {"code": "comment_not_found"}
+        if str(row.get("user_id") or "") != str(user_id):
+            return {"code": "comment_not_owned"}
+        if row.get("deleted_at"):
+            return {"code": "comment_deleted"}
+        clean = html.escape(" ".join(str(body or "").split()), quote=False)
+        if not clean or len(clean) > 1000:
+            return {"code": "invalid_comment"}
+        self._conn.execute(
+            "UPDATE community_comments SET body=?,updated_at=? WHERE comment_id=?",
+            (clean, time.time(), str(comment_id)),
+        )
+        return self.get_comment(comment_id) or {"comment_id": comment_id}
+
+    def delete_comment(self, user_id: str, comment_id: str) -> dict[str, Any]:
+        row = self._row(self._conn.execute(
+            "SELECT * FROM community_comments WHERE comment_id=?", (str(comment_id),)).fetchone())
+        if not row:
+            return {"code": "comment_not_found"}
+        if str(row.get("user_id") or "") != str(user_id):
+            return {"code": "comment_not_owned"}
+        if row.get("deleted_at"):
+            return {"code": "comment_already_deleted"}
+        self._conn.execute(
+            "UPDATE community_comments SET deleted_at=?,updated_at=? WHERE comment_id=?",
+            (time.time(), time.time(), str(comment_id)),
+        )
+        return {"code": "comment_deleted", "comment_id": str(comment_id)}
+
+    def comment_counts(self, post_ids: Iterable[str]) -> dict[str, int]:
+        ids = [str(value or "") for value in post_ids if str(value or "")]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._rows(self._conn.execute(
+            f"SELECT publication_id, COUNT(*) AS count FROM community_comments "
+            f"WHERE publication_id IN ({placeholders}) AND deleted_at IS NULL GROUP BY publication_id", ids))
+        return {str(row["publication_id"]): int(row["count"] or 0) for row in rows}
+
+    def create_notification(self, user_id: str, type_: str, *, actor_user_id: str = "",
+                            publication_id: str = "", comment_id: str = "",
+                            payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        notification_id = uuid.uuid4().hex
+        now = time.time()
+        self._conn.execute(
+            "INSERT INTO community_notifications(notification_id,user_id,type,actor_user_id,publication_id,comment_id,payload_json,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (notification_id, str(user_id), str(type_)[:80], str(actor_user_id), str(publication_id),
+             str(comment_id), json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":")), now),
+        )
+        return {"notification_id": notification_id, "created_at": now}
+
+    def list_notifications(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._rows(self._conn.execute(
+            "SELECT * FROM community_notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+            (str(user_id), int(limit)),
+        ))
+        for row in rows:
+            try:
+                row["payload"] = json.loads(str(row.pop("payload_json") or "{}"))
+            except json.JSONDecodeError:
+                row["payload"] = {}
+        return rows
+
+    def mark_notification_read(self, user_id: str, notification_id: str) -> dict[str, Any]:
+        self._conn.execute(
+            "UPDATE community_notifications SET read_at=COALESCE(read_at, ?) WHERE user_id=? AND notification_id=?",
+            (time.time(), str(user_id), str(notification_id)),
+        )
+        return {"ok": True, "notification_id": str(notification_id)}
+
+    def mark_all_notifications_read(self, user_id: str) -> dict[str, Any]:
+        self._conn.execute(
+            "UPDATE community_notifications SET read_at=COALESCE(read_at, ?) WHERE user_id=? AND read_at IS NULL",
+            (time.time(), str(user_id)),
+        )
+        return {"ok": True}
+
+    def save_user_settings(self, user_id: str, settings: dict[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "interface_language", "theme", "open_folder_on_finish", "local_notifications",
+            "confirm_destructive_actions", "restore_session", "home_page", "default_mode",
+            "default_scope", "use_cache", "temporary_context", "default_ocr", "default_translation",
+            "safe_concurrency", "review_behavior", "default_visibility", "allow_comments",
+            "community_notifications", "show_online_status", "public_profile", "sensitive_content",
+            "output_directory", "output_retention_days", "safe_temp_cleanup", "confirm_before_delete",
+            "cache_budget_mb", "reduced_motion", "high_contrast", "ui_scale", "tooltips",
+            "keyboard_shortcuts", "clear_session_on_close", "diagnostic_logs", "developer_mode",
+        }
+        clean = {key: settings[key] for key in allowed if key in settings}
+        now = time.time()
+        self._conn.execute(
+            "INSERT INTO community_user_settings(user_id,settings_json,updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET settings_json=excluded.settings_json,updated_at=excluded.updated_at",
+            (str(user_id), json.dumps(clean, ensure_ascii=False, sort_keys=True), now),
+        )
+        return self.user_settings(user_id)
+
+    def user_settings(self, user_id: str) -> dict[str, Any]:
+        defaults = {
+            "interface_language": "pt-BR", "theme": "system", "open_folder_on_finish": False,
+            "local_notifications": True, "confirm_destructive_actions": True, "restore_session": True,
+            "home_page": "inicio", "default_mode": "fast", "default_scope": "full", "use_cache": True,
+            "temporary_context": True, "default_ocr": "automatic", "default_translation": "automatic",
+            "safe_concurrency": "automatic", "review_behavior": "ask", "default_visibility": "community",
+            "allow_comments": True, "community_notifications": True, "show_online_status": False,
+            "public_profile": True, "sensitive_content": "hide", "output_directory": "output/",
+            "output_retention_days": 30, "safe_temp_cleanup": "manual", "confirm_before_delete": True,
+            "cache_budget_mb": 2048, "reduced_motion": False, "high_contrast": False, "ui_scale": "100",
+            "tooltips": True, "keyboard_shortcuts": True, "clear_session_on_close": False,
+            "diagnostic_logs": False, "developer_mode": False,
+        }
+        row = self._row(self._conn.execute(
+            "SELECT settings_json FROM community_user_settings WHERE user_id=?", (str(user_id),)).fetchone())
+        if row:
+            try:
+                saved = json.loads(str(row.get("settings_json") or "{}"))
+                if isinstance(saved, dict):
+                    defaults.update(saved)
+            except json.JSONDecodeError:
+                pass
+        return defaults
+
+    @staticmethod
+    def _shape_comment(row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        deleted = row.get("deleted_at") is not None
+        return {
+            "comment_id": str(row.get("comment_id") or ""),
+            "publication_id": str(row.get("publication_id") or ""),
+            "user_id": str(row.get("user_id") or ""),
+            "body": "" if deleted else str(row.get("body") or ""),
+            "parent_comment_id": str(row.get("parent_comment_id") or ""),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "deleted_at": row.get("deleted_at"),
+            "is_deleted": deleted,
+            "author": {
+                "display_name": str(row.get("author_display_name") or "Usu?rio"),
+                "avatar_object_key": str(row.get("author_avatar_object_key") or ""),
+                "public_role": str(row.get("author_public_role") or ""),
+            },
+        }
 
     @staticmethod
     def _with_decoded_tags(row: dict[str, Any] | None) -> dict[str, Any] | None:

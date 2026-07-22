@@ -277,6 +277,86 @@ def create_community_router(community, auth) -> APIRouter:
         principal = authenticated_mutation(request)
         return _community_call(community.unpublish, post_id, principal=principal)
 
+    @router.delete("/posts/{post_id}")
+    def delete_post(post_id: str, request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.delete_own_post, post_id, payload, principal=principal)
+
+    @router.get("/favorites")
+    def favorites(request: Request) -> dict[str, Any]:
+        principal = _community_call(auth.require_authenticated, request)
+        return _community_call(community.favorites, principal=principal)
+
+    @router.put("/posts/{post_id}/favorite")
+    def favorite(post_id: str, request: Request) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.favorite_post, post_id, principal=principal)
+
+    @router.delete("/posts/{post_id}/favorite")
+    def unfavorite(post_id: str, request: Request) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.unfavorite_post, post_id, principal=principal)
+
+    @router.get("/reading-progress")
+    def reading_progress(request: Request) -> dict[str, Any]:
+        principal = _community_call(auth.require_authenticated, request)
+        return _community_call(community.reading_progress, principal=principal)
+
+    @router.put("/posts/{post_id}/reading-progress")
+    def update_reading_progress(post_id: str, request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.update_reading_progress, post_id, payload, principal=principal)
+
+    @router.get("/posts/{post_id}/comments")
+    def comments(
+        post_id: str,
+        request: Request,
+        limit: int = Query(50, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+    ) -> dict[str, Any]:
+        principal = _community_call(auth.require_authenticated, request)
+        return _community_call(community.comments, post_id, principal=principal, limit=limit, offset=offset)
+
+    @router.post("/posts/{post_id}/comments")
+    def create_comment(post_id: str, request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.create_comment, post_id, payload, principal=principal)
+
+    @router.patch("/comments/{comment_id}")
+    def update_comment(comment_id: str, request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.update_comment, comment_id, payload, principal=principal)
+
+    @router.delete("/comments/{comment_id}")
+    def delete_comment(comment_id: str, request: Request) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.delete_comment, comment_id, principal=principal)
+
+    @router.get("/notifications")
+    def notifications(request: Request) -> dict[str, Any]:
+        principal = _community_call(auth.require_authenticated, request)
+        return _community_call(community.notifications, principal=principal)
+
+    @router.patch("/notifications/{notification_id}/read")
+    def mark_notification_read(notification_id: str, request: Request) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.mark_notification_read, notification_id, principal=principal)
+
+    @router.patch("/notifications/read-all")
+    def mark_all_notifications_read(request: Request) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.mark_all_notifications_read, principal=principal)
+
+    @router.get("/settings")
+    def settings(request: Request) -> dict[str, Any]:
+        principal = _community_call(auth.require_authenticated, request)
+        return _community_call(community.settings, principal=principal)
+
+    @router.put("/settings")
+    def save_settings(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.save_settings, payload, principal=principal)
+
     @router.api_route("/posts/{post_id}/pdf", methods=["GET", "HEAD"])
     def pdf(post_id: str, request: Request):
         principal = request_principal(request)

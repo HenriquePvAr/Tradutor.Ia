@@ -227,6 +227,71 @@ class CommunityApiTests(unittest.TestCase):
         self.api.unpublish(result["post_id"], principal=OWNER)
         self.assertEqual(self.api.feed(principal=MEMBER)["count"], 0)
 
+    def test_favorites_are_unique_and_user_scoped(self):
+        result = self._publish_and_run()
+        self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
+                                       moderation_status=Moderation.APPROVED)
+        self.api.favorite_post(result["post_id"], principal=MEMBER)
+        self.api.favorite_post(result["post_id"], principal=MEMBER)
+        favorites = self.api.favorites(principal=MEMBER)["posts"]
+        self.assertEqual(len(favorites), 1)
+        self.assertTrue(self.api.feed(principal=MEMBER)["posts"][0]["favorited"])
+        self.api.unfavorite_post(result["post_id"], principal=MEMBER)
+        self.assertEqual(self.api.favorites(principal=MEMBER)["posts"], [])
+
+    def test_reading_progress_does_not_invent_current_page(self):
+        result = self._publish_and_run()
+        self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
+                                       moderation_status=Moderation.APPROVED)
+        progress = self.api.update_reading_progress(
+            result["post_id"], {"progress_percent": 1}, principal=MEMBER)
+        self.assertEqual(progress["current_page"], 0)
+        self.assertEqual(progress["total_pages"], 0)
+        items = self.api.reading_progress(principal=MEMBER)["posts"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["reading"]["progress_percent"], 1.0)
+
+    def test_comments_create_notification_and_soft_delete(self):
+        result = self._publish_and_run()
+        self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
+                                       moderation_status=Moderation.APPROVED)
+        comment = self.api.create_comment(result["post_id"], {"body": "<b>olá</b>"}, principal=MEMBER)
+        self.assertIn("&lt;b&gt;olá&lt;/b&gt;", comment["body"])
+        notifications = self.api.notifications(principal=OWNER)
+        self.assertEqual(notifications["unread"], 1)
+        comments = self.api.comments(result["post_id"], principal=OWNER)["comments"]
+        self.assertEqual(len(comments), 1)
+        deleted = self.api.delete_comment(comment["comment_id"], principal=MEMBER)
+        self.assertEqual(deleted["code"], "comment_deleted")
+        comments = self.api.comments(result["post_id"], principal=OWNER)["comments"]
+        self.assertTrue(comments[0]["is_deleted"])
+        self.assertEqual(comments[0]["body"], "")
+
+    def test_only_owner_can_soft_delete_publication(self):
+        result = self._publish_and_run()
+        self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
+                                       moderation_status=Moderation.APPROVED)
+        self.assertEqual(
+            self.api.delete_own_post(result["post_id"], {}, principal=MEMBER)["code"],
+            "publication_not_owned",
+        )
+        self.assertEqual(self.api.feed(principal=MEMBER)["count"], 1)
+        self.assertEqual(
+            self.api.delete_own_post(result["post_id"], {"reason": "fixture"}, principal=OWNER)["code"],
+            "publication_deleted",
+        )
+        self.assertEqual(self.api.feed(principal=MEMBER)["count"], 0)
+
+    def test_settings_persist_without_technical_secrets(self):
+        saved = self.api.save_settings(
+            {"theme": "high-contrast", "developer_mode": True, "NVIDIA_API_KEY": "leak"},
+            principal=MEMBER,
+        )["settings"]
+        self.assertEqual(saved["theme"], "high-contrast")
+        self.assertTrue(saved["developer_mode"])
+        self.assertNotIn("NVIDIA_API_KEY", saved)
+        self.assertEqual(self.api.settings(principal=MEMBER)["settings"]["theme"], "high-contrast")
+
 
 if __name__ == "__main__":
     unittest.main()

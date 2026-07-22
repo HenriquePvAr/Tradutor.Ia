@@ -638,6 +638,15 @@ class CommunityApi:
                 limit=min(100, max(1, limit)),
                 offset=max(0, offset),
             )
+            ids = [str(card.get("post_id") or card.get("publication_id") or "") for card in cards]
+            favorite_counts = self.store.favorite_counts(ids)
+            comment_counts = self.store.comment_counts(ids)
+            favorite_flags = self.store.user_favorite_flags(principal.user_id, ids)
+            for card in cards:
+                post_id = str(card.get("post_id") or card.get("publication_id") or "")
+                card["favorite_count"] = favorite_counts.get(post_id, 0)
+                card["comment_count"] = comment_counts.get(post_id, 0)
+                card["favorited"] = post_id in favorite_flags
         return {"posts": cards, "count": len(cards)}
 
     def my_posts(self, *, principal: RequestPrincipal) -> dict[str, Any]:
@@ -649,6 +658,132 @@ class CommunityApi:
             "source_job_id": p.get("source_job_id") or "",
             "tags": list(p.get("tags") or []),
         } for p in posts]}
+
+    def delete_own_post(self, post_id: str, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            result = self.store.soft_delete_own_post(
+                str(post_id or ""),
+                user_id=principal.user_id,
+                reason=str((payload or {}).get("reason") or "")[:240],
+            )
+        return result
+
+    def favorite_post(self, post_id: str, *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return self.store.favorite_post(principal.user_id, str(post_id or ""))
+
+    def unfavorite_post(self, post_id: str, *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return self.store.unfavorite_post(principal.user_id, str(post_id or ""))
+
+    def favorites(self, *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            posts = self.store.list_favorite_posts(principal.user_id)
+            return {"posts": self._cards_with_engagement(posts, principal=principal)}
+
+    def reading_progress(self, *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            rows = self.store.list_reading_progress(principal.user_id)
+            cards = self._cards_with_engagement(rows, principal=principal)
+            by_id = {str(row.get("id") or ""): row for row in rows}
+            for card in cards:
+                row = by_id.get(str(card.get("post_id") or card.get("publication_id") or ""))
+                if row:
+                    card["reading"] = {
+                        "current_page": int(row.get("current_page") or 0),
+                        "total_pages": int(row.get("total_pages") or 0),
+                        "progress_percent": float(row.get("progress_percent") or 0),
+                        "last_read_at": row.get("last_read_at") or 0,
+                        "completed_at": row.get("completed_at") or None,
+                    }
+            return {"posts": cards}
+
+    def update_reading_progress(self, post_id: str, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return self.store.upsert_reading_progress(principal.user_id, str(post_id or ""), payload or {})
+
+    def comments(self, post_id: str, *, principal: RequestPrincipal, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            comments = self.store.list_comments(str(post_id or ""), limit=limit, offset=offset)
+        return {"comments": comments, "count": len(comments)}
+
+    def create_comment(self, post_id: str, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return self.store.create_comment(
+                principal.user_id,
+                str(post_id or ""),
+                str((payload or {}).get("body") or ""),
+                parent_comment_id=str((payload or {}).get("parent_comment_id") or ""),
+            )
+
+    def update_comment(self, comment_id: str, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return self.store.update_comment(
+                principal.user_id,
+                str(comment_id or ""),
+                str((payload or {}).get("body") or ""),
+            )
+
+    def delete_comment(self, comment_id: str, *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return self.store.delete_comment(principal.user_id, str(comment_id or ""))
+
+    def notifications(self, *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            items = self.store.list_notifications(principal.user_id)
+        unread = sum(1 for item in items if not item.get("read_at"))
+        return {"notifications": items, "unread": unread}
+
+    def mark_notification_read(self, notification_id: str, *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return self.store.mark_notification_read(principal.user_id, str(notification_id or ""))
+
+    def mark_all_notifications_read(self, *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return self.store.mark_all_notifications_read(principal.user_id)
+
+    def settings(self, *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return {"settings": self.store.user_settings(principal.user_id)}
+
+    def save_settings(self, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
+        self._require_authenticated_principal(principal)
+        with self._community_lock:
+            return {"settings": self.store.save_user_settings(principal.user_id, payload or {})}
+
+    def _cards_with_engagement(self, posts: list[dict[str, Any]], *, principal: RequestPrincipal) -> list[dict[str, Any]]:
+        ids = [str(post.get("id") or "") for post in posts]
+        favorite_counts = self.store.favorite_counts(ids)
+        comment_counts = self.store.comment_counts(ids)
+        favorited = self.store.user_favorite_flags(principal.user_id, ids)
+        cards: list[dict[str, Any]] = []
+        for post in posts:
+            card = self.service._card(post)
+            post_id = str(post.get("id") or "")
+            card.update({
+                "favorite_count": favorite_counts.get(post_id, 0),
+                "comment_count": comment_counts.get(post_id, 0),
+                "favorited": post_id in favorited,
+                "visibility": post.get("visibility", ""),
+                "source_job_id": post.get("source_job_id") or "",
+                "tags": list(post.get("tags") or []),
+            })
+            cards.append(card)
+        return cards
 
     def open_pdf(self, post_id: str, *, principal: RequestPrincipal, range_header: str = ""):
         """Return (metadata, StorageStream) for the read endpoint, or raise CommunityError."""
