@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from local_environment import load_local_environment_for_entrypoint
-from process_options import build_background_process_options
+from process_options import background_python_executable, build_background_process_options
 
 REPO_ROOT = Path(__file__).resolve().parent
 DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
@@ -59,7 +59,7 @@ def start_worker(*, force: bool = False) -> bool:
     else:
         kwargs["start_new_session"] = True
     subprocess.Popen(
-        [sys.executable, "-u", str(REPO_ROOT / "worker_service.py"), "--db", str(DB_PATH)],
+        [background_python_executable(), "-u", str(REPO_ROOT / "worker_service.py"), "--db", str(DB_PATH)],
         **kwargs,
     )
     # Give it a moment to register its lease so status is accurate.
@@ -82,7 +82,7 @@ def start_ui() -> int:
             new_session=True,
         )
         proc = subprocess.Popen(
-            [sys.executable, "-u", str(REPO_ROOT / "app_ui.py")],
+            [background_python_executable(), "-u", str(REPO_ROOT / "app_ui.py")],
             **kwargs,
         )
         return proc.wait()

@@ -234,6 +234,9 @@ def detect_ocr_jobs(
             "memory_policy": decision.__dict__,
         }
 
+    from process_options import configure_hidden_multiprocessing
+
+    configure_hidden_multiprocessing()
     results = {}
     worker_pids = set()
     fallback_reasons = []

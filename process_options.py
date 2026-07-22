@@ -9,7 +9,38 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+from pathlib import Path
 from typing import Any
+
+
+def configure_hidden_multiprocessing() -> None:
+    """Use pythonw for Windows multiprocessing children when available.
+
+    ``ProcessPoolExecutor`` and ``multiprocessing.Process`` do not accept the
+    ``creationflags`` used by our Popen helper. Selecting the sibling pythonw
+    executable is the supported way to keep those children console-free while
+    preserving normal stdout/stderr capture in the parent.
+    """
+
+    if os.name != "nt":
+        return
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    if not pythonw.is_file():
+        return
+    import multiprocessing
+
+    multiprocessing.set_executable(str(pythonw))
+
+
+def background_python_executable() -> str:
+    """Return pythonw for long-lived Windows UI/worker processes when present."""
+
+    if os.name == "nt":
+        candidate = Path(sys.executable).with_name("pythonw.exe")
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
 
 
 def build_background_process_options(

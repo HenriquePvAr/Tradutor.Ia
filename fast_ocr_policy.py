@@ -136,6 +136,9 @@ def run_ocr_with_timeout(
     from ocr_engine import OCRLine
     import numpy as np
 
+    from process_options import configure_hidden_multiprocessing
+
+    configure_hidden_multiprocessing()
     ctx = mp.get_context("spawn")
     parent, child = ctx.Pipe(duplex=False)
     target = worker_target or _run_ocr_child

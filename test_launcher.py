@@ -40,6 +40,13 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("worker_service.py", " ".join(argv))
         self.assertEqual(popen.call_args.kwargs["env"]["PYTHONUNBUFFERED"], "1")
 
+    def test_background_launch_uses_pythonw_when_available(self):
+        with patch.object(start_tradutor, "background_python_executable", return_value="pythonw.exe"):
+            with patch.object(start_tradutor.subprocess, "Popen") as popen, \
+                    patch.object(start_tradutor.time, "sleep", lambda *_: None):
+                start_tradutor.start_worker()
+        self.assertEqual(popen.call_args.args[0][0], "pythonw.exe")
+
     def test_start_worker_hides_the_detached_console_on_windows(self):
         if start_tradutor.os.name != "nt":
             self.skipTest("Windows-only creation flag")
@@ -68,6 +75,7 @@ class LauncherTests(unittest.TestCase):
                 popen.return_value.wait.return_value = 0
                 self.assertEqual(start_tradutor.start_ui(), 0)
             popen.assert_called_once()
+            self.assertEqual(popen.call_args.args[0][0], start_tradutor.background_python_executable())
             kwargs = popen.call_args.kwargs
             self.assertEqual(kwargs["cwd"], str(root))
             self.assertIs(kwargs["stdin"], start_tradutor.subprocess.DEVNULL)

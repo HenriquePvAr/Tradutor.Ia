@@ -15,6 +15,7 @@ import numpy as np
 import config
 import ocr_parallel
 import run_webtoon
+import process_options
 from fast_ocr_policy import FastOCRBudget, run_ocr_with_timeout
 from ui_helpers import ProgressSnapshot, parse_progress_line
 
@@ -74,6 +75,14 @@ class FastOCRPolicyTests(unittest.TestCase):
         self.assertEqual(lines, [])
         self.assertTrue(metadata["timeout"])
         self.assertLess(time.perf_counter() - started, 3.0)
+
+    def test_windows_multiprocessing_selects_console_free_pythonw(self):
+        with patch.object(process_options.os, "name", "nt"), \
+                patch.object(process_options.Path, "is_file", return_value=True), \
+                patch("multiprocessing.set_executable") as set_executable:
+            process_options.configure_hidden_multiprocessing()
+        set_executable.assert_called_once()
+        self.assertTrue(str(set_executable.call_args.args[0]).lower().endswith("pythonw.exe"))
 
     def test_sequential_success_and_error_emit_checkpoints(self):
         with tempfile.TemporaryDirectory() as tmp:
