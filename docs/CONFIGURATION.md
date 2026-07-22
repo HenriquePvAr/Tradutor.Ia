@@ -59,6 +59,12 @@ NVIDIA é o provedor padrão e o único exposto como fluxo principal pela UI. Os
 | `RAPIDOCR_MIN_CONFIDENCE` | `0.55` | Confidence mínima usada nos sinais de suspeita |
 | `RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK` | `True` | Aciona fallback diante de texto estruturalmente suspeito |
 | `RAPIDOCR_PAGE_FALLBACK` | `True` | Permite fallback da página para Paddle Mobile |
+| `FAST_OCR_HEAVY_FALLBACK` | `False` | Opt-in para fallbacks nativos pesados no modo `fast`; o padrão preserva previsibilidade |
+| `FAST_OCR_PAGE_TIMEOUT_SECONDS` | `45` | Limite de uma tentativa pesada por página no modo `fast` |
+| `FAST_OCR_REGION_TIMEOUT_SECONDS` | `12` | Limite de uma tentativa pesada por região no modo `fast` |
+| `FAST_OCR_FULL_FALLBACK_MAX_PAGES` | `0` | Máximo de páginas que podem usar Paddle completo no modo `fast` |
+| `FAST_OCR_FULL_FALLBACK_MAX_REGIONS` | `4` | Máximo de regiões que podem usar Paddle completo no modo `fast` |
+| `FAST_OCR_TOTAL_FALLBACK_BUDGET_SECONDS` | `60` | Orçamento total de fallback pesado por execução `fast` |
 | `OCR_TEXT_REPAIR` | `True` | Habilita reparos conservadores de OCR |
 | `OCR_TEXT_REPAIR_MODE` | `conservative` | Modo implementado para os reparos; outros valores desativam esse caminho |
 | `OCR_QUALITY_CONTROL` | `True` | Calcula score e motivos de qualidade dos grupos |

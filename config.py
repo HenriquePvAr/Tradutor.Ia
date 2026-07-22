@@ -85,6 +85,27 @@ RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK = _env_bool(
 RAPIDOCR_PAGE_FALLBACK = _env_bool("RAPIDOCR_PAGE_FALLBACK", True)
 OCR_TEXT_REPAIR = _env_bool("OCR_TEXT_REPAIR", True)
 OCR_TEXT_REPAIR_MODE = _env_str("OCR_TEXT_REPAIR_MODE", "conservative").lower()
+# Fast mode has an explicit heavy-fallback budget.  The safe default keeps the
+# predictable RapidOCR path and requires an opt-in before loading native Paddle
+# fallbacks that can take minutes on a single page.
+FAST_OCR_HEAVY_FALLBACK = _env_bool("FAST_OCR_HEAVY_FALLBACK", False)
+FAST_OCR_MODE = _env_bool("FAST_OCR_MODE", False)
+FAST_OCR_PAGE_TIMEOUT_SECONDS = min(
+    900.0, max(1.0, _env_float("FAST_OCR_PAGE_TIMEOUT_SECONDS", 45.0))
+)
+FAST_OCR_REGION_TIMEOUT_SECONDS = min(
+    300.0, max(1.0, _env_float("FAST_OCR_REGION_TIMEOUT_SECONDS", 12.0))
+)
+FAST_OCR_FULL_FALLBACK_MAX_PAGES = max(
+    0, _env_int("FAST_OCR_FULL_FALLBACK_MAX_PAGES", 0)
+)
+FAST_OCR_FULL_FALLBACK_MAX_REGIONS = max(
+    0, _env_int("FAST_OCR_FULL_FALLBACK_MAX_REGIONS", 4)
+)
+FAST_OCR_TOTAL_FALLBACK_BUDGET_SECONDS = min(
+    3600.0,
+    max(0.0, _env_float("FAST_OCR_TOTAL_FALLBACK_BUDGET_SECONDS", 60.0)),
+)
 TRANSLATE_SFX = _env_bool("TRANSLATE_SFX", False)
 PRIORITIZE_ENCLOSED_TEXT = _env_bool("PRIORITIZE_ENCLOSED_TEXT", True)
 

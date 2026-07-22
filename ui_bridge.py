@@ -727,6 +727,14 @@ class UiBridge:
         elapsed = _duration(present_job, live=live) if present_job else None
         stage_started = _normalize_epoch((present_job or {}).get("stage_started_at"))
         stage_elapsed = (time.time() - stage_started) if live and stage_started else None
+        progress_message = str((present_job or {}).get("progress_message") or "")
+        lower_progress_message = progress_message.casefold()
+        if live and stage == "ocr" and "fallback" in lower_progress_message:
+            eta_label = "Página complexa em OCR; o modo Rápido continuará após o limite configurado."
+        elif live and stage == "ocr" and total > 0 and current <= 0:
+            eta_label = "Calculando estimativa após as primeiras páginas."
+        else:
+            eta_label = None
         eta_seconds: float | None = None
         if stage_elapsed is not None and current > 0 and total > current and stage_elapsed >= 2:
             rate = current / stage_elapsed
@@ -772,13 +780,14 @@ class UiBridge:
                 "pages": current,
                 "groups": int((present_job or {}).get("progress_current") or 0),
                 "errors": 0,
-                "last_message": (present_job or {}).get("progress_message") or "",
+                "last_message": progress_message,
                 "elapsed_seconds": elapsed,
                 "elapsed_label": _format_seconds(elapsed),
                 "stage_elapsed_seconds": stage_elapsed,
                 "eta_seconds": eta_seconds,
                 "eta_label": _format_seconds(eta_seconds) if eta_seconds is not None else (
-                    "Calculando estimativa…" if live and total > 0 else "Tempo variável nesta etapa"
+                    eta_label
+                    or ("Calculando estimativa…" if live and total > 0 else "Tempo variável nesta etapa")
                 ),
                 "updated_at": last_update,
                 "stale": stale_updates,

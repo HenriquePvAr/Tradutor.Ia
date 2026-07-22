@@ -36,6 +36,7 @@ from ocr_balloon import (
 )
 from ocr_parallel import detect_ocr_jobs
 from ocr_engine import OCREngine
+from fast_ocr_policy import FastOCRBudget
 from pdf import (
     create_split_boundary_contact_sheet,
     generate_pdf,
@@ -265,6 +266,7 @@ def run_benchmark(args):
         else output_folder / "quality_report.html"
     )
     context_enabled = bool(getattr(args, "use_context", False))
+    fast_ocr_budget = FastOCRBudget.from_config(fast=bool(getattr(args, "fast", False)))
     session_context_path = Path(
         getattr(args, "session_context_path", output_folder / "session_context.json")
     ).resolve()
@@ -314,6 +316,15 @@ def run_benchmark(args):
             "ocr_engine": config.OCR_ENGINE,
             "ocr_fallback_engine": config.OCR_FALLBACK_ENGINE,
             "ocr_hybrid_fallback": config.OCR_HYBRID_FALLBACK,
+            "fast_ocr_mode": bool(getattr(config, "FAST_OCR_MODE", False)),
+            "fast_ocr_heavy_fallback": bool(getattr(config, "FAST_OCR_HEAVY_FALLBACK", False)),
+            "fast_ocr_region_timeout": float(getattr(config, "FAST_OCR_REGION_TIMEOUT_SECONDS", 0.0)),
+            "fast_ocr_full_fallback_max_pages": int(
+                getattr(config, "FAST_OCR_FULL_FALLBACK_MAX_PAGES", 0)
+            ),
+            "fast_ocr_full_fallback_max_regions": int(
+                getattr(config, "FAST_OCR_FULL_FALLBACK_MAX_REGIONS", 0)
+            ),
             "smart_webtoon_pdf_split": config.SMART_WEBTOON_PDF_SPLIT,
             "smart_pdf_target_height": config.SMART_PDF_TARGET_HEIGHT,
             "smart_pdf_min_height": config.SMART_PDF_MIN_HEIGHT,
@@ -537,6 +548,7 @@ def run_benchmark(args):
             stage_seconds["image_save"] += copy_elapsed
             state["timings"]["image_save"] = copy_elapsed
             state["status"] = "completed"
+            state["ocr_completed"] = True
             state["cache_source"] = "no_text_precheck"
             state["debug_data"] = _empty_debug_data(
                 image_path,
@@ -586,6 +598,7 @@ def run_benchmark(args):
             return
         state["raw_lines"] = result.get("lines", [])
         state["ocr_metadata"] = result.get("ocr_metadata", {})
+        state["ocr_completed"] = True
         elapsed = float(result.get("elapsed_seconds", 0.0))
         state["timings"]["ocr"] = elapsed
         if result.get("error"):
@@ -599,7 +612,54 @@ def run_benchmark(args):
         _write_progress(progress_path, run_signature, args, len(image_paths), page_states)
 
     resource_monitor.set_stage("ocr")
+    print(
+        f"OCR: iniciando {len(ocr_jobs)} páginas com engine={config.OCR_ENGINE}",
+        flush=True,
+    )
     resource_monitor.set_progress(queue_depth=len(ocr_jobs), active_workers=min(config.OCR_WORKERS, 1))
+    ocr_positions = {
+        int(job["index"]): position
+        for position, job in enumerate(ocr_jobs, start=1)
+    }
+    ocr_completed_positions = set()
+
+    def _ocr_progress(item, phase):
+        index = int(item.get("index", 0))
+        position = ocr_positions.get(index, 0)
+        engine_name = str(
+            (item.get("ocr_metadata") or {}).get("final_engine")
+            or config.OCR_ENGINE
+        )
+        if phase == "started":
+            print(
+                f"OCR: {position}/{len(ocr_jobs)} - pagina {index} - "
+                f"engine={engine_name} - iniciando",
+                flush=True,
+            )
+            resource_monitor.set_progress(
+                pages_done=len(ocr_completed_positions),
+                pages_total=len(image_paths),
+                queue_depth=max(0, len(ocr_jobs) - len(ocr_completed_positions)),
+                active_workers=1,
+            )
+        else:
+            ocr_completed_positions.add(position)
+            elapsed = float(item.get("elapsed_seconds", 0.0) or 0.0)
+            metadata = item.get("ocr_metadata") or {}
+            final_engine = metadata.get("final_engine") or engine_name
+            print(
+                f"OCR: {position}/{len(ocr_jobs)} - pagina {index} - "
+                f"engine={final_engine} "
+                f"- concluida em {elapsed:.1f}s",
+                flush=True,
+            )
+            resource_monitor.set_progress(
+                pages_done=len(ocr_completed_positions),
+                pages_total=len(image_paths),
+                queue_depth=max(0, len(ocr_jobs) - len(ocr_completed_positions)),
+                active_workers=1 if len(ocr_completed_positions) < len(ocr_jobs) else 0,
+            )
+
     ocr_wall_started = time.perf_counter()
     ocr_results, ocr_parallel_info = detect_ocr_jobs(
         ocr_jobs,
@@ -607,6 +667,7 @@ def run_benchmark(args):
         parallel=config.OCR_PARALLEL,
         workers=config.OCR_WORKERS,
         result_callback=_persist_ocr_result,
+        progress_callback=_ocr_progress,
     )
     stage_seconds["ocr"] = time.perf_counter() - ocr_wall_started
     counters["ocr_runs"] = len(ocr_jobs)
@@ -725,6 +786,7 @@ def run_benchmark(args):
                 groups,
                 ocr_lang,
                 state["index"],
+                fast_ocr_budget=fast_ocr_budget if fast_ocr_budget.enabled else None,
             )
         selective_elapsed = time.perf_counter() - selective_started
         if selective_records:
@@ -751,6 +813,18 @@ def run_benchmark(args):
                     "selective_fallbacks": selective_records,
                 }
         grouping_fallback_reason = _grouping_fallback_reason(state, groups)
+        if grouping_fallback_reason and fast_ocr_budget.enabled:
+            allowed, budget_reason = fast_ocr_budget.allow(
+                kind="paddle_full_page", page=state["index"]
+            )
+            if not allowed:
+                _mark_fast_ocr_review(state, budget_reason, grouping_fallback_reason)
+                print(
+                    f"OCR: pagina {state['index']}/{len(image_paths)} - "
+                    f"fallback pesado preservado ({budget_reason})",
+                    flush=True,
+                )
+                grouping_fallback_reason = ""
         if grouping_fallback_reason:
             fallback_started = time.perf_counter()
             with profile_step(
@@ -758,15 +832,33 @@ def run_benchmark(args):
                 page_index=state["index"],
                 metadata={"reason": grouping_fallback_reason},
             ):
-                paddle = OCREngine(
-                    ocr_lang,
-                    engine="paddle",
-                    fallback_engine="",
-                )
-                fallback_lines = paddle.detect_lines(
-                    original,
-                    page=state["index"],
-                )
+                if fast_ocr_budget.enabled:
+                    from fast_ocr_policy import run_ocr_with_timeout
+
+                    fallback_lines, fallback_metadata = run_ocr_with_timeout(
+                        original,
+                        lang=ocr_lang,
+                        engine_name="paddle",
+                        page=state["index"],
+                        timeout_seconds=fast_ocr_budget.page_timeout_seconds,
+                    )
+                    if fallback_metadata.get("timeout"):
+                        _mark_fast_ocr_review(
+                            state,
+                            "fast_ocr_page_timeout",
+                            grouping_fallback_reason,
+                        )
+                    state["fast_ocr_fallback_metadata"] = fallback_metadata
+                else:
+                    paddle = OCREngine(
+                        ocr_lang,
+                        engine="paddle",
+                        fallback_engine="",
+                    )
+                    fallback_lines = paddle.detect_lines(
+                        original,
+                        page=state["index"],
+                    )
                 fallback_lines, preserved_regional_count = (
                     _preserve_selected_regional_ocr(
                         fallback_lines,
@@ -774,6 +866,12 @@ def run_benchmark(args):
                     )
                 )
             fallback_elapsed = time.perf_counter() - fallback_started
+            if fast_ocr_budget.enabled:
+                fast_ocr_budget.record(
+                    kind="paddle_full_page",
+                    elapsed=fallback_elapsed,
+                    page=state["index"],
+                )
             state["timings"]["ocr"] = (
                 float(state["timings"].get("ocr", 0.0))
                 + fallback_elapsed
@@ -880,6 +978,7 @@ def run_benchmark(args):
         translation_targets.extend(state["translatable_groups"])
 
     resource_monitor.set_stage("translation")
+    print("Tradução NVIDIA: iniciando", flush=True)
     translation_started = time.perf_counter()
     if session_context is not None:
         session_context.prepare(all_analyzed_groups)
@@ -1158,6 +1257,7 @@ def run_benchmark(args):
         "mode": "full" if args.full else "controlled",
         "force": bool(args.force),
         "fast": bool(args.fast),
+        "fast_ocr_budget": fast_ocr_budget.report(),
         "run_signature": run_signature,
         "total_dom_images": download_report.get("total_dom_images", 0),
         "total_unique_urls": download_report.get("total_unique_urls", 0),
@@ -2362,6 +2462,23 @@ def _complete_page_with_error(state, error, errors_folder, stage_seconds):
     (page_folder / "error.txt").write_text(safe_error, encoding="utf-8")
 
 
+def _mark_fast_ocr_review(state, reason, trigger):
+    """Preserve a difficult OCR page and make the bounded fallback visible to review."""
+
+    safe_reason = str(reason or "fast_ocr_fallback_budget_exhausted")
+    for group in state.get("groups", []) or []:
+        if getattr(group, "classification", "") in {"speech", "narration", "unknown"}:
+            group.manual_review_required = True
+            group.fallback_reason = safe_reason
+            if safe_reason not in group.quality_reasons:
+                group.quality_reasons.append(safe_reason)
+    state["fast_ocr_fallback"] = {
+        "reason": safe_reason,
+        "trigger": str(trigger or ""),
+        "action": "preserve_original_and_review",
+    }
+
+
 def _write_progress(
     path,
     run_signature,
@@ -2387,6 +2504,9 @@ def _write_progress(
                 state.get("status") in {"completed", "completed_with_error"}
                 for state in serializable
             ),
+            "ocr_completed_images": sum(
+                bool(state.get("ocr_completed")) for state in serializable
+            ),
             "error_images": sum(
                 state.get("status") == "completed_with_error"
                 for state in serializable
@@ -2411,12 +2531,15 @@ def _serializable_state(state):
         "ocr_cache_key",
         "ocr_error",
         "ocr_metadata",
+        "ocr_completed",
         "precheck",
         "status",
         "cache_source",
         "debug_data",
         "selective_ocr_fallbacks",
         "speech_container_reocr",
+        "fast_ocr_fallback",
+        "fast_ocr_fallback_metadata",
         "timings",
         "error",
     }
@@ -2737,6 +2860,22 @@ def _relevant_output_config(pipeline_fingerprint):
         "ocr_engine": config.OCR_ENGINE,
         "ocr_fallback": config.OCR_FALLBACK_ENGINE,
         "ocr_hybrid_fallback": config.OCR_HYBRID_FALLBACK,
+        "fast_ocr_mode": bool(getattr(config, "FAST_OCR_MODE", False)),
+        "fast_ocr_heavy_fallback": bool(
+            getattr(config, "FAST_OCR_HEAVY_FALLBACK", False)
+        ),
+        "fast_ocr_page_timeout_seconds": float(
+            getattr(config, "FAST_OCR_PAGE_TIMEOUT_SECONDS", 0.0)
+        ),
+        "fast_ocr_region_timeout_seconds": float(
+            getattr(config, "FAST_OCR_REGION_TIMEOUT_SECONDS", 0.0)
+        ),
+        "fast_ocr_full_fallback_max_pages": int(
+            getattr(config, "FAST_OCR_FULL_FALLBACK_MAX_PAGES", 0)
+        ),
+        "fast_ocr_full_fallback_max_regions": int(
+            getattr(config, "FAST_OCR_FULL_FALLBACK_MAX_REGIONS", 0)
+        ),
         "rapidocr_enabled": config.RAPIDOCR_ENABLED,
         "rapidocr_min_confidence": config.RAPIDOCR_MIN_CONFIDENCE,
         "rapidocr_page_fallback": config.RAPIDOCR_PAGE_FALLBACK,

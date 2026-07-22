@@ -24,6 +24,7 @@ from ocr_engine import (
     segment_compact_english_word,
     suggest_english_word,
 )
+from fast_ocr_policy import run_ocr_with_timeout
 
 try:
     from config import FONT_PATH, TEMP_FOLDER, TEMP_OUT
@@ -2772,7 +2773,14 @@ def _classify_paddle_full_call(call):
     return "FULL_NO_CHANGE"
 
 
-def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, page_index):
+def apply_selective_ocr_fallbacks(
+    original_bgr,
+    raw_lines,
+    groups,
+    ocr_lang,
+    page_index,
+    fast_ocr_budget=None,
+):
     if not (
         config.OCR_QUALITY_CONTROL
         and config.OCR_REGION_SELECTIVE_FALLBACK
@@ -2842,6 +2850,19 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
             pre_attempt_best_selection_score = best_selection_score
             full_call_record = None
             if variant == "paddle_full":
+                if fast_ocr_budget is not None:
+                    allowed, budget_reason = fast_ocr_budget.allow(
+                        kind="paddle_full_region", page=page_index
+                    )
+                    if not allowed:
+                        attempts.append(
+                            {
+                                "engine": variant,
+                                "skipped": True,
+                                "skip_reason": budget_reason,
+                            }
+                        )
+                        break
                 duplicate_source = full_region_fingerprints.get(crop_fingerprint)
                 duplicate_region = duplicate_source is not None
                 if duplicate_source is None:
@@ -2903,12 +2924,33 @@ def apply_selective_ocr_fallbacks(original_bgr, raw_lines, groups, ocr_lang, pag
                     page_index=page_index,
                     metadata={"group_id": group.group_id},
                 ):
-                    engine = regional_engines.get(engine_name)
-                    if engine is None:
-                        engine = OCREngine(ocr_lang, engine=engine_name, fallback_engine="")
-                        regional_engines[engine_name] = engine
-                    crop_lines = engine.detect_lines(crop, page=page_index)
+                    if fast_ocr_budget is not None:
+                        crop_lines, timeout_metadata = run_ocr_with_timeout(
+                            crop,
+                            lang=ocr_lang,
+                            engine_name=engine_name,
+                            page=page_index,
+                            timeout_seconds=fast_ocr_budget.region_timeout_seconds,
+                        )
+                        if timeout_metadata.get("timeout"):
+                            raise TimeoutError("fast_ocr_region_timeout")
+                    else:
+                        engine = regional_engines.get(engine_name)
+                        if engine is None:
+                            engine = OCREngine(ocr_lang, engine=engine_name, fallback_engine="")
+                            regional_engines[engine_name] = engine
+                        crop_lines = engine.detect_lines(crop, page=page_index)
                 elapsed = time.perf_counter() - started
+                if fast_ocr_budget is not None:
+                    fast_ocr_budget.record(
+                        kind=(
+                            "paddle_full_region"
+                            if variant == "paddle_full"
+                            else "paddle_mobile_region"
+                        ),
+                        elapsed=elapsed,
+                        page=page_index,
+                    )
                 with profile_step("selective_fallback.offset_lines", page_index=page_index, items=len(crop_lines)):
                     crop_lines = [_offset_line(line, x, y, variant, group.group_id) for line in crop_lines]
                 with profile_step("selective_fallback.candidate_groups_for_fallback", page_index=page_index, items=len(crop_lines)):

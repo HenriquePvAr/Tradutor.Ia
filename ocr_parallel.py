@@ -104,10 +104,12 @@ def _detect_in_worker(job):
         gc.collect()
 
 
-def _detect_sequential(jobs, ocr_lang, result_callback=None):
+def _detect_sequential(jobs, ocr_lang, result_callback=None, progress_callback=None):
     engine = OCREngine(ocr_lang)
     results = {}
     for job in jobs:
+        if progress_callback:
+            progress_callback(job, "started")
         started = time.perf_counter()
         image = cv2.imread(job["image_path"])
         if image is None:
@@ -120,6 +122,8 @@ def _detect_sequential(jobs, ocr_lang, result_callback=None):
             }
             if result_callback:
                 result_callback(results[job["index"]])
+            if progress_callback:
+                progress_callback(results[job["index"]], "completed")
             continue
 
         try:
@@ -132,6 +136,8 @@ def _detect_sequential(jobs, ocr_lang, result_callback=None):
                 "ocr_metadata": engine.last_run_metadata,
                 "pid": os.getpid(),
             }
+            if result_callback:
+                result_callback(results[job["index"]])
         except Exception as exc:
             results[job["index"]] = {
                 "index": job["index"],
@@ -148,10 +154,19 @@ def _detect_sequential(jobs, ocr_lang, result_callback=None):
             except UnboundLocalError:
                 pass
             gc.collect()
+        if progress_callback:
+            progress_callback(results[job["index"]], "completed")
     return results
 
 
-def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2, result_callback=None):
+def detect_ocr_jobs(
+    jobs,
+    ocr_lang,
+    parallel=True,
+    workers=2,
+    result_callback=None,
+    progress_callback=None,
+):
     if not jobs:
         return {}, {
             "parallel_requested": bool(parallel),
@@ -194,7 +209,7 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2, result_callback=No
             "Aviso: memoria livre insuficiente para OCR paralelo no capitulo "
             f"completo ({available_memory_gb:.2f} GB). Usando OCR sequencial."
         )
-        return _detect_sequential(jobs, ocr_lang, result_callback), {
+        return _detect_sequential(jobs, ocr_lang, result_callback, progress_callback), {
             "parallel_requested": True,
             "parallel_used": False,
             "workers_requested": workers,
@@ -205,7 +220,7 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2, result_callback=No
         }
 
     if not parallel or workers == 1 or len(jobs) == 1:
-        return _detect_sequential(jobs, ocr_lang, result_callback), {
+        return _detect_sequential(jobs, ocr_lang, result_callback, progress_callback), {
             "parallel_requested": bool(parallel),
             "parallel_used": False,
             "workers_requested": workers,
@@ -277,6 +292,9 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2, result_callback=No
                 future_map = {
                     executor.submit(_detect_in_worker, job): job for job in chunk
                 }
+                if progress_callback:
+                    for job in chunk:
+                        progress_callback(job, "started")
                 for future in as_completed(future_map):
                     job = future_map[future]
                     try:
@@ -290,6 +308,8 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2, result_callback=No
                     results[job["index"]] = payload
                     if result_callback:
                         result_callback(payload)
+                    if progress_callback:
+                        progress_callback(payload, "completed")
                     if payload.get("pid") is not None:
                         worker_pids.add(payload["pid"])
                         rss = float(payload.get("worker_rss_mb") or 0.0)
@@ -311,7 +331,9 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2, result_callback=No
                 "Aviso: um bloco do OCR paralelo falhou; "
                 f"reprocessando {len(unresolved)} pagina(s) sequencialmente."
             )
-            sequential = _detect_sequential(unresolved, ocr_lang, result_callback)
+            sequential = _detect_sequential(
+                unresolved, ocr_lang, result_callback, progress_callback
+            )
             results.update(sequential)
         start += len(chunk)
 
@@ -321,7 +343,9 @@ def detect_ocr_jobs(jobs, ocr_lang, parallel=True, workers=2, result_callback=No
             "Aviso: resultados OCR ausentes; "
             f"reprocessando {len(missing)} pagina(s) sequencialmente."
         )
-        results.update(_detect_sequential(missing, ocr_lang, result_callback))
+        results.update(
+            _detect_sequential(missing, ocr_lang, result_callback, progress_callback)
+        )
 
     return results, {
         "parallel_requested": True,

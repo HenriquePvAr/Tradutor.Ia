@@ -126,7 +126,7 @@ def main(argv=None):
         full=full,
         debug_folder=str(output_folder / "debug"),
         keep_debug=False,
-        fast=True,
+        fast=args.mode == "fast",
         benchmark=True,
         force=bool(args.force),
         force_download=bool(args.force),
@@ -420,6 +420,20 @@ def _configure_mode(mode):
     config.OCR_FALLBACK_ENGINE = "paddle"
     config.OCR_HYBRID_FALLBACK = True
     config.RAPIDOCR_ENABLED = engine == "rapidocr"
+    config.RAPIDOCR_PAGE_FALLBACK = True
+    config.OCR_REGION_SELECTIVE_FALLBACK = True
+    # Fast mode is deliberately bounded: native Paddle fallbacks are opt-in and
+    # otherwise the RapidOCR result is preserved for review instead of blocking
+    # the whole chapter on one page.
+    config.FAST_OCR_MODE = mode == "fast"
+    if mode == "fast":
+        # Regional Paddle paths are not interruptible in-process on Windows;
+        # keep them out of the Fast path.  A bounded full-page subprocess is
+        # available only through the explicit heavy-fallback budget.
+        config.OCR_REGION_SELECTIVE_FALLBACK = False
+        config.RAPIDOCR_PAGE_FALLBACK = False
+        if not config.FAST_OCR_HEAVY_FALLBACK:
+            config.OCR_HYBRID_FALLBACK = False
     if engine == "rapidocr":
         config.POST_RENDER_OCR_VALIDATION = True
     return engine

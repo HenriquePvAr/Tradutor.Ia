@@ -162,6 +162,10 @@ class OCREngine:
         can_use_paddle = (
             config.OCR_HYBRID_FALLBACK
             and self.fallback_engine == "paddle"
+            and (
+                not bool(getattr(config, "FAST_OCR_MODE", False))
+                or bool(getattr(config, "FAST_OCR_HEAVY_FALLBACK", False))
+            )
         )
         if not can_use_paddle:
             self.last_run_metadata = self._run_metadata(
@@ -179,7 +183,31 @@ class OCREngine:
             engine="paddle_mobile",
             fallback_engine="",
         )
-        lines = paddle.detect_lines(img_bgr, page=page)
+        if bool(getattr(config, "FAST_OCR_MODE", False)):
+            from fast_ocr_policy import run_ocr_with_timeout
+
+            lines, timeout_metadata = run_ocr_with_timeout(
+                img_bgr,
+                lang=self.lang_choice,
+                engine_name="paddle_mobile",
+                page=page,
+                timeout_seconds=float(
+                    getattr(config, "FAST_OCR_PAGE_TIMEOUT_SECONDS", 45.0)
+                ),
+            )
+            if timeout_metadata.get("timeout"):
+                self.last_run_metadata = self._run_metadata(
+                    page,
+                    original_engine="rapidocr",
+                    final_engine="rapidocr",
+                    fallback_used=False,
+                    fallback_reason="fast_ocr_page_timeout",
+                    rapid_metrics=rapid_metrics,
+                    repairs=repairs,
+                )
+                return []
+        else:
+            lines = paddle.detect_lines(img_bgr, page=page)
         self.last_run_metadata = self._run_metadata(
             page,
             original_engine="rapidocr",
