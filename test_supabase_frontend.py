@@ -101,6 +101,7 @@ class SupabaseFrontendTests(unittest.TestCase):
             "canonical_session_confirmed",
             "login_completed",
             "login_reconciled_after_timeout",
+            "auth_timeout",
             "__tradutorAuthStore",
         ):
             self.assertIn(marker, source)

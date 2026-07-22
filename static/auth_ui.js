@@ -243,14 +243,23 @@ async function init() {
           closeModal();
         }
       } else {
-        await authApi.signIn(email, password, {signal: controller.signal});
+        try {
+          await withTimeout(
+            authApi.signIn(email, password, {signal: controller.signal}),
+            AUTH_LOGIN_TIMEOUT_MS,
+          );
+        } catch (signInError) {
+          controller.abort();
+          if (signInError?.message === 'auth_bootstrap_timeout') signInError.code = 'auth_timeout';
+          throw signInError;
+        }
         await establishCanonicalSession(controller.signal);
         closeModal();
         if (typeof window.__tradutorToast === 'function') window.__tradutorToast('Login realizado.', 'ok');
         authTrace('login_completed', {authenticated: true});
       }
     } catch (err) {
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted || err?.code === 'auth_timeout') {
         try {
           await establishCanonicalSession();
           closeModal();
