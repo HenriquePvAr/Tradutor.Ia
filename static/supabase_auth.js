@@ -126,6 +126,47 @@ export async function signIn(email, password, { signal } = {}) {
     // own persistence/refresh asynchronously.
     transportTrace('sdk_session_set_deferred', {code: error?.code || 'sdk_session_error', source: 'supabase_password'});
   }
+  try {
+    const identity = await Promise.race([
+      client.auth.getUser(),
+      new Promise((_, reject) => setTimeout(() => {
+        const timeout = new Error('sdk_get_user_timeout');
+        timeout.code = 'sdk_get_user_timeout';
+        reject(timeout);
+      }, SDK_SESSION_TIMEOUT_MS)),
+    ]);
+    if (identity?.error || !identity?.data?.user?.id) {
+      const error = identity?.error || new Error('user_not_available');
+      error.code = error.code || 'user_not_available';
+      transportTrace('get_user_error', {code: error.code, source: 'supabase_password'});
+      throw error;
+    }
+    transportTrace('get_user_finished', {authenticated: true, source: 'supabase_password'});
+  } catch (error) {
+    transportTrace('get_user_error', {code: error?.code || 'get_user_failed', source: 'supabase_password'});
+    // The SDK identity call can be blocked by its storage lock even though the
+    // Auth endpoint returned a valid session. Verify the same user directly over
+    // the authenticated REST endpoint before failing the login.
+    try {
+      const identityResponse = await fetch(`${cfg.supabase_url}/auth/v1/user`, {
+        headers: {apikey: cfg.publishable_key, Authorization: `Bearer ${memorySession.access_token}`},
+        signal,
+      });
+      const identityPayload = await identityResponse.json().catch(() => ({}));
+      if (identityResponse.ok && identityPayload?.id) {
+        memorySession.user = identityPayload;
+        transportTrace('get_user_finished', {authenticated: true, source: 'supabase_rest'});
+        return memorySession;
+      }
+      const identityError = new Error('user_not_available');
+      identityError.status = identityResponse.status;
+      identityError.code = identityPayload?.code || 'user_not_available';
+      throw identityError;
+    } catch (fallbackError) {
+      transportTrace('get_user_error', {code: fallbackError?.code || 'user_not_available', status: fallbackError?.status || 0, source: 'supabase_rest'});
+      throw fallbackError;
+    }
+  }
   return memorySession;
 }
 

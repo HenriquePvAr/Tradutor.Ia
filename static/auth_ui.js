@@ -332,14 +332,22 @@ async function init() {
       }
       const status = Number(err?.status || 0);
       const sessionFailure = err?.code === 'session_not_established';
+      const errorCode = String(err?.code || '');
       const message = sessionFailure
         ? 'O login foi aceito, mas a sessão não pôde ser confirmada.'
+        : errorCode === 'email_not_confirmed'
+        ? 'Confirme seu e-mail antes de entrar.'
+        : status === 429
+        ? 'Muitas tentativas. Aguarde um pouco e tente novamente.'
+        : status === 400 || status === 401
+        ? 'E-mail ou senha inválidos.'
+        : errorCode === 'supabase_not_configured' || errorCode === 'auth_config_invalid'
+        ? 'O serviço de autenticação não está configurado corretamente.'
         : String(err?.code || '').endsWith('_timeout')
         ? 'O serviço de autenticação demorou para responder.'
         : controller.signal.aborted || err?.name === 'AbortError'
         ? 'O login demorou para responder. Tente novamente.'
-        : status === 401 ? 'E-mail ou senha inválidos.'
-          : status === 403 ? 'Esta conta não tem permissão para entrar.'
+        : status === 403 ? 'Esta conta não tem permissão para entrar.'
             : status >= 500 ? 'Não foi possível concluir o login.'
               : 'Não foi possível conectar ao serviço de autenticação.';
       setAuthState(controller.signal.aborted ? 'auth_timeout' : status === 401 ? 'invalid_credentials' : 'auth_error');

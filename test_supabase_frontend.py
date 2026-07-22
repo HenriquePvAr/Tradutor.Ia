@@ -158,6 +158,9 @@ class SupabaseFrontendTests(unittest.TestCase):
             "SDK_SESSION_TIMEOUT_MS",
             "sdk_session_set_deferred",
             "memorySession",
+            "getUser",
+            "get_user_finished",
+            "/auth/v1/user",
         ):
             self.assertIn(marker, source)
 
