@@ -37,6 +37,8 @@ from supabase_social import (
 )
 
 _USERNAME_RE = re.compile(r"^[a-z0-9_]{3,32}$")
+_DISPLAY_NAME_RE = re.compile(r"^[\w][\w .'-]{0,59}$", re.UNICODE)
+_RESERVED_DISPLAY_NAMES = frozenset({"admin", "administrator", "moderator", "support", "system", "root", "official"})
 _SLUG_RE = re.compile(r"^[a-z0-9-]{1,120}$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 
@@ -140,7 +142,10 @@ class SupabaseSocialRepository:
         if patch.get("username") is not None and "username" in patch:
             _require(bool(_USERNAME_RE.fullmatch(str(patch["username"]))), "invalid_username")
         if patch.get("display_name") is not None:
-            _require(len(str(patch["display_name"])) <= 60, "invalid_display_name")
+            display_name = " ".join(str(patch["display_name"] or "").split())
+            _require(bool(_DISPLAY_NAME_RE.fullmatch(display_name)), "invalid_display_name")
+            _require(display_name.casefold() not in _RESERVED_DISPLAY_NAMES, "display_name_reserved")
+            patch["display_name"] = display_name
         if patch.get("bio") is not None:
             _require(len(str(patch["bio"])) <= 500, "invalid_bio")
         if patch.get("theme_color") is not None:
