@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -153,6 +154,19 @@ class UIHistoryStore:
             return ""
         return str(resolved) if resolved.is_file() else ""
 
+    @staticmethod
+    def _sha256_file(path: str) -> str:
+        if not path:
+            return ""
+        digest = hashlib.sha256()
+        try:
+            with Path(path).open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
+        except OSError:
+            return ""
+        return digest.hexdigest()
+
     @classmethod
     def _record_from_verified_manifest(
         cls,
@@ -171,6 +185,8 @@ class UIHistoryStore:
         # a pre-schema writer mistakenly labelled it finished.
         if final_status == "finished" and manifest.get("quality_passed") is not True:
             final_status = "review_required"
+        identity = cls._job_identity_from_manifest(folder)
+        pdf_path = cls._manifest_pdf_path(folder, manifest)
         return {
             "id": f"discovered-{folder.name}",
             "chapter_name": slug.replace("_", " ").title(),
@@ -185,11 +201,14 @@ class UIHistoryStore:
             "status": final_status,
             "output_folder": str(folder),
             **artifacts,
-            "pdf_path": cls._manifest_pdf_path(folder, manifest),
+            "pdf_path": pdf_path,
             "output_verification": "manifest_verified",
             "manifest_path": str(folder / MANIFEST_FILENAME),
-            "job_id": cls._job_id_from_manifest(folder),
-            "run_id": manifest.get("run_id", ""),
+            "job_id": identity["job_id"],
+            # The job manifest carries the database run id used by authenticated
+            # publication/claim APIs.  The run manifest id is an evidence id and may
+            # legitimately differ on older outputs.
+            "run_id": identity["run_id"] or manifest.get("run_id", ""),
             "commit_hash": manifest.get("commit_hash", ""),
             "branch": manifest.get("branch", ""),
             "pipeline_version": manifest.get("pipeline_version", ""),
@@ -199,7 +218,7 @@ class UIHistoryStore:
             "rejected_count": report.get("translations_rejected", report.get("rejected_count", 0)),
             "errors": report.get("pages_with_error", 0),
             "quality_gate": manifest.get("quality_passed"),
-            "pdf_sha256": manifest.get("pdf_sha256", ""),
+            "pdf_sha256": manifest.get("pdf_sha256") or cls._sha256_file(pdf_path),
             "publication_status": manifest.get("publication_status", ""),
             "publication_pdf_sha256": manifest.get("publication_pdf_sha256", ""),
             "published_at": manifest.get("published_at", ""),
@@ -229,11 +248,14 @@ class UIHistoryStore:
         enriched["output_verification"] = verification
         enriched["manifest_path"] = str(folder / MANIFEST_FILENAME) if manifest else ""
         if manifest:
-            for key in ("run_id", "commit_hash", "branch", "pipeline_version"):
+            identity = self._job_identity_from_manifest(folder)
+            enriched["run_id"] = identity["run_id"] or manifest.get("run_id", "")
+            for key in ("commit_hash", "branch", "pipeline_version"):
                 enriched[key] = manifest.get(key, "")
             enriched["slug"] = manifest.get("slug") or enriched.get("slug") or folder.name
             enriched["url"] = manifest.get("source_url") or enriched.get("url", "")
             enriched["pdf_path"] = self._manifest_pdf_path(folder, manifest)
+            enriched["pdf_sha256"] = manifest.get("pdf_sha256") or self._sha256_file(enriched["pdf_path"])
             status = str(manifest.get("final_status") or "review_required")
             enriched["status"] = (
                 "review_required"
@@ -263,6 +285,21 @@ class UIHistoryStore:
             return ""
         return candidate
 
+    @staticmethod
+    def _job_identity_from_manifest(folder: Path) -> dict[str, str]:
+        """Read the canonical job/run identity without trusting filesystem names."""
+        try:
+            value = json.loads((folder / "job_manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {"job_id": "", "run_id": ""}
+        if not isinstance(value, dict):
+            return {"job_id": "", "run_id": ""}
+        job_id = str(value.get("job_id") or "")
+        if len(job_id) != 32 or any(char not in "0123456789abcdef" for char in job_id):
+            job_id = ""
+        run_id = str(value.get("run_id") or "").strip()
+        return {"job_id": job_id, "run_id": run_id}
+
     def _write(self, records: list[dict[str, Any]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
@@ -277,6 +314,7 @@ class UIHistoryStore:
         allowed = {
             "id",
             "job_id",
+            "community_ownership",
             "chapter_name",
             "slug",
             "url",

@@ -38,6 +38,8 @@
     seriesSort: 'recent',
     publicationRecord: null,
     publicationBusy: false,
+    claimRecord: null,
+    claimBusy: false,
     publicationDrafts: Object.create(null),
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
@@ -989,6 +991,18 @@
     if (eligibility.published && !eligibility.changed) return '<button class="btn-ghost" data-action="publish">Publicado</button>';
     return `<button class="btn-ghost" data-action="publish">${eligibility.changed ? 'Atualizar publicação' : 'Publicar na comunidade'}</button>`;
   }
+  function claimEligibility(record) {
+    const eligibility = publicationEligibility(record);
+    const ownerState = String(record.community_ownership || '');
+    const hasIdentity = /^[0-9a-f]{32}$/.test(String(record.job_id || '')) &&
+      Boolean(String(record.run_id || '').trim()) && /^[0-9a-f]{64}$/.test(String(record.pdf_sha256 || '').toLowerCase());
+    return { ...eligibility,
+      eligible: ownerState === 'legacy' && hasIdentity && eligibility.eligible && !eligibility.published };
+  }
+  function claimAction(record) {
+    if (!claimEligibility(record).eligible) return '';
+    return '<button class="btn-ghost" data-action="claim">Vincular à minha conta</button>';
+  }
   function renderHistoryCard(record) {
     const title = record.chapter_name || record.slug || 'Capítulo';
     const engine = record.mode === 'fast' ? 'rapid' : 'paddle';
@@ -1001,7 +1015,7 @@
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
-      <div class="hm-actions">${actionButton('Abrir PDF', 'open', record.pdf_path)}${actionButton('Pasta', 'open', record.output_folder)}${actionButton('Relatório', 'open', record.quality_report_path)}${actionButton('Compare', 'open', record.compare_sheet_path)}${actionButton('Contexto', 'open', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${publicationAction(record)}</div>
+      <div class="hm-actions">${actionButton('Abrir PDF', 'open', record.pdf_path)}${actionButton('Pasta', 'open', record.output_folder)}${actionButton('Relatório', 'open', record.quality_report_path)}${actionButton('Compare', 'open', record.compare_sheet_path)}${actionButton('Contexto', 'open', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${claimAction(record)}${publicationAction(record)}</div>
     </div>`;
   }
   function renderHistory() {
@@ -1047,8 +1061,74 @@
     const record = appState.history.find(item => String(item.id) === String(button.closest('.hist-item')?.dataset.id));
     if (!record) return;
     if (button.dataset.action === 'reprocess') { loadRecordIntoForm(record); return; }
+    if (button.dataset.action === 'claim') { openClaimModal(record); return; }
     if (button.dataset.action === 'publish') { openPublicationModal(record); return; }
     await openArtifact(decodeURIComponent(button.dataset.path || ''));
+  });
+
+  /* ---------- authenticated legacy ownership ---------- */
+  function closeClaimModal() {
+    const overlay = $('#claimModalOverlay');
+    if (overlay) { overlay.classList.remove('show'); overlay.setAttribute('aria-hidden', 'true'); }
+    appState.claimRecord = null;
+    appState.claimBusy = false;
+  }
+  function openClaimModal(record) {
+    if (!claimEligibility(record).eligible) {
+      showToast('Este capítulo não está disponível para vinculação.', 'warn');
+      return;
+    }
+    const overlay = $('#claimModalOverlay');
+    if (!overlay) return;
+    appState.claimRecord = record;
+    appState.claimBusy = false;
+    const summary = $('#claimSummary');
+    if (summary) summary.innerHTML = [
+      ['Obra', record.series_name || record.chapter_name || '—'],
+      ['Capítulo', record.chapter_name || record.slug || '—'],
+      ['Páginas', Number(record.pages_processed || 0)],
+      ['SHA-256', String(record.pdf_sha256 || '').slice(0, 16) + '…'],
+    ].map(([label, value]) => `<div class="pub-meta"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('');
+    $('#claimConfirm').checked = false;
+    $('#claimError').hidden = true;
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+    $('#claimConfirm')?.focus();
+  }
+  async function claimArtifact(record) {
+    if (appState.claimBusy || !claimEligibility(record).eligible) return;
+    appState.claimBusy = true;
+    const submit = $('#claimSubmit');
+    if (submit) { submit.disabled = true; submit.textContent = 'Vinculando…'; }
+    try {
+      await api(`/api/community/artifacts/${encodeURIComponent(record.job_id)}/claim`, {
+        method: 'POST',
+        body: JSON.stringify({
+          expected_run_id: String(record.run_id || ''),
+          expected_pdf_sha256: String(record.pdf_sha256 || '').toLowerCase(),
+          confirm: true,
+        }),
+      });
+      record.community_ownership = 'owned';
+      closeClaimModal();
+      showToast('Capítulo vinculado à sua conta. Agora você pode publicar.', 'ok');
+      renderHistory();
+    } catch (errorValue) {
+      const error = $('#claimError');
+      if (error) { error.textContent = errorValue.message || 'Não foi possível vincular este capítulo.'; error.hidden = false; }
+      appState.claimBusy = false;
+      if (submit) { submit.disabled = false; submit.textContent = 'Vincular à minha conta'; }
+    }
+  }
+  $('#claimCancel')?.addEventListener('click', closeClaimModal);
+  $('#claimModalClose')?.addEventListener('click', closeClaimModal);
+  $('#claimModalOverlay')?.addEventListener('click', event => {
+    if (event.target === $('#claimModalOverlay')) closeClaimModal();
+  });
+  $('#claimForm')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!$('#claimConfirm')?.checked || !appState.claimRecord) return;
+    await claimArtifact(appState.claimRecord);
   });
 
   /* ---------- community publishing ---------- */

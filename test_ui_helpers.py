@@ -448,6 +448,40 @@ class UIHelpersTests(unittest.TestCase):
             self.assertEqual(records[1]["status"], "finished")
             self.assertEqual(records[1]["output_verification"], "legacy_unverified")
 
+    def test_verified_history_prefers_database_run_id_from_job_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            chapter = output_root / "chapter"
+            chapter.mkdir(parents=True)
+            pdf_path = chapter / "chapter.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+            run_manifest = build_run_manifest(
+                run_id="evidence-run",
+                created_at="2026-01-01T00:00:00+00:00",
+                source_url=LOOKISM_URL,
+                commit_hash="abc123",
+                branch="feature",
+                pipeline_version="pipeline-v1",
+                model="fake",
+                final_status="review_required",
+                quality_passed=False,
+                manual_review_count=1,
+                rejected_count=0,
+                pdf_path=str(pdf_path),
+                slug="chapter",
+            )
+            (chapter / "run_manifest.json").write_text(json.dumps(run_manifest), encoding="utf-8")
+            (chapter / "job_manifest.json").write_text(json.dumps({
+                "job_id": "a" * 32,
+                "run_id": "database-run",
+            }), encoding="utf-8")
+            store = UIHistoryStore(root / "history.json")
+            with patch("ui_history.OUTPUT_ROOT", output_root):
+                record = store.discover_outputs()[0]
+            self.assertEqual(record["job_id"], "a" * 32)
+            self.assertEqual(record["run_id"], "database-run")
+
     def test_discovery_recognizes_generic_e2e_runtime_evidence(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -732,6 +732,21 @@
   </div>
 </div>
 
+<!-- LEGACY ARTIFACT SELF-CLAIM -->
+<div class="modal-overlay" id="claimModalOverlay" aria-hidden="true">
+  <div class="modal-card publication-card" role="dialog" aria-modal="true" aria-labelledby="claimModalTitle">
+    <button type="button" class="modal-close" id="claimModalClose" aria-label="fechar">✕</button>
+    <div class="panel-label">vinculação da conta</div>
+    <h2 id="claimModalTitle">Vincular capítulo à minha conta</h2>
+    <div class="publication-summary" id="claimSummary"></div>
+    <form id="claimForm" autocomplete="off">
+      <label class="publication-confirm"><input type="checkbox" id="claimConfirm" required /> <span>Confirmo que este artefato pertence à minha execução e que os dados exibidos foram conferidos.</span></label>
+      <div class="publication-error" id="claimError" hidden></div>
+      <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="claimCancel">Cancelar</button><button type="submit" class="btn-primary" id="claimSubmit">Vincular à minha conta</button></div>
+    </form>
+  </div>
+</div>
+
 <!-- COMMUNITY PUBLICATION CONFIRMATION -->
 <div class="modal-overlay" id="publicationModalOverlay" aria-hidden="true">
   <div class="modal-card publication-card" role="dialog" aria-modal="true" aria-labelledby="publicationModalTitle">

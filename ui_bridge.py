@@ -406,6 +406,12 @@ class UiBridge:
         if not job:
             return None
         config = job.get("configuration") or {}
+        owner_id = str(config.get("community_owner_id") or "") if isinstance(config, dict) else ""
+        ownership = (
+            "owned" if owner_id else
+            "unowned_new" if isinstance(config, dict) and config.get("ownership_schema_version")
+            else "legacy"
+        )
         source_type = str(job.get("source_type") or config.get("source_type") or "url")
         local_summary = config.get("local_source_summary")
         if not isinstance(local_summary, dict):
@@ -414,6 +420,7 @@ class UiBridge:
             "id": job["id"],
             "run_id": job.get("run_id"),
             "job_id": job["id"],
+            "community_ownership": ownership,
             "chapter_name": config.get("chapter_name") or job.get("series_title") or job.get("series_slug") or "",
             "slug": Path(job.get("output_dir") or "").name,
             # The queue retains the raw URL only to execute a remote job. The browser-facing
@@ -678,6 +685,13 @@ class UiBridge:
             if not job:
                 continue
             record["status"] = job.get("status") or record.get("status")
+            config = job.get("configuration") or {}
+            owner_id = str(config.get("community_owner_id") or "") if isinstance(config, dict) else ""
+            record["community_ownership"] = (
+                "owned" if owner_id else
+                "unowned_new" if isinstance(config, dict) and config.get("ownership_schema_version")
+                else "legacy"
+            )
             record["review_confirmed"] = bool(job.get("review_confirmed_at"))
             record["review_status"] = (
                 "completed" if job.get("review_confirmed_at") else
@@ -1190,6 +1204,7 @@ class UiBridge:
         configuration: dict[str, Any] = {
             "job_type": "translation",
             "source_type": SOURCE_TYPE_LOCAL_FOLDER,
+            "ownership_schema_version": 1,
             "mode": normalized["mode"],
             "full": True,
             "max_images": None,
@@ -1414,6 +1429,8 @@ class UiBridge:
         details = suggest_chapter_details(normalized["url"])
         configuration = {
             "job_type": "translation",
+            # Distinguish newly-created jobs from pre-ownership legacy artifacts.
+            "ownership_schema_version": 1,
             "mode": normalized["mode"],
             "full": normalized["full"],
             "max_images": normalized["max_images"],
