@@ -193,12 +193,23 @@ def create_community_router(community, auth) -> APIRouter:
 
     @router.get("/auth/session")
     def session(request: Request) -> JSONResponse:
-        principal = request_principal(request)
+        try:
+            principal = auth.authenticate_request(request)
+        except AuthenticationRequired as exc:
+            # Keep the canonical endpoint useful to the UI without exposing
+            # credentials: the reason code identifies JWT/config transport failures.
+            return JSONResponse({
+                "authenticated": False,
+                "user_id": "",
+                "auth_source": getattr(auth, "auth_source", "unknown"),
+                "reason_code": str(exc) or "authentication_required",
+            }, status_code=401, headers=no_store_headers)
         return JSONResponse({
             "authenticated": principal.authenticated,
             "user_id": principal.user_id if principal.authenticated else "",
             "roles": sorted(principal.roles),
             "auth_source": principal.auth_source,
+            "reason_code": "" if principal.authenticated else "authentication_required",
         }, headers=no_store_headers)
 
     @router.post("/auth/logout")

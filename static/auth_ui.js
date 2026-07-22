@@ -127,7 +127,7 @@ async function syncBackendSession(accessToken = '', {signal} = {}) {
     else if (response.status === 403) setAuthState('auth_error');
     else setAuthState('unauthenticated');
     window.__tradutorCommunityAuthenticated = false;
-    authTrace('canonical_session_rejected', {status: response.status, authenticated: false});
+    authTrace('canonical_session_rejected', {status: response.status, code: payload.reason_code || 'authentication_required', authenticated: false});
     window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
       detail: {authenticated: false, state: window.__tradutorAuthState},
     }));
