@@ -1,4 +1,4 @@
-// Wires the minimal auth UI (masthead status + modal) to the Supabase SDK module.
+// Wires the minimal auth UI (masthead status + full-page auth surface) to the Supabase SDK module.
 // Loaded as an ES module so it can import the SDK. Keeps the current access token in a
 // window field that the classic tradutor_ui.js reads to attach the Bearer header.
 // Never logs a token, session, or password.
@@ -18,10 +18,30 @@ function setNote(msg) {
   el.hidden = !msg;
 }
 
-function openModal() { $('#authModalOverlay')?.classList.add('show'); }
-function closeModal() {
-  $('#authModalOverlay')?.classList.remove('show');
+function setShellState(state) {
+  document.documentElement.dataset.shellState = state;
+}
+
+function showLoginSurface() {
+  const surface = $('#authSurface');
+  if (surface) surface.hidden = false;
+}
+
+function hideLoginSurface() {
+  const surface = $('#authSurface');
+  if (surface) surface.hidden = true;
   setError(''); setNote('');
+}
+
+function dismissBootSurface() {
+  $('#boot')?.classList.add('hide');
+}
+
+function authShellStateFor(state) {
+  if (state === 'authenticated') return 'authenticated';
+  if (state === 'auth_loading') return 'booting';
+  if (state === 'auth_submitting') return 'authenticating';
+  return 'unauthenticated';
 }
 
 function setSubmitLabel(button, label) {
@@ -79,6 +99,7 @@ function setAuthState(state, userId = '') {
     authenticated: state === 'authenticated',
     user_id: state === 'authenticated' ? String(userId || '') : '',
   };
+  setShellState(authShellStateFor(state));
   authTrace('auth_state_changed', {status: state, authenticated: state === 'authenticated'});
 }
 
@@ -113,6 +134,21 @@ function renderAuthShell(state, message = '') {
   else if (state === 'authenticated') status.textContent = '';
   else if (state === 'auth_error') status.textContent = message || 'Não foi possível verificar sua sessão.';
   else status.textContent = 'visitante';
+  if (state === 'authenticated') {
+    dismissBootSurface();
+    hideLoginSurface();
+    setShellState('authenticated');
+  } else if (state === 'auth_loading') {
+    setShellState('booting');
+  } else if (state === 'auth_submitting') {
+    dismissBootSurface();
+    showLoginSurface();
+    setShellState('authenticating');
+  } else {
+    dismissBootSurface();
+    showLoginSurface();
+    setShellState('unauthenticated');
+  }
 }
 
 function withTimeout(promise, timeoutMs = AUTH_BOOTSTRAP_TIMEOUT_MS) {
@@ -138,6 +174,7 @@ async function syncBackendSession(accessToken = '', {signal} = {}) {
       setAuthState('authenticated', payload.user_id);
       window.__tradutorCommunityAuthenticated = true;
       authTrace('canonical_session_confirmed', {authenticated: true});
+      renderAuthShell('authenticated');
       window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
         detail: {authenticated: true, user_id: String(payload.user_id || ''), state: 'authenticated'},
       }));
@@ -148,6 +185,7 @@ async function syncBackendSession(accessToken = '', {signal} = {}) {
     else if (response.status === 403) setAuthState('auth_error');
     else setAuthState('unauthenticated');
     window.__tradutorCommunityAuthenticated = false;
+    renderAuthShell(window.__tradutorAuthState, payload.message || '');
     authTrace('canonical_session_rejected', {status: response.status, code: payload.reason_code || 'authentication_required', authenticated: false});
     window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
       detail: {authenticated: false, state: window.__tradutorAuthState},
@@ -156,6 +194,7 @@ async function syncBackendSession(accessToken = '', {signal} = {}) {
   } catch (_) {
     setAuthState('auth_error');
     window.__tradutorCommunityAuthenticated = false;
+    renderAuthShell('auth_error', 'Não foi possível verificar sua sessão.');
     authTrace('canonical_session_error', {code: 'network_or_timeout'});
     window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
       detail: {authenticated: false, state: 'auth_error'},
@@ -286,13 +325,12 @@ async function init() {
   document.querySelectorAll('.auth-tab').forEach((tab) => {
     tab.addEventListener('click', () => setMode(tab.dataset.authmode));
   });
-  $('#authOpenBtn')?.addEventListener('click', openModal);
-  $('#authModalClose')?.addEventListener('click', () => {
-    window.__tradutorActiveLoginController?.abort();
-    closeModal();
+  $('#authOpenBtn')?.addEventListener('click', () => {
+    showLoginSurface();
+    setShellState('unauthenticated');
   });
-  $('#authModalOverlay')?.addEventListener('click', (event) => {
-    if (event.target === $('#authModalOverlay')) closeModal();
+  document.querySelectorAll('[data-authmode-link]').forEach((link) => {
+    link.addEventListener('click', () => setMode(link.dataset.authmodeLink || 'login'));
   });
   $('#authLogoutBtn')?.addEventListener('click', async () => {
     try { await withTimeout(authApi.signOut(), AUTH_BOOTSTRAP_TIMEOUT_MS); } catch (_) { /* local cleanup below is authoritative */ }
@@ -341,7 +379,7 @@ async function init() {
           setNote('Conta criada. Confirme pelo e-mail e depois entre.');
           setMode('login');
         } else {
-          closeModal();
+          hideLoginSurface();
         }
       } else {
         try {
@@ -354,9 +392,9 @@ async function init() {
           }
           throw signInError;
         }
-        closeModal();
+        hideLoginSurface();
         if (typeof window.__tradutorToast === 'function') window.__tradutorToast('Login realizado.', 'ok');
-        authTrace('modal_closed', {authenticated: true, source: AUTH_HANDLER_ID});
+        authTrace('auth_surface_hidden', {authenticated: true, source: AUTH_HANDLER_ID});
         authTrace('login_completed', {authenticated: true});
       }
     } catch (err) {
@@ -364,7 +402,7 @@ async function init() {
       if (controller.signal.aborted || err?.code === 'auth_timeout') {
         try {
           await establishCanonicalSession();
-          closeModal();
+          hideLoginSurface();
           if (typeof window.__tradutorToast === 'function') window.__tradutorToast('Login realizado.', 'ok');
           authTrace('login_reconciled_after_timeout', {authenticated: true});
           return;
@@ -412,8 +450,50 @@ async function init() {
     if (!input || !toggle) return;
     const shown = input.type === 'text';
     input.type = shown ? 'password' : 'text';
+    toggle.classList.toggle('shown', !shown);
     toggle.setAttribute('aria-label', shown ? 'Mostrar senha' : 'Ocultar senha');
   });
+  const compare = $('#authCompare');
+  const after = compare?.querySelector('.auth-login-after');
+  const handle = $('#authCompareHandle');
+  if (compare && after && handle) {
+    let dragging = false;
+    let interacted = false;
+    function setComparePosition(pct) {
+      const bounded = Math.max(4, Math.min(96, Number(pct) || 52));
+      after.style.clipPath = `inset(0 0 0 ${bounded}%)`;
+      handle.style.left = `${bounded}%`;
+    }
+    function positionFromEvent(event) {
+      const pointer = event.touches ? event.touches[0] : event;
+      const rect = compare.getBoundingClientRect();
+      return ((pointer.clientX - rect.left) / rect.width) * 100;
+    }
+    function move(event) {
+      if (!dragging) return;
+      setComparePosition(positionFromEvent(event));
+    }
+    compare.addEventListener('mousedown', (event) => {
+      dragging = true; interacted = true; setComparePosition(positionFromEvent(event));
+    });
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', () => { dragging = false; });
+    compare.addEventListener('touchstart', (event) => {
+      dragging = true; interacted = true; setComparePosition(positionFromEvent(event));
+    }, {passive: true});
+    window.addEventListener('touchmove', move, {passive: true});
+    window.addEventListener('touchend', () => { dragging = false; });
+    let t = 0;
+    function autoSweep() {
+      if (!interacted && window.__tradutorAuthState !== 'authenticated') {
+        t += 0.012;
+        setComparePosition(52 + Math.sin(t) * 28);
+      }
+      requestAnimationFrame(autoSweep);
+    }
+    setComparePosition(52);
+    requestAnimationFrame(autoSweep);
+  }
   // Keeps token fresh across login, logout and SDK auto-refresh.
   await withTimeout(authApi.onAuthChange((session, event) => renderSession(session, event)));
 }

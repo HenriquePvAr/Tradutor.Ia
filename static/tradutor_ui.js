@@ -114,6 +114,7 @@
       if (userId) window.__tradutorCommunityUserId = userId;
       window.__tradutorAuthStore = {status: 'authenticated', authenticated: true, user_id: userId};
       if (document.body) document.body.dataset.authState = 'authenticated';
+      document.documentElement.dataset.shellState = 'authenticated';
       uiTrace('canonical_auth_bootstrap_applied', {authenticated: true});
       return 'authenticated';
     }
@@ -124,6 +125,7 @@
       window.__tradutorCommunityUserId = '';
       window.__tradutorAuthStore = {status: 'unauthenticated', authenticated: false, user_id: ''};
       if (document.body) document.body.dataset.authState = 'unauthenticated';
+      document.documentElement.dataset.shellState = 'unauthenticated';
       uiTrace('canonical_auth_bootstrap_applied', {authenticated: false});
       return 'unauthenticated';
     }
@@ -221,23 +223,101 @@
     'loading.stage.init', 'loading.stage.local', 'loading.stage.auth', 'loading.stage.session',
     'loading.stage.profile', 'loading.stage.settings', 'loading.stage.community', 'loading.stage.ready',
   ];
+  const bootStageMeta = [
+    {sub: 'preparando painel local', icon: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.4"/><path d="M21 15l-5-5-4 4-3-3-6 6"/>'},
+    {sub: 'conectando ao servidor local', icon: '<path d="M5 12h14"/><path d="M12 5l7 7-7 7"/><path d="M5 5v14"/>'},
+    {sub: 'preparando provider de autenticação', icon: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'},
+    {sub: 'validando cookie e sessão canônica', icon: '<path d="M20 6 9 17l-5-5"/>'},
+    {sub: 'carregando identidade local', icon: '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="5"/>'},
+    {sub: 'aplicando preferências do painel', icon: '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.37a1.7 1.7 0 0 0-1 .57V20a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-.57 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15a1.7 1.7 0 0 0-.57-1H4a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 .57-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06A2 2 0 1 1 7.09 4.2l.06.06A1.7 1.7 0 0 0 9 4.63h.09A1.7 1.7 0 0 0 10 4.06V4a2 2 0 1 1 4 0v.09c.35.13.68.32 1 .57a1.7 1.7 0 0 0 1.88-.34l.06-.06A2 2 0 1 1 19.77 7.1l-.06.06A1.7 1.7 0 0 0 19.37 9c.25.32.44.65.57 1H20a2 2 0 1 1 0 4h-.09c-.13.35-.32.68-.57 1z"/>'},
+    {sub: 'sincronizando comunidade e histórico', icon: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'},
+    {sub: 'interface pronta', icon: '<path d="M20 6 9 17l-5-5"/>'},
+  ];
+  const bootTips = [
+    'dica: termos glossados ficam marcados em vermelho no PDF final.',
+    'o pipeline nunca aprova uma etapa crítica em silêncio.',
+    'webtoons de rolagem longa são fatiados automaticamente por painel.',
+    'toda tradução revisada é salva em cache para reaproveitar depois.',
+  ];
+  document.documentElement.dataset.shellState = document.documentElement.dataset.shellState || 'booting';
   const bootNodes = $('#bootNodes');
+  const bootLabels = $('#bootNodeLabels');
   if (bootNodes && !bootNodes.children.length) {
-    bootStages.forEach(() => bootNodes.appendChild(document.createElement('span')));
+    bootStageMeta.forEach((stage, index) => {
+      const node = document.createElement('div');
+      node.className = 'app-loading-node';
+      node.dataset.bootNode = String(index);
+      node.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${stage.icon}</svg>`;
+      bootNodes.appendChild(node);
+      if (index < bootStageMeta.length - 1) {
+        const connector = document.createElement('div');
+        connector.className = 'app-loading-connector';
+        connector.innerHTML = '<div class="app-loading-connector-fill"></div><div class="app-loading-connector-spark"></div>';
+        bootNodes.appendChild(connector);
+      }
+      const label = document.createElement('span');
+      label.textContent = String(index + 1);
+      bootLabels?.appendChild(label);
+    });
+  }
+  const bootParticles = $('#bootParticles');
+  if (bootParticles && !bootParticles.children.length) {
+    for (let index = 0; index < 14; index += 1) {
+      const particle = document.createElement('div');
+      particle.className = 'app-loading-particle';
+      const size = 2 + Math.random() * 3;
+      particle.style.width = `${size}px`;
+      particle.style.height = `${size}px`;
+      particle.style.left = `${Math.random() * 100}%`;
+      particle.style.setProperty('--drift', `${Math.random() * 60 - 30}px`);
+      particle.style.animationDuration = `${9 + Math.random() * 10}s`;
+      particle.style.animationDelay = `${Math.random() * 12}s`;
+      bootParticles.appendChild(particle);
+    }
+  }
+  function setBootText(element, text) {
+    if (!element) return;
+    element.innerHTML = '';
+    const span = document.createElement('span');
+    span.textContent = text;
+    element.appendChild(span);
   }
   function setBootStage(index, message = '') {
     if (!bootEl) return;
     const bounded = Math.max(0, Math.min(bootStages.length - 1, Number(index) || 0));
     const label = message || window.TradutorI18n?.t(bootStages[bounded]) || bootStages[bounded];
-    $('#bootStatusLine') && ($('#bootStatusLine').textContent = label);
-    $('#bootStatusMini') && ($('#bootStatusMini').textContent = `${bounded + 1}/${bootStages.length} etapas`);
-    $('#bootRingPct') && ($('#bootRingPct').textContent = `${Math.round(((bounded + 1) / bootStages.length) * 100)}%`);
-    $$('#bootNodes span').forEach((node, nodeIndex) => node.classList.toggle('done', nodeIndex <= bounded));
+    const pct = Math.round(((bounded + 1) / bootStages.length) * 100);
+    setBootText($('#bootStatusLine'), label);
+    $('#bootStatusMini') && ($('#bootStatusMini').textContent = bootStageMeta[bounded]?.sub || `${bounded + 1}/${bootStages.length} etapas`);
+    $('#ringPct') && ($('#ringPct').textContent = `${pct}%`);
+    $('#ringFill') && ($('#ringFill').style.strokeDashoffset = String(175.9 - (pct / 100) * 175.9));
+    $('#pageCount') && ($('#pageCount').textContent = `${bounded + 1}/${bootStages.length} etapas`);
+    $('#bootFooterLabel') && ($('#bootFooterLabel').textContent = pct < 100 ? 'preparando interface' : 'pronto');
+    setBootText($('#tickerText'), bootTips[bounded % bootTips.length]);
+    $$('#bootNodes [data-boot-node]').forEach((node, nodeIndex) => {
+      node.classList.toggle('done', nodeIndex < bounded);
+      node.classList.toggle('active', nodeIndex === bounded);
+      node.classList.toggle('failed', bootEl.dataset.bootState === 'failed' && nodeIndex === bounded);
+    });
+    $$('#bootNodes .app-loading-connector').forEach((connector, connectorIndex) => {
+      connector.classList.toggle('done', connectorIndex < bounded);
+    });
   }
-  function closeBoot() { if (bootEl) bootEl.classList.add('hide'); }
+  function setBootFailed(message) {
+    if (!bootEl) return;
+    bootEl.dataset.bootState = 'failed';
+    document.documentElement.dataset.shellState = 'boot_failed';
+    setBootStage(1, message || 'Não foi possível carregar a interface local.');
+    $('#bootActions') && ($('#bootActions').hidden = false);
+    $('#bootFooterLabel') && ($('#bootFooterLabel').textContent = 'ação necessária');
+  }
+  function closeBoot() {
+    if (bootEl) bootEl.classList.add('hide');
+  }
   setBootStage(0);
-  const bootTimer = window.setTimeout(() => setBootStage(1, 'O carregamento demorou para responder.'), 15000);
-  bootEl?.addEventListener('click', () => { window.clearTimeout(bootTimer); closeBoot(); });
+  const bootTimer = window.setTimeout(() => setBootFailed('O carregamento demorou para responder.'), 15000);
+  $('#bootRetry')?.addEventListener('click', () => window.location.reload());
+  $('#bootDiagnostics')?.addEventListener('click', () => activateTab('logs'));
 
   /* ---------- ambient canvas ---------- */
   const ambientGlow = $('#ambientGlow');
@@ -1220,6 +1300,7 @@
   const statusLabels = {online: 'online', away: 'ausente', busy: 'ocupado', offline: 'offline'};
   function applyCanonicalAuthSurface(state) {
     const authenticated = String(state || '') === 'authenticated';
+    document.documentElement.dataset.shellState = authenticated ? 'authenticated' : 'unauthenticated';
     const protectedSelectors = ['#railProfile', '.rail-tab[data-tab="community"]', '.rail-tab[data-tab="profile"]', '#view-community', '#view-profile'];
     protectedSelectors.forEach(selector => $$(selector).forEach(element => {
       element.hidden = !authenticated;
@@ -2493,7 +2574,7 @@
       window.setTimeout(closeBoot, 250);
     } catch (error) {
       window.clearTimeout(bootTimer);
-      setBootStage(1, 'Não foi possível carregar a interface local.');
+      setBootFailed('Não foi possível carregar a interface local.');
       showToast(`Interface local: ${error.message}`, 'error');
     }
   }

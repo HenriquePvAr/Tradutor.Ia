@@ -95,7 +95,7 @@ function loginGate() {
 }
 
 function openAuth(mode) {
-  // Reuse the existing auth modal wired by auth_ui.js.
+  // Reuse the existing full-page auth surface wired by auth_ui.js.
   document.querySelector(`.auth-tab[data-authmode="${mode}"]`)?.click();
   document.getElementById('authOpenBtn')?.click();
 }

@@ -18,21 +18,69 @@
   </div>
 </div>
 
-<div id="boot" class="reference-loading" title="clique para pular" aria-live="polite">
-  <div class="rl-grid"></div>
-  <div class="rl-watermark">翻</div>
-  <div class="rl-frame">
-    <div class="rl-brand"><span class="rl-kanji">翻訳</span><span class="rl-dot">.</span><span class="rl-ia">IA</span></div>
-    <div class="rl-badge">beta técnica · pipeline local</div>
-    <div class="rl-compare" aria-hidden="true"><span class="rl-tag left">original</span><span class="rl-tag right">pt-br</span><div class="rl-scanline"></div></div>
-    <div class="rl-core">
-      <div class="rl-ring" id="bootRingPct">0%</div>
-      <div>
-        <div class="rl-status" id="bootStatusLine" data-i18n="loading.stage.init">iniciando interface</div>
-        <div class="rl-sub" id="bootStatusMini">0/8 etapas</div>
+<div id="boot" class="app-loading-page" aria-live="polite" data-shell-surface="loading">
+  <div class="app-loading-speedlines"></div>
+  <div class="app-loading-grid"></div>
+  <div class="app-loading-halftone"></div>
+  <div class="app-loading-watermark">翻</div>
+  <div class="app-loading-particles" id="bootParticles" aria-hidden="true"></div>
+  <div class="app-loading-vignette"></div>
+
+  <div class="app-loading-frame">
+    <div class="app-loading-brand">
+      <div class="app-loading-logo"><span class="app-loading-kanji">翻訳</span><span class="app-loading-dot">.</span><span class="app-loading-ia">IA</span></div>
+      <div class="app-loading-badge">beta técnica · pipeline local</div>
+    </div>
+
+    <div class="app-loading-stage-label">painel em análise</div>
+
+    <div class="app-loading-compare">
+      <span class="app-loading-tag app-loading-tag-left">original</span>
+      <span class="app-loading-tag app-loading-tag-right">pt-br</span>
+      <div class="app-loading-corner-fold"></div>
+      <img class="app-loading-before" src="/static/assets/reference-ui/original.jpg" alt="Página original em inglês, detectada via OCR" decoding="async" />
+      <img class="app-loading-after" src="/static/assets/reference-ui/translated.jpg" alt="Página traduzida para português pelo pipeline" decoding="async" />
+      <div class="app-loading-scanline"></div>
+    </div>
+    <div class="app-loading-compare-caption">capítulo <b>12</b> · painel <b>4</b> — comparando texto original com a tradução revisada</div>
+
+    <div class="app-loading-core">
+      <div class="app-loading-ring-wrap">
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <defs>
+            <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#e5484d" />
+              <stop offset="100%" stop-color="#ff6b6f" />
+            </linearGradient>
+          </defs>
+          <circle class="app-loading-ring-track" cx="32" cy="32" r="28"></circle>
+          <circle class="app-loading-ring-fill" id="ringFill" cx="32" cy="32" r="28"></circle>
+        </svg>
+        <div class="app-loading-ring-pct" id="ringPct">0%</div>
+      </div>
+      <div class="app-loading-core-body">
+        <div class="app-loading-status-line" id="bootStatusLine" data-i18n="loading.stage.init"><span>iniciando interface</span></div>
+        <div class="app-loading-status-sub" id="bootStatusMini">preparando painel local</div>
       </div>
     </div>
-    <div class="rl-nodes" id="bootNodes" aria-hidden="true"></div>
+
+    <div class="app-loading-nodes" id="bootNodes" aria-hidden="true"></div>
+    <div class="app-loading-node-labels" id="bootNodeLabels" aria-hidden="true"></div>
+
+    <div class="app-loading-ticker">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v4a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z"/><path d="M19 11v1a7 7 0 0 1-14 0v-1M12 19v3"/></svg>
+      <div class="app-loading-ticker-text" id="tickerText"><span>o pipeline nunca aprova uma etapa crítica em silêncio.</span></div>
+    </div>
+
+    <div class="app-loading-actions" id="bootActions" hidden>
+      <button type="button" class="app-loading-action" id="bootRetry">Tentar novamente</button>
+      <button type="button" class="app-loading-action" id="bootDiagnostics">Abrir diagnóstico</button>
+    </div>
+
+    <div class="app-loading-footer-row">
+      <span><i class="app-loading-dotpulse"></i><span id="bootFooterLabel">preparando interface</span></span>
+      <span class="app-loading-count" id="pageCount">0/8 etapas</span>
+    </div>
   </div>
 </div>
 
@@ -867,46 +915,102 @@
   </div>
 </div>
 
-<!-- AUTH MODAL -->
-<div class="modal-overlay" id="authModalOverlay">
-  <div class="modal-card auth-card auth-reference-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
-    <button type="button" class="modal-close" id="authModalClose" aria-label="fechar">✕</button>
-    <div class="auth-reference-stage" aria-hidden="true">
-      <div class="auth-ref-grid"></div>
-      <div class="auth-ref-watermark">訳</div>
-      <div class="auth-ref-brand"><span>翻訳</span><b>.</b><span>IA</span></div>
-      <h2>Nenhum balão passa <em>sem prova</em> de que foi bem traduzido.</h2>
-      <p>O pipeline lê o painel, mostra a evidência lado a lado e só entrega a página quando a tradução resiste à comparação.</p>
-      <div class="auth-ref-compare"><span class="rl-tag left">original</span><span class="rl-tag right">pt-br</span><div class="auth-ref-handle"></div></div>
-      <div class="auth-ref-pipeline">
-        <span>1<br>download</span><span>2<br>OCR</span><span>3<br>organiza</span><span>4<br>traduz</span><span>5<br>cache</span><span>6<br>PDF</span>
+<!-- AUTH FULL-PAGE SURFACE -->
+<div class="auth-login-page" id="authSurface" data-shell-surface="login" hidden>
+  <div class="auth-login-stage" aria-hidden="true">
+    <div class="auth-login-grid"></div>
+    <div class="auth-login-dots"></div>
+    <div class="auth-login-watermark">訳</div>
+
+    <div class="auth-login-stage-inner">
+      <div class="auth-login-logo"><span class="auth-login-kanji">翻訳</span><span class="auth-login-dot">.</span><span class="auth-login-ia">IA</span></div>
+
+      <div class="auth-login-title">Nenhum balão passa<br>sem <em>prova</em> de que foi bem traduzido.</div>
+      <div class="auth-login-subtitle">O pipeline lê o painel, mostra a evidência lado a lado e só entrega a página quando a tradução resiste à comparação — nada é aprovado no escuro.</div>
+
+      <div class="auth-login-compare-wrap">
+        <div class="auth-login-compare" id="authCompare">
+          <img class="auth-login-before" src="/static/assets/reference-ui/original.jpg" alt="Página original em inglês, detectada via OCR" decoding="async" />
+          <img class="auth-login-after" src="/static/assets/reference-ui/translated.jpg" alt="Página traduzida para português pelo pipeline" decoding="async" />
+          <span class="auth-login-tag auth-login-tag-orig"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3"/><path d="M20 8V5a1 1 0 0 0-1-1h-3"/><path d="M4 16v3a1 1 0 0 0 1 1h3"/><path d="M20 16v3a1 1 0 0 1-1 1h-3"/></svg>original</span>
+          <span class="auth-login-tag auth-login-tag-trans"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8h9"/><path d="M9.5 5v2c0 3-2 5.5-5 6.5"/><path d="M7 8c0 2 2 4.5 6 6"/><path d="M13 21l4-9 4 9"/><path d="M14.5 18h5"/></svg>pt-br</span>
+          <div class="auth-login-handle" id="authCompareHandle"><div class="auth-login-grip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7l-4 5 4 5"/><path d="M16 7l4 5-4 5"/></svg></div></div>
+        </div>
+        <div class="auth-login-compare-hint">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7l-4 5 4 5"/><path d="M16 7l4 5-4 5"/></svg>
+          arraste para comparar original e tradução
+        </div>
+        <div class="auth-login-compare-caption">amostra real do pipeline — <b>inglês → pt-br</b>, revisada painel a painel</div>
+      </div>
+
+      <div class="auth-login-pipeline">
+        <div class="auth-login-pnode"><div class="auth-login-picon"><span class="auth-login-pnum">1</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.4"/><path d="M21 15l-5-5-4 4-3-3-6 6"/></svg></div><div class="auth-login-plabel">download</div></div>
+        <div class="auth-login-pnode"><div class="auth-login-picon"><span class="auth-login-pnum">2</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3"/><path d="M20 8V5a1 1 0 0 0-1-1h-3"/><path d="M4 16v3a1 1 0 0 0 1 1h3"/><path d="M20 16v3a1 1 0 0 1-1 1h-3"/></svg></div><div class="auth-login-plabel">OCR</div></div>
+        <div class="auth-login-pnode"><div class="auth-login-picon"><span class="auth-login-pnum">3</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg></div><div class="auth-login-plabel">organiza</div></div>
+        <div class="auth-login-pnode"><div class="auth-login-picon"><span class="auth-login-pnum">4</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8h9"/><path d="M9.5 5v2c0 3-2 5.5-5 6.5"/><path d="M7 8c0 2 2 4.5 6 6"/><path d="M13 21l4-9 4 9"/><path d="M14.5 18h5"/></svg></div><div class="auth-login-plabel">traduz</div></div>
+        <div class="auth-login-pnode"><div class="auth-login-picon"><span class="auth-login-pnum">5</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="8" ry="2.8"/><path d="M4 5.5v6.2c0 1.5 3.6 2.8 8 2.8s8-1.3 8-2.8V5.5"/><path d="M4 11.7v6.2c0 1.5 3.6 2.8 8 2.8s8-1.3 8-2.8v-6.2"/></svg></div><div class="auth-login-plabel">cache</div></div>
+        <div class="auth-login-pnode"><div class="auth-login-picon"><span class="auth-login-pnum">6</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div><div class="auth-login-plabel">PDF</div></div>
+      </div>
+
+      <div class="auth-login-format-row">
+        <span class="auth-login-fmt">manga</span>
+        <span class="auth-login-fmt">manhwa</span>
+        <span class="auth-login-fmt">webtoon</span>
       </div>
     </div>
-    <div class="auth-reference-side">
-      <div class="auth-card-topbar"><span class="auth-ref-badge">painel local</span><span class="auth-ref-status"><i></i> serviço conectado</span></div>
+  </div>
+
+  <div class="auth-login-side">
+    <div class="auth-login-card">
+      <div class="auth-login-card-topbar">
+        <span class="auth-login-badge">painel local</span>
+        <span class="auth-login-status-dot"><i></i>serviço conectado</span>
+      </div>
+
       <div class="auth-tabs">
         <button type="button" class="auth-tab active" data-authmode="login" data-i18n="auth.login">Entrar</button>
         <button type="button" class="auth-tab" data-authmode="signup" data-i18n="auth.signup">Criar conta</button>
       </div>
-      <h1 id="authTitle">Bem-vindo de volta</h1>
-      <p class="auth-lead">Entre para continuar suas traduções em andamento.</p>
-      <form id="authForm" autocomplete="on">
-        <div class="field">
+
+      <h1 id="authTitle" class="auth-login-heading">Bem-vindo de volta</h1>
+      <div class="auth-login-lead">Entre para continuar suas traduções em andamento.</div>
+
+      <form id="authForm" data-auth-login autocomplete="on">
+        <div class="auth-login-field">
           <label for="authEmail" data-i18n="auth.email">E-mail</label>
-          <input type="email" id="authEmail" required autocomplete="email" placeholder="voce@exemplo.com" data-i18n-placeholder="auth.email" />
-        </div>
-        <div class="field">
-          <label for="authPassword" data-i18n="auth.password">Senha</label>
-          <div class="auth-input-wrap">
-            <input type="password" id="authPassword" required minlength="8" autocomplete="current-password" placeholder="mínimo 8 caracteres" />
-            <button type="button" class="toggle-pw" id="authTogglePassword" aria-label="Mostrar senha">ver</button>
+          <div class="auth-login-input-wrap">
+            <svg class="auth-login-leading" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="5"/></svg>
+            <input type="email" id="authEmail" name="email" required autocomplete="email" placeholder="voce@exemplo.com" data-i18n-placeholder="auth.email" />
           </div>
         </div>
-        <div class="auth-row"><label class="remember"><input type="checkbox" id="authRemember" checked> <span data-i18n="auth.remember">Lembrar de mim</span></label><span data-i18n="auth.forgot">Recuperação indisponível neste ambiente</span></div>
+        <div class="auth-login-field">
+          <label for="authPassword" data-i18n="auth.password">Senha</label>
+          <div class="auth-login-input-wrap">
+            <svg class="auth-login-leading" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            <input type="password" id="authPassword" name="password" required minlength="8" autocomplete="current-password" placeholder="••••••••" />
+            <button type="button" class="auth-login-toggle-pw" id="authTogglePassword" aria-label="Mostrar senha">
+              <svg class="auth-login-eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="auth-login-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.9 17.9A10.9 10.9 0 0 1 12 19c-7 0-11-7-11-7a19.7 19.7 0 0 1 5-5.6M9.9 4.2A9.6 9.6 0 0 1 12 4c7 0 11 7 11 7a19.6 19.6 0 0 1-3.2 4.1M14.1 14.1a3 3 0 1 1-4.2-4.2"/><path d="M1 1l22 22"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="auth-login-row">
+          <label class="auth-login-remember"><input type="checkbox" id="authRemember" checked /> <span data-i18n="auth.remember">Lembrar de mim</span></label>
+          <span class="auth-login-muted" data-i18n="auth.forgot">Recuperação indisponível neste ambiente</span>
+        </div>
+
         <div class="auth-error" id="authError" hidden></div>
         <div class="auth-note" id="authNote" hidden></div>
-        <button type="submit" class="btn-primary auth-submit" id="authSubmit"><span class="btn-text" data-i18n="auth.submit">Entrar no painel</span><span class="spinner" aria-hidden="true"></span></button>
+
+        <button type="submit" class="auth-login-submit" id="authSubmit">
+          <span class="btn-text" data-i18n="auth.submit">Entrar no painel</span>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
       </form>
+
+      <div class="auth-login-footer">Ainda não tem conta? <button type="button" class="auth-login-link" data-authmode-link="signup">Criar conta local</button></div>
+      <div class="auth-login-credit">tradutor.ia · beta técnica · criado por Henrique Paiva Araújo</div>
     </div>
   </div>
 </div>

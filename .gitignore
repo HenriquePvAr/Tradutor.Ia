@@ -25,6 +25,9 @@ models/
 *.jpg
 *.jpeg
 *.webp
+!static/assets/
+!static/assets/reference-ui/
+!static/assets/reference-ui/*.jpg
 *.log
 
 .pytest_cache/
