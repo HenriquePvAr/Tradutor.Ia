@@ -38,6 +38,7 @@
     seriesSort: 'recent',
     publicationRecord: null,
     publicationBusy: false,
+    publicationCorrelation: '',
     claimRecord: null,
     claimBusy: false,
     publicationDrafts: Object.create(null),
@@ -56,6 +57,18 @@
     }
     return null;
   };
+  window.__tradutorUiTrace = Array.isArray(window.__tradutorUiTrace) ? window.__tradutorUiTrace : [];
+  function uiTrace(event, fields = {}) {
+    const safe = {event: String(event || ''), at: Date.now()};
+    for (const key of ['code', 'status', 'authenticated', 'valid', 'correlation_id']) {
+      if (fields[key] !== undefined) safe[key] = fields[key];
+    }
+    window.__tradutorUiTrace.push(safe);
+    if (window.__tradutorUiTrace.length > 80) window.__tradutorUiTrace.shift();
+  }
+  function correlationId() {
+    try { return crypto.randomUUID(); } catch (_) { return `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+  }
 
   function cookieValue(name) {
     const prefix = `${encodeURIComponent(name)}=`;
@@ -979,15 +992,20 @@
     const review = !technicalGatePassed;
     const published = String(record.publication_status || '').toLowerCase() === 'published';
     const changed = published && record.publication_pdf_sha256 && record.pdf_sha256 && record.publication_pdf_sha256 !== record.pdf_sha256;
+    const ownership = String(record.community_ownership || '');
+    const ownerReady = ownership !== 'legacy' && ownership !== 'unowned_new';
+    const baseEligible = hasPdf && manifest && terminal && authenticated;
     return {terminal, hasPdf, manifest, authenticated, review, reviewCompleted,
       technicalGatePassed, published, changed,
-      eligible: hasPdf && manifest && terminal && authenticated};
+      ownership, ownerReady, baseEligible,
+      eligible: baseEligible && ownerReady};
   }
   function publicationAction(record) {
     const eligibility = publicationEligibility(record);
     if (!eligibility.hasPdf) return '';
     if (!eligibility.authenticated) return '<button class="btn-ghost" data-action="publish" disabled title="Entre para publicar">Publicação indisponível</button>';
     if (!eligibility.manifest || !eligibility.terminal) return '<button class="btn-ghost" data-action="publish" disabled>Publicação indisponível</button>';
+    if (!eligibility.ownerReady) return '<button class="btn-ghost" data-action="publish" disabled>Vincule antes de publicar</button>';
     if (eligibility.published && !eligibility.changed) return '<button class="btn-ghost" data-action="publish">Publicado</button>';
     return `<button class="btn-ghost" data-action="publish">${eligibility.changed ? 'Atualizar publicação' : 'Publicar na comunidade'}</button>`;
   }
@@ -997,7 +1015,7 @@
     const hasIdentity = /^[0-9a-f]{32}$/.test(String(record.job_id || '')) &&
       Boolean(String(record.run_id || '').trim()) && /^[0-9a-f]{64}$/.test(String(record.pdf_sha256 || '').toLowerCase());
     return { ...eligibility,
-      eligible: ownerState === 'legacy' && hasIdentity && eligibility.eligible && !eligibility.published };
+      eligible: ownerState === 'legacy' && hasIdentity && eligibility.baseEligible && !eligibility.published };
   }
   function claimAction(record) {
     if (!claimEligibility(record).eligible) return '';
@@ -1097,6 +1115,7 @@
   }
   async function claimArtifact(record) {
     if (appState.claimBusy || !claimEligibility(record).eligible) return;
+    uiTrace('claim_started');
     appState.claimBusy = true;
     const submit = $('#claimSubmit');
     if (submit) { submit.disabled = true; submit.textContent = 'Vinculando…'; }
@@ -1110,10 +1129,12 @@
         }),
       });
       record.community_ownership = 'owned';
+      uiTrace('claim_completed', {status: 200});
       closeClaimModal();
       showToast('Capítulo vinculado à sua conta. Agora você pode publicar.', 'ok');
       renderHistory();
     } catch (errorValue) {
+      uiTrace('claim_failed', {code: errorValue.code || 'claim_failed', status: errorValue.status || 0});
       const error = $('#claimError');
       if (error) { error.textContent = errorValue.message || 'Não foi possível vincular este capítulo.'; error.hidden = false; }
       appState.claimBusy = false;
@@ -1160,6 +1181,8 @@
     if (!overlay || !summary || !form) return;
     appState.publicationRecord = record;
     appState.publicationBusy = false;
+    appState.publicationCorrelation = correlationId();
+    uiTrace('publication_modal_opened', {correlation_id: appState.publicationCorrelation});
     const draftKey = String(record.id || record.slug || '');
     const draft = appState.publicationDrafts[draftKey] || {};
     const review = eligibility.review;
@@ -1193,10 +1216,31 @@
     overlay.setAttribute('aria-hidden', 'false');
     $('#publicationTitle')?.focus();
   }
+  function publicationError(message, code = 'validation_failed') {
+    const error = $('#publicationError');
+    if (error) { error.textContent = message; error.hidden = false; }
+    uiTrace('publication_failed', {code, correlation_id: appState.publicationCorrelation});
+  }
+  function validatePublicationForm(record) {
+    const eligibility = publicationEligibility(record);
+    uiTrace('validation_started', {correlation_id: appState.publicationCorrelation});
+    if (!eligibility.authenticated) { publicationError('Sua sessão não está mais válida. Entre novamente.', 'authentication_required'); return false; }
+    if (!eligibility.ownerReady) { publicationError('Vincule este capítulo à sua conta antes de publicar.', 'artifact_has_no_owner'); return false; }
+    if (!String($('#publicationTitle')?.value || '').trim()) { publicationError('Informe um título.', 'title_required'); return false; }
+    if (!$('#publicationConfirm')?.checked) { publicationError('Confirme que revisou as pendências.', 'confirmation_required'); return false; }
+    uiTrace('validation_result', {valid: true, correlation_id: appState.publicationCorrelation});
+    return true;
+  }
   async function publishToCommunity(record) {
     if (appState.publicationBusy) return;
+    uiTrace('publish_click_received', {correlation_id: appState.publicationCorrelation});
     const eligibility = publicationEligibility(record);
-    if (!eligibility.eligible) return;
+    if (!validatePublicationForm(record) || !eligibility.eligible) {
+      if (eligibility.eligible === false && eligibility.ownerReady && eligibility.authenticated) {
+        publicationError('Publicação indisponível para este resultado.', 'publication_ineligible');
+      }
+      return;
+    }
     const trustedJobId = /^[0-9a-f]{32}$/.test(String(record.job_id || '')) ? String(record.job_id) : '';
     const guess = guessFromUrl(record.url || '');
     const payload = {
@@ -1211,11 +1255,19 @@
     };
     if (trustedJobId) payload.source_job_id = trustedJobId;
     appState.publicationBusy = true;
+    const correlation = appState.publicationCorrelation || correlationId();
+    uiTrace('publication_request_started', {correlation_id: correlation});
     const submit = $('#publicationSubmit');
     if (submit) { submit.disabled = true; submit.textContent = 'Publicando…'; }
     try {
-      await api('/api/community/publish', {method: 'POST', body: JSON.stringify(payload)});
+      const result = await api('/api/community/publish', {
+        method: 'POST',
+        headers: {'X-Tradutor-Correlation-ID': correlation},
+        body: JSON.stringify(payload),
+      });
+      uiTrace('publication_response_received', {status: 200, correlation_id: correlation});
       record.publication_status = 'published';
+      record.publication_id = result.post_id || result.publication_id || '';
       record.publication_tags = payload.tags;
       const key = String(record.id || record.slug || '');
       if (key) delete appState.publicationDrafts[key];
@@ -1223,11 +1275,16 @@
       showToast('Publicação enviada à fila. O worker fará o upload.', 'ok');
       renderHistory();
       await loadCommunityFeed();
+      uiTrace('publication_completed', {status: 200, correlation_id: correlation});
     } catch (errorValue) {
       const error = $('#publicationError');
       if (error) { error.textContent = errorValue.message || 'Não foi possível publicar.'; error.hidden = false; }
       appState.publicationBusy = false;
       if (submit) { submit.disabled = false; submit.textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar'; }
+    } finally {
+      appState.publicationBusy = false;
+      if (submit) { submit.disabled = false; submit.textContent = eligibility.published ? 'Atualizar publicaÃ§Ã£o' : 'Publicar'; }
+      uiTrace('loading_cleared', {correlation_id: correlation});
     }
   }
   $('#publicationCancel')?.addEventListener('click', closePublicationModal);
@@ -1237,8 +1294,10 @@
   });
   $('#publicationForm')?.addEventListener('submit', async event => {
     event.preventDefault();
-    if (!$('#publicationConfirm')?.checked) return;
-    if (appState.publicationRecord) await publishToCommunity(appState.publicationRecord);
+    uiTrace('publication_submit_received', {correlation_id: appState.publicationCorrelation});
+    if (!appState.publicationRecord) { publicationError('Nenhum capítulo selecionado.', 'missing_record'); return; }
+    if (!validatePublicationForm(appState.publicationRecord)) return;
+    await publishToCommunity(appState.publicationRecord);
   });
 
   async function loadCommunityFeed() {

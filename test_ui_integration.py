@@ -91,6 +91,29 @@ class UiIntegrationTests(unittest.TestCase):
             self.assertIn(marker, source + shell, marker)
         self.assertNotIn("window.prompt", source)
 
+    def test_publication_click_has_visible_validation_trace_and_finally(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        for marker in (
+            "publish_click_received",
+            "publication_request_started",
+            "publication_response_received",
+            "publication_completed",
+            "publication_failed",
+            "loading_cleared",
+            "validatePublicationForm",
+            "publicationError",
+            "X-Tradutor-Correlation-ID",
+        ):
+            self.assertIn(marker, source)
+        self.assertNotIn("if (!$('#publicationConfirm')?.checked) return;", source)
+
+    def test_publication_waits_for_owner_and_exposes_claim_state(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("artifact_has_no_owner", source)
+        self.assertIn("community_ownership", source)
+        self.assertIn("claim_completed", source)
+        self.assertIn("ownerReady", source)
+
     def test_publication_payload_has_no_local_or_secret_fields(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         publish = source[source.index("async function publishToCommunity"):source.index("async function loadCommunityFeed")]
