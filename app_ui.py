@@ -53,6 +53,29 @@ BRIDGE = UiBridge()
 COMMUNITY = CommunityApi(BRIDGE.store)
 AUTH = build_auth_provider()
 
+
+def _sync_public_profile(principal: RequestPrincipal) -> dict[str, Any]:
+    """Project the authenticated local profile into the community read model.
+
+    The principal is the only identity accepted here; browser payloads never select
+    the profile row.  Media keys are opaque local markers, not filesystem paths.
+    """
+    profile = BRIDGE.profile_for_user(principal.user_id)
+    return COMMUNITY.store.upsert_profile(principal.user_id, {
+        "display_name": profile.get("display_name") or "Usuário",
+        "avatar_object_key": "local:avatar" if BRIDGE.profile_media_path("avatar", user_id=principal.user_id) else "",
+        "banner_object_key": "local:banner" if BRIDGE.profile_media_path("banner", user_id=principal.user_id) else "",
+        "public_role": profile.get("title") or "",
+        "pronouns": profile.get("pronouns") or "",
+        "status": profile.get("status") or "online",
+        "status_message": profile.get("status_text") or "",
+        "bio": profile.get("bio") or "",
+        "accent_color": profile.get("avatar_color") or "#c5372c",
+    })
+
+
+COMMUNITY._profile_sync = _sync_public_profile
+
 app.add_middleware(CommunityNetworkBoundaryMiddleware, auth=AUTH)
 app.add_static_files("/static", STATIC_DIR)
 app.include_router(create_community_router(COMMUNITY, AUTH))
@@ -164,6 +187,7 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "available": True,
         }
         payload["profile"] = BRIDGE.profile_for_user(principal.user_id)
+        _sync_public_profile(principal)
     except Exception:
         # Bootstrap is read-only; an expired or malformed credential must not prevent
         # the local library from loading. Publication itself remains fail-closed in
@@ -409,7 +433,14 @@ def api_resume(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
 @app.post("/api/ui/profile")
 def api_profile(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     principal = _ui_principal(request, mutate=True)
-    return {"ok": True, "profile": BRIDGE.save_profile(payload, user_id=principal.user_id)}
+    try:
+        profile = BRIDGE.save_profile(payload, user_id=principal.user_id)
+        _sync_public_profile(principal)
+    except ValueError as exc:
+        if str(exc) == "display_name_taken":
+            raise HTTPException(status_code=409, detail={"code": "display_name_taken", "message": "Este nome de exibiÃ§Ã£o jÃ¡ estÃ¡ em uso."}) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "profile": profile}
 
 
 @app.post("/api/ui/profile/media/{kind}")
@@ -421,16 +452,18 @@ async def api_profile_media_upload(
 ) -> dict[str, Any]:
     principal = _ui_principal(request, mutate=True)
     content = await request.body()
+    profile = _api_call(
+        BRIDGE.save_profile_media,
+        kind,
+        filename=filename,
+        content_type=content_type,
+        content=content,
+        user_id=principal.user_id,
+    )
+    _sync_public_profile(principal)
     return {
         "ok": True,
-        "profile": _api_call(
-            BRIDGE.save_profile_media,
-            kind,
-            filename=filename,
-            content_type=content_type,
-            content=content,
-            user_id=principal.user_id,
-        ),
+        "profile": profile,
     }
 
 
@@ -446,7 +479,26 @@ def api_profile_media(request: Request, kind: str) -> FileResponse:
 @app.delete("/api/ui/profile/media/{kind}")
 def api_profile_media_remove(request: Request, kind: str) -> dict[str, Any]:
     principal = _ui_principal(request, mutate=True)
-    return {"ok": True, "profile": _api_call(BRIDGE.remove_profile_media, kind, user_id=principal.user_id)}
+    profile = _api_call(BRIDGE.remove_profile_media, kind, user_id=principal.user_id)
+    _sync_public_profile(principal)
+    return {"ok": True, "profile": profile}
+
+
+@app.get("/api/community/profiles/{user_id}/{kind}")
+def api_community_profile_media(user_id: str, kind: str, request: Request) -> FileResponse:
+    """Serve only an authenticated author's local avatar/banner media."""
+    _ui_principal(request)
+    if kind not in {"avatar", "banner"} or len(user_id) > 128:
+        raise HTTPException(status_code=404, detail="media_not_found")
+    public = COMMUNITY.store.profile_public(user_id)
+    if not public.get(f"{kind}_object_key"):
+        raise HTTPException(status_code=404, detail="media_not_found")
+    path = BRIDGE.profile_media_path(kind, user_id=user_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="media_not_found")
+    return FileResponse(path, media_type=BRIDGE.profile.get(f"{kind}_media_type") or None,
+                        headers={"Cache-Control": "private, no-store",
+                                 "X-Content-Type-Options": "nosniff"})
 
 
 @app.post("/api/ui/open")

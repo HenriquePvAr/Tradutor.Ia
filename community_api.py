@@ -81,13 +81,15 @@ def build_read_provider():
 class CommunityApi:
     def __init__(self, job_store, *, community_db_path: Path = COMMUNITY_DB_PATH,
                  output_root: Path = OUTPUT_ROOT,
-                 read_provider_factory: Callable[[], Any] | None = None):
+                 read_provider_factory: Callable[[], Any] | None = None,
+                 profile_sync: Callable[[RequestPrincipal], Any] | None = None):
         self.store = CommunityStore(community_db_path)
         self.service = CommunityService(
             self.store, job_store, output_root=Path(output_root),
             provider_name=storage_provider_name(), community_db_path=str(community_db_path),
             storage_config={k: v for k, v in _storage_config().items() if k != "storage_provider"})
         self._read_provider_factory = read_provider_factory or build_read_provider
+        self._profile_sync = profile_sync
         # The community DB and jobs DB cannot share one transaction.  The local API
         # serializes the short draft+enqueue boundary so duplicate clicks observe the
         # first fully linked job instead of a half-created cross-database attempt.
@@ -622,6 +624,13 @@ class CommunityApi:
         # The community feed is authenticated-only; it never lists posts to anonymous
         # callers even though every card is metadata-only.
         self._require_authenticated_principal(principal)
+        if self._profile_sync is not None:
+            # A stale local profile must not make an otherwise readable feed fail;
+            # profile editing surfaces report a conflict explicitly as 409.
+            try:
+                self._profile_sync(principal)
+            except ValueError:
+                pass
         with self._community_lock:
             cards = self.service.feed(
                 series_slug=series_slug,

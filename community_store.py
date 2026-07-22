@@ -16,9 +16,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_TAGS = 20
 MAX_TAG_LENGTH = 40
+_DISPLAY_NAME_PATTERN = re.compile(r"^[\w][\w .'-]{0,59}$", re.UNICODE)
+_RESERVED_DISPLAY_NAMES = frozenset({"admin", "administrator", "moderator", "support", "system", "root", "official"})
 _TAG_PATTERN = re.compile(r"^[\wÀ-ÿ][\wÀ-ÿ ._-]*$", re.UNICODE)
 
 
@@ -46,6 +48,16 @@ def normalize_tags(tags: Any) -> list[str]:
         if len(result) > MAX_TAGS:
             raise ValueError("too_many_tags")
     return result
+
+
+def normalize_display_name(value: Any) -> tuple[str, str]:
+    display_name = " ".join(str(value or "").split())
+    if not _DISPLAY_NAME_PATTERN.fullmatch(display_name):
+        raise ValueError("invalid_display_name")
+    normalized = display_name.casefold()
+    if normalized in _RESERVED_DISPLAY_NAMES:
+        raise ValueError("display_name_reserved")
+    return display_name, normalized
 
 
 class PostStatus:
@@ -110,6 +122,27 @@ class CommunityStore:
             self._conn.execute(
                 "ALTER TABLE community_posts ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'"
             )
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS community_profiles (
+                user_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                display_name_normalized TEXT NOT NULL,
+                avatar_object_key TEXT NOT NULL DEFAULT '',
+                banner_object_key TEXT NOT NULL DEFAULT '',
+                public_role TEXT NOT NULL DEFAULT '',
+                pronouns TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'online',
+                status_message TEXT NOT NULL DEFAULT '',
+                bio TEXT NOT NULL DEFAULT '',
+                accent_color TEXT NOT NULL DEFAULT '#c5372c',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_community_profiles_display_name
+                ON community_profiles(display_name_normalized);
+            """
+        )
         self._conn.execute(
             "INSERT INTO meta(key,value) VALUES('schema_version',?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),))
@@ -187,6 +220,70 @@ class CommunityStore:
 
     def _rows(self, cursor) -> list[dict[str, Any]]:
         return [self._row(r) for r in cursor.fetchall()]  # type: ignore[misc]
+
+    # ---- public profiles ----------------------------------------------------
+    def upsert_profile(self, user_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        user_id = str(user_id or "").strip()
+        if not user_id:
+            raise ValueError("authentication_required")
+        display_name, normalized = normalize_display_name(fields.get("display_name"))
+        now = time.time()
+        values = (
+            user_id, display_name, normalized,
+            str(fields.get("avatar_object_key") or ""),
+            str(fields.get("banner_object_key") or ""),
+            str(fields.get("public_role") or "")[:80],
+            str(fields.get("pronouns") or "")[:30],
+            str(fields.get("status") or "online")[:16],
+            str(fields.get("status_message") or "")[:120],
+            str(fields.get("bio") or "")[:500],
+            str(fields.get("accent_color") or "#c5372c")[:16],
+            now, now,
+        )
+        try:
+            self._conn.execute(
+                """INSERT INTO community_profiles(
+                    user_id,display_name,display_name_normalized,avatar_object_key,banner_object_key,
+                    public_role,pronouns,status,status_message,bio,accent_color,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    display_name_normalized=excluded.display_name_normalized,
+                    avatar_object_key=excluded.avatar_object_key,
+                    banner_object_key=excluded.banner_object_key,
+                    public_role=excluded.public_role,
+                    pronouns=excluded.pronouns,
+                    status=excluded.status,
+                    status_message=excluded.status_message,
+                    bio=excluded.bio,
+                    accent_color=excluded.accent_color,
+                    updated_at=excluded.updated_at""", values)
+        except sqlite3.IntegrityError as exc:
+            if "display_name" in str(exc).casefold():
+                raise ValueError("display_name_taken") from exc
+            raise
+        return self.profile_public(user_id)
+
+    def profile_public(self, user_id: str) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT user_id,display_name,avatar_object_key,banner_object_key,public_role,pronouns,status,status_message,bio,accent_color "
+            "FROM community_profiles WHERE user_id=?", (str(user_id),)).fetchone()
+        if row is None:
+            return {"user_id": str(user_id), "display_name": "Usuário", "avatar_object_key": "", "banner_object_key": "", "public_role": ""}
+        return self._row(row) or {}
+
+    def profile_public_for_users(self, user_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        ids = [str(value or "") for value in user_ids if str(value or "")]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._rows(self._conn.execute(
+            f"SELECT user_id,display_name,avatar_object_key,banner_object_key,public_role,pronouns,status,status_message,bio,accent_color "
+            f"FROM community_profiles WHERE user_id IN ({placeholders})", ids))
+        result = {str(row["user_id"]): row for row in rows}
+        for user_id in ids:
+            result.setdefault(user_id, {"user_id": user_id, "display_name": "Usuário", "avatar_object_key": "", "banner_object_key": "", "public_role": ""})
+        return result
 
     # ---- posts --------------------------------------------------------------
     def create_post(self, *, user_id: str, source_job_id: str = "", source_run_id: str = "",
@@ -283,19 +380,19 @@ class CommunityStore:
              require_verified_file: bool = False,
              limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         """Published posts for the feed. Reads only this database - never the provider."""
-        where = ["status=?"]
+        where = ["community_posts.status=?"]
         params: list[Any] = [PostStatus.PUBLISHED]
         visibilities = [Visibility.PUBLIC] + ([Visibility.UNLISTED] if include_unlisted else [])
-        where.append("visibility IN (%s)" % ",".join("?" for _ in visibilities))
+        where.append("community_posts.visibility IN (%s)" % ",".join("?" for _ in visibilities))
         params += visibilities
         if require_moderation:
-            where.append("moderation_status=?")
+            where.append("community_posts.moderation_status=?")
             params.append(Moderation.APPROVED)
         else:
             # Publication and moderation are separate lifecycles. The normal
             # authenticated feed includes posts awaiting review, but never
             # posts explicitly rejected or blocked by moderation.
-            where.append("moderation_status IN (?, ?)")
+            where.append("community_posts.moderation_status IN (?, ?)")
             params.extend((Moderation.APPROVED, Moderation.PENDING))
         if require_verified_file:
             where.append(
@@ -307,17 +404,20 @@ class CommunityStore:
             )
             params.append(FileStatus.VERIFIED)
         if series_slug:
-            where.append("series_slug=?")
+            where.append("community_posts.series_slug=?")
             params.append(series_slug)
         if user_id:
-            where.append("user_id=?")
+            where.append("community_posts.user_id=?")
             params.append(user_id)
         if query:
-            where.append("(title LIKE ? OR series_title LIKE ?)")
+            where.append("(community_posts.title LIKE ? OR community_posts.series_title LIKE ?)")
             params += [f"%{query}%", f"%{query}%"]
         params += [int(limit), int(offset)]
         cur = self._conn.execute(
-            f"SELECT * FROM community_posts WHERE {' AND '.join(where)} "
+            f"SELECT community_posts.*, cp.display_name AS author_display_name, "
+            "cp.avatar_object_key AS author_avatar_object_key, cp.public_role AS author_public_role "
+            "FROM community_posts LEFT JOIN community_profiles cp ON cp.user_id=community_posts.user_id "
+            f"WHERE {' AND '.join(where)} "
             "ORDER BY published_at DESC LIMIT ? OFFSET ?", params)
         return [self._with_decoded_tags(row) for row in self._rows(cur)]
 

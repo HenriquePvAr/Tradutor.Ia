@@ -137,7 +137,9 @@ class SupabaseSocialRepository:
 
     def update_my_profile(self, token, user_id, fields):
         allowed = {"username", "display_name", "bio", "theme_color",
-                   "show_favorites", "show_history", "allow_profile_comments"}
+                   "avatar_object_key", "banner_object_key", "public_role", "pronouns",
+                   "status", "status_message", "accent_color", "show_favorites",
+                   "show_history", "allow_profile_comments"}
         patch = _clean_patch(fields, allowed)
         if patch.get("username") is not None and "username" in patch:
             _require(bool(_USERNAME_RE.fullmatch(str(patch["username"]))), "invalid_username")
@@ -148,6 +150,13 @@ class SupabaseSocialRepository:
             patch["display_name"] = display_name
         if patch.get("bio") is not None:
             _require(len(str(patch["bio"])) <= 500, "invalid_bio")
+        for text_field, maximum in (("public_role", 80), ("pronouns", 30), ("status_message", 120)):
+            if text_field in patch:
+                _require(len(str(patch[text_field] or "")) <= maximum, f"invalid_{text_field}")
+        if "status" in patch:
+            _require(str(patch["status"]) in {"online", "away", "busy", "offline"}, "invalid_status")
+        if "accent_color" in patch:
+            _require(bool(re.fullmatch(r"#[0-9a-fA-F]{6}", str(patch["accent_color"]))), "invalid_accent_color")
         if patch.get("theme_color") is not None:
             _require(bool(re.fullmatch(r"#[0-9a-fA-F]{6}", str(patch["theme_color"]))), "invalid_theme_color")
         for boolean in ("show_favorites", "show_history", "allow_profile_comments"):

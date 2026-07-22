@@ -353,6 +353,7 @@ class CommunityService:
     @staticmethod
     def _card(post: dict[str, Any]) -> dict[str, Any]:
         # A feed card exposes only metadata; never the storage file id.
+        author_id = str(post.get("user_id") or "")
         return {
             "post_id": post["id"],
             "series_title": post["series_title"],
@@ -363,6 +364,12 @@ class CommunityService:
             "tags": list(post.get("tags") or []),
             "cover_reference": post["cover_reference"],
             "user_id": post["user_id"],
+            "author": {
+                "user_id": author_id,
+                "display_name": str(post.get("author_display_name") or "Usuário"),
+                "avatar_url": f"/api/community/profiles/{author_id}/avatar" if post.get("author_avatar_object_key") else "",
+                "public_role": str(post.get("author_public_role") or ""),
+            },
             "views": post["views"],
             "published_at": post["published_at"],
             "status": post["status"],
