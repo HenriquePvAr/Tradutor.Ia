@@ -114,6 +114,29 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn("claim_completed", source)
         self.assertIn("ownerReady", source)
 
+    def test_community_feed_includes_unreviewed_published_posts(self):
+        source = (ROOT / "community_service.py").read_text(encoding="utf-8")
+        store = (ROOT / "community_store.py").read_text(encoding="utf-8")
+        authorization = (ROOT / "community_authorization.py").read_text(encoding="utf-8")
+        self.assertIn("require_moderation=False", source)
+        self.assertIn("moderation_status IN (?, ?)", store)
+        self.assertIn("Moderation.PENDING", authorization)
+
+    def test_community_pdf_uses_authenticated_blob_flow(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        for marker in (
+            "openAuthenticatedCommunityPdf",
+            "rawResponse",
+            "response.blob()",
+            "URL.createObjectURL",
+            "URL.revokeObjectURL",
+            "window.open('', '_blank', 'noopener')",
+            "Abrindo...",
+            "authorization_header_present",
+        ):
+            self.assertIn(marker, source, marker)
+        self.assertNotIn('target="_blank"', source[source.index("function renderCommunityCard"):source.index("function loadRecordIntoForm")])
+
     def test_publication_payload_has_no_local_or_secret_fields(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         publish = source[source.index("async function publishToCommunity"):source.index("async function loadCommunityFeed")]

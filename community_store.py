@@ -291,6 +291,12 @@ class CommunityStore:
         if require_moderation:
             where.append("moderation_status=?")
             params.append(Moderation.APPROVED)
+        else:
+            # Publication and moderation are separate lifecycles. The normal
+            # authenticated feed includes posts awaiting review, but never
+            # posts explicitly rejected or blocked by moderation.
+            where.append("moderation_status IN (?, ?)")
+            params.extend((Moderation.APPROVED, Moderation.PENDING))
         if require_verified_file:
             where.append(
                 "EXISTS (SELECT 1 FROM community_files f WHERE f.id=(SELECT latest.id "

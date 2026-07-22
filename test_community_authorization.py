@@ -854,7 +854,7 @@ def test_invalid_or_multiple_community_range_is_416_before_provider(harness, ran
     assert harness.spy.builds == 0
 
 
-def test_feed_only_contains_public_published_approved_verified(harness):
+def test_feed_contains_public_published_pending_or_approved_verified(harness):
     harness.seed_post(owner="owner-a", visibility=Visibility.PUBLIC, verified=False,
                       title="Unverified")
     harness.seed_post(owner="owner-a", visibility=Visibility.PUBLIC,
@@ -865,8 +865,8 @@ def test_feed_only_contains_public_published_approved_verified(harness):
                       status=PostStatus.FAILED, title="Failed")
     harness.seed_post(owner="owner-a", visibility=Visibility.PUBLIC,
                       status=PostStatus.DELETED, title="Deleted")
-    harness.seed_post(owner="owner-a", visibility=Visibility.PUBLIC,
-                      moderation=Moderation.PENDING, title="Pending moderation")
+    pending_id = harness.seed_post(owner="owner-a", visibility=Visibility.PUBLIC,
+                                   moderation=Moderation.PENDING, title="Pending moderation")
     harness.seed_post(owner="owner-a", visibility=Visibility.UNLISTED,
                       title="Unlisted")
     superseded = harness.seed_post(
@@ -882,7 +882,7 @@ def test_feed_only_contains_public_published_approved_verified(harness):
     response = harness.client.get(
         "/api/community/posts", headers=harness.headers(harness.other))
     ids = {post["post_id"] for post in response.json()["posts"]}
-    assert ids == {harness.public_id}
+    assert ids == {harness.public_id, pending_id}
     assert harness.private_id not in ids
     assert harness.spy.builds == 0
 
@@ -895,6 +895,20 @@ def test_feed_requires_authentication(harness):
     assert member.status_code == 200
     assert harness.public_id in {p["post_id"] for p in member.json()["posts"]}
     assert harness.private_id not in {p["post_id"] for p in member.json()["posts"]}
+
+
+def test_pending_public_post_is_readable_by_any_authenticated_member(harness):
+    pending_id = harness.seed_post(
+        owner="owner-a", visibility=Visibility.PUBLIC,
+        moderation=Moderation.PENDING, title="Pending community post")
+    member = harness.client.get(
+        "/api/community/posts", headers=harness.headers(harness.other))
+    assert pending_id in {p["post_id"] for p in member.json()["posts"]}
+    pdf = harness.client.get(
+        f"/api/community/posts/{pending_id}/pdf",
+        headers=harness.headers(harness.other))
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"].startswith("application/pdf")
 
 
 def test_deleted_latest_file_never_falls_back_to_older_verified_version(harness):

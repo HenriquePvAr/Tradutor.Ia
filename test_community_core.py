@@ -111,10 +111,11 @@ class CommunityStoreTests(unittest.TestCase):
         self.store.set_post_status(pid, PostStatus.PUBLISHED, moderation_status=Moderation.APPROVED)
         self.assertEqual(len(self.store.feed()), 1)
 
-    def test_feed_hides_unapproved(self):
+    def test_moderation_pending_is_visible_only_in_authenticated_feed_mode(self):
         pid = self.store.create_post(user_id="local", series_slug="x", episode_number="1")
         self.store.set_post_status(pid, PostStatus.PUBLISHED)  # moderation still pending
         self.assertEqual(self.store.feed(require_moderation=True), [])
+        self.assertEqual([row["id"] for row in self.store.feed(require_moderation=False)], [pid])
 
     def test_migration_idempotent(self):
         pid = self.store.create_post(user_id="local")

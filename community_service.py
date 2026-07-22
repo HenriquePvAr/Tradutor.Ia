@@ -347,7 +347,7 @@ class CommunityService:
 
     # ---- feed + read --------------------------------------------------------
     def feed(self, **kwargs: Any) -> list[dict[str, Any]]:
-        posts = self.store.feed(require_verified_file=True, **kwargs)
+        posts = self.store.feed(require_moderation=False, require_verified_file=True, **kwargs)
         return [self._card(post) for post in posts]
 
     @staticmethod

@@ -42,6 +42,7 @@
     claimRecord: null,
     claimBusy: false,
     publicationDrafts: Object.create(null),
+    communityObjectUrls: new Set(),
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed']);
@@ -107,6 +108,7 @@
     const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
     const init = {...options, method, headers, credentials: 'same-origin', cache: 'no-store'};
     delete init.timeoutMs;
+    delete init.rawResponse;
     if (controller) init.signal = controller.signal;
     let response;
     try {
@@ -121,9 +123,9 @@
     } finally {
       if (timer) window.clearTimeout(timer);
     }
-    let payload = {};
-    try { payload = await response.json(); } catch (_) { /* empty response */ }
     if (!response.ok) {
+      let payload = {};
+      try { payload = await response.json(); } catch (_) { /* empty response */ }
       const detail = payload.detail;
       const error = new Error(
         (detail && typeof detail === 'object' ? detail.message : detail)
@@ -152,6 +154,9 @@
       authorization_header_present: Boolean(headers.Authorization),
       authorization_scheme: headers.Authorization ? 'Bearer' : '',
     });
+    if (options.rawResponse === true) return response;
+    let payload = {};
+    try { payload = await response.json(); } catch (_) { /* empty response */ }
     return payload;
   }
 
@@ -1091,7 +1096,9 @@
     }).join('');
   }
   $('#histSearch')?.addEventListener('input', renderHistory);
-  window.addEventListener('tradutor-auth-changed', () => {
+  window.addEventListener('tradutor-auth-changed', event => {
+    const state = String(event?.detail?.state || window.__tradutorAuthState || '');
+    if (state !== 'authenticated') clearCommunityObjectUrls();
     renderHistory();
     // The initial bootstrap may race the SDK/backend session check. Refresh the
     // authoritative local records once authentication settles.
@@ -1331,6 +1338,69 @@
     await publishToCommunity(appState.publicationRecord);
   });
 
+  function clearCommunityObjectUrls() {
+    for (const objectUrl of appState.communityObjectUrls) {
+      try { URL.revokeObjectURL(objectUrl); } catch (_) { /* best effort */ }
+    }
+    appState.communityObjectUrls.clear();
+  }
+
+  async function openAuthenticatedCommunityPdf(postId, trigger) {
+    const viewer = window.open('', '_blank', 'noopener');
+    if (!viewer) {
+      showToast('O navegador bloqueou a nova aba do PDF.', 'warn');
+      return;
+    }
+    const originalLabel = trigger?.textContent || 'Abrir PDF';
+    if (trigger) { trigger.disabled = true; trigger.textContent = 'Abrindo...'; }
+    const correlation = correlationId();
+    uiTrace('community_pdf_open_started', {correlation_id: correlation});
+    try {
+      const response = await api(`/api/community/posts/${encodeURIComponent(postId)}/pdf`, {
+        rawResponse: true,
+        timeoutMs: 30000,
+      });
+      const contentType = String(response.headers.get('Content-Type') || '').toLowerCase();
+      if (!contentType.includes('application/pdf')) {
+        const error = new Error('O arquivo retornado não é um PDF.');
+        error.code = 'invalid_pdf_content_type';
+        throw error;
+      }
+      const blob = await response.blob();
+      if (!blob.size) {
+        const error = new Error('O PDF retornado está vazio.');
+        error.code = 'empty_pdf';
+        throw error;
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      appState.communityObjectUrls.add(objectUrl);
+      viewer.location.href = objectUrl;
+      // Keep the object URL alive while the viewer is open, and revoke it later.
+      window.setTimeout(() => {
+        try { URL.revokeObjectURL(objectUrl); } catch (_) { /* best effort */ }
+        appState.communityObjectUrls.delete(objectUrl);
+      }, 300000);
+      uiTrace('community_pdf_opened', {status: 200, correlation_id: correlation});
+    } catch (errorValue) {
+      try { viewer.close(); } catch (_) { /* best effort */ }
+      const status = Number(errorValue?.status || 0);
+      const message = status === 401
+        ? 'Sua sessão expirou. Entre novamente.'
+        : status === 403
+          ? 'Você não possui acesso a este arquivo.'
+          : status === 404
+            ? 'O PDF desta publicação não foi encontrado.'
+            : errorValue?.code === 'connection_error'
+              ? 'Não foi possível abrir o PDF.'
+              : 'Não foi possível abrir o PDF.';
+      showToast(message, 'warn');
+      uiTrace('community_pdf_open_failed', {status, code: errorValue?.code || 'pdf_open_failed', correlation_id: correlation});
+    } finally {
+      if (trigger) { trigger.disabled = false; trigger.textContent = originalLabel; }
+      uiTrace('community_pdf_loading_cleared', {correlation_id: correlation});
+    }
+  }
+
   async function loadCommunityFeed() {
     const container = $('#communityFeed');
     if (!container) return;
@@ -1347,11 +1417,15 @@
   function renderCommunityCard(post) {
     const title = post.title || post.series_title || 'Capítulo';
     const sub = `${escapeHtml(post.series_title || '')} · ep ${escapeHtml(String(post.episode_number || ''))} · ${Number(post.views || 0)} leituras`;
-    const pdfUrl = `/api/community/posts/${encodeURIComponent(post.post_id)}/pdf`;
     return `<div class="hist-item"><div class="hist-cover" style="background:#b8557a">${escapeHtml(title.slice(0,1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}</div></div>
-      <div class="hm-actions"><a class="btn-ghost" href="${pdfUrl}" target="_blank" rel="noopener">Abrir PDF</a></div></div>`;
+      <div class="hm-actions"><button class="btn-ghost" type="button" data-community-pdf-id="${escapeAttr(post.post_id)}">Abrir PDF</button></div></div>`;
   }
+  $('#communityFeed')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-community-pdf-id]');
+    if (!button || button.disabled) return;
+    void openAuthenticatedCommunityPdf(button.dataset.communityPdfId || '', button);
+  });
   function loadRecordIntoForm(record) {
     const local = record.source_type === 'local_folder';
     setSourceType(local ? 'local_folder' : 'url');

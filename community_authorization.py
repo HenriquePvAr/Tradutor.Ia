@@ -50,7 +50,7 @@ def can_read_post(
     visibility = post.get("visibility")
     moderation = post.get("moderation_status")
     if visibility == Visibility.PUBLIC:
-        return moderation == Moderation.APPROVED
+        return moderation in {Moderation.APPROVED, Moderation.PENDING}
     if moderation not in {Moderation.APPROVED, Moderation.PENDING}:
         return False
     if visibility not in {Visibility.PRIVATE, Visibility.UNLISTED}:
