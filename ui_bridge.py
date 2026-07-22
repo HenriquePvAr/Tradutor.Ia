@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -1989,6 +1990,55 @@ class UiBridge:
             import webbrowser
 
             webbrowser.open(path.as_uri())
+
+    def delete_local_artifact(
+        self,
+        record_id: str,
+        *,
+        delete_files: bool = False,
+        confirm: str = "",
+    ) -> dict[str, Any]:
+        """Remove one local history entry and, for safe fixtures, its output folder.
+
+        The client never supplies a filesystem path. The server resolves the selected
+        record from the authoritative history snapshot, confines it to ``output/`` and
+        refuses to delete files for records tied to an existing community publication.
+        """
+        record_id = str(record_id or "")
+        record = next(
+            (item for item in self._history_payload() if str(item.get("id") or "") == record_id),
+            None,
+        )
+        if not record:
+            raise ValueError("local_artifact_not_found")
+        if str(confirm or "") != "EXCLUIR":
+            raise ValueError("confirmation_required")
+        output_root = OUTPUT_ROOT.resolve()
+        folder = Path(str(record.get("output_folder") or "")).resolve()
+        if folder == output_root or output_root not in folder.parents:
+            raise ValueError("local_artifact_path_invalid")
+        if str(record.get("publication_status") or "").lower() == "published" and delete_files:
+            raise ValueError("local_artifact_published")
+        remaining = [item for item in self.history_store.load() if item.get("id") != record_id]
+        self.history_store._write(remaining)
+        if not delete_files:
+            self.history_store.hide_record(record)
+        deleted_files = False
+        if delete_files:
+            if not folder.exists():
+                raise ValueError("local_artifact_not_found")
+            try:
+                shutil.rmtree(folder)
+                deleted_files = True
+            except OSError as exc:
+                raise ValueError("local_artifact_delete_failed") from exc
+        self._refresh_history()
+        return {
+            "code": "local_artifact_deleted",
+            "record_id": record_id,
+            "deleted_files": deleted_files,
+            "publication_preserved": bool(record.get("publication_id")),
+        }
 
     async def shutdown(self) -> None:
         # Closing the UI must never cancel a running job: the worker owns it and keeps

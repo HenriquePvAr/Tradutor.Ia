@@ -43,6 +43,10 @@
     claimBusy: false,
     publicationDrafts: Object.create(null),
     communityObjectUrls: new Set(),
+    communityTab: 'explore',
+    communityCache: {explore: [], favorites: [], reading: [], mine: [], notifications: []},
+    localDeleteRecord: null,
+    localDeleteBusy: false,
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed']);
@@ -1062,10 +1066,15 @@
     return `${whole}s`;
   }
   function actionButton(label, action, path = '') {
-    if (!path && action !== 'reprocess') return '';
+    if (!path && !['reprocess','delete'].includes(action)) return '';
     const icons = {
-      open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M5 4h10l4 4v12H5z"/><path d="M14 4v5h5M8 15h8M8 18h6"/></svg>',
+      pdf: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4"/><path d="M8 16h1.2a1.2 1.2 0 0 0 0-2.4H8V18m5-4.4V18h1.1a2.2 2.2 0 0 0 0-4.4zm5 0h3M18 16h2"/></svg>',
+      folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h5"/></svg>',
+      report: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M6 3h12v18H6z"/><path d="M9 9h6M9 13h3M9 17h6"/><path d="M15 14v3M12 15v2"/></svg>',
+      compare: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 5h7v14H4zM13 5h7v14h-7z"/><path d="m9 9-2 2 2 2M15 15l2-2-2-2"/></svg>',
+      context: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 5h16v10H8l-4 4z"/><path d="M8 9h8M8 12h5"/></svg>',
       reprocess: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8"/><path d="M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16"/><path d="M4 20v-4h4"/></svg>',
+      delete: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M7 7l1 14h8l1-14"/><path d="M10 11v6M14 11v6"/></svg>',
     };
     const icon = icons[action] || '';
     return `<button class="btn-ghost icon-action" data-action="${action}" data-path="${encodeURIComponent(path || '')}" aria-label="${escapeAttr(label)}" title="${escapeAttr(label)}">${icon}<span class="sr-only">${escapeHtml(label)}</span></button>`;
@@ -1125,7 +1134,7 @@
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
-      <div class="hm-actions">${actionButton('Abrir PDF', 'open', record.pdf_path)}${actionButton('Pasta', 'open', record.output_folder)}${actionButton('Relatório', 'open', record.quality_report_path)}${actionButton('Compare', 'open', record.compare_sheet_path)}${actionButton('Contexto', 'open', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${claimAction(record)}${publicationAction(record)}</div>
+      <div class="hm-actions">${actionButton('Abrir PDF', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
     </div>`;
   }
   function renderHistory() {
@@ -1197,13 +1206,16 @@
     if (!record) return;
     if (button.dataset.action === 'reprocess') { loadRecordIntoForm(record); return; }
     if (button.dataset.action === 'claim') { openClaimModal(record); return; }
+    if (button.dataset.action === 'delete') { openLocalDeleteModal(record); return; }
     if (button.dataset.action === 'open-publication') {
       const postId = button.dataset.publicationId || '';
       if (postId) void openAuthenticatedCommunityPdf(postId, button);
       return;
     }
     if (button.dataset.action === 'publish') { openPublicationModal(record); return; }
-    await openArtifact(decodeURIComponent(button.dataset.path || ''));
+    if (['pdf','folder','report','compare','context'].includes(button.dataset.action || '')) {
+      await openArtifact(decodeURIComponent(button.dataset.path || ''));
+    }
   });
   $('#histList')?.addEventListener('keydown', event => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -1211,6 +1223,77 @@
     if (!folder) return;
     event.preventDefault();
     toggleHistoryFolder(folder);
+  });
+
+  function closeLocalDeleteModal() {
+    const overlay = $('#localDeleteModalOverlay');
+    if (overlay) { overlay.classList.remove('show'); overlay.setAttribute('aria-hidden', 'true'); }
+    appState.localDeleteRecord = null;
+    appState.localDeleteBusy = false;
+  }
+  function openLocalDeleteModal(record) {
+    const overlay = $('#localDeleteModalOverlay');
+    if (!overlay) return;
+    appState.localDeleteRecord = record;
+    appState.localDeleteBusy = false;
+    const published = String(record.publication_status || '').toLowerCase() === 'published';
+    $('#localDeleteSummary').innerHTML = [
+      ['Obra', record.series_name || record.chapter_name || '—'],
+      ['Capítulo', record.chapter_name || record.slug || '—'],
+      ['Páginas', Number(record.pages_processed || 0)],
+      ['Pasta', record.output_folder ? String(record.output_folder).replace(/^.*\\output\\?/i, 'output\\') : '—'],
+      ['Publicação', published ? 'existe e será preservada' : 'nenhuma vinculada'],
+    ].map(([label, value]) => `<div class="pub-meta"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('');
+    $('#localDeleteNotice').textContent = published
+      ? 'Este capítulo já possui publicação na Comunidade. A exclusão local não removerá a publicação, e os arquivos usados por ela não serão apagados por este fluxo.'
+      : 'Esta ação remove o item selecionado do histórico. Marque a opção de arquivos apenas para apagar a pasta local deste capítulo.';
+    $('#localDeleteFiles').checked = false;
+    $('#localDeleteFiles').disabled = published;
+    $('#localDeleteConfirm').value = '';
+    $('#localDeleteError').hidden = true;
+    $('#localDeleteSubmit').disabled = false;
+    $('#localDeleteSubmit').textContent = 'Excluir localmente';
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+    $('#localDeleteConfirm')?.focus();
+  }
+  async function deleteLocalArtifact() {
+    if (appState.localDeleteBusy || !appState.localDeleteRecord) return;
+    const record = appState.localDeleteRecord;
+    const submit = $('#localDeleteSubmit');
+    const error = $('#localDeleteError');
+    if (String($('#localDeleteConfirm')?.value || '') !== 'EXCLUIR') {
+      if (error) { error.textContent = 'Digite EXCLUIR para confirmar.'; error.hidden = false; }
+      return;
+    }
+    appState.localDeleteBusy = true;
+    if (submit) { submit.disabled = true; submit.textContent = 'Excluindo...'; }
+    try {
+      const result = await api('/api/ui/history/delete', {
+        method: 'POST',
+        body: JSON.stringify({
+          record_id: record.id,
+          delete_files: $('#localDeleteFiles')?.checked === true,
+          confirm: 'EXCLUIR',
+        }),
+      });
+      closeLocalDeleteModal();
+      showToast(result.deleted_files ? 'Capítulo local e arquivos apagados.' : 'Capítulo removido do histórico local.', 'ok');
+      await refreshBootstrap();
+    } catch (errorValue) {
+      appState.localDeleteBusy = false;
+      if (submit) { submit.disabled = false; submit.textContent = 'Excluir localmente'; }
+      if (error) { error.textContent = humanCommunityError(errorValue, 'Não foi possível excluir este capítulo local.'); error.hidden = false; }
+    }
+  }
+  $('#localDeleteCancel')?.addEventListener('click', closeLocalDeleteModal);
+  $('#localDeleteModalClose')?.addEventListener('click', closeLocalDeleteModal);
+  $('#localDeleteModalOverlay')?.addEventListener('click', event => {
+    if (event.target === $('#localDeleteModalOverlay')) closeLocalDeleteModal();
+  });
+  $('#localDeleteForm')?.addEventListener('submit', event => {
+    event.preventDefault();
+    void deleteLocalArtifact();
   });
 
   /* ---------- authenticated legacy ownership ---------- */
@@ -1485,6 +1568,13 @@
       const objectUrl = URL.createObjectURL(blob);
       appState.communityObjectUrls.add(objectUrl);
       viewer.location.href = objectUrl;
+      try {
+        await api(`/api/community/posts/${encodeURIComponent(postId)}/reading-progress`, {
+          method: 'PUT',
+          body: JSON.stringify({current_page: 1, total_pages: 0, progress_percent: 1}),
+          timeoutMs: 8000,
+        });
+      } catch (_) { /* native PDF viewers do not expose a current page; opening is enough progress evidence */ }
       // Keep the object URL alive while the viewer is open, and revoke it later.
       window.setTimeout(() => {
         try { URL.revokeObjectURL(objectUrl); } catch (_) { /* best effort */ }
@@ -1511,20 +1601,77 @@
     }
   }
 
-  async function loadCommunityFeed() {
-    const container = $('#communityFeed');
-    if (!container) return;
+  const communityPanels = {
+    explore: '#communityFeed',
+    favorites: '#communityFavorites',
+    reading: '#communityReading',
+    mine: '#communityMine',
+    notifications: '#communityNotifications',
+  };
+  function communitySkeleton(container) {
     container.innerHTML = '<div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div><div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>';
+  }
+  function setCommunityTab(tab) {
+    appState.communityTab = communityPanels[tab] ? tab : 'explore';
+    $$('.community-tab').forEach(button => {
+      const active = button.dataset.communityTab === appState.communityTab;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    $$('.community-tab-panel').forEach(panel => {
+      panel.hidden = panel.dataset.communityPanel !== appState.communityTab;
+    });
+    void loadCommunityFeed();
+  }
+  function updateCommunityCounters(tab, count) {
+    const map = {
+      explore: '#communityExploreCount',
+      favorites: '#communityFavoritesCount',
+      reading: '#communityReadingCount',
+      mine: '#communityMineCount',
+    };
+    if (map[tab] && $(map[tab])) $(map[tab]).textContent = String(count);
+  }
+  async function loadCommunityFeed() {
+    const tab = appState.communityTab || 'explore';
+    const container = $(communityPanels[tab] || '#communityFeed');
+    if (!container) return;
+    communitySkeleton(container);
     try {
-      const data = await api('/api/community/posts');
-      if (!data || !Array.isArray(data.posts)) {
+      const endpoint = {
+        explore: '/api/community/posts',
+        favorites: '/api/community/favorites',
+        reading: '/api/community/reading-progress',
+        mine: '/api/community/my-posts',
+        notifications: '/api/community/notifications',
+      }[tab];
+      const data = await api(endpoint);
+      if (!data || (!Array.isArray(data.posts) && !Array.isArray(data.notifications))) {
         const schemaError = new Error('community_schema_invalid');
         schemaError.code = 'community_schema_invalid';
         throw schemaError;
       }
-      const posts = data.posts;
-      if (!posts.length) { container.innerHTML = '<div class="empty-real-state">nenhuma publicação na comunidade ainda</div>'; return; }
-      container.innerHTML = posts.map(renderCommunityCard).join('');
+      if (tab === 'notifications') {
+        const notifications = data.notifications || [];
+        appState.communityCache.notifications = notifications;
+        $('#communityNotificationsCount').textContent = String(data.unread || notifications.length || 0);
+        container.innerHTML = notifications.length ? notifications.map(renderNotificationCard).join('') : '<div class="empty-real-state">você não possui notificações.</div>';
+        return;
+      }
+      const posts = data.posts || [];
+      appState.communityCache[tab] = posts;
+      updateCommunityCounters(tab, posts.length);
+      if (!posts.length) {
+        const empty = {
+          explore: 'nenhuma publicação na comunidade ainda',
+          favorites: 'Você ainda não adicionou nenhuma obra aos favoritos.',
+          reading: 'Nenhuma leitura em andamento.',
+          mine: 'Você ainda não publicou nenhuma obra.',
+        }[tab] || 'nada para mostrar aqui.';
+        container.innerHTML = `<div class="empty-real-state">${escapeHtml(empty)}</div>`;
+        return;
+      }
+      container.innerHTML = posts.map(post => renderCommunityCard(post, {tab})).join('');
       hydrateCommunityAuthorMedia(container);
     } catch (error) {
       const message = error?.code === 'community_schema_invalid'
@@ -1535,8 +1682,13 @@
   }
 
   $('#communityRefreshBtn')?.addEventListener('click', loadCommunityFeed);
+  $('.community-tabs')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-community-tab]');
+    if (!button) return;
+    setCommunityTab(button.dataset.communityTab || 'explore');
+  });
 
-  function renderCommunityCard(post) {
+  function renderCommunityCard(post, options = {}) {
     const title = post.title || post.series_title || 'Capítulo';
     const sub = `${escapeHtml(post.series_title || '')} · ep ${escapeHtml(String(post.episode_number || ''))} · ${Number(post.views || 0)} leituras`;
     const author = post.author || {};
@@ -1546,21 +1698,144 @@
     const avatarAttrs = author.avatar_url ? ` data-community-author-avatar-url="${escapeAttr(author.avatar_url)}"` : '';
     const pages = Number(post.page_count || post.pages || 0);
     const quality = post.quality || post.quality_status || post.review_status || '';
+    const postId = escapeAttr(post.post_id || post.publication_id || '');
+    const favoriteLabel = post.favorited ? 'Remover dos favoritos' : 'Favoritar';
+    const reading = post.reading || {};
+    const progress = reading.total_pages ? ` · página ${Number(reading.current_page || 0)} de ${Number(reading.total_pages || 0)} · ${Number(reading.progress_percent || 0).toFixed(0)}%` : '';
     const tags = Array.isArray(post.tags) && post.tags.length
       ? `<div class="community-card-tags">${post.tags.slice(0, 6).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}</div>`
       : '';
-    return `<article class="hist-item community-publication-card" data-publication-id="${escapeAttr(post.post_id || post.publication_id || '')}" tabindex="0">
+    const ownerActions = options.tab === 'mine'
+      ? `<button class="btn-ghost danger" type="button" data-community-delete-id="${postId}" aria-label="Excluir publicação própria" title="Excluir publicação">Excluir</button>`
+      : '';
+    return `<article class="hist-item community-publication-card" data-publication-id="${postId}" tabindex="0">
       <div class="hist-cover community-publication-cover" style="background:#b8557a">${escapeHtml(title.slice(0,1).toUpperCase())}</div>
-      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}${pages ? ` · ${pages} páginas` : ''}</div><div class="hm-sub community-author"><span class="community-author-avatar community-author-letter"${avatarAttrs}>${initial}</span><span>${authorName}${authorRole}</span></div>${quality ? `<div class="community-quality-chip">${escapeHtml(String(quality))}</div>` : ''}${tags}</div>
-      <div class="hm-actions"><button class="btn-ghost" type="button" data-community-pdf-id="${escapeAttr(post.post_id)}" aria-label="Abrir PDF da publicação" title="Abrir PDF">Abrir PDF</button></div></article>`;
+      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}${pages ? ` · ${pages} páginas` : ''}${progress}</div><div class="hm-sub community-author"><span class="community-author-avatar community-author-letter"${avatarAttrs}>${initial}</span><span>${authorName}${authorRole}</span></div>${quality ? `<div class="community-quality-chip">${escapeHtml(String(quality))}</div>` : ''}${tags}<div class="community-card-stats">${Number(post.favorite_count || 0)} favoritos · ${Number(post.comment_count || 0)} comentários</div><div class="community-comments-panel" data-comments-for="${postId}" hidden></div></div>
+      <div class="hm-actions"><button class="btn-ghost" type="button" data-community-favorite-id="${postId}" aria-pressed="${post.favorited ? 'true' : 'false'}" aria-label="${escapeAttr(favoriteLabel)}" title="${escapeAttr(favoriteLabel)}">${escapeHtml(favoriteLabel)}</button><button class="btn-ghost" type="button" data-community-comments-id="${postId}" aria-label="Abrir comentários" title="Comentários">Comentários</button><button class="btn-ghost" type="button" data-community-pdf-id="${postId}" aria-label="Abrir PDF da publicação" title="Abrir PDF">Abrir PDF</button>${ownerActions}</div></article>`;
   }
-  $('#communityFeed')?.addEventListener('click', event => {
+  function renderNotificationCard(item) {
+    const title = item.type === 'comment_created' ? 'Novo comentário' : 'Notificação';
+    const read = item.read_at ? 'lida' : 'não lida';
+    return `<article class="hist-item community-publication-card" data-notification-id="${escapeAttr(item.notification_id || '')}">
+      <div class="hist-cover community-publication-cover" style="background:#2f7a6b">N</div>
+      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(read)}</div></div>
+      <div class="hm-actions">${item.read_at ? '' : `<button class="btn-ghost" type="button" data-notification-read-id="${escapeAttr(item.notification_id || '')}">Marcar lida</button>`}</div>
+    </article>`;
+  }
+  $('#view-community')?.addEventListener('click', event => {
     const retry = event.target.closest('[data-action="retry-community"]');
     if (retry) { void loadCommunityFeed(); return; }
+    const favorite = event.target.closest('[data-community-favorite-id]');
+    if (favorite && !favorite.disabled) { void toggleCommunityFavorite(favorite.dataset.communityFavoriteId || '', favorite); return; }
+    const comments = event.target.closest('[data-community-comments-id]');
+    if (comments) { void toggleCommunityComments(comments.dataset.communityCommentsId || ''); return; }
+    const deleteButton = event.target.closest('[data-community-delete-id]');
+    if (deleteButton) { void deleteOwnPublication(deleteButton.dataset.communityDeleteId || '', deleteButton); return; }
+    const readButton = event.target.closest('[data-notification-read-id]');
+    if (readButton) { void markNotificationRead(readButton.dataset.notificationReadId || '', readButton); return; }
     const button = event.target.closest('[data-community-pdf-id]');
     if (!button || button.disabled) return;
     void openAuthenticatedCommunityPdf(button.dataset.communityPdfId || '', button);
   });
+  $('#view-community')?.addEventListener('submit', event => {
+    const form = event.target.closest('[data-comment-form]');
+    if (!form) return;
+    event.preventDefault();
+    void submitCommunityComment(form.dataset.commentForm || '', form);
+  });
+  async function toggleCommunityFavorite(postId, button) {
+    if (!postId) return;
+    const pressed = button.getAttribute('aria-pressed') === 'true';
+    button.disabled = true;
+    try {
+      await api(`/api/community/posts/${encodeURIComponent(postId)}/favorite`, {method: pressed ? 'DELETE' : 'PUT'});
+      showToast(pressed ? 'Removido dos favoritos.' : 'Adicionado aos favoritos.', 'ok');
+      await loadCommunityFeed();
+    } catch (errorValue) {
+      showToast(humanCommunityError(errorValue, 'Não foi possível atualizar favorito.'), 'error');
+      button.disabled = false;
+    }
+  }
+  async function toggleCommunityComments(postId) {
+    const panel = document.querySelector(`[data-comments-for="${CSS.escape(postId)}"]`);
+    if (!panel) return;
+    if (!panel.hidden) { panel.hidden = true; return; }
+    panel.hidden = false;
+    panel.innerHTML = '<div class="community-loading">carregando comentários...</div>';
+    try {
+      const data = await api(`/api/community/posts/${encodeURIComponent(postId)}/comments`);
+      const comments = Array.isArray(data.comments) ? data.comments : [];
+      panel.innerHTML = `${comments.length ? comments.map(renderCommunityComment).join('') : '<div class="community-empty">nenhum comentário ainda.</div>'}
+        <form class="community-comment-form" data-comment-form="${escapeAttr(postId)}"><input name="body" maxlength="1000" placeholder="Escreva um comentário..." required><button type="submit" class="btn-ghost">Comentar</button></form>`;
+    } catch (errorValue) {
+      panel.innerHTML = `<div class="community-error-state">${escapeHtml(humanCommunityError(errorValue, 'Não foi possível carregar comentários.'))}</div>`;
+    }
+  }
+  function renderCommunityComment(comment) {
+    const mine = String(comment.user_id || '') === String(window.__tradutorCommunityUserId || '');
+    const body = comment.is_deleted ? 'Comentário removido.' : (comment.body || '');
+    return `<div class="community-comment" data-comment-id="${escapeAttr(comment.comment_id || '')}"><strong>${escapeHtml(comment.author?.display_name || (mine ? 'Você' : 'Usuário'))}</strong><span>${escapeHtml(body)}</span>${mine && !comment.is_deleted ? `<button type="button" class="btn-ghost danger" data-comment-delete-id="${escapeAttr(comment.comment_id || '')}">Excluir</button>` : ''}</div>`;
+  }
+  async function submitCommunityComment(postId, form) {
+    const input = $('input[name="body"]', form);
+    const body = String(input?.value || '').trim();
+    if (!body) return;
+    const button = $('button', form);
+    if (button) { button.disabled = true; button.textContent = 'Enviando...'; }
+    try {
+      await api(`/api/community/posts/${encodeURIComponent(postId)}/comments`, {method: 'POST', body: JSON.stringify({body})});
+      const panel = document.querySelector(`[data-comments-for="${CSS.escape(postId)}"]`);
+      if (panel) panel.hidden = true;
+      await toggleCommunityComments(postId);
+      await loadCommunityFeed();
+    } catch (errorValue) {
+      showToast(humanCommunityError(errorValue, 'Não foi possível comentar.'), 'error');
+    } finally {
+      if (button) { button.disabled = false; button.textContent = 'Comentar'; }
+    }
+  }
+  async function deleteCommunityComment(commentId, button) {
+    if (!commentId || !window.confirm('Excluir este comentário?')) return;
+    button.disabled = true;
+    try {
+      await api(`/api/community/comments/${encodeURIComponent(commentId)}`, {method: 'DELETE'});
+      showToast('Comentário removido.', 'ok');
+      await loadCommunityFeed();
+    } catch (errorValue) {
+      showToast(humanCommunityError(errorValue, 'Não foi possível excluir comentário.'), 'error');
+      button.disabled = false;
+    }
+  }
+  $('#view-community')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-comment-delete-id]');
+    if (!button) return;
+    void deleteCommunityComment(button.dataset.commentDeleteId || '', button);
+  });
+  async function deleteOwnPublication(postId, button) {
+    if (!postId || !window.confirm('Remover esta publicação da Comunidade? O PDF local será preservado.')) return;
+    button.disabled = true;
+    button.textContent = 'Excluindo...';
+    try {
+      const result = await api(`/api/community/posts/${encodeURIComponent(postId)}`, {method: 'DELETE', body: JSON.stringify({reason: 'user_requested'})});
+      showToast(result.code === 'publication_deleted' ? 'Publicação removida da Comunidade.' : 'Publicação já estava removida.', 'ok');
+      await loadCommunityFeed();
+    } catch (errorValue) {
+      showToast(humanCommunityError(errorValue, 'Não foi possível excluir publicação.'), 'error');
+      button.disabled = false;
+      button.textContent = 'Excluir';
+    }
+  }
+  async function markNotificationRead(notificationId, button) {
+    button.disabled = true;
+    try {
+      await api(`/api/community/notifications/${encodeURIComponent(notificationId)}/read`, {method: 'PATCH'});
+      await loadCommunityFeed();
+    } catch (errorValue) {
+      showToast(humanCommunityError(errorValue, 'Não foi possível marcar a notificação.'), 'error');
+      button.disabled = false;
+    }
+  }
+
   function hydrateCommunityAuthorMedia(container) {
     $$('[data-community-author-avatar-url]', container).forEach(element => {
       const source = element.dataset.communityAuthorAvatarUrl || '';
@@ -1757,6 +2032,61 @@
     $('#settingNicegui').textContent = settings.nicegui_version || '—';
     $('#settingBuild').textContent = 'local';
   }
+  function applyProductSettings(settings = {}) {
+    const form = $('#productSettingsForm');
+    if (!form) return;
+    Object.entries(settings).forEach(([key, value]) => {
+      const field = form.elements.namedItem(key);
+      if (!field) return;
+      if (field.type === 'checkbox') field.checked = Boolean(value);
+      else field.value = String(value);
+    });
+  }
+  async function loadProductSettings() {
+    if (!isCanonicalCommunityAuthenticated()) return;
+    try {
+      const result = await api('/api/community/settings');
+      applyProductSettings(result.settings || {});
+    } catch (_) { /* settings stay at safe defaults */ }
+  }
+  function collectProductSettings() {
+    const form = $('#productSettingsForm');
+    const payload = {};
+    if (!form) return payload;
+    Array.from(form.elements).forEach(field => {
+      if (!field.name) return;
+      payload[field.name] = field.type === 'checkbox' ? field.checked : field.value;
+    });
+    return payload;
+  }
+  $('#productSettingsForm')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = $('#settingsSaveBtn');
+    const error = $('#settingsError');
+    if (button) { button.disabled = true; button.textContent = 'Salvando...'; }
+    if (error) error.hidden = true;
+    try {
+      const result = await api('/api/community/settings', {
+        method: 'PUT',
+        body: JSON.stringify(collectProductSettings()),
+      });
+      applyProductSettings(result.settings || {});
+      showToast('Configurações salvas.', 'ok');
+    } catch (errorValue) {
+      if (error) { error.textContent = humanCommunityError(errorValue, 'Não foi possível salvar configurações.'); error.hidden = false; }
+    } finally {
+      if (button) { button.disabled = false; button.textContent = 'Salvar configurações'; }
+    }
+  });
+  $('#settingsResetBtn')?.addEventListener('click', async () => {
+    try {
+      const result = await api('/api/community/settings', {method: 'PUT', body: JSON.stringify({})});
+      applyProductSettings(result.settings || {});
+      showToast('Configurações restauradas.', 'ok');
+    } catch (errorValue) {
+      showToast(humanCommunityError(errorValue, 'Não foi possível restaurar configurações.'), 'error');
+    }
+  });
 
   /* ---------- local profile ---------- */
   function applyProfileToForm(profile) {
@@ -1993,7 +2323,10 @@
       appState.historyRevision = data.history_revision || appState.historyRevision;
       renderSettings(appState.settings);
       applyCanonicalAuthSurface(authState);
-      if (authenticated) applyProfileToForm(appState.profile);
+      if (authenticated) {
+        applyProfileToForm(appState.profile);
+        void loadProductSettings();
+      }
       renderHistory();
       renderDashboard();
       renderRuntime(data);

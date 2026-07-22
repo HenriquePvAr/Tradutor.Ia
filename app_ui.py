@@ -539,6 +539,30 @@ def api_open(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.post("/api/ui/history/delete")
+def api_history_delete(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return BRIDGE.delete_local_artifact(
+            str(payload.get("record_id") or ""),
+            delete_files=bool(payload.get("delete_files", False)),
+            confirm=str(payload.get("confirm") or ""),
+        )
+    except ValueError as exc:
+        code = str(exc)
+        messages = {
+            "local_artifact_not_found": "Este capítulo não foi encontrado no histórico local.",
+            "local_artifact_in_use": "Este capítulo está em uso por um processamento ativo.",
+            "local_artifact_published": "Este capítulo possui publicação na Comunidade; os arquivos locais foram preservados.",
+            "local_artifact_path_invalid": "A pasta deste capítulo não é segura para exclusão automática.",
+            "local_artifact_delete_failed": "Não foi possível apagar os arquivos locais.",
+            "confirmation_required": "Digite EXCLUIR para confirmar.",
+        }
+        raise HTTPException(status_code=400, detail={
+            "code": code,
+            "message": messages.get(code, "Não foi possível excluir este capítulo local."),
+        }) from exc
+
+
 @ui.page("/")
 def index() -> None:
     shell = SHELL_PATH.read_text(encoding="utf-8")

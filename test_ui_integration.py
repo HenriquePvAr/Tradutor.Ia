@@ -3,11 +3,14 @@ from offline_test_guard import install_offline_network_guard
 install_offline_network_guard()
 
 import unittest
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 from ui_helpers import build_run_command, suggest_chapter_details
+from job_store import JobStore
+from ui_history import UIHistoryStore
 from ui_bridge import UiBridge, _profile_default
 
 
@@ -163,6 +166,44 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn("icon-action", source)
         self.assertIn("aria-label=", source)
         self.assertIn("class=\"sr-only\"", source)
+        for action in ("pdf", "folder", "report", "compare", "context", "reprocess", "delete"):
+            self.assertIn(f"{action}:", source, action)
+        self.assertIn("Excluir capítulo local", source)
+        self.assertIn("localDeleteModalOverlay", (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8"))
+
+    def test_community_tabs_are_functional_not_decorative(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        for marker in (
+            "data-community-tab=\"explore\"",
+            "data-community-tab=\"favorites\"",
+            "data-community-tab=\"reading\"",
+            "data-community-tab=\"mine\"",
+            "data-community-tab=\"notifications\"",
+        ):
+            self.assertIn(marker, shell, marker)
+        for endpoint in (
+            "/api/community/favorites",
+            "/api/community/reading-progress",
+            "/api/community/my-posts",
+            "/api/community/notifications",
+            "/api/community/posts/${encodeURIComponent(postId)}/comments",
+        ):
+            self.assertIn(endpoint, source, endpoint)
+        self.assertIn("setCommunityTab", source)
+        self.assertIn("toggleCommunityFavorite", source)
+        self.assertIn("deleteOwnPublication", source)
+
+    def test_common_settings_hide_technical_internals_behind_developer_mode(self):
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        common = shell[
+            shell.index('<form class="settings-product-grid"')
+            :shell.index('<details class="advanced-details">')
+        ]
+        for forbidden in ("NVIDIA_API_KEY", "Python", "NiceGUI", "Repositório", "Stack", "PaddleOCR", "RapidOCR"):
+            self.assertNotIn(forbidden, common, forbidden)
+        self.assertIn("Modo Desenvolvedor", shell)
+        self.assertIn("diagnóstico técnico opcional", shell)
 
     def test_publication_payload_has_no_local_or_secret_fields(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
@@ -253,6 +294,49 @@ class UiIntegrationTests(unittest.TestCase):
                 self.assertTrue(payload["avatar_media_url"].startswith("/api/ui/profile/media/avatar"))
                 self.assertNotIn("local-test-image", str(payload))
 
+    def test_profile_media_multipart_avatar_banner_replace_remove_and_ownership(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.profile = _profile_default()
+            with (
+                patch("ui_bridge.PROFILE_PATH", root / "ui_profile.json"),
+                patch("ui_bridge.PROFILE_MEDIA_DIR", root / "ui_profile"),
+            ):
+                first = bridge.save_profile_media(
+                    "avatar",
+                    filename="avatar.png",
+                    content_type="image/png",
+                    content=b"\x89PNG\r\n\x1a\nfirst-avatar",
+                    user_id="user-media",
+                )
+                avatar_path = Path(first["avatar_media_path"])
+                self.assertTrue(avatar_path.is_file())
+                second = bridge.save_profile_media(
+                    "avatar",
+                    filename="avatar.jpg",
+                    content_type="image/jpeg",
+                    content=b"\xff\xd8\xffsecond-avatar",
+                    user_id="user-media",
+                )
+                self.assertFalse(avatar_path.exists())
+                self.assertEqual(second["avatar_media_type"], "image/jpeg")
+                banner = bridge.save_profile_media(
+                    "banner",
+                    filename="banner.jpeg",
+                    content_type="image/jpeg",
+                    content=b"\xff\xd8\xffbanner",
+                    user_id="user-media",
+                )
+                self.assertEqual(banner["banner"], "custom")
+                self.assertEqual(bridge.profile_media_path("banner", user_id="user-media").read_bytes()[:3], b"\xff\xd8\xff")
+                self.assertIsNone(bridge.profile_media_path("banner", user_id="other-user"))
+                removed = bridge.remove_profile_media("avatar", user_id="user-media")
+                self.assertEqual(removed["avatar_mode"], "letter")
+                self.assertIsNone(bridge.profile_media_path("avatar", user_id="user-media"))
+                with self.assertRaises(ValueError):
+                    bridge.remove_profile_media("banner", user_id="other-user")
+
     def test_profile_media_rejects_video_and_bad_signature(self):
         bridge = UiBridge.__new__(UiBridge)
         bridge.profile = _profile_default()
@@ -263,6 +347,90 @@ class UiIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bridge.save_profile_media("avatar", filename="avatar.png", content_type="image/png",
                                       content=b"not-an-image", user_id="user-test")
+        with self.assertRaises(ValueError):
+            bridge.save_profile_media("avatar", filename="avatar.png", content_type="image/png",
+                                      content=b"\x89PNG\r\n\x1a\n" + (b"x" * (12 * 1024 * 1024 + 1)),
+                                      user_id="user-test")
+
+    def test_safe_local_artifact_delete_uses_server_record_and_fixture(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            fixture = output_root / "fixture_chapter"
+            fixture.mkdir(parents=True)
+            (fixture / "chapter.pdf").write_bytes(b"%PDF-1.4\nx\n%%EOF\n")
+            history = UIHistoryStore(root / "ui_history.json")
+            history._write([{
+                "id": "fixture",
+                "chapter_name": "Fixture",
+                "slug": "fixture_chapter",
+                "output_folder": str(fixture),
+                "pdf_path": str(fixture / "chapter.pdf"),
+                "status": "finished",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }])
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.store = JobStore(root / "jobs.sqlite3")
+            bridge.history = []
+            bridge.history_revision = 1
+            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+                result = bridge.delete_local_artifact("fixture", delete_files=True, confirm="EXCLUIR")
+            self.assertEqual(result["code"], "local_artifact_deleted")
+            self.assertTrue(result["deleted_files"])
+            self.assertFalse(fixture.exists())
+            bridge.store.close()
+
+    def test_local_artifact_delete_preserves_published_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            fixture = output_root / "published_chapter"
+            fixture.mkdir(parents=True)
+            history = UIHistoryStore(root / "ui_history.json")
+            history._write([{
+                "id": "published",
+                "chapter_name": "Published",
+                "slug": "published_chapter",
+                "output_folder": str(fixture),
+                "publication_status": "published",
+                "publication_id": "post-fixture",
+                "status": "finished",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }])
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.store = JobStore(root / "jobs.sqlite3")
+            bridge.history = []
+            bridge.history_revision = 1
+            with patch("ui_bridge.OUTPUT_ROOT", output_root), self.assertRaisesRegex(ValueError, "local_artifact_published"):
+                bridge.delete_local_artifact("published", delete_files=True, confirm="EXCLUIR")
+            self.assertTrue(fixture.exists())
+            bridge.store.close()
+
+    def test_local_history_hide_prevents_discovered_output_from_reappearing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            fixture = output_root / "manifest_like_chapter"
+            fixture.mkdir(parents=True)
+            (fixture / "timing_report.json").write_text(
+                json.dumps({
+                    "processed_images": 2,
+                    "groups_translated": 4,
+                    "quality_validation": {"passed": True},
+                    "total_seconds": 3,
+                }),
+                encoding="utf-8",
+            )
+            (fixture / "chapter.pdf").write_bytes(b"%PDF-1.4\nx\n%%EOF\n")
+            history = UIHistoryStore(root / "ui_history.json")
+            with patch("ui_history.OUTPUT_ROOT", output_root):
+                discovered = history.discover_outputs()
+                self.assertEqual([item["id"] for item in discovered], ["discovered-manifest_like_chapter"])
+                history.hide_record(discovered[0])
+                self.assertEqual(history.discover_outputs(), [])
+                self.assertTrue(fixture.exists())
 
     def test_profile_payload_is_not_shared_between_authenticated_users(self):
         bridge = UiBridge.__new__(UiBridge)
@@ -341,7 +509,8 @@ class UiIntegrationTests(unittest.TestCase):
             :source.index("$('#communityRefreshBtn')")
         ]
         self.assertIn("humanCommunityError(error", feed_block)
-        self.assertIn("skeleton-card", feed_block)
+        self.assertIn("communitySkeleton(container)", feed_block)
+        self.assertIn("skeleton-card", source)
         self.assertIn("community_schema_invalid", feed_block)
         self.assertIn("retry-community", feed_block)
         self.assertNotIn("escapeHtml(error.message)", feed_block)

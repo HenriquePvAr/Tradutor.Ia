@@ -460,7 +460,18 @@
         <span class="community-count">Publicações verificadas · PDFs privados servidos pelo backend</span>
         <button type="button" class="btn-ghost" id="communityRefreshBtn">Atualizar</button>
       </div>
-      <div class="hist-list" id="communityFeed"></div>
+      <div class="community-tabs" role="tablist" aria-label="Seções da Comunidade">
+        <button type="button" class="community-tab active" data-community-tab="explore" role="tab" aria-selected="true">Explorar <span id="communityExploreCount">0</span></button>
+        <button type="button" class="community-tab" data-community-tab="favorites" role="tab" aria-selected="false">Favoritos <span id="communityFavoritesCount">0</span></button>
+        <button type="button" class="community-tab" data-community-tab="reading" role="tab" aria-selected="false">Continuar lendo <span id="communityReadingCount">0</span></button>
+        <button type="button" class="community-tab" data-community-tab="mine" role="tab" aria-selected="false">Minhas obras <span id="communityMineCount">0</span></button>
+        <button type="button" class="community-tab" data-community-tab="notifications" role="tab" aria-selected="false">Notificações <span id="communityNotificationsCount">0</span></button>
+      </div>
+      <div class="hist-list community-tab-panel" id="communityFeed" data-community-panel="explore"></div>
+      <div class="hist-list community-tab-panel" id="communityFavorites" data-community-panel="favorites" hidden></div>
+      <div class="hist-list community-tab-panel" id="communityReading" data-community-panel="reading" hidden></div>
+      <div class="hist-list community-tab-panel" id="communityMine" data-community-panel="mine" hidden></div>
+      <div class="hist-list community-tab-panel" id="communityNotifications" data-community-panel="notifications" hidden></div>
       <div class="community-notice">publique um capítulo pelo histórico · só aparece aqui após o upload e a verificação · publique apenas conteúdo autorizado</div>
     </section>
 
@@ -487,8 +498,59 @@
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Contexto de capítulo</span><strong id="settingContextFriendly">Ativo</strong></div></div>
       </div>
 
+      <form class="settings-product-grid" id="productSettingsForm">
+        <div class="panel settings-section">
+          <div class="panel-label">Geral</div>
+          <label>Idioma da interface<select name="interface_language"><option value="pt-BR">Português do Brasil</option></select></label>
+          <label>Tema<select name="theme"><option value="system">Seguir sistema</option><option value="dark">Escuro</option><option value="high-contrast">Alto contraste</option></select></label>
+          <label class="checkline"><input type="checkbox" name="open_folder_on_finish"> abrir pasta ao terminar</label>
+          <label class="checkline"><input type="checkbox" name="local_notifications"> notificações locais</label>
+          <label class="checkline"><input type="checkbox" name="confirm_destructive_actions"> confirmar ações destrutivas</label>
+        </div>
+        <div class="panel settings-section">
+          <div class="panel-label">Processamento</div>
+          <label>Modo padrão<select name="default_mode"><option value="fast">Rápido</option><option value="quality">Qualidade</option></select></label>
+          <label>Escopo padrão<select name="default_scope"><option value="full">Capítulo inteiro</option><option value="sample">Amostra de teste</option></select></label>
+          <label class="checkline"><input type="checkbox" name="use_cache"> usar cache quando seguro</label>
+          <label class="checkline"><input type="checkbox" name="temporary_context"> usar contexto temporário</label>
+          <label>Concorrência segura<select name="safe_concurrency"><option value="automatic">Automática</option><option value="low">Baixa</option><option value="balanced">Balanceada</option></select></label>
+        </div>
+        <div class="panel settings-section">
+          <div class="panel-label">Comunidade</div>
+          <label>Visibilidade padrão<select name="default_visibility"><option value="community">Comunidade</option><option value="private">Privado</option></select></label>
+          <label class="checkline"><input type="checkbox" name="allow_comments"> permitir comentários</label>
+          <label class="checkline"><input type="checkbox" name="community_notifications"> receber notificações</label>
+          <label class="checkline"><input type="checkbox" name="public_profile"> perfil público</label>
+          <label class="checkline"><input type="checkbox" name="show_online_status"> mostrar status online</label>
+        </div>
+        <div class="panel settings-section">
+          <div class="panel-label">Arquivos</div>
+          <label>Retenção de outputs<select name="output_retention_days"><option value="7">7 dias</option><option value="30">30 dias</option><option value="90">90 dias</option></select></label>
+          <label>Cache seguro<select name="cache_budget_mb"><option value="1024">1 GB</option><option value="2048">2 GB</option><option value="4096">4 GB</option></select></label>
+          <label class="checkline"><input type="checkbox" name="confirm_before_delete"> confirmar antes de apagar</label>
+          <label class="checkline"><input type="checkbox" name="safe_temp_cleanup"> limpeza manual de temporários</label>
+        </div>
+        <div class="panel settings-section">
+          <div class="panel-label">Acessibilidade e privacidade</div>
+          <label class="checkline"><input type="checkbox" name="reduced_motion"> reduzir animações</label>
+          <label class="checkline"><input type="checkbox" name="high_contrast"> aumentar contraste</label>
+          <label>Escala da interface<select name="ui_scale"><option value="80">80%</option><option value="100">100%</option><option value="125">125%</option></select></label>
+          <label class="checkline"><input type="checkbox" name="tooltips"> mostrar tooltips</label>
+          <label class="checkline"><input type="checkbox" name="keyboard_shortcuts"> atalhos de teclado</label>
+        </div>
+        <div class="panel settings-section about-simple">
+          <div class="panel-label">Sobre</div>
+          <h3>Tradutor.Ia</h3>
+          <p>Ferramenta local para traduzir capítulos, revisar resultados e compartilhar PDFs autorizados com a comunidade.</p>
+          <p>Créditos: criado por Henrique Paiva Araújo. Tradução automática assistida, revisão automática e revisão humana quando marcada.</p>
+          <button type="submit" class="btn-primary" id="settingsSaveBtn">Salvar configurações</button>
+          <button type="button" class="btn-ghost" id="settingsResetBtn">Restaurar padrão</button>
+          <div class="publication-error" id="settingsError" hidden></div>
+        </div>
+      </form>
+
       <details class="advanced-details">
-        <summary>Detalhes avançados <span>configuração técnica</span></summary>
+        <summary>Modo Desenvolvedor <span>diagnóstico técnico opcional</span></summary>
         <div class="cfg-grid advanced-grid">
         <div class="panel">
           <div class="panel-label">Tradução</div>
@@ -729,6 +791,23 @@
     </section>
 
   </main>
+  </div>
+</div>
+
+<!-- LOCAL ARTIFACT DELETE -->
+<div class="modal-overlay" id="localDeleteModalOverlay" aria-hidden="true">
+  <div class="modal-card publication-card" role="dialog" aria-modal="true" aria-labelledby="localDeleteModalTitle">
+    <button type="button" class="modal-close" id="localDeleteModalClose" aria-label="fechar">×</button>
+    <div class="panel-label">exclusão local segura</div>
+    <h2 id="localDeleteModalTitle">Excluir capítulo local</h2>
+    <div class="publication-summary" id="localDeleteSummary"></div>
+    <div class="publication-pending" id="localDeleteNotice"></div>
+    <form id="localDeleteForm" autocomplete="off">
+      <label class="publication-confirm"><input type="checkbox" id="localDeleteFiles" /> <span>Apagar também os arquivos locais quando não houver publicação vinculada.</span></label>
+      <div class="field"><label for="localDeleteConfirm">Digite EXCLUIR para confirmar</label><input id="localDeleteConfirm" maxlength="12" /></div>
+      <div class="publication-error" id="localDeleteError" hidden></div>
+      <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="localDeleteCancel">Cancelar</button><button type="submit" class="btn-primary danger" id="localDeleteSubmit">Excluir localmente</button></div>
+    </form>
   </div>
 </div>
 

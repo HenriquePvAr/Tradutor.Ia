@@ -33,8 +33,9 @@ def utc_now() -> str:
 
 
 class UIHistoryStore:
-    def __init__(self, path: Path = HISTORY_PATH):
+    def __init__(self, path: Path = HISTORY_PATH, hidden_path: Path | None = None):
         self.path = Path(path).resolve()
+        self.hidden_path = Path(hidden_path).resolve() if hidden_path else self.path.with_name("ui_hidden_history.json")
 
     def load(self) -> list[dict[str, Any]]:
         try:
@@ -42,8 +43,12 @@ class UIHistoryStore:
         except (OSError, ValueError, TypeError):
             value = []
         records = value if isinstance(value, list) else []
+        hidden = self._hidden_records()
         return sorted(
-            (record for record in records if isinstance(record, dict)),
+            (
+                record for record in records
+                if isinstance(record, dict) and not self._is_hidden(record, hidden)
+            ),
             key=lambda record: str(record.get("started_at") or ""),
             reverse=True,
         )
@@ -56,10 +61,12 @@ class UIHistoryStore:
         return safe_record
 
     def discover_outputs(self) -> list[dict[str, Any]]:
+        hidden = self._hidden_records()
         records = [
             self._enrich_record(self._with_output_verification(record))
             for record in self.load()
         ]
+        records = [record for record in records if not self._is_hidden(record, hidden)]
         known = {str(Path(item.get("output_folder") or "").resolve()) for item in records}
         if not OUTPUT_ROOT.is_dir():
             return records
@@ -71,6 +78,8 @@ class UIHistoryStore:
                 continue
             folder = candidate.resolve()
             if str(folder) in known:
+                continue
+            if self._is_hidden({"id": f"discovered-{folder.name}", "output_folder": str(folder)}, hidden):
                 continue
             timing_path = folder / "timing_report.json"
             report = load_json(timing_path) if timing_path.is_file() else {}
@@ -113,6 +122,62 @@ class UIHistoryStore:
                 self._enrich_record(record)
             )
         return self._sort_records(records)
+
+    def hide_record(self, record: dict[str, Any]) -> None:
+        """Hide a local history card without deleting its output artifacts."""
+
+        hidden = self._hidden_records()
+        record_id = str(record.get("id") or "").strip()
+        folder = str(record.get("output_folder") or "").strip()
+        if record_id:
+            hidden.setdefault("ids", [])
+            if record_id not in hidden["ids"]:
+                hidden["ids"].append(record_id)
+        if folder:
+            try:
+                folder = str(Path(folder).resolve())
+            except OSError:
+                folder = str(record.get("output_folder") or "")
+            hidden.setdefault("folders", [])
+            if folder not in hidden["folders"]:
+                hidden["folders"].append(folder)
+        self._write_hidden(hidden)
+
+    def _hidden_records(self) -> dict[str, list[str]]:
+        try:
+            value = json.loads(self.hidden_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            value = {}
+        if not isinstance(value, dict):
+            return {"ids": [], "folders": []}
+        ids = [str(item) for item in value.get("ids", []) if str(item or "").strip()]
+        folders: list[str] = []
+        for item in value.get("folders", []):
+            try:
+                folders.append(str(Path(str(item)).resolve()))
+            except OSError:
+                folders.append(str(item))
+        return {"ids": ids, "folders": folders}
+
+    def _write_hidden(self, hidden: dict[str, list[str]]) -> None:
+        self.hidden_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.hidden_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(hidden, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(self.hidden_path)
+
+    @staticmethod
+    def _is_hidden(record: dict[str, Any], hidden: dict[str, list[str]]) -> bool:
+        record_id = str(record.get("id") or "")
+        if record_id and record_id in set(hidden.get("ids", [])):
+            return True
+        folder = str(record.get("output_folder") or "")
+        if not folder:
+            return False
+        try:
+            folder = str(Path(folder).resolve())
+        except OSError:
+            pass
+        return folder in set(hidden.get("folders", []))
 
     @staticmethod
     def _sort_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
