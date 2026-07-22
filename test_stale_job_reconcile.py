@@ -71,10 +71,13 @@ class ProgressBindingTests(unittest.TestCase):
         snap = parse_progress_line("Baixando imagens 99/99", snap)
         self.assertEqual(snap.stage, "Baixando imagens")
         self.assertEqual(snap.counter_stage, "Baixando imagens")
-        # The stage advances on a later log line that carries no counter of its own.
+        # Provider setup is emitted before translation and must not relabel the
+        # download counter as NVIDIA. The explicit phase marker is authoritative.
         snap = parse_progress_line("Usando NVIDIA API (nemotron) - Origem: ingles", snap)
-        self.assertEqual(snap.stage, "Tradução NVIDIA")
+        self.assertEqual(snap.stage, "Baixando imagens")
         self.assertEqual(snap.counter_stage, "Baixando imagens")   # counter did NOT follow
+        snap = parse_progress_line("Tradução NVIDIA: iniciando", snap)
+        self.assertEqual(snap.stage, "Tradução NVIDIA")
 
     def test_new_counter_rebinds_to_the_new_stage(self):
         snap = parse_progress_line("Baixando imagens 99/99", ProgressSnapshot())

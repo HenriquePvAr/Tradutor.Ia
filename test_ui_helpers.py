@@ -124,6 +124,16 @@ class UIHelpersTests(unittest.TestCase):
         snapshot = parse_progress_line("Modo: fast (rapidocr)", ProgressSnapshot())
         self.assertEqual(snapshot.stage, "Preparando")
 
+    def test_progress_parser_keeps_ocr_for_nvidia_provider_setup_line(self):
+        snapshot = ProgressSnapshot(stage="OCR", percent=0.32)
+        parse_progress_line("Usando NVIDIA API para tradução", snapshot)
+        self.assertEqual(snapshot.stage, "OCR")
+
+    def test_progress_parser_enters_nvidia_only_on_explicit_phase_marker(self):
+        snapshot = ProgressSnapshot(stage="OCR", percent=0.32)
+        parse_progress_line("Tradução NVIDIA: iniciando", snapshot)
+        self.assertEqual(snapshot.stage, "Tradução NVIDIA")
+
     def test_progress_does_not_regress_to_download(self):
         snapshot = ProgressSnapshot(stage="Tradução NVIDIA", percent=0.64)
         parse_progress_line("Baixando um modelo auxiliar", snapshot)
