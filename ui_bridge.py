@@ -77,7 +77,6 @@ _UI_STAGE_LABELS = {
 }
 MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
 PROFILE_MEDIA_TYPES = {
-    ".gif": "image/gif",
     ".jpeg": "image/jpeg",
     ".jpg": "image/jpeg",
     ".png": "image/png",
@@ -86,7 +85,6 @@ PROFILE_MEDIA_TYPES = {
 PROFILE_MEDIA_SIGNATURES = {
     "image/png": lambda value: value.startswith(b"\x89PNG\r\n\x1a\n"),
     "image/jpeg": lambda value: value.startswith(b"\xff\xd8\xff"),
-    "image/gif": lambda value: value.startswith((b"GIF87a", b"GIF89a")),
     "image/webp": lambda value: len(value) >= 12 and value[:4] == b"RIFF" and value[8:12] == b"WEBP",
 }
 PROFILE_RESERVED_NAMES = frozenset({"admin", "administrator", "moderator", "support", "system", "root", "official"})
@@ -1991,9 +1989,58 @@ class UiBridge:
 
             webbrowser.open(path.as_uri())
 
+    def resolve_local_artifact_for_action(self, local_artifact_id: str) -> dict[str, Any]:
+        """Resolve an opaque UI history identifier to a server-side local artifact.
+
+        The returned object is intentionally for backend use only: callers must not
+        serialize it to the browser because it includes the confined output path.
+        """
+        local_artifact_id = str(local_artifact_id or "").strip()
+        if not local_artifact_id:
+            raise ValueError("local_artifact_not_found")
+        candidates: list[dict[str, Any]] = []
+        for source in (self._history_payload(), self.history_store.load()):
+            for item in source:
+                if isinstance(item, dict):
+                    candidates.append(item)
+        seen: set[str] = set()
+        for record in candidates:
+            output_folder = str(record.get("output_folder") or "")
+            match_values = {
+                str(record.get("id") or ""),
+                str(record.get("local_artifact_id") or ""),
+                str(record.get("job_id") or ""),
+                str(record.get("run_id") or ""),
+                str(record.get("slug") or ""),
+            }
+            if output_folder:
+                try:
+                    match_values.add(Path(output_folder).resolve().name)
+                except OSError:
+                    match_values.add(Path(output_folder).name)
+            if local_artifact_id not in match_values:
+                continue
+            dedupe = str(record.get("id") or output_folder)
+            if dedupe in seen:
+                continue
+            seen.add(dedupe)
+            try:
+                folder = Path(output_folder).resolve()
+            except (OSError, RuntimeError) as exc:
+                raise ValueError("local_artifact_resolve_failed") from exc
+            output_root = OUTPUT_ROOT.resolve()
+            if folder == output_root or output_root not in folder.parents:
+                raise ValueError("local_artifact_path_invalid")
+            return {
+                "local_artifact_id": str(record.get("id") or local_artifact_id),
+                "_record": record,
+                "_output_dir": folder,
+            }
+        raise ValueError("local_artifact_not_found")
+
     def delete_local_artifact(
         self,
-        record_id: str,
+        local_artifact_id: str,
         *,
         delete_files: bool = False,
         confirm: str = "",
@@ -2004,25 +2051,17 @@ class UiBridge:
         record from the authoritative history snapshot, confines it to ``output/`` and
         refuses to delete files for records tied to an existing community publication.
         """
-        record_id = str(record_id or "")
-        record = next(
-            (item for item in self._history_payload() if str(item.get("id") or "") == record_id),
-            None,
-        )
-        if not record:
-            raise ValueError("local_artifact_not_found")
         if str(confirm or "") != "EXCLUIR":
-            raise ValueError("confirmation_required")
-        output_root = OUTPUT_ROOT.resolve()
-        folder = Path(str(record.get("output_folder") or "")).resolve()
-        if folder == output_root or output_root not in folder.parents:
-            raise ValueError("local_artifact_path_invalid")
+            raise ValueError("confirmation_invalid")
+        resolved = self.resolve_local_artifact_for_action(local_artifact_id)
+        record = resolved["_record"]
+        record_id = resolved["local_artifact_id"]
+        folder = resolved["_output_dir"]
         if str(record.get("publication_status") or "").lower() == "published" and delete_files:
             raise ValueError("local_artifact_published")
         remaining = [item for item in self.history_store.load() if item.get("id") != record_id]
         self.history_store._write(remaining)
-        if not delete_files:
-            self.history_store.hide_record(record)
+        self.history_store.hide_record(record)
         deleted_files = False
         if delete_files:
             if not folder.exists():
@@ -2034,8 +2073,8 @@ class UiBridge:
                 raise ValueError("local_artifact_delete_failed") from exc
         self._refresh_history()
         return {
-            "code": "local_artifact_deleted",
-            "record_id": record_id,
+            "code": "local_artifact_deleted" if deleted_files else "local_history_item_hidden",
+            "local_artifact_id": record_id,
             "deleted_files": deleted_files,
             "publication_preserved": bool(record.get("publication_id")),
         }

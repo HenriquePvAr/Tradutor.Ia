@@ -355,6 +355,7 @@ class CommunityService:
         # A feed card exposes only metadata; never the storage file id.
         author_id = str(post.get("user_id") or "")
         return {
+            "publication_id": post["id"],
             "post_id": post["id"],
             "series_title": post["series_title"],
             "series_slug": post["series_slug"],

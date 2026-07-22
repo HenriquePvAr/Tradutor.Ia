@@ -47,6 +47,10 @@
     communityCache: {explore: [], favorites: [], reading: [], mine: [], notifications: []},
     localDeleteRecord: null,
     localDeleteBusy: false,
+    profileMedia: {
+      avatar: {requestId: '', controller: null, objectUrl: ''},
+      banner: {requestId: '', controller: null, objectUrl: ''},
+    },
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed']);
@@ -68,7 +72,7 @@
     for (const key of [
       'code', 'status', 'authenticated', 'valid', 'correlation_id', 'endpoint',
       'method', 'auth_transport', 'token_available', 'authorization_header_present',
-      'authorization_scheme', 'reason_code',
+      'authorization_scheme', 'reason_code', 'kind', 'request_id', 'publication_id',
     ]) {
       if (fields[key] !== undefined) safe[key] = fields[key];
     }
@@ -1267,16 +1271,18 @@
       return;
     }
     appState.localDeleteBusy = true;
+    uiTrace('local_delete_submit', {reason_code: $('#localDeleteFiles')?.checked === true ? 'delete_files' : 'hide_only'});
     if (submit) { submit.disabled = true; submit.textContent = 'Excluindo...'; }
     try {
       const result = await api('/api/ui/history/delete', {
         method: 'POST',
         body: JSON.stringify({
-          record_id: record.id,
+          local_artifact_id: record.id,
           delete_files: $('#localDeleteFiles')?.checked === true,
-          confirm: 'EXCLUIR',
+          confirmation: 'EXCLUIR',
         }),
       });
+      uiTrace('local_delete_completed', {code: result.code});
       closeLocalDeleteModal();
       showToast(result.deleted_files ? 'Capítulo local e arquivos apagados.' : 'Capítulo removido do histórico local.', 'ok');
       await refreshBootstrap();
@@ -1698,7 +1704,7 @@
     const avatarAttrs = author.avatar_url ? ` data-community-author-avatar-url="${escapeAttr(author.avatar_url)}"` : '';
     const pages = Number(post.page_count || post.pages || 0);
     const quality = post.quality || post.quality_status || post.review_status || '';
-    const postId = escapeAttr(post.post_id || post.publication_id || '');
+    const postId = escapeAttr(post.publication_id || post.post_id || '');
     const favoriteLabel = post.favorited ? 'Remover dos favoritos' : 'Favoritar';
     const reading = post.reading || {};
     const progress = reading.total_pages ? ` · página ${Number(reading.current_page || 0)} de ${Number(reading.total_pages || 0)} · ${Number(reading.progress_percent || 0).toFixed(0)}%` : '';
@@ -1747,13 +1753,16 @@
     if (!postId) return;
     const pressed = button.getAttribute('aria-pressed') === 'true';
     button.disabled = true;
+    button.textContent = pressed ? 'Removendo...' : 'Favoritando...';
+    uiTrace('favorite_click_received', {publication_id: postId});
     try {
-      await api(`/api/community/posts/${encodeURIComponent(postId)}/favorite`, {method: pressed ? 'DELETE' : 'PUT'});
+      await api(`/api/community/publications/${encodeURIComponent(postId)}/favorite`, {method: pressed ? 'DELETE' : 'POST'});
       showToast(pressed ? 'Removido dos favoritos.' : 'Adicionado aos favoritos.', 'ok');
       await loadCommunityFeed();
     } catch (errorValue) {
       showToast(humanCommunityError(errorValue, 'Não foi possível atualizar favorito.'), 'error');
       button.disabled = false;
+      button.textContent = pressed ? 'Remover dos favoritos' : 'Favoritar';
     }
   }
   async function toggleCommunityComments(postId) {
@@ -1762,10 +1771,11 @@
     if (!panel.hidden) { panel.hidden = true; return; }
     panel.hidden = false;
     panel.innerHTML = '<div class="community-loading">carregando comentários...</div>';
+    uiTrace('comments_click_received', {publication_id: postId});
     try {
-      const data = await api(`/api/community/posts/${encodeURIComponent(postId)}/comments`);
-      const comments = Array.isArray(data.comments) ? data.comments : [];
-      panel.innerHTML = `${comments.length ? comments.map(renderCommunityComment).join('') : '<div class="community-empty">nenhum comentário ainda.</div>'}
+      const data = await api(`/api/community/publications/${encodeURIComponent(postId)}/comments`);
+      const comments = Array.isArray(data.items) ? data.items : (Array.isArray(data.comments) ? data.comments : []);
+      panel.innerHTML = `${comments.length ? comments.map(renderCommunityComment).join('') : '<div class="community-empty">Ainda não há comentários.</div>'}
         <form class="community-comment-form" data-comment-form="${escapeAttr(postId)}"><input name="body" maxlength="1000" placeholder="Escreva um comentário..." required><button type="submit" class="btn-ghost">Comentar</button></form>`;
     } catch (errorValue) {
       panel.innerHTML = `<div class="community-error-state">${escapeHtml(humanCommunityError(errorValue, 'Não foi possível carregar comentários.'))}</div>`;
@@ -1783,7 +1793,7 @@
     const button = $('button', form);
     if (button) { button.disabled = true; button.textContent = 'Enviando...'; }
     try {
-      await api(`/api/community/posts/${encodeURIComponent(postId)}/comments`, {method: 'POST', body: JSON.stringify({body})});
+      await api(`/api/community/publications/${encodeURIComponent(postId)}/comments`, {method: 'POST', body: JSON.stringify({body})});
       const panel = document.querySelector(`[data-comments-for="${CSS.escape(postId)}"]`);
       if (panel) panel.hidden = true;
       await toggleCommunityComments(postId);
@@ -2227,7 +2237,8 @@
   }
   function renderMediaCard(kind, profile) {
     const card = $(`#${kind}MediaCard`);
-    const source = profile[`${kind}_media_url`];
+    const state = appState.profileMedia?.[kind] || {};
+    const source = state.objectUrl || profile[`${kind}_media_url`];
     if (!card) return;
     card.hidden = !source;
     if (!source) return;
@@ -2235,26 +2246,90 @@
     $(`#${kind}MediaMeta`).textContent = `${formatBytes(profile[`${kind}_media_size`])} · ${profile[`${kind}_media_type`] || 'arquivo'}`;
     setMedia($(`#${kind}MediaPreview`), source, profile[`${kind}_media_type`], '');
   }
+  function revokeProfileMediaPreview(kind) {
+    const state = appState.profileMedia?.[kind];
+    if (!state?.objectUrl) return;
+    try { URL.revokeObjectURL(state.objectUrl); } catch (_) { /* best effort */ }
+    state.objectUrl = '';
+  }
+  function mergeProfileMediaPayload(kind, profile = {}) {
+    appState.profile = {...appState.profile};
+    for (const key of ['path', 'type', 'name', 'size', 'updated_at', 'url']) {
+      const fullKey = `${kind}_media_${key}`;
+      if (Object.prototype.hasOwnProperty.call(profile, fullKey)) appState.profile[fullKey] = profile[fullKey];
+    }
+    if (kind === 'avatar' && Object.prototype.hasOwnProperty.call(profile, 'avatar_mode')) {
+      appState.profile.avatar_mode = profile.avatar_mode;
+    }
+    if (kind === 'banner' && Object.prototype.hasOwnProperty.call(profile, 'banner')) {
+      appState.profile.banner = profile.banner;
+    }
+  }
   async function uploadProfileMedia(kind, file) {
     if (!file) return;
-    const allowed = new Set(['image/png','image/jpeg','image/webp','image/gif']);
+    if (!['avatar', 'banner'].includes(kind)) return;
+    const allowed = new Set(['image/png','image/jpeg','image/webp']);
     if (!allowed.has(file.type) || file.size > 12 * 1024 * 1024) {
-      showToast('Use PNG, JPG, WEBP ou GIF de até 12 MB.', 'error');
+      showToast('Use PNG, JPG ou WEBP de até 12 MB.', 'error');
       return;
     }
-    const payload = await api(`/api/ui/profile/media/${kind}?filename=${encodeURIComponent(file.name)}&content_type=${encodeURIComponent(file.type)}`, {
-      method: 'POST', headers: {'Content-Type': file.type}, body: file, timeoutMs: 20000,
-    });
-    appState.profile = payload.profile;
-    applyProfileToForm(appState.profile);
-    showToast('Mídia salva neste computador.', 'ok');
+    const state = appState.profileMedia[kind];
+    if (state.controller) state.controller.abort();
+    state.controller = new AbortController();
+    state.requestId = correlationId();
+    const requestId = state.requestId;
+    revokeProfileMediaPreview(kind);
+    if (typeof URL?.createObjectURL === 'function') {
+      state.objectUrl = URL.createObjectURL(file);
+      renderMediaCard(kind, {
+        ...appState.profile,
+        [`${kind}_media_url`]: state.objectUrl,
+        [`${kind}_media_name`]: file.name,
+        [`${kind}_media_size`]: file.size,
+        [`${kind}_media_type`]: file.type,
+      });
+    }
+    uiTrace('profile_media_upload_started', {kind, request_id: requestId});
+    const timeout = window.setTimeout(() => state.controller?.abort(), 20000);
+    try {
+      const payload = await api(`/api/ui/profile/media/${kind}?filename=${encodeURIComponent(file.name)}&content_type=${encodeURIComponent(file.type)}`, {
+        method: 'POST', headers: {'Content-Type': file.type}, body: file, signal: state.controller.signal,
+      });
+      if (state.requestId !== requestId) {
+        uiTrace('stale_response_discarded', {kind, request_id: requestId});
+        return;
+      }
+      revokeProfileMediaPreview(kind);
+      mergeProfileMediaPayload(kind, payload.profile || {});
+      applyProfileToForm(appState.profile);
+      showToast(kind === 'avatar' ? 'Avatar salvo neste computador.' : 'Banner salvo neste computador.', 'ok');
+    } finally {
+      window.clearTimeout(timeout);
+      if (state.requestId === requestId) state.controller = null;
+    }
   }
   async function removeProfileMedia(kind) {
+    if (!['avatar', 'banner'].includes(kind)) return;
     if (!window.confirm('Remover esta imagem do perfil?')) return;
-    const payload = await api(`/api/ui/profile/media/${kind}`, {method:'DELETE', timeoutMs: 12000});
-    appState.profile = payload.profile;
-    applyProfileToForm(appState.profile);
-    showToast('Mídia removida.', 'ok');
+    const state = appState.profileMedia[kind];
+    if (state.controller) state.controller.abort();
+    state.controller = new AbortController();
+    state.requestId = correlationId();
+    const requestId = state.requestId;
+    uiTrace('profile_media_remove_started', {kind, request_id: requestId});
+    try {
+      const payload = await api(`/api/ui/profile/media/${kind}`, {method:'DELETE', timeoutMs: 12000});
+      if (state.requestId !== requestId) {
+        uiTrace('stale_response_discarded', {kind, request_id: requestId});
+        return;
+      }
+      revokeProfileMediaPreview(kind);
+      mergeProfileMediaPayload(kind, payload.profile || {});
+      applyProfileToForm(appState.profile);
+      showToast('Mídia removida.', 'ok');
+    } finally {
+      if (state.requestId === requestId) state.controller = null;
+    }
   }
   function bindDropzone(kind) {
     const dropzone = $(`#${kind}ImagePicker`);

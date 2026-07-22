@@ -719,13 +719,13 @@
             <label>Avatar</label>
             <div class="chip-row" id="profileAvatarMode">
               <div class="chip selected" data-mode="letter">inicial + cor</div>
-              <div class="chip" data-mode="image">enviar mídia</div>
+              <div class="chip" data-mode="image">enviar imagem</div>
             </div>
-            <div class="media-dropzone" id="avatarImagePicker" tabindex="0">
-              <input type="file" id="avatarImageInput" accept=".png,.jpg,.jpeg,.webp,.gif" />
+            <div class="media-dropzone" id="avatarImagePicker" data-media-kind="avatar" tabindex="0">
+              <input type="file" id="avatarImageInput" data-media-kind="avatar" accept=".png,.jpg,.jpeg,.webp" />
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
-              <strong>Enviar imagem, GIF ou vídeo</strong>
-              <span>arraste aqui ou clique para selecionar · até 12 MB</span>
+              <strong>Enviar imagem de avatar</strong>
+              <span>PNG, JPEG ou WEBP · quadrada recomendada · até 12 MB</span>
               <div class="field-error" id="avatarImageError">esse arquivo é grande demais — tenta um menor ou mais comprimido</div>
             </div>
             <div class="media-file-card" id="avatarMediaCard" hidden><div class="media-thumb" id="avatarMediaPreview"></div><div><strong id="avatarMediaName"></strong><span id="avatarMediaMeta"></span></div><button type="button" class="media-action" id="avatarMediaReplace">substituir</button><button type="button" class="media-action danger" id="avatarMediaRemove">remover</button></div>
@@ -752,12 +752,12 @@
               <button type="button" class="banner-swatch banner-rose" data-banner="rose" aria-label="banner rosa" title="rosa"></button>
               <button type="button" class="banner-swatch banner-mono" data-banner="mono" aria-label="banner mono" title="mono"></button>
             </div>
-            <button type="button" class="btn-ghost media-trigger" id="bannerMediaTrigger">Enviar mídia personalizada</button>
-            <div class="media-dropzone" id="bannerImagePicker" tabindex="0">
-              <input type="file" id="bannerImageInput" accept=".png,.jpg,.jpeg,.webp,.gif" />
+            <button type="button" class="btn-ghost media-trigger" id="bannerMediaTrigger">Enviar imagem personalizada</button>
+            <div class="media-dropzone" id="bannerImagePicker" data-media-kind="banner" tabindex="0">
+              <input type="file" id="bannerImageInput" data-media-kind="banner" accept=".png,.jpg,.jpeg,.webp" />
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h16v14H4z"/><path d="m4 16 4.5-4.5 3 3L15 11l5 5"/><circle cx="9" cy="9" r="1.5"/></svg>
-              <strong>Imagem, GIF ou vídeo para o banner</strong>
-              <span>arraste aqui ou clique para selecionar · até 12 MB</span>
+              <strong>Imagem para o banner</strong>
+              <span>PNG, JPEG ou WEBP · horizontal recomendada · até 12 MB</span>
               <div class="field-error" id="bannerImageError">esse arquivo é grande demais — tenta um menor ou mais comprimido</div>
             </div>
             <div class="media-file-card" id="bannerMediaCard" hidden><div class="media-thumb wide" id="bannerMediaPreview"></div><div><strong id="bannerMediaName"></strong><span id="bannerMediaMeta"></span></div><button type="button" class="media-action" id="bannerMediaReplace">substituir</button><button type="button" class="media-action danger" id="bannerMediaRemove">remover</button></div>

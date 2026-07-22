@@ -96,6 +96,7 @@ def _community_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> 
             "pdf_not_found": "O PDF deste capítulo não foi encontrado.",
             "manifest_not_found": "O manifesto do capítulo não foi encontrado.",
             "post_not_found": "A publicação anterior não existe mais. Você pode criar uma nova publicação.",
+            "publication_not_found": "Esta publicação não está disponível na Comunidade.",
             "user_not_found": "Seu perfil da comunidade não foi localizado. Saia e entre novamente.",
             "artifact_invalid": "O artefato não passou pela validação necessária para publicação.",
             "resolver_error": "Não foi possível validar os arquivos deste capítulo.",
@@ -287,15 +288,29 @@ def create_community_router(community, auth) -> APIRouter:
         principal = _community_call(auth.require_authenticated, request)
         return _community_call(community.favorites, principal=principal)
 
+    def _favorite_publication(publication_id: str, request: Request) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.favorite_post, publication_id, principal=principal)
+
+    @router.post("/publications/{publication_id}/favorite")
+    def favorite_publication(publication_id: str, request: Request) -> dict[str, Any]:
+        return _favorite_publication(publication_id, request)
+
     @router.put("/posts/{post_id}/favorite")
     def favorite(post_id: str, request: Request) -> dict[str, Any]:
+        return _favorite_publication(post_id, request)
+
+    def _unfavorite_publication(publication_id: str, request: Request) -> dict[str, Any]:
         principal = authenticated_mutation(request)
-        return _community_call(community.favorite_post, post_id, principal=principal)
+        return _community_call(community.unfavorite_post, publication_id, principal=principal)
+
+    @router.delete("/publications/{publication_id}/favorite")
+    def unfavorite_publication(publication_id: str, request: Request) -> dict[str, Any]:
+        return _unfavorite_publication(publication_id, request)
 
     @router.delete("/posts/{post_id}/favorite")
     def unfavorite(post_id: str, request: Request) -> dict[str, Any]:
-        principal = authenticated_mutation(request)
-        return _community_call(community.unfavorite_post, post_id, principal=principal)
+        return _unfavorite_publication(post_id, request)
 
     @router.get("/reading-progress")
     def reading_progress(request: Request) -> dict[str, Any]:
@@ -307,6 +322,19 @@ def create_community_router(community, auth) -> APIRouter:
         principal = authenticated_mutation(request)
         return _community_call(community.update_reading_progress, post_id, payload, principal=principal)
 
+    def _comments(publication_id: str, request: Request, *, limit: int, offset: int) -> dict[str, Any]:
+        principal = _community_call(auth.require_authenticated, request)
+        return _community_call(community.comments, publication_id, principal=principal, limit=limit, offset=offset)
+
+    @router.get("/publications/{publication_id}/comments")
+    def publication_comments(
+        publication_id: str,
+        request: Request,
+        limit: int = Query(50, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+    ) -> dict[str, Any]:
+        return _comments(publication_id, request, limit=limit, offset=offset)
+
     @router.get("/posts/{post_id}/comments")
     def comments(
         post_id: str,
@@ -314,13 +342,19 @@ def create_community_router(community, auth) -> APIRouter:
         limit: int = Query(50, ge=1, le=100),
         offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:
-        principal = _community_call(auth.require_authenticated, request)
-        return _community_call(community.comments, post_id, principal=principal, limit=limit, offset=offset)
+        return _comments(post_id, request, limit=limit, offset=offset)
+
+    def _create_publication_comment(publication_id: str, request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(community.create_comment, publication_id, payload, principal=principal)
+
+    @router.post("/publications/{publication_id}/comments")
+    def create_publication_comment(publication_id: str, request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        return _create_publication_comment(publication_id, request, payload)
 
     @router.post("/posts/{post_id}/comments")
     def create_comment(post_id: str, request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-        principal = authenticated_mutation(request)
-        return _community_call(community.create_comment, post_id, payload, principal=principal)
+        return _create_publication_comment(post_id, request, payload)
 
     @router.patch("/comments/{comment_id}")
     def update_comment(comment_id: str, request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:

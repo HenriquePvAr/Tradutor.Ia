@@ -231,13 +231,43 @@ class CommunityApiTests(unittest.TestCase):
         result = self._publish_and_run()
         self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
                                        moderation_status=Moderation.APPROVED)
-        self.api.favorite_post(result["post_id"], principal=MEMBER)
-        self.api.favorite_post(result["post_id"], principal=MEMBER)
+        self.assertEqual(
+            self.api.feed(principal=MEMBER)["posts"][0]["publication_id"],
+            result["post_id"],
+        )
+        self.assertEqual(
+            self.api.favorite_post(result["post_id"], principal=MEMBER)["code"],
+            "favorite_created",
+        )
+        self.assertEqual(
+            self.api.favorite_post(result["post_id"], principal=MEMBER)["code"],
+            "favorite_already_exists",
+        )
         favorites = self.api.favorites(principal=MEMBER)["posts"]
         self.assertEqual(len(favorites), 1)
         self.assertTrue(self.api.feed(principal=MEMBER)["posts"][0]["favorited"])
-        self.api.unfavorite_post(result["post_id"], principal=MEMBER)
+        self.assertEqual(
+            self.api.unfavorite_post(result["post_id"], principal=MEMBER)["code"],
+            "favorite_removed",
+        )
         self.assertEqual(self.api.favorites(principal=MEMBER)["posts"], [])
+
+    def test_missing_publication_favorite_and_comments_fail_closed(self):
+        with self.assertRaises(ResourceNotFound):
+            self.api.favorite_post("missing-publication", principal=MEMBER)
+        with self.assertRaises(ResourceNotFound):
+            self.api.unfavorite_post("missing-publication", principal=MEMBER)
+        with self.assertRaises(ResourceNotFound):
+            self.api.comments("missing-publication", principal=MEMBER)
+
+    def test_zero_comments_return_explicit_empty_collection(self):
+        result = self._publish_and_run()
+        self.api.store.set_post_status(result["post_id"], PostStatus.PUBLISHED,
+                                       moderation_status=Moderation.APPROVED)
+        comments = self.api.comments(result["post_id"], principal=MEMBER)
+        self.assertEqual(comments["items"], [])
+        self.assertEqual(comments["comments"], [])
+        self.assertEqual(comments["total"], 0)
 
     def test_reading_progress_does_not_invent_current_page(self):
         result = self._publish_and_run()

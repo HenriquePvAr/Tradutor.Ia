@@ -653,11 +653,7 @@ class CommunityApi:
         self._require_authenticated_principal(principal)
         with self._community_lock:
             posts = self.store.list_user_posts(principal.user_id)
-        return {"posts": [self.service._card(p) | {
-            "visibility": p["visibility"],
-            "source_job_id": p.get("source_job_id") or "",
-            "tags": list(p.get("tags") or []),
-        } for p in posts]}
+            return {"posts": self._cards_with_engagement(posts, principal=principal)}
 
     def delete_own_post(self, post_id: str, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
         self._require_authenticated_principal(principal)
@@ -672,12 +668,18 @@ class CommunityApi:
     def favorite_post(self, post_id: str, *, principal: RequestPrincipal) -> dict[str, Any]:
         self._require_authenticated_principal(principal)
         with self._community_lock:
-            return self.store.favorite_post(principal.user_id, str(post_id or ""))
+            result = self.store.favorite_post(principal.user_id, str(post_id or ""))
+        if result.get("code") == "publication_not_found":
+            raise ResourceNotFound("publication_not_found")
+        return result
 
     def unfavorite_post(self, post_id: str, *, principal: RequestPrincipal) -> dict[str, Any]:
         self._require_authenticated_principal(principal)
         with self._community_lock:
-            return self.store.unfavorite_post(principal.user_id, str(post_id or ""))
+            result = self.store.unfavorite_post(principal.user_id, str(post_id or ""))
+        if result.get("code") == "publication_not_found":
+            raise ResourceNotFound("publication_not_found")
+        return result
 
     def favorites(self, *, principal: RequestPrincipal) -> dict[str, Any]:
         self._require_authenticated_principal(principal)
@@ -711,18 +713,23 @@ class CommunityApi:
     def comments(self, post_id: str, *, principal: RequestPrincipal, limit: int = 100, offset: int = 0) -> dict[str, Any]:
         self._require_authenticated_principal(principal)
         with self._community_lock:
+            if not self.store.published_post_exists(str(post_id or "")):
+                raise ResourceNotFound("publication_not_found")
             comments = self.store.list_comments(str(post_id or ""), limit=limit, offset=offset)
-        return {"comments": comments, "count": len(comments)}
+        return {"items": comments, "comments": comments, "total": len(comments), "count": len(comments)}
 
     def create_comment(self, post_id: str, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
         self._require_authenticated_principal(principal)
         with self._community_lock:
-            return self.store.create_comment(
+            result = self.store.create_comment(
                 principal.user_id,
                 str(post_id or ""),
                 str((payload or {}).get("body") or ""),
                 parent_comment_id=str((payload or {}).get("parent_comment_id") or ""),
             )
+        if result.get("code") == "publication_not_found":
+            raise ResourceNotFound("publication_not_found")
+        return result
 
     def update_comment(self, comment_id: str, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
         self._require_authenticated_principal(principal)

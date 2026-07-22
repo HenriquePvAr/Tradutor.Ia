@@ -187,7 +187,7 @@ class UiIntegrationTests(unittest.TestCase):
             "/api/community/reading-progress",
             "/api/community/my-posts",
             "/api/community/notifications",
-            "/api/community/posts/${encodeURIComponent(postId)}/comments",
+            "/api/community/publications/${encodeURIComponent(postId)}/comments",
         ):
             self.assertIn(endpoint, source, endpoint)
         self.assertIn("setCommunityTab", source)
@@ -345,6 +345,9 @@ class UiIntegrationTests(unittest.TestCase):
             bridge.save_profile_media("avatar", filename="clip.mp4", content_type="video/mp4",
                                       content=b"ftyp", user_id="user-test")
         with self.assertRaises(ValueError):
+            bridge.save_profile_media("avatar", filename="avatar.gif", content_type="image/gif",
+                                      content=b"GIF89a", user_id="user-test")
+        with self.assertRaises(ValueError):
             bridge.save_profile_media("avatar", filename="avatar.png", content_type="image/png",
                                       content=b"not-an-image", user_id="user-test")
         with self.assertRaises(ValueError):
@@ -377,9 +380,50 @@ class UiIntegrationTests(unittest.TestCase):
             with patch("ui_bridge.OUTPUT_ROOT", output_root):
                 result = bridge.delete_local_artifact("fixture", delete_files=True, confirm="EXCLUIR")
             self.assertEqual(result["code"], "local_artifact_deleted")
+            self.assertEqual(result["local_artifact_id"], "fixture")
             self.assertTrue(result["deleted_files"])
             self.assertFalse(fixture.exists())
+            self.assertIn("fixture", json.loads(history.hidden_path.read_text(encoding="utf-8"))["ids"])
             bridge.store.close()
+
+    def test_local_artifact_delete_accepts_opaque_artifact_id_and_hides_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            fixture = output_root / "fixture_chapter"
+            fixture.mkdir(parents=True)
+            history = UIHistoryStore(root / "ui_history.json")
+            history._write([{
+                "id": "history-id",
+                "job_id": "job-123",
+                "run_id": "run-123",
+                "chapter_name": "Fixture",
+                "slug": "fixture_chapter",
+                "output_folder": str(fixture),
+                "status": "finished",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }])
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.store = JobStore(root / "jobs.sqlite3")
+            bridge.history = []
+            bridge.history_revision = 1
+            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+                result = bridge.delete_local_artifact("job-123", delete_files=False, confirm="EXCLUIR")
+            self.assertEqual(result["code"], "local_history_item_hidden")
+            self.assertEqual(result["local_artifact_id"], "history-id")
+            self.assertFalse(result["deleted_files"])
+            self.assertTrue(fixture.exists())
+            hidden = json.loads(history.hidden_path.read_text(encoding="utf-8"))
+            self.assertIn("history-id", hidden["ids"])
+            self.assertIn(str(fixture.resolve()), hidden["folders"])
+            bridge.store.close()
+
+    def test_local_artifact_delete_rejects_invalid_confirmation(self):
+        bridge = UiBridge.__new__(UiBridge)
+        bridge.history_store = UIHistoryStore(Path("unused-history.json"))
+        with self.assertRaisesRegex(ValueError, "confirmation_invalid"):
+            bridge.delete_local_artifact("any", delete_files=False, confirm="EXCLUI")
 
     def test_local_artifact_delete_preserves_published_files(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -463,14 +507,35 @@ class UiIntegrationTests(unittest.TestCase):
             "await api(`/api/ui/profile/media/${kind}",
             "headers: {'Content-Type': file.type}",
             "method:'DELETE'",
+            "AbortController",
+            "stale_response_discarded",
+            "mergeProfileMediaPayload",
         ):
             self.assertIn(marker, media_block, marker)
+        self.assertNotIn("image/gif", media_block)
+        self.assertNotIn("WEBP ou GIF", media_block)
         self.assertNotIn("await fetch(`/api/ui/profile/media/${kind}", media_block)
         handler_block = source[
             source.index("function bindDropzone")
             :source.index("bindDropzone('avatar')")
         ]
         self.assertIn("humanCommunityError(error", handler_block)
+
+    def test_profile_media_copy_no_longer_promises_gif_or_video(self):
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        self.assertIn('data-media-kind="avatar"', shell)
+        self.assertIn('data-media-kind="banner"', shell)
+        self.assertNotIn(".gif", shell)
+        self.assertNotIn("GIF ou vídeo", shell)
+        self.assertNotIn("vídeo para o banner", shell)
+
+    def test_community_actions_use_canonical_publication_endpoints(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("post.publication_id || post.post_id", source)
+        self.assertIn("/api/community/publications/${encodeURIComponent(postId)}/favorite", source)
+        self.assertIn("{method: pressed ? 'DELETE' : 'POST'}", source)
+        self.assertIn("/api/community/publications/${encodeURIComponent(postId)}/comments", source)
+        self.assertIn("Ainda não há comentários.", source)
 
     def test_private_profile_media_uses_authenticated_blob_flow(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")

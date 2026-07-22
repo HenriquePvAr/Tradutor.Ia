@@ -406,6 +406,9 @@ class CommunityStore:
         return self._with_decoded_tags(self._row(self._conn.execute(
             "SELECT * FROM community_posts WHERE id=?", (post_id,)).fetchone()))
 
+    def published_post_exists(self, post_id: str) -> bool:
+        return self._published_post_exists(post_id)
+
     def post_for_owner_source(self, user_id: str, source_job_id: str) -> dict[str, Any] | None:
         if not source_job_id:
             return None
@@ -524,18 +527,36 @@ class CommunityStore:
         if not self._published_post_exists(post_id):
             return {"code": "publication_not_found"}
         now = time.time()
+        existed = self._conn.execute(
+            "SELECT 1 FROM community_favorites WHERE user_id=? AND publication_id=?",
+            (str(user_id), str(post_id)),
+        ).fetchone() is not None
         self._conn.execute(
             "INSERT OR IGNORE INTO community_favorites(user_id,publication_id,created_at) VALUES(?,?,?)",
             (str(user_id), str(post_id), now),
         )
-        return {"favorited": True, "publication_id": post_id}
+        return {
+            "code": "favorite_already_exists" if existed else "favorite_created",
+            "favorited": True,
+            "publication_id": post_id,
+        }
 
     def unfavorite_post(self, user_id: str, post_id: str) -> dict[str, Any]:
+        if not self._published_post_exists(post_id):
+            return {"code": "publication_not_found"}
+        existed = self._conn.execute(
+            "SELECT 1 FROM community_favorites WHERE user_id=? AND publication_id=?",
+            (str(user_id), str(post_id)),
+        ).fetchone() is not None
         self._conn.execute(
             "DELETE FROM community_favorites WHERE user_id=? AND publication_id=?",
             (str(user_id), str(post_id)),
         )
-        return {"favorited": False, "publication_id": post_id}
+        return {
+            "code": "favorite_removed" if existed else "favorite_not_found",
+            "favorited": False,
+            "publication_id": post_id,
+        }
 
     def list_favorite_posts(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
         cur = self._conn.execute(

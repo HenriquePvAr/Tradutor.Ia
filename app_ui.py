@@ -501,7 +501,8 @@ def api_profile_media(request: Request, kind: str) -> FileResponse:
     path = BRIDGE.profile_media_path(kind, user_id=principal.user_id)
     if not path:
         raise HTTPException(status_code=404, detail="Mídia não encontrada.")
-    return FileResponse(path, media_type=BRIDGE.profile.get(f"{kind}_media_type") or None)
+    profile = BRIDGE.profile_for_user(principal.user_id)
+    return FileResponse(path, media_type=profile.get(f"{kind}_media_type") or None)
 
 
 @app.delete("/api/ui/profile/media/{kind}")
@@ -524,7 +525,8 @@ def api_community_profile_media(user_id: str, kind: str, request: Request) -> Fi
     path = BRIDGE.profile_media_path(kind, user_id=user_id)
     if not path:
         raise HTTPException(status_code=404, detail="media_not_found")
-    return FileResponse(path, media_type=BRIDGE.profile.get(f"{kind}_media_type") or None,
+    profile = BRIDGE.profile_for_user(user_id)
+    return FileResponse(path, media_type=profile.get(f"{kind}_media_type") or None,
                         headers={"Cache-Control": "private, no-store",
                                  "X-Content-Type-Options": "nosniff"})
 
@@ -543,9 +545,9 @@ def api_open(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
 def api_history_delete(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     try:
         return BRIDGE.delete_local_artifact(
-            str(payload.get("record_id") or ""),
+            str(payload.get("local_artifact_id") or payload.get("record_id") or ""),
             delete_files=bool(payload.get("delete_files", False)),
-            confirm=str(payload.get("confirm") or ""),
+            confirm=str(payload.get("confirmation") or payload.get("confirm") or ""),
         )
     except ValueError as exc:
         code = str(exc)
@@ -555,7 +557,7 @@ def api_history_delete(payload: dict[str, Any] = Body(default={})) -> dict[str, 
             "local_artifact_published": "Este capítulo possui publicação na Comunidade; os arquivos locais foram preservados.",
             "local_artifact_path_invalid": "A pasta deste capítulo não é segura para exclusão automática.",
             "local_artifact_delete_failed": "Não foi possível apagar os arquivos locais.",
-            "confirmation_required": "Digite EXCLUIR para confirmar.",
+            "confirmation_invalid": "Digite EXCLUIR para confirmar.",
         }
         raise HTTPException(status_code=400, detail={
             "code": code,
