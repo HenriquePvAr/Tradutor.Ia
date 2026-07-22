@@ -7,7 +7,7 @@
 // token is never logged and the publishable key is never sent from here. Ownership and
 // identity fields (owner_id/author_id/user_id/reporter_id/recipient_id/role/admin) are
 // never sent; the backend derives them from the validated principal.
-import { currentAccessToken } from '/static/supabase_auth.js';
+import { getCanonicalAccessToken } from '/static/supabase_auth.js';
 
 const BASE = '/api/community/social';
 
@@ -55,7 +55,7 @@ function sanitizeBody(body) {
 // One request. Attaches the Bearer from the auth layer; on a missing token it fails as
 // 401 without calling the backend. Never throws the raw response text to the UI.
 async function request(method, path, { body, signal } = {}) {
-  const token = await currentAccessToken();
+  const token = await getCanonicalAccessToken();
   if (!token) throw new SocialApiError(401, 'authentication_required');
   const init = {
     method,
@@ -157,7 +157,7 @@ export const unlinkAsset = (chapterId, o) => request('DELETE', `/chapters/${enc(
 // Authenticated PDF fetch → object URL for the reader. The Bearer travels in the header
 // (never the URL); the browser gets an in-memory blob URL, not a Google Drive link.
 export async function fetchChapterPdfUrl(chapterId, signal) {
-  const token = await currentAccessToken();
+  const token = await getCanonicalAccessToken();
   if (!token) throw new SocialApiError(401, 'authentication_required');
   const resp = await fetch(`${BASE}/chapters/${enc(chapterId)}/content`, {
     headers: { 'Authorization': `Bearer ${token}` }, credentials: 'same-origin', signal,

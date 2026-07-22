@@ -82,7 +82,15 @@ class SupabaseFrontendTests(unittest.TestCase):
         source = _read("static/auth_ui.js")
         self.assertIn("Verificando sessão", source)
         self.assertIn("window.__tradutorAccessToken = ''", source)
+        self.assertIn("if (state !== 'authenticated') window.__tradutorAccessToken = ''", source)
         self.assertIn("logoutBtn.hidden = state !== 'authenticated'", source)
+
+    def test_authenticated_shell_preserves_bearer_for_community_requests(self):
+        source = _read("static/auth_ui.js")
+        self.assertIn(
+            "if (state !== 'authenticated') window.__tradutorAccessToken = ''",
+            source,
+        )
 
     def test_login_submission_is_abortable_and_always_restores_button(self):
         source = _read("static/auth_ui.js")
@@ -170,6 +178,18 @@ class SupabaseFrontendTests(unittest.TestCase):
         source = _read("static/tradutor_ui.js")
         self.assertIn("await window.__tradutorGetCanonicalAccessToken()", source)
         self.assertNotIn("const bearer = window.__tradutorAccessToken || ''", source)
+        for marker in (
+            "community_request_started",
+            "authorization_header_present",
+            "auth_transport",
+            "reason_code",
+        ):
+            self.assertIn(marker, source)
+
+    def test_social_helper_uses_canonical_async_token_provider(self):
+        source = _read("static/social_api.js")
+        self.assertIn("getCanonicalAccessToken", source)
+        self.assertNotIn("import { currentAccessToken }", source)
 
     def test_public_config_exposes_only_sanitized_project_identity(self):
         source = _read("supabase_auth.py")

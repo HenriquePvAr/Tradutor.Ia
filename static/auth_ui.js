@@ -90,7 +90,9 @@ function renderAuthShell(state, message = '') {
   const logoutBtn = $('#authLogoutBtn');
   if (!area || !status || !openBtn || !logoutBtn) return;
   area.hidden = false;
-  window.__tradutorAccessToken = '';
+  // Keep the verified bearer during the authenticated shell transition.  Community
+  // requests run immediately after login and must see the current provider token.
+  if (state !== 'authenticated') window.__tradutorAccessToken = '';
   openBtn.hidden = state === 'auth_loading' || state === 'authenticated';
   logoutBtn.hidden = state !== 'authenticated';
   if (state === 'auth_loading') status.textContent = 'Verificando sessão…';

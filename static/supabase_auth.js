@@ -118,6 +118,7 @@ export async function signIn(email, password, { signal } = {}) {
     expires_at: Math.floor(Date.now() / 1000) + Number(payload.expires_in || 3600),
     user: payload.user || null,
   };
+  window.__tradutorAuthTransport = 'supabase_rest';
   const client = await getSupabaseClient();
   if (!client) throw new Error('supabase not configured');
   transportTrace('sdk_session_set_started', {source: 'supabase_password'});
@@ -134,6 +135,7 @@ export async function signIn(email, password, { signal } = {}) {
       }, SDK_SESSION_TIMEOUT_MS)),
     ]);
     if (result?.error) throw result.error;
+    window.__tradutorAuthTransport = 'supabase_sdk';
     transportTrace('sdk_session_set_finished', {source: 'supabase_password'});
   } catch (error) {
     // The token came from the verified Auth endpoint. Keep it only in memory so
@@ -170,6 +172,7 @@ export async function signIn(email, password, { signal } = {}) {
       const identityPayload = await identityResponse.json().catch(() => ({}));
       if (identityResponse.ok && identityPayload?.id) {
         memorySession.user = identityPayload;
+        window.__tradutorAuthTransport = 'supabase_rest';
         transportTrace('get_user_finished', {authenticated: true, source: 'supabase_rest'});
         return memorySession;
       }
@@ -188,6 +191,7 @@ export async function signIn(email, password, { signal } = {}) {
 export async function signOut() {
   memorySession = null;
   window.__tradutorAccessToken = '';
+  window.__tradutorAuthTransport = '';
   const client = await getSupabaseClient();
   if (client) await client.auth.signOut();
 }

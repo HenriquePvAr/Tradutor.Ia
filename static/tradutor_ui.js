@@ -60,7 +60,11 @@
   window.__tradutorUiTrace = Array.isArray(window.__tradutorUiTrace) ? window.__tradutorUiTrace : [];
   function uiTrace(event, fields = {}) {
     const safe = {event: String(event || ''), at: Date.now()};
-    for (const key of ['code', 'status', 'authenticated', 'valid', 'correlation_id']) {
+    for (const key of [
+      'code', 'status', 'authenticated', 'valid', 'correlation_id', 'endpoint',
+      'method', 'auth_transport', 'token_available', 'authorization_header_present',
+      'authorization_scheme', 'reason_code',
+    ]) {
       if (fields[key] !== undefined) safe[key] = fields[key];
     }
     window.__tradutorUiTrace.push(safe);
@@ -90,6 +94,14 @@
       if (bearer) window.__tradutorAccessToken = bearer;
     }
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
+    const authTransport = String(window.__tradutorAuthTransport || '');
+    uiTrace('community_request_started', {
+      endpoint: String(path || '').split('?')[0], method,
+      authenticated: window.__tradutorAuthState === 'authenticated',
+      auth_transport: authTransport, token_available: Boolean(bearer),
+      authorization_header_present: Boolean(headers.Authorization),
+      authorization_scheme: headers.Authorization ? 'Bearer' : '',
+    });
     const timeoutMs = Number(options.timeoutMs || 15000);
     const controller = options.signal ? null : new AbortController();
     const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
@@ -123,8 +135,23 @@
         error.action = detail.action || '';
         error.hosts = detail.hosts || null;
       }
+      uiTrace('community_request_failed', {
+        endpoint: String(path || '').split('?')[0], method, status: response.status,
+        reason_code: error.code || (typeof detail === 'string' ? detail : ''),
+        authenticated: window.__tradutorAuthState === 'authenticated',
+        auth_transport: authTransport, token_available: Boolean(bearer),
+        authorization_header_present: Boolean(headers.Authorization),
+        authorization_scheme: headers.Authorization ? 'Bearer' : '',
+      });
       throw error;
     }
+    uiTrace('community_request_response', {
+      endpoint: String(path || '').split('?')[0], method, status: response.status,
+      authenticated: window.__tradutorAuthState === 'authenticated',
+      auth_transport: authTransport, token_available: Boolean(bearer),
+      authorization_header_present: Boolean(headers.Authorization),
+      authorization_scheme: headers.Authorization ? 'Bearer' : '',
+    });
     return payload;
   }
 

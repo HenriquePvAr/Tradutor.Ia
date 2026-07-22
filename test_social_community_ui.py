@@ -42,8 +42,8 @@ class SocialApiClientTests(unittest.TestCase):
         self.assertIn("sanitizeBody", self.src)
 
     def test_bearer_from_auth_layer_only(self):
-        # Token comes from the auth layer's currentAccessToken, attached as Bearer.
-        self.assertIn("currentAccessToken", self.src)
+        # Token comes from the canonical async auth provider, attached as Bearer.
+        self.assertIn("getCanonicalAccessToken", self.src)
         self.assertIn("Authorization", self.src)
         self.assertIn("Bearer ${token}", self.src)
 
