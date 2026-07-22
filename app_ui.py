@@ -32,6 +32,17 @@ if not load_local_environment_for_entrypoint():
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
+AUTH_UI_ASSET = ROOT / "static" / "auth_ui.js"
+
+
+def _asset_url(path: Path) -> str:
+    """Version local static assets so a restarted UI cannot reuse stale auth code."""
+
+    try:
+        version = str(path.stat().st_mtime_ns)
+    except OSError:
+        version = "0"
+    return f"/static/{path.name}?v={version}"
 APP_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
 APP_HOST = configured_bind_host()
 BRIDGE = UiBridge()
@@ -435,7 +446,7 @@ def index() -> None:
     )
     ui.add_body_html(shell)
     ui.add_body_html('<script src="/static/tradutor_ui.js" defer></script>')
-    ui.add_body_html('<script type="module" src="/static/auth_ui.js"></script>')
+    ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
     ui.add_body_html('<script type="module" src="/static/social_community.js"></script>')
 
 

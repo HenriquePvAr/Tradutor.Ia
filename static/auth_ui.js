@@ -2,10 +2,6 @@
 // Loaded as an ES module so it can import the SDK. Keeps the current access token in a
 // window field that the classic tradutor_ui.js reads to attach the Bearer header.
 // Never logs a token, session, or password.
-import {
-  getSupabaseClient, signUp, signIn, signOut, onAuthChange,
-} from '/static/supabase_auth.js';
-
 const $ = (sel) => document.querySelector(sel);
 
 function setError(msg) {
@@ -29,6 +25,8 @@ function closeModal() {
 }
 
 let mode = 'login';
+let authApi = null;
+const AUTH_BOOTSTRAP_TIMEOUT_MS = 10000;
 // The shell must not infer "visitor" while the backend session is still being
 // resolved.  The backend response is authoritative for local-session and Supabase
 // providers alike; the SDK session only supplies the bearer when applicable.
@@ -40,13 +38,36 @@ function setAuthState(state, userId = '') {
   window.__tradutorCommunityUserId = state === 'authenticated' ? String(userId || '') : '';
 }
 
+function renderAuthShell(state, message = '') {
+  const area = $('#authArea');
+  const status = $('#authStatus');
+  const openBtn = $('#authOpenBtn');
+  const logoutBtn = $('#authLogoutBtn');
+  if (!area || !status || !openBtn || !logoutBtn) return;
+  area.hidden = false;
+  window.__tradutorAccessToken = '';
+  openBtn.hidden = state === 'auth_loading' || state === 'authenticated';
+  logoutBtn.hidden = state !== 'authenticated';
+  if (state === 'auth_loading') status.textContent = 'Verificando sessão…';
+  else if (state === 'authenticated') status.textContent = '';
+  else if (state === 'auth_error') status.textContent = message || 'Não foi possível verificar sua sessão.';
+  else status.textContent = 'visitante';
+}
+
+function withTimeout(promise, timeoutMs = AUTH_BOOTSTRAP_TIMEOUT_MS) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('auth_bootstrap_timeout')), timeoutMs)),
+  ]);
+}
+
 async function syncBackendSession(accessToken = '') {
   const headers = {};
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   try {
-    const response = await fetch('/api/community/auth/session', {
+    const response = await withTimeout(fetch('/api/community/auth/session', {
       headers, credentials: 'same-origin', cache: 'no-store',
-    });
+    }));
     let payload = {};
     try { payload = await response.json(); } catch (_) { /* empty response */ }
     if (response.ok && payload.authenticated) {
@@ -110,7 +131,24 @@ function renderSession(session) {
 }
 
 async function init() {
-  const client = await getSupabaseClient();
+  // Dynamic import keeps the canonical state available even when a CDN/module
+  // dependency is unavailable. A failed import is an explicit auth_error, never
+  // an implicit visitor with stale identity from a previous document.
+  setAuthState('auth_loading');
+  renderAuthShell('auth_loading');
+  try {
+    authApi = await withTimeout(import('/static/supabase_auth.js'));
+  } catch (_) {
+    setAuthState('auth_error');
+    window.__tradutorCommunityAuthenticated = false;
+    renderAuthShell('auth_error');
+    setError('Não foi possível verificar sua sessão.');
+    window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
+      detail: {authenticated: false, state: 'auth_error'},
+    }));
+    return;
+  }
+  const client = await withTimeout(authApi.getSupabaseClient());
   if (!client) {
     // Local-session provider: resolve the HttpOnly cookie through the backend.
     window.__tradutorAccessToken = '';
@@ -127,7 +165,7 @@ async function init() {
     if (event.target === $('#authModalOverlay')) closeModal();
   });
   $('#authLogoutBtn')?.addEventListener('click', async () => {
-    await signOut();
+    await authApi.signOut();
   });
   $('#authForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -139,7 +177,7 @@ async function init() {
     submit.textContent = 'Aguarde…';
     try {
       if (mode === 'signup') {
-        const { needsConfirmation } = await signUp(email, password);
+        const { needsConfirmation } = await authApi.signUp(email, password);
         if (needsConfirmation) {
           setNote('Conta criada. Confirme pelo e-mail e depois entre.');
           setMode('login');
@@ -147,7 +185,7 @@ async function init() {
           closeModal();
         }
       } else {
-        await signIn(email, password);
+        await authApi.signIn(email, password);
         closeModal();
       }
     } catch (err) {
@@ -158,12 +196,14 @@ async function init() {
     }
   });
   // Keeps token fresh across login, logout and SDK auto-refresh.
-  await onAuthChange(renderSession);
+  await withTimeout(authApi.onAuthChange(renderSession));
 }
 
 init().catch(() => {
   setAuthState('auth_error');
   window.__tradutorCommunityAuthenticated = false;
+  renderAuthShell('auth_error');
+  setError('Não foi possível verificar sua sessão.');
   window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
     detail: {authenticated: false, state: 'auth_error'},
   }));

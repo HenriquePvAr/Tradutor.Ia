@@ -69,6 +69,27 @@ class SupabaseFrontendTests(unittest.TestCase):
         self.assertIn("session_expired", source)
         self.assertIn("credentials: 'same-origin'", source)
 
+    def test_auth_bootstrap_defines_state_before_dynamic_dependency_import(self):
+        source = _read("static/auth_ui.js")
+        self.assertIn("window.__tradutorAuthState = 'auth_loading'", source)
+        self.assertIn("import('/static/supabase_auth.js')", source)
+        self.assertIn("AUTH_BOOTSTRAP_TIMEOUT_MS", source)
+        self.assertIn("withTimeout", source)
+        self.assertIn("renderAuthShell('auth_error')", source)
+        self.assertNotIn("from '/static/supabase_auth.js'", source)
+
+    def test_auth_shell_clears_stale_identity_while_loading(self):
+        source = _read("static/auth_ui.js")
+        self.assertIn("Verificando sessão", source)
+        self.assertIn("window.__tradutorAccessToken = ''", source)
+        self.assertIn("logoutBtn.hidden = state !== 'authenticated'", source)
+
+    def test_auth_asset_is_versioned_by_file_mtime(self):
+        app_source = _read("app_ui.py")
+        self.assertIn("AUTH_UI_ASSET", app_source)
+        self.assertIn("st_mtime_ns", app_source)
+        self.assertIn("return f\"/static/{path.name}?v={version}\"", app_source)
+
     def test_tradutor_refreshes_bootstrap_after_auth_change(self):
         source = _read("static/tradutor_ui.js")
         self.assertIn("tradutor-auth-changed", source)
