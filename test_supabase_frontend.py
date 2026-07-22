@@ -106,6 +106,26 @@ class SupabaseFrontendTests(unittest.TestCase):
         ):
             self.assertIn(marker, source)
 
+    def test_login_timeout_covers_complete_flow_and_top_level_finally(self):
+        source = _read("static/auth_ui.js")
+        self.assertIn("completeLoginFlow", source)
+        self.assertIn("withTimeout(completeLoginFlow(email, password, controller.signal), AUTH_LOGIN_TIMEOUT_MS)", source)
+        self.assertIn("login_request_started", source)
+        self.assertIn("canonical_session_refresh_started", source)
+        self.assertIn("login_finally_executed", source)
+
+    def test_login_has_single_guarded_handler_and_recreates_abort_controller(self):
+        source = _read("static/auth_ui.js")
+        self.assertEqual(source.count("$('#authForm')?.addEventListener('submit'"), 1)
+        self.assertIn("window.__tradutorAuthHandlersBound", source)
+        self.assertIn("window.__tradutorActiveLoginController = controller", source)
+        self.assertIn("auth_ui:canonical-submit-v3", source)
+
+    def test_auth_asset_exposes_sanitized_build_marker(self):
+        source = _read("static/auth_ui.js")
+        self.assertIn("window.__tradutorAuthBuild", source)
+        self.assertIn("new URL(import.meta.url)", source)
+
     def test_auth_heartbeat_keeps_refresh_and_canonical_state_in_sync(self):
         source = _read("static/auth_ui.js")
         self.assertIn("startAuthHeartbeat", source)

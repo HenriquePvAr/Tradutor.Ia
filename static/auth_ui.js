@@ -30,6 +30,8 @@ let authHeartbeatTimer = 0;
 let authHeartbeatBusy = false;
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 10000;
 const AUTH_LOGIN_TIMEOUT_MS = 20000;
+const AUTH_HANDLER_ID = 'auth_ui:canonical-submit-v3';
+window.__tradutorAuthBuild = `auth_ui:${new URL(import.meta.url).searchParams.get('v') || 'unversioned'}`;
 // The shell must not infer "visitor" while the backend session is still being
 // resolved.  The backend response is authoritative for local-session and Supabase
 // providers alike; the SDK session only supplies the bearer when applicable.
@@ -145,6 +147,22 @@ async function establishCanonicalSession(signal) {
   throw error;
 }
 
+async function completeLoginFlow(email, password, signal) {
+  authTrace('login_request_started', {source: AUTH_HANDLER_ID});
+  await authApi.signIn(email, password, {signal});
+  authTrace('login_request_finished', {source: AUTH_HANDLER_ID});
+  authTrace('canonical_session_refresh_started', {source: AUTH_HANDLER_ID});
+  const canonical = await establishCanonicalSession(signal);
+  authTrace('canonical_session_refresh_finished', {authenticated: true, source: AUTH_HANDLER_ID});
+  if (!canonical?.authenticated) {
+    const error = new Error('session_not_established');
+    error.code = 'session_not_established';
+    throw error;
+  }
+  authTrace('auth_state_updated', {authenticated: true, source: AUTH_HANDLER_ID});
+  return canonical;
+}
+
 function setMode(next) {
   mode = next;
   document.querySelectorAll('.auth-tab').forEach((tab) => {
@@ -218,11 +236,16 @@ async function init() {
     await syncBackendSession();
     return;
   }
+  if (window.__tradutorAuthHandlersBound) return;
+  window.__tradutorAuthHandlersBound = true;
   document.querySelectorAll('.auth-tab').forEach((tab) => {
     tab.addEventListener('click', () => setMode(tab.dataset.authmode));
   });
   $('#authOpenBtn')?.addEventListener('click', openModal);
-  $('#authModalClose')?.addEventListener('click', closeModal);
+  $('#authModalClose')?.addEventListener('click', () => {
+    window.__tradutorActiveLoginController?.abort();
+    closeModal();
+  });
   $('#authModalOverlay')?.addEventListener('click', (event) => {
     if (event.target === $('#authModalOverlay')) closeModal();
   });
@@ -238,6 +261,7 @@ async function init() {
     const email = $('#authEmail').value.trim();
     const password = $('#authPassword').value;
     const controller = new AbortController();
+    window.__tradutorActiveLoginController = controller;
     const timeoutId = setTimeout(() => controller.abort(), AUTH_LOGIN_TIMEOUT_MS);
     // Keep a UI-level escape hatch independent of the promise returned by a
     // provider SDK.  A misbehaving thenable must never leave the button locked.
@@ -256,12 +280,12 @@ async function init() {
     }, AUTH_LOGIN_TIMEOUT_MS + 250);
     submit.dataset.busy = '1';
     submit.disabled = true;
-    submit.textContent = 'Aguarde…';
+    submit.textContent = 'Entrando…';
     setAuthState('auth_submitting');
-    authTrace('login_submit_started');
+    authTrace('login_submit_received', {source: AUTH_HANDLER_ID});
     try {
       if (mode === 'signup') {
-        const { needsConfirmation } = await authApi.signUp(email, password);
+        const { needsConfirmation } = await withTimeout(authApi.signUp(email, password), AUTH_LOGIN_TIMEOUT_MS);
         if (needsConfirmation) {
           setNote('Conta criada. Confirme pelo e-mail e depois entre.');
           setMode('login');
@@ -270,18 +294,15 @@ async function init() {
         }
       } else {
         try {
-          await withTimeout(
-            authApi.signIn(email, password, {signal: controller.signal}),
-            AUTH_LOGIN_TIMEOUT_MS,
-          );
+          await withTimeout(completeLoginFlow(email, password, controller.signal), AUTH_LOGIN_TIMEOUT_MS);
         } catch (signInError) {
           controller.abort();
           if (signInError?.message === 'auth_bootstrap_timeout') signInError.code = 'auth_timeout';
           throw signInError;
         }
-        await establishCanonicalSession(controller.signal);
         closeModal();
         if (typeof window.__tradutorToast === 'function') window.__tradutorToast('Login realizado.', 'ok');
+        authTrace('modal_closed', {authenticated: true, source: AUTH_HANDLER_ID});
         authTrace('login_completed', {authenticated: true});
       }
     } catch (err) {
@@ -312,9 +333,11 @@ async function init() {
     } finally {
       clearTimeout(timeoutId);
       clearTimeout(watchdogId);
+      if (window.__tradutorActiveLoginController === controller) window.__tradutorActiveLoginController = null;
       submit.dataset.busy = '';
       submit.disabled = false;
       submit.textContent = mode === 'signup' ? 'Criar conta' : 'Entrar';
+      authTrace('login_finally_executed', {source: AUTH_HANDLER_ID});
     }
   });
   // Keeps token fresh across login, logout and SDK auto-refresh.
