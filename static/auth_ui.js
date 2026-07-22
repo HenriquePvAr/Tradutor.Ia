@@ -47,6 +47,11 @@ function authTrace(event, fields = {}) {
     if (fields[key] !== undefined) safe[key] = fields[key];
   }
   window.__tradutorAuthTrace.push(safe);
+  try {
+    document.documentElement.dataset.tradutorAuthLastEvent = safe.event;
+    if (safe.code) document.documentElement.dataset.tradutorAuthLastCode = String(safe.code).slice(0, 80);
+    if (safe.status !== undefined) document.documentElement.dataset.tradutorAuthLastStatus = String(safe.status);
+  } catch (_) { /* diagnostics never affect auth */ }
   if (window.__tradutorAuthTrace.length > 40) window.__tradutorAuthTrace.shift();
 }
 
