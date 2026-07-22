@@ -1211,6 +1211,9 @@
   .empty-real-state{padding:26px 18px; border:1px dashed var(--line); color:var(--muted); text-align:center; font-family:'JetBrains Mono',monospace; font-size:11px;}
   .hist-item .hm-actions{display:flex; flex-wrap:wrap; justify-content:flex-end; gap:5px; max-width:310px;}
   .hist-item .hm-actions button{font-size:9px; padding:6px 8px;}
+  .hist-item .hm-actions .icon-action{width:32px; height:30px; padding:6px; display:inline-flex; align-items:center; justify-content:center;}
+  .hist-item .hm-actions .icon-action svg{width:15px; height:15px;}
+  .profile-card{transform:none !important;}
   .queue-item.status-cancelled{opacity:.58;}
   .queue-item.status-error{border-color:rgba(197,55,44,.45);}
   button:disabled{opacity:.42; cursor:not-allowed; transform:none !important;}

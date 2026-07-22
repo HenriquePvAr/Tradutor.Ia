@@ -141,6 +141,22 @@ class UiIntegrationTests(unittest.TestCase):
             self.assertIn(marker, source, marker)
         self.assertNotIn('target="_blank"', source[source.index("function renderCommunityCard"):source.index("function loadRecordIntoForm")])
 
+    def test_auth_surface_gates_profile_and_community_without_stale_local_identity(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        for marker in ("applyCanonicalAuthSurface", "#view-community", "#view-profile", "clearCommunityObjectUrls"):
+            self.assertIn(marker, source, marker)
+
+    def test_pdf_reader_checks_private_inline_pdf_signature(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        for marker in ("Content-Disposition", "Cache-Control", "invalid_pdf_headers", "invalid_pdf_signature", "%PDF-"):
+            self.assertIn(marker, source, marker)
+
+    def test_history_artifact_actions_are_compact_accessible_svg_controls(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("icon-action", source)
+        self.assertIn("aria-label=", source)
+        self.assertIn("class=\"sr-only\"", source)
+
     def test_publication_payload_has_no_local_or_secret_fields(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         publish = source[source.index("async function publishToCommunity"):source.index("async function loadCommunityFeed")]
@@ -217,16 +233,48 @@ class UiIntegrationTests(unittest.TestCase):
                 patch("ui_bridge.PROFILE_PATH", root / "ui_profile.json"),
                 patch("ui_bridge.PROFILE_MEDIA_DIR", root / "ui_profile"),
             ):
+                bridge.profile["user_id"] = "user-test"
                 payload = bridge.save_profile_media(
                     "avatar",
                     filename="avatar.png",
                     content_type="image/png",
-                    content=b"local-test-image",
+                    content=b"\x89PNG\r\n\x1a\nlocal-test-image",
+                    user_id="user-test",
                 )
-                self.assertTrue((root / "ui_profile" / "avatar.png").is_file())
+                self.assertTrue(Path(payload["avatar_media_path"]).is_file())
                 self.assertEqual(payload["avatar_mode"], "image")
                 self.assertTrue(payload["avatar_media_url"].startswith("/api/ui/profile/media/avatar"))
                 self.assertNotIn("local-test-image", str(payload))
+
+    def test_profile_media_rejects_video_and_bad_signature(self):
+        bridge = UiBridge.__new__(UiBridge)
+        bridge.profile = _profile_default()
+        bridge.profile["user_id"] = "user-test"
+        with self.assertRaises(ValueError):
+            bridge.save_profile_media("avatar", filename="clip.mp4", content_type="video/mp4",
+                                      content=b"ftyp", user_id="user-test")
+        with self.assertRaises(ValueError):
+            bridge.save_profile_media("avatar", filename="avatar.png", content_type="image/png",
+                                      content=b"not-an-image", user_id="user-test")
+
+    def test_profile_payload_is_not_shared_between_authenticated_users(self):
+        bridge = UiBridge.__new__(UiBridge)
+        bridge.profile = {**_profile_default(), "user_id": "user-a", "display_name": "Alice"}
+        self.assertEqual(bridge.profile_for_user("user-a")["display_name"], "Alice")
+        self.assertNotEqual(bridge.profile_for_user("user-b")["display_name"], "Alice")
+
+    def test_profile_display_name_is_normalized_and_reserved_names_rejected(self):
+        bridge = UiBridge.__new__(UiBridge)
+        bridge.profile = _profile_default()
+        saved = bridge.save_profile({"display_name": "  Alice   Example  "}, user_id="user-test")
+        self.assertEqual(saved["display_name"], "Alice Example")
+        with self.assertRaisesRegex(ValueError, "display_name_reserved"):
+            bridge.save_profile({"display_name": "ADMIN"}, user_id="user-test")
+
+    def test_profile_routes_require_canonical_authentication(self):
+        source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        for marker in ("def _ui_principal", "AUTH.require_authenticated", "api_profile_media", "profile_for_user"):
+            self.assertIn(marker, source, marker)
 
     def test_standard_emoji_are_not_embedded_in_ui(self):
         sources = "\n".join(

@@ -121,6 +121,19 @@ def _job_principal(request: Request) -> RequestPrincipal:
     return principal
 
 
+def _ui_principal(request: Request, *, mutate: bool = False) -> RequestPrincipal:
+    """Require the canonical auth principal for identity-bound UI resources."""
+    try:
+        principal = AUTH.require_authenticated(request)
+        if mutate:
+            AUTH.require_csrf(request, principal)
+        return principal
+    except CsrfRejected as exc:
+        raise HTTPException(status_code=403, detail="csrf_rejected") from exc
+    except AuthenticationRequired as exc:
+        raise HTTPException(status_code=401, detail="authentication_required") from exc
+
+
 def _local_folder_submit_allowed(request: Request) -> bool:
     """A browser may submit a filesystem folder only to a loopback-only UI server."""
 
@@ -150,6 +163,7 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "user_id": principal.user_id if principal.authenticated else "",
             "available": True,
         }
+        payload["profile"] = BRIDGE.profile_for_user(principal.user_id)
     except Exception:
         # Bootstrap is read-only; an expired or malformed credential must not prevent
         # the local library from loading. Publication itself remains fail-closed in
@@ -161,6 +175,7 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "user_id": "",
             "available": True,
         }
+        payload["profile"] = {}
     return payload
 
 
@@ -392,8 +407,9 @@ def api_resume(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
 
 
 @app.post("/api/ui/profile")
-def api_profile(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    return {"ok": True, "profile": BRIDGE.save_profile(payload)}
+def api_profile(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    return {"ok": True, "profile": BRIDGE.save_profile(payload, user_id=principal.user_id)}
 
 
 @app.post("/api/ui/profile/media/{kind}")
@@ -403,6 +419,7 @@ async def api_profile_media_upload(
     filename: str = Query(..., min_length=1, max_length=180),
     content_type: str = Query(..., min_length=3, max_length=80),
 ) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
     content = await request.body()
     return {
         "ok": True,
@@ -412,21 +429,24 @@ async def api_profile_media_upload(
             filename=filename,
             content_type=content_type,
             content=content,
+            user_id=principal.user_id,
         ),
     }
 
 
 @app.get("/api/ui/profile/media/{kind}")
-def api_profile_media(kind: str) -> FileResponse:
-    path = BRIDGE.profile_media_path(kind)
+def api_profile_media(request: Request, kind: str) -> FileResponse:
+    principal = _ui_principal(request)
+    path = BRIDGE.profile_media_path(kind, user_id=principal.user_id)
     if not path:
         raise HTTPException(status_code=404, detail="Mídia não encontrada.")
     return FileResponse(path, media_type=BRIDGE.profile.get(f"{kind}_media_type") or None)
 
 
 @app.delete("/api/ui/profile/media/{kind}")
-def api_profile_media_remove(kind: str) -> dict[str, Any]:
-    return {"ok": True, "profile": _api_call(BRIDGE.remove_profile_media, kind)}
+def api_profile_media_remove(request: Request, kind: str) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    return {"ok": True, "profile": _api_call(BRIDGE.remove_profile_media, kind, user_id=principal.user_id)}
 
 
 @app.post("/api/ui/open")

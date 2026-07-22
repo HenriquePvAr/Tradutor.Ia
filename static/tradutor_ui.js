@@ -1011,7 +1011,12 @@
   }
   function actionButton(label, action, path = '') {
     if (!path && action !== 'reprocess') return '';
-    return `<button class="btn-ghost" data-action="${action}" data-path="${encodeURIComponent(path || '')}">${label}</button>`;
+    const icons = {
+      open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M5 4h10l4 4v12H5z"/><path d="M14 4v5h5M8 15h8M8 18h6"/></svg>',
+      reprocess: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8"/><path d="M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16"/><path d="M4 20v-4h4"/></svg>',
+    };
+    const icon = icons[action] || '';
+    return `<button class="btn-ghost icon-action" data-action="${action}" data-path="${encodeURIComponent(path || '')}" aria-label="${escapeAttr(label)}" title="${escapeAttr(label)}">${icon}<span class="sr-only">${escapeHtml(label)}</span></button>`;
   }
   function publicationEligibility(record) {
     const terminal = terminalRunStatuses.has(String(record.status || '').toLowerCase());
@@ -1095,15 +1100,32 @@
       return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><div class="cf-header" data-folder="${escapeAttr(key)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></div><div class="cf-body">${group.records.map(renderHistoryCard).join('')}</div></div>`;
     }).join('');
   }
+  function applyCanonicalAuthSurface(state) {
+    const authenticated = String(state || '') === 'authenticated';
+    const protectedSelectors = ['#railProfile', '.rail-tab[data-tab="community"]', '.rail-tab[data-tab="profile"]', '#view-community', '#view-profile'];
+    protectedSelectors.forEach(selector => $$(selector).forEach(element => {
+      element.hidden = !authenticated;
+      element.setAttribute('aria-hidden', authenticated ? 'false' : 'true');
+    }));
+    const profileControls = $$('#view-profile input, #view-profile textarea, #view-profile select, #view-profile button');
+    profileControls.forEach(control => { control.disabled = !authenticated; });
+    if (!authenticated) {
+      appState.profile = {};
+      renderProfile({});
+      if ($('#view-community')?.classList.contains('active') || $('#view-profile')?.classList.contains('active')) activateTab('inicio');
+    }
+  }
   $('#histSearch')?.addEventListener('input', renderHistory);
   window.addEventListener('tradutor-auth-changed', event => {
     const state = String(event?.detail?.state || window.__tradutorAuthState || '');
     if (state !== 'authenticated') clearCommunityObjectUrls();
+    applyCanonicalAuthSurface(state);
     renderHistory();
     // The initial bootstrap may race the SDK/backend session check. Refresh the
     // authoritative local records once authentication settles.
     void refreshBootstrap();
   });
+  applyCanonicalAuthSurface(window.__tradutorAuthState || 'auth_loading');
   $('#histList')?.addEventListener('click', async event => {
     const folder = event.target.closest('.cf-header');
     if (folder) {
@@ -1366,10 +1388,23 @@
         error.code = 'invalid_pdf_content_type';
         throw error;
       }
+      const disposition = String(response.headers.get('Content-Disposition') || '').toLowerCase();
+      const cacheControl = String(response.headers.get('Cache-Control') || '').toLowerCase();
+      if (!disposition.includes('inline') || !cacheControl.includes('private') || !cacheControl.includes('no-store')) {
+        const error = new Error('Os cabeÃ§alhos do PDF nÃ£o sÃ£o seguros.');
+        error.code = 'invalid_pdf_headers';
+        throw error;
+      }
       const blob = await response.blob();
       if (!blob.size) {
         const error = new Error('O PDF retornado está vazio.');
         error.code = 'empty_pdf';
+        throw error;
+      }
+      const header = new Uint8Array(await blob.slice(0, 5).arrayBuffer());
+      if (String.fromCharCode(...header) !== '%PDF-') {
+        const error = new Error('O arquivo retornado nÃ£o possui assinatura PDF.');
+        error.code = 'invalid_pdf_signature';
         throw error;
       }
       const objectUrl = URL.createObjectURL(blob);
@@ -1654,14 +1689,11 @@
       const image = document.createElement('img');
       image.src = source; image.alt = '';
       element.appendChild(image);
-    } else if (source && String(mediaType).startsWith('video/')) {
-      const video = document.createElement('video');
-      video.src = source; video.autoplay = true; video.loop = true; video.muted = true; video.playsInline = true;
-      element.appendChild(video);
     } else element.textContent = fallback;
   }
   function renderProfile(profile = profileFromForm()) {
-    const name = profile.display_name || 'você';
+    const authenticated = String(window.__tradutorAuthState || '') === 'authenticated';
+    const name = authenticated ? (profile.display_name || 'você') : 'Visitante';
     const avatar = name.slice(0, 1).toUpperCase();
     const avatarData = profile.avatar_mode === 'image' ? profile.avatar_media_url : '';
     [$('#pcAvatar'), $('#rpAvatar')].forEach(element => {
@@ -1720,9 +1752,9 @@
   }
   async function uploadProfileMedia(kind, file) {
     if (!file) return;
-    const allowed = new Set(['image/png','image/jpeg','image/webp','image/gif','video/mp4','video/webm']);
+    const allowed = new Set(['image/png','image/jpeg','image/webp','image/gif']);
     if (!allowed.has(file.type) || file.size > 12 * 1024 * 1024) {
-      showToast('Use PNG, JPG, WEBP, GIF, MP4 ou WEBM de até 12 MB.', 'error');
+      showToast('Use PNG, JPG, WEBP ou GIF de até 12 MB.', 'error');
       return;
     }
     const response = await fetch(`/api/ui/profile/media/${kind}?filename=${encodeURIComponent(file.name)}&content_type=${encodeURIComponent(file.type)}`, {
@@ -1779,14 +1811,14 @@
     catch (_) { showToast('Não foi possível copiar.', 'error'); }
   });
   document.addEventListener('mousemove', event => {
-    const card = event.target.closest('.dash-stat-card, .profile-card');
+    const card = event.target.closest('.dash-stat-card');
     if (!card || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     const rect = card.getBoundingClientRect();
     const rotateY = ((event.clientX - rect.left - rect.width / 2) / (rect.width / 2)) * 5;
     const rotateX = -((event.clientY - rect.top - rect.height / 2) / (rect.height / 2)) * 5;
     card.style.transform = `perspective(700px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
   });
-  document.addEventListener('mouseleave', () => $$('.dash-stat-card, .profile-card').forEach(card => { card.style.transform = ''; }));
+  document.addEventListener('mouseleave', () => $$('.dash-stat-card').forEach(card => { card.style.transform = ''; }));
   document.addEventListener('keydown', event => {
     const tag = document.activeElement?.tagName || '';
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
@@ -1801,11 +1833,13 @@
       const data = await api(`/api/ui/bootstrap?cursor=${appState.cursor}`);
       appState.bootstrap = data;
       appState.history = Array.isArray(data.history) ? data.history : [];
-      appState.profile = data.profile || {};
+      const authenticated = String(window.__tradutorAuthState || '') === 'authenticated';
+      appState.profile = authenticated ? (data.profile || {}) : {};
       appState.settings = data.settings || {};
       appState.historyRevision = data.history_revision || appState.historyRevision;
       renderSettings(appState.settings);
-      applyProfileToForm(appState.profile);
+      applyCanonicalAuthSurface(window.__tradutorAuthState || 'auth_loading');
+      if (authenticated) applyProfileToForm(appState.profile);
       renderHistory();
       renderDashboard();
       renderRuntime(data);

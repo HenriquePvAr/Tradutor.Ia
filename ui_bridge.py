@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import uuid
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -78,11 +79,16 @@ PROFILE_MEDIA_TYPES = {
     ".gif": "image/gif",
     ".jpeg": "image/jpeg",
     ".jpg": "image/jpeg",
-    ".mp4": "video/mp4",
     ".png": "image/png",
-    ".webm": "video/webm",
     ".webp": "image/webp",
 }
+PROFILE_MEDIA_SIGNATURES = {
+    "image/png": lambda value: value.startswith(b"\x89PNG\r\n\x1a\n"),
+    "image/jpeg": lambda value: value.startswith(b"\xff\xd8\xff"),
+    "image/gif": lambda value: value.startswith((b"GIF87a", b"GIF89a")),
+    "image/webp": lambda value: len(value) >= 12 and value[:4] == b"RIFF" and value[8:12] == b"WEBP",
+}
+PROFILE_RESERVED_NAMES = frozenset({"admin", "administrator", "moderator", "support", "system", "root", "official"})
 
 
 UNAVAILABLE_DURATION = "Tempo indisponível"
@@ -668,6 +674,16 @@ class UiBridge:
             "settings": self.settings(),
             "community": {"available": False, "posts": 0},
         }
+
+    def profile_for_user(self, user_id: str) -> dict[str, Any]:
+        """Expose only the profile bound to the authenticated principal."""
+        normalized = str(user_id or "").strip()
+        if not normalized or str(self.profile.get("user_id") or "") != normalized:
+            profile = _profile_default()
+            profile["avatar_media_url"] = ""
+            profile["banner_media_url"] = ""
+            return profile
+        return self._profile_payload()
 
     def _history_payload(self) -> list[dict[str, Any]]:
         # Terminal jobs from the store, plus legacy output discovery for old runs.
@@ -1836,12 +1852,20 @@ class UiBridge:
             raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
         return {"ok": True}
 
-    def save_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def save_profile(self, payload: dict[str, Any], *, user_id: str = "") -> dict[str, Any]:
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            raise ValueError("authentication_required")
         allowed_status = {"online", "away", "busy", "offline"}
         profile = _profile_default()
-        profile.update(self.profile)
+        if str(self.profile.get("user_id") or "") == normalized_user_id:
+            profile.update(self.profile)
+        display_name = " ".join(str(payload.get("display_name") or "você").split())[:40]
+        if display_name.casefold() in PROFILE_RESERVED_NAMES:
+            raise ValueError("display_name_reserved")
         profile.update(
             {
+                "user_id": normalized_user_id,
                 "display_name": str(payload.get("display_name") or "você")[:40],
                 "title": str(payload.get("title") or "")[:40],
                 "pronouns": str(payload.get("pronouns") or "")[:30],
@@ -1857,6 +1881,7 @@ class UiBridge:
                 "banner": str(payload.get("banner") or "ink")[:20],
             }
         )
+        profile["display_name"] = display_name
         self.profile = profile
         self._write_profile()
         return self._profile_payload()
@@ -1868,24 +1893,36 @@ class UiBridge:
         filename: str,
         content_type: str,
         content: bytes,
+        user_id: str = "",
     ) -> dict[str, Any]:
         if kind not in {"avatar", "banner"}:
-            raise ValueError("Tipo de mídia de perfil inválido.")
+            raise ValueError("invalid_profile_media_kind")
         suffix = Path(filename or "").suffix.casefold()
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            raise ValueError("authentication_required")
+        if str(self.profile.get("user_id") or "") != normalized_user_id:
+            self.profile = _profile_default()
+            self.profile["user_id"] = normalized_user_id
         expected_type = PROFILE_MEDIA_TYPES.get(suffix)
         if not expected_type or content_type.casefold().split(";", 1)[0] != expected_type:
-            raise ValueError("Use PNG, JPG, JPEG, WEBP, GIF, MP4 ou WEBM.")
+            raise ValueError("Use PNG, JPG, JPEG ou WEBP.")
+        signature = PROFILE_MEDIA_SIGNATURES.get(expected_type)
+        if signature is None or not signature(content[:32]):
+            raise ValueError("invalid_image_signature")
         if not content or len(content) > MAX_PROFILE_MEDIA_BYTES:
             raise ValueError("A mídia deve ter no máximo 12 MB.")
 
         PROFILE_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        target = (PROFILE_MEDIA_DIR / f"{kind}{suffix}").resolve()
+        user_dir = PROFILE_MEDIA_DIR / hashlib.sha256(normalized_user_id.encode("utf-8")).hexdigest()[:24]
+        user_dir.mkdir(parents=True, exist_ok=True)
+        target = (user_dir / f"{kind}{suffix}").resolve()
         if PROFILE_MEDIA_DIR.resolve() not in target.parents:
             raise ValueError("Nome de mídia inválido.")
         temporary = target.with_suffix(target.suffix + ".tmp")
         temporary.write_bytes(content)
         temporary.replace(target)
-        for candidate in PROFILE_MEDIA_DIR.glob(f"{kind}.*"):
+        for candidate in user_dir.glob(f"{kind}.*"):
             if candidate.resolve() != target and candidate.suffix != ".tmp":
                 candidate.unlink(missing_ok=True)
 
@@ -1901,7 +1938,9 @@ class UiBridge:
         self._write_profile()
         return self._profile_payload()
 
-    def remove_profile_media(self, kind: str) -> dict[str, Any]:
+    def remove_profile_media(self, kind: str, *, user_id: str = "") -> dict[str, Any]:
+        if str(user_id or "").strip() != str(self.profile.get("user_id") or ""):
+            raise ValueError("authentication_required")
         if kind not in {"avatar", "banner"}:
             raise ValueError("Tipo de mídia de perfil inválido.")
         path = self.profile_media_path(kind)
@@ -1920,8 +1959,10 @@ class UiBridge:
         self._write_profile()
         return self._profile_payload()
 
-    def profile_media_path(self, kind: str) -> Path | None:
+    def profile_media_path(self, kind: str, *, user_id: str = "") -> Path | None:
         if kind not in {"avatar", "banner"}:
+            return None
+        if user_id and str(user_id).strip() != str(self.profile.get("user_id") or ""):
             return None
         raw_path = str(self.profile.get(f"{kind}_media_path") or "")
         if not raw_path:
