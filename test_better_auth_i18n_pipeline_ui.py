@@ -169,7 +169,7 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
             self.assertNotIn(generic, auth_fragment, generic)
         for expected in (
             "auth-login-stage", "auth-login-side", "auth-login-card",
-            "auth-login-compare", "auth-login-pipeline", "auth-login-submit",
+            "auth-login-compare", "auth-marketing-pipeline", "auth-login-submit",
         ):
             self.assertIn(expected, auth_fragment)
 
@@ -245,6 +245,55 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertIn("authCompare", self.auth_js)
         self.assertIn("authCompareHandle", self.auth_js)
         self.assertIn("setComparePosition", self.auth_js)
+        self.assertIn("forwardMs = 5200", self.auth_js)
+        self.assertIn("pauseStartMs = 750", self.auth_js)
+        self.assertNotIn("compare.addEventListener('mousedown'", self.auth_js)
+        self.assertNotIn("touchstart", self.auth_js)
+        self.assertIn("pointer-events:none", self.css)
+        self.assertIn("object-fit:contain;object-position:top center", self.css)
+
+    def test_auth_marketing_pipeline_ping_pongs_and_is_not_interactive(self):
+        self.assertIn('id="authMarketingPipeline"', self.shell)
+        self.assertEqual(self.shell.count("data-auth-pipeline-step"), 6)
+        self.assertIn("sequence = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0]", self.auth_js)
+        self.assertIn("__tradutorAuthPipelineTimer", self.auth_js)
+        self.assertIn("auth-marketing-pipeline{", self.css)
+        self.assertIn("pointer-events:none", self.css)
+        pipeline_fragment = self.shell[self.shell.index('id="authMarketingPipeline"'):]
+        self.assertNotIn("<button", pipeline_fragment.split("</div>\n\n      <div class=\"auth-login-format-row\">")[0])
+        self.assertNotIn("tabindex", pipeline_fragment.split("</div>\n\n      <div class=\"auth-login-format-row\">")[0])
+
+    def test_auth_form_removes_top_tabs_and_adds_required_copy_and_benefits(self):
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        self.assertNotIn('class="auth-tabs"', auth_fragment)
+        self.assertEqual(auth_fragment.count("data-authmode-link"), 1)
+        for key in (
+            "auth.hero.title",
+            "auth.hero.description",
+            "auth.hero.complement",
+            "auth.benefit.session",
+            "auth.benefit.pdfs",
+            "auth.benefit.progress",
+        ):
+            self.assertIn(key, auth_fragment)
+        self.assertIn("auth-login-recovery", auth_fragment)
+        self.assertIn("hidden>Recuperar acesso", auth_fragment)
+
+    def test_new_auth_and_loading_strings_exist_in_all_catalogs(self):
+        required = {
+            "auth.hero.title", "auth.hero.description", "auth.hero.complement",
+            "auth.compare.automatic", "auth.compare.caption",
+            "auth.pipeline.download", "auth.pipeline.ocr", "auth.pipeline.organize",
+            "auth.pipeline.translate", "auth.pipeline.cache", "auth.pipeline.pdf",
+            "auth.local_panel", "auth.service_connected", "auth.welcome_back",
+            "auth.continue_work", "auth.no_account", "auth.create_local",
+            "auth.benefit.session", "auth.benefit.pdfs", "auth.benefit.progress",
+            "loading.title", "loading.subtitle",
+        }
+        for lang in ("pt-BR", "en-US", "es-ES", "fr-FR", "ja-JP", "ko-KR"):
+            with self.subTest(lang=lang):
+                keys = set(re.findall(r"'([^']+)'\s*:", read(f"static/i18n/{lang}.js")))
+                self.assertTrue(required.issubset(keys))
 
 
 if __name__ == "__main__":
