@@ -258,6 +258,7 @@ async function init() {
     await syncBackendSession();
     return;
   }
+  window.__tradutorGetCanonicalAccessToken = authApi.getCanonicalAccessToken;
   if (window.__tradutorAuthHandlersBound) return;
   window.__tradutorAuthHandlersBound = true;
   document.querySelectorAll('.auth-tab').forEach((tab) => {

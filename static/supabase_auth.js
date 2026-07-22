@@ -56,6 +56,20 @@ export async function currentAccessToken() {
   return data?.session?.access_token || '';
 }
 
+// Canonical asynchronous source used by all community requests.
+export async function getCanonicalAccessToken() {
+  const now = Math.floor(Date.now() / 1000);
+  if (memorySession?.access_token && (!memorySession.expires_at || memorySession.expires_at > now + 30)) {
+    return memorySession.access_token;
+  }
+  const client = await getSupabaseClient();
+  if (!client) return '';
+  const {data, error} = await client.auth.getSession();
+  if (error || !data?.session?.access_token) return '';
+  memorySession = {...memorySession, ...data.session, expires_at: data.session.expires_at || 0};
+  return memorySession.access_token || '';
+}
+
 export async function currentUserEmail() {
   const client = await getSupabaseClient();
   if (!client) return '';
@@ -101,6 +115,7 @@ export async function signIn(email, password, { signal } = {}) {
     refresh_token: String(payload.refresh_token),
     token_type: payload.token_type || 'bearer',
     expires_in: payload.expires_in,
+    expires_at: Math.floor(Date.now() / 1000) + Number(payload.expires_in || 3600),
     user: payload.user || null,
   };
   const client = await getSupabaseClient();

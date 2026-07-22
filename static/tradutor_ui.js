@@ -84,7 +84,11 @@
     }
     // Supabase mode: attach the current access token (kept fresh by the SDK). The token
     // lives only in the auth module's cache; this never persists or logs it.
-    const bearer = window.__tradutorAccessToken || '';
+    let bearer = window.__tradutorAccessToken || '';
+    if (!bearer && typeof window.__tradutorGetCanonicalAccessToken === 'function') {
+      try { bearer = await window.__tradutorGetCanonicalAccessToken(); } catch (_) { bearer = ''; }
+      if (bearer) window.__tradutorAccessToken = bearer;
+    }
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     const timeoutMs = Number(options.timeoutMs || 15000);
     const controller = options.signal ? null : new AbortController();

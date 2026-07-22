@@ -161,8 +161,15 @@ class SupabaseFrontendTests(unittest.TestCase):
             "getUser",
             "get_user_finished",
             "/auth/v1/user",
+            "getCanonicalAccessToken",
+            "__tradutorGetCanonicalAccessToken",
         ):
             self.assertIn(marker, source)
+
+    def test_community_helper_resolves_token_asynchronously(self):
+        source = _read("static/tradutor_ui.js")
+        self.assertIn("await window.__tradutorGetCanonicalAccessToken()", source)
+        self.assertNotIn("const bearer = window.__tradutorAccessToken || ''", source)
 
     def test_public_config_exposes_only_sanitized_project_identity(self):
         source = _read("supabase_auth.py")
