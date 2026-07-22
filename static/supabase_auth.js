@@ -8,6 +8,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.58.0';
 
 let clientPromise = null;
 let publicConfigPromise = null;
+let memorySession = null;
+const SDK_SESSION_TIMEOUT_MS = 5000;
+
+function transportTrace(event, fields = {}) {
+  try { window.__tradutorAuthTraceEvent?.(event, fields); } catch (_) { /* diagnostics never affect auth */ }
+}
 
 async function fetchPublicConfig() {
   const response = await fetch('/api/community/auth/config', { credentials: 'same-origin' });
@@ -43,6 +49,7 @@ export function getSupabaseClient() {
 
 // Current access token for backend calls, or '' when signed out. Never logged.
 export async function currentAccessToken() {
+  if (memorySession?.access_token) return memorySession.access_token;
   const client = await getSupabaseClient();
   if (!client) return '';
   const { data } = await client.auth.getSession();
@@ -68,6 +75,7 @@ export async function signUp(email, password) {
 }
 
 export async function signIn(email, password, { signal } = {}) {
+  transportTrace('sign_in_started', {source: 'supabase_password'});
   const cfg = await publicConfig();
   if (cfg.provider !== 'supabase' || !cfg.supabase_url || !cfg.publishable_key) {
     throw new Error('supabase not configured');
@@ -78,23 +86,51 @@ export async function signIn(email, password, { signal } = {}) {
     body: JSON.stringify({email, password}),
     signal,
   });
+  transportTrace('sign_in_response_received', {status: response.status, source: 'supabase_password'});
   let payload = {};
   try { payload = await response.json(); } catch (_) { /* invalid response */ }
   if (!response.ok || !payload.access_token || !payload.refresh_token) {
     const error = new Error(String(payload.error_description || payload.msg || 'authentication_failed'));
     error.status = response.status;
+    error.code = String(payload.error_code || payload.error || 'authentication_failed');
+    transportTrace('sign_in_error_received', {status: response.status, code: error.code, source: 'supabase_password'});
     throw error;
   }
+  memorySession = {
+    access_token: String(payload.access_token),
+    refresh_token: String(payload.refresh_token),
+    token_type: payload.token_type || 'bearer',
+    expires_in: payload.expires_in,
+    user: payload.user || null,
+  };
   const client = await getSupabaseClient();
   if (!client) throw new Error('supabase not configured');
-  const { error } = await client.auth.setSession({
-    access_token: payload.access_token,
-    refresh_token: payload.refresh_token,
-  });
-  if (error) throw error;
+  transportTrace('sdk_session_set_started', {source: 'supabase_password'});
+  try {
+    const result = await Promise.race([
+      client.auth.setSession({
+        access_token: payload.access_token,
+        refresh_token: payload.refresh_token,
+      }),
+      new Promise((_, reject) => setTimeout(() => {
+        const timeout = new Error('sdk_session_timeout');
+        timeout.code = 'sdk_session_timeout';
+        reject(timeout);
+      }, SDK_SESSION_TIMEOUT_MS)),
+    ]);
+    if (result?.error) throw result.error;
+    transportTrace('sdk_session_set_finished', {source: 'supabase_password'});
+  } catch (error) {
+    // The token came from the verified Auth endpoint. Keep it only in memory so
+    // the canonical backend exchange can finish; the SDK may still complete its
+    // own persistence/refresh asynchronously.
+    transportTrace('sdk_session_set_deferred', {code: error?.code || 'sdk_session_error', source: 'supabase_password'});
+  }
+  return memorySession;
 }
 
 export async function signOut() {
+  memorySession = null;
   const client = await getSupabaseClient();
   if (client) await client.auth.signOut();
 }
@@ -105,6 +141,6 @@ export async function onAuthChange(handler) {
   if (!client) { handler(null, 'INITIAL_SESSION'); return () => {}; }
   const { data } = client.auth.onAuthStateChange((event, session) => handler(session, event));
   const { data: initial } = await client.auth.getSession();
-  handler(initial?.session || null, 'INITIAL_SESSION');
+  handler(memorySession || initial?.session || null, 'INITIAL_SESSION');
   return () => data.subscription.unsubscribe();
 }

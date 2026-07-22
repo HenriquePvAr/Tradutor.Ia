@@ -14,6 +14,7 @@ import json
 import re
 import threading
 import time
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -185,10 +186,17 @@ class SupabaseAuthProvider:
 
     def public_config(self) -> dict[str, str]:
         """Only fields designed for the browser; never the secret key or JWKS internals."""
+        hostname = urlparse(self.config.url).hostname or ""
+        project_ref = hostname.split(".", 1)[0] if hostname else ""
+        masked_ref = f"{project_ref[:6]}…{project_ref[-4:]}" if len(project_ref) > 10 else project_ref
         return {
             "provider": "supabase",
             "supabase_url": self.config.url,
             "publishable_key": self.config.publishable_key,
+            "configured": self.configured,
+            "hostname": hostname,
+            "project_ref": masked_ref,
+            "auth_method": "email_password",
         }
 
     # ---- request boundary ----------------------------------------------------

@@ -50,6 +50,8 @@ function authTrace(event, fields = {}) {
   if (window.__tradutorAuthTrace.length > 40) window.__tradutorAuthTrace.shift();
 }
 
+window.__tradutorAuthTraceEvent = authTrace;
+
 function setAuthState(state, userId = '') {
   window.__tradutorAuthState = state;
   window.__tradutorCommunityUserId = state === 'authenticated' ? String(userId || '') : '';
@@ -103,6 +105,7 @@ async function syncBackendSession(accessToken = '', {signal} = {}) {
   const headers = {};
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   try {
+    if (accessToken) authTrace('local_session_exchange_started', {source: 'bearer'});
     authTrace('canonical_session_request', {source: accessToken ? 'bearer' : 'cookie'});
     const response = await withTimeout(fetch('/api/community/auth/session', {
       headers, credentials: 'same-origin', cache: 'no-store', signal,
@@ -110,6 +113,7 @@ async function syncBackendSession(accessToken = '', {signal} = {}) {
     let payload = {};
     try { payload = await response.json(); } catch (_) { /* empty response */ }
     if (response.ok && payload.authenticated) {
+      if (accessToken) authTrace('local_session_exchange_finished', {status: response.status, authenticated: true, source: 'bearer'});
       setAuthState('authenticated', payload.user_id);
       window.__tradutorCommunityAuthenticated = true;
       authTrace('canonical_session_confirmed', {authenticated: true});
@@ -118,6 +122,7 @@ async function syncBackendSession(accessToken = '', {signal} = {}) {
       }));
       return payload;
     }
+    if (accessToken) authTrace('local_session_exchange_finished', {status: response.status, authenticated: false, source: 'bearer'});
     if (response.status === 401) setAuthState('session_expired');
     else if (response.status === 403) setAuthState('auth_error');
     else setAuthState('unauthenticated');
@@ -149,10 +154,12 @@ async function establishCanonicalSession(signal) {
 }
 
 async function completeLoginFlow(email, password, signal) {
+  window.__tradutorLoginStage = 'supabase_sign_in';
   authTrace('login_request_started', {source: AUTH_HANDLER_ID});
   await authApi.signIn(email, password, {signal});
   authTrace('login_request_finished', {source: AUTH_HANDLER_ID});
   authTrace('canonical_session_refresh_started', {source: AUTH_HANDLER_ID});
+  window.__tradutorLoginStage = 'canonical_session';
   const canonical = await establishCanonicalSession(signal);
   authTrace('canonical_session_refresh_finished', {authenticated: true, source: AUTH_HANDLER_ID});
   if (!canonical?.authenticated) {
@@ -161,6 +168,8 @@ async function completeLoginFlow(email, password, signal) {
     throw error;
   }
   authTrace('auth_state_updated', {authenticated: true, source: AUTH_HANDLER_ID});
+  window.__tradutorAccessToken = await authApi.currentAccessToken();
+  renderAuthShell('authenticated');
   return canonical;
 }
 
@@ -299,7 +308,10 @@ async function init() {
           await withTimeout(completeLoginFlow(email, password, controller.signal), AUTH_LOGIN_TIMEOUT_MS);
         } catch (signInError) {
           controller.abort();
-          if (signInError?.message === 'auth_bootstrap_timeout') signInError.code = 'auth_timeout';
+          if (signInError?.message === 'auth_bootstrap_timeout') {
+            signInError.code = `${window.__tradutorLoginStage || 'supabase_sign_in'}_timeout`;
+            authTrace('sign_in_timeout', {code: signInError.code});
+          }
           throw signInError;
         }
         closeModal();
@@ -322,6 +334,8 @@ async function init() {
       const sessionFailure = err?.code === 'session_not_established';
       const message = sessionFailure
         ? 'O login foi aceito, mas a sessão não pôde ser confirmada.'
+        : String(err?.code || '').endsWith('_timeout')
+        ? 'O serviço de autenticação demorou para responder.'
         : controller.signal.aborted || err?.name === 'AbortError'
         ? 'O login demorou para responder. Tente novamente.'
         : status === 401 ? 'E-mail ou senha inválidos.'

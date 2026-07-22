@@ -188,6 +188,7 @@ def create_community_router(community, auth) -> APIRouter:
         """Browser-safe provider configuration; never secrets or JWKS internals."""
         public = getattr(auth, "public_config", None)
         content = public() if callable(public) else {"provider": getattr(auth, "auth_source", "local")}
+        content = {**content, "build_version": "local-ui"}
         return JSONResponse(content, headers=no_store_headers)
 
     @router.get("/auth/session")

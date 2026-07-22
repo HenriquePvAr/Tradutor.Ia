@@ -149,6 +149,24 @@ class SupabaseFrontendTests(unittest.TestCase):
         self.assertIn("signal,", source)
         self.assertIn("grant_type=password", source)
 
+    def test_supabase_transport_reports_response_and_bounds_sdk_session_persistence(self):
+        source = _read("static/supabase_auth.js")
+        for marker in (
+            "sign_in_started",
+            "sign_in_response_received",
+            "sign_in_error_received",
+            "SDK_SESSION_TIMEOUT_MS",
+            "sdk_session_set_deferred",
+            "memorySession",
+        ):
+            self.assertIn(marker, source)
+
+    def test_public_config_exposes_only_sanitized_project_identity(self):
+        source = _read("supabase_auth.py")
+        for marker in ("hostname", "project_ref", "auth_method", "configured"):
+            self.assertIn(marker, source)
+        self.assertIn("build_version", _read("community_http.py"))
+
     def test_auth_asset_is_versioned_by_file_mtime(self):
         app_source = _read("app_ui.py")
         self.assertIn("AUTH_UI_ASSET", app_source)
