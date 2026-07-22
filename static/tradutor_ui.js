@@ -315,7 +315,7 @@
     railIndicator.style.height = `${tab.offsetHeight}px`;
   }
   function staggerReveal(view) {
-    $$('.panel, .hist-item, .dash-stat-card', view).forEach((item, index) => {
+    $$('.panel, .hist-item', view).forEach((item, index) => {
       item.style.animation = 'none';
       void item.offsetHeight;
       item.style.animation = `riseIn .42s cubic-bezier(.2,.8,.25,1) ${Math.min(index, 8) * 70}ms both`;
@@ -2285,22 +2285,13 @@
     } catch (error) { showToast(error.message, 'error'); }
   });
 
-  /* ---------- modal, copy and tilt ---------- */
+  /* ---------- modal and copy ---------- */
   $('#visitorModalClose')?.addEventListener('click', () => $('#visitorModalOverlay').classList.remove('open'));
   $('#visitorModalOverlay')?.addEventListener('click', event => { if (event.target.id === 'visitorModalOverlay') event.currentTarget.classList.remove('open'); });
   $('#copyRepo')?.addEventListener('click', async event => {
     try { await navigator.clipboard.writeText(event.currentTarget.dataset.copy || ''); showToast('Copiado.', 'ok'); }
     catch (_) { showToast('Não foi possível copiar.', 'error'); }
   });
-  document.addEventListener('mousemove', event => {
-    const card = event.target.closest('.dash-stat-card');
-    if (!card || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const rect = card.getBoundingClientRect();
-    const rotateY = ((event.clientX - rect.left - rect.width / 2) / (rect.width / 2)) * 5;
-    const rotateX = -((event.clientY - rect.top - rect.height / 2) / (rect.height / 2)) * 5;
-    card.style.transform = `perspective(700px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
-  });
-  document.addEventListener('mouseleave', () => $$('.dash-stat-card').forEach(card => { card.style.transform = ''; }));
   document.addEventListener('keydown', event => {
     const tag = document.activeElement?.tagName || '';
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;

@@ -536,6 +536,39 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn("community-card-tags", card_css)
         self.assertNotRegex(card_css, r"(?<!text-)transform:")
 
+    def test_dashboard_metric_cards_remain_static_on_hover_and_focus(self):
+        css = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        stat_css = css[
+            css.index(".dash-stats")
+            :css.index(".dash-series-item")
+        ]
+        reduced_motion = css[
+            css.index("@media (prefers-reduced-motion: reduce)")
+            :css.index("/* ---------- REAL NICEGUI BRIDGE ---------- */")
+        ]
+        self.assertEqual(shell.count('class="dash-stat-card"'), 4)
+        self.assertIn("grid-template-columns:repeat(4, 1fr)", stat_css)
+        self.assertIn("transform:none", stat_css)
+        self.assertIn(".dash-stat-card:hover", stat_css)
+        self.assertIn(".dash-stat-card:focus-within", stat_css)
+        self.assertIn("border-color 160ms ease", stat_css)
+        self.assertNotIn("perspective", stat_css)
+        self.assertNotIn("transform-style", stat_css)
+        self.assertNotIn("will-change:transform", stat_css)
+        self.assertNotIn("transition:all", stat_css.replace(" ", ""))
+        self.assertNotIn("transition-property:transform", stat_css.replace(" ", ""))
+        self.assertNotRegex(stat_css, r"transition:[^;]*transform")
+        self.assertNotRegex(stat_css, r"translate(?:X|Y)?\(")
+        self.assertNotRegex(stat_css, r"scale\(")
+        self.assertNotRegex(stat_css, r"rotate(?:X|Y)?\(")
+        self.assertIn(".dash-stat-card{animation:none !important", reduced_motion)
+        stagger_block = source[source.index("function staggerReveal"):source.index("function activateTab")]
+        self.assertNotIn(".dash-stat-card", stagger_block)
+        self.assertNotIn("closest('.dash-stat-card')", source)
+        self.assertNotIn("perspective(700px)", source)
+
     def test_social_module_does_not_replace_local_verified_feed(self):
         source = (ROOT / "static" / "social_community.js").read_text(encoding="utf-8")
         boot_block = source[source.index("async function boot"):]

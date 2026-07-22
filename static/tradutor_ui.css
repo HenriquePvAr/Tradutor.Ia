@@ -329,18 +329,23 @@
     display:flex; align-items:center; gap:6px;
   }
   .dash-streak:empty{display:none;}
-  .dash-stats{display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; margin-bottom:22px; perspective:900px;}
+  .dash-stats{display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; margin-bottom:22px;}
   .dash-stat-card{
     border:1px solid var(--line); border-radius:4px; padding:22px 14px;
     display:flex; flex-direction:column; align-items:center; gap:7px; text-align:center;
     background:
       radial-gradient(rgba(239,231,216,0.045) 1px, transparent 1.3px) 0 0/7px 7px,
       linear-gradient(160deg, rgba(239,231,216,0.05), rgba(239,231,216,0.015));
-    transition:transform .15s ease-out, border-color .2s ease;
+    transition:border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
     box-shadow:0 20px 40px -26px rgba(0,0,0,0.6);
-    transform-style:preserve-3d; will-change:transform;
+    transform:none;
   }
-  .dash-stat-card:hover{border-color:rgba(var(--tab-rgb),0.55);}
+  .dash-stat-card:hover,
+  .dash-stat-card:focus-within{
+    border-color:rgba(var(--tab-rgb),0.55);
+    background-color:rgba(var(--tab-rgb),0.035);
+    transform:none;
+  }
   .dsc-icon{width:23px; height:23px; color:var(--tab-accent); line-height:1;}
   .dsc-icon svg{width:100%; height:100%; display:block;}
   .dsc-num{font-family:'Black Han Sans',sans-serif; font-size:30px; color:var(--paper); line-height:1;}
@@ -1222,6 +1227,7 @@
 
   @media (prefers-reduced-motion: reduce){
     *{animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important;}
+    .dash-stat-card{animation:none !important; transition-duration:0ms !important; transform:none !important;}
     #boot{display:none;}
     .sweep{display:none;}
   }
