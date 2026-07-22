@@ -136,8 +136,7 @@ class SupabaseSocialRepository:
         return rows[0]
 
     def update_my_profile(self, token, user_id, fields):
-        allowed = {"username", "display_name", "bio", "theme_color",
-                   "avatar_object_key", "banner_object_key", "public_role", "pronouns",
+        allowed = {"username", "display_name", "bio", "theme_color", "public_role", "pronouns",
                    "status", "status_message", "accent_color", "show_favorites",
                    "show_history", "allow_profile_comments"}
         patch = _clean_patch(fields, allowed)

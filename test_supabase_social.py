@@ -170,6 +170,11 @@ class OwnershipAndBodyTests(unittest.TestCase):
         with self.assertRaises(SocialValidationError):
             _repo(FakeTransport()).update_work(TOKEN, UUID2, {"owner_id": "x"})
 
+    def test_profile_object_keys_are_server_managed(self):
+        with self.assertRaises(SocialValidationError):
+            _repo(FakeTransport()).update_my_profile(
+                TOKEN, USER, {"avatar_object_key": "forged/path"})
+
     def test_deleted_comment_text_is_hidden(self):
         t = FakeTransport()
         t.push(200, [{"id": UUID2, "content": "secret", "deleted_at": "2020-01-01T00:00:00Z"}])
