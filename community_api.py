@@ -303,15 +303,15 @@ class CommunityApi:
         *,
         expected_run: str,
         expected_hash: str,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         """Validate the exact terminal job without assigning ownership."""
         try:
             job = self.service.job_store.get_job(job_id)
             if not job:
-                raise ValueError
+                raise ArtifactBindingError("job_not_found", status_code=404)
             config = job.get("configuration") or {}
             if not isinstance(config, dict) or config.get("job_type") != "translation":
-                raise ValueError
+                raise ArtifactBindingError("legacy_claim_not_allowed", status_code=422)
             current_owner = str(config.get("community_owner_id") or "")
             if current_owner:
                 # The caller may still receive an idempotent response, but the
@@ -326,38 +326,88 @@ class CommunityApi:
             output_dir = Path(str(job.get("output_dir") or "")).resolve()
             root = self.service.output_root.resolve()
             if not _is_within(output_dir, root):
-                raise ValueError
+                raise ArtifactBindingError("manifest_path_invalid", status_code=404)
             pdf_path = _resolve_recorded_path(job.get("pdf_path"), output_dir)
             if not _is_within(pdf_path, output_dir) or not _is_within(pdf_path, root):
-                raise ValueError
+                raise ArtifactBindingError("manifest_path_invalid", status_code=404)
+
+            # A persisted manifest_path may point at run_manifest.json, whose role is
+            # technical pipeline evidence and which legitimately may not carry job_id.
+            # Binding identity must come from a validated job_manifest.json fallback.
             recorded_manifest = str(job.get("manifest_path") or "").strip()
-            manifest_path = Path(recorded_manifest) if recorded_manifest else output_dir / "job_manifest.json"
-            if not manifest_path.is_absolute():
-                manifest_path = output_dir / manifest_path
-            manifest_path = manifest_path.resolve()
-            if not _is_within(manifest_path, output_dir) or not manifest_path.is_file():
-                manifest_path = output_dir / "job_manifest.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if not isinstance(manifest, dict) or manifest.get("job_id") != job_id \
-                    or manifest.get("run_id") != expected_run \
-                    or int(manifest.get("exit_code")) != 0:
-                raise ValueError
+            candidates: list[tuple[str, Path]] = []
+            if recorded_manifest:
+                candidates.append(("persisted", Path(recorded_manifest)))
+            candidates.extend((
+                ("job_manifest", output_dir / "job_manifest.json"),
+                ("run_manifest", output_dir / "run_manifest.json"),
+            ))
+            selected: tuple[str, Path, dict[str, Any]] | None = None
+            seen: set[Path] = set()
+            for source, candidate in candidates:
+                candidate = candidate if candidate.is_absolute() else output_dir / candidate
+                candidate = candidate.resolve()
+                if candidate in seen or not _is_within(candidate, output_dir):
+                    continue
+                seen.add(candidate)
+                if not candidate.is_file() or candidate.suffix.lower() != ".json":
+                    continue
+                try:
+                    document = json.loads(candidate.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(document, dict):
+                    continue
+                if document.get("job_id") != job_id or document.get("run_id") != expected_run:
+                    # run_manifest without job_id is evidence only; keep looking for
+                    # the canonical job manifest instead of treating the artifact as absent.
+                    continue
+                normalized_source = (
+                    "job_manifest" if candidate.name == "job_manifest.json"
+                    else "run_manifest" if candidate.name == "run_manifest.json"
+                    else source
+                )
+                selected = (normalized_source, candidate, document)
+                break
+            if selected is None:
+                raise ArtifactBindingError("job_manifest_not_found", status_code=404)
+            manifest_source, manifest_path, manifest = selected
+            if manifest.get("output_dir"):
+                manifest_output = Path(str(manifest["output_dir"])).resolve()
+                if manifest_output != output_dir:
+                    raise ArtifactBindingError("manifest_identity_mismatch", status_code=409)
+            if int(manifest.get("exit_code")) != 0:
+                raise ArtifactBindingError("manifest_identity_mismatch", status_code=409)
             manifest_pdf = _resolve_recorded_path(manifest.get("pdf_path"), output_dir)
             if manifest_pdf != pdf_path:
-                raise ValueError
+                raise ArtifactBindingError("manifest_identity_mismatch", status_code=409)
             digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
             if digest != expected_hash:
                 raise ArtifactBindingError("hash_mismatch", status_code=409)
             validate_local_pdf(pdf_path, root)
-            run_manifest_path = output_dir / "run_manifest.json"
+            run_manifest_path = (output_dir / "run_manifest.json").resolve()
+            if not _is_within(run_manifest_path, output_dir):
+                raise ArtifactBindingError("manifest_path_invalid", status_code=404)
             if run_manifest_path.is_file():
                 run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(run_manifest, dict) or not run_manifest.get("run_id"):
+                    raise ArtifactBindingError("run_manifest_not_found", status_code=404)
+                if run_manifest.get("job_id") and run_manifest.get("job_id") != job_id:
+                    raise ArtifactBindingError("manifest_identity_mismatch", status_code=409)
                 run_pdf = _resolve_recorded_path(
                     run_manifest.get("pdf_path") or run_manifest.get("pdf_filename"), output_dir)
-                if not isinstance(run_manifest, dict) or not run_manifest.get("run_id") \
-                        or run_pdf != pdf_path:
-                    raise ValueError
-            return {"pdf_path": str(pdf_path), "pdf_sha256": digest}
+                if run_pdf != pdf_path:
+                    raise ArtifactBindingError("manifest_identity_mismatch", status_code=409)
+            return {
+                "resolved": True,
+                "job_id": str(job_id),
+                "run_id": str(expected_run),
+                "manifest_source": str(manifest_source),
+                "job_manifest_path": str(output_dir / "job_manifest.json"),
+                "run_manifest_path": str(run_manifest_path),
+                "pdf_path": str(pdf_path),
+                "pdf_sha256": digest,
+            }
         except ArtifactBindingError:
             raise
         except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):

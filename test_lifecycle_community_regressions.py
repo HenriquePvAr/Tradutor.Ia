@@ -3,6 +3,7 @@
 import _test_bootstrap  # noqa: F401
 
 import asyncio
+import hashlib
 import json
 import tempfile
 import time
@@ -11,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from community_auth import RequestPrincipal, ResourceNotFound
-from community_api import CommunityApi
+from community_api import ArtifactBindingError, CommunityApi
 from community_http import _community_call
 from job_store import JobStatus, JobStore
 import ui_bridge
@@ -135,6 +136,77 @@ class CancellationContractTests(unittest.TestCase):
 
 
 class CommunityResolutionTests(unittest.TestCase):
+    def _legacy_fixture(self, tmp: Path):
+        output = tmp / "output" / "chapter"
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nlegacy binding fixture\n")
+        store = _new_store(tmp)
+        api = CommunityApi(store, community_db_path=tmp / "community.sqlite3", output_root=tmp / "output")
+        job_id = _make_review_required(store)
+        store.update_fields(job_id, output_dir=str(output), pdf_path=str(pdf),
+                            manifest_path=str(output / "run_manifest.json"))
+        store.complete_review(job_id)
+        job = store.get_job(job_id)
+        (output / "job_manifest.json").write_text(json.dumps({
+            "job_id": job_id, "run_id": job["run_id"], "status": JobStatus.FINISHED,
+            "exit_code": 0, "output_dir": str(output), "pdf_path": str(pdf),
+        }), encoding="utf-8")
+        (output / "run_manifest.json").write_text(json.dumps({
+            "run_id": "pipeline-run-id", "pdf_path": str(pdf),
+        }), encoding="utf-8")
+        return store, api, job_id, job, pdf
+
+    def test_unowned_claim_resolves_job_manifest_when_run_manifest_lacks_job_id(self):
+        tmp = Path(tempfile.mkdtemp())
+        store, api, job_id, job, pdf = self._legacy_fixture(tmp)
+        try:
+            digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+            resolved = api._resolve_unowned_binding_source(
+                job_id, expected_run=job["run_id"], expected_hash=digest)
+            self.assertEqual(resolved["manifest_source"], "job_manifest")
+            self.assertEqual(resolved["job_id"], job_id)
+            self.assertEqual(resolved["run_id"], job["run_id"])
+            self.assertEqual(resolved["pdf_sha256"], digest)
+        finally:
+            api.close()
+            store.close()
+
+    def test_self_claim_binds_owner_after_validated_manifest_fallback(self):
+        tmp = Path(tempfile.mkdtemp())
+        store, api, job_id, job, pdf = self._legacy_fixture(tmp)
+        try:
+            before = hashlib.sha256(pdf.read_bytes()).hexdigest()
+            principal = RequestPrincipal("member-user", True, auth_source="supabase")
+            result = api.claim_legacy_artifact(
+                job_id,
+                {"expected_run_id": job["run_id"], "expected_pdf_sha256": before, "confirm": True},
+                principal=principal,
+            )
+            self.assertEqual(result["code"], "artifact_claimed")
+            self.assertEqual(store.get_job(job_id)["configuration"]["community_owner_id"], "member-user")
+            self.assertEqual(hashlib.sha256(pdf.read_bytes()).hexdigest(), before)
+        finally:
+            api.close()
+            store.close()
+
+    def test_job_manifest_identity_mismatch_is_not_treated_as_valid_fallback(self):
+        tmp = Path(tempfile.mkdtemp())
+        store, api, job_id, job, pdf = self._legacy_fixture(tmp)
+        try:
+            path = pdf.parent / "job_manifest.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["job_id"] = "f" * 32
+            path.write_text(json.dumps(data), encoding="utf-8")
+            digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+            with self.assertRaises(ArtifactBindingError) as caught:
+                api._resolve_unowned_binding_source(
+                    job_id, expected_run=job["run_id"], expected_hash=digest)
+            self.assertEqual(caught.exception.code, "job_manifest_not_found")
+        finally:
+            api.close()
+            store.close()
+
     def test_local_legacy_job_resolves_and_binds_owner_after_manifest_validation(self):
         tmp = Path(tempfile.mkdtemp())
         output = tmp / "output" / "chapter"
