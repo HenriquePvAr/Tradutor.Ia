@@ -221,12 +221,15 @@ function renderSession(session, authEvent = '') {
   authTrace('sdk_session_changed', {authenticated: Boolean(session)});
   startAuthHeartbeat();
   setAuthState('auth_loading');
-  const email = session?.user?.email || '';
-  if (session && email) {
-    status.textContent = email;
+  const displayName = String(window.__tradutorDisplayName || '').trim();
+  if (session) {
+    // The public shell never falls back to the account email.  The local profile
+    // bootstrap replaces the neutral label with the persisted display name.
+    status.textContent = displayName || 'Usuário';
     openBtn.hidden = true;
     logoutBtn.hidden = false;
   } else {
+    window.__tradutorDisplayName = '';
     status.textContent = 'visitante';
     openBtn.hidden = false;
     logoutBtn.hidden = true;

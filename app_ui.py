@@ -37,6 +37,9 @@ ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
 AUTH_UI_ASSET = ROOT / "static" / "auth_ui.js"
+TRADUTOR_UI_ASSET = ROOT / "static" / "tradutor_ui.js"
+TRADUTOR_CSS_ASSET = ROOT / "static" / "tradutor_ui.css"
+SOCIAL_COMMUNITY_ASSET = ROOT / "static" / "social_community.js"
 
 
 def _asset_url(path: Path) -> str:
@@ -75,6 +78,30 @@ def _sync_public_profile(principal: RequestPrincipal) -> dict[str, Any]:
 
 
 COMMUNITY._profile_sync = _sync_public_profile
+
+
+def _enrich_history_publications(history: list[dict[str, Any]]) -> None:
+    """Join verified local history records to an existing community post only."""
+    for record in history:
+        job_id = str(record.get("job_id") or "")
+        run_id = str(record.get("run_id") or "")
+        pdf_sha = str(record.get("pdf_sha256") or "").casefold()
+        if not job_id or not run_id or len(pdf_sha) != 64:
+            continue
+        post = COMMUNITY.store.post_for_any_source(job_id)
+        if not post or str(post.get("source_run_id") or "") != run_id:
+            continue
+        file = COMMUNITY.store.file_for_post(str(post.get("id") or ""))
+        if not file or str(file.get("sha256") or "").casefold() != pdf_sha:
+            continue
+        if str(post.get("status") or "").casefold() != "published":
+            continue
+        record.update({
+            "publication_status": "published",
+            "publication_id": str(post.get("id") or ""),
+            "publication_pdf_sha256": pdf_sha,
+            "published_at": post.get("published_at") or "",
+        })
 
 app.add_middleware(CommunityNetworkBoundaryMiddleware, auth=AUTH)
 app.add_static_files("/static", STATIC_DIR)
@@ -177,6 +204,7 @@ def auth_callback() -> FileResponse:
 @app.get("/api/ui/bootstrap")
 def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, Any]:
     payload = BRIDGE.bootstrap(cursor)
+    _enrich_history_publications(payload.get("history") or [])
     try:
         principal = AUTH.authenticate_request(request)
         payload["community"] = {
@@ -518,13 +546,13 @@ def index() -> None:
         """
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-        <link rel="stylesheet" href="/static/tradutor_ui.css">
         """
+        + f'<link rel="stylesheet" href="{_asset_url(TRADUTOR_CSS_ASSET)}">'
     )
     ui.add_body_html(shell)
-    ui.add_body_html(f'<script src="{_asset_url(STATIC_DIR / "tradutor_ui.js")}" defer></script>')
+    ui.add_body_html(f'<script src="{_asset_url(TRADUTOR_UI_ASSET)}" defer></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
-    ui.add_body_html('<script type="module" src="/static/social_community.js"></script>')
+    ui.add_body_html(f'<script type="module" src="{_asset_url(SOCIAL_COMMUNITY_ASSET)}"></script>')
 
 
 @app.on_shutdown

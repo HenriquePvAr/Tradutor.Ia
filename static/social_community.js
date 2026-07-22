@@ -101,7 +101,7 @@ function openAuth(mode) {
 }
 
 function header() {
-  const email = (state.session && state.session.user && state.session.user.email) || '';
+  const displayName = String(window.__tradutorDisplayName || state.profile?.display_name || 'Usuário').trim() || 'Usuário';
   const nav = el('nav', { class: 'sc-nav', attrs: { 'aria-label': 'Comunidade' } });
   for (const t of TABS) {
     nav.appendChild(el('button', {
@@ -113,7 +113,7 @@ function header() {
   return el('header', { class: 'sc-head' }, [
     el('div', { class: 'sc-head-top' }, [
       el('span', { class: 'sc-title', text: 'Comunidade' }),
-      el('span', { class: 'sc-user', text: email, attrs: { title: email } }),
+      el('span', { class: 'sc-user', text: displayName, attrs: { title: displayName } }),
       el('button', { class: 'btn-ghost sc-logout', text: 'Sair', on: { click: doLogout } }),
     ]),
     nav,

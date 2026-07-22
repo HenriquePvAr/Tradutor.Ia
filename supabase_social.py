@@ -245,8 +245,8 @@ PROFILE_FIELDS = ("id,username,display_name,display_name_normalized,bio,theme_co
                   "avatar_object_key,banner_object_key,public_role,pronouns,status,"
                   "status_message,accent_color,show_favorites,show_history,"
                   "allow_profile_comments,created_at,updated_at")
-PROFILE_PUBLIC_FIELDS = ("id,username,display_name,bio,avatar_object_key,banner_object_key,"
-                         "public_role,pronouns,status,status_message,accent_color,created_at")
+PROFILE_PUBLIC_FIELDS = ("id,username,display_name,bio,public_role,pronouns,status,"
+                         "status_message,accent_color,created_at")
 WORK_FIELDS = ("id,owner_id,title,slug,synopsis,status,created_at,updated_at,published_at")
 CHAPTER_FIELDS = ("id,work_id,chapter_number,title,status,created_at,updated_at,published_at")
 COMMENT_FIELDS = ("id,chapter_id,author_id,parent_id,content,moderation_status,"

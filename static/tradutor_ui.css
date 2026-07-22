@@ -834,6 +834,7 @@
   .community-folder{border:1px solid var(--line); border-radius:3px; overflow:hidden; animation:riseIn .4s cubic-bezier(.2,.8,.25,1) both;}
   .cf-header{
     display:flex; align-items:center; gap:11px; padding:14px 16px; cursor:pointer;
+    width:100%; border:0; color:inherit; font:inherit; text-align:left;
     background:rgba(239,231,216,0.03); transition:background .15s;
   }
   .cf-header:hover{background:rgba(239,231,216,0.06);}

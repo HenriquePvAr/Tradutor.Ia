@@ -1044,6 +1044,10 @@
   function publicationAction(record) {
     const eligibility = publicationEligibility(record);
     if (!eligibility.hasPdf) return '';
+    if (eligibility.published && !eligibility.changed) {
+      const postId = escapeAttr(record.publication_id || '');
+      return `<button class="btn-ghost" data-action="open-publication" data-publication-id="${postId}" ${postId ? '' : 'disabled'} title="Abrir publicação existente">Publicado</button>`;
+    }
     if (!eligibility.authenticated) return '<button class="btn-ghost" data-action="publish" disabled title="Entre para publicar">Publicação indisponível</button>';
     if (!eligibility.manifest || !eligibility.terminal) return '<button class="btn-ghost" data-action="publish" disabled>Publicação indisponível</button>';
     if (!eligibility.ownerReady) return '<button class="btn-ghost" data-action="publish" disabled>Vincule antes de publicar</button>';
@@ -1095,11 +1099,13 @@
       groups.get(key).records.push(record);
     });
     list.innerHTML = Array.from(groups.entries()).map(([key, group]) => {
-      const open = appState.expandedFolders.has(key) || groups.size === 1;
+      const open = appState.expandedFolders.has(key);
       const folderIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h8l2 2"/></svg>';
-      return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><div class="cf-header" data-folder="${escapeAttr(key)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></div><div class="cf-body">${group.records.map(renderHistoryCard).join('')}</div></div>`;
+      const panelId = `series-panel-${slugify(key) || 'series'}`;
+      return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><button type="button" class="cf-header" data-folder="${escapeAttr(key)}" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${escapeAttr(panelId)}" aria-label="${escapeAttr(`Expandir ${group.series}`)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></button><div class="cf-body" id="${escapeAttr(panelId)}" role="region" aria-hidden="${open ? 'false' : 'true'}">${group.records.map(renderHistoryCard).join('')}</div></div>`;
     }).join('');
   }
+  const statusLabels = {online: 'online', away: 'ausente', busy: 'ocupado', offline: 'offline'};
   function applyCanonicalAuthSurface(state) {
     const authenticated = String(state || '') === 'authenticated';
     const protectedSelectors = ['#railProfile', '.rail-tab[data-tab="community"]', '.rail-tab[data-tab="profile"]', '#view-community', '#view-profile'];
@@ -1115,6 +1121,12 @@
       if ($('#view-community')?.classList.contains('active') || $('#view-profile')?.classList.contains('active')) activateTab('inicio');
     }
   }
+  function toggleHistoryFolder(folder) {
+    const key = folder?.dataset?.folder;
+    if (!key) return;
+    appState.expandedFolders.has(key) ? appState.expandedFolders.delete(key) : appState.expandedFolders.add(key);
+    renderHistory();
+  }
   $('#histSearch')?.addEventListener('input', renderHistory);
   window.addEventListener('tradutor-auth-changed', event => {
     const state = String(event?.detail?.state || window.__tradutorAuthState || '');
@@ -1129,9 +1141,7 @@
   $('#histList')?.addEventListener('click', async event => {
     const folder = event.target.closest('.cf-header');
     if (folder) {
-      const key = folder.dataset.folder;
-      appState.expandedFolders.has(key) ? appState.expandedFolders.delete(key) : appState.expandedFolders.add(key);
-      renderHistory();
+      toggleHistoryFolder(folder);
       return;
     }
     const button = event.target.closest('[data-action]');
@@ -1140,8 +1150,20 @@
     if (!record) return;
     if (button.dataset.action === 'reprocess') { loadRecordIntoForm(record); return; }
     if (button.dataset.action === 'claim') { openClaimModal(record); return; }
+    if (button.dataset.action === 'open-publication') {
+      const postId = button.dataset.publicationId || '';
+      if (postId) void openAuthenticatedCommunityPdf(postId, button);
+      return;
+    }
     if (button.dataset.action === 'publish') { openPublicationModal(record); return; }
     await openArtifact(decodeURIComponent(button.dataset.path || ''));
+  });
+  $('#histList')?.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const folder = event.target.closest('.cf-header');
+    if (!folder) return;
+    event.preventDefault();
+    toggleHistoryFolder(folder);
   });
 
   /* ---------- authenticated legacy ownership ---------- */
@@ -1657,8 +1679,11 @@
   }
 
   /* ---------- local profile ---------- */
-  const statusLabels = {online: 'online', away: 'ausente', busy: 'ocupado', offline: 'offline'};
   function applyProfileToForm(profile) {
+    window.__tradutorDisplayName = String(profile.display_name || '').trim();
+    if (window.__tradutorAuthState === 'authenticated' && $('#authStatus')) {
+      $('#authStatus').textContent = window.__tradutorDisplayName || 'Usuário';
+    }
     $('#profileName').value = profile.display_name || '';
     $('#profileTitle').value = profile.title || '';
     $('#profilePronouns').value = profile.pronouns || '';
@@ -1841,6 +1866,7 @@
       appState.history = Array.isArray(data.history) ? data.history : [];
       const authenticated = String(window.__tradutorAuthState || '') === 'authenticated';
       appState.profile = authenticated ? (data.profile || {}) : {};
+      window.__tradutorDisplayName = authenticated ? String(appState.profile.display_name || '').trim() : '';
       appState.settings = data.settings || {};
       appState.historyRevision = data.history_revision || appState.historyRevision;
       renderSettings(appState.settings);

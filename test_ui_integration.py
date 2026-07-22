@@ -28,7 +28,13 @@ class UiIntegrationTests(unittest.TestCase):
 
     def test_tradutor_asset_is_versioned_to_avoid_stale_browser_cache(self):
         source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
-        self.assertIn("_asset_url(STATIC_DIR / \"tradutor_ui.js\")", source)
+        for marker in (
+            "_asset_url(TRADUTOR_UI_ASSET)",
+            "_asset_url(AUTH_UI_ASSET)",
+            "_asset_url(SOCIAL_COMMUNITY_ASSET)",
+            "_asset_url(TRADUTOR_CSS_ASSET)",
+        ):
+            self.assertIn(marker, source, marker)
 
     def test_fast_force_command(self):
         command = build_run_command(
@@ -290,12 +296,22 @@ class UiIntegrationTests(unittest.TestCase):
         migration = (ROOT / "supabase" / "migrations" / "20260722120000_public_profile_identity.sql").read_text(encoding="utf-8")
         for marker in ("display_name_normalized", "profiles_display_name_normalized_uq", "normalize_profile_identity", "display_name_reserved"):
             self.assertIn(marker, migration, marker)
+        self.assertIn("if not exists (select 1 from pg_constraint", migration)
+        public_fields = (ROOT / "supabase_social.py").read_text(encoding="utf-8").split("PROFILE_PUBLIC_FIELDS", 1)[1].split("WORK_FIELDS", 1)[0]
+        self.assertNotIn("avatar_object_key", public_fields)
+        self.assertNotIn("banner_object_key", public_fields)
 
     def test_community_card_uses_public_author_and_no_private_identity(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         for marker in ("post.author", "author.display_name", "author.avatar_url", "community-author-avatar"):
             self.assertIn(marker, source, marker)
         self.assertNotIn("author.email", source)
+        auth_source = (ROOT / "static" / "auth_ui.js").read_text(encoding="utf-8")
+        community_source = (ROOT / "static" / "social_community.js").read_text(encoding="utf-8")
+        self.assertIn("__tradutorDisplayName", auth_source)
+        self.assertIn("__tradutorDisplayName", community_source)
+        self.assertNotIn("session.user.email", auth_source)
+        self.assertNotIn("session.user.email", community_source)
 
     def test_enter_and_real_progress_surfaces_remain_structural(self):
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
@@ -303,6 +319,24 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn('<form id="authForm"', shell)
         self.assertIn("progress.stage_key", source)
         self.assertIn("terminalRunStatuses", source)
+
+    def test_history_series_headers_are_accessible_accordions(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
+        for marker in ("series-panel-", "aria-expanded", "aria-controls", "role=\"region\"", "expandedFolders", "toggleHistoryFolder", "keydown"):
+            self.assertIn(marker, source, marker)
+        self.assertIn('class="cf-header"', source)
+        self.assertIn("width:100%; border:0", css)
+        self.assertNotIn("groups.size === 1", source)
+        self.assertLess(source.index("const statusLabels"), source.index("applyCanonicalAuthSurface(window.__tradutorAuthState"))
+
+    def test_existing_publication_is_joined_to_history_by_run_and_sha(self):
+        app_source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        ui_source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        for marker in ("_enrich_history_publications", "source_run_id", "publication_pdf_sha256", "publication_id"):
+            self.assertIn(marker, app_source, marker)
+        for marker in ("open-publication", "Abrir publicação existente", "Publicado"):
+            self.assertIn(marker, ui_source, marker)
 
     def test_standard_emoji_are_not_embedded_in_ui(self):
         sources = "\n".join(
