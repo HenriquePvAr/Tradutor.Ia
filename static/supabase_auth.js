@@ -102,9 +102,9 @@ export async function signOut() {
 // Subscribe to session changes so the shell can re-render on login/logout/refresh.
 export async function onAuthChange(handler) {
   const client = await getSupabaseClient();
-  if (!client) { handler(null); return () => {}; }
-  const { data } = client.auth.onAuthStateChange((_event, session) => handler(session));
+  if (!client) { handler(null, 'INITIAL_SESSION'); return () => {}; }
+  const { data } = client.auth.onAuthStateChange((event, session) => handler(session, event));
   const { data: initial } = await client.auth.getSession();
-  handler(initial?.session || null);
+  handler(initial?.session || null, 'INITIAL_SESSION');
   return () => data.subscription.unsubscribe();
 }

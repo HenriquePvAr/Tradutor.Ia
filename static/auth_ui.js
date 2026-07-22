@@ -157,13 +157,24 @@ function setMode(next) {
   setError(''); setNote('');
 }
 
-function renderSession(session) {
+function renderSession(session, authEvent = '') {
   const area = $('#authArea');
   const status = $('#authStatus');
   const openBtn = $('#authOpenBtn');
   const logoutBtn = $('#authLogoutBtn');
   if (!area) return;
   area.hidden = false;
+  // Supabase can briefly emit a null session while refreshing tokens.  Do not
+  // turn that transient event into a logout; the canonical backend session is
+  // authoritative.  An explicit SIGNED_OUT event still clears the UI.
+  if (!session && authEvent && authEvent !== 'SIGNED_OUT') {
+    setAuthState('auth_loading');
+    void syncBackendSession().then((canonical) => {
+      if (canonical?.authenticated) renderAuthShell('authenticated');
+      else renderAuthShell('auth_error', 'Não foi possível verificar sua sessão.');
+    });
+    return;
+  }
   window.__tradutorAccessToken = session?.access_token || '';
   authTrace('sdk_session_changed', {authenticated: Boolean(session)});
   startAuthHeartbeat();
@@ -228,6 +239,21 @@ async function init() {
     const password = $('#authPassword').value;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), AUTH_LOGIN_TIMEOUT_MS);
+    // Keep a UI-level escape hatch independent of the promise returned by a
+    // provider SDK.  A misbehaving thenable must never leave the button locked.
+    const watchdogId = setTimeout(() => {
+      if (submit.dataset.busy !== '1') return;
+      controller.abort();
+      const message = 'O login demorou para responder. Tente novamente.';
+      setAuthState('auth_timeout');
+      window.__tradutorCommunityAuthenticated = false;
+      renderAuthShell('auth_error', message);
+      setError(message);
+      authTrace('login_watchdog_timeout', {code: 'auth_timeout'});
+      submit.dataset.busy = '';
+      submit.disabled = false;
+      submit.textContent = mode === 'signup' ? 'Criar conta' : 'Entrar';
+    }, AUTH_LOGIN_TIMEOUT_MS + 250);
     submit.dataset.busy = '1';
     submit.disabled = true;
     submit.textContent = 'Aguarde…';
@@ -285,13 +311,14 @@ async function init() {
       authTrace('login_failed', {code: err?.code || (status ? `http_${status}` : 'auth_error')});
     } finally {
       clearTimeout(timeoutId);
+      clearTimeout(watchdogId);
       submit.dataset.busy = '';
       submit.disabled = false;
       submit.textContent = mode === 'signup' ? 'Criar conta' : 'Entrar';
     }
   });
   // Keeps token fresh across login, logout and SDK auto-refresh.
-  await withTimeout(authApi.onAuthChange(renderSession));
+  await withTimeout(authApi.onAuthChange((session, event) => renderSession(session, event)));
 }
 
 init().catch(() => {
