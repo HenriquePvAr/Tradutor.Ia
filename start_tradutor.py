@@ -69,8 +69,23 @@ def start_worker(*, force: bool = False) -> bool:
 
 
 def start_ui() -> int:
-    proc = subprocess.run([sys.executable, str(REPO_ROOT / "app_ui.py")], cwd=str(REPO_ROOT))
-    return proc.returncode
+    """Run the UI without inheriting a visible Windows console window."""
+
+    log_path = REPO_ROOT / ".cache" / "runtime" / "ui.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("ab") as log_handle:
+        kwargs = build_background_process_options(
+            cwd=str(REPO_ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            new_session=True,
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(REPO_ROOT / "app_ui.py")],
+            **kwargs,
+        )
+        return proc.wait()
 
 
 def print_status() -> None:

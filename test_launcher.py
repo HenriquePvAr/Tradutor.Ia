@@ -59,6 +59,22 @@ class LauncherTests(unittest.TestCase):
     def test_main_unknown_command(self):
         self.assertEqual(start_tradutor.main(["bogus"]), 2)
 
+    def test_start_ui_uses_hidden_background_options_and_captured_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app_ui.py").write_text("", encoding="utf-8")
+            with patch.object(start_tradutor, "REPO_ROOT", root), \
+                    patch.object(start_tradutor.subprocess, "Popen") as popen:
+                popen.return_value.wait.return_value = 0
+                self.assertEqual(start_tradutor.start_ui(), 0)
+            popen.assert_called_once()
+            kwargs = popen.call_args.kwargs
+            self.assertEqual(kwargs["cwd"], str(root))
+            self.assertIs(kwargs["stdin"], start_tradutor.subprocess.DEVNULL)
+            self.assertIs(kwargs["stderr"], start_tradutor.subprocess.STDOUT)
+            if start_tradutor.os.name == "nt":
+                self.assertTrue(kwargs["creationflags"] & start_tradutor.subprocess.CREATE_NO_WINDOW)
+
 
 if __name__ == "__main__":
     unittest.main()
