@@ -130,6 +130,8 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
         payload["community"] = {
             **(payload.get("community") or {}),
             "authenticated": bool(principal.authenticated),
+            "auth_state": "authenticated" if principal.authenticated else "unauthenticated",
+            "user_id": principal.user_id if principal.authenticated else "",
             "available": True,
         }
     except Exception:
@@ -139,6 +141,8 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
         payload["community"] = {
             **(payload.get("community") or {}),
             "authenticated": False,
+            "auth_state": "auth_error",
+            "user_id": "",
             "available": True,
         }
     return payload

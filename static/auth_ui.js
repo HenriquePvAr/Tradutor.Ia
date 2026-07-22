@@ -29,6 +29,52 @@ function closeModal() {
 }
 
 let mode = 'login';
+// The shell must not infer "visitor" while the backend session is still being
+// resolved.  The backend response is authoritative for local-session and Supabase
+// providers alike; the SDK session only supplies the bearer when applicable.
+window.__tradutorAuthState = 'auth_loading';
+window.__tradutorCommunityUserId = '';
+
+function setAuthState(state, userId = '') {
+  window.__tradutorAuthState = state;
+  window.__tradutorCommunityUserId = state === 'authenticated' ? String(userId || '') : '';
+}
+
+async function syncBackendSession(accessToken = '') {
+  const headers = {};
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  try {
+    const response = await fetch('/api/community/auth/session', {
+      headers, credentials: 'same-origin', cache: 'no-store',
+    });
+    let payload = {};
+    try { payload = await response.json(); } catch (_) { /* empty response */ }
+    if (response.ok && payload.authenticated) {
+      setAuthState('authenticated', payload.user_id);
+      window.__tradutorCommunityAuthenticated = true;
+      window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
+        detail: {authenticated: true, user_id: String(payload.user_id || ''), state: 'authenticated'},
+      }));
+      return payload;
+    }
+    if (response.status === 401) setAuthState('session_expired');
+    else if (response.status === 403) setAuthState('auth_error');
+    else setAuthState('unauthenticated');
+    window.__tradutorCommunityAuthenticated = false;
+    window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
+      detail: {authenticated: false, state: window.__tradutorAuthState},
+    }));
+    return payload;
+  } catch (_) {
+    setAuthState('auth_error');
+    window.__tradutorCommunityAuthenticated = false;
+    window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
+      detail: {authenticated: false, state: 'auth_error'},
+    }));
+    return null;
+  }
+}
+
 function setMode(next) {
   mode = next;
   document.querySelectorAll('.auth-tab').forEach((tab) => {
@@ -49,10 +95,7 @@ function renderSession(session) {
   if (!area) return;
   area.hidden = false;
   window.__tradutorAccessToken = session?.access_token || '';
-  window.__tradutorCommunityAuthenticated = Boolean(session?.user?.id || session?.user?.email);
-  window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
-    detail: {authenticated: window.__tradutorCommunityAuthenticated},
-  }));
+  setAuthState('auth_loading');
   const email = session?.user?.email || '';
   if (session && email) {
     status.textContent = email;
@@ -63,15 +106,16 @@ function renderSession(session) {
     openBtn.hidden = false;
     logoutBtn.hidden = true;
   }
+  void syncBackendSession(window.__tradutorAccessToken);
 }
 
 async function init() {
   const client = await getSupabaseClient();
   if (!client) {
-    // Local-session provider (or unconfigured): no Supabase auth UI.
+    // Local-session provider: resolve the HttpOnly cookie through the backend.
     window.__tradutorAccessToken = '';
-    window.__tradutorCommunityAuthenticated = false;
-    window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {detail: {authenticated: false}}));
+    setAuthState('auth_loading');
+    await syncBackendSession();
     return;
   }
   document.querySelectorAll('.auth-tab').forEach((tab) => {
@@ -117,4 +161,10 @@ async function init() {
   await onAuthChange(renderSession);
 }
 
-init().catch(() => { /* auth UI stays hidden on init failure */ });
+init().catch(() => {
+  setAuthState('auth_error');
+  window.__tradutorCommunityAuthenticated = false;
+  window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
+    detail: {authenticated: false, state: 'auth_error'},
+  }));
+});

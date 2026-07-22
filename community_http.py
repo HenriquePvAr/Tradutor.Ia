@@ -91,6 +91,8 @@ def _community_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> 
             "manifest_not_found": "O manifesto do capítulo não foi encontrado.",
             "post_not_found": "A publicação anterior não existe mais. Você pode criar uma nova publicação.",
             "user_not_found": "Seu perfil da comunidade não foi localizado. Saia e entre novamente.",
+            "artifact_invalid": "O artefato não passou pela validação necessária para publicação.",
+            "resolver_error": "Não foi possível validar os arquivos deste capítulo.",
         }
         raise HTTPException(
             status_code=404,

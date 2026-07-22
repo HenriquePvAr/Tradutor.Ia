@@ -174,11 +174,42 @@ class CommunityResolutionTests(unittest.TestCase):
         self.assertEqual(error.detail["code"], "pdf_not_found")
         self.assertNotEqual(error.detail["message"], "not_found")
 
+    def test_recorded_run_manifest_path_falls_back_to_job_manifest(self):
+        tmp = Path(tempfile.mkdtemp())
+        output = tmp / "output" / "chapter"
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nminimal offline fixture\n")
+        store = _new_store(tmp)
+        api = CommunityApi(store, community_db_path=tmp / "community.sqlite3", output_root=tmp / "output")
+        try:
+            job_id = _make_review_required(store)
+            store.update_fields(job_id, output_dir=str(output), pdf_path=str(pdf), exit_code=0,
+                                manifest_path=str(output / "run_manifest.json"))
+            store.complete_review(job_id)
+            job = store.get_job(job_id)
+            (output / "job_manifest.json").write_text(json.dumps({
+                "job_id": job_id, "run_id": job["run_id"], "status": JobStatus.REVIEW_REQUIRED,
+                "exit_code": 0, "pdf_path": str(pdf),
+            }), encoding="utf-8")
+            (output / "run_manifest.json").write_text(json.dumps({
+                "run_id": "pipeline-run-id", "pdf_path": str(pdf),
+            }), encoding="utf-8")
+            principal = RequestPrincipal("local-user", True, auth_source="local_session")
+            resolved = api._resolve_translation_job(job_id, principal)
+            self.assertEqual(resolved["source_job_id"], job_id)
+            self.assertEqual(resolved["source_run_id"], job["run_id"])
+            self.assertEqual(Path(resolved["pdf_path"]), pdf.resolve())
+            self.assertEqual(len(resolved["pdf_sha256"]), 64)
+        finally:
+            api.close()
+            store.close()
+
 
 class FrontendContractTests(unittest.TestCase):
     def test_frontend_has_timeout_per_job_cancel_and_review_completion_state(self):
         source = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
-        for marker in ("AbortController", "/api/ui/jobs/", "unhandledrejection", "review_status !== 'completed'", "revisão concluída"):
+        for marker in ("AbortController", "/api/ui/jobs/", "unhandledrejection", "reviewCompleted", "revisão concluída"):
             self.assertIn(marker, source)
 
 

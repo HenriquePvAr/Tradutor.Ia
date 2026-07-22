@@ -79,6 +79,12 @@ class PdfUiTests(unittest.TestCase):
         self.assertIn("publishStatus", self.src)
         self.assertIn("pollPublish", self.src)
 
+    def test_technical_gate_stays_distinct_from_completed_review(self):
+        ui = read("static/tradutor_ui.js")
+        self.assertIn("technicalGatePassed", ui)
+        self.assertIn("gate técnico reprovado · revisão humana concluída", ui)
+        self.assertNotIn("review ? 'revisão necessária' : 'gate aprovado'", ui)
+
 
 class PdfWiringTests(unittest.TestCase):
     def test_app_mounts_pdf_router(self):

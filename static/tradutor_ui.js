@@ -966,15 +966,19 @@
     const terminal = terminalRunStatuses.has(String(record.status || '').toLowerCase());
     const hasPdf = Boolean(record.pdf_path);
     const manifest = record.output_verification === 'manifest_verified' || Boolean(record.manifest_path);
-    const authenticated = Boolean(
+    const authState = String(window.__tradutorAuthState || 'auth_loading');
+    const authenticated = authState === 'authenticated' && Boolean(
       appState.bootstrap?.community?.authenticated ||
       window.__tradutorCommunityAuthenticated ||
       window.__tradutorAccessToken,
     );
-    const review = record.review_status !== 'completed' && (String(record.status || '').toLowerCase() === 'review_required' || boolish(record.quality_gate) === false);
+    const technicalGatePassed = boolish(record.quality_gate) === true;
+    const reviewCompleted = record.review_status === 'completed' || record.review_confirmed === true;
+    const review = !technicalGatePassed;
     const published = String(record.publication_status || '').toLowerCase() === 'published';
     const changed = published && record.publication_pdf_sha256 && record.pdf_sha256 && record.publication_pdf_sha256 !== record.pdf_sha256;
-    return {terminal, hasPdf, manifest, authenticated, review, published, changed,
+    return {terminal, hasPdf, manifest, authenticated, review, reviewCompleted,
+      technicalGatePassed, published, changed,
       eligible: hasPdf && manifest && terminal && authenticated};
   }
   function publicationAction(record) {
@@ -1024,7 +1028,12 @@
     }).join('');
   }
   $('#histSearch')?.addEventListener('input', renderHistory);
-  window.addEventListener('tradutor-auth-changed', () => renderHistory());
+  window.addEventListener('tradutor-auth-changed', () => {
+    renderHistory();
+    // The initial bootstrap may race the SDK/backend session check. Refresh the
+    // authoritative local records once authentication settles.
+    void refreshBootstrap();
+  });
   $('#histList')?.addEventListener('click', async event => {
     const folder = event.target.closest('.cf-header');
     if (folder) {
@@ -1079,11 +1088,17 @@
       ['Obra', record.series_name || record.chapter_name || '—'],
       ['Capítulo', record.chapter_name || record.slug || '—'],
       ['Páginas', Number(record.pages_processed || 0)],
-      ['Qualidade', review ? 'revisão necessária' : 'gate aprovado'],
+      ['Qualidade', review
+        ? (eligibility.reviewCompleted
+          ? 'gate técnico reprovado · revisão humana concluída'
+          : 'gate técnico reprovado · revisão necessária')
+        : 'gate técnico aprovado'],
     ].map(([label, value]) => `<div class="pub-meta"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('');
     pending.hidden = !review;
     pending.textContent = review
-      ? `Este capítulo tem ${pendingCount || 'pendências de'} revisão. Confirme que você conferiu o resultado antes de publicar.`
+      ? (eligibility.reviewCompleted
+        ? 'Este capítulo possui revisão humana concluída, mas o gate técnico automático registrou pendências. Confirme que você revisou as pendências e autoriza a publicação desta versão.'
+        : `Este capítulo tem ${pendingCount || 'pendências de'} revisão. Confirme que você conferiu o resultado antes de publicar.`)
       : '';
     $('#publicationTitle').value = draft.title || record.chapter_name || record.slug || '';
     $('#publicationDescription').value = draft.description || '';

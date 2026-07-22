@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import threading
 import os
+import hashlib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -210,10 +211,30 @@ class CommunityApi:
             if not _is_within(pdf_path, output_dir) or not _is_within(pdf_path, root):
                 raise ValueError
 
-            manifest_path = output_dir / "job_manifest.json"
+            # The job row records the runner manifest, while the pipeline also writes a
+            # separate run manifest. Prefer the recorded path only after constraining it
+            # to this output directory, then fall back to the canonical job manifest.
+            recorded_manifest = str(job.get("manifest_path") or "").strip()
+            manifest_path = Path(recorded_manifest) if recorded_manifest else output_dir / "job_manifest.json"
+            if not manifest_path.is_absolute():
+                manifest_path = output_dir / manifest_path
+            manifest_path = manifest_path.resolve()
+            if not _is_within(manifest_path, output_dir) or not manifest_path.is_file():
+                manifest_path = output_dir / "job_manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             if not isinstance(manifest, dict):
                 raise ValueError
+            # Older runner rows point at run_manifest.json. That manifest is useful
+            # evidence but intentionally has no job id; use the job manifest for the
+            # lifecycle binding instead of treating the valid PDF as missing.
+            if manifest.get("job_id") != job["id"] or manifest.get("run_id") != job["run_id"]:
+                fallback_manifest = output_dir / "job_manifest.json"
+                if fallback_manifest == manifest_path or not fallback_manifest.is_file():
+                    raise ValueError
+                manifest_path = fallback_manifest.resolve()
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict):
+                    raise ValueError
             manifest_pdf = _resolve_recorded_path(manifest.get("pdf_path"), output_dir)
             manifest_status = str(manifest.get("status") or "")
             status_matches = manifest_status == job["status"] or (
@@ -230,6 +251,21 @@ class CommunityApi:
             ):
                 raise ValueError
             validate_local_pdf(pdf_path, root)
+            # Keep the pipeline's run manifest and quality report tied to the same
+            # output folder. They are evidence, not client-controlled identifiers.
+            run_manifest_path = output_dir / "run_manifest.json"
+            if run_manifest_path.is_file():
+                run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(run_manifest, dict) or not run_manifest.get("run_id"):
+                    raise ValueError
+                run_pdf = _resolve_recorded_path(
+                    run_manifest.get("pdf_path") or run_manifest.get("pdf_filename"), output_dir)
+                if run_pdf != pdf_path:
+                    raise ValueError
+            digest = hashlib.sha256()
+            with pdf_path.open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
             if legacy_owner:
                 self.service.job_store.update_fields(
                     job["id"], configuration_json=json.dumps(config, ensure_ascii=False))
@@ -238,6 +274,9 @@ class CommunityApi:
                 "pdf_path": str(pdf_path),
                 "source_job_id": job["id"],
                 "source_run_id": job["run_id"],
+                "manifest_path": str(manifest_path),
+                "run_manifest_path": str(run_manifest_path),
+                "pdf_sha256": digest.hexdigest(),
             }
         except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
             raise ResourceNotFound("output_not_found") from None

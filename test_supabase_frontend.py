@@ -62,6 +62,18 @@ class SupabaseFrontendTests(unittest.TestCase):
         for token in ("signUp", "signIn", "signOut", "onAuthChange"):
             self.assertIn(token, source)
 
+    def test_auth_ui_resolves_backend_session_before_visitor_state(self):
+        source = _read("static/auth_ui.js")
+        self.assertIn("/api/community/auth/session", source)
+        self.assertIn("auth_loading", source)
+        self.assertIn("session_expired", source)
+        self.assertIn("credentials: 'same-origin'", source)
+
+    def test_tradutor_refreshes_bootstrap_after_auth_change(self):
+        source = _read("static/tradutor_ui.js")
+        self.assertIn("tradutor-auth-changed", source)
+        self.assertIn("void refreshBootstrap()", source)
+
     def test_shell_has_auth_controls(self):
         shell = _read("ui/ui_shell.html")
         for anchor in ("authModalOverlay", "authOpenBtn", "authLogoutBtn",
