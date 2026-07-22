@@ -9,7 +9,9 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.58.0';
 let clientPromise = null;
 let publicConfigPromise = null;
 let memorySession = null;
+let sessionPersistencePromise = null;
 const SDK_SESSION_TIMEOUT_MS = 5000;
+const SESSION_RESTORE_TIMEOUT_MS = 7000;
 
 function transportTrace(event, fields = {}) {
   try { window.__tradutorAuthTraceEvent?.(event, fields); } catch (_) { /* diagnostics never affect auth */ }
@@ -24,6 +26,15 @@ async function fetchPublicConfig() {
 function publicConfig() {
   if (!publicConfigPromise) publicConfigPromise = fetchPublicConfig();
   return publicConfigPromise;
+}
+
+function stableStorageKey(supabaseUrl) {
+  try {
+    const projectRef = new URL(String(supabaseUrl)).hostname.split('.')[0].toLowerCase();
+    return `sb-${projectRef}-auth-token`;
+  } catch (_) {
+    return 'sb-auth-token';
+  }
 }
 
 // Resolves to a configured Supabase client, or null when the backend is not running
@@ -41,6 +52,8 @@ export function getSupabaseClient() {
         autoRefreshToken: true,
         detectSessionInUrl: true,
         flowType: 'pkce',
+        storage: window.localStorage,
+        storageKey: stableStorageKey(cfg.supabase_url),
       },
     });
   })();
@@ -122,12 +135,13 @@ export async function signIn(email, password, { signal } = {}) {
   const client = await getSupabaseClient();
   if (!client) throw new Error('supabase not configured');
   transportTrace('sdk_session_set_started', {source: 'supabase_password'});
+  sessionPersistencePromise = client.auth.setSession({
+    access_token: payload.access_token,
+    refresh_token: payload.refresh_token,
+  });
   try {
     const result = await Promise.race([
-      client.auth.setSession({
-        access_token: payload.access_token,
-        refresh_token: payload.refresh_token,
-      }),
+      sessionPersistencePromise,
       new Promise((_, reject) => setTimeout(() => {
         const timeout = new Error('sdk_session_timeout');
         timeout.code = 'sdk_session_timeout';
@@ -138,10 +152,15 @@ export async function signIn(email, password, { signal } = {}) {
     window.__tradutorAuthTransport = 'supabase_sdk';
     transportTrace('sdk_session_set_finished', {source: 'supabase_password'});
   } catch (error) {
-    // The token came from the verified Auth endpoint. Keep it only in memory so
-    // the canonical backend exchange can finish; the SDK may still complete its
-    // own persistence/refresh asynchronously.
+    // The token came from the verified Auth endpoint. Keep the official SDK
+    // persistence promise alive; the backend exchange may finish before a slow
+    // storage lock releases, but a later load must still restore this session.
     transportTrace('sdk_session_set_deferred', {code: error?.code || 'sdk_session_error', source: 'supabase_password'});
+    void sessionPersistencePromise.then(() => {
+      transportTrace('sdk_session_persisted', {source: 'supabase_password'});
+    }).catch((persistError) => {
+      transportTrace('sdk_session_persist_failed', {code: persistError?.code || 'sdk_session_persist_failed', source: 'supabase_password'});
+    });
   }
   try {
     const identity = await Promise.race([
@@ -190,6 +209,7 @@ export async function signIn(email, password, { signal } = {}) {
 
 export async function signOut() {
   memorySession = null;
+  sessionPersistencePromise = null;
   window.__tradutorAccessToken = '';
   window.__tradutorAuthTransport = '';
   const client = await getSupabaseClient();
@@ -200,8 +220,35 @@ export async function signOut() {
 export async function onAuthChange(handler) {
   const client = await getSupabaseClient();
   if (!client) { handler(null, 'INITIAL_SESSION'); return () => {}; }
-  const { data } = client.auth.onAuthStateChange((event, session) => handler(session, event));
-  const { data: initial } = await client.auth.getSession();
-  handler(memorySession || initial?.session || null, 'INITIAL_SESSION');
+  const { data } = client.auth.onAuthStateChange((event, session) => {
+    if (session) memorySession = {...memorySession, ...session};
+    else if (event === 'SIGNED_OUT') memorySession = null;
+    handler(session, event);
+  });
+  const restore = (async () => {
+    if (sessionPersistencePromise) {
+      try { await Promise.race([sessionPersistencePromise, new Promise(resolve => setTimeout(resolve, SDK_SESSION_TIMEOUT_MS))]); } catch (_) { /* restore below */ }
+    }
+    const { data: initial, error } = await client.auth.getSession();
+    if (error || !initial?.session) return null;
+    const { data: identity, error: identityError } = await client.auth.getUser();
+    if (identityError || !identity?.user?.id || identity.user.id !== initial.session.user?.id) return null;
+    memorySession = {...initial.session, user: identity.user};
+    return memorySession;
+  })();
+  try {
+    const restored = await Promise.race([
+      restore,
+      new Promise(resolve => setTimeout(() => resolve(null), SESSION_RESTORE_TIMEOUT_MS)),
+    ]);
+    handler(memorySession || restored || null, 'INITIAL_SESSION');
+  } catch (_) {
+    handler(memorySession || null, 'INITIAL_SESSION');
+  }
+  // A slow browser storage lock must not make the shell forget an otherwise
+  // valid session. Finish restoration in the background if the bounded wait won.
+  void restore.then((restored) => {
+    if (restored) handler(restored, 'INITIAL_SESSION_RESTORED');
+  }).catch(() => {});
   return () => data.subscription.unsubscribe();
 }

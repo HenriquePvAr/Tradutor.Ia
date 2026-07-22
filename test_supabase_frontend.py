@@ -174,6 +174,29 @@ class SupabaseFrontendTests(unittest.TestCase):
             self.assertIn(marker, source)
         self.assertIn("__tradutorGetCanonicalAccessToken", _read("static/auth_ui.js"))
 
+    def test_supabase_session_uses_stable_official_storage_and_restores_identity(self):
+        source = _read("static/supabase_auth.js")
+        for marker in (
+            "persistSession: true",
+            "autoRefreshToken: true",
+            "storage: window.localStorage",
+            "storageKey: stableStorageKey(cfg.supabase_url)",
+            "function stableStorageKey",
+            "client.auth.getSession()",
+            "client.auth.getUser()",
+            "INITIAL_SESSION_RESTORED",
+            "sdk_session_persisted",
+        ):
+            self.assertIn(marker, source, marker)
+
+    def test_pdf_popup_flow_does_not_replace_the_authenticated_tab(self):
+        source = _read("static/tradutor_ui.js")
+        helper = source[source.index("async function openAuthenticatedCommunityPdf"):source.index("async function loadCommunityFeed")]
+        self.assertIn("window.open('', '_blank', 'noopener')", helper)
+        self.assertIn("viewer.location.href = objectUrl", helper)
+        self.assertNotIn("window.location", helper)
+        self.assertIn("viewer.close()", helper)
+
     def test_community_helper_resolves_token_asynchronously(self):
         source = _read("static/tradutor_ui.js")
         self.assertIn("await window.__tradutorGetCanonicalAccessToken()", source)
