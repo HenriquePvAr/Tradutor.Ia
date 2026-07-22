@@ -450,7 +450,7 @@ def index() -> None:
         """
     )
     ui.add_body_html(shell)
-    ui.add_body_html('<script src="/static/tradutor_ui.js" defer></script>')
+    ui.add_body_html(f'<script src="{_asset_url(STATIC_DIR / "tradutor_ui.js")}" defer></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
     ui.add_body_html('<script type="module" src="/static/social_community.js"></script>')
 

@@ -26,6 +26,10 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertTrue((ROOT / "static" / "tradutor_ui.js").is_file())
         self.assertNotIn("<section class=", app_source)
 
+    def test_tradutor_asset_is_versioned_to_avoid_stale_browser_cache(self):
+        source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        self.assertIn("_asset_url(STATIC_DIR / \"tradutor_ui.js\")", source)
+
     def test_fast_force_command(self):
         command = build_run_command(
             url=URL,
