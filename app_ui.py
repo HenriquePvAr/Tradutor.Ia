@@ -5,9 +5,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any, Callable
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 
 from fastapi import Body, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from nicegui import app, ui
 
 from community_auth import (
@@ -37,9 +40,19 @@ ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
 AUTH_UI_ASSET = ROOT / "static" / "auth_ui.js"
+AUTH_PROVIDER_ASSET = ROOT / "static" / "auth_provider.js"
 TRADUTOR_UI_ASSET = ROOT / "static" / "tradutor_ui.js"
 TRADUTOR_CSS_ASSET = ROOT / "static" / "tradutor_ui.css"
 SOCIAL_COMMUNITY_ASSET = ROOT / "static" / "social_community.js"
+I18N_ASSETS = [
+    ROOT / "static" / "i18n" / "pt-BR.js",
+    ROOT / "static" / "i18n" / "en-US.js",
+    ROOT / "static" / "i18n" / "es-ES.js",
+    ROOT / "static" / "i18n" / "fr-FR.js",
+    ROOT / "static" / "i18n" / "ja-JP.js",
+    ROOT / "static" / "i18n" / "ko-KR.js",
+    ROOT / "static" / "i18n" / "index.js",
+]
 
 
 def _asset_url(path: Path) -> str:
@@ -49,12 +62,67 @@ def _asset_url(path: Path) -> str:
         version = str(path.stat().st_mtime_ns)
     except OSError:
         version = "0"
-    return f"/static/{path.name}?v={version}"
+    try:
+        rel = path.relative_to(STATIC_DIR).as_posix()
+    except ValueError:
+        rel = path.name
+    return f"/static/{rel}?v={version}"
 APP_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
 APP_HOST = configured_bind_host()
 BRIDGE = UiBridge()
 COMMUNITY = CommunityApi(BRIDGE.store)
 AUTH = build_auth_provider()
+
+
+def _better_auth_internal_base() -> str:
+    host = str(os.getenv("TRADUTOR_AUTH_SERVICE_HOST", "127.0.0.1") or "127.0.0.1").strip()
+    port = str(os.getenv("TRADUTOR_AUTH_SERVICE_PORT", "8787") or "8787").strip()
+    base = str(os.getenv("BETTER_AUTH_INTERNAL_URL", f"http://{host}:{port}") or "").strip().rstrip("/")
+    parsed = urllib_parse.urlparse(base)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise HTTPException(status_code=503, detail="auth_service_not_configured")
+    return urllib_parse.urlunparse(parsed)
+
+
+def _forward_auth_headers(request: Request) -> dict[str, str]:
+    allowed = {"cookie", "content-type", "accept", "origin", "referer", "user-agent"}
+    forwarded: dict[str, str] = {}
+    for name, value in request.headers.items():
+        lower = name.lower()
+        if lower in allowed:
+            forwarded[name] = value
+    return forwarded
+
+
+def _proxied_auth_response(target: str, request: Request, body: bytes) -> Response:
+    headers = _forward_auth_headers(request)
+    upstream = urllib_request.Request(
+        target,
+        data=body if request.method.upper() not in {"GET", "HEAD"} else None,
+        headers=headers,
+        method=request.method.upper(),
+    )
+    try:
+        with urllib_request.urlopen(upstream, timeout=10) as raw:  # noqa: S310 - target is loopback-only
+            payload = raw.read()
+            status = raw.status
+            response_headers = raw.headers
+    except urllib_error.HTTPError as exc:
+        payload = exc.read()
+        status = exc.code
+        response_headers = exc.headers
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="auth_service_unavailable") from exc
+
+    safe_headers = {"Cache-Control": "no-store"}
+    for header in ("content-type", "location"):
+        value = response_headers.get(header)
+        if value:
+            safe_headers[header] = value
+    response = Response(content=payload, status_code=status, headers=safe_headers)
+    for cookie in response_headers.get_all("Set-Cookie", []):
+        response.headers.append("Set-Cookie", cookie)
+    return response
 
 
 def _sync_public_profile(principal: RequestPrincipal) -> dict[str, Any]:
@@ -199,6 +267,24 @@ def auth_callback() -> FileResponse:
     returns to the fixed local root — no open redirect surface.
     """
     return FileResponse(ROOT / "ui" / "auth_callback.html", media_type="text/html")
+
+
+@app.api_route("/api/auth/{auth_path:path}", methods=["GET", "POST"])
+async def better_auth_proxy(auth_path: str, request: Request) -> Response:
+    """Same-origin bridge to the loopback-only Better Auth service.
+
+    This is intentionally not configurable by request.  The only destination is
+    BETTER_AUTH_INTERNAL_URL / TRADUTOR_AUTH_SERVICE_HOST:PORT, validated as loopback.
+    """
+
+    if getattr(AUTH, "auth_source", "") != "better_auth":
+        raise HTTPException(status_code=404, detail="not_found")
+    suffix = urllib_parse.quote(str(auth_path or "").lstrip("/"), safe="/-._~")
+    query = request.url.query
+    target = f"{_better_auth_internal_base()}/api/auth/{suffix}"
+    if query:
+        target = f"{target}?{query}"
+    return _proxied_auth_response(target, request, await request.body())
 
 
 @app.get("/api/ui/bootstrap")
@@ -576,6 +662,8 @@ def index() -> None:
         + f'<link rel="stylesheet" href="{_asset_url(TRADUTOR_CSS_ASSET)}">'
     )
     ui.add_body_html(shell)
+    for asset in I18N_ASSETS:
+        ui.add_body_html(f'<script src="{_asset_url(asset)}" defer></script>')
     ui.add_body_html(f'<script src="{_asset_url(TRADUTOR_UI_ASSET)}" defer></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(SOCIAL_COMMUNITY_ASSET)}"></script>')

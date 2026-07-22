@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
+import json
 import os
 import re
 import secrets
@@ -17,6 +18,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Protocol, runtime_checkable
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 
 
 SESSION_COOKIE_NAME = "tradutor_community_session"
@@ -371,9 +375,128 @@ class LocalSessionAuthProvider:
                     record.revoked = True
 
 
+class BetterAuthProvider:
+    """Canonical-session provider backed by the local Better Auth service.
+
+    The browser never chooses identity fields for Python routes.  It presents the
+    Better Auth cookie on the same origin, and Python asks the loopback-only service
+    for the sanitized session contract.
+    """
+
+    auth_source = "better_auth"
+    supports_external_bind = True
+
+    def __init__(
+        self,
+        *,
+        internal_url: str,
+        public_base_path: str = "/api/auth",
+        timeout_seconds: float = 5.0,
+        allowed_origins: tuple[str, ...] = ("http://127.0.0.1:8080",),
+    ) -> None:
+        parsed = urllib_parse.urlparse(str(internal_url or "").rstrip("/"))
+        if parsed.scheme != "http" or not bind_is_loopback(parsed.hostname or ""):
+            raise AuthConfigurationError("Better Auth internal URL must be loopback HTTP")
+        self.internal_url = urllib_parse.urlunparse(parsed)
+        self.public_base_path = str(public_base_path or "/api/auth")
+        self.timeout_seconds = float(timeout_seconds)
+        self.allowed_origins = tuple(origin.rstrip("/") for origin in allowed_origins if origin)
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "BetterAuthProvider":
+        values = os.environ if env is None else env
+        host = str(values.get("TRADUTOR_AUTH_SERVICE_HOST", "127.0.0.1") or "127.0.0.1").strip()
+        port = str(values.get("TRADUTOR_AUTH_SERVICE_PORT", "8787") or "8787").strip()
+        base = str(values.get("BETTER_AUTH_INTERNAL_URL", f"http://{host}:{port}") or "").strip()
+        ui_origin = str(values.get("BETTER_AUTH_URL", "http://127.0.0.1:8080") or "").strip().rstrip("/")
+        extra = [
+            value.strip().rstrip("/")
+            for value in str(values.get("BETTER_AUTH_TRUSTED_ORIGINS", "") or "").split(",")
+            if value.strip()
+        ]
+        return cls(internal_url=base, allowed_origins=tuple([ui_origin, *extra]))
+
+    def public_config(self) -> dict[str, object]:
+        return {
+            "provider": self.auth_source,
+            "auth_base_path": self.public_base_path,
+            "google_enabled": bool(os.getenv("GOOGLE_CLIENT_ID") and os.getenv("GOOGLE_CLIENT_SECRET")),
+        }
+
+    def _session_url(self) -> str:
+        return f"{self.internal_url}/internal/auth/session"
+
+    def _request_headers(self, request) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        cookie = str(request.headers.get("cookie", "") or "")
+        if cookie:
+            headers["Cookie"] = cookie
+        authorization = str(request.headers.get("authorization", "") or "")
+        if authorization:
+            headers["Authorization"] = authorization
+        return headers
+
+    def authenticate_request(self, request) -> RequestPrincipal:
+        req = urllib_request.Request(self._session_url(), headers=self._request_headers(request))
+        try:
+            with urllib_request.urlopen(req, timeout=self.timeout_seconds) as response:  # noqa: S310 - loopback URL validated above
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            if exc.code == 401:
+                return RequestPrincipal.anonymous()
+            raise AuthenticationRequired("better_auth_session_rejected") from exc
+        except (OSError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            raise AuthenticationRequired("better_auth_session_unavailable") from exc
+        if not isinstance(payload, dict) or not payload.get("authenticated"):
+            return RequestPrincipal.anonymous()
+        user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+        return RequestPrincipal(
+            user_id=str(user.get("id") or ""),
+            authenticated=True,
+            roles=frozenset(),
+            auth_source=self.auth_source,
+            session_id=None,
+        )
+
+    def require_authenticated(self, request) -> RequestPrincipal:
+        principal = self.authenticate_request(request)
+        if not principal.authenticated:
+            raise AuthenticationRequired("authentication_required")
+        return principal
+
+    def require_role(self, request, role: str) -> RequestPrincipal:
+        principal = self.require_authenticated(request)
+        if not principal.has_role(role):
+            raise AuthorizationDenied("role_required")
+        return principal
+
+    def require_csrf(self, request, principal: RequestPrincipal) -> None:
+        if str(request.method).upper() not in _MUTATING_METHODS:
+            return
+        origin = str(request.headers.get("origin", "") or "").rstrip("/")
+        referer = str(request.headers.get("referer", "") or "").rstrip("/")
+        if origin and origin in self.allowed_origins:
+            return
+        if referer:
+            try:
+                parsed = urllib_parse.urlparse(referer)
+                candidate = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+                if candidate in self.allowed_origins:
+                    return
+            except ValueError:
+                pass
+        raise CsrfRejected("origin_required")
+
+
 def build_auth_provider(env: Mapping[str, str] | None = None) -> AuthProvider:
     values = os.environ if env is None else env
-    provider_name = str(values.get("COMMUNITY_AUTH_PROVIDER", "local") or "local").strip().lower()
+    provider_name = str(
+        values.get("AUTH_PROVIDER") or values.get("COMMUNITY_AUTH_PROVIDER", "local") or "local"
+    ).strip().lower()
     if provider_name == "local":
         return LocalSessionAuthProvider.from_env(values)
     if provider_name == "supabase":
@@ -382,6 +505,8 @@ def build_auth_provider(env: Mapping[str, str] | None = None) -> AuthProvider:
         from supabase_auth import SupabaseAuthConfig, SupabaseAuthProvider
 
         return SupabaseAuthProvider(SupabaseAuthConfig.from_env(values))
+    if provider_name == "better_auth":
+        return BetterAuthProvider.from_env(values)
     raise AuthConfigurationError(f"unsupported community auth provider: {provider_name}")
 
 

@@ -24,6 +24,20 @@ function closeModal() {
   setError(''); setNote('');
 }
 
+function setSubmitLabel(button, label) {
+  if (!button) return;
+  const text = button.querySelector('.btn-text');
+  if (text) text.textContent = label;
+  else button.textContent = label;
+}
+
+function setSubmitLoading(button, loading, label) {
+  if (!button) return;
+  button.classList.toggle('loading', Boolean(loading));
+  button.disabled = Boolean(loading);
+  setSubmitLabel(button, label);
+}
+
 let mode = 'login';
 let authApi = null;
 let authHeartbeatTimer = 0;
@@ -187,7 +201,7 @@ function setMode(next) {
   });
   const submit = $('#authSubmit');
   const pw = $('#authPassword');
-  if (submit) submit.textContent = next === 'signup' ? 'Criar conta' : 'Entrar';
+  if (submit) setSubmitLabel(submit, next === 'signup' ? 'Criar conta' : 'Entrar no painel');
   if (pw) pw.autocomplete = next === 'signup' ? 'new-password' : 'current-password';
   setError(''); setNote('');
 }
@@ -247,7 +261,7 @@ async function init() {
     // The module is loaded dynamically, so include a per-document cache key;
     // otherwise a restarted local UI can keep an older persistence implementation
     // even though auth_ui.js itself was versioned by the server.
-    authApi = await withTimeout(import(`/static/supabase_auth.js?v=${Date.now()}`));
+    authApi = await withTimeout(import(`/static/auth_provider.js?v=${Date.now()}`));
   } catch (_) {
     setAuthState('auth_error');
     window.__tradutorCommunityAuthenticated = false;
@@ -314,12 +328,10 @@ async function init() {
       setError(message);
       authTrace('login_watchdog_timeout', {code: 'auth_timeout'});
       submit.dataset.busy = '';
-      submit.disabled = false;
-      submit.textContent = mode === 'signup' ? 'Criar conta' : 'Entrar';
+      setSubmitLoading(submit, false, mode === 'signup' ? 'Criar conta' : 'Entrar no painel');
     }, AUTH_LOGIN_TIMEOUT_MS + 250);
     submit.dataset.busy = '1';
-    submit.disabled = true;
-    submit.textContent = 'Entrando…';
+    setSubmitLoading(submit, true, 'Entrando…');
     setAuthState('auth_submitting');
     authTrace('login_submit_received', {source: AUTH_HANDLER_ID});
     try {
@@ -389,11 +401,18 @@ async function init() {
       if (window.__tradutorActiveLoginController === controller) window.__tradutorActiveLoginController = null;
       if (attemptId === loginAttemptCounter) {
         submit.dataset.busy = '';
-        submit.disabled = false;
-        submit.textContent = mode === 'signup' ? 'Criar conta' : 'Entrar';
+        setSubmitLoading(submit, false, mode === 'signup' ? 'Criar conta' : 'Entrar no painel');
         authTrace('login_finally_executed', {source: AUTH_HANDLER_ID});
       }
     }
+  });
+  $('#authTogglePassword')?.addEventListener('click', () => {
+    const input = $('#authPassword');
+    const toggle = $('#authTogglePassword');
+    if (!input || !toggle) return;
+    const shown = input.type === 'text';
+    input.type = shown ? 'password' : 'text';
+    toggle.setAttribute('aria-label', shown ? 'Mostrar senha' : 'Ocultar senha');
   });
   // Keeps token fresh across login, logout and SDK auto-refresh.
   await withTimeout(authApi.onAuthChange((session, event) => renderSession(session, event)));

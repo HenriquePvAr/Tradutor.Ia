@@ -51,6 +51,11 @@
       avatar: {requestId: '', controller: null, objectUrl: ''},
       banner: {requestId: '', controller: null, objectUrl: ''},
     },
+    currentRequestId: '',
+    currentJobId: '',
+    currentRunId: '',
+    currentSourceUrl: '',
+    currentStageVersion: 0,
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed']);
@@ -212,8 +217,26 @@
 
   /* ---------- boot ---------- */
   const bootEl = $('#boot');
+  const bootStages = [
+    'loading.stage.init', 'loading.stage.local', 'loading.stage.auth', 'loading.stage.session',
+    'loading.stage.profile', 'loading.stage.settings', 'loading.stage.community', 'loading.stage.ready',
+  ];
+  const bootNodes = $('#bootNodes');
+  if (bootNodes && !bootNodes.children.length) {
+    bootStages.forEach(() => bootNodes.appendChild(document.createElement('span')));
+  }
+  function setBootStage(index, message = '') {
+    if (!bootEl) return;
+    const bounded = Math.max(0, Math.min(bootStages.length - 1, Number(index) || 0));
+    const label = message || window.TradutorI18n?.t(bootStages[bounded]) || bootStages[bounded];
+    $('#bootStatusLine') && ($('#bootStatusLine').textContent = label);
+    $('#bootStatusMini') && ($('#bootStatusMini').textContent = `${bounded + 1}/${bootStages.length} etapas`);
+    $('#bootRingPct') && ($('#bootRingPct').textContent = `${Math.round(((bounded + 1) / bootStages.length) * 100)}%`);
+    $$('#bootNodes span').forEach((node, nodeIndex) => node.classList.toggle('done', nodeIndex <= bounded));
+  }
   function closeBoot() { if (bootEl) bootEl.classList.add('hide'); }
-  const bootTimer = window.setTimeout(closeBoot, 2050);
+  setBootStage(0);
+  const bootTimer = window.setTimeout(() => setBootStage(1, 'O carregamento demorou para responder.'), 15000);
   bootEl?.addEventListener('click', () => { window.clearTimeout(bootTimer); closeBoot(); });
 
   /* ---------- ambient canvas ---------- */
@@ -607,6 +630,17 @@
     $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
   }
 
+  function resetActivePipelineIdentity(sourceUrl = '') {
+    appState.currentRequestId = correlationId();
+    appState.currentJobId = '';
+    appState.currentRunId = '';
+    appState.currentSourceUrl = String(sourceUrl || '');
+    appState.currentStageVersion += 1;
+    resetRunPreview();
+    $('#balloonText') && ($('#balloonText').textContent = window.TradutorI18n?.t('pipeline.validating_source') || 'Validando fonte');
+    uiTrace('pipeline_request_created', {request_id: appState.currentRequestId});
+  }
+
   function showStartError(error) {
     const box = $('#startError');
     if (!box) { showToast(error.message, 'error'); return; }
@@ -633,12 +667,14 @@
     const previousLabel = button ? button.textContent : '';
     if (button) { button.dataset.busy = '1'; button.disabled = true; button.textContent = 'Iniciando processamento…'; }
     $('#startError') && ($('#startError').hidden = true);
+    const payload = formPayload();
+    resetActivePipelineIdentity(payload.url || payload.local_folder || '');
     // The submit only enqueues now, so the response arrives with a job to poll. Controls
     // are flipped after it, not before, and the screen shows whatever stage the worker
     // actually reports rather than guessing at "analisando fonte".
 
     try {
-      const result = await api('/api/ui/run', {method: 'POST', body: JSON.stringify(formPayload())});
+      const result = await api('/api/ui/run', {method: 'POST', body: JSON.stringify(payload)});
       if (!result || result.ok === false) {
         const error = new Error((result && (result.message || result.reason_code)) || 'Não foi possível analisar esta fonte com segurança.');
         error.code = result && result.reason_code;
@@ -648,6 +684,9 @@
       }
       appState.lastFinishedId = '';
       resetRunPreview();                            // never carry the previous job's card over
+      appState.currentJobId = String(result.job_id || '');
+      appState.currentRunId = String(result.run_id || '');
+      uiTrace('pipeline_job_created', {request_id: appState.currentRequestId});
       const awaitingReview = Boolean(result.awaiting_source_review);
       setRunControls(true, awaitingReview);
       if (awaitingReview) {
@@ -709,6 +748,12 @@
   $('#urlInput')?.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); startTranslation(); }
   });
+  $('#urlInput')?.addEventListener('input', () => {
+    if (appState.currentSourceUrl && $('#urlInput').value.trim() !== appState.currentSourceUrl) {
+      resetRunPreview();
+      $('#balloonText') && ($('#balloonText').textContent = window.TradutorI18n?.t('pipeline.idle') || 'Pronto para iniciar');
+    }
+  });
   $('#localFolderInput')?.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); startTranslation(); }
   });
@@ -738,7 +783,14 @@
     else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
     if (runtime.quality_review) renderQualityReview(runtime.quality_review);
     else if ($('#qualityReviewPanel')) $('#qualityReviewPanel').hidden = true;
-    if (runtime.latest && !awaitingReview) renderResult(runtime.latest);
+    if (runtime.latest && !awaitingReview) {
+      const latestId = String(runtime.latest.id || runtime.latest.job_id || '');
+      if (!appState.currentJobId || latestId === appState.currentJobId || terminalRunStatuses.has(appState.status)) {
+        renderResult(runtime.latest);
+      } else {
+        uiTrace('old_pipeline_event_discarded', {request_id: appState.currentRequestId});
+      }
+    }
     if (runtime.history_revision !== appState.historyRevision) refreshBootstrap();
     if (terminalRunStatuses.has(appState.status) && runtime.latest?.id && runtime.latest.id !== appState.lastFinishedId) {
       appState.lastFinishedId = runtime.latest.id;
@@ -1427,6 +1479,7 @@
       ? (record.publication_tags || record.tags).join(', ')
       : String(record.publication_tags || record.tags || ''));
     $('#publicationVisibility').value = draft.visibility || 'public';
+    if ($('#publicationAllowComments')) $('#publicationAllowComments').checked = draft.allow_comments !== false;
     $('#publicationConfirm').checked = false;
     $('#publicationSubmit').textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar';
     $('#publicationError').hidden = true;
@@ -1470,6 +1523,7 @@
       description: String($('#publicationDescription')?.value || '').slice(0, 2000),
       tags: String($('#publicationTags')?.value || '').split(',').map(value => value.trim()).filter(Boolean).slice(0, 20),
       visibility: $('#publicationVisibility')?.value === 'private' ? 'private' : 'public',
+      allow_comments: $('#publicationAllowComments')?.checked !== false,
     };
     if (trustedJobId) payload.source_job_id = trustedJobId;
     appState.publicationBusy = true;
@@ -1501,7 +1555,7 @@
       if (submit) { submit.disabled = false; submit.textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar'; }
     } finally {
       appState.publicationBusy = false;
-      if (submit) { submit.disabled = false; submit.textContent = eligibility.published ? 'Atualizar publicaÃ§Ã£o' : 'Publicar'; }
+      if (submit) { submit.disabled = false; submit.textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar'; }
       uiTrace('loading_cleared', {correlation_id: correlation});
     }
   }
@@ -2051,6 +2105,11 @@
       if (field.type === 'checkbox') field.checked = Boolean(value);
       else field.value = String(value);
     });
+    const language = $('#interfaceLanguageSelect');
+    if (language && window.TradutorI18n) {
+      language.value = window.TradutorI18n.selectedLanguage();
+      window.TradutorI18n.apply(document);
+    }
   }
   async function loadProductSettings() {
     if (!isCanonicalCommunityAuthenticated()) return;
@@ -2087,6 +2146,33 @@
     } finally {
       if (button) { button.disabled = false; button.textContent = 'Salvar configurações'; }
     }
+  });
+  $('#interfaceLanguageSelect')?.addEventListener('change', event => {
+    window.TradutorI18n?.setLanguage(event.target.value);
+  });
+  $('#settingsClearSession')?.addEventListener('click', async () => {
+    if (!window.confirm('Limpar a sessão atual neste navegador?')) return;
+    try {
+      await api('/api/community/auth/logout', {method: 'POST', body: JSON.stringify({})});
+    } catch (_) {
+      /* stale logout may already be complete */
+    }
+    window.__tradutorAccessToken = '';
+    window.__tradutorAuthState = 'unauthenticated';
+    window.__tradutorCommunityAuthenticated = false;
+    window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
+      detail: {authenticated: false, state: 'unauthenticated'},
+    }));
+    showToast('Sessão local limpa.', 'ok');
+  });
+  $('#settingsClearLocalData')?.addEventListener('click', () => {
+    if (!window.confirm('Limpar preferências locais deste navegador? Outputs e cache do projeto não serão apagados.')) return;
+    try {
+      localStorage.removeItem('tradutor.interfaceLanguage');
+      sessionStorage.clear();
+    } catch (_) { /* storage may be unavailable */ }
+    window.TradutorI18n?.setLanguage('auto');
+    showToast('Dados locais da interface limpos.', 'ok');
   });
   $('#settingsResetBtn')?.addEventListener('click', async () => {
     try {
@@ -2378,14 +2464,19 @@
   /* ---------- data lifecycle ---------- */
   async function refreshBootstrap() {
     try {
+      setBootStage(1);
       const data = await api(`/api/ui/bootstrap?cursor=${appState.cursor}`);
+      setBootStage(2);
       appState.bootstrap = data;
       appState.history = Array.isArray(data.history) ? data.history : [];
       const authState = syncCanonicalAuthFromBootstrap(data);
+      setBootStage(3);
       const authenticated = authState === 'authenticated';
       appState.profile = authenticated ? (data.profile || {}) : {};
+      setBootStage(4);
       window.__tradutorDisplayName = authenticated ? String(appState.profile.display_name || '').trim() : '';
       appState.settings = data.settings || {};
+      setBootStage(5);
       appState.historyRevision = data.history_revision || appState.historyRevision;
       renderSettings(appState.settings);
       applyCanonicalAuthSurface(authState);
@@ -2395,8 +2486,14 @@
       }
       renderHistory();
       renderDashboard();
+      setBootStage(6);
       renderRuntime(data);
+      setBootStage(7);
+      window.clearTimeout(bootTimer);
+      window.setTimeout(closeBoot, 250);
     } catch (error) {
+      window.clearTimeout(bootTimer);
+      setBootStage(1, 'Não foi possível carregar a interface local.');
       showToast(`Interface local: ${error.message}`, 'error');
     }
   }

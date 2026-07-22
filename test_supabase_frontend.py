@@ -72,7 +72,8 @@ class SupabaseFrontendTests(unittest.TestCase):
     def test_auth_bootstrap_defines_state_before_dynamic_dependency_import(self):
         source = _read("static/auth_ui.js")
         self.assertIn("window.__tradutorAuthState = 'auth_loading'", source)
-        self.assertIn("import(`/static/supabase_auth.js?v=${Date.now()}`)", source)
+        self.assertIn("import(`/static/auth_provider.js?v=${Date.now()}`)", source)
+        self.assertIn("supabase_auth.js", _read("static/auth_provider.js"))
         self.assertIn("AUTH_BOOTSTRAP_TIMEOUT_MS", source)
         self.assertIn("withTimeout", source)
         self.assertIn("renderAuthShell('auth_error')", source)
@@ -97,7 +98,8 @@ class SupabaseFrontendTests(unittest.TestCase):
         self.assertIn("new AbortController()", source)
         self.assertIn("controller.abort()", source)
         self.assertIn("finally", source)
-        self.assertIn("submit.disabled = false", source)
+        self.assertIn("button.disabled = Boolean(loading)", source)
+        self.assertIn("setSubmitLoading(submit, false", source)
         self.assertIn("submit.dataset.busy", source)
 
     def test_login_reconciles_canonical_session_without_reload(self):
@@ -243,7 +245,8 @@ class SupabaseFrontendTests(unittest.TestCase):
         app_source = _read("app_ui.py")
         self.assertIn("AUTH_UI_ASSET", app_source)
         self.assertIn("st_mtime_ns", app_source)
-        self.assertIn("return f\"/static/{path.name}?v={version}\"", app_source)
+        self.assertIn("path.relative_to(STATIC_DIR).as_posix()", app_source)
+        self.assertIn("return f\"/static/{rel}?v={version}\"", app_source)
 
     def test_tradutor_refreshes_bootstrap_after_auth_change(self):
         source = _read("static/tradutor_ui.js")

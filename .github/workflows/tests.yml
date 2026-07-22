@@ -67,7 +67,30 @@ jobs:
         run: python -m pytest -q
 
       - name: Check JavaScript syntax
-        run: node --check static/tradutor_ui.js
+        run: |
+          node --check static/auth_provider.js
+          node --check static/auth_ui.js
+          node --check static/supabase_auth.js
+          node --check static/social_community.js
+          node --check static/tradutor_ui.js
+          node --check static/i18n/index.js
+          node --check static/i18n/pt-BR.js
+          node --check static/i18n/en-US.js
+          node --check static/i18n/es-ES.js
+          node --check static/i18n/fr-FR.js
+          node --check static/i18n/ja-JP.js
+          node --check static/i18n/ko-KR.js
+
+      - name: Install Better Auth service dependencies
+        working-directory: apps/auth-service
+        run: npm ci
+
+      - name: Check Better Auth service
+        working-directory: apps/auth-service
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
 
       - name: Compile Python modules
         run: |

@@ -1312,7 +1312,40 @@
     .profile-preview-panel{position:static; top:auto;}
   }
 
-  /* ---------- auth (Supabase) ---------- */
+  /* ---------- reference loading/login ---------- */
+  .reference-loading{position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; background:#0a0a0b; color:#f2f0ec; overflow:hidden;}
+  .reference-loading[hidden]{display:none;}
+  .rl-grid,.auth-ref-grid{position:absolute; inset:0; background-image:linear-gradient(to right,rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.03) 1px,transparent 1px); background-size:42px 42px; mask-image:radial-gradient(ellipse 75% 65% at 50% 40%,#000 10%,transparent 78%);}
+  .rl-watermark,.auth-ref-watermark{position:absolute; right:-52px; top:-80px; font-family:'Noto Serif JP',serif; font-size:360px; font-weight:900; color:transparent; -webkit-text-stroke:1px rgba(229,72,77,.09); pointer-events:none;}
+  .rl-frame{position:relative; z-index:1; width:min(480px,92vw); display:flex; flex-direction:column; align-items:center; gap:18px; padding:34px 24px;}
+  .rl-brand,.auth-ref-brand{display:flex; align-items:baseline; gap:4px; font-family:'Noto Serif JP',serif; font-weight:800;}
+  .rl-kanji,.auth-ref-brand span{font-size:29px}.rl-dot,.auth-ref-brand b{color:#e5484d; font-family:'Space Grotesk',sans-serif; font-size:25px}.rl-ia{font-family:'Space Grotesk',sans-serif; font-size:25px}
+  .rl-badge,.auth-ref-badge{font:600 9.5px 'JetBrains Mono',monospace; letter-spacing:2px; text-transform:uppercase; color:#ff6b6f; border:1px solid rgba(229,72,77,.45); background:rgba(229,72,77,.06); padding:4px 10px; border-radius:4px;}
+  .rl-compare,.auth-ref-compare{position:relative; width:min(280px,70vw); aspect-ratio:495/550; border:1px solid rgba(255,255,255,.08); border-radius:10px; background:linear-gradient(135deg,#131315,#050506); box-shadow:0 24px 48px -18px rgba(0,0,0,.65); overflow:hidden;}
+  .rl-compare::before,.auth-ref-compare::before{content:""; position:absolute; inset:16% 18%; border:2px solid rgba(242,240,236,.2); border-radius:46% 54% 42% 58%; filter:url(#inkRough);}
+  .rl-compare::after,.auth-ref-compare::after{content:""; position:absolute; inset:38% 14% auto; height:52px; border-radius:50%; background:rgba(229,72,77,.16);}
+  .rl-tag{position:absolute; top:9px; z-index:2; font:600 8px 'JetBrains Mono',monospace; letter-spacing:1.2px; text-transform:uppercase; padding:3px 7px; border-radius:4px; background:rgba(10,10,11,.68); color:#8b8b88; border:1px solid rgba(255,255,255,.08);}
+  .rl-tag.left{left:9px}.rl-tag.right{right:9px; color:#ff6b6f; border-color:rgba(229,72,77,.45); background:rgba(229,72,77,.18)}
+  .rl-scanline,.auth-ref-handle{position:absolute; top:0; bottom:0; left:52%; width:2px; background:#ff6b6f; box-shadow:0 0 14px 2px rgba(229,72,77,.35); animation:rlSweep 4.2s cubic-bezier(.76,0,.24,1) infinite;}
+  @keyframes rlSweep{0%{left:0;opacity:0}5%{opacity:1}45%{left:100%;opacity:1}50%,100%{opacity:0}}
+  .rl-core{width:100%; display:flex; align-items:center; gap:16px; background:#131315; border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:15px 18px;}
+  .rl-ring{width:64px; height:64px; border-radius:50%; display:grid; place-items:center; color:#ff6b6f; font:700 13px 'JetBrains Mono',monospace; border:5px solid #191a1c; box-shadow:inset 0 0 0 2px rgba(229,72,77,.35);}
+  .rl-status{font:600 12.5px 'JetBrains Mono',monospace; color:#f2f0ec}.rl-sub{margin-top:3px; color:#4d4c49; font:500 10px 'JetBrains Mono',monospace}
+  .rl-nodes{display:flex; gap:6px; width:100%; justify-content:center}.rl-nodes span{width:30px; height:6px; border-radius:999px; background:#191a1c; border:1px solid rgba(255,255,255,.08)}.rl-nodes span.done{background:#e5484d}
+  .auth-reference-card{width:min(980px,94vw); max-width:980px; padding:0; display:grid; grid-template-columns:1.15fr .85fr; overflow:hidden; background:#0a0a0b;}
+  .auth-reference-stage{position:relative; min-height:620px; padding:50px 54px; border-right:1px solid rgba(255,255,255,.08); overflow:hidden;}
+  .auth-reference-stage h2{position:relative; z-index:1; max-width:540px; margin:26px 0 10px; font:800 32px/1.2 'Space Grotesk',sans-serif}.auth-reference-stage h2 em{font-style:normal; color:#ff6b6f}
+  .auth-reference-stage p{position:relative; z-index:1; max-width:440px; color:#8b8b88; line-height:1.65}
+  .auth-ref-compare{position:relative; z-index:1; margin-top:24px; width:min(460px,100%);}
+  .auth-ref-pipeline{position:relative; z-index:1; display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-top:18px}.auth-ref-pipeline span{text-align:center; color:#8b8b88; font:600 9px/1.35 'JetBrains Mono',monospace; border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:8px 3px; background:#131315}
+  .auth-reference-side{padding:40px 32px; display:flex; flex-direction:column; justify-content:center}.auth-card-topbar,.auth-row{display:flex; justify-content:space-between; align-items:center; gap:12px}.auth-ref-status{display:flex; align-items:center; gap:6px; color:#8b8b88; font:600 9.5px 'JetBrains Mono',monospace}.auth-ref-status i{width:6px;height:6px;border-radius:50%; background:#4ade80; box-shadow:0 0 6px #4ade80}
+  .auth-reference-side h1{margin:24px 0 6px; font:800 25px 'Space Grotesk',sans-serif}.auth-lead{margin:0 0 22px; color:#8b8b88}
+  .auth-input-wrap{position:relative}.auth-input-wrap input{padding-right:42px}.toggle-pw{position:absolute; right:6px; top:50%; transform:translateY(-50%); width:30px; height:30px; border:0; border-radius:5px; background:transparent; color:var(--muted); cursor:pointer}
+  .auth-row{font-size:12px; color:var(--muted); margin:0 0 8px}.auth-submit{position:relative}.auth-submit .spinner{display:none; width:15px; height:15px; border-radius:50%; border:2px solid rgba(255,255,255,.35); border-top-color:#fff; animation:spin .7s linear infinite}.auth-submit.loading .btn-text{opacity:.001}.auth-submit.loading .spinner{display:block; position:absolute}
+  @media (max-width:900px){.auth-reference-card{grid-template-columns:1fr}.auth-reference-stage{display:none}.auth-reference-side{padding:34px 24px}}
+  @media (prefers-reduced-motion:reduce){.rl-scanline,.auth-ref-handle{animation:none}.reference-loading *,.auth-reference-card *{transition:none!important; animation:none!important}}
+
+  /* ---------- auth ---------- */
   .mh-auth{display:inline-flex; align-items:center; gap:8px;}
   .mh-auth-status{
     font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--gold);

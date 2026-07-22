@@ -18,11 +18,22 @@
   </div>
 </div>
 
-<div id="boot" title="clique para pular">
-  <div class="boot-lines"></div>
-  <div class="boot-mark">翻訳<span>.</span>IA</div>
-  <div class="boot-sub">carregando pipeline local…</div>
-  <div class="boot-bar"></div>
+<div id="boot" class="reference-loading" title="clique para pular" aria-live="polite">
+  <div class="rl-grid"></div>
+  <div class="rl-watermark">翻</div>
+  <div class="rl-frame">
+    <div class="rl-brand"><span class="rl-kanji">翻訳</span><span class="rl-dot">.</span><span class="rl-ia">IA</span></div>
+    <div class="rl-badge">beta técnica · pipeline local</div>
+    <div class="rl-compare" aria-hidden="true"><span class="rl-tag left">original</span><span class="rl-tag right">pt-br</span><div class="rl-scanline"></div></div>
+    <div class="rl-core">
+      <div class="rl-ring" id="bootRingPct">0%</div>
+      <div>
+        <div class="rl-status" id="bootStatusLine" data-i18n="loading.stage.init">iniciando interface</div>
+        <div class="rl-sub" id="bootStatusMini">0/8 etapas</div>
+      </div>
+    </div>
+    <div class="rl-nodes" id="bootNodes" aria-hidden="true"></div>
+  </div>
 </div>
 
 <div class="shell">
@@ -471,7 +482,15 @@
       <div class="hist-list community-tab-panel" id="communityFavorites" data-community-panel="favorites" hidden></div>
       <div class="hist-list community-tab-panel" id="communityReading" data-community-panel="reading" hidden></div>
       <div class="hist-list community-tab-panel" id="communityMine" data-community-panel="mine" hidden></div>
-      <div class="hist-list community-tab-panel" id="communityNotifications" data-community-panel="notifications" hidden></div>
+      <div class="hist-list community-tab-panel" id="communityNotifications" data-community-panel="notifications" hidden>
+        <div class="panel settings-section community-notification-preferences">
+          <div class="panel-label" data-i18n="community.notification_preferences">Preferências de notificação</div>
+          <label class="checkline"><input type="checkbox" name="notify_comments"> <span data-i18n="community.notify_comments">comentários</span></label>
+          <label class="checkline"><input type="checkbox" name="notify_replies"> <span data-i18n="community.notify_replies">respostas</span></label>
+          <label class="checkline"><input type="checkbox" name="notify_moderation"> <span data-i18n="community.notify_moderation">moderação</span></label>
+          <label class="checkline"><input type="checkbox" name="notify_updates"> <span data-i18n="community.notify_updates">atualizações relevantes</span></label>
+        </div>
+      </div>
       <div class="community-notice">publique um capítulo pelo histórico · só aparece aqui após o upload e a verificação · publique apenas conteúdo autorizado</div>
     </section>
 
@@ -481,8 +500,8 @@
         <span class="ph-kanji">設</span>
         <span class="ph-burst"></span>
         <div>
-          <div class="page-title" data-text="Configurações">Configurações</div>
-          <div class="page-desc">Preferências principais do aplicativo e informações avançadas quando você precisar.</div>
+          <div class="page-title" data-text="Configurações" data-i18n="settings.title">Configurações</div>
+          <div class="page-desc" data-i18n="settings.description">Preferências principais do aplicativo e informações avançadas quando você precisar.</div>
         </div>
         <div class="page-headright">
           <span class="page-ep">話 <b>06</b></span>
@@ -500,49 +519,44 @@
 
       <form class="settings-product-grid" id="productSettingsForm">
         <div class="panel settings-section">
-          <div class="panel-label">Geral</div>
-          <label>Idioma da interface<select name="interface_language"><option value="pt-BR">Português do Brasil</option></select></label>
-          <label>Tema<select name="theme"><option value="system">Seguir sistema</option><option value="dark">Escuro</option><option value="high-contrast">Alto contraste</option></select></label>
-          <label class="checkline"><input type="checkbox" name="open_folder_on_finish"> abrir pasta ao terminar</label>
-          <label class="checkline"><input type="checkbox" name="local_notifications"> notificações locais</label>
-          <label class="checkline"><input type="checkbox" name="confirm_destructive_actions"> confirmar ações destrutivas</label>
+          <div class="panel-label" data-i18n="settings.general">Geral</div>
+          <label><span data-i18n="settings.language.title">Idioma da interface</span><select name="interface_language" id="interfaceLanguageSelect"><option value="auto" data-i18n="language.auto">Automático — sistema</option><option value="pt-BR" data-i18n="language.pt-BR">Português do Brasil</option><option value="en-US" data-i18n="language.en-US">English</option><option value="es-ES" data-i18n="language.es-ES">Español</option><option value="fr-FR" data-i18n="language.fr-FR">Français</option><option value="ja-JP" data-i18n="language.ja-JP">日本語</option><option value="ko-KR" data-i18n="language.ko-KR">한국어</option></select></label>
+          <label><span data-i18n="settings.theme">Tema</span><select name="theme"><option value="system">Seguir sistema</option><option value="dark">Escuro</option><option value="high-contrast">Alto contraste</option></select></label>
+          <label><span data-i18n="settings.home_page">Página inicial</span><select name="home_page"><option value="inicio">Início</option><option value="nova">Nova tradução</option><option value="hist">Capítulos traduzidos</option><option value="community">Comunidade</option></select></label>
+          <label class="checkline"><input type="checkbox" name="open_folder_on_finish"> <span data-i18n="settings.open_folder">abrir pasta ao terminar</span></label>
+          <label class="checkline"><input type="checkbox" name="local_notifications"> <span data-i18n="settings.local_notifications">notificações locais</span></label>
+          <label class="checkline"><input type="checkbox" name="confirm_destructive_actions"> <span data-i18n="settings.confirm_destructive">confirmar ações destrutivas</span></label>
         </div>
         <div class="panel settings-section">
-          <div class="panel-label">Processamento</div>
-          <label>Modo padrão<select name="default_mode"><option value="fast">Rápido</option><option value="quality">Qualidade</option></select></label>
-          <label>Escopo padrão<select name="default_scope"><option value="full">Capítulo inteiro</option><option value="sample">Amostra de teste</option></select></label>
-          <label class="checkline"><input type="checkbox" name="use_cache"> usar cache quando seguro</label>
-          <label class="checkline"><input type="checkbox" name="temporary_context"> usar contexto temporário</label>
-          <label>Concorrência segura<select name="safe_concurrency"><option value="automatic">Automática</option><option value="low">Baixa</option><option value="balanced">Balanceada</option></select></label>
+          <div class="panel-label" data-i18n="settings.processing">Processamento</div>
+          <label><span data-i18n="settings.default_mode">Modo padrão</span><select name="default_mode"><option value="fast">Rápido</option><option value="quality">Qualidade</option></select></label>
+          <label><span data-i18n="settings.default_scope">Escopo padrão</span><select name="default_scope"><option value="full">Capítulo inteiro</option><option value="sample">Amostra de teste</option></select></label>
+          <label class="checkline"><input type="checkbox" name="use_cache"> <span data-i18n="settings.cache">usar cache quando seguro</span></label>
+          <label class="checkline"><input type="checkbox" name="temporary_context"> <span data-i18n="settings.temporary_context">usar contexto temporário</span></label>
+          <label><span data-i18n="settings.safe_concurrency">Concorrência segura</span><select name="safe_concurrency"><option value="automatic">Automática</option><option value="low">Baixa</option><option value="balanced">Balanceada</option></select></label>
         </div>
         <div class="panel settings-section">
-          <div class="panel-label">Comunidade</div>
-          <label>Visibilidade padrão<select name="default_visibility"><option value="community">Comunidade</option><option value="private">Privado</option></select></label>
-          <label class="checkline"><input type="checkbox" name="allow_comments"> permitir comentários</label>
-          <label class="checkline"><input type="checkbox" name="community_notifications"> receber notificações</label>
-          <label class="checkline"><input type="checkbox" name="public_profile"> perfil público</label>
-          <label class="checkline"><input type="checkbox" name="show_online_status"> mostrar status online</label>
+          <div class="panel-label" data-i18n="settings.files">Arquivos</div>
+          <label><span data-i18n="settings.output_retention">Retenção de outputs</span><select name="output_retention_days"><option value="7">7 dias</option><option value="30">30 dias</option><option value="90">90 dias</option></select></label>
+          <label><span data-i18n="settings.cache_limit">Limite de cache</span><select name="cache_budget_mb"><option value="1024">1 GB</option><option value="2048">2 GB</option><option value="4096">4 GB</option></select></label>
+          <label class="checkline"><input type="checkbox" name="confirm_before_delete"> <span data-i18n="settings.confirm_delete">confirmar antes de apagar</span></label>
+          <label class="checkline"><input type="checkbox" name="safe_temp_cleanup"> <span data-i18n="settings.cleanup_temp">limpeza manual de temporários</span></label>
         </div>
         <div class="panel settings-section">
-          <div class="panel-label">Arquivos</div>
-          <label>Retenção de outputs<select name="output_retention_days"><option value="7">7 dias</option><option value="30">30 dias</option><option value="90">90 dias</option></select></label>
-          <label>Cache seguro<select name="cache_budget_mb"><option value="1024">1 GB</option><option value="2048">2 GB</option><option value="4096">4 GB</option></select></label>
-          <label class="checkline"><input type="checkbox" name="confirm_before_delete"> confirmar antes de apagar</label>
-          <label class="checkline"><input type="checkbox" name="safe_temp_cleanup"> limpeza manual de temporários</label>
-        </div>
-        <div class="panel settings-section">
-          <div class="panel-label">Acessibilidade e privacidade</div>
-          <label class="checkline"><input type="checkbox" name="reduced_motion"> reduzir animações</label>
-          <label class="checkline"><input type="checkbox" name="high_contrast"> aumentar contraste</label>
-          <label>Escala da interface<select name="ui_scale"><option value="80">80%</option><option value="100">100%</option><option value="125">125%</option></select></label>
-          <label class="checkline"><input type="checkbox" name="tooltips"> mostrar tooltips</label>
-          <label class="checkline"><input type="checkbox" name="keyboard_shortcuts"> atalhos de teclado</label>
+          <div class="panel-label" data-i18n="settings.access_privacy">Acessibilidade e privacidade</div>
+          <label class="checkline"><input type="checkbox" name="reduced_motion"> <span data-i18n="settings.reduced_motion">reduzir animações</span></label>
+          <label class="checkline"><input type="checkbox" name="high_contrast"> <span data-i18n="settings.high_contrast">aumentar contraste</span></label>
+          <label><span data-i18n="settings.ui_scale">Escala da interface</span><select name="ui_scale"><option value="80">80%</option><option value="100">100%</option><option value="125">125%</option></select></label>
+          <label class="checkline"><input type="checkbox" name="tooltips"> <span data-i18n="settings.tooltips">mostrar tooltips</span></label>
+          <label class="checkline"><input type="checkbox" name="keyboard_shortcuts"> <span data-i18n="settings.shortcuts">atalhos de teclado</span></label>
+          <button type="button" class="btn-ghost" id="settingsClearSession" data-i18n="settings.clear_session">limpar sessão</button>
+          <button type="button" class="btn-ghost danger" id="settingsClearLocalData" data-i18n="settings.clear_local_data">limpar dados locais</button>
         </div>
         <div class="panel settings-section about-simple">
-          <div class="panel-label">Sobre</div>
+          <div class="panel-label" data-i18n="settings.about">Sobre</div>
           <h3>Tradutor.Ia</h3>
-          <p>Ferramenta local para traduzir capítulos, revisar resultados e compartilhar PDFs autorizados com a comunidade.</p>
-          <p>Créditos: criado por Henrique Paiva Araújo. Tradução automática assistida, revisão automática e revisão humana quando marcada.</p>
+          <p data-i18n="settings.about_text">Ferramenta local para traduzir capítulos, revisar resultados e compartilhar PDFs autorizados com a comunidade.</p>
+          <p>Privacidade: arquivos locais, credenciais e tokens não são exibidos publicamente. Suporte: use Logs e Diagnóstico para relatar falhas sanitizadas.</p>
           <button type="submit" class="btn-primary" id="settingsSaveBtn">Salvar configurações</button>
           <button type="button" class="btn-ghost" id="settingsResetBtn">Restaurar padrão</button>
           <div class="publication-error" id="settingsError" hidden></div>
@@ -704,6 +718,12 @@
             </div>
           </div>
 
+          <div class="field profile-privacy-controls">
+            <label data-i18n="profile.privacy">Privacidade do perfil</label>
+            <label class="checkline"><input type="checkbox" name="public_profile"> <span data-i18n="profile.public_profile">perfil público</span></label>
+            <label class="checkline"><input type="checkbox" name="show_online_status"> <span data-i18n="profile.online_status">mostrar status online</span></label>
+          </div>
+
           <div class="field">
             <label>Mensagem de status <span class="hint">— opcional</span></label>
             <input type="text" id="profileStatusText" placeholder="ex: traduzindo um capítulo agora..." maxlength="60" />
@@ -839,6 +859,7 @@
       <div class="field"><label for="publicationDescription">Descrição</label><textarea id="publicationDescription" maxlength="2000" rows="3"></textarea></div>
       <div class="field"><label for="publicationTags">Tags</label><input id="publicationTags" maxlength="240" placeholder="separe por vírgulas" /></div>
       <div class="field"><label for="publicationVisibility">Visibilidade</label><select id="publicationVisibility"><option value="public">Comunidade</option><option value="private">Privado</option></select></div>
+      <label class="publication-confirm"><input type="checkbox" id="publicationAllowComments" checked /> <span data-i18n="publication.allow_comments">Permitir comentários nesta publicação</span></label>
       <label class="publication-confirm"><input type="checkbox" id="publicationConfirm" required /> <span>Confirmo que posso publicar este PDF e que a revisão pendente foi conferida.</span></label>
       <div class="publication-error" id="publicationError" hidden></div>
       <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="publicationCancel">Cancelar</button><button type="submit" class="btn-primary" id="publicationSubmit">Publicar</button></div>
@@ -846,26 +867,46 @@
   </div>
 </div>
 
-<!-- AUTH MODAL (Supabase) -->
+<!-- AUTH MODAL -->
 <div class="modal-overlay" id="authModalOverlay">
-  <div class="modal-card auth-card">
+  <div class="modal-card auth-card auth-reference-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
     <button type="button" class="modal-close" id="authModalClose" aria-label="fechar">✕</button>
-    <div class="auth-tabs">
-      <button type="button" class="auth-tab active" data-authmode="login">Entrar</button>
-      <button type="button" class="auth-tab" data-authmode="signup">Criar conta</button>
+    <div class="auth-reference-stage" aria-hidden="true">
+      <div class="auth-ref-grid"></div>
+      <div class="auth-ref-watermark">訳</div>
+      <div class="auth-ref-brand"><span>翻訳</span><b>.</b><span>IA</span></div>
+      <h2>Nenhum balão passa <em>sem prova</em> de que foi bem traduzido.</h2>
+      <p>O pipeline lê o painel, mostra a evidência lado a lado e só entrega a página quando a tradução resiste à comparação.</p>
+      <div class="auth-ref-compare"><span class="rl-tag left">original</span><span class="rl-tag right">pt-br</span><div class="auth-ref-handle"></div></div>
+      <div class="auth-ref-pipeline">
+        <span>1<br>download</span><span>2<br>OCR</span><span>3<br>organiza</span><span>4<br>traduz</span><span>5<br>cache</span><span>6<br>PDF</span>
+      </div>
     </div>
-    <form id="authForm" autocomplete="on">
-      <div class="field">
-        <label for="authEmail">E-mail</label>
-        <input type="email" id="authEmail" required autocomplete="email" placeholder="voce@exemplo.com" />
+    <div class="auth-reference-side">
+      <div class="auth-card-topbar"><span class="auth-ref-badge">painel local</span><span class="auth-ref-status"><i></i> serviço conectado</span></div>
+      <div class="auth-tabs">
+        <button type="button" class="auth-tab active" data-authmode="login" data-i18n="auth.login">Entrar</button>
+        <button type="button" class="auth-tab" data-authmode="signup" data-i18n="auth.signup">Criar conta</button>
       </div>
-      <div class="field">
-        <label for="authPassword">Senha</label>
-        <input type="password" id="authPassword" required minlength="8" autocomplete="current-password" placeholder="mínimo 8 caracteres" />
-      </div>
-      <div class="auth-error" id="authError" hidden></div>
-      <div class="auth-note" id="authNote" hidden></div>
-      <button type="submit" class="btn-primary" id="authSubmit">Entrar</button>
-    </form>
+      <h1 id="authTitle">Bem-vindo de volta</h1>
+      <p class="auth-lead">Entre para continuar suas traduções em andamento.</p>
+      <form id="authForm" autocomplete="on">
+        <div class="field">
+          <label for="authEmail" data-i18n="auth.email">E-mail</label>
+          <input type="email" id="authEmail" required autocomplete="email" placeholder="voce@exemplo.com" data-i18n-placeholder="auth.email" />
+        </div>
+        <div class="field">
+          <label for="authPassword" data-i18n="auth.password">Senha</label>
+          <div class="auth-input-wrap">
+            <input type="password" id="authPassword" required minlength="8" autocomplete="current-password" placeholder="mínimo 8 caracteres" />
+            <button type="button" class="toggle-pw" id="authTogglePassword" aria-label="Mostrar senha">ver</button>
+          </div>
+        </div>
+        <div class="auth-row"><label class="remember"><input type="checkbox" id="authRemember" checked> <span data-i18n="auth.remember">Lembrar de mim</span></label><span data-i18n="auth.forgot">Recuperação indisponível neste ambiente</span></div>
+        <div class="auth-error" id="authError" hidden></div>
+        <div class="auth-note" id="authNote" hidden></div>
+        <button type="submit" class="btn-primary auth-submit" id="authSubmit"><span class="btn-text" data-i18n="auth.submit">Entrar no painel</span><span class="spinner" aria-hidden="true"></span></button>
+      </form>
+    </div>
   </div>
 </div>
