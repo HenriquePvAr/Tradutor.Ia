@@ -437,7 +437,11 @@
                 <button class="btn-ghost" type="button" id="acceptLowRiskReview">Aceitar baixo risco</button>
                 <button class="btn-ghost" type="button" id="acceptAllReview">ACEITAR TODOS</button>
                 <button class="btn-ghost" type="button" id="undoBulkReview" disabled>Desfazer última ação em massa</button>
-                <button class="btn-ghost" type="button" id="globalAiReview">REVISAR PDF INTEIRO</button>
+                <button class="btn-primary" type="button" id="globalAiReview">REVISAR CAPÍTULO INTEIRO</button>
+              </div>
+              <div class="quality-revision-status" id="qualityRevisionStatus" hidden>
+                <strong id="qualityRevisionPhase">Revisão ainda não iniciada</strong>
+                <span id="qualityRevisionMeta">Aguardando ação pela UI.</span>
               </div>
               <div class="quality-review-message" id="qualityReviewBulkMessage" role="status" aria-live="polite"></div>
               <div class="quality-review-list" id="qualityReviewList"></div>

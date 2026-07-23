@@ -418,6 +418,29 @@ async def api_job_cancel(job_id: str) -> JSONResponse:
     return JSONResponse(result, status_code=status_code)
 
 
+@app.get("/api/ui/quality-review/revision/{job_id}")
+def api_quality_revision_status(job_id: str) -> dict[str, Any]:
+    status = BRIDGE.quality_revision_status(job_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "quality_revision_not_available",
+            "message": "Não há uma revisão iterativa disponível para este job.",
+        })
+    return status
+
+
+@app.post("/api/ui/quality-review/revision/start")
+def api_quality_revision_start(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return BRIDGE.start_quality_revision(str(payload.get("job_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "message": "Não foi possível iniciar a revisão iterativa.",
+            "action": "Confira se o capítulo possui PDF e relatório de qualidade persistidos.",
+        }) from exc
+
+
 @app.get("/api/ui/quality-review/{job_id}")
 def api_quality_review(job_id: str) -> dict[str, Any]:
     review = BRIDGE.quality_review(job_id)

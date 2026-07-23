@@ -50,6 +50,7 @@
     qualityReviewSelection: new Set(),
     qualityReviewUndo: [],
     qualityReviewBulkBusy: false,
+    qualityRevisionPoll: null,
     currentPipelineState: null,
     cancelBusy: false,
     expandedFolders: new Set(),
@@ -1445,6 +1446,7 @@
       confirm.title = confirm.disabled && !review.confirmed ? 'Revise cada item ou mantenha o original antes de confirmar.' : '';
     }
     updateQualityReviewSelectionUi();
+    pollQualityRevisionStatus(review.job_id, {once: true});
   }
 
   function visibleQualityReviewKeys({risk = ''} = {}) {
@@ -1475,6 +1477,46 @@
     if (!node) return;
     node.textContent = message || '';
     node.dataset.state = type || '';
+  }
+
+  function renderQualityRevisionStatus(status = null) {
+    const panel = $('#qualityRevisionStatus');
+    if (!panel) return;
+    if (!status || status.status === 'not_started') {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    const phase = $('#qualityRevisionPhase');
+    const meta = $('#qualityRevisionMeta');
+    const label = status.phase_label || status.phase || 'Revisão em andamento';
+    const pages = status.total_pages ? `${status.total_pages} páginas` : 'páginas sendo calculadas';
+    const regions = status.total_regions ? `${status.total_regions} regiões` : 'regiões sendo calculadas';
+    const requests = Number(status.requests || 0);
+    if (phase) phase.textContent = label;
+    if (meta) {
+      meta.textContent = `revision_id ${String(status.revision_id || '—').slice(0, 8)} · ${pages} · ${regions} · ${requests} requisições · ${status.status || 'running'}`;
+    }
+  }
+
+  async function pollQualityRevisionStatus(jobId, {once = false} = {}) {
+    if (!jobId) return null;
+    try {
+      const status = await api(`/api/ui/quality-review/revision/${encodeURIComponent(jobId)}`);
+      renderQualityRevisionStatus(status);
+      if (!once && ['running', 'starting'].includes(String(status.status || ''))) {
+        clearTimeout(appState.qualityRevisionPoll);
+        appState.qualityRevisionPoll = setTimeout(() => pollQualityRevisionStatus(jobId), 2500);
+      } else if (!once && status.status) {
+        clearTimeout(appState.qualityRevisionPoll);
+        appState.qualityRevisionPoll = null;
+        pollState();
+      }
+      return status;
+    } catch (error) {
+      renderQualityRevisionStatus(null);
+      return null;
+    }
   }
 
   async function qualityReviewBulkAction({action = 'reviewed', keys = [], riskFilter = '', confirmation = false} = {}) {
@@ -1576,14 +1618,17 @@
   $('#globalAiReview')?.addEventListener('click', async () => {
     if (!appState.qualityReview?.job_id || appState.qualityReviewBulkBusy) return;
     appState.qualityReviewBulkBusy = true;
-    setQualityReviewBulkMessage('Gerando pré-revisão global offline...', 'busy');
+    setQualityReviewBulkMessage('Iniciando revisão completa pela UI...', 'busy');
     try {
-      const report = await api('/api/ui/quality-review/global-review', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id})});
-      setQualityReviewBulkMessage(`Pré-revisão global: ${report.total_regions || 0} regiões · ${report.manual_review || 0} revisões manuais · ${report.english_residual || 0} inglês residual. Nenhuma alteração foi aplicada.`, 'ok');
-      showToast('Relatório global de qualidade gerado.', 'ok');
+      const status = await api('/api/ui/quality-review/revision/start', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id})});
+      renderQualityRevisionStatus(status);
+      setQualityReviewBulkMessage(`Revisão iniciada: ${status.phase_label || status.phase || 'em andamento'}.`, 'ok');
+      showToast('Revisão completa iniciada pela UI.', 'ok');
+      clearTimeout(appState.qualityRevisionPoll);
+      appState.qualityRevisionPoll = setTimeout(() => pollQualityRevisionStatus(appState.qualityReview.job_id), 1000);
     } catch (error) {
-      setQualityReviewBulkMessage(error.message || 'Não foi possível gerar a revisão global.', 'error');
-      showToast(error.message || 'Não foi possível gerar a revisão global.', 'error');
+      setQualityReviewBulkMessage(error.message || 'Não foi possível iniciar a revisão completa.', 'error');
+      showToast(error.message || 'Não foi possível iniciar a revisão completa.', 'error');
     } finally {
       appState.qualityReviewBulkBusy = false;
       updateQualityReviewSelectionUi();

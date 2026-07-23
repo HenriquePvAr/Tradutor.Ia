@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import hashlib
@@ -40,6 +41,7 @@ from ui_helpers import (
     suggest_chapter_details,
 )
 from ui_history import UIHistoryStore, utc_now
+from chapter_quality_revision import ChapterQualityRevision
 
 
 PROFILE_PATH = REPO_ROOT / ".cache" / "ui_profile.json"
@@ -304,6 +306,7 @@ class UiBridge:
         self.profile = self._load_profile()
         self.store = JobStore(JOBS_DB_PATH)
         self.history_revision = 1
+        self._quality_revision_threads: dict[str, threading.Thread] = {}
         self.store.reconcile_confirmed_reviews()
         # A job left in flight by a crash must not come back as PROCESSANDO after a restart.
         self._recover_staged_source_analyses()
@@ -765,6 +768,78 @@ class UiBridge:
                 encoding="utf-8",
             )
         return report
+
+    def quality_revision_status(self, job_id: str) -> dict[str, Any] | None:
+        job = self.store.get_job(str(job_id or ""))
+        if not job:
+            return None
+        output_dir = job.get("output_dir")
+        if not output_dir:
+            return None
+        revision = ChapterQualityRevision(
+            output_dir,
+            job_id=str(job["id"]),
+            run_id=str(job.get("run_id") or ""),
+        )
+        status = revision.latest_status()
+        if status:
+            status = dict(status)
+            thread = self._quality_revision_threads.get(str(job["id"]))
+            status["thread_alive"] = bool(thread and thread.is_alive())
+            return status
+        return {
+            "job_id": str(job["id"]),
+            "parent_job_id": str(job["id"]),
+            "parent_run_id": str(job.get("run_id") or ""),
+            "status": "not_started",
+            "phase": "not_started",
+            "phase_label": "Revisão ainda não iniciada",
+        }
+
+    def start_quality_revision(self, job_id: str) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not job.get("output_dir"):
+            raise ValueError("quality_review_not_available")
+        thread = self._quality_revision_threads.get(str(job["id"]))
+        if thread and thread.is_alive():
+            status = self.quality_revision_status(str(job["id"]))
+            return status or {"status": "running", "parent_job_id": str(job["id"])}
+
+        revision = ChapterQualityRevision(
+            str(job["output_dir"]),
+            job_id=str(job["id"]),
+            run_id=str(job.get("run_id") or ""),
+        )
+
+        def target() -> None:
+            try:
+                revision.start(max_iterations=3)
+            finally:
+                self.history_revision += 1
+
+        thread = threading.Thread(
+            target=target,
+            name=f"quality-revision-{str(job['id'])[:8]}",
+            daemon=True,
+        )
+        self._quality_revision_threads[str(job["id"])] = thread
+        thread.start()
+        # Give the worker a moment to persist its first checkpoint, then return a
+        # disk-backed status.  If the OS schedules it later, the caller still receives
+        # a clear starting state instead of a silent no-op.
+        thread.join(timeout=0.2)
+        self.history_revision += 1
+        status = self.quality_revision_status(str(job["id"]))
+        return status or {
+            "parent_job_id": str(job["id"]),
+            "parent_run_id": str(job.get("run_id") or ""),
+            "status": "starting",
+            "phase": "preparing",
+            "phase_label": "Preparando revisão",
+        }
 
     def quality_review_page(self, job_id: str, page_number: int) -> Path | None:
         job = self.store.get_job(str(job_id or ""))
