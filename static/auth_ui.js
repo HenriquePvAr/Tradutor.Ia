@@ -19,10 +19,12 @@ function setNote(msg) {
 }
 
 function setShellState(state) {
+  if (window.__tradutorVisualTestEnabled === true && document.documentElement.dataset.visualBootTest === '1') return;
   document.documentElement.dataset.shellState = state;
 }
 
 function showLoginSurface() {
+  if (window.__tradutorVisualTestEnabled === true && document.documentElement.dataset.visualBootTest === '1') return;
   const surface = $('#authSurface');
   if (surface) surface.hidden = false;
 }
@@ -34,6 +36,7 @@ function hideLoginSurface() {
 }
 
 function dismissBootSurface() {
+  if (window.__tradutorVisualTestEnabled === true && document.documentElement.dataset.visualBootTest === '1') return;
   $('#boot')?.classList.add('hide');
 }
 

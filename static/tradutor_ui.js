@@ -225,14 +225,15 @@
     const raw = String(params.get('visual_boot_stage') || '').trim().toLowerCase();
     if (!raw) return null;
     const local = ['127.0.0.1', 'localhost', '::1'].includes(window.location.hostname);
-    if (!local) return null;
+    const enabled = window.__tradutorVisualTestEnabled === true;
+    if (!local || !enabled) return null;
     const stageMap = {init: 1, local: 2, auth: 3, session: 4, profile: 5, settings: 6, community: 7, ready: 8};
     if (raw === 'error' || raw === 'disk_full' || raw === 'retry') {
-      return {kind: 'error', code: raw === 'error' ? String(params.get('visual_boot_error') || 'boot_error') : raw};
+      return {kind: 'error', code: raw === 'error' ? String(params.get('visual_boot_error') || 'boot_error') : raw, reducedMotion: params.get('visual_reduced_motion') === '1'};
     }
     const stage = Number(raw) || stageMap[raw] || 0;
     if (stage < 1 || stage > 8) return null;
-    return {kind: 'stage', index: stage - 1};
+    return {kind: 'stage', index: stage - 1, reducedMotion: params.get('visual_reduced_motion') === '1'};
   })();
   let bootHighestStage = 0;
   const bootStages = [
@@ -306,10 +307,11 @@
       bootHighestStage = bounded;
     }
     const label = message || window.TradutorI18n?.t(bootStages[bounded]) || bootStages[bounded];
-    const pct = Math.round(((bounded + 1) / bootStages.length) * 100);
+    const pct = ((bounded + 1) / bootStages.length) * 100;
+    const pctLabel = `${pct.toLocaleString('pt-BR', {maximumFractionDigits: 1})}%`;
     setBootText($('#bootStatusLine'), label);
     $('#bootStatusMini') && ($('#bootStatusMini').textContent = bootStageMeta[bounded]?.sub || `${bounded + 1}/${bootStages.length} etapas`);
-    $('#ringPct') && ($('#ringPct').textContent = `${pct}%`);
+    $('#ringPct') && ($('#ringPct').textContent = pctLabel);
     $('#ringFill') && ($('#ringFill').style.strokeDashoffset = String(175.9 - (pct / 100) * 175.9));
     $('#bootProgressBar') && ($('#bootProgressBar').style.width = `${pct}%`);
     $('#pageCount') && ($('#pageCount').textContent = `${bounded + 1}/${bootStages.length} etapas`);
@@ -338,9 +340,17 @@
   setBootStage(0);
   if (bootVisualTest?.kind === 'stage') {
     bootEl.dataset.visualBootTest = '1';
+    document.documentElement.dataset.visualBootTest = '1';
+    if (bootVisualTest.reducedMotion) document.documentElement.dataset.visualReducedMotion = '1';
+    document.documentElement.dataset.shellState = 'booting';
+    $('#authSurface') && ($('#authSurface').hidden = true);
     setBootStage(bootVisualTest.index);
   } else if (bootVisualTest?.kind === 'error') {
     bootEl.dataset.visualBootTest = '1';
+    document.documentElement.dataset.visualBootTest = '1';
+    if (bootVisualTest.reducedMotion) document.documentElement.dataset.visualReducedMotion = '1';
+    document.documentElement.dataset.shellState = 'boot_failed';
+    $('#authSurface') && ($('#authSurface').hidden = true);
     setBootFailed(bootVisualTest.code === 'disk_full'
       ? 'Disco cheio ao preparar o painel local.'
       : 'Não foi possível carregar a interface local.');
@@ -1744,7 +1754,7 @@
       const disposition = String(response.headers.get('Content-Disposition') || '').toLowerCase();
       const cacheControl = String(response.headers.get('Cache-Control') || '').toLowerCase();
       if (!disposition.includes('inline') || !cacheControl.includes('private') || !cacheControl.includes('no-store')) {
-        const error = new Error('Os cabeÃ§alhos do PDF nÃ£o sÃ£o seguros.');
+        const error = new Error('Os cabeçalhos do PDF não são seguros.');
         error.code = 'invalid_pdf_headers';
         throw error;
       }
@@ -1756,7 +1766,7 @@
       }
       const header = new Uint8Array(await blob.slice(0, 5).arrayBuffer());
       if (String.fromCharCode(...header) !== '%PDF-') {
-        const error = new Error('O arquivo retornado nÃ£o possui assinatura PDF.');
+        const error = new Error('O arquivo retornado não possui assinatura PDF.');
         error.code = 'invalid_pdf_signature';
         throw error;
       }

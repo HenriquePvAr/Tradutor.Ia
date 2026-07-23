@@ -499,8 +499,8 @@ async def api_source_retry(payload: dict[str, Any] = Body(default={})) -> dict[s
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={
             "code": str(exc), "stage": "revisao_da_fonte",
-            "message": "Esta revisÃ£o de fonte nÃ£o pode mais ser repetida.",
-            "action": "Atualize a tela e escolha a revisÃ£o atualmente exibida.",
+            "message": "Esta revisão de fonte não pode mais ser repetida.",
+            "action": "Atualize a tela e escolha a revisão atualmente exibida.",
         }) from exc
 
 
@@ -552,7 +552,7 @@ def api_profile(request: Request, payload: dict[str, Any] = Body(default={})) ->
         _sync_public_profile(principal)
     except ValueError as exc:
         if str(exc) == "display_name_taken":
-            raise HTTPException(status_code=409, detail={"code": "display_name_taken", "message": "Este nome de exibiÃ§Ã£o jÃ¡ estÃ¡ em uso."}) from exc
+            raise HTTPException(status_code=409, detail={"code": "display_name_taken", "message": "Este nome de exibição já está em uso."}) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "profile": profile}
 
@@ -654,6 +654,7 @@ def api_history_delete(payload: dict[str, Any] = Body(default={})) -> dict[str, 
 @ui.page("/")
 def index() -> None:
     shell = SHELL_PATH.read_text(encoding="utf-8")
+    visual_test_enabled = os.getenv("TRADUTOR_UI_VISUAL_TEST", "").strip() == "1"
     ui.add_head_html(
         """
         <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -662,6 +663,11 @@ def index() -> None:
         + f'<link rel="stylesheet" href="{_asset_url(TRADUTOR_CSS_ASSET)}">'
     )
     ui.add_body_html(shell)
+    ui.add_body_html(
+        "<script>"
+        f"window.__tradutorVisualTestEnabled = {'true' if visual_test_enabled else 'false'};"
+        "</script>"
+    )
     for asset in I18N_ASSETS:
         ui.add_body_html(f'<script src="{_asset_url(asset)}" defer></script>')
     ui.add_body_html(f'<script src="{_asset_url(TRADUTOR_UI_ASSET)}" defer></script>')

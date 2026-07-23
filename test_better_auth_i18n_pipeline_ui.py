@@ -114,6 +114,15 @@ class BetterAuthServiceScaffoldTests(unittest.TestCase):
         self.assertIn("emailAndPassword", read("apps/auth-service/src/auth.ts"))
         self.assertIn("/internal/auth/session", read("apps/auth-service/src/server.ts"))
 
+    def test_service_exposes_liveness_readiness_and_database_readiness(self):
+        server = read("apps/auth-service/src/server.ts")
+        self.assertIn('/internal/auth/live', server)
+        self.assertIn('/internal/auth/ready', server)
+        self.assertIn('/internal/auth/db-ready', server)
+        self.assertIn('databaseReady', server)
+        self.assertIn('Cache-Control', server)
+        self.assertIn('503', server)
+
     def test_migration_scripts_are_dry_run_only_by_default(self):
         self.assertIn("remoteMigrationExecuted: false", read("scripts/auth-migration/audit.ts"))
         self.assertIn("intentionally disabled", read("scripts/auth-migration/migrate.ts"))
@@ -288,12 +297,43 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
 
     def test_loading_visual_test_mode_is_local_and_fail_closed(self):
         self.assertIn("visual_boot_stage", self.ui_js)
+        self.assertIn("__tradutorVisualTestEnabled", read("app_ui.py"))
+        self.assertIn("TRADUTOR_UI_VISUAL_TEST", read("app_ui.py"))
+        self.assertIn("window.__tradutorVisualTestEnabled === true", self.ui_js)
         self.assertIn("['127.0.0.1', 'localhost', '::1']", self.ui_js)
         self.assertIn("dataset.visualBootTest = '1'", self.ui_js)
+        self.assertIn("document.documentElement.dataset.visualBootTest = '1'", self.ui_js)
+        self.assertIn("window.__tradutorVisualTestEnabled === true && document.documentElement.dataset.visualBootTest === '1'", self.auth_js)
         self.assertIn("if (bootVisualTest) return;", self.ui_js)
         self.assertIn("bootHighestStage", self.ui_js)
         self.assertIn("bootProgressBar", self.shell)
         self.assertIn("app-loading-progress", self.css)
+        self.assertIn("visual_reduced_motion", self.ui_js)
+        self.assertIn('data-visual-reduced-motion="1"', self.css)
+        for stage in ("init: 1", "local: 2", "auth: 3", "session: 4", "profile: 5", "settings: 6", "community: 7", "ready: 8"):
+            self.assertIn(stage, self.ui_js)
+        self.assertIn("stage < 1 || stage > 8", self.ui_js)
+        self.assertIn("raw === 'error'", self.ui_js)
+
+    def test_visible_ui_strings_do_not_contain_known_mojibake(self):
+        checked = {
+            "app_ui.py": read("app_ui.py"),
+            "ui/ui_shell.html": self.shell,
+            "static/tradutor_ui.js": self.ui_js,
+            "static/auth_ui.js": self.auth_js,
+        }
+        mojibake_patterns = (
+            "\u00c3\u0192", "\u00c3\u201a", "\u00c3\u00a2\u00e2\u201a\u00ac", "\ufffd",
+            "anÃ", "traduÃ", "configuraÃ", "publicaÃ", "revisÃ", "sessÃ",
+            "nÃ£", "jÃ¡", "exibiÃ", "pÃ¡", "possÃ", "cabeÃ", "sÃ£",
+        )
+        for rel, text in checked.items():
+            with self.subTest(file=rel):
+                for pattern in mojibake_patterns:
+                    self.assertNotIn(pattern, text)
+        self.assertIn("Tentar nova análise", self.shell)
+        self.assertIn("Esta revisão de fonte não pode mais ser repetida.", checked["app_ui.py"])
+        self.assertIn("Os cabeçalhos do PDF não são seguros.", self.ui_js)
 
     def test_new_auth_and_loading_strings_exist_in_all_catalogs(self):
         required = {
