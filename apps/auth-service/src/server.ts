@@ -1,10 +1,11 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { createAuth } from "./auth.js";
+import { createAuth, prepareAuthDatabase } from "./auth.js";
 import { loadConfig } from "./config.js";
 import { getSanitizedSession } from "./session.js";
 
 const config = loadConfig();
+await prepareAuthDatabase(config);
 const auth = createAuth(config);
 const app = new Hono();
 
@@ -36,4 +37,3 @@ serve({
 });
 
 console.log(`tradutor auth-service listening on ${config.host}:${config.port}`);
-

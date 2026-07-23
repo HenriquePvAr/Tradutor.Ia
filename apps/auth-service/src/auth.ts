@@ -2,12 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { betterAuth } from "better-auth";
+import { getMigrations } from "better-auth/db/migration";
 import type { AuthServiceConfig } from "./config.js";
 
-export function createAuth(config: AuthServiceConfig) {
-  fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
-  const database = new Database(config.databasePath);
-  return betterAuth({
+function authOptions(config: AuthServiceConfig, database: Database.Database) {
+  return {
     baseURL: config.baseUrl,
     basePath: "/api/auth",
     secret: config.secret,
@@ -17,7 +16,7 @@ export function createAuth(config: AuthServiceConfig) {
       cookiePrefix: "tradutor-auth",
       defaultCookieAttributes: {
         httpOnly: true,
-        sameSite: "lax",
+        sameSite: "lax" as const,
         secure: config.baseUrl.startsWith("https://"),
         path: "/",
       },
@@ -34,8 +33,26 @@ export function createAuth(config: AuthServiceConfig) {
           },
         }
       : {},
-  });
+  };
+}
+
+export async function prepareAuthDatabase(config: AuthServiceConfig) {
+  fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
+  const database = new Database(config.databasePath);
+  try {
+    const migrations = await getMigrations(authOptions(config, database));
+    if (migrations.toBeCreated.length || migrations.toBeAdded.length) {
+      await migrations.runMigrations();
+    }
+  } finally {
+    database.close();
+  }
+}
+
+export function createAuth(config: AuthServiceConfig) {
+  fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
+  const database = new Database(config.databasePath);
+  return betterAuth(authOptions(config, database));
 }
 
 export type TradutorAuth = ReturnType<typeof createAuth>;
-
