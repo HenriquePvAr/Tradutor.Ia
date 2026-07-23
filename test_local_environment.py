@@ -25,6 +25,7 @@ ENV_KEYS = (
     "GOOGLE_OAUTH_TOKEN_PATH",
     "GOOGLE_OAUTH_SCOPES",
     "LOCAL_ENV_TEST_VALUE",
+    "TRADUTOR_ALLOW_DRIVER_DOWNLOAD",
 )
 
 
@@ -36,6 +37,7 @@ def isolated_environment(monkeypatch):
 
 def _select(monkeypatch, path: Path) -> None:
     monkeypatch.setattr(local_environment, "LOCAL_ENV_PATH", path)
+    monkeypatch.setattr(local_environment, "LOCAL_ENV_OVERRIDE_PATH", path.parent / ".env.local")
 
 
 def test_env_present_and_process_environment_absent(tmp_path, monkeypatch):
@@ -63,6 +65,31 @@ def test_process_environment_overrides_local_file(tmp_path, monkeypatch):
     local_environment.load_local_environment()
 
     assert os.environ["COMMUNITY_STORAGE_PROVIDER"] == "filesystem"
+
+
+def test_env_local_can_enable_local_driver_policy(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("LOCAL_ENV_TEST_VALUE=from-base\n", encoding="utf-8")
+    (tmp_path / ".env.local").write_text(
+        "TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1\n", encoding="utf-8"
+    )
+    _select(monkeypatch, env_path)
+
+    assert local_environment.load_local_environment() is True
+    assert os.environ["LOCAL_ENV_TEST_VALUE"] == "from-base"
+    assert os.environ["TRADUTOR_ALLOW_DRIVER_DOWNLOAD"] == "1"
+
+
+def test_env_local_does_not_override_process_values(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    (tmp_path / ".env.local").write_text(
+        "TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1\n", encoding="utf-8"
+    )
+    _select(monkeypatch, env_path)
+    monkeypatch.setenv("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "0")
+
+    assert local_environment.load_local_environment() is True
+    assert os.environ["TRADUTOR_ALLOW_DRIVER_DOWNLOAD"] == "0"
 
 
 def test_env_example_is_never_loaded(tmp_path, monkeypatch):

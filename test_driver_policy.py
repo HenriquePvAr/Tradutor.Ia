@@ -9,7 +9,7 @@ import _test_bootstrap  # noqa: F401
 
 import unittest
 
-from down import driver_download_allowed
+from down import driver_download_allowed, driver_resolution_diagnostics
 
 
 class DriverPolicyTests(unittest.TestCase):
@@ -54,6 +54,21 @@ class DriverPolicyTests(unittest.TestCase):
                 down._create_driver()
 
         self.assertEqual(raised.exception.code, CHROMEDRIVER_UNAVAILABLE)
+
+    def test_driver_diagnostics_are_sanitized_and_show_selenium_manager(self):
+        import down
+        from unittest import mock
+
+        with mock.patch.object(down, "CHROMEDRIVER_PATH", ""), \
+             mock.patch.object(down.os.path, "isfile", return_value=False), \
+             mock.patch.object(down.shutil, "which", return_value=None):
+            info = driver_resolution_diagnostics({"TRADUTOR_ALLOW_DRIVER_DOWNLOAD": "1"})
+
+        self.assertTrue(info["driver_download_allowed"])
+        self.assertFalse(info["chromedriver_path_configured"])
+        self.assertTrue(info["selenium_manager_available"])
+        self.assertEqual(info["driver_resolution_source"], "selenium_manager")
+        self.assertNotIn("C:\\", str(info))
 
     def test_no_space_left_on_device_is_reported_as_disk_full(self):
         import errno

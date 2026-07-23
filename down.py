@@ -498,6 +498,28 @@ def driver_download_allowed(env=None) -> bool:
     return str(values.get("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "")).strip() == "1"
 
 
+def driver_resolution_diagnostics(env=None) -> dict[str, object]:
+    """Sanitized driver resolution signals for UI/support surfaces."""
+    values = os.environ if env is None else env
+    explicit = str(values.get("CHROMEDRIVER_PATH", "") or "").strip()
+    explicit_valid = bool(explicit and os.path.isfile(explicit))
+    path_driver = shutil.which("chromedriver") or shutil.which("chromedriver.exe")
+    allowed = driver_download_allowed(values)
+    source = "none"
+    if explicit_valid:
+        source = "explicit_path"
+    elif path_driver:
+        source = "cache"
+    elif allowed:
+        source = "selenium_manager"
+    return {
+        "driver_download_allowed": allowed,
+        "chromedriver_path_configured": bool(explicit),
+        "selenium_manager_available": allowed,
+        "driver_resolution_source": source,
+    }
+
+
 def _pipeline_exception_code(exc: BaseException) -> str:
     """Classify local operational failures without leaking provider/browser details."""
     if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC:
