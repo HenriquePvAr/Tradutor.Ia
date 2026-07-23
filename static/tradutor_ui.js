@@ -1422,6 +1422,7 @@
     if (!panel || !list) return;
     appState.qualityReview = review;
     panel.hidden = false;
+    updateQualityReviewDeveloperActions();
     const items = Array.isArray(review.items) ? review.items : [];
     const filter = appState.qualityReviewFilter || 'pending';
     const visible = items.filter(item => filter === 'all' || (filter === 'pending' ? item.state === 'pending' : item.state !== 'pending'));
@@ -1479,6 +1480,20 @@
     node.dataset.state = type || '';
   }
 
+  function qualityReviewDeveloperMode() {
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      return params.get('dev') === '1' || params.get('review_dev') === '1' || localStorage.getItem('tradutorDeveloperMode') === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function updateQualityReviewDeveloperActions() {
+    const canary = $('#nvidiaContractCanary');
+    if (canary) canary.hidden = !qualityReviewDeveloperMode();
+  }
+
   function renderQualityRevisionStatus(status = null) {
     const panel = $('#qualityRevisionStatus');
     if (!panel) return;
@@ -1493,9 +1508,17 @@
     const pages = status.total_pages ? `${status.total_pages} páginas` : 'páginas sendo calculadas';
     const regions = status.total_regions ? `${status.total_regions} regiões` : 'regiões sendo calculadas';
     const requests = Number(status.requests || 0);
+    const responseStats = [
+      status.valid_response_batches ? `${status.valid_response_batches} válidas` : '',
+      status.repaired_batches ? `${status.repaired_batches} reparadas` : '',
+      status.fallback_individual_requests ? `${status.fallback_individual_requests} fallback` : '',
+      status.invalid_response_batches ? `${status.invalid_response_batches} inválidas` : '',
+      status.manual_review ? `${status.manual_review} manual` : '',
+      status.validity_rate != null ? `${Math.round(Number(status.validity_rate || 0) * 100)}%` : '',
+    ].filter(Boolean).join(' · ');
     if (phase) phase.textContent = label;
     if (meta) {
-      meta.textContent = `revision_id ${String(status.revision_id || '—').slice(0, 8)} · ${pages} · ${regions} · ${requests} requisições · ${status.status || 'running'}`;
+      meta.textContent = `revision_id ${String(status.revision_id || '—').slice(0, 8)} · ${pages} · ${regions} · ${requests} requisições · ${status.status || 'running'}${responseStats ? ' · ' + responseStats : ''}`;
     }
   }
 
@@ -1610,6 +1633,25 @@
       setQualityReviewBulkMessage('Última ação em massa desfeita.', 'ok');
     } catch (error) {
       setQualityReviewBulkMessage(error.message || 'Não foi possível desfazer.', 'error');
+    } finally {
+      appState.qualityReviewBulkBusy = false;
+      updateQualityReviewSelectionUi();
+    }
+  });
+  $('#nvidiaContractCanary')?.addEventListener('click', async () => {
+    if (!qualityReviewDeveloperMode() || !appState.qualityReview?.job_id || appState.qualityReviewBulkBusy) return;
+    appState.qualityReviewBulkBusy = true;
+    setQualityReviewBulkMessage('Testando contrato NVIDIA com canário de até 10 regiões...', 'busy');
+    try {
+      const status = await api('/api/ui/quality-review/revision/canary/start', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id, max_regions: 10})});
+      renderQualityRevisionStatus(status);
+      setQualityReviewBulkMessage(`Canário iniciado: ${status.phase_label || status.phase || 'em andamento'}.`, 'ok');
+      showToast('Canário do contrato NVIDIA iniciado.', 'ok');
+      clearTimeout(appState.qualityRevisionPoll);
+      appState.qualityRevisionPoll = setTimeout(() => pollQualityRevisionStatus(appState.qualityReview.job_id), 1000);
+    } catch (error) {
+      setQualityReviewBulkMessage(error.message || 'Não foi possível iniciar o canário NVIDIA.', 'error');
+      showToast(error.message || 'Não foi possível iniciar o canário NVIDIA.', 'error');
     } finally {
       appState.qualityReviewBulkBusy = false;
       updateQualityReviewSelectionUi();

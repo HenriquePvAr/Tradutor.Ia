@@ -841,6 +841,48 @@ class UiBridge:
             "phase_label": "Preparando revisão",
         }
 
+    def start_quality_revision_canary(self, job_id: str, *, max_regions: int = 10) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not job.get("output_dir"):
+            raise ValueError("quality_review_not_available")
+        thread = self._quality_revision_threads.get(str(job["id"]))
+        if thread and thread.is_alive():
+            status = self.quality_revision_status(str(job["id"]))
+            return status or {"status": "running", "parent_job_id": str(job["id"])}
+
+        revision = ChapterQualityRevision(
+            str(job["output_dir"]),
+            job_id=str(job["id"]),
+            run_id=str(job.get("run_id") or ""),
+        )
+
+        def target() -> None:
+            try:
+                revision.start_canary(max_regions=max_regions)
+            finally:
+                self.history_revision += 1
+
+        thread = threading.Thread(
+            target=target,
+            name=f"quality-canary-{str(job['id'])[:8]}",
+            daemon=True,
+        )
+        self._quality_revision_threads[str(job["id"])] = thread
+        thread.start()
+        thread.join(timeout=0.2)
+        self.history_revision += 1
+        status = self.quality_revision_status(str(job["id"]))
+        return status or {
+            "parent_job_id": str(job["id"]),
+            "parent_run_id": str(job.get("run_id") or ""),
+            "status": "starting",
+            "phase": "contextual_translation_review",
+            "phase_label": "Testando contrato NVIDIA",
+        }
+
     def quality_review_page(self, job_id: str, page_number: int) -> Path | None:
         job = self.store.get_job(str(job_id or ""))
         if not job:

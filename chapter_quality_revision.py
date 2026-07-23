@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -55,9 +54,69 @@ TRANSLATABLE_CLASSES = {
     "unknown",
 }
 PRESERVED_CLASSES = {"sfx", "decorative", "credit", "watermark", "editorial"}
+REVIEW_SCHEMA_VERSION = "1.0"
+REVIEW_ACTIONS = {"keep", "rewrite", "preserve_original", "manual_review"}
+REVIEW_RISKS = {"low", "medium", "high"}
+REVIEW_RESULT_FIELDS = {
+    "region_id",
+    "action",
+    "revised_translation",
+    "reason_code",
+    "confidence",
+    "risk",
+    "terminology",
+}
+REVIEW_ENVELOPE_FIELDS = {"schema_version", "batch_id", "results"}
+NVIDIA_REVIEW_JSON_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["schema_version", "batch_id", "results"],
+    "properties": {
+        "schema_version": {"type": "string", "const": REVIEW_SCHEMA_VERSION},
+        "batch_id": {"type": "string"},
+        "results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "region_id",
+                    "action",
+                    "revised_translation",
+                    "reason_code",
+                    "confidence",
+                    "risk",
+                    "terminology",
+                ],
+                "properties": {
+                    "region_id": {"type": "string"},
+                    "action": {"type": "string", "enum": sorted(REVIEW_ACTIONS)},
+                    "revised_translation": {"type": "string"},
+                    "reason_code": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "risk": {"type": "string", "enum": sorted(REVIEW_RISKS)},
+                    "terminology": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["source", "target"],
+                            "properties": {
+                                "source": {"type": "string"},
+                                "target": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
 _NVIDIA_REVIEW_REQUEST_SCRIPT = r"""
 import json
 import sys
+import time
+import urllib.error
 import urllib.request
 
 import config
@@ -74,8 +133,36 @@ http_request = urllib.request.Request(
     },
     method="POST",
 )
-with urllib.request.urlopen(http_request, timeout=45) as response:
-    sys.stdout.write(response.read().decode("utf-8"))
+started = time.perf_counter()
+try:
+    with urllib.request.urlopen(http_request, timeout=45) as response:
+        body = response.read().decode("utf-8", errors="replace")
+        sys.stdout.write(json.dumps({
+            "ok": True,
+            "status_http": int(getattr(response, "status", 0) or 0),
+            "duration_seconds": time.perf_counter() - started,
+            "body": body,
+        }, ensure_ascii=False))
+except urllib.error.HTTPError as exc:
+    body = exc.read().decode("utf-8", errors="replace")
+    sys.stdout.write(json.dumps({
+        "ok": False,
+        "status_http": int(getattr(exc, "code", 0) or 0),
+        "duration_seconds": time.perf_counter() - started,
+        "body": body,
+        "error": "http_error",
+    }, ensure_ascii=False))
+    sys.exit(0)
+except Exception as exc:
+    sys.stdout.write(json.dumps({
+        "ok": False,
+        "status_http": None,
+        "duration_seconds": time.perf_counter() - started,
+        "body": "",
+        "error": type(exc).__name__,
+        "error_message": str(exc)[:500],
+    }, ensure_ascii=False))
+    sys.exit(0)
 """
 
 
@@ -155,6 +242,26 @@ class RevisionPaths:
     glossary: Path
     visual_inspection: Path
     render_audit: Path
+    checkpoint: Path
+    raw_responses: Path
+
+
+@dataclass
+class ReviewContractResult:
+    valid: bool
+    items: list[dict[str, Any]]
+    categories: list[str]
+    error: str
+    diagnostics: dict[str, Any]
+    repaired: bool = False
+
+
+class ReviewContractError(ValueError):
+    def __init__(self, error: str, categories: list[str] | None = None, diagnostics: dict[str, Any] | None = None) -> None:
+        super().__init__(error)
+        self.error = error
+        self.categories = categories or ["unknown"]
+        self.diagnostics = diagnostics or {}
 
 
 class ContextualNvidiaReviewer:
@@ -176,41 +283,167 @@ class ContextualNvidiaReviewer:
     def configured(self) -> bool:
         return bool(self.api_key and self.api_key != "sua_chave_aqui")
 
-    def review_batch(self, records: list[dict[str, Any]], glossary: dict[str, Any]) -> list[dict[str, Any]]:
+    def review_batch(
+        self,
+        records: list[dict[str, Any]],
+        glossary: dict[str, Any],
+        *,
+        batch_id: str | None = None,
+        raw_response_dir: str | Path | None = None,
+        request_budget: int | None = None,
+    ) -> list[dict[str, Any]]:
         if not records:
             return []
         if not self.configured:
             raise RuntimeError("nvidia_not_configured")
+        self.valid_batches = getattr(self, "valid_batches", 0)
+        self.repaired_batches = getattr(self, "repaired_batches", 0)
+        self.fallback_individual = getattr(self, "fallback_individual", 0)
+        self.invalid_batches = getattr(self, "invalid_batches", 0)
+        batch_id = str(batch_id or f"review-{uuid.uuid4().hex[:12]}")
+        raw_dir = Path(raw_response_dir) if raw_response_dir else None
+        response = self._send_review_request(records, glossary, batch_id, "review")
+        if response.get("provider_error") and not response.get("content"):
+            parsed = ReviewContractResult(
+                False,
+                [],
+                self._provider_error_categories(str(response.get("provider_error") or "")),
+                str(response.get("provider_error") or "nvidia_review_request_failed"),
+                {},
+            )
+            self._write_raw_response(raw_dir, batch_id, "review", records, response, parsed)
+            self.invalid_batches += 1
+            return self._manual_reviews(records, str(response.get("provider_error") or "nvidia_review_request_failed"), parsed.categories)
+        parsed = self._parse_contract_response(response.get("content", ""), records, batch_id)
+        self._write_raw_response(raw_dir, batch_id, "review", records, response, parsed)
+        if parsed.valid:
+            self.valid_batches += 1
+            return parsed.items
+
+        repair = self._send_repair_request(records, batch_id, response.get("content", ""), parsed)
+        if repair.get("provider_error") and not repair.get("content"):
+            repair_parsed = ReviewContractResult(
+                False,
+                [],
+                self._provider_error_categories(str(repair.get("provider_error") or "")),
+                str(repair.get("provider_error") or "nvidia_review_repair_failed"),
+                {},
+            )
+            self._write_raw_response(raw_dir, batch_id, "repair", records, repair, repair_parsed)
+            return self._manual_reviews(records, str(repair.get("provider_error") or "nvidia_review_repair_failed"), repair_parsed.categories)
+        repair_parsed = self._parse_contract_response(repair.get("content", ""), records, batch_id)
+        repair_parsed.repaired = repair_parsed.valid
+        self._write_raw_response(raw_dir, batch_id, "repair", records, repair, repair_parsed)
+        if repair_parsed.valid:
+            self.repaired_batches += 1
+            for item in repair_parsed.items:
+                item["contract_path"] = "repaired"
+            return repair_parsed.items
+
+        self.invalid_batches += 1
+        if len(records) > 1 and (request_budget is None or self.requests + len(records) <= request_budget):
+            results: list[dict[str, Any]] = []
+            for offset, record in enumerate(records, start=1):
+                individual_id = f"{batch_id}-region-{offset:02d}"
+                individual = self._send_review_request([record], glossary, individual_id, "individual_fallback")
+                individual_parsed = self._parse_contract_response(individual.get("content", ""), [record], individual_id)
+                self._write_raw_response(raw_dir, individual_id, "individual_fallback", [record], individual, individual_parsed)
+                if individual_parsed.valid:
+                    self.valid_batches += 1
+                    self.fallback_individual += 1
+                    for item in individual_parsed.items:
+                        item["contract_path"] = "individual_fallback"
+                    results.extend(individual_parsed.items)
+                else:
+                    results.extend(self._manual_reviews([record], "individual_contract_parse_failed", individual_parsed.categories))
+            return results
+        return self._manual_reviews(records, "batch_contract_parse_failed", sorted(set(parsed.categories + repair_parsed.categories)))
+
+    def _send_review_request(
+        self,
+        records: list[dict[str, Any]],
+        glossary: dict[str, Any],
+        batch_id: str,
+        purpose: str,
+    ) -> dict[str, Any]:
+        prompt_regions = [self._prompt_record(record) for record in records]
         payload = {
-            "chapter": {"target_language": "pt-BR", "review_goal": "naturalidade e fidelidade sem hardcode"},
+            "schema_version": REVIEW_SCHEMA_VERSION,
+            "batch_id": batch_id,
+            "target_language": "pt-BR",
+            "review_goal": "naturalidade e fidelidade sem hardcode",
             "glossary": glossary,
-            "regions": records,
+            "regions": prompt_regions,
         }
         started = time.perf_counter()
         request_payload = {
             "model": self.model,
-            "temperature": 0.1,
+            "temperature": 0.0,
+            "top_p": 0.2,
             "max_tokens": 4096,
+            "nvext": {"guided_json": NVIDIA_REVIEW_JSON_SCHEMA},
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "Revise traducoes de manhwa de ingles para portugues do Brasil. "
-                        "Responda somente JSON. Use exclusivamente os region_id recebidos. "
-                        "Nao invente texto fora do contexto. Nao use markdown. "
-                        "Classifique action como keep, rewrite, preserve_original ou manual_review. "
-                        "Use risk low, medium ou high. HIGH nunca deve ser aplicado automaticamente."
+                        "Revise traducoes de quadrinhos de ingles para portugues brasileiro natural. "
+                        "Responda apenas com um objeto JSON valido no schema fornecido, sem Markdown, "
+                        "sem introducao e sem conclusao. Nao altere IDs, nao remova itens, nao acrescente "
+                        "itens e nao ordene por preferencia. Use exatamente o batch_id recebido e exatamente "
+                        "os region_id recebidos. Respeite text_type, preserve credit/watermark/decorative, "
+                        "preserve nomes proprios e use o glossario. Escolha manual_review quando houver "
+                        "duvida, OCR incerto ou risco alto. Nao invente texto ausente e nao corrija OCR sem evidencia."
                     ),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(payload, ensure_ascii=False),
                 },
+                ],
+        }
+        return self._post_chat_completion(request_payload, started, purpose)
+
+    def _send_repair_request(
+        self,
+        records: list[dict[str, Any]],
+        batch_id: str,
+        invalid_response: str,
+        failure: ReviewContractResult,
+    ) -> dict[str, Any]:
+        payload = {
+            "schema_version": REVIEW_SCHEMA_VERSION,
+            "batch_id": batch_id,
+            "expected_region_ids": [str(item["region_id"]) for item in records],
+            "validation_error": failure.error,
+            "validation_categories": failure.categories,
+            "invalid_response": str(invalid_response or "")[:16000],
+            "schema": NVIDIA_REVIEW_JSON_SCHEMA,
+        }
+        started = time.perf_counter()
+        request_payload = {
+            "model": self.model,
+            "temperature": 0.0,
+            "top_p": 0.1,
+            "max_tokens": 4096,
+            "nvext": {"guided_json": NVIDIA_REVIEW_JSON_SCHEMA},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Converta somente o conteudo fornecido para o schema solicitado. "
+                        "Nao reavalie, nao reescreva semanticamente e nao crie IDs. "
+                        "Se nao for possivel preservar exatamente todos os IDs e campos, use manual_review."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
         }
+        return self._post_chat_completion(request_payload, started, "repair")
+
+    def _post_chat_completion(self, request_payload: dict[str, Any], started: float, purpose: str) -> dict[str, Any]:
         self.requests += 1
         try:
-            python_executable = str(getattr(sys, "_base_executable", "") or sys.executable)
+            python_executable = self._subprocess_python_executable()
             completed = subprocess.run(
                 [
                     python_executable,
@@ -227,86 +460,270 @@ class ContextualNvidiaReviewer:
                 check=False,
             )
             if completed.returncode != 0:
-                raise RuntimeError("nvidia_review_subprocess_failed")
-            response_payload = json.loads(completed.stdout or "{}")
-        except (subprocess.TimeoutExpired, OSError, ValueError, RuntimeError):
-            return [
-                {
-                    "region_id": str(item["region_id"]),
-                    "action": "manual_review",
-                    "revised_translation": "",
-                    "reason_code": "nvidia_review_request_failed",
-                    "confidence": 0.0,
-                    "risk": "high",
-                    "terminology": [],
+                return {
+                    "purpose": purpose,
+                    "status_http": None,
+                    "duration_seconds": time.perf_counter() - started,
+                    "content": "",
+                    "raw_body": "",
+                    "finish_reason": None,
+                    "provider_error": "nvidia_review_subprocess_failed",
+                    "provider_error_detail": (completed.stderr or completed.stdout or "")[:1000],
+                    "returncode": completed.returncode,
                 }
-                for item in records
-            ]
+            subprocess_payload = json.loads(completed.stdout or "{}")
+            status_http = int(subprocess_payload.get("status_http") or 0)
+            body = str(subprocess_payload.get("body") or "")
+            if status_http in {401, 403, 429}:
+                raise RuntimeError(f"nvidia_provider_stop_{status_http}")
+            if not subprocess_payload.get("ok"):
+                raw_error = str(subprocess_payload.get("error") or "provider_error")
+                provider_error = "nvidia_review_timeout" if raw_error == "TimeoutError" else raw_error
+                return {
+                    "purpose": purpose,
+                    "status_http": status_http,
+                    "duration_seconds": subprocess_payload.get("duration_seconds"),
+                    "content": "",
+                    "raw_body": body,
+                    "finish_reason": None,
+                    "provider_error": provider_error,
+                    "provider_error_detail": subprocess_payload.get("error_message") or "",
+                }
+            response_payload = json.loads(body or "{}")
+        except subprocess.TimeoutExpired:
+            return {
+                "purpose": purpose,
+                "status_http": None,
+                "duration_seconds": time.perf_counter() - started,
+                "content": "",
+                "raw_body": "",
+                "finish_reason": None,
+                "provider_error": "nvidia_review_timeout",
+            }
+        except (OSError, ValueError, RuntimeError) as exc:
+            return {
+                "purpose": purpose,
+                "status_http": None,
+                "duration_seconds": time.perf_counter() - started,
+                "content": "",
+                "raw_body": "",
+                "finish_reason": None,
+                "provider_error": "nvidia_review_request_failed",
+                "provider_error_detail": str(exc)[:500],
+            }
         finally:
             self.duration_seconds += time.perf_counter() - started
         text = (((response_payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+        finish_reason = ((response_payload.get("choices") or [{}])[0].get("finish_reason") or None)
+        return {
+            "purpose": purpose,
+            "status_http": status_http,
+            "duration_seconds": time.perf_counter() - started,
+            "content": str(text or ""),
+            "raw_body": json.dumps(response_payload, ensure_ascii=False),
+            "finish_reason": finish_reason,
+            "provider_error": None,
+        }
+
+    def _parse_contract_response(self, text: str, records: list[dict[str, Any]], batch_id: str) -> ReviewContractResult:
         try:
-            parsed = TranslatorNvidiaBatch._loads_json(TranslatorNvidiaBatch._remove_markdown_fence(text))
-        except ValueError:
-            return [
-                {
-                    "region_id": str(item["region_id"]),
-                    "action": "manual_review",
-                    "revised_translation": "",
-                    "reason_code": "invalid_json_review_response",
-                    "confidence": 0.0,
-                    "risk": "high",
-                    "terminology": [],
-                }
-                for item in records
-            ]
-        items = self.review_items_from_parsed(parsed)
-        expected = {str(item["region_id"]) for item in records}
-        if not isinstance(items, list):
-            return [
-                {
-                    "region_id": region_id,
-                    "action": "manual_review",
-                    "revised_translation": "",
-                    "reason_code": "invalid_review_response_shape",
-                    "confidence": 0.0,
-                    "risk": "high",
-                    "terminology": [],
-                }
-                for region_id in sorted(expected)
-            ]
-        result: list[dict[str, Any]] = []
-        for entry in items:
+            parsed, syntax_categories = self._loads_contract_json(text)
+            items = self._validate_contract(parsed, records, batch_id)
+            categories = syntax_categories or ["valid_json"]
+            return ReviewContractResult(True, items, categories, "", {
+                "returned_ids": [item["region_id"] for item in items],
+                "missing_ids": [],
+                "extra_ids": [],
+            })
+        except ReviewContractError as exc:
+            return ReviewContractResult(False, [], exc.categories, exc.error, exc.diagnostics)
+
+    @staticmethod
+    def _loads_contract_json(text: str) -> tuple[Any, list[str]]:
+        value = str(text or "").lstrip("\ufeff").strip()
+        categories: list[str] = []
+        if not value:
+            raise ReviewContractError("empty_response", ["invalid_json"], {})
+        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", value, flags=re.IGNORECASE | re.DOTALL)
+        if fence:
+            value = fence.group(1).strip()
+            categories.append("markdown_fence")
+        spans = ContextualNvidiaReviewer._json_object_spans(value)
+        if not spans:
+            category = "wrong_root_type" if value.startswith("[") else "truncated_json" if value.startswith("{") else "invalid_json"
+            raise ReviewContractError("json_object_not_found", [category], {"response_size": len(value)})
+        if len(spans) > 1:
+            raise ReviewContractError("multiple_json_objects", ["invalid_json"], {"objects": len(spans)})
+        start, end = spans[0]
+        if value[:start].strip():
+            categories.append("prose_before_json")
+        if value[end:].strip():
+            categories.append("prose_after_json")
+        candidate = value[start:end]
+        try:
+            return json.loads(candidate), categories or ["valid_json"]
+        except ValueError as exc:
+            category = "truncated_json" if candidate.count("{") != candidate.count("}") else "invalid_json"
+            raise ReviewContractError("json_decode_failed", [category], {"error": str(exc)[:200]}) from exc
+
+    @staticmethod
+    def _json_object_spans(value: str) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        depth = 0
+        start: int | None = None
+        in_string = False
+        escaped = False
+        for index, char in enumerate(value):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                if depth == 0:
+                    start = index
+                depth += 1
+            elif char == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        spans.append((start, index + 1))
+                        start = None
+        return spans
+
+    @staticmethod
+    def _validate_contract(parsed: Any, records: list[dict[str, Any]], batch_id: str) -> list[dict[str, Any]]:
+        expected = {str(item["region_id"]): item for item in records}
+        diagnostics: dict[str, Any] = {"expected_ids": sorted(expected)}
+        categories: list[str] = []
+        if not isinstance(parsed, dict):
+            raise ReviewContractError("root_must_be_object", ["wrong_root_type"], diagnostics)
+        extra_root = sorted(set(parsed) - REVIEW_ENVELOPE_FIELDS)
+        if extra_root:
+            categories.append("wrong_field_names")
+            diagnostics["additional_fields"] = extra_root
+        if parsed.get("schema_version") != REVIEW_SCHEMA_VERSION:
+            categories.append("wrong_field_names")
+            diagnostics["schema_version"] = parsed.get("schema_version")
+        if str(parsed.get("batch_id") or "") != str(batch_id):
+            categories.append("wrong_field_names")
+            diagnostics["batch_id"] = parsed.get("batch_id")
+        results = parsed.get("results")
+        if not isinstance(results, list):
+            raise ReviewContractError("results_must_be_list", sorted(set(categories + ["wrong_root_type"])), diagnostics)
+        returned: list[str] = []
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        unknown: list[str] = []
+        missing_fields: dict[str, list[str]] = {}
+        additional_fields: dict[str, list[str]] = {}
+        for index, entry in enumerate(results):
             if not isinstance(entry, dict):
+                categories.append("wrong_root_type")
                 continue
-            region_id = str(entry.get("region_id") or "")
-            if region_id not in expected:
-                continue
-            result.append({
-                "region_id": region_id,
-                "action": str(entry.get("action") or "manual_review"),
-                "revised_translation": str(entry.get("revised_translation") or ""),
-                "reason_code": str(entry.get("reason_code") or "model_review"),
-                "confidence": float(entry.get("confidence") or 0.0),
-                "risk": str(entry.get("risk") or "high").lower(),
+            rid = str(entry.get("region_id") or "")
+            if not rid:
+                categories.append("missing_region_id")
+                rid = f"<missing:{index}>"
+            returned.append(rid)
+            if rid in seen:
+                duplicates.append(rid)
+            seen.add(rid)
+            if rid and rid not in expected:
+                unknown.append(rid)
+            miss = sorted(REVIEW_RESULT_FIELDS - set(entry))
+            if miss:
+                missing_fields[rid] = miss
+                categories.append("wrong_field_names")
+            extra = sorted(set(entry) - REVIEW_RESULT_FIELDS)
+            if extra:
+                additional_fields[rid] = extra
+                categories.append("wrong_field_names")
+            action = str(entry.get("action") or "").lower()
+            risk = str(entry.get("risk") or "").lower()
+            reason = str(entry.get("reason_code") or "")
+            revised = str(entry.get("revised_translation") or "")
+            if action not in REVIEW_ACTIONS:
+                categories.append("invalid_action")
+            try:
+                confidence = float(entry.get("confidence"))
+            except (TypeError, ValueError):
+                confidence = -1.0
+            if confidence < 0.0 or confidence > 1.0:
+                categories.append("invalid_confidence")
+            if risk not in REVIEW_RISKS:
+                categories.append("invalid_risk")
+            if action == "rewrite" and not revised.strip():
+                categories.append("empty_translation")
+            if action == "rewrite" and rid in expected:
+                source_text = str(expected[rid].get("source_text") or "").strip()
+                if revised.strip() and revised.strip().casefold() == source_text.casefold() and not reason:
+                    categories.append("source_text_copied_without_reason")
+            if re.search(r"```|schema|json|region_id|batch_id", revised, re.IGNORECASE):
+                categories.append("model_instruction_leak")
+            if action in {"preserve_original", "manual_review"} and revised.strip():
+                categories.append("empty_translation")
+            if not isinstance(entry.get("terminology"), list):
+                categories.append("wrong_field_names")
+            normalized.append({
+                "region_id": rid,
+                "action": action,
+                "revised_translation": revised,
+                "reason_code": reason or "model_review",
+                "confidence": max(0.0, min(1.0, confidence)),
+                "risk": risk if risk in REVIEW_RISKS else "high",
                 "terminology": entry.get("terminology") if isinstance(entry.get("terminology"), list) else [],
+                "contract_path": "batch",
             })
-        seen = {item["region_id"] for item in result}
-        for missing in sorted(expected - seen):
-            result.append({
-                "region_id": missing,
-                "action": "manual_review",
-                "revised_translation": "",
-                "reason_code": "missing_region_id_in_model_response",
-                "confidence": 0.0,
-                "risk": "high",
-                "terminology": [],
-            })
-        return result
+        returned_set = set(returned)
+        missing = sorted(set(expected) - returned_set)
+        extra_ids = sorted(returned_set - set(expected))
+        if duplicates:
+            categories.append("duplicate_region_id")
+        if unknown:
+            categories.append("unknown_region_id")
+        if missing:
+            categories.append("missing_regions")
+        if extra_ids:
+            categories.append("extra_regions")
+        diagnostics.update({
+            "returned_ids": returned,
+            "missing_ids": missing,
+            "extra_ids": extra_ids,
+            "duplicate_ids": duplicates,
+            "unknown_ids": unknown,
+            "missing_fields": missing_fields,
+            "additional_fields": additional_fields,
+        })
+        if categories or set(expected) != returned_set:
+            raise ReviewContractError("review_contract_validation_failed", sorted(set(categories or ["unknown"])), diagnostics)
+        return normalized
 
     def _chat_completions_url(self) -> str:
         base = str(self.base_url or "").rstrip("/")
         return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+
+    @staticmethod
+    def _subprocess_python_executable() -> str:
+        executable = Path(str(sys.executable or ""))
+        if executable.name.lower() == "pythonw.exe":
+            sibling = executable.with_name("python.exe")
+            if sibling.is_file():
+                return str(sibling)
+        return str(executable or sys.executable)
+
+    @staticmethod
+    def _provider_error_categories(provider_error: str) -> list[str]:
+        value = str(provider_error or "")
+        if "timeout" in value.lower():
+            return ["timeout"]
+        return ["provider_error"]
 
     @staticmethod
     def review_items_from_parsed(parsed: Any) -> Any:
@@ -333,6 +750,75 @@ class ContextualNvidiaReviewer:
             if keyed_items:
                 items = keyed_items
         return items
+
+    @staticmethod
+    def _prompt_record(record: dict[str, Any]) -> dict[str, Any]:
+        source = str(record.get("source_text") or "")
+        current = str(record.get("current_translation") or "")
+        limit = max(len(current), len(source), 40)
+        return {
+            "region_id": str(record.get("region_id") or ""),
+            "page_id": str(record.get("page_id") or record.get("page") or ""),
+            "source_text": source,
+            "current_translation": current,
+            "text_type": str(record.get("text_type") or "unknown"),
+            "ocr_confidence": float(record.get("ocr_confidence") or record.get("confidence") or 0.0),
+            "previous_context": str(record.get("previous_context") or ""),
+            "next_context": str(record.get("next_context") or ""),
+            "glossary": record.get("glossary") if isinstance(record.get("glossary"), dict) else {},
+            "constraints": {
+                "max_characters": int(record.get("max_characters") or min(220, max(40, int(limit * 1.35)))),
+                "max_lines": int(record.get("max_lines") or 4),
+            },
+        }
+
+    @staticmethod
+    def _manual_reviews(records: list[dict[str, Any]], reason_code: str, categories: list[str] | None = None) -> list[dict[str, Any]]:
+        return [
+            {
+                "region_id": str(item["region_id"]),
+                "action": "manual_review",
+                "revised_translation": "",
+                "reason_code": reason_code,
+                "confidence": 0.0,
+                "risk": "high",
+                "terminology": [],
+                "contract_categories": sorted(set(categories or ["unknown"])),
+                "contract_path": "manual_review",
+            }
+            for item in records
+        ]
+
+    @staticmethod
+    def _write_raw_response(
+        raw_response_dir: Path | None,
+        batch_id: str,
+        stage: str,
+        records: list[dict[str, Any]],
+        response: dict[str, Any],
+        parsed: ReviewContractResult,
+    ) -> None:
+        if raw_response_dir is None:
+            return
+        raw_response_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "batch_id": batch_id,
+            "stage": stage,
+            "region_ids": [str(item.get("region_id") or "") for item in records],
+            "status_http": response.get("status_http"),
+            "duration_seconds": response.get("duration_seconds"),
+            "response_size_bytes": len(str(response.get("content") or "").encode("utf-8")),
+            "finish_reason": response.get("finish_reason"),
+            "provider_error": response.get("provider_error"),
+            "provider_error_detail": response.get("provider_error_detail") or "",
+            "returncode": response.get("returncode"),
+            "valid": parsed.valid,
+            "categories": parsed.categories,
+            "parse_error": parsed.error,
+            "diagnostics": parsed.diagnostics,
+            "raw_content": response.get("content") or "",
+        }
+        write_json(raw_response_dir / f"{batch_id}-{stage}.json", payload)
 
 
 class ChapterQualityRevision:
@@ -392,6 +878,90 @@ class ChapterQualityRevision:
             write_json(paths.manifest, manifest)
             raise
 
+    def start_canary(self, *, max_regions: int = 10) -> dict[str, Any]:
+        progress = read_json(self.output_dir / "progress.json", {})
+        quality = read_json(self.output_dir / "quality_report.json", {})
+        if not isinstance(progress, dict) or not progress.get("pages"):
+            raise ValueError("revision_progress_missing")
+        if not isinstance(quality, dict) or len(quality.get("pages") or []) == 0:
+            raise ValueError("revision_quality_report_missing")
+        source_pdf = self._current_pdf_path(progress, quality)
+        if not source_pdf.is_file():
+            raise ValueError("revision_source_pdf_missing")
+        revision_id = uuid.uuid4().hex
+        paths = self._paths(revision_id)
+        manifest = self._initial_manifest(revision_id, source_pdf, 1)
+        manifest.update({
+            "revision_type": "contract_canary",
+            "phase": "contextual_translation_review",
+            "phase_label": "Testando contrato NVIDIA",
+            "canary_max_regions": max(1, min(10, int(max_regions or 10))),
+        })
+        write_json(paths.manifest, manifest)
+        write_json(self.output_dir / "quality_revision" / "latest_revision.json", {
+            "revision_id": revision_id,
+            "manifest_path": str(paths.manifest),
+            "updated_at": utc_now(),
+        })
+        try:
+            valid_page_numbers = {
+                page_number(page)
+                for page in (quality.get("pages") or [])
+                if isinstance(page, dict) and page_number(page) > 0
+            }
+            pages = [
+                page for page in (progress.get("pages") or [])
+                if isinstance(page, dict)
+                and page.get("debug_data")
+                and (not valid_page_numbers or page_number(page) in valid_page_numbers)
+            ]
+            regions = self._collect_regions(pages)
+            manifest["total_pages"] = len(pages)
+            manifest["total_regions"] = len(regions)
+            glossary = self._build_glossary(regions)
+            write_json(paths.glossary, glossary)
+            contextual = self._review_translations(
+                regions,
+                glossary,
+                manifest,
+                paths,
+                canary=True,
+                max_regions=manifest["canary_max_regions"],
+            )
+            write_json(paths.contextual_review, contextual)
+            reviewed = max(1, int(contextual.get("reviewed_regions") or 0))
+            structurally_valid_regions = sum(
+                1 for item in contextual.get("reviews", [])
+                if str(item.get("contract_path") or "") in {"batch", "repaired", "individual_fallback"}
+            )
+            validity_rate = structurally_valid_regions / reviewed
+            ids_ok = all(str(item.get("region_id") or "") for item in contextual.get("reviews", []))
+            passed = validity_rate >= 0.90 and ids_ok
+            manifest.update({
+                "status": "contract_canary_passed" if passed else "contract_canary_failed",
+                "phase": "finalized",
+                "phase_label": "Contrato NVIDIA aprovado" if passed else "Contrato NVIDIA requer correção",
+                "reviewed_regions": int(contextual.get("reviewed_regions") or 0),
+                "canary_region_ids": [item.get("region_id") for item in contextual.get("reviews", [])],
+                "validity_rate": validity_rate,
+                "manual_review": int(contextual.get("manual_review") or 0),
+                "safe_changes_applied": 0,
+                "no_reviewed_pdf_reason": "contract_canary_only",
+                "updated_at": utc_now(),
+            })
+            write_json(paths.manifest, manifest)
+            return manifest
+        except Exception as exc:  # noqa: BLE001 - persist failed canary state
+            manifest.update({
+                "status": "failed",
+                "phase": "failed",
+                "error_code": type(exc).__name__,
+                "error_message": str(exc),
+                "updated_at": utc_now(),
+            })
+            write_json(paths.manifest, manifest)
+            raise
+
     def _paths(self, revision_id: str) -> RevisionPaths:
         root = self.output_dir / "quality_revision" / revision_id
         return RevisionPaths(
@@ -402,6 +972,8 @@ class ChapterQualityRevision:
             glossary=root / "chapter_glossary.json",
             visual_inspection=root / "visual_inspection.json",
             render_audit=root / "incremental_render_audit.json",
+            checkpoint=root / "nvidia_revision_checkpoint.json",
+            raw_responses=root / "nvidia_revision" / "raw-responses",
         )
 
     def _initial_manifest(self, revision_id: str, source_pdf: Path, max_iterations: int) -> dict[str, Any]:
@@ -466,7 +1038,7 @@ class ChapterQualityRevision:
         self._checkpoint(paths, manifest, "contextual_translation_review", "Revisando traduções com contexto")
         glossary = self._build_glossary(regions)
         write_json(paths.glossary, glossary)
-        contextual = self._review_translations(regions, glossary, manifest)
+        contextual = self._review_translations(regions, glossary, manifest, paths)
         write_json(paths.contextual_review, contextual)
 
         self._checkpoint(paths, manifest, "terminology_validation", "Validando terminologia")
@@ -485,16 +1057,25 @@ class ChapterQualityRevision:
         write_json(paths.render_audit, render_audit)
 
         self._checkpoint(paths, manifest, "pdf_generation", "Gerando PDF revisado")
-        reviewed_pdf = self._next_reviewed_pdf_path()
         if changed_by_page:
+            reviewed_pdf = self._next_reviewed_pdf_path(source_pdf)
             generate_pdf(rendered_images, str(reviewed_pdf))
+            manifest["reviewed_pdf_path"] = str(reviewed_pdf)
+            manifest["reviewed_pdf_sha256"] = self._sha256(reviewed_pdf)
+            self._checkpoint(paths, manifest, "pdf_inspection", "Inspecionando o novo PDF")
+            visual = self._inspect_pdf_pages(reviewed_pdf, rendered_images, expected_pages=len(pages))
         else:
-            shutil.copy2(source_pdf, reviewed_pdf)
-        manifest["reviewed_pdf_path"] = str(reviewed_pdf)
-        manifest["reviewed_pdf_sha256"] = self._sha256(reviewed_pdf)
-
-        self._checkpoint(paths, manifest, "pdf_inspection", "Inspecionando o novo PDF")
-        visual = self._inspect_pdf_pages(reviewed_pdf, rendered_images, expected_pages=len(pages))
+            manifest["reviewed_pdf_path"] = ""
+            manifest["reviewed_pdf_sha256"] = ""
+            manifest["no_reviewed_pdf_reason"] = "no_safe_changes_applied"
+            visual = {
+                "pdf_path": "",
+                "pdf_exists": False,
+                "pages_inspected": 0,
+                "expected_pages": len(pages),
+                "reason_code": "no_safe_changes_applied",
+                "created_at": utc_now(),
+            }
         write_json(paths.visual_inspection, visual)
 
         status = "review_required" if manifest["manual_review"] or not contextual.get("quality_passed") else "finished"
@@ -619,12 +1200,23 @@ class ChapterQualityRevision:
         ]
         return {"terms": terms, "created_at": utc_now(), "editable": True}
 
-    def _review_translations(self, regions: list[dict[str, Any]], glossary: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    def _review_translations(
+        self,
+        regions: list[dict[str, Any]],
+        glossary: dict[str, Any],
+        manifest: dict[str, Any],
+        paths: RevisionPaths,
+        *,
+        canary: bool = False,
+        max_regions: int | None = None,
+    ) -> dict[str, Any]:
         reviewable = [
             self._review_record(regions, idx)
             for idx, region in enumerate(regions)
             if self._is_reviewable(region)
         ]
+        if canary:
+            reviewable = self._select_canary_records(reviewable, max_regions=max_regions or 10)
         reviewer = self.reviewer_factory()
         model = getattr(reviewer, "model", "unknown")
         manifest["model"] = model
@@ -632,13 +1224,46 @@ class ChapterQualityRevision:
         batch_size = 6
         for start in range(0, len(reviewable), batch_size):
             batch = reviewable[start:start + batch_size]
-            raw = reviewer.review_batch(batch, glossary)
+            batch_id = f"{manifest.get('revision_id', 'revision')}-batch-{(start // batch_size) + 1:03d}"
+            try:
+                raw = reviewer.review_batch(
+                    batch,
+                    glossary,
+                    batch_id=batch_id,
+                    raw_response_dir=paths.raw_responses,
+                    request_budget=max(1, len(reviewable) * 3),
+                )
+            except TypeError:
+                raw = reviewer.review_batch(batch, glossary)
             normalized = self._normalize_reviews(batch, raw)
             reviews.extend(normalized)
             manifest["requests"] = int(getattr(reviewer, "requests", manifest.get("requests", 0) or 0))
+            checkpoint = {
+                "revision_id": manifest.get("revision_id"),
+                "batch_id": batch_id,
+                "region_ids_completed": [item["region_id"] for item in reviews],
+                "valid": int(getattr(reviewer, "valid_batches", 0)),
+                "repaired": int(getattr(reviewer, "repaired_batches", 0)),
+                "individual": int(getattr(reviewer, "fallback_individual", 0)),
+                "invalid": int(getattr(reviewer, "invalid_batches", 0)),
+                "applicable": sum(1 for item in reviews if item.get("action") == "rewrite" and item.get("risk") == "low"),
+                "manual": sum(1 for item in reviews if item.get("action") == "manual_review"),
+                "requests_used": int(getattr(reviewer, "requests", 0)),
+                "last_error": "",
+                "updated_at": utc_now(),
+            }
+            write_json(paths.checkpoint, checkpoint)
         manifest["requests"] = int(getattr(reviewer, "requests", manifest.get("requests", 0) or 0))
         blocked = sum(1 for item in reviews if item.get("action") == "manual_review")
         residual = sum(1 for item in reviews if item.get("reason_code") == "source_language_residual")
+        valid_batches = int(getattr(reviewer, "valid_batches", 0))
+        repaired_batches = int(getattr(reviewer, "repaired_batches", 0))
+        fallback_individual = int(getattr(reviewer, "fallback_individual", 0))
+        invalid_batches = int(getattr(reviewer, "invalid_batches", 0))
+        manifest["valid_response_batches"] = valid_batches
+        manifest["repaired_batches"] = repaired_batches
+        manifest["fallback_individual_requests"] = fallback_individual
+        manifest["invalid_response_batches"] = invalid_batches
         return {
             "model": model,
             "requests": manifest["requests"],
@@ -646,6 +1271,10 @@ class ChapterQualityRevision:
             "reviews": reviews,
             "manual_review": blocked,
             "source_language_residual": residual,
+            "valid_response_batches": valid_batches,
+            "repaired_batches": repaired_batches,
+            "fallback_individual_requests": fallback_individual,
+            "invalid_response_batches": invalid_batches,
             "quality_passed": blocked == 0 and residual == 0,
             "created_at": utc_now(),
         }
@@ -660,10 +1289,41 @@ class ChapterQualityRevision:
             "source_text": region["source_text"],
             "current_translation": region["current_translation"],
             "text_type": region["text_type"],
+            "ocr_confidence": region.get("confidence", 0.0),
             "previous_context": previous_region.get("current_translation") or previous_region.get("source_text") or "",
             "next_context": next_region.get("current_translation") or next_region.get("source_text") or "",
             "quality_reasons": region.get("quality_reasons") or [],
         }
+
+    def _select_canary_records(self, records: list[dict[str, Any]], *, max_regions: int = 10) -> list[dict[str, Any]]:
+        selected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def add(items: list[dict[str, Any]], limit: int) -> None:
+            for item in items:
+                rid = str(item.get("region_id") or "")
+                if rid and rid not in seen and len(selected) < max_regions and limit > 0:
+                    selected.append(item)
+                    seen.add(rid)
+                    limit -= 1
+
+        residual = [item for item in records if looks_like_source_english(item.get("current_translation", ""))]
+        long_items = sorted(records, key=lambda item: len(str(item.get("current_translation") or item.get("source_text") or "")), reverse=True)
+        short_items = sorted(records, key=lambda item: len(str(item.get("current_translation") or item.get("source_text") or "")))
+        low_conf = sorted(records, key=lambda item: float(item.get("ocr_confidence") or 0.0))
+        by_type: dict[str, list[dict[str, Any]]] = {}
+        for item in records:
+            by_type.setdefault(str(item.get("text_type") or "unknown"), []).append(item)
+        add(residual, 2)
+        add(long_items, 2)
+        add(short_items, 2)
+        add(low_conf, 2)
+        for text_type in sorted(by_type):
+            add(by_type[text_type], 1)
+            if len(selected) >= max_regions:
+                break
+        add(records, max_regions - len(selected))
+        return selected[:max_regions]
 
     def _normalize_reviews(self, batch: list[dict[str, Any]], raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         expected = {item["region_id"]: item for item in batch}
@@ -696,6 +1356,8 @@ class ChapterQualityRevision:
                 "confidence": confidence,
                 "risk": risk,
                 "terminology": item.get("terminology") if isinstance(item.get("terminology"), list) else [],
+                "contract_path": str(item.get("contract_path") or "batch"),
+                "contract_categories": item.get("contract_categories") if isinstance(item.get("contract_categories"), list) else [],
             })
         return result
 
@@ -846,13 +1508,12 @@ class ChapterQualityRevision:
             "created_at": utc_now(),
         }
 
-    def _next_reviewed_pdf_path(self) -> Path:
-        base = self.output_dir / "shadow_slave_capitulo_shadow_slave_reviewed_v2.pdf"
-        if not base.exists():
-            return base
-        idx = 3
+    def _next_reviewed_pdf_path(self, source_pdf: Path) -> Path:
+        source_stem = source_pdf.stem
+        clean_stem = re.sub(r"_reviewed_v\d+$", "", source_stem)
+        idx = 2
         while True:
-            candidate = self.output_dir / f"shadow_slave_capitulo_shadow_slave_reviewed_v{idx}.pdf"
+            candidate = self.output_dir / f"{clean_stem}_reviewed_v{idx}.pdf"
             if not candidate.exists():
                 return candidate
             idx += 1

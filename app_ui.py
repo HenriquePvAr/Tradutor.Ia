@@ -441,6 +441,21 @@ def api_quality_revision_start(payload: dict[str, Any] = Body(default={})) -> di
         }) from exc
 
 
+@app.post("/api/ui/quality-review/revision/canary/start")
+def api_quality_revision_canary_start(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return BRIDGE.start_quality_revision_canary(
+            str(payload.get("job_id") or ""),
+            max_regions=int(payload.get("max_regions") or 10),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "message": "Não foi possível iniciar o canário do contrato NVIDIA.",
+            "action": "Confira se o capítulo possui PDF e relatório de qualidade persistidos.",
+        }) from exc
+
+
 @app.get("/api/ui/quality-review/{job_id}")
 def api_quality_review(job_id: str) -> dict[str, Any]:
     review = BRIDGE.quality_review(job_id)

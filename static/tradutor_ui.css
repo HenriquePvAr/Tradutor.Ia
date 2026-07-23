@@ -1567,6 +1567,7 @@
   .quality-review-filters{display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;}
   .quality-review-filters .selected{border-color:var(--rose); color:var(--paper);}
   .quality-review-bulk{display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:10px 0 12px; padding:10px; border:1px solid var(--line); border-radius:9px; background:rgba(255,255,255,.035);}
+  .quality-review-dev-action{border-style:dashed;}
   .review-select-all{display:flex; align-items:center; gap:7px; color:var(--muted);}
   .quality-revision-status{display:flex; flex-direction:column; gap:4px; margin:10px 0 12px; padding:10px; border:1px solid rgba(201,162,39,.35); border-radius:9px; background:rgba(201,162,39,.08);}
   .quality-revision-status strong{color:var(--paper); font-size:12px;}
