@@ -56,6 +56,7 @@
     currentRunId: '',
     currentSourceUrl: '',
     currentStageVersion: 0,
+    newTranslationDraft: false,
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed']);
@@ -219,6 +220,21 @@
 
   /* ---------- boot ---------- */
   const bootEl = $('#boot');
+  const bootVisualTest = (() => {
+    const params = new URLSearchParams(window.location.search || '');
+    const raw = String(params.get('visual_boot_stage') || '').trim().toLowerCase();
+    if (!raw) return null;
+    const local = ['127.0.0.1', 'localhost', '::1'].includes(window.location.hostname);
+    if (!local) return null;
+    const stageMap = {init: 1, local: 2, auth: 3, session: 4, profile: 5, settings: 6, community: 7, ready: 8};
+    if (raw === 'error' || raw === 'disk_full' || raw === 'retry') {
+      return {kind: 'error', code: raw === 'error' ? String(params.get('visual_boot_error') || 'boot_error') : raw};
+    }
+    const stage = Number(raw) || stageMap[raw] || 0;
+    if (stage < 1 || stage > 8) return null;
+    return {kind: 'stage', index: stage - 1};
+  })();
+  let bootHighestStage = 0;
   const bootStages = [
     'loading.stage.init', 'loading.stage.local', 'loading.stage.auth', 'loading.stage.session',
     'loading.stage.profile', 'loading.stage.settings', 'loading.stage.community', 'loading.stage.ready',
@@ -284,13 +300,18 @@
   }
   function setBootStage(index, message = '') {
     if (!bootEl) return;
-    const bounded = Math.max(0, Math.min(bootStages.length - 1, Number(index) || 0));
+    let bounded = Math.max(0, Math.min(bootStages.length - 1, Number(index) || 0));
+    if (bootEl.dataset.bootState !== 'failed') {
+      bounded = Math.max(bootHighestStage, bounded);
+      bootHighestStage = bounded;
+    }
     const label = message || window.TradutorI18n?.t(bootStages[bounded]) || bootStages[bounded];
     const pct = Math.round(((bounded + 1) / bootStages.length) * 100);
     setBootText($('#bootStatusLine'), label);
     $('#bootStatusMini') && ($('#bootStatusMini').textContent = bootStageMeta[bounded]?.sub || `${bounded + 1}/${bootStages.length} etapas`);
     $('#ringPct') && ($('#ringPct').textContent = `${pct}%`);
     $('#ringFill') && ($('#ringFill').style.strokeDashoffset = String(175.9 - (pct / 100) * 175.9));
+    $('#bootProgressBar') && ($('#bootProgressBar').style.width = `${pct}%`);
     $('#pageCount') && ($('#pageCount').textContent = `${bounded + 1}/${bootStages.length} etapas`);
     $('#bootFooterLabel') && ($('#bootFooterLabel').textContent = pct < 100 ? 'preparando interface' : 'pronto');
     setBootText($('#tickerText'), bootTips[bounded % bootTips.length]);
@@ -315,7 +336,16 @@
     if (bootEl) bootEl.classList.add('hide');
   }
   setBootStage(0);
-  const bootTimer = window.setTimeout(() => setBootFailed('O carregamento demorou para responder.'), 15000);
+  if (bootVisualTest?.kind === 'stage') {
+    bootEl.dataset.visualBootTest = '1';
+    setBootStage(bootVisualTest.index);
+  } else if (bootVisualTest?.kind === 'error') {
+    bootEl.dataset.visualBootTest = '1';
+    setBootFailed(bootVisualTest.code === 'disk_full'
+      ? 'Disco cheio ao preparar o painel local.'
+      : 'Não foi possível carregar a interface local.');
+  }
+  const bootTimer = bootVisualTest ? 0 : window.setTimeout(() => setBootFailed('O carregamento demorou para responder.'), 15000);
   $('#bootRetry')?.addEventListener('click', () => window.location.reload());
   $('#bootDiagnostics')?.addEventListener('click', () => activateTab('logs'));
 
@@ -452,6 +482,10 @@
     ambientSweep();
     const rect = tab.getBoundingClientRect();
     burstAt(rect.right, rect.top + rect.height / 2, 10);
+    if (name === 'nova' && !inFlightStatuses.has(appState.status)) {
+      appState.newTranslationDraft = true;
+      clearNewTranslationDraftPanels();
+    }
     if (name === 'hist') renderHistory();
     if (name === 'inicio') renderDashboard();
     if (name === 'community') loadCommunityFeed();
@@ -464,6 +498,8 @@
   /* ---------- visual feedback ---------- */
   const reasonMessages = {
     source_not_ready: 'Não foi possível abrir o navegador necessário para analisar a fonte.',
+    chromedriver_unavailable: 'ChromeDriver indisponível. Configure o driver local ou habilite a resolução oficial para este teste.',
+    disk_full: 'Disco cheio ao gravar as páginas baixadas. Libere espaço e tente novamente.',
     authentication_required: 'Essa fonte exige autenticação.',
     challenge_required: 'A fonte exige uma verificação interativa.',
     source_access_denied: 'A fonte recusou o acesso público.',
@@ -688,7 +724,8 @@
       source_type: appState.selectedSourceType,
       chapter_name: $('#nameInput').value.trim() || guess.title,
       slug: slugify($('#outputInput').value || guess.slug),
-      mode: appState.selectedMode,
+      mode: appState.selectedMode === 'download_only' ? 'fast' : appState.selectedMode,
+      download_only: appState.selectedMode === 'download_only',
       full,
       max_images: maxImages,
       use_cache: $('#cacheToggle').checked,
@@ -709,6 +746,20 @@
     appState.sourceReview = null;
     $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
   }
+  function clearNewTranslationDraftPanels() {
+    resetRunPreview();
+    $('#qualityReviewPanel') && ($('#qualityReviewPanel').hidden = true);
+    $('#runStatusCard') && ($('#runStatusCard').hidden = true);
+    $('#artifactActions') && ($('#artifactActions').innerHTML = '');
+    $('#balloonText') && ($('#balloonText').textContent = window.TradutorI18n?.t('pipeline.idle') || 'Pronto para iniciar');
+    $$('.stage-item').forEach(item => {
+      item.classList.remove('active', 'done', 'indeterminate');
+      const pct = $('.stage-pct', item);
+      const fill = $('.stage-fill', item);
+      if (pct) pct.textContent = '—';
+      if (fill) fill.style.width = '0%';
+    });
+  }
 
   function resetActivePipelineIdentity(sourceUrl = '') {
     appState.currentRequestId = correlationId();
@@ -716,6 +767,7 @@
     appState.currentRunId = '';
     appState.currentSourceUrl = String(sourceUrl || '');
     appState.currentStageVersion += 1;
+    appState.newTranslationDraft = false;
     resetRunPreview();
     $('#balloonText') && ($('#balloonText').textContent = window.TradutorI18n?.t('pipeline.validating_source') || 'Validando fonte');
     uiTrace('pipeline_request_created', {request_id: appState.currentRequestId});
@@ -829,9 +881,9 @@
     if (event.key === 'Enter') { event.preventDefault(); startTranslation(); }
   });
   $('#urlInput')?.addEventListener('input', () => {
-    if (appState.currentSourceUrl && $('#urlInput').value.trim() !== appState.currentSourceUrl) {
-      resetRunPreview();
-      $('#balloonText') && ($('#balloonText').textContent = window.TradutorI18n?.t('pipeline.idle') || 'Pronto para iniciar');
+    if (!appState.currentSourceUrl || $('#urlInput').value.trim() !== appState.currentSourceUrl) {
+      appState.newTranslationDraft = true;
+      clearNewTranslationDraftPanels();
     }
   });
   $('#localFolderInput')?.addEventListener('keydown', event => {
@@ -854,16 +906,18 @@
     status.textContent = runStatusLabels[appState.status] || appState.status;
     status.dataset.state = appState.status;
     renderProgress(runtime.progress || {});
-    renderRunStatus(runtime);
+    const draftOnly = appState.newTranslationDraft && !runtime.active && !runtime.source_review;
+    if (draftOnly) clearNewTranslationDraftPanels();
+    else renderRunStatus(runtime);
     renderQueue();
     appendLogs(runtime.logs || []);
     if (awaitingReview && runtime.source_review && shouldRenderSourceReview(runtime.source_review)) {
       renderSourceReview(runtime.source_review);
     }
     else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
-    if (runtime.quality_review) renderQualityReview(runtime.quality_review);
+    if (!draftOnly && runtime.quality_review) renderQualityReview(runtime.quality_review);
     else if ($('#qualityReviewPanel')) $('#qualityReviewPanel').hidden = true;
-    if (runtime.latest && !awaitingReview) {
+    if (runtime.latest && !awaitingReview && !draftOnly) {
       const latestId = String(runtime.latest.id || runtime.latest.job_id || '');
       if (!appState.currentJobId || latestId === appState.currentJobId || terminalRunStatuses.has(appState.status)) {
         renderResult(runtime.latest);
@@ -2544,6 +2598,7 @@
 
   /* ---------- data lifecycle ---------- */
   async function refreshBootstrap() {
+    if (bootVisualTest) return;
     try {
       setBootStage(1);
       const data = await api(`/api/ui/bootstrap?cursor=${appState.cursor}`);

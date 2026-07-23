@@ -156,6 +156,23 @@ class UIHelpersTests(unittest.TestCase):
         self.assertIn("--cache", command)
         self.assertIn("--no-context", command)
 
+    def test_download_only_flag_is_forwarded(self):
+        command = build_run_command(
+            url=LOOKISM_URL,
+            mode="fast",
+            output="download audit",
+            full=False,
+            max_images=3,
+            use_cache=False,
+            force=True,
+            use_context=False,
+            download_only=True,
+            python_executable="python.exe",
+        )
+        self.assertIn("--download-only", command)
+        self.assertLess(command.index("--no-context"), command.index("--download-only"))
+        self.assertEqual(command[command.index("--max-images") + 1], "3")
+
     def test_history_drops_unknown_fields(self):
         with tempfile.TemporaryDirectory() as folder:
             store = UIHistoryStore(Path(folder) / "history.json")

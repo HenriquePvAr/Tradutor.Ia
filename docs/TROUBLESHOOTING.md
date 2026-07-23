@@ -133,7 +133,8 @@ Atualize o Chrome e confirme que ele abre normalmente. O downloader tenta
 `CHROMEDRIVER_PATH` e depois apenas `chromedriver`/`chromedriver.exe` já presente no
 `PATH`; ele não baixa drivers automaticamente.
 
-Quando a descoberta automática falhar, configure um driver compatível:
+Quando a descoberta automática falhar, o job deve terminar com `chromedriver_unavailable`.
+Configure um driver compatível:
 
 ```dotenv
 CHROMEDRIVER_PATH=C:\ferramentas\chromedriver.exe

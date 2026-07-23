@@ -21,6 +21,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 # one of these rather than sitting in queued/running forever.
 UNSUPPORTED_SOURCE = "unsupported_source"
 SOURCE_NOT_READY = "source_not_ready"
+CHROMEDRIVER_UNAVAILABLE = "chromedriver_unavailable"
 CHALLENGE_REQUIRED = "challenge_required"
 SOURCE_ACCESS_DENIED = "source_access_denied"
 SOURCE_RATE_LIMITED = "source_rate_limited"

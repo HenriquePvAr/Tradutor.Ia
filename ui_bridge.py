@@ -1386,6 +1386,7 @@ class UiBridge:
             use_context=bool(config.get("use_context", True)),
             source_candidate_ids=selected,
             open_output=bool(config.get("open_output", False)),
+            download_only=bool(config.get("download_only", False)),
             python_executable=sys.executable,
         )
         selection = {
@@ -1438,6 +1439,7 @@ class UiBridge:
             use_context=normalized["use_context"],
             source_candidate_ids=list(payload.get("source_candidate_ids") or []),
             open_output=normalized["open_output"],
+            download_only=normalized["download_only"],
             python_executable=sys.executable,
         )
         output_folder = (OUTPUT_ROOT / normalized["slug"]).resolve()
@@ -1447,6 +1449,7 @@ class UiBridge:
             # Distinguish newly-created jobs from pre-ownership legacy artifacts.
             "ownership_schema_version": 1,
             "mode": normalized["mode"],
+            "download_only": normalized["download_only"],
             "full": normalized["full"],
             "max_images": normalized["max_images"],
             "force": normalized["force"],
@@ -1705,6 +1708,7 @@ class UiBridge:
             "chapter_name": config.get("chapter_name") or job.get("series_title") or "",
             "slug": Path(str(job.get("output_dir") or "chapter")).name,
             "mode": config.get("mode") or "fast",
+            "download_only": bool(config.get("download_only", False)),
             "full": bool(config.get("full", True)),
             "max_images": config.get("max_images"),
             "use_cache": bool(config.get("use_cache")),
@@ -1738,6 +1742,7 @@ class UiBridge:
             "chapter_name": config.get("chapter_name") or job.get("series_title") or "",
             "slug": slug,
             "mode": config.get("mode") or "fast",
+            "download_only": bool(config.get("download_only", False)),
             "full": bool(config.get("full", True)),
             "max_images": config.get("max_images"),
             "use_cache": bool(config.get("use_cache", True)),
@@ -2100,6 +2105,7 @@ class UiBridge:
         url = clean_url(str(payload.get("url") or "")).strip()
         details = suggest_chapter_details(url)
         mode = str(payload.get("mode") or "fast")
+        download_only = bool(payload.get("download_only", False))
         full = bool(payload.get("full", True))
         max_images = None if full else int(payload.get("max_images") or 0)
         force = bool(payload.get("force", False))
@@ -2114,6 +2120,7 @@ class UiBridge:
             use_cache=use_cache,
             force=force,
             use_context=bool(payload.get("use_context", True)),
+            download_only=download_only,
         )
         return {
             "id": str(payload.get("id") or uuid.uuid4()),
@@ -2121,6 +2128,7 @@ class UiBridge:
             "chapter_name": str(payload.get("chapter_name") or details["title"])[:120],
             "slug": slug,
             "mode": mode,
+            "download_only": download_only,
             "full": full,
             "max_images": max_images,
             "use_cache": use_cache,

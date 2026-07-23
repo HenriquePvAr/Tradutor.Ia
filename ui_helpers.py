@@ -177,6 +177,7 @@ def build_run_command(
     use_context: bool,
     source_candidate_ids: list[str] | tuple[str, ...] | None = None,
     open_output: bool = False,
+    download_only: bool = False,
     python_executable: str | None = None,
 ) -> list[str]:
     from chapter_source import select_adapter
@@ -229,6 +230,8 @@ def build_run_command(
         command.extend(["--max-images", str(int(max_images))])
     if not use_context:
         command.append("--no-context")
+    if download_only:
+        command.append("--download-only")
     for candidate_id in source_candidate_ids or []:
         value = str(candidate_id or "").strip()
         if value:

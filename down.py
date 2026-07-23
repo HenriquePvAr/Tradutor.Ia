@@ -1,3 +1,4 @@
+import errno
 import html
 import hashlib
 import io
@@ -287,10 +288,10 @@ def download_images(
         # come from a server or browser and is not an output-side diagnostic contract.
         report["failure"] = {"code": str(exc.code)}
         raise
-    except Exception:
+    except Exception as exc:
         # Browser/driver faults have no stable external detail, but they still need a
         # terminal, sanitised reason for the runner and UI rather than a stuck job.
-        report["failure"] = {"code": "source_not_ready"}
+        report["failure"] = {"code": _pipeline_exception_code(exc)}
         raise
     finally:
         for transport in transports:
@@ -497,6 +498,13 @@ def driver_download_allowed(env=None) -> bool:
     return str(values.get("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "")).strip() == "1"
 
 
+def _pipeline_exception_code(exc: BaseException) -> str:
+    """Classify local operational failures without leaking provider/browser details."""
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC:
+        return "disk_full"
+    return "source_not_ready"
+
+
 def _create_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -525,10 +533,13 @@ def _create_driver():
         # implicit this would give source analysis an unrelated network side effect, which
         # is why the default below still fails closed.
         return webdriver.Chrome(service=Service(), options=chrome_options)
-    raise RuntimeError(
-        "ChromeDriver local indisponivel. Defina CHROMEDRIVER_PATH, instale-o no PATH, "
-        "ou habilite explicitamente TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1 para permitir que o "
-        "Selenium Manager oficial resolva o driver."
+    from chapter_source import CHROMEDRIVER_UNAVAILABLE, SourceError
+
+    raise SourceError(
+        CHROMEDRIVER_UNAVAILABLE,
+        "Defina CHROMEDRIVER_PATH, instale chromedriver no PATH ou habilite "
+        "TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1 para permitir que o Selenium Manager oficial "
+        "resolva o driver.",
     )
 
 

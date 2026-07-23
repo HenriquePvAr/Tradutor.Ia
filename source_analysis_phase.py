@@ -156,6 +156,7 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
         use_context=bool(config.get("use_context", True)),
         source_candidate_ids=command_selection,
         open_output=bool(config.get("open_output", False)),
+        download_only=bool(config.get("download_only", False)),
         python_executable=sys.executable,
     )
 
@@ -262,7 +263,7 @@ def apply_source_analysis(
             payload={"ok": False, "run_id": row["run_id"], "job_id": job_id,
                      "analysis": public_analysis, "reason_code": analysis.outcome})
 
-    if environment_ready is not None and not environment_ready():
+    if not bool((job.get("configuration") or {}).get("download_only")) and environment_ready is not None and not environment_ready():
         reason_code = "environment_not_configured"
         row = store.transition(
             job_id, JobStatus.FAILED, reason_code=reason_code,

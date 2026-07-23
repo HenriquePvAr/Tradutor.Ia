@@ -93,9 +93,9 @@ O downloader inicia o Chrome em modo headless. A resolução do driver segue est
 1. `CHROMEDRIVER_PATH`, quando configurado e válido;
 2. `chromedriver` ou `chromedriver.exe` já disponível no `PATH`.
 
-Não há download automático por webdriver-manager ou Selenium Manager: a análise de fonte
-não deve introduzir uma requisição implícita. Se o driver local não for encontrado, defina
-um caminho genérico no `.env`:
+Não há download automático por webdriver-manager ou Selenium Manager por padrão: a análise
+de fonte não deve introduzir uma requisição implícita. Se o driver local não for encontrado,
+o job termina com `chromedriver_unavailable`; defina um caminho genérico no `.env`:
 
 ```dotenv
 CHROMEDRIVER_PATH=C:\ferramentas\chromedriver.exe

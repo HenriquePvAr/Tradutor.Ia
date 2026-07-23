@@ -195,7 +195,7 @@ produzidos e nenhuma página obrigatória faltando.
 
 | Situação | stage | reason_code |
 | --- | --- | --- |
-| Driver ausente | `source_analysis` | `source_not_ready` |
+| Driver ausente | `source_analysis` | `chromedriver_unavailable` |
 | Nenhum candidato | `source_analysis` | `no_chapter_images` |
 | Coletor não viu o leitor inteiro | `source_analysis` | `incomplete_source_coverage` |
 | Confiança média | `awaiting_source_review` | — (não é `failed`) |
@@ -221,7 +221,7 @@ transport funcionam — comprovado até **duas** imagens baixadas e validadas. O
 inteiro **não** foi processado, e nada aqui afirma suporte completo ao Webtoons.
 
 O driver é opt-in: `TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1` permite ao Selenium Manager oficial
-resolver o ChromeDriver. Sem driver e sem a flag, o submit falha com `source_not_ready` —
+resolver o ChromeDriver. Sem driver e sem a flag, o submit falha com `chromedriver_unavailable` —
 era essa a causa de ambiente.
 
 ### Dívida técnica registrada

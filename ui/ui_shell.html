@@ -65,6 +65,7 @@
       <div class="app-loading-core-body">
         <div class="app-loading-status-line" id="bootStatusLine" data-i18n="loading.stage.init"><span>iniciando interface</span></div>
         <div class="app-loading-status-sub" id="bootStatusMini">preparando painel local</div>
+        <div class="app-loading-progress" aria-hidden="true"><div id="bootProgressBar"></div></div>
       </div>
     </div>
 
@@ -318,6 +319,10 @@
               <div class="choice-card" data-mode="quality">
                 <div class="ct-title">Qualidade</div>
                 <div class="ct-desc">Usa processamento mais conservador para páginas e fontes difíceis.</div>
+              </div>
+              <div class="choice-card" data-mode="download_only">
+                <div class="ct-title">Download-only</div>
+                <div class="ct-desc">Coleta e valida páginas sem OCR, tradução ou PDF.</div>
               </div>
             </div>
           </div>
@@ -931,7 +936,6 @@
 
       <div class="auth-login-title" data-i18n="auth.hero.title">Traduza mangás, manhwas e webtoons com contexto, qualidade e poucos cliques.</div>
       <div class="auth-login-subtitle" data-i18n="auth.hero.description">O Tradutor.Ia detecta os balões, reconhece o texto, traduz para português e reconstrói cada página preservando a arte original.</div>
-      <div class="auth-login-complement" data-i18n="auth.hero.complement">Do link ao PDF, acompanhe cada etapa pelo painel.</div>
 
       <div class="auth-login-compare-wrap">
         <div class="auth-login-compare" id="authCompare" role="img" aria-label="Comparação automática entre uma página original e a versão traduzida reconstruída pelo Tradutor.Ia.">
@@ -948,6 +952,7 @@
         <div class="auth-login-compare-caption" data-i18n="auth.compare.caption">Como o Tradutor.Ia transforma cada capítulo.</div>
       </div>
 
+      <div class="auth-login-flow-intro" data-i18n="auth.hero.complement">Um fluxo completo, do download ao PDF.</div>
       <div class="auth-marketing-pipeline" id="authMarketingPipeline" aria-hidden="true">
         <div class="auth-marketing-pipeline-track"><span id="authMarketingPipelineFill"></span></div>
         <div class="auth-login-pnode" data-auth-pipeline-step="1"><div class="auth-login-picon"><span class="auth-login-pnum">1</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.4"/><path d="M21 15l-5-5-4 4-3-3-6 6"/></svg></div><div class="auth-login-plabel" data-i18n="auth.pipeline.download">download</div></div>
