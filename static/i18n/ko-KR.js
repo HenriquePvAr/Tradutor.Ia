@@ -68,7 +68,7 @@
     'auth.error': '로그인을 완료할 수 없습니다.',
     'auth.hero.title': '만화, 만화형 웹툰과 웹툰을 맥락과 품질을 지키며 몇 번의 클릭으로 번역하세요.',
     'auth.hero.description': 'Tradutor.Ia는 말풍선을 감지하고, 텍스트를 인식하고, 번역한 뒤 원본 그림을 보존하며 각 페이지를 다시 구성합니다.',
-    'auth.hero.complement': '링크부터 PDF까지 모든 단계를 패널에서 확인하세요.',
+    'auth.hero.complement': '다운로드부터 PDF까지 이어지는 완전한 흐름.',
     'auth.compare.automatic': '원본과 번역의 자동 비교',
     'auth.compare.caption': 'Tradutor.Ia가 각 챕터를 변환하는 방식.',
     'auth.pipeline.download': '다운로드',

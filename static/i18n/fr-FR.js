@@ -68,7 +68,7 @@
     'auth.error': 'Impossible de terminer la connexion.',
     'auth.hero.title': 'Traduisez mangas, manhwas et webtoons avec contexte, qualité et quelques clics.',
     'auth.hero.description': 'Tradutor.Ia détecte les bulles, reconnaît le texte, le traduit et reconstruit chaque page en préservant l’illustration originale.',
-    'auth.hero.complement': 'Du lien au PDF, suivez chaque étape dans le tableau de bord.',
+    'auth.hero.complement': 'Un flux complet, du téléchargement au PDF.',
     'auth.compare.automatic': 'comparaison automatique entre original et traduction',
     'auth.compare.caption': 'Comment Tradutor.Ia transforme chaque chapitre.',
     'auth.pipeline.download': 'téléchargement',

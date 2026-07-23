@@ -68,7 +68,7 @@
     'auth.error': 'Could not complete sign-in.',
     'auth.hero.title': 'Translate manga, manhwa, and webtoons with context, quality, and just a few clicks.',
     'auth.hero.description': 'Tradutor.Ia detects speech balloons, reads the text, translates it, and rebuilds each page while preserving the original artwork.',
-    'auth.hero.complement': 'From link to PDF, follow every step in the dashboard.',
+    'auth.hero.complement': 'One complete flow, from download to PDF.',
     'auth.compare.automatic': 'automatic comparison between original and translation',
     'auth.compare.caption': 'How Tradutor.Ia transforms each chapter.',
     'auth.pipeline.download': 'download',

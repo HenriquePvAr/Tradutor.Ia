@@ -68,7 +68,7 @@
     'auth.error': 'ログインを完了できませんでした。',
     'auth.hero.title': 'マンガ、マンファ、Webtoonを文脈と品質を保ったまま、少ないクリックで翻訳。',
     'auth.hero.description': 'Tradutor.Ia は吹き出しを検出し、文字を読み取り、翻訳して、元の絵を保ったまま各ページを再構築します。',
-    'auth.hero.complement': 'リンクからPDFまで、各工程をパネルで確認できます。',
+    'auth.hero.complement': 'ダウンロードからPDFまでの完全なフロー。',
     'auth.compare.automatic': '原文と翻訳の自動比較',
     'auth.compare.caption': 'Tradutor.Ia が各章を変換する流れ。',
     'auth.pipeline.download': '取得',

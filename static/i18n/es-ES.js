@@ -68,7 +68,7 @@
     'auth.error': 'No se pudo completar el inicio de sesión.',
     'auth.hero.title': 'Traduce mangas, manhwas y webtoons con contexto, calidad y pocos clics.',
     'auth.hero.description': 'Tradutor.Ia detecta los globos, reconoce el texto, lo traduce y reconstruye cada página preservando el arte original.',
-    'auth.hero.complement': 'Del enlace al PDF, sigue cada etapa desde el panel.',
+    'auth.hero.complement': 'Un flujo completo, de la descarga al PDF.',
     'auth.compare.automatic': 'comparación automática entre original y traducción',
     'auth.compare.caption': 'Cómo Tradutor.Ia transforma cada capítulo.',
     'auth.pipeline.download': 'descarga',

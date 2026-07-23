@@ -278,6 +278,22 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
             self.assertIn(key, auth_fragment)
         self.assertIn("auth-login-recovery", auth_fragment)
         self.assertIn("hidden>Recuperar acesso", auth_fragment)
+        self.assertIn("auth-login-flow-intro", auth_fragment)
+        self.assertNotIn("Do link ao PDF, acompanhe cada etapa pelo painel.", auth_fragment)
+        compare_pos = auth_fragment.index('class="auth-login-compare-wrap"')
+        flow_pos = auth_fragment.index("auth-login-flow-intro")
+        pipeline_pos = auth_fragment.index('id="authMarketingPipeline"')
+        self.assertLess(compare_pos, flow_pos)
+        self.assertLess(flow_pos, pipeline_pos)
+
+    def test_loading_visual_test_mode_is_local_and_fail_closed(self):
+        self.assertIn("visual_boot_stage", self.ui_js)
+        self.assertIn("['127.0.0.1', 'localhost', '::1']", self.ui_js)
+        self.assertIn("dataset.visualBootTest = '1'", self.ui_js)
+        self.assertIn("if (bootVisualTest) return;", self.ui_js)
+        self.assertIn("bootHighestStage", self.ui_js)
+        self.assertIn("bootProgressBar", self.shell)
+        self.assertIn("app-loading-progress", self.css)
 
     def test_new_auth_and_loading_strings_exist_in_all_catalogs(self):
         required = {
