@@ -690,6 +690,32 @@ class JobStore:
         self.update_fields(job_id, review_actions_json=json.dumps(actions, ensure_ascii=False))
         return actions
 
+    def record_review_actions_bulk(self, job_id: str, updates: dict[str, str]) -> dict[str, str]:
+        if not updates:
+            return self.review_actions(job_id)
+        for item_key, action in updates.items():
+            if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", str(item_key or "")):
+                raise TransitionError("invalid_review_item")
+            if action not in {"reviewed", "preserved_original", "pending"}:
+                raise TransitionError("invalid_review_action")
+        actions = self.review_actions(job_id)
+        for item_key, action in updates.items():
+            if action == "pending":
+                actions.pop(str(item_key), None)
+            else:
+                actions[str(item_key)] = action
+        now = time.time()
+        payload = json.dumps(actions, ensure_ascii=False)
+        with self._conn:
+            row = self._conn.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise TransitionError("unknown job")
+            self._conn.execute(
+                "UPDATE jobs SET review_actions_json=?, updated_at=? WHERE id=?",
+                (payload, now, job_id),
+            )
+        return actions
+
     def confirm_review(self, job_id: str) -> dict[str, str]:
         self.complete_review(job_id)
         return self.review_actions(job_id)

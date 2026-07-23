@@ -401,6 +401,7 @@
               <div class="stage-item" data-stage="translate"><div class="stage-fill"></div><span class="stage-dot"></span><span>Tradução</span><span class="stage-pct">—</span></div>
               <div class="stage-item" data-stage="render"><div class="stage-fill"></div><span class="stage-dot"></span><span>Redesenho dos balões</span><span class="stage-pct">—</span></div>
               <div class="stage-item" data-stage="pdf"><div class="stage-fill"></div><span class="stage-dot"></span><span>Geração do PDF</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="quality_review"><div class="stage-fill"></div><span class="stage-dot"></span><span>Revisão de qualidade</span><span class="stage-pct">—</span></div>
             </div>
             <div class="run-summary" id="runSummary" hidden aria-live="polite"></div>
             <div class="run-status-card" id="runStatusCard" hidden aria-live="polite">
@@ -430,6 +431,15 @@
                 <button type="button" class="btn-ghost" data-review-filter="all">Todos</button>
                 <button type="button" class="btn-ghost" data-review-filter="completed">Concluídos</button>
               </div>
+              <div class="quality-review-bulk" id="qualityReviewBulk">
+                <label class="review-select-all"><input type="checkbox" id="qualityReviewSelectAll"> Selecionar todos do filtro atual</label>
+                <span id="qualityReviewSelectedCount">0 selecionados</span>
+                <button class="btn-ghost" type="button" id="acceptLowRiskReview">Aceitar baixo risco</button>
+                <button class="btn-ghost" type="button" id="acceptAllReview">ACEITAR TODOS</button>
+                <button class="btn-ghost" type="button" id="undoBulkReview" disabled>Desfazer última ação em massa</button>
+                <button class="btn-ghost" type="button" id="globalAiReview">REVISAR PDF INTEIRO</button>
+              </div>
+              <div class="quality-review-message" id="qualityReviewBulkMessage" role="status" aria-live="polite"></div>
               <div class="quality-review-list" id="qualityReviewList"></div>
               <div class="cta-row quality-review-actions">
                 <button class="btn-primary" type="button" id="confirmQualityReview">Confirmar revisão</button>

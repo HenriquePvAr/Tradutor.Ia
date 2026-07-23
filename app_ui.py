@@ -453,6 +453,41 @@ def api_quality_review_action(payload: dict[str, Any] = Body(default={})) -> dic
         }) from exc
 
 
+@app.post("/api/ui/quality-review/bulk-action")
+def api_quality_review_bulk_action(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        raw_keys = payload.get("item_keys") or []
+        item_keys = [str(item) for item in raw_keys] if isinstance(raw_keys, list) else []
+        raw_restore = payload.get("restore_actions") or {}
+        restore_actions = {str(key): str(value) for key, value in raw_restore.items()} if isinstance(raw_restore, dict) else {}
+        return BRIDGE.quality_review_bulk_action(
+            str(payload.get("job_id") or ""),
+            item_keys,
+            str(payload.get("action") or ""),
+            risk_filter=str(payload.get("risk_filter") or ""),
+            undo=bool(payload.get("undo") or False),
+            restore_actions=restore_actions,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "message": "Não foi possível aplicar a ação em massa.",
+            "action": "Confira os itens selecionados e tente novamente.",
+        }) from exc
+
+
+@app.post("/api/ui/quality-review/global-review")
+def api_quality_review_global_review(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return BRIDGE.translation_global_review(str(payload.get("job_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "message": "Não foi possível gerar a revisão global.",
+            "action": "Confira se o job possui relatório de qualidade persistido.",
+        }) from exc
+
+
 @app.post("/api/ui/quality-review/confirm")
 def api_quality_review_confirm(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     try:

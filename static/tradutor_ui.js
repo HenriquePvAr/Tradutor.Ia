@@ -47,6 +47,10 @@
     sourceReview: null,
     qualityReview: null,
     qualityReviewFilter: 'pending',
+    qualityReviewSelection: new Set(),
+    qualityReviewUndo: [],
+    qualityReviewBulkBusy: false,
+    currentPipelineState: null,
     cancelBusy: false,
     expandedFolders: new Set(),
     seriesQuery: '',
@@ -565,16 +569,50 @@
   }
 
   const stageMessages = {
-    prepare: 'aguardando início',
-    queued: 'na fila', worker_starting: 'iniciando processamento',
+    idle: 'Pronto para iniciar',
+    prepare: 'Pronto para iniciar',
+    validating_source: 'Validando a fonte...',
+    source_validation: 'Validando a fonte...',
+    source_verified: 'Fonte encontrada',
+    creating_job: 'Criando o processamento...',
+    queued: 'Na fila...',
+    starting_worker: 'Iniciando o worker...',
+    worker_starting: 'Iniciando o worker...',
+    starting: 'Iniciando o worker...',
+    source_analysis: 'Analisando o capítulo...',
+    browser_loading: 'Analisando o capítulo...',
+    collecting_candidates: 'Analisando o capítulo...',
+    clustering_candidates: 'Analisando o capítulo...',
     source_lazy_resolution: 'carregando páginas do leitor',
     source_selection: 'preparando a ordem das páginas',
-    preparing: 'preparando processamento', quality_gate: 'validando resultado',
-    validating_source: 'validando a fonte', source_validation: 'validando a fonte', source_analysis: 'localizando páginas', browser_loading: 'abrindo o leitor', collecting_candidates: 'coletando páginas', clustering_candidates: 'validando páginas', awaiting_source_review: 'aguardando revisão das páginas', downloading_pages: 'baixando páginas', validating_pages: 'validando páginas', download: 'baixando páginas', validation: 'detectando balões',
-    ocr: 'lendo texto', classification: 'organizando regiões', translate: 'traduzindo',
-    render: 'redesenhando balões', pdf: 'gerando PDF', reports: 'finalizando', final: 'concluído',
+    awaiting_source_review: 'Preparando as páginas...',
+    reviewing_pages: 'Preparando as páginas...',
+    downloading: 'Baixando as páginas...',
+    downloading_pages: 'Baixando as páginas...',
+    validating_pages: 'Baixando as páginas...',
+    download: 'Baixando as páginas...',
+    detecting_balloons: 'Detectando os balões...',
+    validation: 'Detectando os balões...',
+    reading_text: 'Lendo o texto...',
+    ocr: 'Lendo o texto...',
+    classification: 'Lendo o texto...',
+    translating: 'Traduzindo o capítulo...',
+    translate: 'Traduzindo o capítulo...',
+    redrawing: 'Reconstruindo a arte...',
+    render: 'Reconstruindo a arte...',
+    generating_pdf: 'Gerando o PDF...',
+    pdf: 'Gerando o PDF...',
+    reports: 'Gerando o PDF...',
+    quality_review: 'Revisando a tradução...',
+    quality_gate: 'Revisando a tradução...',
+    review_required: 'Revisão necessária',
+    finished: 'Capítulo concluído',
+    review_completed: 'Capítulo concluído',
+    failed: 'Não foi possível concluir',
+    cancelled: 'Processamento cancelado',
+    final: 'Capítulo concluído',
   };
-  const sfxWords = {download: '…', validation: '!!', ocr: 'スキャン', classification: 'CHK', translate: 'ZAP', render: 'SHK', pdf: 'PDF', reports: 'OK'};
+  const sfxWords = {download: '…', downloading: '…', downloading_pages: '…', validation: '!!', detecting_balloons: '!!', ocr: 'スキャン', reading_text: 'スキャン', classification: 'CHK', translate: 'ZAP', translating: 'ZAP', render: 'SHK', redrawing: 'SHK', pdf: 'PDF', generating_pdf: 'PDF', quality_review: 'OK', reports: 'OK'};
   function sfxPop(key) {
     const stage = $('#balloonStage');
     if (!stage || !sfxWords[key]) return;
@@ -1072,8 +1110,52 @@
   });
 
   /* ---------- real pipeline presentation ---------- */
-  const stageOrder = ['source_analysis', 'awaiting_source_review', 'download', 'validation', 'ocr', 'translate', 'render', 'pdf'];
-  const visualStageKey = key => ({validating_source: 'source_analysis', source_validation: 'source_analysis', browser_loading: 'source_analysis', collecting_candidates: 'source_analysis', clustering_candidates: 'source_analysis', downloading_pages: 'download', validating_pages: 'download', classification: 'ocr', reports: 'pdf'}[key] || key);
+  const stageOrder = ['source_analysis', 'awaiting_source_review', 'download', 'validation', 'ocr', 'translate', 'render', 'pdf', 'quality_review'];
+  const stageAliases = {
+    idle: 'idle',
+    prepare: 'idle',
+    creating_job: 'source_analysis',
+    queued: 'source_analysis',
+    starting: 'source_analysis',
+    starting_worker: 'source_analysis',
+    worker_starting: 'source_analysis',
+    validating_source: 'source_analysis',
+    source_validation: 'source_analysis',
+    source_verified: 'source_analysis',
+    source_analysis: 'source_analysis',
+    browser_loading: 'source_analysis',
+    collecting_candidates: 'source_analysis',
+    clustering_candidates: 'source_analysis',
+    source_lazy_resolution: 'source_analysis',
+    source_selection: 'awaiting_source_review',
+    awaiting_source_review: 'awaiting_source_review',
+    reviewing_pages: 'awaiting_source_review',
+    downloading: 'download',
+    downloading_pages: 'download',
+    validating_pages: 'download',
+    download: 'download',
+    detecting_balloons: 'validation',
+    validation: 'validation',
+    reading_text: 'ocr',
+    ocr: 'ocr',
+    classification: 'ocr',
+    translating: 'translate',
+    translate: 'translate',
+    redrawing: 'render',
+    render: 'render',
+    generating_pdf: 'pdf',
+    pdf: 'pdf',
+    reports: 'pdf',
+    quality_review: 'quality_review',
+    quality_gate: 'quality_review',
+    review_required: 'quality_review',
+    review_completed: 'quality_review',
+    finished: 'quality_review',
+    failed: 'failed',
+    cancelled: 'cancelled',
+    final: 'quality_review',
+  };
+  const visualStageKey = key => stageAliases[String(key || '').toLowerCase()] || String(key || 'idle').toLowerCase();
   function terminalIdentity(record) {
     const jobId = String(record?.id || record?.job_id || '');
     const runId = String(record?.run_id || '');
@@ -1152,6 +1234,83 @@
     showToast(notification.message, notification.type, {key, kind: 'terminal'});
     uiTrace('TERMINAL_NOTIFICATION_EMITTED', {job_id: record?.id || '', run_id: record?.run_id || '', stage: record?.stage || '', status});
   }
+  function canonicalProgressStage(runtime, record, progress) {
+    const raw = String(progress?.stage_key || record?.stage || runtime?.stage || runtime?.status || 'idle').toLowerCase();
+    if (String(record?.status || runtime?.status || '').toLowerCase() === 'review_required') return 'quality_review';
+    if (String(record?.status || runtime?.status || '').toLowerCase() === 'finished') return 'finished';
+    return raw || 'idle';
+  }
+  function metricFromProgress(progress, fallback = '') {
+    if (progress?.total) return `${Number(progress.current || 0)}/${Number(progress.total || 0)}`;
+    return fallback;
+  }
+  function buildPipelineState(runtime, progress = {}) {
+    const record = runtime.active || runtime.source_review || runtime.latest || runtime.latest_result || null;
+    const status = String(record?.status || runtime.status || 'ready').toLowerCase();
+    const rawStage = canonicalProgressStage(runtime, record, progress);
+    const visualStage = visualStageKey(rawStage);
+    const current = Number(progress.current || 0);
+    const total = Number(progress.total || 0);
+    const fraction = Number.isFinite(Number(progress.fraction)) ? Number(progress.fraction) : (total ? current / total : null);
+    const isTerminal = terminalRunStatuses.has(status) || ['failed', 'cancelled'].includes(status);
+    const totalPages = Number(record?.page_count || record?.pages || progress.pages || progress.total_pages || 0);
+    const pendingReview = Number(runtime.quality_review?.pending_count || record?.manual_review_count || record?.rejected_count || 0);
+    return {
+      requestId: appState.currentRequestId,
+      jobId: String(record?.id || record?.job_id || appState.currentJobId || ''),
+      runId: String(record?.run_id || appState.currentRunId || ''),
+      sourceUrl: String(record?.url || appState.currentSourceUrl || ''),
+      title: String(record?.chapter_name || appState.currentChapterName || 'Capítulo atual'),
+      status,
+      stage: rawStage,
+      visualStage,
+      stageStartedAt: record?.stage_started_at || '',
+      createdAt: record?.created_at || record?.started_at || '',
+      updatedAt: progress.updated_at || record?.updated_at || record?.finished_at || '',
+      heartbeatAt: progress.updated_at || record?.updated_at || '',
+      totalPages,
+      completedPages: total ? current : Number(progress.pages || 0),
+      currentPage: total ? current : 0,
+      totalGroups: Number(progress.groups || record?.group_count || 0),
+      completedGroups: Number(progress.completed_groups || 0),
+      totalTranslations: Number(progress.total_translations || 0),
+      completedTranslations: Number(progress.completed_translations || 0),
+      progressPercent: fraction == null ? null : Math.max(0, Math.min(99, Math.round(fraction * 100))),
+      elapsedSeconds: progress.elapsed_seconds ?? null,
+      etaSeconds: progress.eta_seconds ?? null,
+      message: String(progress.last_message || progress.stage || stageMessages[rawStage] || ''),
+      reasonCode: String(record?.reason_code || ''),
+      pendingReview,
+      isTerminal,
+      progress,
+      record,
+    };
+  }
+  function canonicalStageMetric(stage, state, progress) {
+    const activeMetric = metricFromProgress(progress, 'em andamento');
+    if (stage === state.visualStage && activeMetric !== '0/0') return activeMetric || 'em andamento';
+    if (stage === 'awaiting_source_review' && state.totalPages) return `${state.totalPages} páginas`;
+    if (stage === 'download' && state.totalPages) return `${state.totalPages}/${state.totalPages}`;
+    if (stage === 'validation' && state.totalGroups) return `${state.totalGroups} grupos`;
+    if (stage === 'ocr' && state.totalPages) return `${state.totalPages}/${state.totalPages}`;
+    if (stage === 'translate' && state.totalTranslations) return `${state.completedTranslations || state.totalTranslations}/${state.totalTranslations}`;
+    if (stage === 'render' && state.totalPages) return `${state.totalPages}/${state.totalPages}`;
+    if (stage === 'pdf' && state.totalPages) return `${state.totalPages} páginas`;
+    if (stage === 'quality_review' && state.pendingReview) return `${state.pendingReview} pendências`;
+    return '';
+  }
+  function renderPipelinePreview(state) {
+    const balloon = $('#balloonText');
+    if (!balloon) return;
+    const messageKey = state.status === 'ready' && !state.jobId ? 'idle' : (state.status === 'review_required' ? 'review_required' : state.stage);
+    const message = stageMessages[messageKey] || stageMessages[state.visualStage] || 'Processando...';
+    const detail = state.progress?.total
+      ? `Página ${Number(state.progress.current || 0)} de ${Number(state.progress.total || 0)}`
+      : state.pendingReview
+        ? `Revisão: ${state.pendingReview} pendências`
+        : '';
+    balloon.innerHTML = detail ? `${escapeHtml(message)}<br><small>${escapeHtml(detail)}</small>` : escapeHtml(message);
+  }
   function renderRuntime(runtime) {
     appState.status = runtime.status || 'ready';
     appState.queue = runtime.queue || [];
@@ -1167,6 +1326,8 @@
       visibleProgress.stage_key = terminalLatest.stage || visibleProgress.stage_key || 'source_analysis';
       visibleProgress.stage = stageMessages[visibleProgress.stage_key] || visibleProgress.stage || visibleProgress.stage_key;
     }
+    const pipelineState = buildPipelineState(runtime, visibleProgress);
+    appState.currentPipelineState = pipelineState;
     appState.activeJobId = runtime.active?.id || runtime.source_review?.id || '';
     appState.latestJobId = runtime.latest?.id || '';
     const incoming = runtime.active || runtime.source_review || runtime.latest || null;
@@ -1189,7 +1350,7 @@
     const status = $('#appStatus');
     status.textContent = runStatusLabels[appState.status] || appState.status;
     status.dataset.state = appState.status;
-    renderProgress(visibleProgress);
+    renderProgress(visibleProgress, pipelineState);
     const draftOnly = appState.newTranslationDraft && !runtime.active && !runtime.source_review;
     if (draftOnly) clearNewTranslationDraftPanels();
     else renderRunStatus({...runtime, status: presentationStatus, progress: visibleProgress});
@@ -1226,6 +1387,7 @@
     const record = runtime.active || runtime.latest || null;
     const status = runtime.status === 'ready' && record ? record.status : runtime.status;
     const progress = runtime.progress || {};
+    const pipelineState = appState.currentPipelineState || buildPipelineState(runtime, progress);
     card.hidden = !active && !record;
     if (card.hidden) return;
     const recordJobId = String(record?.id || record?.job_id || '');
@@ -1237,11 +1399,12 @@
     }
     card.dataset.currentJobId = appState.currentJobId || recordJobId;
     card.dataset.currentRunId = appState.currentRunId || recordRunId;
-    card.dataset.currentStage = progress.stage_key || record.stage || status;
+    card.dataset.currentStage = pipelineState.stage || progress.stage_key || record.stage || status;
     const failed = status === 'failed';
-    $('#runStatusHuman').textContent = failed ? 'Não foi possível iniciar o processamento' : (stageMessages[progress.stage_key] || runStatusLabels[status] || 'Processamento');
+    $('#runStatusHuman').textContent = failed ? 'Não foi possível iniciar o processamento' : (stageMessages[pipelineState.stage] || stageMessages[pipelineState.visualStage] || runStatusLabels[status] || 'Processamento');
     const count = progress.total ? `${progress.current || 0} de ${progress.total}` : 'progresso sendo calculado';
-    $('#runProgressHuman').textContent = active ? count : (status === 'finished' ? 'PDF pronto' : status === 'review_required' ? 'Alguns itens precisam de revisao' : failed ? (reasonText(record?.reason_code) || record?.error_message || 'O processamento nao foi concluido.') : runStatusLabels[status] || '');
+    const terminalCount = pipelineState.pendingReview ? `${pipelineState.pendingReview} itens aguardando revisão` : (pipelineState.totalPages ? `${pipelineState.totalPages} páginas` : '');
+    $('#runProgressHuman').textContent = active ? count : (status === 'finished' ? (terminalCount || 'PDF pronto') : status === 'review_required' ? (terminalCount || 'Alguns itens precisam de revisão') : failed ? (reasonText(record?.reason_code) || record?.error_message || 'O processamento não foi concluído.') : runStatusLabels[status] || '');
     $('#runEtaHuman').textContent = active ? (progress.eta_label || 'Tempo variavel nesta etapa') : '';
     const updated = progress.updated_at ? new Date(Number(progress.updated_at) * 1000) : null;
     $('#runUpdatedHuman').textContent = updated && !Number.isNaN(updated.getTime()) ? `Atualizado ha ${Math.max(0, Math.floor((Date.now() - updated.getTime()) / 1000))}s` : '';
@@ -1261,16 +1424,88 @@
     const items = Array.isArray(review.items) ? review.items : [];
     const filter = appState.qualityReviewFilter || 'pending';
     const visible = items.filter(item => filter === 'all' || (filter === 'pending' ? item.state === 'pending' : item.state !== 'pending'));
-    $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
+    const counts = items.reduce((acc, item) => {
+      const risk = String(item.risk || 'LOW').toUpperCase();
+      acc[risk] = (acc[risk] || 0) + 1;
+      return acc;
+    }, {LOW: 0, MEDIUM: 0, HIGH: 0});
+    $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · LOW ${counts.LOW || 0} · MEDIUM ${counts.MEDIUM || 0} · HIGH ${counts.HIGH || 0} · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
+    const visibleKeys = new Set(visible.map(item => String(item.key || '')));
+    appState.qualityReviewSelection = new Set([...appState.qualityReviewSelection].filter(key => visibleKeys.has(key)));
     list.innerHTML = visible.length ? visible.map(item => {
       const actionClass = item.state === 'pending' ? ' show' : '';
-      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span></div><div class="quality-review-reason">${escapeHtml(item.reason)}</div><div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div></div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="cta-row"><button type="button" class="btn-ghost review-mark${actionClass}" data-review-action="reviewed">Marcar como revisado</button><button type="button" class="btn-ghost review-preserve${actionClass}" data-review-action="preserved_original">Manter original</button></div></article>`;
+      const checked = appState.qualityReviewSelection.has(String(item.key || '')) ? ' checked' : '';
+      const risk = String(item.risk || 'LOW').toUpperCase();
+      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label><input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> <strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span></div><div class="quality-review-reason">${escapeHtml(item.reason)}</div><div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div></div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="cta-row"><button type="button" class="btn-ghost review-mark${actionClass}" data-review-action="reviewed">Marcar como revisado</button><button type="button" class="btn-ghost review-preserve${actionClass}" data-review-action="preserved_original">Manter original</button></div></article>`;
     }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
     const confirm = $('#confirmQualityReview');
     if (confirm) {
       confirm.hidden = Boolean(review.confirmed);
       confirm.disabled = Boolean(review.confirmed) || Number(review.pending_count || 0) > 0;
       confirm.title = confirm.disabled && !review.confirmed ? 'Revise cada item ou mantenha o original antes de confirmar.' : '';
+    }
+    updateQualityReviewSelectionUi();
+  }
+
+  function visibleQualityReviewKeys({risk = ''} = {}) {
+    const root = $('#qualityReviewList');
+    if (!root) return [];
+    return $$('.quality-review-item', root)
+      .filter(item => !risk || String(item.dataset.risk || '').toUpperCase() === String(risk).toUpperCase())
+      .map(item => String(item.dataset.reviewKey || ''))
+      .filter(Boolean);
+  }
+
+  function updateQualityReviewSelectionUi() {
+    const count = appState.qualityReviewSelection.size;
+    const label = $('#qualityReviewSelectedCount');
+    if (label) label.textContent = `${count} selecionado${count === 1 ? '' : 's'}`;
+    const all = $('#qualityReviewSelectAll');
+    const visible = visibleQualityReviewKeys();
+    if (all) {
+      all.checked = visible.length > 0 && visible.every(key => appState.qualityReviewSelection.has(key));
+      all.indeterminate = !all.checked && visible.some(key => appState.qualityReviewSelection.has(key));
+    }
+    const undo = $('#undoBulkReview');
+    if (undo) undo.disabled = appState.qualityReviewUndo.length === 0 || appState.qualityReviewBulkBusy;
+  }
+
+  function setQualityReviewBulkMessage(message, type = '') {
+    const node = $('#qualityReviewBulkMessage');
+    if (!node) return;
+    node.textContent = message || '';
+    node.dataset.state = type || '';
+  }
+
+  async function qualityReviewBulkAction({action = 'reviewed', keys = [], riskFilter = '', confirmation = false} = {}) {
+    if (!appState.qualityReview?.job_id || appState.qualityReviewBulkBusy) return;
+    const selected = keys.length ? keys : [...appState.qualityReviewSelection];
+    if (!selected.length) { setQualityReviewBulkMessage('Selecione ao menos um item.', 'warn'); return; }
+    if (confirmation && selected.length) {
+      const highCount = (appState.qualityReview.items || []).filter(item => selected.includes(String(item.key)) && String(item.risk || '').toUpperCase() === 'HIGH').length;
+      const pages = Array.from(new Set((appState.qualityReview.items || []).filter(item => selected.includes(String(item.key))).map(item => item.page))).sort((a, b) => Number(a) - Number(b));
+      const ok = window.confirm(`Você está prestes a aceitar ${selected.length} itens pendentes em ${pages.length} páginas. Alto risco: ${highCount}. Esta ação não publica o capítulo.`);
+      if (!ok) return;
+      if (highCount > 0 && !window.confirm('Esta seleção inclui itens de alto risco. Confirme novamente para aceitar TODOS; caso contrário use Aceitar baixo risco.')) {
+        setQualityReviewBulkMessage('Ação cancelada: itens de alto risco não foram aceitos.', 'warn');
+        return;
+      }
+    }
+    appState.qualityReviewBulkBusy = true;
+    setQualityReviewBulkMessage('Aplicando ação em massa...', 'busy');
+    try {
+      appState.qualityReviewUndo.push({keys: selected, previous: (appState.qualityReview.items || []).filter(item => selected.includes(String(item.key))).map(item => [String(item.key), String(item.state || 'pending')])});
+      const review = await api('/api/ui/quality-review/bulk-action', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id, item_keys: selected, action, risk_filter: riskFilter})});
+      appState.qualityReviewSelection = new Set();
+      renderQualityReview(review);
+      setQualityReviewBulkMessage(`${review.bulk?.count || selected.length} itens atualizados.`, 'ok');
+      showToast('Ação em massa aplicada.', 'ok');
+    } catch (error) {
+      setQualityReviewBulkMessage(error.message || 'Não foi possível aplicar a ação em massa.', 'error');
+      showToast(error.message || 'Não foi possível aplicar a ação em massa.', 'error');
+    } finally {
+      appState.qualityReviewBulkBusy = false;
+      updateQualityReviewSelectionUi();
     }
   }
 
@@ -1297,20 +1532,80 @@
   }
 
   $('#qualityReviewList')?.addEventListener('click', qualityReviewAction);
+  $('#qualityReviewList')?.addEventListener('change', event => {
+    const checkbox = event.target.closest?.('[data-review-select]');
+    if (!checkbox) return;
+    const key = String(checkbox.dataset.reviewSelect || '');
+    if (!key) return;
+    if (checkbox.checked) appState.qualityReviewSelection.add(key);
+    else appState.qualityReviewSelection.delete(key);
+    updateQualityReviewSelectionUi();
+  });
   $$('[data-review-filter]').forEach(button => button.addEventListener('click', () => { appState.qualityReviewFilter = button.dataset.reviewFilter || 'pending'; $$('[data-review-filter]').forEach(item => item.classList.toggle('selected', item === button)); if (appState.qualityReview) renderQualityReview(appState.qualityReview); }));
   $('#confirmQualityReview')?.addEventListener('click', confirmQualityReview);
+  $('#qualityReviewSelectAll')?.addEventListener('change', event => {
+    const keys = visibleQualityReviewKeys();
+    if (event.target.checked) keys.forEach(key => appState.qualityReviewSelection.add(key));
+    else keys.forEach(key => appState.qualityReviewSelection.delete(key));
+    renderQualityReview(appState.qualityReview);
+  });
+  $('#acceptLowRiskReview')?.addEventListener('click', () => {
+    const lowKeys = visibleQualityReviewKeys({risk: 'LOW'});
+    const selectedLow = lowKeys.filter(key => appState.qualityReviewSelection.has(key));
+    const keys = selectedLow.length ? selectedLow : lowKeys;
+    qualityReviewBulkAction({action: 'reviewed', keys, riskFilter: 'LOW', confirmation: false});
+  });
+  $('#acceptAllReview')?.addEventListener('click', () => qualityReviewBulkAction({action: 'reviewed', confirmation: true}));
+  $('#undoBulkReview')?.addEventListener('click', async () => {
+    if (!appState.qualityReview?.job_id || appState.qualityReviewBulkBusy || !appState.qualityReviewUndo.length) return;
+    const last = appState.qualityReviewUndo.pop();
+    const restore = Object.fromEntries(last.previous || []);
+    appState.qualityReviewBulkBusy = true;
+    setQualityReviewBulkMessage('Desfazendo última ação em massa...', 'busy');
+    try {
+      const review = await api('/api/ui/quality-review/bulk-action', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id, item_keys: last.keys || [], action: 'pending', undo: true, restore_actions: restore})});
+      renderQualityReview(review);
+      setQualityReviewBulkMessage('Última ação em massa desfeita.', 'ok');
+    } catch (error) {
+      setQualityReviewBulkMessage(error.message || 'Não foi possível desfazer.', 'error');
+    } finally {
+      appState.qualityReviewBulkBusy = false;
+      updateQualityReviewSelectionUi();
+    }
+  });
+  $('#globalAiReview')?.addEventListener('click', async () => {
+    if (!appState.qualityReview?.job_id || appState.qualityReviewBulkBusy) return;
+    appState.qualityReviewBulkBusy = true;
+    setQualityReviewBulkMessage('Gerando pré-revisão global offline...', 'busy');
+    try {
+      const report = await api('/api/ui/quality-review/global-review', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id})});
+      setQualityReviewBulkMessage(`Pré-revisão global: ${report.total_regions || 0} regiões · ${report.manual_review || 0} revisões manuais · ${report.english_residual || 0} inglês residual. Nenhuma alteração foi aplicada.`, 'ok');
+      showToast('Relatório global de qualidade gerado.', 'ok');
+    } catch (error) {
+      setQualityReviewBulkMessage(error.message || 'Não foi possível gerar a revisão global.', 'error');
+      showToast(error.message || 'Não foi possível gerar a revisão global.', 'error');
+    } finally {
+      appState.qualityReviewBulkBusy = false;
+      updateQualityReviewSelectionUi();
+    }
+  });
   $('#runRetryAction')?.addEventListener('click', async () => { const id = appState.latestJobId || ''; if (!id) return; try { await api('/api/ui/retry', {method: 'POST', body: JSON.stringify({job_id: id})}); showToast('Nova tentativa iniciada.', 'ok'); pollState(); } catch (error) { showToast(error.message || 'Nao foi possivel tentar novamente.', 'error'); } });
 
-  function renderProgress(progress) {
-    const runtimeKey = progress.stage_key || 'prepare';
-    const key = visualStageKey(runtimeKey);
+  function renderProgress(progress, pipelineState = null) {
+    const state = pipelineState || buildPipelineState({status: appState.status}, progress);
+    const runtimeKey = state.stage || progress.stage_key || 'idle';
+    const key = state.visualStage || visualStageKey(runtimeKey);
     const activeIndex = stageOrder.indexOf(key);
+    const terminalOk = ['finished', 'review_required', 'review_completed'].includes(state.status);
     $$('.stage-item').forEach(item => {
       const index = stageOrder.indexOf(item.dataset.stage);
       const pct = $('.stage-pct', item);
       const fill = $('.stage-fill', item);
-      item.classList.toggle('done', key === 'final' || (activeIndex >= 0 && index < activeIndex));
-      item.classList.toggle('active', item.dataset.stage === key && (appState.status === 'running' || appState.status === 'staging' || appState.status === 'awaiting_source_review' || appState.status === 'failed' || appState.status === 'cancelled'));
+      const failedHere = ['failed', 'cancelled'].includes(state.status) && item.dataset.stage === key;
+      item.classList.toggle('done', terminalOk || key === 'final' || (activeIndex >= 0 && index < activeIndex));
+      item.classList.toggle('active', item.dataset.stage === key && !terminalOk && (appState.status === 'running' || appState.status === 'staging' || appState.status === 'awaiting_source_review' || state.status === 'queued' || state.status === 'starting'));
+      item.classList.toggle('failed', failedHere && state.status === 'failed');
+      item.classList.toggle('cancelled', failedHere && state.status === 'cancelled');
       item.classList.toggle('indeterminate', item.classList.contains('active') && progress.indeterminate);
       if (item.classList.contains('done')) { pct.textContent = '100%'; fill.style.width = '100%'; }
       else if (item.classList.contains('active') && progress.fraction != null) {
@@ -1318,13 +1613,18 @@
         pct.textContent = progress.total ? `${progress.current}/${progress.total} · ${percent}%` : `${percent}%`;
         fill.style.width = `${percent}%`;
       } else if (item.classList.contains('active')) { pct.textContent = 'em andamento'; fill.style.width = '38%'; }
-      else { pct.textContent = '—'; fill.style.width = '0%'; }
+      else {
+        const metric = canonicalStageMetric(item.dataset.stage, state, progress);
+        pct.textContent = metric || '—';
+        fill.style.width = '0%';
+      }
+      item.dataset.state = item.classList.contains('done') ? 'completed' : item.classList.contains('active') ? 'active' : item.classList.contains('failed') ? 'failed' : item.classList.contains('cancelled') ? 'cancelled' : 'future';
     });
     if (key !== appState.activeStage) {
       appState.activeStage = key;
       sfxPop(runtimeKey);
     }
-    $('#balloonText').textContent = stageMessages[runtimeKey] || 'aguardando início';
+    renderPipelinePreview(state);
     $('#scanline')?.classList.toggle('run', appState.status === 'running' && ['ocr', 'classification', 'render'].includes(runtimeKey));
     const summary = $('#runSummary');
     if (appState.status === 'running') {

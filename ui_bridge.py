@@ -484,6 +484,29 @@ class UiBridge:
             return "O sistema preservou este texto por segurança."
         return "A tradução precisa de confirmação."
 
+    @staticmethod
+    def _quality_review_risk(item: dict[str, Any], page: dict[str, Any]) -> str:
+        reasons = " ".join(str(value).lower() for value in (item.get("quality_reasons") or []))
+        visual = item.get("visual_validation") or {}
+        if (
+            item.get("manual_review_required")
+            or item.get("preserved_original")
+            or item.get("translation_final_state") == "preserved_original"
+            or not visual.get("visual_validation_passed", True)
+            or "semantic" in reasons
+            or "source_language" in reasons
+            or "ocr" in reasons
+            or "truncated" in reasons
+        ):
+            return "HIGH"
+        try:
+            overflow = float(item.get("text_overflow_ratio") or 0.0)
+        except (TypeError, ValueError):
+            overflow = 0.0
+        if overflow >= 1.1 or item.get("classification") == "sfx" or "terminology" in reasons:
+            return "MEDIUM"
+        return "LOW"
+
     def _quality_report_data(self, job: dict[str, Any]) -> dict[str, Any] | None:
         report_path = Path(str(job.get("quality_report_path") or ""))
         output_dir = Path(str(job.get("output_dir") or "")).resolve()
@@ -557,6 +580,7 @@ class UiBridge:
                     "original": str(raw.get("text") or ""),
                     "translation": str(raw.get("translation") or raw.get("translation_candidate") or ""),
                     "reason": self._quality_review_reason(raw, page),
+                    "risk": self._quality_review_risk(raw, page),
                     "state": action,
                     "preserved_original": bool(raw.get("preserved_original")),
                     "page_url": f"/api/ui/quality-review/{job['id']}/page/{page_number}",
@@ -582,6 +606,65 @@ class UiBridge:
         self.history_revision += 1
         return self.quality_review(job_id) or payload
 
+    def quality_review_bulk_action(
+        self,
+        job_id: str,
+        item_keys: list[str],
+        action: str,
+        *,
+        risk_filter: str = "",
+        undo: bool = False,
+        restore_actions: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        if payload.get("confirmed"):
+            raise ValueError("quality_review_already_completed")
+        if action not in {"reviewed", "preserved_original", "pending"}:
+            raise ValueError("quality_review_action_invalid")
+        known = {str(item["key"]): item for item in payload["items"]}
+        requested = [str(key) for key in (item_keys or []) if str(key) in known]
+        if risk_filter:
+            risk = str(risk_filter).upper()
+            requested = [key for key in requested if str(known[key].get("risk") or "").upper() == risk]
+        if not requested:
+            raise ValueError("quality_review_bulk_empty")
+        previous = {key: str(known[key].get("state") or "pending") for key in requested}
+        updates = {key: action for key in requested}
+        if undo:
+            restore = restore_actions if isinstance(restore_actions, dict) else previous
+            updates = {key: str(restore.get(key, "pending")) for key in requested}
+        job = self.store.get_job(str(job_id or ""))
+        output_dir = Path(str(job.get("output_dir") or "")) if job else None
+        if output_dir:
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                checkpoint = {
+                    "job_id": str(job_id),
+                    "action": action,
+                    "risk_filter": str(risk_filter or ""),
+                    "item_keys": requested,
+                    "previous": previous,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                (output_dir / "review_bulk_checkpoint.json").write_text(
+                    json.dumps(checkpoint, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError:
+                raise ValueError("quality_review_checkpoint_failed") from None
+        self.store.record_review_actions_bulk(str(job_id), updates)
+        self.history_revision += 1
+        updated = self.quality_review(job_id) or payload
+        updated["bulk"] = {
+            "action": action,
+            "count": len(requested),
+            "risk_filter": str(risk_filter or ""),
+            "checkpoint": "review_bulk_checkpoint.json",
+        }
+        return updated
+
     def confirm_quality_review(self, job_id: str) -> dict[str, Any]:
         payload = self.quality_review(job_id)
         if not payload:
@@ -594,6 +677,94 @@ class UiBridge:
         self.store.confirm_review(job_id)
         self.history_revision += 1
         return self.quality_review(job_id) or payload
+
+    @staticmethod
+    def _looks_english(text: str) -> bool:
+        tokens = re.findall(r"[A-Za-z]{2,}", str(text or ""))
+        if not tokens:
+            return False
+        common = {
+            "the", "and", "you", "that", "this", "with", "for", "are", "was", "were",
+            "have", "has", "not", "what", "when", "where", "from", "your", "their",
+            "will", "just", "maybe", "should", "can", "cannot", "i", "am",
+        }
+        hits = sum(1 for token in tokens if token.lower() in common)
+        return hits >= 1 and hits / max(1, len(tokens)) >= 0.18
+
+    @staticmethod
+    def _looks_mixed_language(text: str) -> bool:
+        value = str(text or "")
+        has_pt = bool(re.search(r"[áàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ]|\b(não|você|para|com|que|uma|está|capítulo)\b", value, re.I))
+        return has_pt and UiBridge._looks_english(value)
+
+    def translation_global_review(self, job_id: str) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        job = self.store.get_job(str(job_id or ""))
+        output_dir = Path(str(job.get("output_dir") or "")) if job else None
+        items = payload.get("items") or []
+        suggestions: list[dict[str, Any]] = []
+        counts = {
+            "total_regions": len(items),
+            "kept": 0,
+            "rewritten": 0,
+            "preserved_original": 0,
+            "manual_review": 0,
+            "english_residual": 0,
+            "mixed_language": 0,
+            "sfx": 0,
+            "LOW": 0,
+            "MEDIUM": 0,
+            "HIGH": 0,
+        }
+        for item in items:
+            current = str(item.get("translation") or "")
+            original = str(item.get("original") or "")
+            risk = str(item.get("risk") or "LOW").upper()
+            counts[risk] = counts.get(risk, 0) + 1
+            english = self._looks_english(current)
+            mixed = self._looks_mixed_language(current)
+            if english:
+                counts["english_residual"] += 1
+            if mixed:
+                counts["mixed_language"] += 1
+            if str(item.get("classification") or "").lower() == "sfx":
+                counts["sfx"] += 1
+            action = "manual_review" if risk == "HIGH" or english or mixed else "keep"
+            counts["manual_review" if action == "manual_review" else "kept"] += 1
+            suggestions.append({
+                "id": str(item.get("key") or ""),
+                "page_id": str(item.get("page") or ""),
+                "region_id": str(item.get("key") or ""),
+                "balloon_id": str(item.get("key") or ""),
+                "source_text": original,
+                "current_translation": current,
+                "text_type": str(item.get("classification") or "unknown"),
+                "action": action,
+                "revised_translation": current,
+                "reason_code": "english_or_mixed_language" if english or mixed else f"risk_{risk.lower()}",
+                "confidence": 0.0 if action == "manual_review" else 0.7,
+                "risk": risk,
+                "terminology": [],
+            })
+        report = {
+            **counts,
+            "job_id": str(job_id),
+            "model": "offline-heuristic-preflight",
+            "requests": 0,
+            "duration_seconds": 0,
+            "glossary": {"terms": []},
+            "suggestions": suggestions,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "translation_global_review.json").write_text(
+                json.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        return report
 
     def quality_review_page(self, job_id: str, page_number: int) -> Path | None:
         job = self.store.get_job(str(job_id or ""))
