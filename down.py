@@ -1974,6 +1974,18 @@ def _download_candidates(
             _report_ignored(report, candidate, skip_reason)
             continue
 
+        existing_path = os.path.join(target_folder, f"{len(saved) + 1:03}.png")
+        existing_item = _existing_download_item(existing_path, candidate, url)
+        if existing_item:
+            content_hashes.add(existing_item["sha256"])
+            report["downloaded"].append(existing_item)
+            report["total_downloaded"] = len(report["downloaded"])
+            report["reused_existing_count"] = int(report.get("reused_existing_count") or 0) + 1
+            saved.append(existing_path)
+            if progress_callback:
+                progress_callback(len(saved), max_images or total, "Baixando imagens")
+            continue
+
         download_started = time.perf_counter()
         canvas_data = candidate.get("canvas_data")
         if isinstance(canvas_data, (bytes, bytearray)) and canvas_data:
@@ -2046,6 +2058,35 @@ def _download_candidates(
     report["download_gate"] = _build_download_gate(report)
     report["download_valid"] = bool(report["download_gate"].get("passed"))
     return saved
+
+
+def _existing_download_item(file_path, candidate, url):
+    """Return a report item for a valid sequential PNG already present on disk."""
+    if not os.path.isfile(file_path):
+        return None
+    try:
+        with Image.open(file_path) as image:
+            width, height = image.size
+            if image.format != "PNG":
+                return None
+            image.verify()
+        with open(file_path, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+    except Exception:
+        return None
+    return {
+        "candidate_id": str(candidate.get("candidate_id") or ""),
+        "url": _sanitized_url(url),
+        "path": file_path,
+        "transport_name": "existing_file",
+        "width": width,
+        "height": height,
+        "source": candidate.get("source"),
+        "order": candidate.get("order"),
+        "sha256": digest,
+        "is_chapter_candidate": bool(candidate.get("isChapterCandidate")),
+        "reused_existing": True,
+    }
 
 
 def _candidate_skip_reason(candidate):

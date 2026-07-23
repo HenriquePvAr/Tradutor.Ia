@@ -606,6 +606,59 @@ class DownloaderRegressionTests(unittest.TestCase):
         self.assertEqual(transport.calls[0][1], "https://reader.example.test/chapter/1")
         self.assertEqual(report["downloaded"][0]["transport_name"], "requests")
 
+    def test_existing_sequential_pngs_are_reused_before_fetching_missing_pages(self):
+        existing = Image.new("RGB", (800, 1200), "navy")
+        fresh = Image.new("RGB", (800, 900), "white")
+        fresh_buffer = io.BytesIO()
+        fresh.save(fresh_buffer, "PNG")
+
+        class RecordingTransport:
+            name = "requests"
+
+            def __init__(self):
+                self.calls = []
+
+            def fetch(self, url, *, referer=""):
+                self.calls.append((url, referer))
+                return SimpleNamespace(
+                    content=fresh_buffer.getvalue(),
+                    content_type="image/png",
+                    final_url=url,
+                    status=200,
+                )
+
+        transport = RecordingTransport()
+        candidates = [
+            {"candidate_id": f"page-{index:03}", "url": f"https://reader.example.test/{index:03}.png",
+             "source": "currentSrc", "order": index, "width": 800, "height": 1200,
+             "isChapterCandidate": True}
+            for index in range(1, 4)
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            existing.save(Path(folder) / "001.png", "PNG")
+            existing.save(Path(folder) / "002.png", "PNG")
+            report = {
+                "viewer_image_count": 3,
+                "ignored": [],
+                "downloaded": [],
+                "transport_metadata": {"configured": ["requests"], "count": 1},
+                "transport_name": "none",
+                "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                            "image_save_seconds": 0.0},
+            }
+            paths = _download_candidates(
+                None, candidates, None, 1, None, None, report,
+                "https://reader.example.test/chapter/1", folder, transports=[transport],
+            )
+
+        self.assertEqual(len(paths), 3)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(transport.calls[0][0], "https://reader.example.test/003.png")
+        self.assertEqual([item["transport_name"] for item in report["downloaded"]],
+                         ["existing_file", "existing_file", "requests"])
+        self.assertEqual(report["reused_existing_count"], 2)
+        self.assertTrue(report["downloaded"][0]["reused_existing"])
+
     def test_download_report_records_the_fallback_that_actually_saved_the_page(self):
         image = Image.new("RGB", (800, 1200), "navy")
         buffer = io.BytesIO()
