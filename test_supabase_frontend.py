@@ -41,7 +41,8 @@ class SupabaseFrontendTests(unittest.TestCase):
 
     def test_api_attaches_bearer_from_sdk_cache(self):
         source = _read("static/tradutor_ui.js")
-        self.assertIn("window.__tradutorAccessToken", source)
+        self.assertIn("getGlobal('__tradutorAccessToken')", source)
+        self.assertIn("setGlobal('__tradutorAccessToken'", source)
         self.assertIn("Authorization", source)
         self.assertIn("Bearer ${bearer}", source)
 
@@ -220,7 +221,8 @@ class SupabaseFrontendTests(unittest.TestCase):
 
     def test_community_helper_resolves_token_asynchronously(self):
         source = _read("static/tradutor_ui.js")
-        self.assertIn("await window.__tradutorGetCanonicalAccessToken()", source)
+        self.assertIn("const canonicalAccessToken = getGlobal('__tradutorGetCanonicalAccessToken')", source)
+        self.assertIn("await canonicalAccessToken()", source)
         self.assertNotIn("const bearer = window.__tradutorAccessToken || ''", source)
         for marker in (
             "community_request_started",

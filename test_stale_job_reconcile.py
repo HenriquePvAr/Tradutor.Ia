@@ -369,7 +369,8 @@ class FrontendTimerTests(unittest.TestCase):
 
     def test_single_polling_interval_with_cleanup(self):
         self.assertEqual(self.src.count("setInterval("), 1)
-        self.assertIn("clearInterval(pollingTimer)", self.src)
+        self.assertIn("clearInterval(getGlobal('__tradutorUiPollingTimer'))", self.src)
+        self.assertIn("setGlobal('__tradutorUiPollingTimer'", self.src)
 
     def test_elapsed_comes_from_the_server(self):
         self.assertIn("progress.elapsed_label", self.src)

@@ -789,9 +789,11 @@ class UiBridge:
         if pending:
             status = JobStatus.QUEUED
         blocked = pending and not worker
-        latest_job = self._latest_terminal_job()
-        latest_record = record or self._job_record(latest_job)
-        quality_review = self.quality_review(latest_job["id"]) if latest_job else None
+        latest_result_job = self._latest_terminal_job()
+        latest_operational_job = self._latest_operational_job()
+        latest_record = record or self._job_record(latest_operational_job or latest_result_job)
+        latest_result_record = self._job_record(latest_result_job)
+        quality_review = self.quality_review(latest_result_job["id"]) if latest_result_job else None
         return {
             "status": status if status in JobStatus.ALL else "ready",
             "pending": pending,
@@ -799,6 +801,7 @@ class UiBridge:
             "blocked_reason": "worker_offline" if blocked else "",
             "active": record,
             "latest": latest_record,
+            "latest_result": latest_result_record,
             "progress": {
                 "stage": _UI_STAGE_LABELS.get(stage, stage),
                 "stage_key": stage,
@@ -861,6 +864,18 @@ class UiBridge:
         return next((job for job in jobs
                      if self._is_translation_job(job) and self._is_presentable_result(job)), None)
 
+    def _latest_operational_job(self) -> dict[str, Any] | None:
+        """Most recent terminal translation attempt, even when it produced no artifact."""
+        jobs = self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=None)
+        return next((
+            job for job in jobs
+            if self._is_translation_job(job)
+            and (
+                str(job.get("status") or "") in {JobStatus.FAILED, JobStatus.CANCELLED}
+                or self._is_presentable_result(job)
+            )
+        ), None)
+
     def _tail_job_logs(self, active: dict[str, Any] | None, cursor: int) -> dict[str, Any]:
         if not active or not active.get("log_path"):
             return {"entries": [], "cursor": int(cursor or 0)}
@@ -880,11 +895,14 @@ class UiBridge:
         return {"entries": entries, "cursor": len(lines[-MAX_LOG_LINES:])}
 
     def settings(self) -> dict[str, Any]:
+        from down import driver_resolution_diagnostics
+
         values = _read_env_file()
         env = env_status()
         model = os.getenv("NVIDIA_TRANSLATION_MODEL") or values.get(
             "NVIDIA_TRANSLATION_MODEL", "nvidia/nemotron-3-super-120b-a12b"
         )
+        driver = driver_resolution_diagnostics()
         return {
             "env_exists": env["env_exists"],
             "nvidia_configured": env["nvidia_configured"],
@@ -912,6 +930,10 @@ class UiBridge:
             "nicegui_version": _package_version("nicegui"),
             "rapidocr_version": _package_version("rapidocr-onnxruntime"),
             "paddleocr_version": _package_version("paddleocr"),
+            "driver_download_allowed": driver["driver_download_allowed"],
+            "chromedriver_path_configured": driver["chromedriver_path_configured"],
+            "selenium_manager_available": driver["selenium_manager_available"],
+            "driver_resolution_source": driver["driver_resolution_source"],
             "port": int(os.getenv("TRADUTOR_UI_PORT", "8080")),
         }
 

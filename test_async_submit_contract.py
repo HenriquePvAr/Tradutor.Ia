@@ -159,5 +159,57 @@ class StageLabelTests(unittest.TestCase):
         self.assertEqual(_UI_STAGE_LABELS.get("nao_existe", "nao_existe"), "nao_existe")
 
 
+class RuntimeStateLatestJobTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.bridge = _Bridge(self.tmp / "jobs.sqlite3")
+
+    def tearDown(self):
+        self.bridge.store.close()
+
+    def _create_terminal(self, *, job_id, status, stage, reason_code="", output_dir="out"):
+        created = self.bridge.store.create_job(
+            job_id=job_id,
+            source_url=URL,
+            output_dir=str(self.tmp / output_dir),
+            command=["python", "run_webtoon.py"],
+            run_id=f"run-{job_id[:8]}",
+            configuration={"job_type": "translation", "chapter_name": "Chapter"},
+            initial_status=JobStatus.STAGING,
+        )
+        self.bridge.store.update_fields(
+            created,
+            status=status,
+            stage=stage,
+            reason_code=reason_code,
+            finished_at=1.0,
+        )
+        return created
+
+    def test_failed_source_analysis_is_the_runtime_latest_even_without_result_files(self):
+        finished = self._create_terminal(
+            job_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            status=JobStatus.FINISHED,
+            stage="download",
+            reason_code="completed",
+            output_dir="finished",
+        )
+        (self.tmp / "finished").mkdir()
+        failed = self._create_terminal(
+            job_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            status=JobStatus.FAILED,
+            stage="source_analysis",
+            reason_code="chromedriver_unavailable",
+            output_dir="failed",
+        )
+
+        state = self.bridge.runtime_state(0)
+
+        self.assertEqual(state["latest"]["id"], failed)
+        self.assertEqual(state["latest"]["status"], JobStatus.FAILED)
+        self.assertEqual(state["latest"]["reason_code"], "chromedriver_unavailable")
+        self.assertEqual(state["latest_result"]["id"], finished)
+
+
 if __name__ == "__main__":
     unittest.main()

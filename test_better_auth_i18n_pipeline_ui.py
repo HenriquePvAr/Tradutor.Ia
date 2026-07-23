@@ -299,7 +299,7 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertIn("visual_boot_stage", self.ui_js)
         self.assertIn("__tradutorVisualTestEnabled", read("app_ui.py"))
         self.assertIn("TRADUTOR_UI_VISUAL_TEST", read("app_ui.py"))
-        self.assertIn("window.__tradutorVisualTestEnabled === true", self.ui_js)
+        self.assertIn("getGlobal('__tradutorVisualTestEnabled') === true", self.ui_js)
         self.assertIn("['127.0.0.1', 'localhost', '::1']", self.ui_js)
         self.assertIn("dataset.visualBootTest = '1'", self.ui_js)
         self.assertIn("document.documentElement.dataset.visualBootTest = '1'", self.ui_js)

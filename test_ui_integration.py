@@ -688,7 +688,7 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn('class="cf-header"', source)
         self.assertIn("width:100%; border:0", css)
         self.assertNotIn("groups.size === 1", source)
-        self.assertLess(source.index("const statusLabels"), source.index("applyCanonicalAuthSurface(window.__tradutorAuthState"))
+        self.assertLess(source.index("const statusLabels"), source.index("applyCanonicalAuthSurface(getGlobal('__tradutorAuthState')"))
 
     def test_existing_publication_is_joined_to_history_by_run_and_sha(self):
         app_source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
@@ -703,9 +703,9 @@ class UiIntegrationTests(unittest.TestCase):
         for marker in (
             "syncCanonicalAuthFromBootstrap(data)",
             "bootstrapCommunityAuthenticated",
-            "window.__tradutorAuthState = 'authenticated'",
-            "window.__tradutorCommunityAuthenticated = true",
-            "window.__tradutorAuthStore = {status: 'authenticated'",
+            "setGlobal('__tradutorAuthState', 'authenticated')",
+            "setGlobal('__tradutorCommunityAuthenticated', true)",
+            "setGlobal('__tradutorAuthStore', {status: 'authenticated'",
             "canonical_auth_bootstrap_applied",
             "applyCanonicalAuthSurface(authState)",
         ):
@@ -718,10 +718,10 @@ class UiIntegrationTests(unittest.TestCase):
             :source.index("return currentCanonicalAuthState();")
         ]
         for marker in (
-            "window.__tradutorAuthState = 'unauthenticated'",
-            "window.__tradutorCommunityAuthenticated = false",
-            "window.__tradutorCommunityUserId = ''",
-            "window.__tradutorAuthStore = {status: 'unauthenticated'",
+            "setGlobal('__tradutorAuthState', 'unauthenticated')",
+            "setGlobal('__tradutorCommunityAuthenticated', false)",
+            "setGlobal('__tradutorCommunityUserId', '')",
+            "setGlobal('__tradutorAuthStore', {status: 'unauthenticated'",
         ):
             self.assertIn(marker, unauth_block, marker)
 

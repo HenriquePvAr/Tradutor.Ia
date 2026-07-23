@@ -9,6 +9,21 @@
     return node.innerHTML;
   };
   const escapeAttr = value => escapeHtml(value).replace(/"/g, '&quot;');
+  const safeGlobals = Object.create(null);
+  function getGlobal(name, fallback = undefined) {
+    try {
+      if (Object.prototype.hasOwnProperty.call(window, name)) return window[name];
+    } catch (_) { /* fall back to local namespace */ }
+    return Object.prototype.hasOwnProperty.call(safeGlobals, name) ? safeGlobals[name] : fallback;
+  }
+  function setGlobal(name, value) {
+    try {
+      window[name] = value;
+      if (window[name] === value) return value;
+    } catch (_) { /* non-extensible window; use local namespace */ }
+    safeGlobals[name] = value;
+    return value;
+  }
   const appState = {
     bootstrap: null,
     history: [],
@@ -55,12 +70,26 @@
     currentJobId: '',
     currentRunId: '',
     currentSourceUrl: '',
+    currentChapterName: '',
     currentStageVersion: 0,
     newTranslationDraft: false,
+    terminalStatusByIdentity: new Map(),
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
-  const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed']);
+  const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed', 'failed', 'cancelled']);
   const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
+  const MAX_VISIBLE_TOASTS = 3;
+  const TOAST_DISMISS_MS = 3200;
+  const TOAST_DEDUP_LIMIT = 80;
+  const TERMINAL_NOTIFICATION_STORAGE_KEY = 'tradutor.terminalNotifications.v1';
+  const toastRegistry = new Map();
+  const consumedTerminalNotifications = new Set();
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(TERMINAL_NOTIFICATION_STORAGE_KEY) || '[]');
+    if (Array.isArray(stored)) stored.slice(-TOAST_DEDUP_LIMIT).forEach(key => {
+      if (typeof key === 'string' && key) consumedTerminalNotifications.add(key);
+    });
+  } catch (_) { /* session storage is advisory only */ }
   const boolish = value => {
     if (value === true || value === false) return value;
     if (value === 1 || value === '1') return true;
@@ -72,18 +101,21 @@
     }
     return null;
   };
-  window.__tradutorUiTrace = Array.isArray(window.__tradutorUiTrace) ? window.__tradutorUiTrace : [];
+  setGlobal('__tradutorUiTrace', Array.isArray(getGlobal('__tradutorUiTrace')) ? getGlobal('__tradutorUiTrace') : []);
   function uiTrace(event, fields = {}) {
     const safe = {event: String(event || ''), at: Date.now()};
     for (const key of [
       'code', 'status', 'authenticated', 'valid', 'correlation_id', 'endpoint',
       'method', 'auth_transport', 'token_available', 'authorization_header_present',
       'authorization_scheme', 'reason_code', 'kind', 'request_id', 'publication_id',
+      'job_id', 'run_id', 'stage',
     ]) {
       if (fields[key] !== undefined) safe[key] = fields[key];
     }
-    window.__tradutorUiTrace.push(safe);
-    if (window.__tradutorUiTrace.length > 80) window.__tradutorUiTrace.shift();
+    const trace = getGlobal('__tradutorUiTrace', []);
+    trace.push(safe);
+    if (trace.length > 80) trace.shift();
+    setGlobal('__tradutorUiTrace', trace);
   }
   function correlationId() {
     try { return crypto.randomUUID(); } catch (_) { return `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
@@ -92,16 +124,16 @@
     return data?.community?.authenticated === true;
   }
   function currentCanonicalAuthState() {
-    if (String(window.__tradutorAuthState || '') === 'authenticated') return 'authenticated';
+    if (String(getGlobal('__tradutorAuthState') || '') === 'authenticated') return 'authenticated';
     if (bootstrapCommunityAuthenticated()) return 'authenticated';
-    return String(window.__tradutorAuthState || 'auth_loading');
+    return String(getGlobal('__tradutorAuthState') || 'auth_loading');
   }
   function isCanonicalCommunityAuthenticated() {
     if (bootstrapCommunityAuthenticated()) return true;
-    return String(window.__tradutorAuthState || '') === 'authenticated' && Boolean(
-      window.__tradutorCommunityAuthenticated ||
-      window.__tradutorAccessToken ||
-      window.__tradutorAuthStore?.authenticated,
+    return String(getGlobal('__tradutorAuthState') || '') === 'authenticated' && Boolean(
+      getGlobal('__tradutorCommunityAuthenticated') ||
+      getGlobal('__tradutorAccessToken') ||
+      getGlobal('__tradutorAuthStore')?.authenticated,
     );
   }
   function syncCanonicalAuthFromBootstrap(data) {
@@ -109,22 +141,22 @@
     const backendAuthenticated = community.authenticated === true;
     const backendUnauthenticated = community.authenticated === false;
     if (backendAuthenticated) {
-      const userId = String(community.user_id || data?.profile?.user_id || window.__tradutorCommunityUserId || '');
-      window.__tradutorAuthState = 'authenticated';
-      window.__tradutorCommunityAuthenticated = true;
-      if (userId) window.__tradutorCommunityUserId = userId;
-      window.__tradutorAuthStore = {status: 'authenticated', authenticated: true, user_id: userId};
+      const userId = String(community.user_id || data?.profile?.user_id || getGlobal('__tradutorCommunityUserId') || '');
+      setGlobal('__tradutorAuthState', 'authenticated');
+      setGlobal('__tradutorCommunityAuthenticated', true);
+      if (userId) setGlobal('__tradutorCommunityUserId', userId);
+      setGlobal('__tradutorAuthStore', {status: 'authenticated', authenticated: true, user_id: userId});
       if (document.body) document.body.dataset.authState = 'authenticated';
       document.documentElement.dataset.shellState = 'authenticated';
       uiTrace('canonical_auth_bootstrap_applied', {authenticated: true});
       return 'authenticated';
     }
-    const rawAuthState = String(window.__tradutorAuthState || '');
-    if (backendUnauthenticated && !window.__tradutorAccessToken && rawAuthState !== 'auth_loading') {
-      window.__tradutorAuthState = 'unauthenticated';
-      window.__tradutorCommunityAuthenticated = false;
-      window.__tradutorCommunityUserId = '';
-      window.__tradutorAuthStore = {status: 'unauthenticated', authenticated: false, user_id: ''};
+    const rawAuthState = String(getGlobal('__tradutorAuthState') || '');
+    if (backendUnauthenticated && !getGlobal('__tradutorAccessToken') && rawAuthState !== 'auth_loading') {
+      setGlobal('__tradutorAuthState', 'unauthenticated');
+      setGlobal('__tradutorCommunityAuthenticated', false);
+      setGlobal('__tradutorCommunityUserId', '');
+      setGlobal('__tradutorAuthStore', {status: 'unauthenticated', authenticated: false, user_id: ''});
       if (document.body) document.body.dataset.authState = 'unauthenticated';
       document.documentElement.dataset.shellState = 'unauthenticated';
       uiTrace('canonical_auth_bootstrap_applied', {authenticated: false});
@@ -147,16 +179,17 @@
     }
     // Supabase mode: attach the current access token (kept fresh by the SDK). The token
     // lives only in the auth module's cache; this never persists or logs it.
-    let bearer = window.__tradutorAccessToken || '';
-    if (!bearer && typeof window.__tradutorGetCanonicalAccessToken === 'function') {
-      try { bearer = await window.__tradutorGetCanonicalAccessToken(); } catch (_) { bearer = ''; }
-      if (bearer) window.__tradutorAccessToken = bearer;
+    let bearer = getGlobal('__tradutorAccessToken') || '';
+    const canonicalAccessToken = getGlobal('__tradutorGetCanonicalAccessToken');
+    if (!bearer && typeof canonicalAccessToken === 'function') {
+      try { bearer = await canonicalAccessToken(); } catch (_) { bearer = ''; }
+      if (bearer) setGlobal('__tradutorAccessToken', bearer);
     }
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
-    const authTransport = String(window.__tradutorAuthTransport || '');
+    const authTransport = String(getGlobal('__tradutorAuthTransport') || '');
     uiTrace('community_request_started', {
       endpoint: String(path || '').split('?')[0], method,
-      authenticated: window.__tradutorAuthState === 'authenticated',
+      authenticated: getGlobal('__tradutorAuthState') === 'authenticated',
       auth_transport: authTransport, token_available: Boolean(bearer),
       authorization_header_present: Boolean(headers.Authorization),
       authorization_scheme: headers.Authorization ? 'Bearer' : '',
@@ -198,7 +231,7 @@
       uiTrace('community_request_failed', {
         endpoint: String(path || '').split('?')[0], method, status: response.status,
         reason_code: error.code || (typeof detail === 'string' ? detail : ''),
-        authenticated: window.__tradutorAuthState === 'authenticated',
+        authenticated: getGlobal('__tradutorAuthState') === 'authenticated',
         auth_transport: authTransport, token_available: Boolean(bearer),
         authorization_header_present: Boolean(headers.Authorization),
         authorization_scheme: headers.Authorization ? 'Bearer' : '',
@@ -207,7 +240,7 @@
     }
     uiTrace('community_request_response', {
       endpoint: String(path || '').split('?')[0], method, status: response.status,
-      authenticated: window.__tradutorAuthState === 'authenticated',
+      authenticated: getGlobal('__tradutorAuthState') === 'authenticated',
       auth_transport: authTransport, token_available: Boolean(bearer),
       authorization_header_present: Boolean(headers.Authorization),
       authorization_scheme: headers.Authorization ? 'Bearer' : '',
@@ -225,7 +258,7 @@
     const raw = String(params.get('visual_boot_stage') || '').trim().toLowerCase();
     if (!raw) return null;
     const local = ['127.0.0.1', 'localhost', '::1'].includes(window.location.hostname);
-    const enabled = window.__tradutorVisualTestEnabled === true;
+    const enabled = getGlobal('__tradutorVisualTestEnabled') === true;
     if (!local || !enabled) return null;
     const stageMap = {init: 1, local: 2, auth: 3, session: 4, profile: 5, settings: 6, community: 7, ready: 8};
     if (raw === 'error' || raw === 'disk_full' || raw === 'retry') {
@@ -493,8 +526,7 @@
     const rect = tab.getBoundingClientRect();
     burstAt(rect.right, rect.top + rect.height / 2, 10);
     if (name === 'nova' && !inFlightStatuses.has(appState.status)) {
-      appState.newTranslationDraft = true;
-      clearNewTranslationDraftPanels();
+      appState.newTranslationDraft = false;
     }
     if (name === 'hist') renderHistory();
     if (name === 'inicio') renderDashboard();
@@ -508,7 +540,7 @@
   /* ---------- visual feedback ---------- */
   const reasonMessages = {
     source_not_ready: 'Não foi possível abrir o navegador necessário para analisar a fonte.',
-    chromedriver_unavailable: 'ChromeDriver indisponível. Configure o driver local ou habilite a resolução oficial para este teste.',
+    chromedriver_unavailable: 'O navegador necessário para analisar esta fonte não está disponível.',
     disk_full: 'Disco cheio ao gravar as páginas baixadas. Libere espaço e tente novamente.',
     authentication_required: 'Essa fonte exige autenticação.',
     challenge_required: 'A fonte exige uma verificação interativa.',
@@ -538,7 +570,7 @@
     source_lazy_resolution: 'carregando páginas do leitor',
     source_selection: 'preparando a ordem das páginas',
     preparing: 'preparando processamento', quality_gate: 'validando resultado',
-    source_validation: 'validando a fonte', source_analysis: 'localizando páginas', browser_loading: 'abrindo o leitor', collecting_candidates: 'coletando páginas', clustering_candidates: 'validando páginas', awaiting_source_review: 'aguardando revisão das páginas', downloading_pages: 'baixando páginas', validating_pages: 'validando páginas', download: 'baixando páginas', validation: 'detectando balões',
+    validating_source: 'validando a fonte', source_validation: 'validando a fonte', source_analysis: 'localizando páginas', browser_loading: 'abrindo o leitor', collecting_candidates: 'coletando páginas', clustering_candidates: 'validando páginas', awaiting_source_review: 'aguardando revisão das páginas', downloading_pages: 'baixando páginas', validating_pages: 'validando páginas', download: 'baixando páginas', validation: 'detectando balões',
     ocr: 'lendo texto', classification: 'organizando regiões', translate: 'traduzindo',
     render: 'redesenhando balões', pdf: 'gerando PDF', reports: 'finalizando', final: 'concluído',
   };
@@ -568,8 +600,70 @@
     stack.appendChild(toast);
     window.setTimeout(() => { toast.classList.add('leaving'); window.setTimeout(() => toast.remove(), 280); }, 3200);
   }
+  function rememberBounded(set, key, limit = TOAST_DEDUP_LIMIT) {
+    if (!key) return;
+    if (set.has(key)) set.delete(key);
+    set.add(key);
+    while (set.size > limit) set.delete(set.values().next().value);
+  }
+  function persistConsumedTerminalNotifications() {
+    try {
+      sessionStorage.setItem(
+        TERMINAL_NOTIFICATION_STORAGE_KEY,
+        JSON.stringify(Array.from(consumedTerminalNotifications).slice(-TOAST_DEDUP_LIMIT)),
+      );
+    } catch (_) { /* best effort only */ }
+  }
+  function removeToastByKey(key) {
+    const existing = toastRegistry.get(key);
+    if (!existing) return;
+    window.clearTimeout(existing.timeout);
+    window.clearTimeout(existing.removeTimeout);
+    existing.node.remove();
+    toastRegistry.delete(key);
+  }
+  function scheduleToastRemoval(key, toast) {
+    const timeout = window.setTimeout(() => {
+      toast.classList.add('leaving');
+      const removeTimeout = window.setTimeout(() => {
+        toast.remove();
+        toastRegistry.delete(key);
+      }, 280);
+      const entry = toastRegistry.get(key);
+      if (entry) entry.removeTimeout = removeTimeout;
+    }, TOAST_DISMISS_MS);
+    return timeout;
+  }
+  showToast = function deduplicatedToast(message, type = 'ok', options = {}) {
+    if (type && typeof type === 'object') {
+      options = type;
+      type = options.type || 'ok';
+    }
+    const stack = $('#toastStack');
+    if (!stack) return null;
+    const key = String(options.key || `${type}:${message}`);
+    const icon = type === 'error' ? '!' : type === 'warn' ? '△' : '✓';
+    const existing = toastRegistry.get(key);
+    if (existing?.node?.isConnected) {
+      existing.node.className = `toast ${type}`;
+      existing.node.innerHTML = `<span class="t-icon">${icon}</span><span>${escapeHtml(message)}</span>`;
+      window.clearTimeout(existing.timeout);
+      window.clearTimeout(existing.removeTimeout);
+      existing.timeout = scheduleToastRemoval(key, existing.node);
+      uiTrace('TERMINAL_NOTIFICATION_DEDUPED', {kind: options.kind || 'toast'});
+      return existing.node;
+    }
+    while (toastRegistry.size >= MAX_VISIBLE_TOASTS) removeToastByKey(toastRegistry.keys().next().value);
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.dataset.toastKey = key;
+    toast.innerHTML = `<span class="t-icon">${icon}</span><span>${escapeHtml(message)}</span>`;
+    stack.appendChild(toast);
+    toastRegistry.set(key, {node: toast, timeout: scheduleToastRemoval(key, toast), removeTimeout: 0});
+    return toast;
+  };
   // Bridge so ES modules (e.g. the social community UI) reuse the same toast component.
-  window.__tradutorToast = (message, kind) => showToast(message, kind === 'err' ? 'error' : kind || 'ok');
+  setGlobal('__tradutorToast', (message, kind) => showToast(message, kind === 'err' ? 'error' : kind || 'ok'));
   function humanCommunityError(errorValue, fallback = 'Não foi possível concluir a ação.') {
     const code = String(errorValue?.code || errorValue?.message || '').trim();
     const status = Number(errorValue?.status || 0);
@@ -776,15 +870,81 @@
     appState.currentJobId = '';
     appState.currentRunId = '';
     appState.currentSourceUrl = String(sourceUrl || '');
+    appState.currentChapterName = $('#nameInput')?.value?.trim() || '';
     appState.currentStageVersion += 1;
     appState.newTranslationDraft = false;
     resetRunPreview();
     $('#balloonText') && ($('#balloonText').textContent = window.TradutorI18n?.t('pipeline.validating_source') || 'Validando fonte');
+    persistPipelineIdentity('validating_source');
     uiTrace('pipeline_request_created', {request_id: appState.currentRequestId});
+  }
+
+  function persistPipelineIdentity(stage = '') {
+    setGlobal('__tradutorCurrentRequestId', appState.currentRequestId);
+    setGlobal('__tradutorCurrentJobId', appState.currentJobId);
+    setGlobal('__tradutorCurrentRunId', appState.currentRunId);
+    setGlobal('__tradutorCurrentStage', stage || appState.activeStage || '');
+    try {
+      sessionStorage.setItem('tradutor:activePipeline', JSON.stringify({
+        request_id: appState.currentRequestId,
+        job_id: appState.currentJobId,
+        run_id: appState.currentRunId,
+        source_url: appState.currentSourceUrl,
+        chapter_name: appState.currentChapterName,
+        stage: stage || appState.activeStage || '',
+        updated_at: Date.now(),
+      }));
+    } catch (_) { /* session storage is a convenience only */ }
+  }
+
+  function pipelineRecord(status = 'staging', stage = 'source_validation', extra = {}) {
+    return {
+      id: appState.currentJobId,
+      job_id: appState.currentJobId,
+      run_id: appState.currentRunId,
+      status,
+      stage,
+      reason_code: extra.reason_code || '',
+      chapter_name: appState.currentChapterName || $('#nameInput')?.value?.trim() || 'Capítulo atual',
+      slug: $('#outputInput')?.value || '',
+      url: appState.currentSourceUrl,
+      error_message: extra.message || '',
+    };
+  }
+
+  function renderLocalPipelineState(stage, {status = 'staging', message = '', reason_code = ''} = {}) {
+    appState.status = status;
+    appState.activeStage = '';
+    persistPipelineIdentity(stage);
+    const record = pipelineRecord(status, stage, {reason_code, message});
+    const runtime = {
+      status,
+      active: terminalRunStatuses.has(status) ? null : record,
+      latest: terminalRunStatuses.has(status) ? record : null,
+      progress: {
+        stage_key: stage,
+        stage: stageMessages[stage] || stage,
+        current: 0,
+        total: 0,
+        fraction: null,
+        indeterminate: !terminalRunStatuses.has(status),
+        last_message: message,
+        updated_at: Date.now() / 1000,
+      },
+    };
+    renderProgress(runtime.progress);
+    renderRunStatus(runtime);
+    const identity = terminalIdentity(record);
+    if (identity) appState.terminalStatusByIdentity.set(identity, String(status || '').toLowerCase());
   }
 
   function showStartError(error) {
     const box = $('#startError');
+    renderLocalPipelineState('source_analysis', {
+      status: 'failed',
+      reason_code: error.code || '',
+      message: error.message || '',
+    });
     if (!box) { showToast(error.message, 'error'); return; }
     const parts = [`<strong>Não foi possível iniciar</strong>`];
     if (error.stage) parts.push(`Etapa: ${escapeHtml(error.stage)}`);
@@ -811,9 +971,10 @@
     $('#startError') && ($('#startError').hidden = true);
     const payload = formPayload();
     resetActivePipelineIdentity(payload.url || payload.local_folder || '');
-    // The submit only enqueues now, so the response arrives with a job to poll. Controls
-    // are flipped after it, not before, and the screen shows whatever stage the worker
-    // actually reports rather than guessing at "analisando fonte".
+    renderLocalPipelineState('validating_source', {
+      status: 'staging',
+      message: 'Validando fonte',
+    });
 
     try {
       const result = await api('/api/ui/run', {method: 'POST', body: JSON.stringify(payload)});
@@ -828,8 +989,18 @@
       resetRunPreview();                            // never carry the previous job's card over
       appState.currentJobId = String(result.job_id || '');
       appState.currentRunId = String(result.run_id || '');
-      uiTrace('pipeline_job_created', {request_id: appState.currentRequestId});
+      persistPipelineIdentity(result.stage || 'queued');
+      uiTrace('pipeline_job_created', {
+        request_id: appState.currentRequestId,
+        job_id: appState.currentJobId,
+        run_id: appState.currentRunId,
+        stage: result.stage || 'queued',
+      });
       const awaitingReview = Boolean(result.awaiting_source_review);
+      renderLocalPipelineState(awaitingReview ? 'awaiting_source_review' : (result.stage || 'queued'), {
+        status: awaitingReview ? 'awaiting_source_review' : (result.status || 'queued'),
+        message: awaitingReview ? 'Aguardando revisão das páginas' : 'Na fila',
+      });
       setRunControls(true, awaitingReview);
       if (awaitingReview) {
         renderSourceReview({
@@ -902,23 +1073,126 @@
 
   /* ---------- real pipeline presentation ---------- */
   const stageOrder = ['source_analysis', 'awaiting_source_review', 'download', 'validation', 'ocr', 'translate', 'render', 'pdf'];
-  const visualStageKey = key => ({source_validation: 'source_analysis', browser_loading: 'source_analysis', collecting_candidates: 'source_analysis', clustering_candidates: 'source_analysis', downloading_pages: 'download', validating_pages: 'download', classification: 'ocr', reports: 'pdf'}[key] || key);
+  const visualStageKey = key => ({validating_source: 'source_analysis', source_validation: 'source_analysis', browser_loading: 'source_analysis', collecting_candidates: 'source_analysis', clustering_candidates: 'source_analysis', downloading_pages: 'download', validating_pages: 'download', classification: 'ocr', reports: 'pdf'}[key] || key);
+  function terminalIdentity(record) {
+    const jobId = String(record?.id || record?.job_id || '');
+    const runId = String(record?.run_id || '');
+    return jobId || runId ? `${jobId}:${runId}` : '';
+  }
+  function terminalNotificationKey(record) {
+    const identity = terminalIdentity(record);
+    if (!identity) return '';
+    const status = String(record?.status || '').toLowerCase();
+    const stage = String(record?.stage || '');
+    return `${identity}:${status}:${stage}`;
+  }
+  function terminalNotificationMessage(record) {
+    const status = String(record?.status || '').toLowerCase();
+    if (status === 'review_required') {
+      return {message: 'PDF gerado, mas requer revisão de qualidade.', type: 'warn'};
+    }
+    if (['finished', 'review_completed'].includes(status) && (record?.pdf_path || record?.quality_report_path || record?.output_folder)) {
+      return {message: 'PDF finalizado e registrado no histórico.', type: 'ok'};
+    }
+    return null;
+  }
+  function releaseStaleInterfaceBusy() {
+    if (document.body) {
+      document.body.removeAttribute('aria-busy');
+      document.body.inert = false;
+    }
+    $$('.modal-overlay:not(.show)').forEach(overlay => {
+      overlay.setAttribute('aria-hidden', 'true');
+    });
+    const startButton = $('#startBtn');
+    if (startButton && !inFlightStatuses.has(appState.status)) {
+      startButton.dataset.busy = '0';
+      startButton.disabled = false;
+    }
+    const boot = $('#boot');
+    if (boot && !document.documentElement.dataset.visualBootTest) boot.classList.add('hide');
+  }
+  function rememberRuntimeTerminalState(runtime) {
+    const record = runtime.active || runtime.source_review || runtime.latest || null;
+    const identity = terminalIdentity(record);
+    if (!identity) return;
+    const status = String(record?.status || runtime.status || '').toLowerCase();
+    appState.terminalStatusByIdentity.set(identity, status);
+    if (terminalRunStatuses.has(status)) {
+      const key = terminalNotificationKey(record);
+      rememberBounded(consumedTerminalNotifications, key);
+      persistConsumedTerminalNotifications();
+    }
+  }
+  function handleTerminalRuntimeTransition(runtime) {
+    const record = runtime.active || runtime.source_review || runtime.latest || null;
+    const identity = terminalIdentity(record);
+    if (!identity) return;
+    const status = String(record?.status || runtime.status || '').toLowerCase();
+    const previous = appState.terminalStatusByIdentity.get(identity) || '';
+    appState.terminalStatusByIdentity.set(identity, status);
+    if (!terminalRunStatuses.has(status)) return;
+    releaseStaleInterfaceBusy();
+    const key = terminalNotificationKey(record);
+    const notification = terminalNotificationMessage(record);
+    if (!previous || terminalRunStatuses.has(previous) || !notification) {
+      rememberBounded(consumedTerminalNotifications, key);
+      persistConsumedTerminalNotifications();
+      uiTrace('TERMINAL_NOTIFICATION_DEDUPED', {job_id: record?.id || '', run_id: record?.run_id || '', stage: record?.stage || '', status});
+      return;
+    }
+    uiTrace('TERMINAL_EVENT_RECEIVED', {job_id: record?.id || '', run_id: record?.run_id || '', stage: record?.stage || '', status});
+    if (consumedTerminalNotifications.has(key)) {
+      uiTrace('TERMINAL_NOTIFICATION_DEDUPED', {job_id: record?.id || '', run_id: record?.run_id || '', stage: record?.stage || '', status});
+      return;
+    }
+    rememberBounded(consumedTerminalNotifications, key);
+    persistConsumedTerminalNotifications();
+    flashFrame();
+    showToast(notification.message, notification.type, {key, kind: 'terminal'});
+    uiTrace('TERMINAL_NOTIFICATION_EMITTED', {job_id: record?.id || '', run_id: record?.run_id || '', stage: record?.stage || '', status});
+  }
   function renderRuntime(runtime) {
     appState.status = runtime.status || 'ready';
     appState.queue = runtime.queue || [];
     const awaitingReview = appState.status === 'awaiting_source_review';
     const running = inFlightStatuses.has(appState.status);
     const analyzing = appState.status === 'staging';
+    const visibleProgress = {...(runtime.progress || {})};
+    const terminalLatest = runtime.latest || null;
+    let presentationStatus = appState.status;
+    if (!runtime.active && !runtime.source_review && terminalLatest
+        && ['failed', 'cancelled'].includes(String(terminalLatest.status || '').toLowerCase())) {
+      presentationStatus = String(terminalLatest.status || appState.status);
+      visibleProgress.stage_key = terminalLatest.stage || visibleProgress.stage_key || 'source_analysis';
+      visibleProgress.stage = stageMessages[visibleProgress.stage_key] || visibleProgress.stage || visibleProgress.stage_key;
+    }
     appState.activeJobId = runtime.active?.id || runtime.source_review?.id || '';
     appState.latestJobId = runtime.latest?.id || '';
+    const incoming = runtime.active || runtime.source_review || runtime.latest || null;
+    const incomingJobId = String(incoming?.id || incoming?.job_id || '');
+    const incomingRunId = String(incoming?.run_id || '');
+    if (incomingJobId && (!appState.currentJobId || incomingJobId === appState.currentJobId)) {
+      if (!appState.currentJobId) appState.currentJobId = incomingJobId;
+      if (!appState.currentRunId && incomingRunId) {
+        appState.currentRunId = incomingRunId;
+        uiTrace('PIPELINE_RUN_ADOPTED', {
+          request_id: appState.currentRequestId,
+          job_id: incomingJobId,
+          run_id: incomingRunId,
+          stage: visibleProgress.stage_key || incoming.stage || '',
+        });
+      }
+      persistPipelineIdentity(visibleProgress.stage_key || incoming.stage || appState.status);
+    }
     setRunControls(running || analyzing, awaitingReview);
     const status = $('#appStatus');
     status.textContent = runStatusLabels[appState.status] || appState.status;
     status.dataset.state = appState.status;
-    renderProgress(runtime.progress || {});
+    renderProgress(visibleProgress);
     const draftOnly = appState.newTranslationDraft && !runtime.active && !runtime.source_review;
     if (draftOnly) clearNewTranslationDraftPanels();
-    else renderRunStatus(runtime);
+    else renderRunStatus({...runtime, status: presentationStatus, progress: visibleProgress});
     renderQueue();
     appendLogs(runtime.logs || []);
     if (awaitingReview && runtime.source_review && shouldRenderSourceReview(runtime.source_review)) {
@@ -927,20 +1201,23 @@
     else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
     if (!draftOnly && runtime.quality_review) renderQualityReview(runtime.quality_review);
     else if ($('#qualityReviewPanel')) $('#qualityReviewPanel').hidden = true;
-    if (runtime.latest && !awaitingReview && !draftOnly) {
-      const latestId = String(runtime.latest.id || runtime.latest.job_id || '');
-      if (!appState.currentJobId || latestId === appState.currentJobId || terminalRunStatuses.has(appState.status)) {
-        renderResult(runtime.latest);
+    const resultRecord = runtime.latest_result || runtime.latest;
+    if (resultRecord && !awaitingReview && !draftOnly) {
+      const latestId = String(resultRecord.id || resultRecord.job_id || '');
+      const operationLatest = runtime.latest || null;
+      const operationLatestId = String(operationLatest?.id || operationLatest?.job_id || '');
+      const operationFailedWithoutResult = operationLatestId && operationLatestId !== latestId
+        && ['failed', 'cancelled'].includes(String(operationLatest?.status || '').toLowerCase());
+      if (operationFailedWithoutResult) {
+        $('#artifactActions') && ($('#artifactActions').innerHTML = '');
+        $('#runSummary') && ($('#runSummary').hidden = true);
+      } else if (!appState.currentJobId || latestId === appState.currentJobId || terminalRunStatuses.has(presentationStatus)) {
+        renderResult(resultRecord);
       } else {
         uiTrace('old_pipeline_event_discarded', {request_id: appState.currentRequestId});
       }
     }
     if (runtime.history_revision !== appState.historyRevision) refreshBootstrap();
-    if (terminalRunStatuses.has(appState.status) && runtime.latest?.id && runtime.latest.id !== appState.lastFinishedId) {
-      appState.lastFinishedId = runtime.latest.id;
-      flashFrame();
-      showToast(appState.status === 'review_required' ? 'PDF gerado, mas requer revisão de qualidade.' : 'PDF finalizado e registrado no histórico.', appState.status === 'review_required' ? 'warn' : 'ok');
-    }
   }
   function renderRunStatus(runtime) {
     const card = $('#runStatusCard');
@@ -951,10 +1228,20 @@
     const progress = runtime.progress || {};
     card.hidden = !active && !record;
     if (card.hidden) return;
+    const recordJobId = String(record?.id || record?.job_id || '');
+    const recordRunId = String(record?.run_id || '');
+    if (recordJobId && (!appState.currentJobId || appState.currentJobId === recordJobId)) {
+      if (!appState.currentJobId) appState.currentJobId = recordJobId;
+      if (!appState.currentRunId && recordRunId) appState.currentRunId = recordRunId;
+      persistPipelineIdentity(progress.stage_key || record.stage || status);
+    }
+    card.dataset.currentJobId = appState.currentJobId || recordJobId;
+    card.dataset.currentRunId = appState.currentRunId || recordRunId;
+    card.dataset.currentStage = progress.stage_key || record.stage || status;
     const failed = status === 'failed';
-    $('#runStatusHuman').textContent = failed ? 'Ocorreu um problema' : (stageMessages[progress.stage_key] || runStatusLabels[status] || 'Processamento');
+    $('#runStatusHuman').textContent = failed ? 'Não foi possível iniciar o processamento' : (stageMessages[progress.stage_key] || runStatusLabels[status] || 'Processamento');
     const count = progress.total ? `${progress.current || 0} de ${progress.total}` : 'progresso sendo calculado';
-    $('#runProgressHuman').textContent = active ? count : (status === 'finished' ? 'PDF pronto' : status === 'review_required' ? 'Alguns itens precisam de revisao' : failed ? (reasonText(record?.reason_code) || 'O processamento nao foi concluido.') : runStatusLabels[status] || '');
+    $('#runProgressHuman').textContent = active ? count : (status === 'finished' ? 'PDF pronto' : status === 'review_required' ? 'Alguns itens precisam de revisao' : failed ? (reasonText(record?.reason_code) || record?.error_message || 'O processamento nao foi concluido.') : runStatusLabels[status] || '');
     $('#runEtaHuman').textContent = active ? (progress.eta_label || 'Tempo variavel nesta etapa') : '';
     const updated = progress.updated_at ? new Date(Number(progress.updated_at) * 1000) : null;
     $('#runUpdatedHuman').textContent = updated && !Number.isNaN(updated.getTime()) ? `Atualizado ha ${Math.max(0, Math.floor((Date.now() - updated.getTime()) / 1000))}s` : '';
@@ -1023,7 +1310,7 @@
       const pct = $('.stage-pct', item);
       const fill = $('.stage-fill', item);
       item.classList.toggle('done', key === 'final' || (activeIndex >= 0 && index < activeIndex));
-      item.classList.toggle('active', item.dataset.stage === key && (appState.status === 'running' || appState.status === 'staging' || appState.status === 'awaiting_source_review'));
+      item.classList.toggle('active', item.dataset.stage === key && (appState.status === 'running' || appState.status === 'staging' || appState.status === 'awaiting_source_review' || appState.status === 'failed' || appState.status === 'cancelled'));
       item.classList.toggle('indeterminate', item.classList.contains('active') && progress.indeterminate);
       if (item.classList.contains('done')) { pct.textContent = '100%'; fill.style.width = '100%'; }
       else if (item.classList.contains('active') && progress.fraction != null) {
@@ -1386,7 +1673,7 @@
   }
   $('#histSearch')?.addEventListener('input', renderHistory);
   window.addEventListener('tradutor-auth-changed', event => {
-    const state = String(event?.detail?.state || window.__tradutorAuthState || '');
+    const state = String(event?.detail?.state || getGlobal('__tradutorAuthState') || '');
     if (state !== 'authenticated') clearCommunityObjectUrls();
     applyCanonicalAuthSurface(state);
     renderHistory();
@@ -1394,7 +1681,7 @@
     // authoritative local records once authentication settles.
     void refreshBootstrap();
   });
-  applyCanonicalAuthSurface(window.__tradutorAuthState || 'auth_loading');
+  applyCanonicalAuthSurface(getGlobal('__tradutorAuthState') || 'auth_loading');
   $('#histList')?.addEventListener('click', async event => {
     const folder = event.target.closest('.cf-header');
     if (folder) {
@@ -1981,7 +2268,7 @@
     }
   }
   function renderCommunityComment(comment) {
-    const mine = String(comment.user_id || '') === String(window.__tradutorCommunityUserId || '');
+    const mine = String(comment.user_id || '') === String(getGlobal('__tradutorCommunityUserId') || '');
     const body = comment.is_deleted ? 'Comentário removido.' : (comment.body || '');
     return `<div class="community-comment" data-comment-id="${escapeAttr(comment.comment_id || '')}"><strong>${escapeHtml(comment.author?.display_name || (mine ? 'Você' : 'Usuário'))}</strong><span>${escapeHtml(body)}</span>${mine && !comment.is_deleted ? `<button type="button" class="btn-ghost danger" data-comment-delete-id="${escapeAttr(comment.comment_id || '')}">Excluir</button>` : ''}</div>`;
   }
@@ -2302,9 +2589,9 @@
     } catch (_) {
       /* stale logout may already be complete */
     }
-    window.__tradutorAccessToken = '';
-    window.__tradutorAuthState = 'unauthenticated';
-    window.__tradutorCommunityAuthenticated = false;
+    setGlobal('__tradutorAccessToken', '');
+    setGlobal('__tradutorAuthState', 'unauthenticated');
+    setGlobal('__tradutorCommunityAuthenticated', false);
     window.dispatchEvent(new CustomEvent('tradutor-auth-changed', {
       detail: {authenticated: false, state: 'unauthenticated'},
     }));
@@ -2331,9 +2618,9 @@
 
   /* ---------- local profile ---------- */
   function applyProfileToForm(profile) {
-    window.__tradutorDisplayName = String(profile.display_name || '').trim();
+    setGlobal('__tradutorDisplayName', String(profile.display_name || '').trim());
     if (currentCanonicalAuthState() === 'authenticated' && $('#authStatus')) {
-      $('#authStatus').textContent = window.__tradutorDisplayName || 'Usuário';
+      $('#authStatus').textContent = getGlobal('__tradutorDisplayName') || 'Usuário';
     }
     $('#profileName').value = profile.display_name || '';
     $('#profileTitle').value = profile.title || '';
@@ -2418,7 +2705,7 @@
     delete element.dataset.objectUrl;
   }
   function renderProfile(profile = profileFromForm()) {
-    const authenticated = String(window.__tradutorAuthState || '') === 'authenticated';
+    const authenticated = String(getGlobal('__tradutorAuthState') || '') === 'authenticated';
     const name = authenticated ? (profile.display_name || 'você') : 'Visitante';
     const avatar = name.slice(0, 1).toUpperCase();
     const avatarData = profile.avatar_mode === 'image' ? profile.avatar_media_url : '';
@@ -2620,7 +2907,7 @@
       const authenticated = authState === 'authenticated';
       appState.profile = authenticated ? (data.profile || {}) : {};
       setBootStage(4);
-      window.__tradutorDisplayName = authenticated ? String(appState.profile.display_name || '').trim() : '';
+      setGlobal('__tradutorDisplayName', authenticated ? String(appState.profile.display_name || '').trim() : '');
       appState.settings = data.settings || {};
       setBootStage(5);
       appState.historyRevision = data.history_revision || appState.historyRevision;
@@ -2634,6 +2921,7 @@
       renderDashboard();
       setBootStage(6);
       renderRuntime(data);
+      rememberRuntimeTerminalState(data);
       setBootStage(7);
       window.clearTimeout(bootTimer);
       window.setTimeout(closeBoot, 250);
@@ -2649,15 +2937,29 @@
     try {
       const data = await api(`/api/ui/state?cursor=${appState.cursor}`);
       renderRuntime(data);
+      handleTerminalRuntimeTransition(data);
       appState.cursor = Math.max(appState.cursor, Number(data.log_cursor || 0));
+      document.documentElement.dataset.uiPollCount = String(Number(document.documentElement.dataset.uiPollCount || 0) + 1);
+      uiTrace('EVENT_CURSOR_ADVANCED', {status: appState.status});
     } catch (error) {
       $('#appStatus').textContent = 'sem conexão';
       $('#appStatus').dataset.state = 'error';
     } finally { appState.polling = false; }
   }
   refreshBootstrap();
-  const pollingTimer = window.setInterval(pollState, 850);
-  window.addEventListener('beforeunload', () => { window.clearInterval(pollingTimer); cancelAnimationFrame(animationFrame); });
+  if (getGlobal('__tradutorUiPollingTimer')) {
+    window.clearInterval(getGlobal('__tradutorUiPollingTimer'));
+    uiTrace('POLLING_DUPLICATE_BLOCKED', {status: appState.status});
+  }
+  setGlobal('__tradutorUiPollingTimer', window.setInterval(pollState, 850));
+  document.documentElement.dataset.tradutorUiReady = '1';
+  uiTrace('POLLING_STARTED', {status: appState.status});
+  window.addEventListener('beforeunload', () => {
+    window.clearInterval(getGlobal('__tradutorUiPollingTimer'));
+    setGlobal('__tradutorUiPollingTimer', 0);
+    uiTrace('POLLING_STOPPED', {status: appState.status});
+    cancelAnimationFrame(animationFrame);
+  }, {once: true});
   window.addEventListener('unhandledrejection', event => {
     const reason = event.reason || {};
     showToast(reason.message || 'Uma operação não foi concluída.', 'error');

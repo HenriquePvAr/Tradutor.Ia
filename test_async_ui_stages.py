@@ -40,19 +40,25 @@ class StageLabelTests(unittest.TestCase):
 
 
 class SubmitFlowTests(unittest.TestCase):
-    def test_controls_flip_only_after_the_response(self):
+    def test_pipeline_panel_is_rendered_before_the_submit_response(self):
         body = JS[JS.index("async function startTranslation"):]
         body = body[:body.index("\n  async function cancelTranslation")]
-        self.assertLess(body.index("await api('/api/ui/run'"), body.index("setRunControls(true"))
+        self.assertLess(body.index("renderLocalPipelineState("), body.index("await api('/api/ui/run'"))
 
-    def test_the_page_does_not_pre_announce_an_analysis_stage(self):
+    def test_the_page_announces_source_validation_not_worker_analysis(self):
         body = JS[JS.index("async function startTranslation"):]
         body = body[:body.index("\n  async function cancelTranslation")]
-        # The old flow asserted the stage before the backend reported it.
+        self.assertIn("validating_source", body)
         self.assertNotIn("Analisando fonte", body)
 
     def test_a_double_click_is_still_guarded(self):
         self.assertIn("button.dataset.busy", JS)
+
+    def test_source_analysis_failure_stays_in_the_pipeline_card(self):
+        self.assertIn("function renderLocalPipelineState", JS)
+        self.assertIn("Não foi possível iniciar o processamento", JS)
+        self.assertIn("chromedriver_unavailable", JS)
+        self.assertIn("runStatusCard", JS)
 
 
 class CounterOwnershipTests(unittest.TestCase):
@@ -98,7 +104,8 @@ class ReasonMessageTests(unittest.TestCase):
 class PollingTests(unittest.TestCase):
     def test_a_single_polling_timer_with_cleanup(self):
         self.assertEqual(JS.count("setInterval("), 1)
-        self.assertIn("clearInterval(pollingTimer)", JS)
+        self.assertIn("clearInterval(getGlobal('__tradutorUiPollingTimer'))", JS)
+        self.assertIn("setGlobal('__tradutorUiPollingTimer'", JS)
 
     def test_review_is_opened_from_polling_not_from_the_submit(self):
         # The worker produces the review now, so the runtime payload is what opens it.
