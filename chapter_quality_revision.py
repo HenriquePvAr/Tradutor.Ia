@@ -2174,6 +2174,10 @@ class ChapterQualityRevision:
     # A reviewed page is an edit of the translated page, never a rebuild of the
     # English source. Overlap is detected by how much darker a region became.
     RENDER_OVERLAP_INK_RATIO = 1.35
+    # Cleanup must leave the region essentially blank. Anything above this share
+    # of the previous ink means the old translation survived and the new text
+    # would be drawn on top of it.
+    CLEANUP_RESIDUAL_INK_RATIO = 0.05
 
     @staticmethod
     def _resolve_incremental_render_base(page: dict[str, Any]) -> dict[str, Any]:
@@ -2237,6 +2241,49 @@ class ChapterQualityRevision:
             boxes.append((left, top, right, bottom))
         return boxes, rejected
 
+    # Region geometry in the manifest is (x, y, width, height). Treating it as
+    # (left, top, right, bottom) silently inverts the bottom of a page-bottom
+    # balloon, so every conversion goes through these helpers.
+    @staticmethod
+    def _xywh_to_ltrb(box: Any) -> tuple[int, int, int, int] | None:
+        try:
+            x, y, width, height = (int(v) for v in list(box)[:4])
+        except (TypeError, ValueError):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return x, y, x + width, y + height
+
+    @staticmethod
+    def _clip_ltrb(rect: tuple[int, int, int, int], *, width: int, height: int) -> tuple[int, int, int, int] | None:
+        left, top, right, bottom = rect
+        left, top = max(0, left), max(0, top)
+        right, bottom = min(width, right), min(height, bottom)
+        if right - left < 2 or bottom - top < 2:
+            return None
+        return left, top, right, bottom
+
+    @staticmethod
+    def _previous_text_mask(region: "np.ndarray") -> "np.ndarray":
+        """Mask the glyphs of the translation currently drawn in this region.
+
+        The revision re-renders on top of the translated page, so the text to
+        remove is the previous translation, not the source text. Only clearly
+        darker-than-background components are taken, which keeps balloon borders
+        and artwork out of the mask.
+        """
+
+        grey = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY) if region.ndim == 3 else region
+        background = int(np.median(grey))
+        # Take the antialiased edge as well: masking only the dark glyph core
+        # leaves a light ghost of the previous translation behind.
+        threshold = max(0, background - 35)
+        mask = (grey <= threshold).astype(np.uint8) * 255
+        if not mask.any():
+            return mask
+        # Close the remaining halo without letting the mask bleed into the art.
+        return cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
+
     @staticmethod
     def _pixels_outside_boxes_changed(
         base: "np.ndarray",
@@ -2256,6 +2303,66 @@ class ChapterQualityRevision:
         for left, top, right, bottom in boxes:
             allowed[top:bottom, left:right] = True
         return int((differing & ~allowed).sum())
+
+    # A cleanup mask that covers most of the region is not text: it is artwork.
+    CLEANUP_MAX_MASK_RATIO = 0.60
+    # Below this median level the region is dark, so its text is light-on-dark
+    # and the dark-glyph mask below would not find it.
+    CLEANUP_MIN_BACKGROUND_LEVEL = 128
+
+    def _clean_previous_translation(
+        self,
+        base: "np.ndarray",
+        boxes: list[tuple[int, int, int, int]],
+    ) -> tuple["np.ndarray | None", list[dict[str, Any]], str]:
+        """Erase the previous translation inside the changed regions.
+
+        Returns the cleaned page, per-region metrics and a reason code. The page
+        is only cleaned where this revision is allowed to draw, so every other
+        pixel is untouched. Fails closed when a mask looks like artwork rather
+        than text instead of guessing a background.
+        """
+
+        cleaned = base.copy()
+        metrics: list[dict[str, Any]] = []
+        for left, top, right, bottom in boxes:
+            region = cleaned[top:bottom, left:right]
+            grey = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY) if region.ndim == 3 else region
+            if int(np.median(grey)) < self.CLEANUP_MIN_BACKGROUND_LEVEL:
+                # A predominantly dark region carries light-on-dark text, which
+                # this dark-glyph cleanup cannot isolate. Refuse instead of
+                # drawing the new text over the old one or erasing artwork.
+                metrics.append({
+                    "box": [left, top, right, bottom],
+                    "reason_code": "clean_region_background_unavailable",
+                })
+                return None, metrics, "clean_region_background_unavailable"
+            mask = self._previous_text_mask(region)
+            area = int((mask > 0).sum())
+            total = int(mask.size) or 1
+            ratio = area / total
+            entry = {
+                "box": [left, top, right, bottom],
+                "mask_area": area,
+                "mask_ratio": round(ratio, 4),
+                "pixels_removed": area,
+                "pixels_preserved": total - area,
+            }
+            if area == 0:
+                # Nothing to erase: the region is already blank background.
+                entry["reason_code"] = "empty_previous_text_mask"
+                metrics.append(entry)
+                continue
+            if ratio > self.CLEANUP_MAX_MASK_RATIO:
+                entry["reason_code"] = "excessive_cleanup_mask"
+                metrics.append(entry)
+                return None, metrics, "excessive_cleanup_mask"
+            # Reconstruct the background from the surrounding balloon pixels.
+            repaired = cv2.inpaint(region, mask, 3, cv2.INPAINT_TELEA)
+            region[mask > 0] = repaired[mask > 0]
+            entry["reason_code"] = ""
+            metrics.append(entry)
+        return cleaned, metrics, ""
 
     @staticmethod
     def _ink(image: "np.ndarray") -> int:
@@ -2306,9 +2413,22 @@ class ChapterQualityRevision:
                     "rejected_regions": rejected_regions,
                 })
                 continue
+            # Erase the previous translation inside the changed regions first, so
+            # the renderer draws the new text on clean background instead of on
+            # top of the text that is already there.
+            cleaned, cleanup_metrics, cleanup_reason = self._clean_previous_translation(base, boxes)
+            if cleaned is None:
+                rendered_paths.append(str(current_output))
+                render_records.append({
+                    "page": number,
+                    "status": "rejected",
+                    "reason_code": cleanup_reason or "clean_region_background_unavailable",
+                    "cleanup": cleanup_metrics,
+                })
+                continue
             groups = self._groups_from_page_items(page)
             full, debug_data = render_analyzed_image(
-                original,
+                cleaned,
                 [],
                 [],
                 groups,
@@ -2331,12 +2451,17 @@ class ChapterQualityRevision:
             for left, top, right, bottom in boxes:
                 patch = full[top:bottom, left:right]
                 before_ink = self._ink(base[top:bottom, left:right])
+                residual_ink = self._ink(cleaned[top:bottom, left:right])
                 after_ink = self._ink(patch)
-                if before_ink and after_ink > before_ink * self.RENDER_OVERLAP_INK_RATIO:
-                    # Far more ink than before means the new text was painted over
-                    # text the mask failed to clear.
+                # The safety property is that the previous translation was really
+                # erased. Once the region is blank the new text cannot be drawn on
+                # top of anything, so a longer translation legitimately adds ink.
+                if before_ink and residual_ink > before_ink * self.CLEANUP_RESIDUAL_INK_RATIO:
                     overlap.append({"box": [left, top, right, bottom],
-                                    "ink_before": before_ink, "ink_after": after_ink})
+                                    "ink_before": before_ink,
+                                    "ink_after_cleanup": residual_ink,
+                                    "ink_final": after_ink,
+                                    "detail": "previous translation still present after cleanup"})
                     continue
                 final[top:bottom, left:right] = patch
             if overlap:
@@ -2381,6 +2506,7 @@ class ChapterQualityRevision:
                 "changed_regions": [item["region_id"] for item in changed_by_page[number]],
                 "changed_boxes": [list(b) for b in boxes],
                 "rejected_regions": rejected_regions,
+                "cleanup": cleanup_metrics,
                 "redrawn_groups": debug_data.get("redrawn_group_count"),
             })
         return rendered_paths, {
