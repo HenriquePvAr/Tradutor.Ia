@@ -1426,6 +1426,50 @@
     if (cancel && !appState.cancelBusy) cancel.hidden = !active;
   }
 
+  // Short labels for the summary line and filter chips.
+  const VISUAL_STATE_LABELS = {
+    applied: 'aplicadas',
+    rejected_visual_regression: 'rejeitadas',
+    manual_review: 'revisão manual',
+    unchanged: 'sem alteração',
+    pending: 'pendentes',
+  };
+
+  // Full sentence shown as each item's status, per the review spec.
+  const VISUAL_STATE_STATUS = {
+    applied: 'Alteração aplicada',
+    rejected_visual_regression: 'Alteração rejeitada por segurança visual',
+    manual_review: 'Revisão humana necessária',
+    unchanged: 'Sem alteração',
+    pending: 'Aguardando o gate visual',
+  };
+
+  // Why the visual gate refused a region, in plain pt-BR. Unknown codes fall
+  // back to the raw code so a new gate is never silently invisible.
+  const VISUAL_REASON_LABELS = {
+    translated_render_base_unavailable: 'Página traduzida-base indisponível',
+    unsafe_incremental_mask: 'Máscara de alteração insegura',
+    unexpected_pixels_outside_changed_regions: 'Pixels externos à região foram alterados',
+    text_overlap_regression_detected: 'Possível texto sobreposto detectado',
+    clean_region_background_unavailable: 'Não foi possível reconstruir o fundo com segurança',
+    excessive_cleanup_mask: 'A máscara removeria uma área excessiva',
+    empty_previous_text_mask: 'Não foi possível localizar o texto anterior',
+    cleanup_mask_crosses_artwork: 'A limpeza pode atingir a arte',
+    ambiguous_text_polarity: 'Não foi possível distinguir o texto do fundo com segurança',
+    unsafe_inverted_cleanup_mask: 'A máscara invertida do balão escuro não era segura',
+    dark_region_background_reconstruction_failed: 'Não foi possível reconstruir o fundo escuro',
+    light_text_components_not_isolated: 'O que seria apagado parece arte, não letras',
+    render_dimension_mismatch: 'O redesenho saiu com dimensões diferentes da página',
+    reviewed_page_write_failed: 'A página revisada não pôde ser gravada',
+    source_image_missing: 'A imagem de origem da página não foi encontrada',
+  };
+
+  function visualReasonLabel(code) {
+    const key = String(code || '');
+    if (!key) return '';
+    return VISUAL_REASON_LABELS[key] || key;
+  }
+
   function renderQualityReview(review) {
     const panel = $('#qualityReviewPanel');
     const list = $('#qualityReviewList');
@@ -1435,20 +1479,36 @@
     updateQualityReviewDeveloperActions();
     const items = Array.isArray(review.items) ? review.items : [];
     const filter = appState.qualityReviewFilter || 'pending';
-    const visible = items.filter(item => filter === 'all' || (filter === 'pending' ? item.state === 'pending' : item.state !== 'pending'));
+    const visible = items.filter(item => {
+      if (VISUAL_STATE_LABELS[filter]) return String(item.visual_state || '') === filter;
+      return filter === 'all' || (filter === 'pending' ? item.state === 'pending' : item.state !== 'pending');
+    });
     const counts = items.reduce((acc, item) => {
       const risk = String(item.risk || 'LOW').toUpperCase();
       acc[risk] = (acc[risk] || 0) + 1;
       return acc;
     }, {LOW: 0, MEDIUM: 0, HIGH: 0});
-    $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · LOW ${counts.LOW || 0} · MEDIUM ${counts.MEDIUM || 0} · HIGH ${counts.HIGH || 0} · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
+    const visualSummary = review.visual_state_summary || {};
+    const visualParts = Object.keys(VISUAL_STATE_LABELS)
+      .filter(state => Number(visualSummary[state] || 0) > 0)
+      .map(state => `${VISUAL_STATE_LABELS[state]} ${Number(visualSummary[state])}`);
+    $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · LOW ${counts.LOW || 0} · MEDIUM ${counts.MEDIUM || 0} · HIGH ${counts.HIGH || 0}${visualParts.length ? ` · gate visual: ${visualParts.join(' · ')}` : ''} · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
     const visibleKeys = new Set(visible.map(item => String(item.key || '')));
     appState.qualityReviewSelection = new Set([...appState.qualityReviewSelection].filter(key => visibleKeys.has(key)));
     list.innerHTML = visible.length ? visible.map(item => {
       const actionClass = item.state === 'pending' ? ' show' : '';
       const checked = appState.qualityReviewSelection.has(String(item.key || '')) ? ' checked' : '';
       const risk = String(item.risk || 'LOW').toUpperCase();
-      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label><input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> <strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span></div><div class="quality-review-reason">${escapeHtml(item.reason)}</div><div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div></div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="cta-row"><button type="button" class="btn-ghost review-mark${actionClass}" data-review-action="reviewed">Marcar como revisado</button><button type="button" class="btn-ghost review-preserve${actionClass}" data-review-action="preserved_original">Manter original</button></div></article>`;
+      const visualState = String(item.visual_state || '');
+      const visualBadge = visualState
+        ? `<span class="quality-review-visual" data-visual-state="${escapeAttr(visualState)}">${escapeHtml(VISUAL_STATE_STATUS[visualState] || visualState)}</span>`
+        : '';
+      const visualReason = visualReasonLabel(item.visual_reason_code);
+      const visualNote = visualState === 'rejected_visual_regression' && visualReason
+        ? `<div class="quality-review-visual-reason">${escapeHtml(visualReason)}</div>` : '';
+      const compare = visualState && item.page_url
+        ? `<button type="button" class="btn-ghost review-compare show" data-review-compare="${escapeAttr(item.page)}">ABRIR COMPARAÇÃO</button>` : '';
+      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label><input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> <strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(item.reason)}</div>${visualNote}<div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Proposta</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="cta-row"><button type="button" class="btn-ghost review-mark${actionClass}" data-review-action="reviewed">Marcar como revisado</button><button type="button" class="btn-ghost review-preserve${actionClass}" data-review-action="preserved_original">Manter original</button>${compare}</div></article>`;
     }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
     const confirm = $('#confirmQualityReview');
     if (confirm) {
@@ -1611,7 +1671,24 @@
     }
   }
 
+  // Side-by-side of the page as published versus the page the revision produced,
+  // so a rejected region can be judged instead of just read about.
+  function openVisualComparison(page) {
+    const jobId = appState.qualityReview?.job_id;
+    if (!jobId || !page) return;
+    const dialog = $('#visualComparisonDialog');
+    const body = $('#visualComparisonBody');
+    if (!dialog || !body) return;
+    const base = `/api/ui/quality-review/${encodeURIComponent(jobId)}/page/${encodeURIComponent(page)}`;
+    body.innerHTML = `<figure><figcaption>Publicado</figcaption><img src="${escapeAttr(base)}" alt="Página ${escapeAttr(page)} publicada"></figure>`
+      + `<figure><figcaption>Revisado</figcaption><img src="${escapeAttr(base)}?revision=latest" alt="Página ${escapeAttr(page)} revisada"></figure>`;
+    dialog.hidden = false;
+    if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+  }
+
   async function qualityReviewAction(event) {
+    const compare = event.target.closest('[data-review-compare]');
+    if (compare) { openVisualComparison(compare.dataset.reviewCompare); return; }
     const button = event.target.closest('[data-review-action]');
     if (!button || button.dataset.busy === '1') return;
     const item = button.closest('[data-review-key]');
@@ -1634,6 +1711,12 @@
   }
 
   $('#qualityReviewList')?.addEventListener('click', qualityReviewAction);
+  $('#visualComparisonClose')?.addEventListener('click', () => {
+    const dialog = $('#visualComparisonDialog');
+    if (!dialog) return;
+    if (typeof dialog.close === 'function' && dialog.open) dialog.close();
+    dialog.hidden = true;
+  });
   $('#qualityReviewList')?.addEventListener('change', event => {
     const checkbox = event.target.closest?.('[data-review-select]');
     if (!checkbox) return;

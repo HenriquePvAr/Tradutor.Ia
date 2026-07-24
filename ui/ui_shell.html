@@ -438,6 +438,10 @@
                 <button type="button" class="btn-ghost selected" data-review-filter="pending">Pendentes</button>
                 <button type="button" class="btn-ghost" data-review-filter="all">Todos</button>
                 <button type="button" class="btn-ghost" data-review-filter="completed">Concluídos</button>
+                <button type="button" class="btn-ghost" data-review-filter="applied">Aplicados</button>
+                <button type="button" class="btn-ghost" data-review-filter="rejected_visual_regression">Recusados pelo gate visual</button>
+                <button type="button" class="btn-ghost" data-review-filter="manual_review">Revisão manual</button>
+                <button type="button" class="btn-ghost" data-review-filter="unchanged">Sem alteração</button>
               </div>
               <div class="quality-review-bulk" id="qualityReviewBulk">
                 <label class="review-select-all"><input type="checkbox" id="qualityReviewSelectAll"> Selecionar todos do filtro atual</label>
@@ -461,6 +465,10 @@
               <div class="cta-row quality-review-actions">
                 <button class="btn-primary" type="button" id="confirmQualityReview">Confirmar revisão</button>
               </div>
+              <dialog class="visual-comparison" id="visualComparisonDialog" hidden aria-label="Comparação visual da página">
+                <div class="visual-comparison-body" id="visualComparisonBody"></div>
+                <button class="btn-ghost" type="button" id="visualComparisonClose">Fechar</button>
+              </dialog>
             </div>
             <div class="artifact-actions" id="artifactActions"></div>
           </div>

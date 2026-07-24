@@ -480,8 +480,8 @@ def api_quality_review(job_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/ui/quality-review/{job_id}/page/{page_number}")
-def api_quality_review_page(job_id: str, page_number: int) -> FileResponse:
-    path = BRIDGE.quality_review_page(job_id, page_number)
+def api_quality_review_page(job_id: str, page_number: int, revision: str = "") -> FileResponse:
+    path = BRIDGE.quality_review_page(job_id, page_number, revision=revision)
     if path is None:
         raise HTTPException(status_code=404, detail="Página de revisão não encontrada.")
     return FileResponse(path)

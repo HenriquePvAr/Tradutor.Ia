@@ -548,6 +548,7 @@ class UiBridge:
             return {"job_id": job["id"], "items": [], "pending_count": 0,
                     "confirmed": bool(job.get("review_confirmed_at"))}
         actions = self.store.review_actions(job["id"])
+        visual_states = self._region_visual_states(job)
         items: list[dict[str, Any]] = []
         for page in report.get("pages", []) or []:
             if not isinstance(page, dict):
@@ -576,8 +577,15 @@ class UiBridge:
                     continue
                 seen_keys.add(key)
                 action = actions.get(key, "pending")
+                visual = visual_states.get(f"p{page_number:03d}:{item_id}") or {}
                 items.append({
                     "key": key,
+                    "region_id": f"p{page_number:03d}:{item_id}",
+                    "visual_state": str(visual.get("state") or ""),
+                    "visual_reason_code": str(visual.get("reason_code") or ""),
+                    "proposed_translation": str(visual.get("proposed_translation") or ""),
+                    "applied_translation": str(visual.get("applied_translation") or ""),
+                    "confidence": visual.get("confidence"),
                     "page": page_number,
                     "label": f"Balão {item_id}" if item_id else "Texto da página",
                     "classification": str(raw.get("classification") or "speech"),
@@ -596,7 +604,28 @@ class UiBridge:
             "confirmed": bool(job.get("review_confirmed_at")),
             "review_status": "completed" if job.get("review_confirmed_at") else "required",
             "status": job.get("status"),
+            "visual_state_summary": ChapterQualityRevision._visual_state_summary(visual_states),
         }
+
+    def _region_visual_states(self, job: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Per-region result of the visual gate from the latest revision, if any."""
+
+        output_dir = job.get("output_dir")
+        if not output_dir:
+            return {}
+        revision = ChapterQualityRevision(output_dir, job_id=str(job["id"]),
+                                          run_id=str(job.get("run_id") or ""))
+        status = revision.latest_status() or {}
+        revision_id = str(status.get("revision_id") or "")
+        if not revision_id:
+            return {}
+        audit = Path(output_dir) / "quality_revision" / revision_id / "incremental_render_audit.json"
+        try:
+            data = json.loads(audit.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        states = data.get("region_visual_states")
+        return states if isinstance(states, dict) else {}
 
     def quality_review_action(self, job_id: str, item_key: str, action: str) -> dict[str, Any]:
         payload = self.quality_review(job_id)
@@ -934,10 +963,17 @@ class UiBridge:
             "phase_label": "Testando contrato NVIDIA",
         }
 
-    def quality_review_page(self, job_id: str, page_number: int) -> Path | None:
+    def quality_review_page(self, job_id: str, page_number: int, revision: str = "") -> Path | None:
         job = self.store.get_job(str(job_id or ""))
         if not job:
             return None
+        if revision:
+            # The page the revision produced, for the side-by-side comparison.
+            # Absent (page unchanged or gate refused it) the caller gets a 404
+            # rather than the published page dressed up as a revised one.
+            output_dir = Path(str(job.get("output_dir") or "")).resolve()
+            revised = output_dir / "quality_revision_pages" / f"page_{int(page_number):03d}.png"
+            return revised if revised.is_file() else None
         report = self._quality_report_data(job)
         if not report:
             return None

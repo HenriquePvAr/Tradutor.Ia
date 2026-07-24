@@ -1665,7 +1665,12 @@ class ChapterQualityRevision:
         rendered_images, render_audit = self._render_changed_pages(pages, changed_by_page)
         render_audit["missing_text_candidates"] = missing_text_candidates
         render_audit["ocr_rechecks"] = ocr_rechecks
+        visual_states = self._region_visual_states(
+            contextual.get("reviews", []), changed_by_page, render_audit.get("records", []))
+        render_audit["region_visual_states"] = visual_states
+        render_audit["visual_state_summary"] = self._visual_state_summary(visual_states)
         write_json(paths.render_audit, render_audit)
+        manifest["visual_state_summary"] = render_audit["visual_state_summary"]
 
         self._checkpoint(paths, manifest, "pdf_generation", "Gerando PDF revisado")
         semantic_hash = self._semantic_revision_hash(changed_by_page)
@@ -1725,13 +1730,21 @@ class ChapterQualityRevision:
             }
         write_json(paths.visual_inspection, visual)
 
-        status = "review_required" if manifest["manual_review"] or not contextual.get("quality_passed") else "finished"
+        summary = self._review_summary(
+            contextual.get("reviews", []), visual_states, render_audit.get("records", []),
+            changed_by_page, pages)
+        manifest["review_summary"] = summary
+        # Finished only means nothing is left for a human: a region the gate
+        # refused or flagged for manual review keeps the whole revision in
+        # review_required even after every NVIDIA request has returned.
+        blocking = summary["rejected_visual_gate"] + summary["manual_review"] + summary["pending"] + summary["failed"]
+        status = "review_required" if blocking or not contextual.get("quality_passed") else "finished"
         manifest.update({
             "status": status,
             "phase": "finalized",
             "phase_label": "Finalizado" if status == "finished" else "Revisão humana necessária",
             "revision_iteration": 1,
-            "safe_changes_applied": sum(len(v) for v in changed_by_page.values()),
+            "safe_changes_applied": summary["applied"],
             "pages_changed": sorted(int(page) for page in changed_by_page),
             "regions_changed": [item["region_id"] for items in changed_by_page.values() for item in items],
             "visual_pages_inspected": visual.get("pages_inspected", 0),
@@ -2584,6 +2597,119 @@ class ChapterQualityRevision:
             "regions_rerendered": sum(len(items) for items in changed_by_page.values()),
             "records": render_records,
             "created_at": utc_now(),
+        }
+
+    # A region ends in exactly one of these, so the UI never has to guess what
+    # happened to a correction the reviewer proposed.
+    VISUAL_STATES = ("applied", "rejected_visual_regression", "manual_review", "unchanged", "pending")
+
+    @staticmethod
+    def _region_visual_states(
+        reviews: list[dict[str, Any]],
+        changed_by_page: dict[int, list[dict[str, Any]]],
+        render_records: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        states: dict[str, dict[str, Any]] = {}
+        for item in reviews:
+            region_id = str(item.get("region_id") or "")
+            if not region_id:
+                continue
+            action = str(item.get("action") or "")
+            if action == "manual_review":
+                state, reason = "manual_review", str(item.get("reason_code") or "manual_review_required")
+            elif action == "keep":
+                state, reason = "unchanged", str(item.get("reason_code") or "")
+            else:
+                # Proposed but not yet seen by the renderer.
+                state, reason = "pending", str(item.get("reason_code") or "")
+            # Everything the review panel needs to explain the decision, so the
+            # UI never has to reopen the raw review to describe one region.
+            states[region_id] = {
+                "region_id": region_id,
+                "page_id": region_id.split(":", 1)[0],
+                "state": state,
+                "reason_code": reason,
+                "risk": str(item.get("risk") or ""),
+                "confidence": item.get("confidence"),
+                "source_text": str(item.get("source_text") or item.get("original") or ""),
+                "previous_translation": str(item.get("current_translation") or ""),
+                "proposed_translation": str(item.get("revised_translation") or ""),
+                "applied_translation": "",
+                "cleanup_metrics": None,
+                "pixel_diff": None,
+                "comparison_artifact": "",
+                "timestamp": utc_now(),
+            }
+
+        proposed_by_region = {str(change.get("region_id") or ""): str(change.get("revised_translation") or "")
+                              for items in changed_by_page.values() for change in items}
+        submitted = set(proposed_by_region)
+        for region_id in submitted:
+            states.setdefault(region_id, {"region_id": region_id, "state": "pending", "reason_code": ""})
+            states[region_id]["state"] = "pending"
+
+        for record in render_records:
+            page = record.get("page")
+            regions = [str(value) for value in (record.get("changed_regions") or [])]
+            rejected = {str(value) for value in (record.get("rejected_regions") or [])}
+            page_failed = str(record.get("status")) == "rejected"
+            page_reason = str(record.get("reason_code") or "")
+            cleanup = record.get("cleanup")
+            for region_id in regions or sorted(submitted):
+                entry = states.setdefault(region_id, {"region_id": region_id, "state": "pending", "reason_code": ""})
+                if page is not None:
+                    entry["page"] = page
+                    entry.setdefault("page_id", f"p{int(page):03d}")
+                if cleanup is not None:
+                    entry["cleanup_metrics"] = cleanup
+                if page_failed or region_id in rejected:
+                    entry["state"] = "rejected_visual_regression"
+                    entry["reason_code"] = page_reason or entry.get("reason_code") or "region_rejected"
+                elif entry["state"] == "pending":
+                    entry["state"] = "applied"
+                    entry["applied_translation"] = proposed_by_region.get(region_id, "")
+            if page_failed and not regions:
+                # The whole page was refused before any region was attributed.
+                for region_id in submitted:
+                    entry = states.setdefault(region_id, {"region_id": region_id, "state": "pending", "reason_code": ""})
+                    if entry["state"] == "pending":
+                        entry.update({"state": "rejected_visual_regression", "reason_code": page_reason})
+        return states
+
+    @classmethod
+    def _visual_state_summary(cls, states: dict[str, dict[str, Any]]) -> dict[str, int]:
+        summary = {state: 0 for state in cls.VISUAL_STATES}
+        for entry in states.values():
+            state = str(entry.get("state") or "pending")
+            summary[state] = summary.get(state, 0) + 1
+        return summary
+
+    @staticmethod
+    def _review_summary(
+        reviews: list[dict[str, Any]],
+        states: dict[str, dict[str, Any]],
+        render_records: list[dict[str, Any]],
+        changed_by_page: dict[int, list[dict[str, Any]]],
+        pages: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        by_state: dict[str, int] = {}
+        for entry in states.values():
+            by_state[str(entry.get("state") or "pending")] = by_state.get(str(entry.get("state") or "pending"), 0) + 1
+        rendered_pages = {int(r.get("page")) for r in render_records
+                          if r.get("page") is not None and str(r.get("status")) == "rendered"}
+        failed_pages = {int(r.get("page")) for r in render_records
+                        if r.get("page") is not None and str(r.get("status")) == "rejected"}
+        return {
+            "total": len(reviews),
+            "analyzed": sum(1 for item in reviews if str(item.get("action") or "")),
+            "applied": by_state.get("applied", 0),
+            "rejected_visual_gate": by_state.get("rejected_visual_regression", 0),
+            "manual_review": by_state.get("manual_review", 0),
+            "unchanged": by_state.get("unchanged", 0),
+            "pending": by_state.get("pending", 0),
+            "failed": sum(1 for r in render_records if str(r.get("status")) == "warning"),
+            "pages_changed": len(rendered_pages),
+            "pages_preserved": max(0, len(pages) - len(rendered_pages) - len(failed_pages)),
         }
 
     def _groups_from_page_items(self, page: dict[str, Any]) -> list[TextGroup]:
