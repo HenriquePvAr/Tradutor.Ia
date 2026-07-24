@@ -7,6 +7,7 @@ revision run is a separate audit/review workspace tied to a parent job/run.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -56,6 +57,15 @@ TRANSLATABLE_CLASSES = {
 }
 PRESERVED_CLASSES = {"sfx", "decorative", "credit", "watermark", "editorial"}
 REVIEW_SCHEMA_VERSION = "1.0"
+# Bump whenever the review prompt changes meaning: cached answers produced by an
+# older prompt must not be reused for a newer one.
+REVIEW_PROMPT_VERSION = "2"
+# Bump when the LOW/MEDIUM/HIGH application policy changes: an answer cached under
+# a laxer policy must not be replayed under a stricter one.
+REVIEW_RISK_POLICY_VERSION = "1"
+# A concurrent reader on Windows can briefly block the atomic swap.
+WRITE_JSON_REPLACE_ATTEMPTS = 6
+WRITE_JSON_REPLACE_BACKOFF_SECONDS = 0.05
 REVIEW_ACTIONS = {"keep", "rewrite", "preserve_original", "manual_review"}
 REVIEW_RISKS = {"low", "medium", "high"}
 # A revision is only advanced by a worker thread inside the UI process, so these
@@ -261,7 +271,25 @@ def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    # Windows refuses the atomic replace while a reader still holds the target
+    # open, and the UI polls these files for live progress. A brief retry keeps
+    # the swap atomic instead of losing a revision to a transient share error.
+    for attempt in range(WRITE_JSON_REPLACE_ATTEMPTS):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            time.sleep(WRITE_JSON_REPLACE_BACKOFF_SECONDS * (attempt + 1))
+    # Still blocked by a reader: write in place rather than lose the revision.
+    # Readers already treat an unreadable file as "no data yet", so a rare torn
+    # read is far cheaper than failing a run that has real work persisted.
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def looks_like_source_english(text: str) -> bool:
@@ -1103,6 +1131,137 @@ class ContextualNvidiaReviewer:
         write_json(raw_response_dir / f"{batch_id}-{stage}.json", payload)
 
 
+class RevisionResponseCache:
+    """Content-addressed cache of validated contextual review answers.
+
+    An answer is reused only when every input that can change it is identical:
+    provider/model/endpoint, prompt and schema version, the region's own text, its
+    surrounding context, the relevant glossary subset, the OCR text, the layout
+    limits and the language pair.  Only hashes and the validated response are
+    persisted -- never keys, tokens, headers or raw provider payloads.
+    """
+
+    CACHEABLE_ACTIONS = frozenset({"keep", "rewrite", "preserve_original"})
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.hits = 0
+        self.misses = 0
+        self.invalidations = 0
+        self.invalidation_reasons: list[str] = []
+        self._entries: dict[str, dict[str, Any]] = {}
+        self._keys_by_region: dict[str, set[str]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.is_file():
+            return
+        # A partially written or corrupted line must never break a revision: skip it.
+        for line in self.path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            key = str(entry.get("cache_key") or "")
+            region_id = str(entry.get("region_id") or "")
+            if not key or not region_id or not isinstance(entry.get("response"), dict):
+                continue
+            self._entries[key] = entry
+            self._keys_by_region.setdefault(region_id, set()).add(key)
+
+    @staticmethod
+    def _hash(value: Any) -> str:
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(str(text).encode("utf-8")).hexdigest()[:32]
+
+    def build_key(
+        self,
+        record: dict[str, Any],
+        *,
+        provider: str,
+        model: str,
+        endpoint: str,
+        glossary: dict[str, Any],
+        ocr_text: str = "",
+        source_language: str = "en",
+        target_language: str = "pt-BR",
+    ) -> tuple[str, dict[str, str]]:
+        constraints = record.get("constraints") if isinstance(record.get("constraints"), dict) else {}
+        parts = {
+            "provider": provider,
+            "model": model,
+            "endpoint": endpoint,
+            "prompt_version": REVIEW_PROMPT_VERSION,
+            "schema_version": REVIEW_SCHEMA_VERSION,
+            "region_id": str(record.get("region_id") or ""),
+            "text_type": str(record.get("text_type") or "unknown"),
+            "source_language": source_language,
+            "target_language": target_language,
+            "max_characters": str(constraints.get("max_characters") or ""),
+            "max_lines": str(constraints.get("max_lines") or ""),
+            "risk_policy": REVIEW_RISK_POLICY_VERSION,
+            "source_text": self._hash(record.get("source_text") or ""),
+            "current_translation": self._hash(record.get("current_translation") or ""),
+            "previous_context": self._hash(record.get("previous_context") or ""),
+            "next_context": self._hash(record.get("next_context") or ""),
+            "glossary": self._hash(glossary or {}),
+            "ocr": self._hash(ocr_text or record.get("source_text") or ""),
+        }
+        return self._hash(parts), parts
+
+    def lookup(self, cache_key: str, region_id: str) -> dict[str, Any] | None:
+        entry = self._entries.get(cache_key)
+        if entry:
+            self.hits += 1
+            entry["hit_count"] = int(entry.get("hit_count") or 0) + 1
+            entry["last_used_at"] = utc_now()
+            return dict(entry["response"])
+        self.misses += 1
+        # The region was cached before under a different key: an input changed.
+        previous = self._keys_by_region.get(str(region_id))
+        if previous:
+            self.invalidations += 1
+            self.invalidation_reasons.append("input_changed")
+        return None
+
+    def store(self, cache_key: str, region_id: str, review: dict[str, Any], input_hashes: dict[str, str]) -> bool:
+        if str(review.get("action") or "") not in self.CACHEABLE_ACTIONS:
+            # manual_review is a fail-closed outcome, never a reusable answer.
+            return False
+        entry = {
+            "cache_key": cache_key,
+            "region_id": str(region_id),
+            "response": review,
+            "response_hash": self._hash(review),
+            "model": input_hashes.get("model", ""),
+            "prompt_version": REVIEW_PROMPT_VERSION,
+            "schema_version": REVIEW_SCHEMA_VERSION,
+            "input_hashes": input_hashes,
+            "status": "valid",
+            "hit_count": 0,
+            "created_at": utc_now(),
+            "last_used_at": utc_now(),
+        }
+        self._entries[cache_key] = entry
+        self._keys_by_region.setdefault(str(region_id), set()).add(cache_key)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return True
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "cache_hits": self.hits,
+            "cache_misses": self.misses,
+            "cache_invalidations": self.invalidations,
+            "cache_entries": len(self._entries),
+            "provider_requests_avoided": self.hits,
+        }
+
+
 class ChapterQualityRevision:
     def __init__(
         self,
@@ -1143,6 +1302,8 @@ class ChapterQualityRevision:
         "resumed_regions", "regions_completed", "regions_pending", "applied_low",
         "risk_counts", "elapsed_ms", "valid", "repaired", "individual", "invalid",
         "manual", "applicable", "last_error",
+        "cache_hits", "cache_misses", "cache_invalidations", "cache_entries",
+        "provider_requests_avoided",
     )
 
     def live_progress(self) -> dict[str, Any]:
@@ -1711,6 +1872,12 @@ class ChapterQualityRevision:
         reviews: list[dict[str, Any]] = []
         cancelled = False
         review_started = time.perf_counter()
+        # The canary is a live provider diagnostic, so it never reads or writes the
+        # cache; a full revision reuses answers whose inputs are byte-identical.
+        cache: RevisionResponseCache | None = None
+        if not canary and bool(getattr(config, "QUALITY_REVISION_CACHE", True)):
+            cache = RevisionResponseCache(self.output_dir / "revision_request_cache.jsonl")
+        pending_cache: dict[str, tuple[str, dict[str, str]]] = {}
         batch_size = self._revision_batch_size(reviewable, canary=canary)
         for start in range(0, len(reviewable), batch_size):
             # Stop before issuing another provider request; everything already
@@ -1720,6 +1887,31 @@ class ChapterQualityRevision:
                 break
             batch = reviewable[start:start + batch_size]
             batch_id = f"{manifest.get('revision_id', 'revision')}-batch-{(start // batch_size) + 1:03d}"
+            # One region per request means the cache can answer a whole batch. A
+            # cached answer is a completed region that costs no provider request.
+            if cache is not None and len(batch) == 1:
+                record = batch[0]
+                # Key on exactly what the provider will see, so a prompt-shaping
+                # change invalidates the entry instead of replaying a stale answer.
+                prompt_record = record
+                if hasattr(reviewer, "_prompt_record"):
+                    try:
+                        prompt_record = reviewer._prompt_record(record)
+                    except Exception:  # noqa: BLE001 - fall back to the raw record
+                        prompt_record = record
+                cache_key, input_hashes = cache.build_key(
+                    prompt_record,
+                    provider="nvidia",
+                    model=model,
+                    endpoint=str(getattr(reviewer, "base_url", "") or ""),
+                    glossary=ContextualNvidiaReviewer._compact_glossary(glossary, [record]),
+                    ocr_text=str(record.get("source_text") or ""),
+                )
+                cached = cache.lookup(cache_key, str(record.get("region_id") or ""))
+                if cached:
+                    reviews.append({**cached, "contract_path": "cache"})
+                    continue
+                pending_cache[str(record.get("region_id") or "")] = (cache_key, input_hashes)
             try:
                 raw = reviewer.review_batch(
                     batch,
@@ -1732,6 +1924,11 @@ class ChapterQualityRevision:
             except TypeError:
                 raw = reviewer.review_batch(batch, glossary)
             normalized = self._normalize_reviews(batch, raw)
+            if cache is not None:
+                for item in normalized:
+                    entry = pending_cache.pop(str(item.get("region_id") or ""), None)
+                    if entry:
+                        cache.store(entry[0], str(item.get("region_id") or ""), item, entry[1])
             reviews.extend(normalized)
             manifest["requests"] = int(getattr(reviewer, "requests", manifest.get("requests", 0) or 0))
             checkpoint = {
@@ -1766,6 +1963,7 @@ class ChapterQualityRevision:
                     for level in ("low", "medium", "high")
                 },
                 "elapsed_ms": int((time.perf_counter() - review_started) * 1000),
+                **(cache.stats() if cache is not None else {}),
                 "updated_at": utc_now(),
             }
             write_json(paths.checkpoint, checkpoint)

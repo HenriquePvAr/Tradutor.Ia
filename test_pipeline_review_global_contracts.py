@@ -135,6 +135,137 @@ class RevisionCancelAndResumeContracts(unittest.TestCase):
         self.assertIn("REVISION_RESUMABLE_STATES", js)
 
 
+class AtomicStateWriteContracts(unittest.TestCase):
+    def test_progress_writes_survive_a_concurrent_reader(self) -> None:
+        # The UI polls these files for live progress. On Windows an open reader
+        # blocks the atomic swap, which used to fail whole revisions.
+        import threading
+
+        from chapter_quality_revision import write_json
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "checkpoint.json"
+            write_json(path, {"tick": -1})
+            stop = threading.Event()
+
+            def reader() -> None:
+                while not stop.is_set():
+                    try:
+                        path.read_text(encoding="utf-8")
+                    except OSError:
+                        pass
+
+            thread = threading.Thread(target=reader, daemon=True)
+            thread.start()
+            try:
+                for tick in range(40):
+                    write_json(path, {"tick": tick})
+            finally:
+                stop.set()
+                thread.join(timeout=5)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["tick"], 39)
+            self.assertFalse(path.with_suffix(".json.tmp").exists())
+
+
+class RevisionResponseCacheContracts(unittest.TestCase):
+    def _record(self, **overrides):
+        record = {
+            "region_id": "p1:R1", "source_text": "Run now",
+            "current_translation": "Corra agora", "text_type": "dialogue",
+            "previous_context": "antes", "next_context": "depois",
+            "constraints": {"max_characters": 80, "max_lines": 3},
+        }
+        record.update(overrides)
+        return record
+
+    def _kwargs(self, **overrides):
+        kwargs = {"provider": "nvidia", "model": "m1", "endpoint": "https://e/v1",
+                  "glossary": {"terms": []}, "ocr_text": "Run now"}
+        kwargs.update(overrides)
+        return kwargs
+
+    def _answer(self):
+        return {"region_id": "p1:R1", "action": "rewrite", "revised_translation": "Corra!",
+                "risk": "low", "confidence": 0.97, "reason_code": "ok", "terminology": []}
+
+    def test_identical_inputs_hit_the_cache_across_processes(self) -> None:
+        from chapter_quality_revision import RevisionResponseCache
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "cache.jsonl"
+            first = RevisionResponseCache(path)
+            key, hashes = first.build_key(self._record(), **self._kwargs())
+            self.assertIsNone(first.lookup(key, "p1:R1"))
+            first.store(key, "p1:R1", self._answer(), hashes)
+            # A fresh instance must reuse the answer written to disk.
+            second = RevisionResponseCache(path)
+            again, _ = second.build_key(self._record(), **self._kwargs())
+            self.assertEqual(again, key)
+            self.assertEqual((second.lookup(again, "p1:R1") or {})["revised_translation"], "Corra!")
+            self.assertEqual(second.stats()["cache_hits"], 1)
+            self.assertEqual(second.stats()["provider_requests_avoided"], 1)
+
+    def test_any_changed_input_invalidates_the_cached_answer(self) -> None:
+        from chapter_quality_revision import RevisionResponseCache
+
+        mutations = {
+            "source_text": {"source_text": "Run away"},
+            "current_translation": {"current_translation": "Corra ja"},
+            "previous_context": {"previous_context": "outro"},
+            "next_context": {"next_context": "outro"},
+            "constraints": {"constraints": {"max_characters": 40, "max_lines": 2}},
+        }
+        for label, override in mutations.items():
+            with tempfile.TemporaryDirectory() as folder:
+                cache = RevisionResponseCache(Path(folder) / "cache.jsonl")
+                key, hashes = cache.build_key(self._record(), **self._kwargs())
+                cache.store(key, "p1:R1", self._answer(), hashes)
+                changed, _ = cache.build_key(self._record(**override), **self._kwargs())
+                self.assertNotEqual(changed, key, label)
+                self.assertIsNone(cache.lookup(changed, "p1:R1"), label)
+                self.assertEqual(cache.invalidations, 1, label)
+                self.assertIn("input_changed", cache.invalidation_reasons)
+
+    def test_model_ocr_and_glossary_are_part_of_the_key(self) -> None:
+        from chapter_quality_revision import RevisionResponseCache
+
+        with tempfile.TemporaryDirectory() as folder:
+            cache = RevisionResponseCache(Path(folder) / "cache.jsonl")
+            base, _ = cache.build_key(self._record(), **self._kwargs())
+            for override in ({"model": "m2"}, {"ocr_text": "Run n0w"},
+                             {"glossary": {"terms": [{"term": "Sunny"}]}},
+                             {"endpoint": "https://other/v1"}):
+                other, _ = cache.build_key(self._record(), **self._kwargs(**override))
+                self.assertNotEqual(other, base, override)
+
+    def test_manual_review_is_never_cached(self) -> None:
+        from chapter_quality_revision import RevisionResponseCache
+
+        with tempfile.TemporaryDirectory() as folder:
+            cache = RevisionResponseCache(Path(folder) / "cache.jsonl")
+            key, hashes = cache.build_key(self._record(), **self._kwargs())
+            stored = cache.store(key, "p1:R1", {"region_id": "p1:R1", "action": "manual_review"}, hashes)
+            self.assertFalse(stored)
+            self.assertIsNone(cache.lookup(key, "p1:R1"))
+
+    def test_cache_file_never_stores_secrets_and_survives_corruption(self) -> None:
+        from chapter_quality_revision import RevisionResponseCache
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "cache.jsonl"
+            cache = RevisionResponseCache(path)
+            key, hashes = cache.build_key(self._record(), **self._kwargs())
+            cache.store(key, "p1:R1", self._answer(), hashes)
+            raw = path.read_text(encoding="utf-8").lower()
+            for secret in ("authorization", "bearer", "api_key", "apikey", "cookie", "password"):
+                self.assertNotIn(secret, raw, secret)
+            # A truncated trailing line must not break loading the good entries.
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write('{"cache_key": "broken", "regi')
+            recovered = RevisionResponseCache(path)
+            self.assertIsNotNone(recovered.lookup(key, "p1:R1"))
+
+
 class LiveRevisionProgressContracts(unittest.TestCase):
     def _revision_with_checkpoint(self, root: Path, checkpoint: dict) -> ChapterQualityRevision:
         output = root / "output"
