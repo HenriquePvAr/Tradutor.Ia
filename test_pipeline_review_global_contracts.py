@@ -255,6 +255,115 @@ class IncrementalRenderBaseContracts(unittest.TestCase):
         self.assertGreater(after, before * ChapterQualityRevision.RENDER_OVERLAP_INK_RATIO)
 
 
+class RegionGeometryContracts(unittest.TestCase):
+    """Region boxes are (x, y, width, height), never (left, top, right, bottom)."""
+
+    def test_page_bottom_balloon_keeps_its_bottom_below_its_top(self) -> None:
+        # The real page-8 lower balloon on an 800x1911 page.
+        rect = ChapterQualityRevision._xywh_to_ltrb([297, 1660, 333, 42])
+        self.assertEqual(rect, (297, 1660, 630, 1702))
+        left, top, right, bottom = rect
+        self.assertGreater(bottom, top)
+        self.assertGreater(right, left)
+
+    def test_zero_or_negative_extent_is_rejected(self) -> None:
+        for box in ([10, 10, 0, 40], [10, 10, 40, 0], [10, 10, -5, 40], ["a", 1, 2, 3], []):
+            self.assertIsNone(ChapterQualityRevision._xywh_to_ltrb(box), box)
+
+    def test_clipping_keeps_the_box_inside_the_page(self) -> None:
+        clipped = ChapterQualityRevision._clip_ltrb((-20, -10, 900, 2000), width=800, height=1911)
+        self.assertEqual(clipped, (0, 0, 800, 1911))
+        # A box entirely outside the page collapses and is rejected.
+        self.assertIsNone(ChapterQualityRevision._clip_ltrb((900, 2000, 950, 2050), width=800, height=1911))
+        # So is a sliver too small to hold text.
+        self.assertIsNone(ChapterQualityRevision._clip_ltrb((10, 10, 11, 11), width=800, height=1911))
+
+
+class LocalizedCleanupContracts(unittest.TestCase):
+    """The previous translation must be erased before the new one is drawn."""
+
+    def _revision(self, root: Path) -> ChapterQualityRevision:
+        return ChapterQualityRevision(root, job_id="job-1", run_id="run-1")
+
+    def _page_with_text(self):
+        import numpy as np
+
+        page = np.full((200, 300, 3), 255, dtype=np.uint8)
+        page[40:60, 20:280] = 20            # previous translation, region A
+        page[140:160, 20:280] = 20          # untouched text, region B
+        page[95:100, :] = 0                 # balloon border between them
+        return page
+
+    def test_previous_text_is_erased_and_neighbours_are_untouched(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            page = self._page_with_text()
+            box = (10, 30, 290, 70)          # only region A
+            cleaned, metrics, reason = revision._clean_previous_translation(page, [box])
+            self.assertEqual(reason, "")
+            self.assertIsNotNone(cleaned)
+            # The old translation is gone from the changed region...
+            self.assertEqual(revision._ink(cleaned[30:70, 10:290]), 0)
+            # ...while the other text, the border and everything else stay put.
+            np.testing.assert_array_equal(cleaned[140:160, 20:280], page[140:160, 20:280])
+            np.testing.assert_array_equal(cleaned[95:100, :], page[95:100, :])
+            self.assertEqual(
+                ChapterQualityRevision._pixels_outside_boxes_changed(page, cleaned, [box]), 0)
+            self.assertGreater(metrics[0]["pixels_removed"], 0)
+            self.assertGreater(metrics[0]["pixels_preserved"], 0)
+
+    def test_cleanup_is_idempotent(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            page = self._page_with_text()
+            box = (10, 30, 290, 70)
+            once, _, _ = revision._clean_previous_translation(page, [box])
+            twice, _, _ = revision._clean_previous_translation(once, [box])
+            np.testing.assert_array_equal(once, twice)
+
+    def test_a_dark_region_fails_closed_instead_of_erasing_artwork(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            # A dark panel carries light-on-dark text, which the dark-glyph mask
+            # cannot isolate: refuse rather than erase the artwork or draw over it.
+            page = np.full((100, 100, 3), 255, dtype=np.uint8)
+            page[10:90, 10:90] = 10
+            cleaned, metrics, reason = revision._clean_previous_translation(page, [(5, 5, 95, 95)])
+            self.assertIsNone(cleaned)
+            self.assertEqual(reason, "clean_region_background_unavailable")
+            self.assertEqual(metrics[-1]["reason_code"], "clean_region_background_unavailable")
+
+    def test_a_mask_covering_most_of_a_light_region_is_rejected(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            # Light background overall, but dense hatching: once the halo is
+            # closed the mask covers most of the region, so it is artwork.
+            page = np.full((100, 100, 3), 255, dtype=np.uint8)
+            page[::3, :] = 10
+            cleaned, metrics, reason = revision._clean_previous_translation(page, [(5, 5, 98, 98)])
+            self.assertIsNone(cleaned)
+            self.assertEqual(reason, "excessive_cleanup_mask")
+
+    def test_blank_region_reports_an_empty_mask_without_failing(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            page = np.full((100, 100, 3), 255, dtype=np.uint8)
+            cleaned, metrics, reason = revision._clean_previous_translation(page, [(10, 10, 90, 90)])
+            self.assertEqual(reason, "")
+            self.assertIsNotNone(cleaned)
+            self.assertEqual(metrics[0]["reason_code"], "empty_previous_text_mask")
+
+
 class ReviewedPdfVersionGateContracts(unittest.TestCase):
     def _revision(self, root: Path) -> ChapterQualityRevision:
         output = root / "output"
