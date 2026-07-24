@@ -135,6 +135,48 @@ class RevisionCancelAndResumeContracts(unittest.TestCase):
         self.assertIn("REVISION_RESUMABLE_STATES", js)
 
 
+class LiveRevisionProgressContracts(unittest.TestCase):
+    def _revision_with_checkpoint(self, root: Path, checkpoint: dict) -> ChapterQualityRevision:
+        output = root / "output"
+        folder = output / "quality_revision" / "rev1"
+        folder.mkdir(parents=True)
+        manifest = folder / "revision_manifest.json"
+        manifest.write_text(json.dumps({"revision_id": "rev1", "status": "running", "requests": 0}), encoding="utf-8")
+        (folder / "nvidia_revision_checkpoint.json").write_text(json.dumps(checkpoint), encoding="utf-8")
+        (output / "quality_revision" / "latest_revision.json").write_text(
+            json.dumps({"revision_id": "rev1", "manifest_path": str(manifest)}), encoding="utf-8")
+        return ChapterQualityRevision(output, job_id="job-1", run_id="run-1")
+
+    def test_running_revision_reports_real_counters_not_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision_with_checkpoint(Path(folder), {
+                "requests_used": 27, "regions_completed": 27, "regions_pending": 46,
+                "suspicious_regions": 73, "skipped_unchanged_regions": 35,
+                "resumed_regions": 0, "valid": 26, "manual": 3, "elapsed_ms": 91000,
+                "risk_counts": {"low": 20, "medium": 4, "high": 3},
+            })
+            progress = revision.live_progress()
+            # The manifest still says 0 requests; the loop's checkpoint is authoritative.
+            self.assertEqual(progress["requests"], 27)
+            self.assertEqual(progress["regions_completed"], 27)
+            self.assertEqual(progress["regions_pending"], 46)
+            self.assertEqual(progress["suspicious_regions"], 73)
+            self.assertEqual(progress["risk_counts"], {"low": 20, "medium": 4, "high": 3})
+            self.assertEqual(progress["elapsed_ms"], 91000)
+
+    def test_live_progress_is_empty_without_a_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "output"
+            (output / "quality_revision").mkdir(parents=True)
+            revision = ChapterQualityRevision(output, job_id="job-1", run_id="run-1")
+            self.assertEqual(revision.live_progress(), {})
+
+    def test_ui_panel_renders_live_counters(self) -> None:
+        js = JS.read_text(encoding="utf-8")
+        self.assertIn("regions_completed", js)
+        self.assertIn("regions_pending", js)
+
+
 class SuspiciousRegionSelection(unittest.TestCase):
     def _revision(self) -> ChapterQualityRevision:
         return ChapterQualityRevision("unused", job_id="job-1", run_id="run-1")

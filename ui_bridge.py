@@ -798,6 +798,12 @@ class UiBridge:
             # Older runs that died before being superseded never reach the "latest"
             # pointer, so settle them too instead of leaving them in flight forever.
             revision.sweep_stale_revisions(keep_revision_id=str(status.get("revision_id") or "") if alive else "")
+            # Overlay the running loop's per-region counters so the panel shows real
+            # progress instead of the manifest's last phase-transition snapshot.
+            progress = revision.live_progress()
+            for key, value in progress.items():
+                if value is not None and not status.get(key):
+                    status[key] = value
             return status
         return {
             "job_id": str(job["id"]),

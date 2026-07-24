@@ -1138,6 +1138,35 @@ class ChapterQualityRevision:
             return read_json(manifest, {})
         return None
 
+    LIVE_PROGRESS_FIELDS = (
+        "regions_total", "suspicious_regions", "skipped_unchanged_regions",
+        "resumed_regions", "regions_completed", "regions_pending", "applied_low",
+        "risk_counts", "elapsed_ms", "valid", "repaired", "individual", "invalid",
+        "manual", "applicable", "last_error",
+    )
+
+    def live_progress(self) -> dict[str, Any]:
+        """Per-region counters written by the running review loop.
+
+        The manifest is only rewritten on phase changes, so a revision in flight
+        would otherwise report zero requests while it is actually working.
+        """
+
+        root = self.output_dir / "quality_revision"
+        pointer = read_json(root / "latest_revision.json", {})
+        manifest_path = Path(str(pointer.get("manifest_path") or ""))
+        if not manifest_path.is_file():
+            return {}
+        checkpoint = read_json(manifest_path.parent / "nvidia_revision_checkpoint.json", {})
+        if not isinstance(checkpoint, dict) or not checkpoint:
+            return {}
+        progress = {key: checkpoint[key] for key in self.LIVE_PROGRESS_FIELDS if key in checkpoint}
+        requests_used = checkpoint.get("requests_used")
+        if requests_used is not None:
+            progress["requests"] = int(requests_used or 0)
+        progress["checkpoint_updated_at"] = checkpoint.get("updated_at")
+        return progress
+
     def resume_reviews(self) -> dict[str, dict[str, Any]]:
         """Answers already stored by a cancelled/interrupted revision.
 
@@ -1681,6 +1710,7 @@ class ChapterQualityRevision:
                 }
         reviews: list[dict[str, Any]] = []
         cancelled = False
+        review_started = time.perf_counter()
         batch_size = self._revision_batch_size(reviewable, canary=canary)
         for start in range(0, len(reviewable), batch_size):
             # Stop before issuing another provider request; everything already
@@ -1719,6 +1749,23 @@ class ChapterQualityRevision:
                 # Persist the answers themselves so a resume continues from here
                 # instead of paying for the same regions again.
                 "completed_reviews": reviews,
+                # Live counters: the manifest is only rewritten on phase changes,
+                # so the UI reads progress from here while the revision runs.
+                "regions_total": int(manifest.get("total_regions") or 0),
+                "suspicious_regions": len(reviewable) + len(resumed),
+                "skipped_unchanged_regions": len(skipped_unchanged),
+                "resumed_regions": len(resumed),
+                "regions_completed": len(reviews) + len(resumed),
+                "regions_pending": max(0, len(reviewable) - len(reviews)),
+                "applied_low": sum(
+                    1 for item in reviews
+                    if item.get("action") == "rewrite" and item.get("risk") == "low"
+                ),
+                "risk_counts": {
+                    level: sum(1 for item in reviews if str(item.get("risk") or "") == level)
+                    for level in ("low", "medium", "high")
+                },
+                "elapsed_ms": int((time.perf_counter() - review_started) * 1000),
                 "updated_at": utc_now(),
             }
             write_json(paths.checkpoint, checkpoint)

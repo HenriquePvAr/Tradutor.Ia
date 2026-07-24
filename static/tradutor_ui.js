@@ -1531,7 +1531,20 @@
     ].filter(Boolean).join(' · ');
     if (phase) phase.textContent = label;
     if (meta) {
-      meta.textContent = `revision_id ${String(status.revision_id || '—').slice(0, 8)} · ${pages} · ${regions} · ${requests} requisições · ${status.status || 'running'}${responseStats ? ' · ' + responseStats : ''}`;
+      // Live per-region counters come from the running loop's checkpoint, so a
+      // revision in flight shows real progress instead of a stale zero.
+      const done = Number(status.regions_completed || 0);
+      const pending = Number(status.regions_pending || 0);
+      const progressBits = [
+        status.suspicious_regions != null ? `${status.suspicious_regions} suspeitas` : '',
+        status.skipped_unchanged_regions != null ? `${status.skipped_unchanged_regions} não selecionadas` : '',
+        (done || pending) ? `${done} concluídas · ${pending} pendentes` : '',
+        status.resumed_regions ? `${status.resumed_regions} reaproveitadas` : '',
+        status.cache_hits ? `${status.cache_hits} cache` : '',
+        status.retries ? `${status.retries} retry` : '',
+        status.elapsed_ms ? `${Math.round(Number(status.elapsed_ms) / 1000)}s` : '',
+      ].filter(Boolean).join(' · ');
+      meta.textContent = `revision_id ${String(status.revision_id || '—').slice(0, 8)} · ${pages} · ${regions} · ${requests} requisições · ${status.status || 'running'}${progressBits ? ' · ' + progressBits : ''}${responseStats ? ' · ' + responseStats : ''}`;
     }
     // A revision must always offer the next honest action: stop it while it runs,
     // or continue it from the checkpoint once it stopped.
