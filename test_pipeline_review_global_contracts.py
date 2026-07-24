@@ -279,6 +279,143 @@ class RegionGeometryContracts(unittest.TestCase):
         self.assertIsNone(ChapterQualityRevision._clip_ltrb((10, 10, 11, 11), width=800, height=1911))
 
 
+class GroupPolygonGeometryContracts(unittest.TestCase):
+    """A reconstructed group's polygon must be its own box, not a page-tall sliver."""
+
+    def _revision(self, folder):
+        return ChapterQualityRevision(str(folder), job_id="p", run_id="p")
+
+    def test_polygon_comes_from_xywh_corners(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            # bounding_box is (x, y, w, h); here x=302,y=1608 with w<y, the case
+            # that used to produce a full-height x301-324 sliver.
+            page = {"index": 8, "debug_data": {"items": [
+                {"id": "REGION_002", "region_id": "p008:REGION_002",
+                 "bounding_box": [302, 1608, 323, 146], "text": "TSK.",
+                 "translation": "TSK."}]}}
+            group = revision._groups_from_page_items(page)[0]
+            poly = group.lines[0].polygon.tolist()
+            xs = [p[0] for p in poly]
+            ys = [p[1] for p in poly]
+            self.assertEqual((min(xs), max(xs)), (302, 302 + 323))
+            self.assertEqual((min(ys), max(ys)), (1608, 1608 + 146))
+            # The sliver bug spanned from y=146 up to y=1608; never again.
+            self.assertGreaterEqual(min(ys), 1608)
+
+
+class VisualGateStateContracts(unittest.TestCase):
+    """Every reviewed region ends in exactly one state the UI can show."""
+
+    def _states(self, reviews, changed_by_page, records):
+        return ChapterQualityRevision._region_visual_states(reviews, changed_by_page, records)
+
+    def test_a_region_the_gate_accepted_is_applied(self) -> None:
+        states = self._states(
+            [{"region_id": "p008:a", "action": "replace"}],
+            {8: [{"region_id": "p008:a"}]},
+            [{"page": 8, "status": "rendered", "changed_regions": ["p008:a"], "rejected_regions": []}])
+        self.assertEqual(states["p008:a"]["state"], "applied")
+
+    def test_a_rejected_page_marks_its_regions_as_visual_regressions(self) -> None:
+        states = self._states(
+            [{"region_id": "p008:a", "action": "replace"}],
+            {8: [{"region_id": "p008:a"}]},
+            [{"page": 8, "status": "rejected",
+              "reason_code": "unexpected_pixels_outside_changed_regions",
+              "changed_regions": ["p008:a"]}])
+        self.assertEqual(states["p008:a"]["state"], "rejected_visual_regression")
+        self.assertEqual(states["p008:a"]["reason_code"], "unexpected_pixels_outside_changed_regions")
+
+    def test_a_region_rejected_inside_an_accepted_page_is_not_reported_as_applied(self) -> None:
+        states = self._states(
+            [{"region_id": "p008:a", "action": "replace"}, {"region_id": "p008:b", "action": "replace"}],
+            {8: [{"region_id": "p008:a"}, {"region_id": "p008:b"}]},
+            [{"page": 8, "status": "rendered", "reason_code": "",
+              "changed_regions": ["p008:a", "p008:b"], "rejected_regions": ["p008:b"]}])
+        self.assertEqual(states["p008:a"]["state"], "applied")
+        self.assertEqual(states["p008:b"]["state"], "rejected_visual_regression")
+
+    def test_manual_review_and_unchanged_are_kept_apart(self) -> None:
+        states = self._states(
+            [{"region_id": "p001:a", "action": "manual_review", "reason_code": "high_risk"},
+             {"region_id": "p001:b", "action": "keep"}],
+            {}, [])
+        self.assertEqual(states["p001:a"]["state"], "manual_review")
+        self.assertEqual(states["p001:a"]["reason_code"], "high_risk")
+        self.assertEqual(states["p001:b"]["state"], "unchanged")
+
+    def test_a_region_the_renderer_never_saw_stays_pending(self) -> None:
+        states = self._states([{"region_id": "p003:a", "action": "replace"}],
+                              {3: [{"region_id": "p003:a"}]}, [])
+        self.assertEqual(states["p003:a"]["state"], "pending")
+
+    def test_review_summary_counts_each_outcome_separately(self) -> None:
+        reviews = [{"region_id": "p001:a", "action": "manual_review"},
+                   {"region_id": "p001:b", "action": "keep"},
+                   {"region_id": "p008:a", "action": "replace"},
+                   {"region_id": "p008:b", "action": "replace"}]
+        changed = {8: [{"region_id": "p008:a", "revised_translation": "x"},
+                       {"region_id": "p008:b", "revised_translation": "y"}]}
+        records = [{"page": 8, "status": "rendered",
+                    "changed_regions": ["p008:a", "p008:b"], "rejected_regions": ["p008:b"]}]
+        states = self._states(reviews, changed, records)
+        summary = ChapterQualityRevision._review_summary(
+            reviews, states, records, changed, [{"index": 8}, {"index": 1}])
+        self.assertEqual(summary["applied"], 1)
+        self.assertEqual(summary["rejected_visual_gate"], 1)
+        self.assertEqual(summary["manual_review"], 1)
+        self.assertEqual(summary["unchanged"], 1)
+        self.assertEqual(summary["pages_changed"], 1)
+
+    def test_every_state_is_one_of_the_declared_states_and_the_summary_totals_match(self) -> None:
+        reviews = [{"region_id": "p001:a", "action": "manual_review"},
+                   {"region_id": "p001:b", "action": "keep"},
+                   {"region_id": "p008:a", "action": "replace"},
+                   {"region_id": "p008:b", "action": "replace"},
+                   {"region_id": "p003:a", "action": "replace"}]
+        states = self._states(
+            reviews,
+            {8: [{"region_id": "p008:a"}, {"region_id": "p008:b"}], 3: [{"region_id": "p003:a"}]},
+            [{"page": 8, "status": "rendered", "changed_regions": ["p008:a", "p008:b"],
+              "rejected_regions": ["p008:b"]}])
+        for region_id, entry in states.items():
+            self.assertIn(entry["state"], ChapterQualityRevision.VISUAL_STATES, region_id)
+        summary = ChapterQualityRevision._visual_state_summary(states)
+        self.assertEqual(sum(summary.values()), len(reviews))
+        self.assertEqual(summary["applied"], 1)
+        self.assertEqual(summary["rejected_visual_regression"], 1)
+        self.assertEqual(summary["pending"], 1)
+
+
+class VisualGateUiContracts(unittest.TestCase):
+    def setUp(self) -> None:
+        self.js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
+        self.shell = Path("ui/ui_shell.html").read_text(encoding="utf-8")
+
+    def test_every_gate_reason_code_has_a_pt_br_label(self) -> None:
+        # A gate the user cannot read is a gate the user cannot act on.
+        for code in ("translated_render_base_unavailable", "unsafe_incremental_mask",
+                     "unexpected_pixels_outside_changed_regions", "text_overlap_regression_detected",
+                     "clean_region_background_unavailable", "excessive_cleanup_mask",
+                     "ambiguous_text_polarity", "unsafe_inverted_cleanup_mask",
+                     "dark_region_background_reconstruction_failed",
+                     "light_text_components_not_isolated",
+                     "empty_previous_text_mask", "cleanup_mask_crosses_artwork"):
+            self.assertIn(f"{code}:", self.js, code)
+
+    def test_every_visual_state_has_a_label_and_a_filter(self) -> None:
+        for state in ChapterQualityRevision.VISUAL_STATES:
+            self.assertIn(f"{state}:", self.js, state)
+        for state in ("applied", "rejected_visual_regression", "manual_review", "unchanged"):
+            self.assertIn(f'data-review-filter="{state}"', self.shell, state)
+
+    def test_the_comparison_action_is_offered(self) -> None:
+        self.assertIn("data-review-compare", self.js)
+        self.assertIn("ABRIR COMPARAÇÃO", self.js)
+        self.assertIn("visualComparisonDialog", self.shell)
+
+
 class LocalizedCleanupContracts(unittest.TestCase):
     """The previous translation must be erased before the new one is drawn."""
 
