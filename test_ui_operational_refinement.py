@@ -221,5 +221,57 @@ class FrontendOperationalContractsTests(unittest.TestCase):
         self.assertNotIn("traceback", js[js.index("function renderRunStatus"):])
 
 
+class TranslatedHistoryReviewEntry(unittest.TestCase):
+    def setUp(self):
+        root = Path(__file__).resolve().parent
+        self.js = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.shell = (root / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+
+    def test_history_card_exposes_explicit_review_action(self):
+        # A visible text action (not just another icon) with accessible labelling.
+        self.assertIn('data-action="review"', self.js)
+        self.assertIn("reviewAction(record)", self.js)
+        self.assertIn("Revisar OCR, tradução e qualidade deste capítulo", self.js)
+        for label in ("Ver revisão", "Continuar revisão", "Revisar"):
+            self.assertIn(label, self.js)
+
+    def test_review_entry_adopts_job_and_run_not_runtime_latest(self):
+        # The entry must bind exactly the clicked card's job_id + run_id.
+        self.assertIn("function reviewIdentity", self.js)
+        self.assertIn("record.job_id || record.id", self.js)
+        self.assertIn("record.run_id", self.js)
+        self.assertIn("function openChapterReview", self.js)
+        self.assertIn("url.searchParams.set('view', 'review')", self.js)
+        self.assertIn("url.searchParams.set('job_id', jobId)", self.js)
+        self.assertIn("url.searchParams.set('run_id', runId)", self.js)
+        # It must not adopt a chapter by falling back to the global latest runtime.
+        self.assertNotIn("runtime.latest", self.js[self.js.index("function openChapterReview"):])
+
+    def test_review_mode_opens_panel_and_hides_start(self):
+        self.assertIn("function applyReviewMode", self.js)
+        self.assertIn("if (start) start.hidden = true", self.js)
+        self.assertIn("panel.scrollIntoView", self.js)
+        self.assertIn('reviewModeBanner', self.shell)
+        self.assertIn('reviewModeExit', self.shell)
+
+    def test_reload_restores_review_selection(self):
+        self.assertIn("function restoreReviewModeFromUrl", self.js)
+        self.assertIn("params.get('view') !== 'review'", self.js)
+        self.assertIn("restoreReviewModeFromUrl()", self.js)
+        # A background poll must not hide the panel while review_mode owns it.
+        self.assertIn("!appState.reviewMode && $('#qualityReviewPanel')", self.js)
+
+    def test_review_action_stays_separate_from_compare_and_report(self):
+        # Compare/report/pdf keep opening only their own artifact.
+        self.assertIn("['pdf','folder','report','compare','context'].includes", self.js)
+        self.assertIn("if (button.dataset.action === 'review')", self.js)
+
+    def test_developer_mode_toggle_is_a_real_ui_option(self):
+        self.assertIn('id="developerModeToggle"', self.shell)
+        self.assertIn("developerModeToggle", self.js)
+        self.assertIn("tradutorDeveloperMode", self.js)
+        self.assertIn("updateQualityReviewDeveloperActions()", self.js)
+
+
 if __name__ == "__main__":
     unittest.main()
