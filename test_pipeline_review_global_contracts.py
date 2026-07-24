@@ -345,6 +345,18 @@ class VisualGateStateContracts(unittest.TestCase):
         self.assertEqual(states["p001:a"]["reason_code"], "high_risk")
         self.assertEqual(states["p001:b"]["state"], "unchanged")
 
+    def test_preserve_original_is_unchanged_not_pending(self) -> None:
+        states = self._states([{"region_id": "p001:a", "action": "preserve_original"}], {}, [])
+        self.assertEqual(states["p001:a"]["state"], "unchanged")
+
+    def test_a_declined_proposal_is_held_for_manual_review(self) -> None:
+        # Reviewer proposed a rewrite, but the safe-apply step never submitted it
+        # to the renderer (e.g. adding text where there was none). It must not
+        # vanish into "pending"; a human decides.
+        states = self._states([{"region_id": "p004:a", "action": "rewrite",
+                                "revised_translation": "novo"}], {}, [])
+        self.assertEqual(states["p004:a"]["state"], "manual_review")
+
     def test_a_region_the_renderer_never_saw_stays_pending(self) -> None:
         states = self._states([{"region_id": "p003:a", "action": "replace"}],
                               {3: [{"region_id": "p003:a"}]}, [])
@@ -575,6 +587,20 @@ class ReviewedPdfVersionGateContracts(unittest.TestCase):
             base = revision._semantic_revision_hash(self._changes())
             self.assertNotEqual(revision._semantic_revision_hash(self._changes(translation="Fuja!")), base)
             self.assertNotEqual(revision._semantic_revision_hash(self._changes(source="Run n0w")), base)
+
+    def test_render_pipeline_version_participates_in_the_hash(self) -> None:
+        # A renderer fix that changes pixels but not the reviewed text must still
+        # count as a new material revision, so it can supersede an old PDF.
+        import chapter_quality_revision as cqr
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            base = revision._semantic_revision_hash(self._changes())
+            original = cqr.RENDER_PIPELINE_VERSION
+            try:
+                cqr.RENDER_PIPELINE_VERSION = original + "-next"
+                self.assertNotEqual(revision._semantic_revision_hash(self._changes()), base)
+            finally:
+                cqr.RENDER_PIPELINE_VERSION = original
 
     def test_version_manifest_records_and_reports_the_latest_existing_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
