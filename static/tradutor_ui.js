@@ -1501,6 +1501,9 @@
     if (canary) canary.hidden = !qualityReviewDeveloperMode();
   }
 
+  const REVISION_CANCELLABLE_STATES = new Set(['queued', 'running', 'cancelling']);
+  const REVISION_RESUMABLE_STATES = new Set(['cancelled', 'interrupted', 'failed']);
+
   function renderQualityRevisionStatus(status = null) {
     const panel = $('#qualityRevisionStatus');
     if (!panel) return;
@@ -1527,6 +1530,17 @@
     if (meta) {
       meta.textContent = `revision_id ${String(status.revision_id || '—').slice(0, 8)} · ${pages} · ${regions} · ${requests} requisições · ${status.status || 'running'}${responseStats ? ' · ' + responseStats : ''}`;
     }
+    // A revision must always offer the next honest action: stop it while it runs,
+    // or continue it from the checkpoint once it stopped.
+    const state = String(status.status || '');
+    const cancelBtn = $('#cancelRevisionAction');
+    const resumeBtn = $('#resumeRevisionAction');
+    if (cancelBtn) {
+      cancelBtn.hidden = !REVISION_CANCELLABLE_STATES.has(state);
+      cancelBtn.disabled = state === 'cancelling';
+      cancelBtn.textContent = state === 'cancelling' ? 'CANCELANDO…' : 'CANCELAR REVISÃO';
+    }
+    if (resumeBtn) resumeBtn.hidden = !REVISION_RESUMABLE_STATES.has(state);
   }
 
   async function pollQualityRevisionStatus(jobId, {once = false} = {}) {
@@ -1670,6 +1684,32 @@
       updateQualityReviewSelectionUi();
     }
   });
+  $('#cancelRevisionAction')?.addEventListener('click', async () => {
+    const jobId = appState.qualityReview?.job_id;
+    if (!jobId || appState.qualityReviewBulkBusy) return;
+    if (!window.confirm('Cancelar a revisão em andamento? O progresso já revisado é preservado e você pode retomar depois.')) return;
+    appState.qualityReviewBulkBusy = true;
+    setQualityReviewBulkMessage('Cancelando revisão...', 'busy');
+    try {
+      const status = await api('/api/ui/quality-review/revision/cancel', {method: 'POST', body: JSON.stringify({job_id: jobId})});
+      renderQualityRevisionStatus(status);
+      setQualityReviewBulkMessage(`Revisão ${status.status === 'cancelling' ? 'sendo cancelada' : status.status || 'cancelada'}.`, 'ok');
+      clearTimeout(appState.qualityRevisionPoll);
+      appState.qualityRevisionPoll = setTimeout(() => pollQualityRevisionStatus(jobId), 1000);
+    } catch (error) {
+      setQualityReviewBulkMessage(error.message || 'Não foi possível cancelar a revisão.', 'error');
+    } finally {
+      appState.qualityReviewBulkBusy = false;
+      updateQualityReviewSelectionUi();
+    }
+  });
+
+  $('#resumeRevisionAction')?.addEventListener('click', () => {
+    // Resuming continues from the persisted checkpoint; the backend skips the
+    // regions that already have a stored answer instead of re-requesting them.
+    $('#globalAiReview')?.click();
+  });
+
   $('#globalAiReview')?.addEventListener('click', async () => {
     if (!appState.qualityReview?.job_id || appState.qualityReviewBulkBusy) return;
     appState.qualityReviewBulkBusy = true;

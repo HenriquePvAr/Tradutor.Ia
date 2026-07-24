@@ -441,6 +441,18 @@ def api_quality_revision_start(payload: dict[str, Any] = Body(default={})) -> di
         }) from exc
 
 
+@app.post("/api/ui/quality-review/revision/cancel")
+def api_quality_revision_cancel(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        return BRIDGE.cancel_quality_revision(str(payload.get("job_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "message": "Não foi possível cancelar a revisão.",
+            "action": "Recarregue a página e confira o estado atual da revisão.",
+        }) from exc
+
+
 @app.post("/api/ui/quality-review/revision/canary/start")
 def api_quality_revision_canary_start(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     try:

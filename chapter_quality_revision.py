@@ -1111,11 +1111,21 @@ class ChapterQualityRevision:
         job_id: str,
         run_id: str,
         reviewer_factory: Callable[[], Any] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.job_id = str(job_id or "")
         self.run_id = str(run_id or "")
         self.reviewer_factory = reviewer_factory or ContextualNvidiaReviewer
+        # Cooperative cancellation: checked between regions so an in-flight
+        # request finishes and its checkpoint is preserved before stopping.
+        self.should_cancel = should_cancel or (lambda: False)
+
+    def cancel_requested(self) -> bool:
+        try:
+            return bool(self.should_cancel())
+        except Exception:  # noqa: BLE001 - a broken predicate must never abort a revision
+            return False
 
     def latest_status(self) -> dict[str, Any] | None:
         root = self.output_dir / "quality_revision"
@@ -1127,6 +1137,56 @@ class ChapterQualityRevision:
         if manifest.is_file():
             return read_json(manifest, {})
         return None
+
+    def resume_reviews(self) -> dict[str, dict[str, Any]]:
+        """Answers already stored by a cancelled/interrupted revision.
+
+        Keyed by region_id so a resume can skip exactly those regions. Returns
+        an empty mapping when the last revision is not resumable, so a fresh
+        revision never silently reuses stale answers.
+        """
+
+        root = self.output_dir / "quality_revision"
+        pointer = read_json(root / "latest_revision.json", {})
+        manifest_path = Path(str(pointer.get("manifest_path") or ""))
+        if not manifest_path.is_file():
+            return {}
+        manifest = read_json(manifest_path, {})
+        if str(manifest.get("status") or "") not in {"cancelled", "interrupted", "failed"}:
+            return {}
+        checkpoint = read_json(manifest_path.parent / "nvidia_revision_checkpoint.json", {})
+        completed = checkpoint.get("completed_reviews")
+        if not isinstance(completed, list):
+            return {}
+        return {
+            str(item.get("region_id")): item
+            for item in completed
+            if isinstance(item, dict) and item.get("region_id")
+        }
+
+    def mark_cancelling(self) -> dict[str, Any] | None:
+        """Flag a running revision as cancelling so the UI reflects it at once.
+
+        The worker thread persists the terminal ``cancelled`` state once it stops
+        between regions; this only moves ``running`` -> ``cancelling``.
+        """
+
+        root = self.output_dir / "quality_revision"
+        pointer = read_json(root / "latest_revision.json", {})
+        manifest_path = Path(str(pointer.get("manifest_path") or ""))
+        if not manifest_path.is_file():
+            return None
+        manifest = read_json(manifest_path, {})
+        if str(manifest.get("status") or "") not in {"queued", "running"}:
+            return manifest
+        manifest.update({
+            "status": "cancelling",
+            "phase_label": "Cancelando revisão",
+            "reason_code": "user_cancelled",
+            "updated_at": utc_now(),
+        })
+        write_json(manifest_path, manifest)
+        return manifest
 
     def mark_interrupted(self, reason_code: str = "revision_process_lost") -> dict[str, Any] | None:
         """Persist a lost in-flight revision as interrupted so it can be resumed.
@@ -1164,6 +1224,9 @@ class ChapterQualityRevision:
         source_pdf = self._current_pdf_path(progress, quality)
         if not source_pdf.is_file():
             raise ValueError("revision_source_pdf_missing")
+        # Read the previous checkpoint before this run claims the "latest" pointer,
+        # so a resume can skip the regions that were already answered and paid for.
+        resume_reviews = self.resume_reviews()
         revision_id = uuid.uuid4().hex
         paths = self._paths(revision_id)
         manifest = self._initial_manifest(revision_id, source_pdf, max_iterations)
@@ -1174,7 +1237,7 @@ class ChapterQualityRevision:
             "updated_at": utc_now(),
         })
         try:
-            return self._run(progress, quality, source_pdf, paths, manifest)
+            return self._run(progress, quality, source_pdf, paths, manifest, resume_reviews=resume_reviews)
         except Exception as exc:  # noqa: BLE001 - persist failed revision state
             manifest.update({
                 "status": "failed",
@@ -1318,6 +1381,7 @@ class ChapterQualityRevision:
         source_pdf: Path,
         paths: RevisionPaths,
         manifest: dict[str, Any],
+        resume_reviews: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         valid_page_numbers = {
             page_number(page)
@@ -1346,8 +1410,25 @@ class ChapterQualityRevision:
         self._checkpoint(paths, manifest, "contextual_translation_review", "Revisando traduções com contexto")
         glossary = self._build_glossary(regions)
         write_json(paths.glossary, glossary)
-        contextual = self._review_translations(regions, glossary, manifest, paths)
+        contextual = self._review_translations(regions, glossary, manifest, paths, resume_reviews=resume_reviews)
         write_json(paths.contextual_review, contextual)
+
+        if contextual.get("cancelled"):
+            # Stop cleanly: no safe changes are applied and no PDF is produced,
+            # but every answered region stays in the checkpoint for a resume.
+            manifest.update({
+                "status": "cancelled",
+                "phase": "cancelled",
+                "phase_label": "Revisão cancelada",
+                "reason_code": "user_cancelled",
+                "resumable": True,
+                "safe_changes_applied": 0,
+                "reviewed_pdf_path": "",
+                "no_reviewed_pdf_reason": "revision_cancelled",
+                "updated_at": utc_now(),
+            })
+            write_json(paths.manifest, manifest)
+            return manifest
 
         self._checkpoint(paths, manifest, "terminology_validation", "Validando terminologia")
         applicable = self._select_safe_changes(regions, contextual.get("reviews", []))
@@ -1517,6 +1598,7 @@ class ChapterQualityRevision:
         *,
         canary: bool = False,
         max_regions: int | None = None,
+        resume_reviews: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         reviewable = [
             self._review_record(regions, idx)
@@ -1526,11 +1608,19 @@ class ChapterQualityRevision:
         if canary:
             reviewable = self._select_canary_records(reviewable, max_regions=max_regions or 10)
         skipped_unchanged: list[dict[str, Any]] = []
+        resumed: list[dict[str, Any]] = []
         if not canary:
             reviewable, skipped = self._partition_suspicious(reviewable)
             skipped_unchanged = [self._unchanged_review(record) for record in skipped]
             manifest["suspicious_regions"] = len(reviewable)
             manifest["skipped_unchanged_regions"] = len(skipped)
+            if resume_reviews:
+                # Regions already answered by the cancelled/interrupted run are
+                # carried over verbatim: no second request, no duplicate cost.
+                pending = [r for r in reviewable if str(r.get("region_id")) not in resume_reviews]
+                resumed = [resume_reviews[str(r["region_id"])] for r in reviewable if str(r.get("region_id")) in resume_reviews]
+                reviewable = pending
+            manifest["resumed_regions"] = len(resumed)
         reviewer = self.reviewer_factory()
         model = getattr(reviewer, "model", "unknown")
         manifest["model"] = model
@@ -1559,8 +1649,14 @@ class ChapterQualityRevision:
                     "created_at": utc_now(),
                 }
         reviews: list[dict[str, Any]] = []
+        cancelled = False
         batch_size = self._revision_batch_size(reviewable, canary=canary)
         for start in range(0, len(reviewable), batch_size):
+            # Stop before issuing another provider request; everything already
+            # answered stays in the checkpoint so the revision can be resumed.
+            if not canary and self.cancel_requested():
+                cancelled = True
+                break
             batch = reviewable[start:start + batch_size]
             batch_id = f"{manifest.get('revision_id', 'revision')}-batch-{(start // batch_size) + 1:03d}"
             try:
@@ -1589,11 +1685,16 @@ class ChapterQualityRevision:
                 "manual": sum(1 for item in reviews if item.get("action") == "manual_review"),
                 "requests_used": int(getattr(reviewer, "requests", 0)),
                 "last_error": "",
+                # Persist the answers themselves so a resume continues from here
+                # instead of paying for the same regions again.
+                "completed_reviews": reviews,
                 "updated_at": utc_now(),
             }
             write_json(paths.checkpoint, checkpoint)
-        # Non-suspicious regions were never sent to the model; record them as
-        # explicitly unchanged so no region is silently omitted or treated as approved.
+        # Answers carried over from the interrupted run, plus the non-suspicious
+        # regions that were never sent to the model. Recording both keeps every
+        # region accounted for: none is silently omitted or treated as approved.
+        reviews.extend(resumed)
         reviews.extend(skipped_unchanged)
         manifest["requests"] = int(getattr(reviewer, "requests", manifest.get("requests", 0) or 0))
         blocked = sum(1 for item in reviews if item.get("action") == "manual_review")
@@ -1621,6 +1722,7 @@ class ChapterQualityRevision:
             "invalid_response_batches": invalid_batches,
             "quality_passed": blocked == 0 and residual == 0,
             "connectivity_check": health_check or {},
+            "cancelled": cancelled,
             "created_at": utc_now(),
         }
 

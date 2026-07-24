@@ -307,6 +307,7 @@ class UiBridge:
         self.store = JobStore(JOBS_DB_PATH)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
+        self._quality_revision_cancels: dict[str, threading.Event] = {}
         self.store.reconcile_confirmed_reviews()
         # A job left in flight by a crash must not come back as PROCESSANDO after a restart.
         self._recover_staged_source_analyses()
@@ -816,10 +817,13 @@ class UiBridge:
             status = self.quality_revision_status(str(job["id"]))
             return status or {"status": "running", "parent_job_id": str(job["id"])}
 
+        cancel = threading.Event()
+        self._quality_revision_cancels[str(job["id"])] = cancel
         revision = ChapterQualityRevision(
             str(job["output_dir"]),
             job_id=str(job["id"]),
             run_id=str(job.get("run_id") or ""),
+            should_cancel=cancel.is_set,
         )
 
         def target() -> None:
@@ -848,6 +852,36 @@ class UiBridge:
             "phase": "preparing",
             "phase_label": "Preparando revisão",
         }
+
+    def cancel_quality_revision(self, job_id: str) -> dict[str, Any]:
+        """Cooperatively stop this job's revision. Idempotent and scoped.
+
+        Only this job's revision is signalled: the UI, the worker and any other
+        job keep running. The in-flight provider request is allowed to finish so
+        its checkpoint survives for a later resume.
+        """
+
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not job.get("output_dir"):
+            raise ValueError("quality_review_not_available")
+        key = str(job["id"])
+        cancel = self._quality_revision_cancels.get(key)
+        if cancel:
+            cancel.set()
+        revision = ChapterQualityRevision(
+            str(job["output_dir"]),
+            job_id=key,
+            run_id=str(job.get("run_id") or ""),
+        )
+        thread = self._quality_revision_threads.get(key)
+        if thread and thread.is_alive():
+            # The worker will persist "cancelled" once it stops between regions.
+            revision.mark_cancelling()
+        else:
+            # Nothing is running: settle the state instead of leaving it in-flight.
+            revision.mark_interrupted("revision_process_lost")
+        self.history_revision += 1
+        return self.quality_revision_status(key) or {"status": "cancelled", "parent_job_id": key}
 
     def start_quality_revision_canary(self, job_id: str, *, max_regions: int = 10) -> dict[str, Any]:
         payload = self.quality_review(job_id)

@@ -62,6 +62,59 @@ class RevisionLifecycleContracts(unittest.TestCase):
         self.assertNotIn("stderr", options)
 
 
+class RevisionCancelAndResumeContracts(unittest.TestCase):
+    def _revision(self, root: Path, status: str, reviews: list | None = None) -> ChapterQualityRevision:
+        output = root / "output"
+        folder = output / "quality_revision" / "rev1"
+        folder.mkdir(parents=True)
+        manifest = folder / "revision_manifest.json"
+        manifest.write_text(json.dumps({"revision_id": "rev1", "status": status}), encoding="utf-8")
+        if reviews is not None:
+            (folder / "nvidia_revision_checkpoint.json").write_text(
+                json.dumps({"completed_reviews": reviews}), encoding="utf-8")
+        (output / "quality_revision" / "latest_revision.json").write_text(
+            json.dumps({"revision_id": "rev1", "manifest_path": str(manifest)}), encoding="utf-8")
+        return ChapterQualityRevision(output, job_id="job-1", run_id="run-1")
+
+    def test_cancelling_is_idempotent_and_only_moves_in_flight_revisions(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder), "running")
+            first = revision.mark_cancelling()
+            self.assertEqual(first["status"], "cancelling")
+            self.assertEqual(first["reason_code"], "user_cancelled")
+            self.assertEqual(revision.mark_cancelling()["status"], "cancelling")
+        with tempfile.TemporaryDirectory() as folder:
+            done = self._revision(Path(folder), "finished")
+            self.assertEqual(done.mark_cancelling()["status"], "finished")
+
+    def test_resume_reuses_answers_only_from_a_stopped_revision(self) -> None:
+        answers = [{"region_id": "p1:R1", "action": "keep"}, {"region_id": "p1:R2", "action": "rewrite"}]
+        for status in ("cancelled", "interrupted", "failed"):
+            with tempfile.TemporaryDirectory() as folder:
+                revision = self._revision(Path(folder), status, answers)
+                self.assertEqual(sorted(revision.resume_reviews()), ["p1:R1", "p1:R2"], status)
+        for status in ("finished", "running"):
+            with tempfile.TemporaryDirectory() as folder:
+                revision = self._revision(Path(folder), status, answers)
+                self.assertEqual(revision.resume_reviews(), {}, status)
+
+    def test_cancel_predicate_failure_never_aborts_a_revision(self) -> None:
+        def broken() -> bool:
+            raise RuntimeError("predicate exploded")
+
+        revision = ChapterQualityRevision("unused", job_id="j", run_id="r", should_cancel=broken)
+        self.assertFalse(revision.cancel_requested())
+
+    def test_ui_exposes_cancel_and_resume_actions(self) -> None:
+        js = JS.read_text(encoding="utf-8")
+        shell = SHELL.read_text(encoding="utf-8")
+        self.assertIn('id="cancelRevisionAction"', shell)
+        self.assertIn('id="resumeRevisionAction"', shell)
+        self.assertIn("/api/ui/quality-review/revision/cancel", js)
+        self.assertIn("REVISION_CANCELLABLE_STATES", js)
+        self.assertIn("REVISION_RESUMABLE_STATES", js)
+
+
 class SuspiciousRegionSelection(unittest.TestCase):
     def _revision(self) -> ChapterQualityRevision:
         return ChapterQualityRevision("unused", job_id="job-1", run_id="run-1")
