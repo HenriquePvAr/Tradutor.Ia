@@ -2719,7 +2719,16 @@ class ChapterQualityRevision:
             if not isinstance(item, dict) or item.get("ignored"):
                 continue
             box = tuple(int(v) for v in (item.get("bounding_box") or [0, 0, 1, 1])[:4])
-            polygon = np.array([[box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]]], dtype=np.float32)
+            # bounding_box is (x, y, w, h); the polygon corners must come from
+            # x+w / y+h, not from w / h treated as absolute right/bottom. The old
+            # form built a page-tall vertical sliver whenever y > h, and that
+            # sliver whitened text in unrelated groups during the incremental
+            # re-render (e.g. page 8's top balloon).
+            bx, by, bw, bh = box
+            polygon = np.array(
+                [[bx, by], [bx + bw, by], [bx + bw, by + bh], [bx, by + bh]],
+                dtype=np.float32,
+            )
             line = OCRLine(
                 text=item_text(item),
                 confidence=float(item.get("confidence") or 0.0),
