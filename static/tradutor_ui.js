@@ -537,7 +537,12 @@
     if (name === 'inicio') renderDashboard();
     if (name === 'community') loadCommunityFeed();
   }
-  $$('.rail-tab').forEach(tab => tab.addEventListener('click', () => activateTab(tab.dataset.tab)));
+  $$('.rail-tab').forEach(tab => tab.addEventListener('click', () => {
+    // Choosing "Nova tradução" from the rail means starting a fresh chapter, so
+    // review_mode must release the form instead of pinning the reviewed chapter.
+    if (tab.dataset.tab === 'nova' && appState.reviewMode) exitReviewMode();
+    activateTab(tab.dataset.tab);
+  }));
   $$('[data-goto]').forEach(button => button.addEventListener('click', () => activateTab(button.dataset.goto)));
   $('#railProfile')?.addEventListener('click', () => activateTab('profile'));
   window.setTimeout(() => moveIndicator($('.rail-tab.active')), 60);
@@ -2041,24 +2046,44 @@
       if (el) el.readOnly = true;
     });
   }
-  function clearReviewMode() {
+  // Leave review_mode and hand the Nova tradução form back to the user: the
+  // reviewed chapter must not keep the form hostage. Never touches the
+  // revision's checkpoints or cancels background work.
+  function exitReviewMode({clearForm = true} = {}) {
+    const wasActive = Boolean(appState.reviewMode);
     delete document.documentElement.dataset.reviewMode;
     appState.reviewMode = null;
+    appState.currentJobId = '';
+    setGlobal('__tradutorCurrentJobId', '');
     const banner = $('#reviewModeBanner');
     if (banner) banner.hidden = true;
     const start = $('#startBtn');
-    if (start) start.hidden = false;
+    if (start) { start.hidden = false; start.disabled = false; }
     ['#urlInput', '#localFolderInput', '#nameInput', '#outputInput'].forEach(sel => {
       const el = $(sel);
       if (el) el.readOnly = false;
     });
+    if (wasActive && clearForm) {
+      appState.programmingFields = true;
+      ['#urlInput', '#localFolderInput', '#nameInput', '#outputInput'].forEach(sel => {
+        const el = $(sel);
+        if (el) el.value = '';
+      });
+      appState.programmingFields = false;
+      appState.nameDirty = false;
+      appState.outputDirty = false;
+      appState.qualityReview = null;
+    }
     const panel = $('#qualityReviewPanel');
     if (panel) panel.hidden = true;
+    const revisionStatus = $('#qualityRevisionStatus');
+    if (revisionStatus) revisionStatus.hidden = true;
     try {
       const url = new URL(window.location.href);
       ['view', 'job_id', 'run_id'].forEach(key => url.searchParams.delete(key));
       window.history.replaceState({}, '', url);
     } catch (_) { /* history is best-effort */ }
+    return wasActive;
   }
   // Adopt exactly this chapter's job/run and open the existing review panel in
   // Nova tradução. Never creates a job, starts a run, or calls NVIDIA.
@@ -2168,7 +2193,7 @@
     renderHistory();
   }
   $('#histSearch')?.addEventListener('input', renderHistory);
-  $('#reviewModeExit')?.addEventListener('click', () => { clearReviewMode(); activateTab('hist'); });
+  $('#reviewModeExit')?.addEventListener('click', () => { exitReviewMode(); activateTab('hist'); });
   const developerModeToggle = $('#developerModeToggle');
   if (developerModeToggle) {
     developerModeToggle.checked = qualityReviewDeveloperMode();
