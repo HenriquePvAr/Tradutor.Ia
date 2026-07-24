@@ -10,7 +10,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chapter_quality_revision import ChapterQualityRevision, ContextualNvidiaReviewer, REVIEW_SCHEMA_VERSION
+from chapter_quality_revision import (
+    ChapterQualityRevision,
+    ContextualNvidiaReviewer,
+    REVIEW_SCHEMA_VERSION,
+    stable_region_key,
+)
 from job_store import JobStatus, JobStore
 
 
@@ -133,6 +138,121 @@ class RevisionCancelAndResumeContracts(unittest.TestCase):
         self.assertIn("/api/ui/quality-review/revision/cancel", js)
         self.assertIn("REVISION_CANCELLABLE_STATES", js)
         self.assertIn("REVISION_RESUMABLE_STATES", js)
+
+
+class IncrementalRenderBaseContracts(unittest.TestCase):
+    """The reviewed page must be an edit of the translated page.
+
+    Rebuilding it from the English scan is what made earlier revisions show the
+    source text again, overlap two languages and regress whole pages.
+    """
+
+    def _page(self, root: Path, *, with_output: bool = True):
+        import numpy as np
+
+        import cv2
+
+        english = root / "smart_input_pages"
+        translated = root / "pages"
+        english.mkdir(parents=True, exist_ok=True)
+        translated.mkdir(parents=True, exist_ok=True)
+        source = english / "page_003.png"
+        output = translated / "page_003.png"
+        # Two regions: the top one will change, the bottom one must not.
+        src = np.full((200, 300, 3), 255, dtype=np.uint8)
+        cv2.rectangle(src, (10, 10), (290, 90), (0, 0, 0), -1)      # english region A
+        cv2.rectangle(src, (10, 110), (290, 190), (0, 0, 0), -1)    # english region B
+        cv2.imwrite(str(source), src)
+        trans = np.full((200, 300, 3), 255, dtype=np.uint8)
+        cv2.rectangle(trans, (10, 10), (290, 90), (40, 40, 40), -1)   # translated A
+        cv2.rectangle(trans, (10, 110), (290, 190), (80, 80, 80), -1)  # translated B
+        if with_output:
+            cv2.imwrite(str(output), trans)
+        page = {
+            "index": 3,
+            "image_path": str(source),
+            "output_path": str(output) if with_output else "",
+            # Region geometry is (x, y, width, height), matching the pipeline.
+            "debug_data": {"items": [
+                {"region_id": "REGION_001", "page": 3, "draw_box": [10, 10, 280, 80]},
+                {"region_id": "REGION_002", "page": 3, "draw_box": [10, 110, 280, 80]},
+            ]},
+        }
+        return page, source, output
+
+    def _revision(self, root: Path) -> ChapterQualityRevision:
+        return ChapterQualityRevision(root, job_id="job-1", run_id="run-1")
+
+    def test_base_is_the_translated_output_never_the_english_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            page, source, output = self._page(root)
+            resolved = ChapterQualityRevision._resolve_incremental_render_base(page)
+            self.assertEqual(resolved["base_kind"], "translated_pipeline_output")
+            self.assertEqual(Path(resolved["path"]), output)
+            self.assertNotEqual(Path(resolved["path"]), source)
+
+    def test_missing_translated_output_fails_closed_without_falling_back(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            page, source, _ = self._page(root, with_output=False)
+            resolved = ChapterQualityRevision._resolve_incremental_render_base(page)
+            self.assertEqual(resolved["base_kind"], "unavailable")
+            self.assertEqual(resolved["reason_code"], "translated_render_base_unavailable")
+            # The English scan must never be offered as a fallback.
+            self.assertEqual(resolved["path"], "")
+            self.assertNotEqual(resolved["path"], str(source))
+
+    def test_only_changed_regions_are_boxed(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            page, _, _ = self._page(root)
+            boxes, rejected = ChapterQualityRevision._changed_region_boxes(
+                page, [{"region_id": stable_region_key(3, page["debug_data"]["items"][0])}],
+                width=300, height=200)
+            self.assertEqual(len(boxes), 1)
+            # (x, y, w, h) = (10, 10, 280, 80) becomes the rect (10, 10)-(290, 90).
+            self.assertEqual(boxes[0], (10, 10, 290, 90))
+            self.assertEqual(rejected, [])
+
+    def test_degenerate_boxes_are_rejected_not_expanded(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            page, _, _ = self._page(root)
+            page["debug_data"]["items"][0]["draw_box"] = [10, 10, 0, 0]
+            boxes, rejected = ChapterQualityRevision._changed_region_boxes(
+                page, [{"region_id": stable_region_key(3, page["debug_data"]["items"][0])}],
+                width=300, height=200)
+            self.assertEqual(boxes, [])
+            self.assertEqual(len(rejected), 1)
+
+    def test_untouched_pixels_are_detected_when_something_rewrites_the_page(self) -> None:
+        import numpy as np
+
+        base = np.zeros((40, 40, 3), dtype=np.uint8)
+        same = base.copy()
+        boxes = [(0, 0, 10, 10)]
+        self.assertEqual(ChapterQualityRevision._pixels_outside_boxes_changed(base, same, boxes), 0)
+        # A change inside the allowed box is fine...
+        inside = base.copy()
+        inside[0:10, 0:10] = 255
+        self.assertEqual(ChapterQualityRevision._pixels_outside_boxes_changed(base, inside, boxes), 0)
+        # ...but anything outside it means the page was rebuilt, not edited.
+        outside = base.copy()
+        outside[20:30, 20:30] = 255
+        self.assertEqual(ChapterQualityRevision._pixels_outside_boxes_changed(base, outside, boxes), 100)
+
+    def test_overlapping_text_is_visible_as_extra_ink(self) -> None:
+        import numpy as np
+
+        clean = np.full((20, 20, 3), 255, dtype=np.uint8)
+        clean[5:8, :] = 0                     # one line of text
+        overlapped = np.full((20, 20, 3), 255, dtype=np.uint8)
+        overlapped[5:8, :] = 0
+        overlapped[10:16, :] = 0              # second language drawn over it
+        before = ChapterQualityRevision._ink(clean)
+        after = ChapterQualityRevision._ink(overlapped)
+        self.assertGreater(after, before * ChapterQualityRevision.RENDER_OVERLAP_INK_RATIO)
 
 
 class ReviewedPdfVersionGateContracts(unittest.TestCase):
