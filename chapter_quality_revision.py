@@ -1164,6 +1164,37 @@ class ChapterQualityRevision:
             if isinstance(item, dict) and item.get("region_id")
         }
 
+    def sweep_stale_revisions(self, *, keep_revision_id: str = "") -> list[str]:
+        """Settle in-flight manifests left behind by earlier processes.
+
+        ``mark_interrupted`` only heals the revision the "latest" pointer names, so
+        older runs that died before being superseded stayed ``running`` forever.
+        The live revision is passed in and skipped.
+        """
+
+        healed: list[str] = []
+        root = self.output_dir / "quality_revision"
+        if not root.is_dir():
+            return healed
+        for manifest_path in root.glob("*/revision_manifest.json"):
+            manifest = read_json(manifest_path, {})
+            revision_id = str(manifest.get("revision_id") or "")
+            if not revision_id or revision_id == str(keep_revision_id or ""):
+                continue
+            if str(manifest.get("status") or "") not in REVISION_IN_FLIGHT_STATUSES:
+                continue
+            manifest.update({
+                "status": "interrupted",
+                "phase": "interrupted",
+                "phase_label": "Revisão interrompida",
+                "reason_code": "revision_process_lost",
+                "resumable": True,
+                "updated_at": utc_now(),
+            })
+            write_json(manifest_path, manifest)
+            healed.append(revision_id)
+        return healed
+
     def mark_cancelling(self) -> dict[str, Any] | None:
         """Flag a running revision as cancelling so the UI reflects it at once.
 

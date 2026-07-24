@@ -98,6 +98,26 @@ class RevisionCancelAndResumeContracts(unittest.TestCase):
                 revision = self._revision(Path(folder), status, answers)
                 self.assertEqual(revision.resume_reviews(), {}, status)
 
+    def test_stale_revisions_outside_the_latest_pointer_are_settled(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "output"
+            for name, status in (("old", "running"), ("live", "running"), ("done", "finished")):
+                target = output / "quality_revision" / name
+                target.mkdir(parents=True)
+                (target / "revision_manifest.json").write_text(
+                    json.dumps({"revision_id": name, "status": status}), encoding="utf-8")
+            revision = ChapterQualityRevision(output, job_id="job-1", run_id="run-1")
+            healed = revision.sweep_stale_revisions(keep_revision_id="live")
+            self.assertEqual(healed, ["old"])
+            settled = json.loads((output / "quality_revision" / "old" / "revision_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(settled["status"], "interrupted")
+            self.assertTrue(settled["resumable"])
+            # The live revision and terminal ones are never touched.
+            kept = json.loads((output / "quality_revision" / "live" / "revision_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(kept["status"], "running")
+            done = json.loads((output / "quality_revision" / "done" / "revision_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(done["status"], "finished")
+
     def test_cancel_predicate_failure_never_aborts_a_revision(self) -> None:
         def broken() -> bool:
             raise RuntimeError("predicate exploded")

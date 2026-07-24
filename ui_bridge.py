@@ -795,6 +795,9 @@ class UiBridge:
             if not alive and str(status.get("status") or "") in REVISION_IN_FLIGHT_STATUSES:
                 status = revision.mark_interrupted("revision_process_lost") or status
                 status["thread_alive"] = False
+            # Older runs that died before being superseded never reach the "latest"
+            # pointer, so settle them too instead of leaving them in flight forever.
+            revision.sweep_stale_revisions(keep_revision_id=str(status.get("revision_id") or "") if alive else "")
             return status
         return {
             "job_id": str(job["id"]),
