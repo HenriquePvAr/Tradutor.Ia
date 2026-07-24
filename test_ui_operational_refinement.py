@@ -238,7 +238,9 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
     def test_review_entry_adopts_job_and_run_not_runtime_latest(self):
         # The entry must bind exactly the clicked card's job_id + run_id.
         self.assertIn("function reviewIdentity", self.js)
-        self.assertIn("record.job_id || record.id", self.js)
+        # The canonical job id only; a presentation/history row id is never a source job.
+        self.assertIn("String(record.job_id || '').toLowerCase()", self.js)
+        self.assertNotIn("record.job_id || record.id", self.js)
         self.assertIn("record.run_id", self.js)
         self.assertIn("function openChapterReview", self.js)
         self.assertIn("url.searchParams.set('view', 'review')", self.js)

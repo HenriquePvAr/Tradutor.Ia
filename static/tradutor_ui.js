@@ -2055,7 +2055,9 @@
   // Canonical job/run identity for a finished chapter card. The review entry must
   // adopt exactly this chapter's job_id + run_id, never runtime.latest or the title.
   function reviewIdentity(record) {
-    const jobId = String(record.job_id || record.id || '').toLowerCase();
+    // Only the canonical job id identifies the chapter; a presentation/history
+    // row id must never be used as the source job.
+    const jobId = String(record.job_id || '').toLowerCase();
     const runId = String(record.run_id || '').trim();
     if (!/^[0-9a-f]{32}$/.test(jobId) || !runId) return null;
     if (!record.quality_report_path) return null;
@@ -2179,7 +2181,7 @@
     if (params.get('view') !== 'review') return;
     const jobId = String(params.get('job_id') || '').toLowerCase();
     if (!/^[0-9a-f]{32}$/.test(jobId)) return;
-    const record = appState.history.find(item => String(item.job_id || item.id || '').toLowerCase() === jobId);
+    const record = appState.history.find(item => String(item.job_id || '').toLowerCase() === jobId);
     if (record) void openChapterReview(record, {restore: true});
   }
   function renderHistoryCard(record) {
