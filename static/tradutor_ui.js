@@ -1641,9 +1641,15 @@
   $('#nvidiaContractCanary')?.addEventListener('click', async () => {
     if (!qualityReviewDeveloperMode() || !appState.qualityReview?.job_id || appState.qualityReviewBulkBusy) return;
     appState.qualityReviewBulkBusy = true;
-    setQualityReviewBulkMessage('Testando contrato NVIDIA com canário de até 10 regiões...', 'busy');
+    setQualityReviewBulkMessage('Preparando canário NVIDIA escalonado...', 'busy');
     try {
-      const status = await api('/api/ui/quality-review/revision/canary/start', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id, max_regions: 10})});
+      const current = await pollQualityRevisionStatus(appState.qualityReview.job_id, {once: true});
+      const passed = String(current?.status || '') === 'contract_canary_passed';
+      const reviewed = Number(current?.reviewed_regions || 0);
+      const validity = Number(current?.validity_rate || 0);
+      const maxRegions = passed && reviewed >= 3 && validity >= 0.9 ? 10 : (passed && reviewed >= 1 ? 3 : 1);
+      setQualityReviewBulkMessage(`Enviando canário NVIDIA de ${maxRegions} região${maxRegions === 1 ? '' : 'ões'}...`, 'busy');
+      const status = await api('/api/ui/quality-review/revision/canary/start', {method: 'POST', body: JSON.stringify({job_id: appState.qualityReview.job_id, max_regions: maxRegions})});
       renderQualityRevisionStatus(status);
       setQualityReviewBulkMessage(`Canário iniciado: ${status.phase_label || status.phase || 'em andamento'}.`, 'ok');
       showToast('Canário do contrato NVIDIA iniciado.', 'ok');
