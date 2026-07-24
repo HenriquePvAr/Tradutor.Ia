@@ -539,6 +539,8 @@ class ContextualNvidiaReviewer:
                     "role": "system",
                     "content": (
                         "Return only the guided JSON object. Use exact batch_id and region_id set. "
+                        "Return exactly one result per input region: same count, same region_id set, "
+                        "no omissions, no additions, no reordering; use keep when a region needs no change. "
                         "Actions: keep, rewrite, preserve_original, manual_review. "
                         "revised_translation must be the corrected pt-BR text (non-empty) only for rewrite; "
                         "for keep, preserve_original and manual_review set revised_translation to \"\". "
