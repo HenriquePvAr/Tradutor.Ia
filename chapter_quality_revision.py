@@ -1667,11 +1667,47 @@ class ChapterQualityRevision:
         write_json(paths.render_audit, render_audit)
 
         self._checkpoint(paths, manifest, "pdf_generation", "Gerando PDF revisado")
-        if changed_by_page:
+        semantic_hash = self._semantic_revision_hash(changed_by_page)
+        previous_version = self._latest_pdf_version()
+        manifest["semantic_revision_hash"] = semantic_hash
+        equivalent = bool(
+            changed_by_page
+            and previous_version
+            and str(previous_version.get("semantic_revision_hash") or "") == semantic_hash
+        )
+        if equivalent:
+            # The same corrections on the same regions produce the same chapter.
+            # A PDF would differ only by metadata/recompression, so keep the one
+            # we already have instead of growing a pile of equivalent versions.
+            manifest.update({
+                "reviewed_pdf_path": str(previous_version.get("pdf_path") or ""),
+                "reviewed_pdf_sha256": str(previous_version.get("pdf_sha256") or ""),
+                "no_reviewed_pdf_reason": "no_new_material_changes",
+                "materially_equivalent_to": str(previous_version.get("pdf_path") or ""),
+                "contains_new_material_changes": False,
+            })
+            visual = {
+                "pdf_path": str(previous_version.get("pdf_path") or ""),
+                "pdf_exists": True,
+                "pages_inspected": 0,
+                "expected_pages": len(pages),
+                "reason_code": "no_new_material_changes",
+                "created_at": utc_now(),
+            }
+        elif changed_by_page:
             reviewed_pdf = self._next_reviewed_pdf_path(source_pdf)
             generate_pdf(rendered_images, str(reviewed_pdf))
             manifest["reviewed_pdf_path"] = str(reviewed_pdf)
             manifest["reviewed_pdf_sha256"] = self._sha256(reviewed_pdf)
+            manifest["contains_new_material_changes"] = True
+            self._record_pdf_version(
+                pdf_path=reviewed_pdf,
+                manifest=manifest,
+                semantic_hash=semantic_hash,
+                changed_by_page=changed_by_page,
+                parent=previous_version,
+                page_count=len(pages),
+            )
             self._checkpoint(paths, manifest, "pdf_inspection", "Inspecionando o novo PDF")
             visual = self._inspect_pdf_pages(reviewed_pdf, rendered_images, expected_pages=len(pages))
         else:
@@ -2343,6 +2379,77 @@ class ChapterQualityRevision:
                 return Path(str(value))
         matches = sorted(self.output_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
         return matches[0] if matches else self.output_dir / "chapter.pdf"
+
+    PDF_VERSION_MANIFEST = "reviewed_pdf_version_manifest.json"
+    RENDERER_VERSION = "1"
+
+    @staticmethod
+    def _semantic_revision_hash(changed_by_page: dict[int, list[dict[str, Any]]]) -> str:
+        """Stable fingerprint of what a revision actually changes.
+
+        Built only from the applied corrections (region, action and resulting
+        text), never from timestamps, file order or PDF metadata, so two runs
+        that reach the same chapter produce the same hash even though their PDFs
+        would differ byte-for-byte after recompression.
+        """
+
+        entries = sorted(
+            (
+                str(item.get("region_id") or ""),
+                str(item.get("action") or ""),
+                str(item.get("revised_translation") or item.get("translation") or ""),
+                str(item.get("source_text") or ""),
+            )
+            for items in (changed_by_page or {}).values()
+            for item in items
+        )
+        payload = json.dumps(entries, ensure_ascii=False)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _pdf_version_manifest_path(self) -> Path:
+        return self.output_dir / self.PDF_VERSION_MANIFEST
+
+    def _latest_pdf_version(self) -> dict[str, Any] | None:
+        versions = read_json(self._pdf_version_manifest_path(), {})
+        entries = versions.get("versions") if isinstance(versions, dict) else None
+        if not isinstance(entries, list) or not entries:
+            return None
+        # Only versions whose file still exists can be reused as "the current PDF".
+        for entry in reversed(entries):
+            if isinstance(entry, dict) and Path(str(entry.get("pdf_path") or "")).is_file():
+                return entry
+        return None
+
+    def _record_pdf_version(
+        self,
+        *,
+        pdf_path: Path,
+        manifest: dict[str, Any],
+        semantic_hash: str,
+        changed_by_page: dict[int, list[dict[str, Any]]],
+        parent: dict[str, Any] | None,
+        page_count: int,
+    ) -> None:
+        path = self._pdf_version_manifest_path()
+        document = read_json(path, {})
+        entries = document.get("versions") if isinstance(document.get("versions"), list) else []
+        entries.append({
+            "pdf_path": str(pdf_path),
+            "pdf_sha256": str(manifest.get("reviewed_pdf_sha256") or ""),
+            "semantic_revision_hash": semantic_hash,
+            "revision_id": str(manifest.get("revision_id") or ""),
+            "parent_revision_id": str((parent or {}).get("revision_id") or ""),
+            "page_count": page_count,
+            "changed_region_ids": sorted(
+                str(item.get("region_id") or "")
+                for items in changed_by_page.values() for item in items
+            ),
+            "changed_page_ids": sorted(int(page) for page in changed_by_page),
+            "renderer_version": self.RENDERER_VERSION,
+            "contains_new_material_changes": True,
+            "created_at": utc_now(),
+        })
+        write_json(path, {"versions": entries})
 
     @staticmethod
     def _sha256(path: Path) -> str:

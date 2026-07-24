@@ -135,6 +135,80 @@ class RevisionCancelAndResumeContracts(unittest.TestCase):
         self.assertIn("REVISION_RESUMABLE_STATES", js)
 
 
+class ReviewedPdfVersionGateContracts(unittest.TestCase):
+    def _revision(self, root: Path) -> ChapterQualityRevision:
+        output = root / "output"
+        output.mkdir(parents=True, exist_ok=True)
+        return ChapterQualityRevision(output, job_id="job-1", run_id="run-1")
+
+    def _changes(self, translation: str = "Corra!", source: str = "Run now"):
+        return {3: [{"region_id": "p003:R1", "action": "rewrite",
+                     "revised_translation": translation, "source_text": source}]}
+
+    def test_semantic_hash_ignores_ordering_and_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            one = {1: [{"region_id": "p001:R1", "action": "rewrite", "revised_translation": "A", "source_text": "a"}],
+                   2: [{"region_id": "p002:R2", "action": "rewrite", "revised_translation": "B", "source_text": "b"}]}
+            other = {2: [{"region_id": "p002:R2", "action": "rewrite", "revised_translation": "B", "source_text": "b"}],
+                     1: [{"region_id": "p001:R1", "action": "rewrite", "revised_translation": "A", "source_text": "a"}]}
+            self.assertEqual(revision._semantic_revision_hash(one),
+                             revision._semantic_revision_hash(other))
+
+    def test_same_corrections_are_materially_equivalent(self) -> None:
+        # Scenario A/D: identical corrections, different run -> no new version.
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            first = revision._semantic_revision_hash(self._changes())
+            second = revision._semantic_revision_hash(self._changes())
+            self.assertEqual(first, second)
+
+    def test_changed_translation_or_source_creates_a_new_version(self) -> None:
+        # Scenario B (new text) and C (OCR corrected -> different source_text).
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            base = revision._semantic_revision_hash(self._changes())
+            self.assertNotEqual(revision._semantic_revision_hash(self._changes(translation="Fuja!")), base)
+            self.assertNotEqual(revision._semantic_revision_hash(self._changes(source="Run n0w")), base)
+
+    def test_version_manifest_records_and_reports_the_latest_existing_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            self.assertIsNone(revision._latest_pdf_version())
+            pdf = revision.output_dir / "chapter_reviewed_v2.pdf"
+            pdf.write_bytes(b"%PDF-1.4\n")
+            revision._record_pdf_version(
+                pdf_path=pdf,
+                manifest={"revision_id": "rev1", "reviewed_pdf_sha256": "abc"},
+                semantic_hash="hash-1",
+                changed_by_page=self._changes(),
+                parent=None,
+                page_count=68,
+            )
+            latest = revision._latest_pdf_version()
+            self.assertEqual(latest["semantic_revision_hash"], "hash-1")
+            self.assertEqual(latest["changed_region_ids"], ["p003:R1"])
+            self.assertEqual(latest["page_count"], 68)
+            self.assertTrue(latest["contains_new_material_changes"])
+
+    def test_a_missing_pdf_file_is_not_offered_as_the_current_version(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            pdf = revision.output_dir / "gone.pdf"
+            pdf.write_bytes(b"%PDF-1.4\n")
+            revision._record_pdf_version(
+                pdf_path=pdf, manifest={"revision_id": "rev1"}, semantic_hash="h",
+                changed_by_page=self._changes(), parent=None, page_count=68)
+            pdf.unlink()
+            self.assertIsNone(revision._latest_pdf_version())
+
+    def test_gate_is_wired_into_pdf_generation(self) -> None:
+        source = (ROOT / "chapter_quality_revision.py").read_text(encoding="utf-8")
+        self.assertIn("no_new_material_changes", source)
+        self.assertIn("materially_equivalent_to", source)
+        self.assertIn("contains_new_material_changes", source)
+
+
 class AtomicStateWriteContracts(unittest.TestCase):
     def test_progress_writes_survive_a_concurrent_reader(self) -> None:
         # The UI polls these files for live progress. On Windows an open reader
