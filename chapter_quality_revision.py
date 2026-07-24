@@ -112,57 +112,133 @@ NVIDIA_REVIEW_JSON_SCHEMA = {
         },
     },
 }
+# The integrate.api.nvidia.com endpoint ignores nvext.guided_json for this
+# reasoning model but honors OpenAI-style response_format json_schema (strict),
+# which forces exact field names and enum values without chain-of-thought prose.
+NVIDIA_REVIEW_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "chapter_review",
+        "strict": True,
+        "schema": NVIDIA_REVIEW_JSON_SCHEMA,
+    },
+}
 _NVIDIA_REVIEW_REQUEST_SCRIPT = r"""
+import http.client
 import json
+import socket
 import sys
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 
 import config
 
 request = json.loads(sys.stdin.read() or "{}")
 url = str(request.get("url") or "")
 payload = request.get("payload") or {}
-http_request = urllib.request.Request(
-    url,
-    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-    headers={
-        "Authorization": "Bearer " + str(config.NVIDIA_API_KEY or ""),
-        "Content-Type": "application/json",
-    },
-    method="POST",
-)
+connect_timeout = float(request.get("connect_timeout") or 10.0)
+read_timeout = float(request.get("read_timeout") or 120.0)
+body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+parsed = urllib.parse.urlparse(url)
+path = parsed.path or "/"
+if parsed.query:
+    path = path + "?" + parsed.query
+headers = {
+    "Authorization": "Bearer " + str(config.NVIDIA_API_KEY or ""),
+    "Content-Type": "application/json",
+    "Content-Length": str(len(body_bytes)),
+}
 started = time.perf_counter()
+timing = {
+    "request_started_at": started,
+    "connect_started_at": None,
+    "connection_established_at": None,
+    "request_upload_started_at": None,
+    "request_upload_finished_at": None,
+    "first_response_byte_at": None,
+    "request_finished_at": None,
+    "dns_ms": None,
+    "connect_ms": None,
+    "tls_ms": None,
+    "request_upload_ms": None,
+    "time_to_first_byte_ms": None,
+    "response_read_ms": None,
+    "total_ms": None,
+    "timeout_phase": None,
+}
+conn = None
 try:
-    with urllib.request.urlopen(http_request, timeout=45) as response:
-        body = response.read().decode("utf-8", errors="replace")
-        sys.stdout.write(json.dumps({
-            "ok": True,
-            "status_http": int(getattr(response, "status", 0) or 0),
-            "duration_seconds": time.perf_counter() - started,
-            "body": body,
-        }, ensure_ascii=False))
-except urllib.error.HTTPError as exc:
-    body = exc.read().decode("utf-8", errors="replace")
+    conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    timing["connect_started_at"] = time.perf_counter()
+    conn = conn_cls(parsed.hostname, parsed.port, timeout=connect_timeout)
+    conn.connect()
+    timing["connection_established_at"] = time.perf_counter()
+    timing["connect_ms"] = (timing["connection_established_at"] - timing["connect_started_at"]) * 1000.0
+    if getattr(conn, "sock", None) is not None:
+        conn.sock.settimeout(read_timeout)
+    timing["request_upload_started_at"] = time.perf_counter()
+    conn.request("POST", path, body=body_bytes, headers=headers)
+    timing["request_upload_finished_at"] = time.perf_counter()
+    timing["request_upload_ms"] = (timing["request_upload_finished_at"] - timing["request_upload_started_at"]) * 1000.0
+    response = conn.getresponse()
+    timing["first_response_byte_at"] = time.perf_counter()
+    timing["time_to_first_byte_ms"] = (timing["first_response_byte_at"] - started) * 1000.0
+    read_started = time.perf_counter()
+    raw_body = response.read()
+    timing["request_finished_at"] = time.perf_counter()
+    timing["response_read_ms"] = (timing["request_finished_at"] - read_started) * 1000.0
+    timing["total_ms"] = (timing["request_finished_at"] - started) * 1000.0
+    body = raw_body.decode("utf-8", errors="replace")
+    ok = 200 <= int(response.status) < 300
     sys.stdout.write(json.dumps({
-        "ok": False,
-        "status_http": int(getattr(exc, "code", 0) or 0),
-        "duration_seconds": time.perf_counter() - started,
+        "ok": ok,
+        "status_http": int(response.status),
+        "duration_seconds": timing["total_ms"] / 1000.0,
         "body": body,
-        "error": "http_error",
+        "timing": timing,
+        "error": "" if ok else "http_error",
     }, ensure_ascii=False))
     sys.exit(0)
-except Exception as exc:
+except socket.timeout as exc:
+    now = time.perf_counter()
+    timing["request_finished_at"] = now
+    timing["total_ms"] = (now - started) * 1000.0
+    if timing["connection_established_at"] is None:
+        timing["timeout_phase"] = "connect"
+    elif timing["first_response_byte_at"] is None:
+        timing["timeout_phase"] = "read"
+    else:
+        timing["timeout_phase"] = "read"
     sys.stdout.write(json.dumps({
         "ok": False,
         "status_http": None,
-        "duration_seconds": time.perf_counter() - started,
+        "duration_seconds": timing["total_ms"] / 1000.0,
         "body": "",
+        "timing": timing,
+        "error": "timeout",
+        "error_message": str(exc)[:500],
+    }, ensure_ascii=False))
+    sys.exit(0)
+except Exception as exc:
+    now = time.perf_counter()
+    timing["request_finished_at"] = now
+    timing["total_ms"] = (now - started) * 1000.0
+    sys.stdout.write(json.dumps({
+        "ok": False,
+        "status_http": None,
+        "duration_seconds": timing["total_ms"] / 1000.0,
+        "body": "",
+        "timing": timing,
         "error": type(exc).__name__,
         "error_message": str(exc)[:500],
     }, ensure_ascii=False))
     sys.exit(0)
+finally:
+    try:
+        if conn is not None:
+            conn.close()
+    except Exception:
+        pass
 """
 
 
@@ -278,6 +354,11 @@ class ContextualNvidiaReviewer:
         self.api_key = config.NVIDIA_API_KEY
         self.requests = 0
         self.duration_seconds = 0.0
+        self.connect_timeout_seconds = float(getattr(config, "NVIDIA_CONNECT_TIMEOUT_SECONDS", 10.0) or 10.0)
+        self.read_timeout_seconds = float(getattr(config, "NVIDIA_READ_TIMEOUT_SECONDS", 120.0) or 120.0)
+        self.total_timeout_seconds = float(getattr(config, "NVIDIA_TOTAL_TIMEOUT_SECONDS", 150.0) or 150.0)
+        self.region_timeout_seconds = float(getattr(config, "NVIDIA_REVISION_REGION_TIMEOUT_SECONDS", 120.0) or 120.0)
+        self.diagnostic_mode = bool(getattr(config, "NVIDIA_REVISION_DIAGNOSTIC_MODE", False))
 
     @property
     def configured(self) -> bool:
@@ -291,6 +372,7 @@ class ContextualNvidiaReviewer:
         batch_id: str | None = None,
         raw_response_dir: str | Path | None = None,
         request_budget: int | None = None,
+        diagnostic_mode: bool | None = None,
     ) -> list[dict[str, Any]]:
         if not records:
             return []
@@ -302,6 +384,7 @@ class ContextualNvidiaReviewer:
         self.invalid_batches = getattr(self, "invalid_batches", 0)
         batch_id = str(batch_id or f"review-{uuid.uuid4().hex[:12]}")
         raw_dir = Path(raw_response_dir) if raw_response_dir else None
+        diagnostic = self.diagnostic_mode if diagnostic_mode is None else bool(diagnostic_mode)
         response = self._send_review_request(records, glossary, batch_id, "review")
         if response.get("provider_error") and not response.get("content"):
             parsed = ReviewContractResult(
@@ -319,6 +402,9 @@ class ContextualNvidiaReviewer:
         if parsed.valid:
             self.valid_batches += 1
             return parsed.items
+        if diagnostic:
+            self.invalid_batches += 1
+            return self._manual_reviews(records, "diagnostic_contract_parse_failed", parsed.categories)
 
         repair = self._send_repair_request(records, batch_id, response.get("content", ""), parsed)
         if repair.get("provider_error") and not repair.get("content"):
@@ -359,6 +445,62 @@ class ContextualNvidiaReviewer:
             return results
         return self._manual_reviews(records, "batch_contract_parse_failed", sorted(set(parsed.categories + repair_parsed.categories)))
 
+    def health_check(self, *, raw_response_dir: str | Path | None = None, batch_id: str = "health-check") -> dict[str, Any]:
+        started = time.perf_counter()
+        request_payload = {
+            "model": self.model,
+            "temperature": 0.0,
+            "top_p": 0.1,
+            "max_tokens": 512,
+            "response_format": NVIDIA_REVIEW_RESPONSE_FORMAT,
+            "chat_template_kwargs": {"thinking": False},
+            "messages": [
+                {"role": "system", "content": "Return only the guided JSON object for this health check."},
+                {"role": "user", "content": json.dumps({
+                    "schema_version": REVIEW_SCHEMA_VERSION,
+                    "batch_id": batch_id,
+                    "results": [],
+                }, ensure_ascii=False, separators=(",", ":"))},
+            ],
+        }
+        response = self._post_chat_completion(request_payload, started, "health_check", request_meta={
+            "batch_size": 0,
+            "system_prompt_characters": len(request_payload["messages"][0]["content"]),
+            "user_prompt_characters": len(request_payload["messages"][1]["content"]),
+            "prompt_characters_before": len(request_payload["messages"][1]["content"]),
+            "prompt_characters_after": len(json.dumps(request_payload["messages"], ensure_ascii=False, separators=(",", ":"))),
+            "estimated_tokens_before": self._estimate_tokens(len(request_payload["messages"][1]["content"])),
+            "estimated_tokens_after": self._estimate_tokens(len(json.dumps(request_payload["messages"], ensure_ascii=False, separators=(",", ":")))),
+            "max_tokens": 512,
+            "temperature": 0.0,
+            "top_p": 0.1,
+            "structured_output_enabled": True,
+            "structured_output_method": "response_format.json_schema",
+            "response_format": "json_schema",
+            "nvext": False,
+            "guided_json": True,
+            "schema_sent": True,
+            "streaming": False,
+            "glossary_terms_total": 0,
+            "glossary_terms_sent": 0,
+            "timeout_config": self._timeout_config(),
+        })
+        if response.get("provider_error") and not response.get("content"):
+            parsed = ReviewContractResult(False, [], self._provider_error_categories(str(response.get("provider_error") or "")), str(response.get("provider_error") or ""), {})
+        else:
+            parsed = self._parse_contract_response(response.get("content", ""), [], batch_id)
+        self._write_raw_response(Path(raw_response_dir) if raw_response_dir else None, batch_id, "health_check", [], response, parsed)
+        return {
+            "ok": parsed.valid,
+            "batch_id": batch_id,
+            "status_http": response.get("status_http"),
+            "duration_seconds": response.get("duration_seconds"),
+            "timeout_phase": response.get("timeout_phase") or "",
+            "provider_error": response.get("provider_error") or "",
+            "categories": parsed.categories,
+            "request_meta": response.get("request_meta") or {},
+        }
+
     def _send_review_request(
         self,
         records: list[dict[str, Any]],
@@ -366,42 +508,77 @@ class ContextualNvidiaReviewer:
         batch_id: str,
         purpose: str,
     ) -> dict[str, Any]:
-        prompt_regions = [self._prompt_record(record) for record in records]
-        payload = {
+        prompt_characters_before = len(json.dumps({
             "schema_version": REVIEW_SCHEMA_VERSION,
             "batch_id": batch_id,
             "target_language": "pt-BR",
             "review_goal": "naturalidade e fidelidade sem hardcode",
             "glossary": glossary,
+            "regions": records,
+        }, ensure_ascii=False))
+        prompt_regions = [self._prompt_record(record) for record in records]
+        compact_glossary = self._compact_glossary(glossary, prompt_regions)
+        payload = {
+            "schema_version": REVIEW_SCHEMA_VERSION,
+            "batch_id": batch_id,
+            "target_language": "pt-BR",
+            "glossary": compact_glossary,
             "regions": prompt_regions,
         }
+        user_content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         started = time.perf_counter()
         request_payload = {
             "model": self.model,
             "temperature": 0.0,
             "top_p": 0.2,
-            "max_tokens": 4096,
-            "nvext": {"guided_json": NVIDIA_REVIEW_JSON_SCHEMA},
+            "max_tokens": self._max_tokens_for_records(records),
+            "response_format": NVIDIA_REVIEW_RESPONSE_FORMAT,
+            "chat_template_kwargs": {"thinking": False},
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "Revise traducoes de quadrinhos de ingles para portugues brasileiro natural. "
-                        "Responda apenas com um objeto JSON valido no schema fornecido, sem Markdown, "
-                        "sem introducao e sem conclusao. Nao altere IDs, nao remova itens, nao acrescente "
-                        "itens e nao ordene por preferencia. Use exatamente o batch_id recebido e exatamente "
-                        "os region_id recebidos. Respeite text_type, preserve credit/watermark/decorative, "
-                        "preserve nomes proprios e use o glossario. Escolha manual_review quando houver "
-                        "duvida, OCR incerto ou risco alto. Nao invente texto ausente e nao corrija OCR sem evidencia."
+                        "Return only the guided JSON object. Use exact batch_id and region_id set. "
+                        "Actions: keep, rewrite, preserve_original, manual_review. "
+                        "revised_translation must be the corrected pt-BR text (non-empty) only for rewrite; "
+                        "for keep, preserve_original and manual_review set revised_translation to \"\". "
+                        "Use natural pt-BR, preserve names/glossary, and choose manual_review when unsure. "
+                        "No Markdown, no extra text, no invented OCR."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(payload, ensure_ascii=False),
+                    "content": user_content,
                 },
                 ],
         }
-        return self._post_chat_completion(request_payload, started, purpose)
+        prompt_characters_after = len(json.dumps({
+            "messages": request_payload["messages"],
+            "response_format": request_payload.get("response_format"),
+        }, ensure_ascii=False, separators=(",", ":")))
+        request_meta = {
+            "batch_size": len(records),
+            "system_prompt_characters": len(request_payload["messages"][0]["content"]),
+            "user_prompt_characters": len(user_content),
+            "prompt_characters_before": prompt_characters_before,
+            "prompt_characters_after": prompt_characters_after,
+            "estimated_tokens_before": self._estimate_tokens(prompt_characters_before),
+            "estimated_tokens_after": self._estimate_tokens(prompt_characters_after),
+            "max_tokens": request_payload["max_tokens"],
+            "temperature": request_payload["temperature"],
+            "top_p": request_payload["top_p"],
+            "structured_output_enabled": True,
+            "structured_output_method": "response_format.json_schema",
+            "response_format": "json_schema",
+            "nvext": False,
+            "guided_json": True,
+            "schema_sent": True,
+            "streaming": False,
+            "glossary_terms_total": len((glossary or {}).get("terms") or []),
+            "glossary_terms_sent": len((compact_glossary or {}).get("terms") or []),
+            "timeout_config": self._timeout_config(),
+        }
+        return self._post_chat_completion(request_payload, started, purpose, request_meta=request_meta)
 
     def _send_repair_request(
         self,
@@ -425,7 +602,8 @@ class ContextualNvidiaReviewer:
             "temperature": 0.0,
             "top_p": 0.1,
             "max_tokens": 4096,
-            "nvext": {"guided_json": NVIDIA_REVIEW_JSON_SCHEMA},
+            "response_format": NVIDIA_REVIEW_RESPONSE_FORMAT,
+            "chat_template_kwargs": {"thinking": False},
             "messages": [
                 {
                     "role": "system",
@@ -438,9 +616,37 @@ class ContextualNvidiaReviewer:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
         }
-        return self._post_chat_completion(request_payload, started, "repair")
+        return self._post_chat_completion(request_payload, started, "repair", request_meta={
+            "batch_size": len(records),
+            "system_prompt_characters": len(request_payload["messages"][0]["content"]),
+            "user_prompt_characters": len(request_payload["messages"][1]["content"]),
+            "prompt_characters_before": len(json.dumps(payload, ensure_ascii=False)),
+            "prompt_characters_after": len(json.dumps(request_payload["messages"], ensure_ascii=False)),
+            "estimated_tokens_before": self._estimate_tokens(len(json.dumps(payload, ensure_ascii=False))),
+            "estimated_tokens_after": self._estimate_tokens(len(json.dumps(request_payload["messages"], ensure_ascii=False))),
+            "max_tokens": request_payload["max_tokens"],
+            "temperature": request_payload["temperature"],
+            "top_p": request_payload["top_p"],
+            "structured_output_enabled": True,
+            "structured_output_method": "response_format.json_schema",
+            "response_format": "json_schema",
+            "nvext": False,
+            "guided_json": True,
+            "schema_sent": True,
+            "streaming": False,
+            "glossary_terms_total": 0,
+            "glossary_terms_sent": 0,
+            "timeout_config": self._timeout_config(),
+        })
 
-    def _post_chat_completion(self, request_payload: dict[str, Any], started: float, purpose: str) -> dict[str, Any]:
+    def _post_chat_completion(
+        self,
+        request_payload: dict[str, Any],
+        started: float,
+        purpose: str,
+        *,
+        request_meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.requests += 1
         try:
             python_executable = self._subprocess_python_executable()
@@ -453,10 +659,12 @@ class ContextualNvidiaReviewer:
                 input=json.dumps({
                     "url": self._chat_completions_url(),
                     "payload": request_payload,
+                    "connect_timeout": self.connect_timeout_seconds,
+                    "read_timeout": self.read_timeout_seconds,
                 }, ensure_ascii=False),
                 text=True,
                 capture_output=True,
-                timeout=60,
+                timeout=max(self.total_timeout_seconds, self.read_timeout_seconds + 5.0),
                 check=False,
             )
             if completed.returncode != 0:
@@ -470,15 +678,17 @@ class ContextualNvidiaReviewer:
                     "provider_error": "nvidia_review_subprocess_failed",
                     "provider_error_detail": (completed.stderr or completed.stdout or "")[:1000],
                     "returncode": completed.returncode,
+                    "request_meta": request_meta or {},
                 }
             subprocess_payload = json.loads(completed.stdout or "{}")
             status_http = int(subprocess_payload.get("status_http") or 0)
             body = str(subprocess_payload.get("body") or "")
+            timing = subprocess_payload.get("timing") if isinstance(subprocess_payload.get("timing"), dict) else {}
             if status_http in {401, 403, 429}:
                 raise RuntimeError(f"nvidia_provider_stop_{status_http}")
             if not subprocess_payload.get("ok"):
                 raw_error = str(subprocess_payload.get("error") or "provider_error")
-                provider_error = "nvidia_review_timeout" if raw_error == "TimeoutError" else raw_error
+                provider_error = "nvidia_review_timeout" if raw_error in {"TimeoutError", "timeout"} else raw_error
                 return {
                     "purpose": purpose,
                     "status_http": status_http,
@@ -488,6 +698,9 @@ class ContextualNvidiaReviewer:
                     "finish_reason": None,
                     "provider_error": provider_error,
                     "provider_error_detail": subprocess_payload.get("error_message") or "",
+                    "timing": timing,
+                    "timeout_phase": timing.get("timeout_phase") or ("read" if provider_error == "nvidia_review_timeout" else ""),
+                    "request_meta": request_meta or {},
                 }
             response_payload = json.loads(body or "{}")
         except subprocess.TimeoutExpired:
@@ -499,6 +712,8 @@ class ContextualNvidiaReviewer:
                 "raw_body": "",
                 "finish_reason": None,
                 "provider_error": "nvidia_review_timeout",
+                "timeout_phase": "subprocess",
+                "request_meta": request_meta or {},
             }
         except (OSError, ValueError, RuntimeError) as exc:
             return {
@@ -510,6 +725,8 @@ class ContextualNvidiaReviewer:
                 "finish_reason": None,
                 "provider_error": "nvidia_review_request_failed",
                 "provider_error_detail": str(exc)[:500],
+                "timeout_phase": "",
+                "request_meta": request_meta or {},
             }
         finally:
             self.duration_seconds += time.perf_counter() - started
@@ -523,6 +740,9 @@ class ContextualNvidiaReviewer:
             "raw_body": json.dumps(response_payload, ensure_ascii=False),
             "finish_reason": finish_reason,
             "provider_error": None,
+            "timing": timing,
+            "timeout_phase": "",
+            "request_meta": request_meta or {},
         }
 
     def _parse_contract_response(self, text: str, records: list[dict[str, Any]], batch_id: str) -> ReviewContractResult:
@@ -756,20 +976,70 @@ class ContextualNvidiaReviewer:
         source = str(record.get("source_text") or "")
         current = str(record.get("current_translation") or "")
         limit = max(len(current), len(source), 40)
-        return {
+        result = {
             "region_id": str(record.get("region_id") or ""),
-            "page_id": str(record.get("page_id") or record.get("page") or ""),
             "source_text": source,
             "current_translation": current,
             "text_type": str(record.get("text_type") or "unknown"),
-            "ocr_confidence": float(record.get("ocr_confidence") or record.get("confidence") or 0.0),
-            "previous_context": str(record.get("previous_context") or ""),
-            "next_context": str(record.get("next_context") or ""),
-            "glossary": record.get("glossary") if isinstance(record.get("glossary"), dict) else {},
+            "previous_context": ContextualNvidiaReviewer._short_context(record.get("previous_context")),
+            "next_context": ContextualNvidiaReviewer._short_context(record.get("next_context")),
             "constraints": {
                 "max_characters": int(record.get("max_characters") or min(220, max(40, int(limit * 1.35)))),
                 "max_lines": int(record.get("max_lines") or 4),
             },
+        }
+        confidence = float(record.get("ocr_confidence") or record.get("confidence") or 0.0)
+        if confidence:
+            result["ocr_confidence"] = round(confidence, 3)
+        return result
+
+    @staticmethod
+    def _short_context(value: Any, *, limit: int = 160) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit].rstrip() + "…"
+
+    @staticmethod
+    def _compact_glossary(glossary: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, Any]:
+        terms = (glossary or {}).get("terms") if isinstance(glossary, dict) else []
+        if not isinstance(terms, list):
+            return {"terms": []}
+        haystack = " ".join(
+            str(record.get(key) or "")
+            for record in records
+            for key in ("source_text", "current_translation", "previous_context", "next_context")
+        ).casefold()
+        selected = []
+        for term in terms:
+            if not isinstance(term, dict):
+                continue
+            value = str(term.get("term") or "").strip()
+            if value and value.casefold() in haystack:
+                selected.append({
+                    key: term.get(key)
+                    for key in ("term", "category", "policy")
+                    if term.get(key)
+                })
+            if len(selected) >= 12:
+                break
+        return {"terms": selected}
+
+    @staticmethod
+    def _estimate_tokens(characters: int) -> int:
+        return max(1, int((int(characters or 0) + 3) / 4))
+
+    @staticmethod
+    def _max_tokens_for_records(records: list[dict[str, Any]]) -> int:
+        return min(2048, max(640, 360 + 220 * max(1, len(records))))
+
+    def _timeout_config(self) -> dict[str, float]:
+        return {
+            "connect_seconds": self.connect_timeout_seconds,
+            "read_seconds": self.read_timeout_seconds,
+            "total_seconds": self.total_timeout_seconds,
+            "region_seconds": self.region_timeout_seconds,
+            "subprocess_seconds": max(self.total_timeout_seconds, self.read_timeout_seconds + 5.0),
         }
 
     @staticmethod
@@ -811,6 +1081,9 @@ class ContextualNvidiaReviewer:
             "finish_reason": response.get("finish_reason"),
             "provider_error": response.get("provider_error"),
             "provider_error_detail": response.get("provider_error_detail") or "",
+            "timeout_phase": response.get("timeout_phase") or "",
+            "timing": response.get("timing") if isinstance(response.get("timing"), dict) else {},
+            "request_meta": response.get("request_meta") if isinstance(response.get("request_meta"), dict) else {},
             "returncode": response.get("returncode"),
             "valid": parsed.valid,
             "categories": parsed.categories,
@@ -1220,8 +1493,32 @@ class ChapterQualityRevision:
         reviewer = self.reviewer_factory()
         model = getattr(reviewer, "model", "unknown")
         manifest["model"] = model
+        health_check: dict[str, Any] | None = None
+        if canary and hasattr(reviewer, "health_check"):
+            health_check = reviewer.health_check(
+                raw_response_dir=paths.raw_responses,
+                batch_id="health-check",
+            )
+            manifest["requests"] = int(getattr(reviewer, "requests", manifest.get("requests", 0) or 0))
+            manifest["connectivity_check"] = health_check
+            if not health_check.get("ok"):
+                return {
+                    "model": model,
+                    "requests": manifest["requests"],
+                    "reviewed_regions": 0,
+                    "reviews": [],
+                    "manual_review": len(reviewable),
+                    "source_language_residual": 0,
+                    "valid_response_batches": 0,
+                    "repaired_batches": 0,
+                    "fallback_individual_requests": 0,
+                    "invalid_response_batches": 1,
+                    "connectivity_check": health_check,
+                    "quality_passed": False,
+                    "created_at": utc_now(),
+                }
         reviews: list[dict[str, Any]] = []
-        batch_size = 6
+        batch_size = self._revision_batch_size(reviewable, canary=canary)
         for start in range(0, len(reviewable), batch_size):
             batch = reviewable[start:start + batch_size]
             batch_id = f"{manifest.get('revision_id', 'revision')}-batch-{(start // batch_size) + 1:03d}"
@@ -1232,6 +1529,7 @@ class ChapterQualityRevision:
                     batch_id=batch_id,
                     raw_response_dir=paths.raw_responses,
                     request_budget=max(1, len(reviewable) * 3),
+                    diagnostic_mode=canary,
                 )
             except TypeError:
                 raw = reviewer.review_batch(batch, glossary)
@@ -1276,6 +1574,7 @@ class ChapterQualityRevision:
             "fallback_individual_requests": fallback_individual,
             "invalid_response_batches": invalid_batches,
             "quality_passed": blocked == 0 and residual == 0,
+            "connectivity_check": health_check or {},
             "created_at": utc_now(),
         }
 
@@ -1324,6 +1623,21 @@ class ChapterQualityRevision:
                 break
         add(records, max_regions - len(selected))
         return selected[:max_regions]
+
+    def _revision_batch_size(self, records: list[dict[str, Any]], *, canary: bool = False) -> int:
+        if canary:
+            total = len(records)
+            if total <= 1:
+                return 1
+            if total <= 3:
+                return 3
+            return min(5, total)
+        longest = max((len(str(item.get("source_text") or "")) + len(str(item.get("current_translation") or "")) for item in records), default=0)
+        if longest > 800:
+            return 2
+        if longest > 400:
+            return 4
+        return 6
 
     def _normalize_reviews(self, batch: list[dict[str, Any]], raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         expected = {item["region_id"]: item for item in batch}
