@@ -64,6 +64,13 @@ REVIEW_PROMPT_VERSION = "2"
 # Bump when the LOW/MEDIUM/HIGH application policy changes: an answer cached under
 # a laxer policy must not be replayed under a stricter one.
 REVIEW_RISK_POLICY_VERSION = "1"
+# Bump when render-affecting logic changes. The equivalence gate folds this into
+# the semantic hash so a fix that changes rendered pixels without changing the
+# reviewed text still counts as a new material revision (otherwise a reviewed PDF
+# rendered by the old, buggy renderer would block the corrected one).
+#   1: original incremental renderer
+#   2: reconstructed group polygon rebuilt from (x, y, w, h) corners
+RENDER_PIPELINE_VERSION = "2"
 # A concurrent reader on Windows can briefly block the atomic swap.
 WRITE_JSON_REPLACE_ATTEMPTS = 6
 WRITE_JSON_REPLACE_BACKOFF_SECONDS = 0.05
@@ -2617,11 +2624,13 @@ class ChapterQualityRevision:
             action = str(item.get("action") or "")
             if action == "manual_review":
                 state, reason = "manual_review", str(item.get("reason_code") or "manual_review_required")
-            elif action == "keep":
+            elif action in ("keep", "preserve_original", "preserved_original"):
+                # The reviewer chose to leave the original text as it is.
                 state, reason = "unchanged", str(item.get("reason_code") or "")
             else:
-                # Proposed but not yet seen by the renderer.
-                state, reason = "pending", str(item.get("reason_code") or "")
+                # A proposed rewrite. "proposed" is an internal marker resolved
+                # below once the render outcome (or lack of one) is known.
+                state, reason = "proposed", str(item.get("reason_code") or "")
             # Everything the review panel needs to explain the decision, so the
             # UI never has to reopen the raw review to describe one region.
             states[region_id] = {
@@ -2645,8 +2654,8 @@ class ChapterQualityRevision:
                               for items in changed_by_page.values() for change in items}
         submitted = set(proposed_by_region)
         for region_id in submitted:
-            states.setdefault(region_id, {"region_id": region_id, "state": "pending", "reason_code": ""})
-            states[region_id]["state"] = "pending"
+            states.setdefault(region_id, {"region_id": region_id, "state": "proposed", "reason_code": ""})
+            states[region_id]["state"] = "proposed"
 
         for record in render_records:
             page = record.get("page")
@@ -2656,7 +2665,7 @@ class ChapterQualityRevision:
             page_reason = str(record.get("reason_code") or "")
             cleanup = record.get("cleanup")
             for region_id in regions or sorted(submitted):
-                entry = states.setdefault(region_id, {"region_id": region_id, "state": "pending", "reason_code": ""})
+                entry = states.setdefault(region_id, {"region_id": region_id, "state": "proposed", "reason_code": ""})
                 if page is not None:
                     entry["page"] = page
                     entry.setdefault("page_id", f"p{int(page):03d}")
@@ -2665,15 +2674,22 @@ class ChapterQualityRevision:
                 if page_failed or region_id in rejected:
                     entry["state"] = "rejected_visual_regression"
                     entry["reason_code"] = page_reason or entry.get("reason_code") or "region_rejected"
-                elif entry["state"] == "pending":
+                elif entry["state"] == "proposed":
                     entry["state"] = "applied"
                     entry["applied_translation"] = proposed_by_region.get(region_id, "")
             if page_failed and not regions:
                 # The whole page was refused before any region was attributed.
                 for region_id in submitted:
-                    entry = states.setdefault(region_id, {"region_id": region_id, "state": "pending", "reason_code": ""})
-                    if entry["state"] == "pending":
+                    entry = states.setdefault(region_id, {"region_id": region_id, "state": "proposed", "reason_code": ""})
+                    if entry["state"] == "proposed":
                         entry.update({"state": "rejected_visual_regression", "reason_code": page_reason})
+
+        # Resolve any proposal the renderer never settled. One that was submitted
+        # to the renderer but got no record is still in flight (pending); one the
+        # safe-apply step declined (never submitted) is held for a human.
+        for region_id, entry in states.items():
+            if entry.get("state") == "proposed":
+                entry["state"] = "pending" if region_id in submitted else "manual_review"
         return states
 
     @classmethod
@@ -2911,7 +2927,9 @@ class ChapterQualityRevision:
             for items in (changed_by_page or {}).values()
             for item in items
         )
-        payload = json.dumps(entries, ensure_ascii=False)
+        # The render version is part of the fingerprint: identical text rendered
+        # by a corrected renderer is a genuinely different reviewed page.
+        payload = json.dumps([RENDER_PIPELINE_VERSION, entries], ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _pdf_version_manifest_path(self) -> Path:
