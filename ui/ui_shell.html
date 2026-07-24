@@ -265,6 +265,14 @@
         </div>
       </div>
 
+      <div class="review-mode-banner" id="reviewModeBanner" hidden role="status">
+        <div class="rmb-main">
+          <strong id="reviewModeTitle">Revisando capítulo</strong>
+          <span id="reviewModeMeta" class="rmb-meta"></span>
+        </div>
+        <button type="button" class="btn-ghost" id="reviewModeExit">Voltar à biblioteca</button>
+      </div>
+
       <div class="nt-grid">
         <!-- form -->
         <div class="panel">
@@ -638,6 +646,13 @@
       <details class="advanced-details">
         <summary>Modo Desenvolvedor <span>diagnóstico técnico opcional</span></summary>
         <div class="cfg-grid advanced-grid">
+        <div class="panel">
+          <div class="panel-label">Ferramentas de revisão</div>
+          <div class="toggle-row">
+            <div class="toggle-copy"><div class="tt">Modo desenvolvedor da revisão</div><div class="td">Mostra "Testar contrato NVIDIA" no painel de revisão de qualidade.</div></div>
+            <label class="switch"><input type="checkbox" id="developerModeToggle"><span class="slider"></span></label>
+          </div>
+        </div>
         <div class="panel">
           <div class="panel-label">Tradução</div>
           <div class="kv-row"><span class="kv-key">TRANSLATION_MODE</span><span class="kv-val" id="settingTranslationMode">—</span></div>

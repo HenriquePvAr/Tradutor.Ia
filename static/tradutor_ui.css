@@ -1593,3 +1593,11 @@
   .quality-review-thumb{display:block; max-width:100%; max-height:180px; object-fit:contain; margin:8px auto 0; border-radius:4px; border:1px solid var(--line);}
   .quality-review-actions{margin-top:12px;}
   @media (max-width:620px){ .quality-review-text{grid-template-columns:1fr;} }
+
+/* Review navigation from the translated-chapters library */
+.review-mode-banner{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 18px;padding:14px 18px;border:1px solid rgba(var(--tab-rgb,201,162,39),.35);border-radius:12px;background:rgba(var(--tab-rgb,201,162,39),.08)}
+.review-mode-banner .rmb-main{display:flex;flex-direction:column;gap:3px;min-width:0}
+.review-mode-banner strong{font-size:15px;letter-spacing:.2px}
+.review-mode-banner .rmb-meta{font-size:12px;opacity:.72;font-variant-numeric:tabular-nums}
+.hm-review-action{border-color:rgba(var(--tab-rgb,201,162,39),.55)!important;color:var(--tab-accent,#c9a227)!important;font-weight:600}
+.hm-review-action:focus-visible{outline:2px solid var(--tab-accent,#c9a227);outline-offset:2px}

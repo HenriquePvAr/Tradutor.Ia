@@ -1362,7 +1362,9 @@
     }
     else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
     if (!draftOnly && runtime.quality_review) renderQualityReview(runtime.quality_review);
-    else if ($('#qualityReviewPanel')) $('#qualityReviewPanel').hidden = true;
+    // In explicit review_mode the panel is owned by the selected finished chapter,
+    // so a background poll of the (idle) active runtime must not hide it.
+    else if (!appState.reviewMode && $('#qualityReviewPanel')) $('#qualityReviewPanel').hidden = true;
     const resultRecord = runtime.latest_result || runtime.latest;
     if (resultRecord && !awaitingReview && !draftOnly) {
       const latestId = String(resultRecord.id || resultRecord.job_id || '');
@@ -2002,6 +2004,107 @@
     if (!claimEligibility(record).eligible) return '';
     return '<button class="btn-ghost" data-action="claim">Vincular à minha conta</button>';
   }
+  // Canonical job/run identity for a finished chapter card. The review entry must
+  // adopt exactly this chapter's job_id + run_id, never runtime.latest or the title.
+  function reviewIdentity(record) {
+    const jobId = String(record.job_id || record.id || '').toLowerCase();
+    const runId = String(record.run_id || '').trim();
+    if (!/^[0-9a-f]{32}$/.test(jobId) || !runId) return null;
+    if (!record.quality_report_path) return null;
+    return {jobId, runId};
+  }
+  function reviewActionLabel(record) {
+    const status = String(record.status || '').toLowerCase();
+    if (record.review_status === 'completed' || status === 'review_completed') return 'Ver revisão';
+    if (status === 'review_running' || status === 'running') return 'Continuar revisão';
+    return 'Revisar';
+  }
+  function reviewAction(record) {
+    if (!reviewIdentity(record)) return '';
+    const label = reviewActionLabel(record);
+    return `<button class="btn-ghost hm-review-action" data-action="review" title="Revisar OCR, tradução e qualidade deste capítulo" aria-label="${escapeAttr(`${label}: ${record.chapter_name || record.slug || 'capítulo'}`)}">${escapeHtml(label)}</button>`;
+  }
+  function applyReviewMode(info) {
+    document.documentElement.dataset.reviewMode = '1';
+    const banner = $('#reviewModeBanner');
+    if (banner) {
+      banner.hidden = false;
+      const title = $('#reviewModeTitle');
+      const metaEl = $('#reviewModeMeta');
+      if (title) title.textContent = `Revisando ${info.chapterName}`;
+      if (metaEl) metaEl.textContent = `job ${String(info.jobId).slice(0, 8)}… · run ${String(info.runId).slice(0, 8)}…`;
+    }
+    const start = $('#startBtn');
+    if (start) start.hidden = true;
+    ['#urlInput', '#localFolderInput', '#nameInput', '#outputInput'].forEach(sel => {
+      const el = $(sel);
+      if (el) el.readOnly = true;
+    });
+  }
+  function clearReviewMode() {
+    delete document.documentElement.dataset.reviewMode;
+    appState.reviewMode = null;
+    const banner = $('#reviewModeBanner');
+    if (banner) banner.hidden = true;
+    const start = $('#startBtn');
+    if (start) start.hidden = false;
+    ['#urlInput', '#localFolderInput', '#nameInput', '#outputInput'].forEach(sel => {
+      const el = $(sel);
+      if (el) el.readOnly = false;
+    });
+    const panel = $('#qualityReviewPanel');
+    if (panel) panel.hidden = true;
+    try {
+      const url = new URL(window.location.href);
+      ['view', 'job_id', 'run_id'].forEach(key => url.searchParams.delete(key));
+      window.history.replaceState({}, '', url);
+    } catch (_) { /* history is best-effort */ }
+  }
+  // Adopt exactly this chapter's job/run and open the existing review panel in
+  // Nova tradução. Never creates a job, starts a run, or calls NVIDIA.
+  async function openChapterReview(record, {restore = false} = {}) {
+    const identity = reviewIdentity(record);
+    if (!identity) { showToast('Revisão indisponível para este capítulo.', 'warn'); return; }
+    const {jobId, runId} = identity;
+    appState.reviewMode = {jobId, runId, chapterName: record.chapter_name || record.slug || 'Capítulo'};
+    appState.currentJobId = jobId;
+    if (!restore) {
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set('view', 'review');
+        url.searchParams.set('job_id', jobId);
+        url.searchParams.set('run_id', runId);
+        window.history.replaceState({}, '', url);
+      } catch (_) { /* history is best-effort; in-memory state still applies */ }
+    }
+    activateTab('nova');
+    applyReviewMode(appState.reviewMode);
+    try {
+      const review = await api(`/api/ui/quality-review/${encodeURIComponent(jobId)}`);
+      if (review) renderQualityReview(review);
+    } catch (_) {
+      setQualityReviewBulkMessage('Não foi possível carregar a revisão deste capítulo.', 'error');
+    }
+    try {
+      const status = await api(`/api/ui/quality-review/revision/${encodeURIComponent(jobId)}`);
+      renderQualityRevisionStatus(status);
+    } catch (_) { /* revision status is optional context */ }
+    updateQualityReviewDeveloperActions();
+    const panel = $('#qualityReviewPanel');
+    if (panel) {
+      panel.hidden = false;
+      panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+  }
+  function restoreReviewModeFromUrl() {
+    let params;
+    try { params = new URLSearchParams(window.location.search || ''); } catch (_) { return; }
+    if (params.get('view') !== 'review') return;
+    const jobId = String(params.get('job_id') || '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(jobId)) return;
+    const record = appState.history.find(item => String(item.job_id || item.id || '').toLowerCase() === jobId);
+    if (record) void openChapterReview(record, {restore: true});
+  }
   function renderHistoryCard(record) {
     const title = record.chapter_name || record.slug || 'Capítulo';
     const engine = record.mode === 'fast' ? 'rapid' : 'paddle';
@@ -2014,7 +2117,7 @@
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
-      <div class="hm-actions">${actionButton('Abrir PDF', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
+      <div class="hm-actions">${reviewAction(record)}${actionButton('Abrir PDF', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
     </div>`;
   }
   function renderHistory() {
@@ -2065,6 +2168,18 @@
     renderHistory();
   }
   $('#histSearch')?.addEventListener('input', renderHistory);
+  $('#reviewModeExit')?.addEventListener('click', () => { clearReviewMode(); activateTab('hist'); });
+  const developerModeToggle = $('#developerModeToggle');
+  if (developerModeToggle) {
+    developerModeToggle.checked = qualityReviewDeveloperMode();
+    developerModeToggle.addEventListener('change', () => {
+      try {
+        if (developerModeToggle.checked) localStorage.setItem('tradutorDeveloperMode', '1');
+        else localStorage.removeItem('tradutorDeveloperMode');
+      } catch (_) { /* private mode: dev toggle stays session-only */ }
+      updateQualityReviewDeveloperActions();
+    });
+  }
   window.addEventListener('tradutor-auth-changed', event => {
     const state = String(event?.detail?.state || getGlobal('__tradutorAuthState') || '');
     if (state !== 'authenticated') clearCommunityObjectUrls();
@@ -2085,6 +2200,7 @@
     if (!button) return;
     const record = appState.history.find(item => String(item.id) === String(button.closest('.hist-item')?.dataset.id));
     if (!record) return;
+    if (button.dataset.action === 'review') { void openChapterReview(record); return; }
     if (button.dataset.action === 'reprocess') { loadRecordIntoForm(record); return; }
     if (button.dataset.action === 'claim') { openClaimModal(record); return; }
     if (button.dataset.action === 'delete') { openLocalDeleteModal(record); return; }
@@ -3312,6 +3428,10 @@
       }
       renderHistory();
       renderDashboard();
+      if (!appState.reviewRestoreAttempted) {
+        appState.reviewRestoreAttempted = true;
+        restoreReviewModeFromUrl();
+      }
       setBootStage(6);
       renderRuntime(data);
       rememberRuntimeTerminalState(data);
