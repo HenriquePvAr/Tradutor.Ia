@@ -43,6 +43,26 @@ def background_python_executable() -> str:
     return sys.executable
 
 
+def hidden_console_options() -> dict[str, Any]:
+    """Windows-only kwargs that keep a short-lived child console-free.
+
+    ``build_background_process_options`` also fixes the standard streams, which
+    conflicts with ``subprocess.run(input=..., capture_output=True)``.  Callers
+    that capture output themselves need only the window flags, so they stay
+    auditable (stdout/stderr still reach the caller) without flashing a console.
+    """
+
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
 def build_background_process_options(
     *,
     stdin: Any = subprocess.DEVNULL,

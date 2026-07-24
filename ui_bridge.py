@@ -41,7 +41,7 @@ from ui_helpers import (
     suggest_chapter_details,
 )
 from ui_history import UIHistoryStore, utc_now
-from chapter_quality_revision import ChapterQualityRevision
+from chapter_quality_revision import REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision
 
 
 PROFILE_PATH = REPO_ROOT / ".cache" / "ui_profile.json"
@@ -785,7 +785,15 @@ class UiBridge:
         if status:
             status = dict(status)
             thread = self._quality_revision_threads.get(str(job["id"]))
-            status["thread_alive"] = bool(thread and thread.is_alive())
+            alive = bool(thread and thread.is_alive())
+            status["thread_alive"] = alive
+            # A revision only runs inside this process. If it is still marked as
+            # in-flight with no worker thread (UI restarted, process killed), it
+            # is lost: report and persist it as interrupted instead of leaving a
+            # permanently "running" revision the user cannot cancel or resume.
+            if not alive and str(status.get("status") or "") in REVISION_IN_FLIGHT_STATUSES:
+                status = revision.mark_interrupted("revision_process_lost") or status
+                status["thread_alive"] = False
             return status
         return {
             "job_id": str(job["id"]),

@@ -132,6 +132,15 @@ NVIDIA_TOTAL_TIMEOUT_SECONDS = _env_float("NVIDIA_TOTAL_TIMEOUT_SECONDS", 150.0)
 NVIDIA_REVISION_REGION_TIMEOUT_SECONDS = _env_float("NVIDIA_REVISION_REGION_TIMEOUT_SECONDS", 120.0)
 NVIDIA_REVISION_DIAGNOSTIC_MODE = _env_bool("NVIDIA_REVISION_DIAGNOSTIC_MODE", False)
 
+# Full chapter revision policy. The reviewer sends one region per request; these
+# knobs keep the full run to suspicious regions, bound concurrency to the rate
+# limit, cache valid responses, and retry only transient transport failures.
+QUALITY_REVISION_SUSPICIOUS_ONLY = _env_bool("QUALITY_REVISION_SUSPICIOUS_ONLY", True)
+QUALITY_REVISION_CONCURRENCY = min(3, max(1, _env_int("QUALITY_REVISION_CONCURRENCY", 2)))
+QUALITY_REVISION_CACHE = _env_bool("QUALITY_REVISION_CACHE", True)
+QUALITY_REVISION_MAX_RETRY = min(2, max(0, _env_int("QUALITY_REVISION_MAX_RETRY", 1)))
+QUALITY_REVISION_LOW_OCR_CONFIDENCE = _env_float("QUALITY_REVISION_LOW_OCR_CONFIDENCE", 0.75)
+
 # Controlled Webtoon test mode.
 TEST_MODE = _env_str("TEST_MODE", "False").lower() in ("1", "true", "yes", "on")
 TEST_URL = _env_str(

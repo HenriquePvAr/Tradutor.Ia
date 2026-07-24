@@ -25,6 +25,7 @@ import config
 from ocr_balloon import TextGroup, render_analyzed_image
 from ocr_engine import OCRLine
 from pdf import generate_pdf
+from process_options import hidden_console_options
 from translator_nvidia import TranslatorNvidiaBatch
 
 
@@ -57,6 +58,9 @@ PRESERVED_CLASSES = {"sfx", "decorative", "credit", "watermark", "editorial"}
 REVIEW_SCHEMA_VERSION = "1.0"
 REVIEW_ACTIONS = {"keep", "rewrite", "preserve_original", "manual_review"}
 REVIEW_RISKS = {"low", "medium", "high"}
+# A revision is only advanced by a worker thread inside the UI process, so these
+# states are meaningless once that thread is gone.
+REVISION_IN_FLIGHT_STATUSES = frozenset({"queued", "running", "cancelling"})
 REVIEW_RESULT_FIELDS = {
     "region_id",
     "action",
@@ -668,6 +672,9 @@ class ContextualNvidiaReviewer:
                 capture_output=True,
                 timeout=max(self.total_timeout_seconds, self.read_timeout_seconds + 5.0),
                 check=False,
+                # The UI runs under pythonw, so a plain python.exe child would
+                # flash a console per request. Output is still captured above.
+                **hidden_console_options(),
             )
             if completed.returncode != 0:
                 return {
@@ -1121,6 +1128,32 @@ class ChapterQualityRevision:
             return read_json(manifest, {})
         return None
 
+    def mark_interrupted(self, reason_code: str = "revision_process_lost") -> dict[str, Any] | None:
+        """Persist a lost in-flight revision as interrupted so it can be resumed.
+
+        Idempotent: a revision that already reached a terminal state is returned
+        untouched, and checkpoints are never discarded.
+        """
+
+        root = self.output_dir / "quality_revision"
+        pointer = read_json(root / "latest_revision.json", {})
+        manifest_path = Path(str(pointer.get("manifest_path") or ""))
+        if not manifest_path.is_file():
+            return None
+        manifest = read_json(manifest_path, {})
+        if str(manifest.get("status") or "") not in REVISION_IN_FLIGHT_STATUSES:
+            return manifest
+        manifest.update({
+            "status": "interrupted",
+            "phase": "interrupted",
+            "phase_label": "Revisão interrompida",
+            "reason_code": reason_code,
+            "resumable": True,
+            "updated_at": utc_now(),
+        })
+        write_json(manifest_path, manifest)
+        return manifest
+
     def start(self, *, max_iterations: int = 3) -> dict[str, Any]:
         progress = read_json(self.output_dir / "progress.json", {})
         quality = read_json(self.output_dir / "quality_report.json", {})
@@ -1492,6 +1525,12 @@ class ChapterQualityRevision:
         ]
         if canary:
             reviewable = self._select_canary_records(reviewable, max_regions=max_regions or 10)
+        skipped_unchanged: list[dict[str, Any]] = []
+        if not canary:
+            reviewable, skipped = self._partition_suspicious(reviewable)
+            skipped_unchanged = [self._unchanged_review(record) for record in skipped]
+            manifest["suspicious_regions"] = len(reviewable)
+            manifest["skipped_unchanged_regions"] = len(skipped)
         reviewer = self.reviewer_factory()
         model = getattr(reviewer, "model", "unknown")
         manifest["model"] = model
@@ -1553,6 +1592,9 @@ class ChapterQualityRevision:
                 "updated_at": utc_now(),
             }
             write_json(paths.checkpoint, checkpoint)
+        # Non-suspicious regions were never sent to the model; record them as
+        # explicitly unchanged so no region is silently omitted or treated as approved.
+        reviews.extend(skipped_unchanged)
         manifest["requests"] = int(getattr(reviewer, "requests", manifest.get("requests", 0) or 0))
         blocked = sum(1 for item in reviews if item.get("action") == "manual_review")
         residual = sum(1 for item in reviews if item.get("reason_code") == "source_language_residual")
@@ -1568,6 +1610,8 @@ class ChapterQualityRevision:
             "model": model,
             "requests": manifest["requests"],
             "reviewed_regions": len(reviewable),
+            "suspicious_regions": len(reviewable) if not canary else None,
+            "skipped_unchanged_regions": len(skipped_unchanged),
             "reviews": reviews,
             "manual_review": blocked,
             "source_language_residual": residual,
@@ -1836,6 +1880,74 @@ class ChapterQualityRevision:
         if classification not in TRANSLATABLE_CLASSES:
             return False
         return bool(str(region.get("source_text") or "").strip())
+
+    @staticmethod
+    def _word_tokens(text: str) -> list[str]:
+        return [t for t in re.findall(r"[^\W\d_]+", str(text or "").casefold(), flags=re.UNICODE) if len(t) >= 2]
+
+    def _suspicious_reasons(self, record: dict[str, Any]) -> list[str]:
+        # General, work-agnostic signals that a translation may need model review.
+        # No source phrases, translations, page numbers, or per-title rules here.
+        reasons: list[str] = []
+        source = str(record.get("source_text") or "").strip()
+        current = str(record.get("current_translation") or "").strip()
+        if record.get("quality_reasons"):
+            reasons.append("already_flagged")
+        try:
+            confidence = float(record.get("ocr_confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        low_conf = float(getattr(config, "QUALITY_REVISION_LOW_OCR_CONFIDENCE", 0.75) or 0.75)
+        if 0.0 < confidence < low_conf:
+            reasons.append("low_ocr_confidence")
+        if source and not current:
+            reasons.append("empty_translation")
+        if source and current and current.casefold() == source.casefold():
+            reasons.append("untranslated_literal")
+        # English residual / mixed language: a pt-BR translation should not reuse
+        # most of the source's word tokens verbatim.
+        source_tokens = set(self._word_tokens(source))
+        current_tokens = self._word_tokens(current)
+        if len(source_tokens) >= 2 and current_tokens:
+            shared = sum(1 for t in current_tokens if t in source_tokens)
+            if shared / len(current_tokens) >= 0.5:
+                reasons.append("source_language_residual")
+        # Length anomalies for multi-word source (truncation / overflow).
+        if len(source.split()) >= 2 and current:
+            ratio = len(current) / max(1, len(source))
+            if ratio < 0.4:
+                reasons.append("suspicious_truncation")
+            elif ratio > 1.8:
+                reasons.append("suspicious_overflow")
+        return reasons
+
+    def _partition_suspicious(self, reviewable: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if not bool(getattr(config, "QUALITY_REVISION_SUSPICIOUS_ONLY", True)):
+            return reviewable, []
+        suspicious: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for record in reviewable:
+            reasons = self._suspicious_reasons(record)
+            if reasons:
+                record = {**record, "suspicious_reasons": reasons}
+                suspicious.append(record)
+            else:
+                skipped.append(record)
+        return suspicious, skipped
+
+    @staticmethod
+    def _unchanged_review(record: dict[str, Any]) -> dict[str, Any]:
+        # A region not sent to the model stays as-is; it is never "AI approved".
+        return {
+            "region_id": record["region_id"],
+            "action": "keep",
+            "revised_translation": "",
+            "reason_code": "not_suspicious_unchanged",
+            "confidence": 0.0,
+            "risk": "low",
+            "terminology": [],
+            "contract_path": "not_reviewed",
+        }
 
     def _text_type(self, classification: str) -> str:
         if classification == "speech":
