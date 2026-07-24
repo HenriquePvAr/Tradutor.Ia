@@ -251,7 +251,10 @@ class SupabaseAuthProvider:
                 options={"require": ["exp", "sub"]},
             )
         except InvalidTokenError as exc:
-            raise AuthenticationRequired("token_verification_failed") from exc
+            # The PyJWT subclass name (InvalidAudienceError, InvalidSignatureError,
+            # ExpiredSignatureError, InvalidIssuerError, ...) pinpoints the cause and
+            # carries no token content, so it is safe to surface for diagnostics.
+            raise AuthenticationRequired(f"token_verification_failed_{type(exc).__name__}") from exc
         return claims
 
     def authenticate_request(self, request) -> RequestPrincipal:

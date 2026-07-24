@@ -80,7 +80,7 @@ window.__tradutorAuthTrace = Array.isArray(window.__tradutorAuthTrace)
 
 function authTrace(event, fields = {}) {
   const safe = {event: String(event || ''), at: Date.now()};
-  for (const key of ['status', 'code', 'authenticated', 'source']) {
+  for (const key of ['status', 'code', 'authenticated', 'source', 'token_present', 'token_length', 'elapsed_ms', 'expires_at', 'reason', 'meta']) {
     if (fields[key] !== undefined) safe[key] = fields[key];
   }
   window.__tradutorAuthTrace.push(safe);
@@ -208,7 +208,24 @@ async function syncBackendSession(accessToken = '', {signal} = {}) {
 
 async function establishCanonicalSession(signal) {
   let accessToken = '';
-  try { accessToken = await authApi.currentAccessToken(); } catch (_) { /* backend remains authoritative */ }
+  const tokenStarted = Date.now();
+  try { accessToken = await authApi.currentAccessToken(); } catch (err) {
+    authTrace('AUTH_ACCESS_TOKEN_MISSING', {code: err?.code || 'current_access_token_threw', elapsed_ms: Date.now() - tokenStarted});
+  }
+  const token = String(accessToken || '');
+  let meta = null;
+  if (token) {
+    try {
+      const parts = token.split('.');
+      const d = (s) => JSON.parse(atob(String(s || '').replace(/-/g, '+').replace(/_/g, '/')));
+      const h = d(parts[0]); const p = d(parts[1]);
+      const nowS = Math.floor(Date.now() / 1000);
+      meta = {alg: h.alg, kid: String(h.kid || '').slice(0, 12), iss: p.iss, aud: p.aud, exp_in: (p.exp || 0) - nowS, sub: Boolean(p.sub)};
+    } catch (_) { meta = {decode_error: true}; }
+  }
+  authTrace(token ? 'AUTH_ACCESS_TOKEN_PRESENT' : 'AUTH_ACCESS_TOKEN_MISSING', {
+    token_present: Boolean(token), token_length: token.length, elapsed_ms: Date.now() - tokenStarted, meta,
+  });
   const payload = await syncBackendSession(accessToken, {signal});
   if (payload?.authenticated) return payload;
   const error = new Error('session_not_established');
