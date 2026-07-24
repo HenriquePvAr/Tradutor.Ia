@@ -91,6 +91,35 @@ class QualityReviewTests(unittest.TestCase):
         self.assertTrue(confirmed["confirmed"])
         self.assertEqual(self.bridge.store.review_actions(self.job_id)["p1:iBALAO_1"], "preserved_original")
 
+    def test_visual_state_joins_on_region_id_not_balloon_id(self):
+        # The report item's id is the balloon label (BALAO_1); the visual gate
+        # keys regions by region_id (REGION_001). The panel must join on the
+        # region_id, otherwise every per-item state is silently dropped.
+        report_path = self.output / "quality_report.json"
+        report_path.write_text(json.dumps({"pages": [{
+            "index": 8,
+            "output_path": str(self.output / "page_001.png"),
+            "translation_terminal_items": [{
+                "id": "BALAO_1", "region_id": "REGION_001", "classification": "speech",
+                "text": "Hello", "translation": "Ola", "manual_review_required": True,
+            }],
+        }]}), encoding="utf-8")
+        rev_root = self.output / "quality_revision"
+        rev_dir = rev_root / "rev1"
+        rev_dir.mkdir(parents=True)
+        manifest_path = rev_dir / "revision_manifest.json"
+        manifest_path.write_text(json.dumps({"revision_id": "rev1", "status": "review_required"}), encoding="utf-8")
+        (rev_root / "latest_revision.json").write_text(
+            json.dumps({"revision_id": "rev1", "manifest_path": str(manifest_path)}), encoding="utf-8")
+        (rev_dir / "incremental_render_audit.json").write_text(json.dumps({"region_visual_states": {
+            "p008:REGION_001": {"state": "applied", "reason_code": "",
+                                "proposed_translation": "Ola revisado"}}}), encoding="utf-8")
+
+        item = self.bridge.quality_review(self.job_id)["items"][0]
+        self.assertEqual(item["region_id"], "p008:REGION_001")
+        self.assertEqual(item["visual_state"], "applied")
+        self.assertEqual(item["proposed_translation"], "Ola revisado")
+
     def test_quality_review_falls_back_to_structured_json_next_to_html_report(self):
         html_path = self.output / "quality_report.html"
         html_path.write_text("<html>visual report</html>", encoding="utf-8")

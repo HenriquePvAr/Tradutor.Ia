@@ -577,10 +577,14 @@ class UiBridge:
                     continue
                 seen_keys.add(key)
                 action = actions.get(key, "pending")
-                visual = visual_states.get(f"p{page_number:03d}:{item_id}") or {}
+                # The visual gate keys regions by region_id (REGION_001), while a
+                # review item's id is the balloon label (BALAO_1); join on the
+                # region_id so per-item states are not silently dropped.
+                region_id = str(raw.get("region_id") or item_id)
+                visual = visual_states.get(f"p{page_number:03d}:{region_id}") or {}
                 items.append({
                     "key": key,
-                    "region_id": f"p{page_number:03d}:{item_id}",
+                    "region_id": f"p{page_number:03d}:{region_id}",
                     "visual_state": str(visual.get("state") or ""),
                     "visual_reason_code": str(visual.get("reason_code") or ""),
                     "proposed_translation": str(visual.get("proposed_translation") or ""),
