@@ -19,6 +19,110 @@ JS = ROOT / "static" / "tradutor_ui.js"
 SHELL = ROOT / "ui" / "ui_shell.html"
 
 
+class RevisionLifecycleContracts(unittest.TestCase):
+    def _revision_with_status(self, root: Path, status: str) -> ChapterQualityRevision:
+        output = root / "output"
+        (output / "quality_revision" / "rev1").mkdir(parents=True)
+        manifest = output / "quality_revision" / "rev1" / "revision_manifest.json"
+        manifest.write_text(json.dumps({"revision_id": "rev1", "status": status, "phase": "x"}), encoding="utf-8")
+        (output / "quality_revision" / "latest_revision.json").write_text(
+            json.dumps({"revision_id": "rev1", "manifest_path": str(manifest)}), encoding="utf-8")
+        return ChapterQualityRevision(output, job_id="job-1", run_id="run-1")
+
+    def test_lost_in_flight_revision_becomes_interrupted_and_resumable(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision_with_status(Path(folder), "running")
+            marked = revision.mark_interrupted()
+            self.assertEqual(marked["status"], "interrupted")
+            self.assertEqual(marked["reason_code"], "revision_process_lost")
+            self.assertTrue(marked["resumable"])
+
+    def test_marking_interrupted_is_idempotent_for_terminal_revisions(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision_with_status(Path(folder), "finished")
+            marked = revision.mark_interrupted()
+            # A terminal revision is returned untouched, never rewritten.
+            self.assertEqual(marked["status"], "finished")
+            self.assertNotIn("reason_code", marked)
+
+    def test_background_nvidia_child_never_opens_a_console_on_windows(self) -> None:
+        import os
+        import subprocess
+
+        from process_options import hidden_console_options
+
+        options = hidden_console_options()
+        if os.name == "nt":
+            self.assertEqual(options["creationflags"], subprocess.CREATE_NO_WINDOW)
+            self.assertIn("startupinfo", options)
+        else:
+            self.assertEqual(options, {})
+        # Output must still be captured, so the helper must not fix the streams.
+        self.assertNotIn("stdout", options)
+        self.assertNotIn("stderr", options)
+
+
+class SuspiciousRegionSelection(unittest.TestCase):
+    def _revision(self) -> ChapterQualityRevision:
+        return ChapterQualityRevision("unused", job_id="job-1", run_id="run-1")
+
+    def test_clean_translation_is_not_suspicious(self) -> None:
+        record = {"region_id": "p1:R1", "source_text": "You think you can defeat me?",
+                  "current_translation": "Voce acha que pode me derrotar?", "ocr_confidence": 0.95,
+                  "quality_reasons": []}
+        self.assertEqual(self._revision()._suspicious_reasons(record), [])
+
+    def test_generic_quality_signals_flag_regions(self) -> None:
+        revision = self._revision()
+        expectations = {
+            "already_flagged": {"source_text": "Master", "current_translation": "Mestre",
+                                "ocr_confidence": 0.99, "quality_reasons": ["needs_context"]},
+            "low_ocr_confidence": {"source_text": "The shadow rose", "current_translation": "A sombra se ergueu",
+                                   "ocr_confidence": 0.4, "quality_reasons": []},
+            "empty_translation": {"source_text": "Hello there", "current_translation": "",
+                                  "ocr_confidence": 0.9, "quality_reasons": []},
+            "untranslated_literal": {"source_text": "Run away now", "current_translation": "Run away now",
+                                     "ocr_confidence": 0.95, "quality_reasons": []},
+            "suspicious_truncation": {"source_text": "The nightmare spell shattered the sky above them",
+                                      "current_translation": "O feitico", "ocr_confidence": 0.95,
+                                      "quality_reasons": []},
+        }
+        for expected, record in expectations.items():
+            record = {"region_id": "p1:R", **record}
+            self.assertIn(expected, revision._suspicious_reasons(record), expected)
+
+    def test_partition_keeps_unsuspicious_regions_out_of_the_model(self) -> None:
+        revision = self._revision()
+        clean = {"region_id": "p1:R1", "source_text": "Go now", "current_translation": "Va agora",
+                 "ocr_confidence": 0.98, "quality_reasons": []}
+        flagged = {"region_id": "p1:R2", "source_text": "Go now", "current_translation": "",
+                   "ocr_confidence": 0.98, "quality_reasons": []}
+        suspicious, skipped = revision._partition_suspicious([clean, flagged])
+        self.assertEqual([r["region_id"] for r in suspicious], ["p1:R2"])
+        self.assertEqual([r["region_id"] for r in skipped], ["p1:R1"])
+        # A skipped region is explicitly unchanged, never "approved by the model".
+        unchanged = revision._unchanged_review(skipped[0])
+        self.assertEqual(unchanged["action"], "keep")
+        self.assertEqual(unchanged["reason_code"], "not_suspicious_unchanged")
+        self.assertEqual(unchanged["contract_path"], "not_reviewed")
+
+    def test_preserved_classes_never_reach_the_suspicious_heuristic(self) -> None:
+        revision = self._revision()
+        for classification in ("sfx", "credit", "watermark", "decorative", "editorial"):
+            self.assertFalse(revision._is_reviewable({"classification": classification, "source_text": "BOOM"}),
+                             classification)
+
+
+class ReviewModeNavigationContracts(unittest.TestCase):
+    def test_exit_review_mode_releases_the_new_translation_form(self) -> None:
+        source = JS.read_text(encoding="utf-8")
+        self.assertIn("function exitReviewMode", source)
+        self.assertIn("if (start) { start.hidden = false; start.disabled = false; }", source)
+        self.assertIn("['view', 'job_id', 'run_id'].forEach(key => url.searchParams.delete(key));", source)
+        # Choosing Nova tradução from the rail must leave review_mode.
+        self.assertIn("if (tab.dataset.tab === 'nova' && appState.reviewMode) exitReviewMode();", source)
+
+
 class PipelineCanonicalUiContracts(unittest.TestCase):
     def test_pipeline_uses_canonical_stage_aliases_for_new_backend_stages(self) -> None:
         source = JS.read_text(encoding="utf-8")
