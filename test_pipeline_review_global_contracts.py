@@ -288,9 +288,11 @@ class LocalizedCleanupContracts(unittest.TestCase):
     def _page_with_text(self):
         import numpy as np
 
+        # Real text is many small glyphs, not one solid bar.
         page = np.full((200, 300, 3), 255, dtype=np.uint8)
-        page[40:60, 20:280] = 20            # previous translation, region A
-        page[140:160, 20:280] = 20          # untouched text, region B
+        for x in range(20, 280, 20):
+            page[42:52, x:x + 10] = 20      # previous translation, region A
+            page[142:152, x:x + 10] = 20    # untouched text, region B
         page[95:100, :] = 0                 # balloon border between them
         return page
 
@@ -307,7 +309,7 @@ class LocalizedCleanupContracts(unittest.TestCase):
             # The old translation is gone from the changed region...
             self.assertEqual(revision._ink(cleaned[30:70, 10:290]), 0)
             # ...while the other text, the border and everything else stay put.
-            np.testing.assert_array_equal(cleaned[140:160, 20:280], page[140:160, 20:280])
+            np.testing.assert_array_equal(cleaned[142:152, 20:280], page[142:152, 20:280])
             np.testing.assert_array_equal(cleaned[95:100, :], page[95:100, :])
             self.assertEqual(
                 ChapterQualityRevision._pixels_outside_boxes_changed(page, cleaned, [box]), 0)
@@ -325,19 +327,56 @@ class LocalizedCleanupContracts(unittest.TestCase):
             twice, _, _ = revision._clean_previous_translation(once, [box])
             np.testing.assert_array_equal(once, twice)
 
-    def test_a_dark_region_fails_closed_instead_of_erasing_artwork(self) -> None:
+    @staticmethod
+    def _dark_balloon() -> "object":
+        import numpy as np
+
+        page = np.full((200, 300, 3), 235, dtype=np.uint8)
+        page[20:180, 20:280] = 25                     # dark narration box
+        for x in range(40, 260, 24):                  # light glyphs on it
+            page[90:120, x:x + 12] = 235
+        return page
+
+    def test_light_text_on_a_dark_balloon_is_erased_without_touching_the_balloon(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            page = self._dark_balloon()
+            box = (30, 80, 270, 130)
+            polarity, _ = revision._detect_text_polarity(page[80:130, 30:270])
+            self.assertEqual(polarity, "light_text_on_dark_background")
+            cleaned, metrics, reason = revision._clean_previous_translation(page, [box])
+            self.assertEqual(reason, "")
+            self.assertIsNotNone(cleaned)
+            self.assertEqual(metrics[-1]["polarity"], "light_text_on_dark_background")
+            # The light glyphs are gone; the balloon they sat on is still dark.
+            self.assertEqual(revision._ink(cleaned[80:130, 30:270], polarity), 0)
+            self.assertGreater(revision._ink(cleaned[80:130, 30:270]), 0)
+
+    def test_residual_ink_is_measured_in_the_polarity_of_the_erased_text(self) -> None:
+        # On a dark balloon the balloon itself is dark, so a dark-ink measure
+        # would report a clean region as still full of the old translation.
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            page = self._dark_balloon()
+            cleaned, _, _ = revision._clean_previous_translation(page, [(30, 80, 270, 130)])
+            crop = cleaned[80:130, 30:270]
+            self.assertEqual(revision._ink(crop, "light_text_on_dark_background"), 0)
+            self.assertGreater(revision._ink(crop, "dark_text_on_light_background"), 0)
+
+    def test_a_solid_dark_panel_is_artwork_and_fails_closed(self) -> None:
         import numpy as np
 
         with tempfile.TemporaryDirectory() as folder:
             revision = self._revision(Path(folder))
-            # A dark panel carries light-on-dark text, which the dark-glyph mask
-            # cannot isolate: refuse rather than erase the artwork or draw over it.
+            # A solid dark panel is artwork, not glyphs on a balloon: neither side
+            # of the histogram looks like text, so refuse instead of erasing it.
             page = np.full((100, 100, 3), 255, dtype=np.uint8)
             page[10:90, 10:90] = 10
             cleaned, metrics, reason = revision._clean_previous_translation(page, [(5, 5, 95, 95)])
             self.assertIsNone(cleaned)
-            self.assertEqual(reason, "clean_region_background_unavailable")
-            self.assertEqual(metrics[-1]["reason_code"], "clean_region_background_unavailable")
+            # One big blob is a panel or the page around a balloon, not glyphs.
+            self.assertIn(reason, {"ambiguous_text_polarity", "light_text_components_not_isolated"})
+            self.assertEqual(metrics[-1]["reason_code"], reason)
 
     def test_a_mask_covering_most_of_a_light_region_is_rejected(self) -> None:
         import numpy as np

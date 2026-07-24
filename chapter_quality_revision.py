@@ -2263,25 +2263,67 @@ class ChapterQualityRevision:
             return None
         return left, top, right, bottom
 
-    @staticmethod
-    def _previous_text_mask(region: "np.ndarray") -> "np.ndarray":
-        """Mask the glyphs of the translation currently drawn in this region.
+    # Glyphs are a minority of a balloon. A candidate side larger than this is
+    # artwork or the background itself, not text.
+    TEXT_POLARITY_MAX_SHARE = 0.45
+    # One side must clearly dominate, otherwise the polarity is ambiguous.
+    TEXT_POLARITY_DOMINANCE = 2.0
+    TEXT_POLARITY_DELTA = 35
 
-        The revision re-renders on top of the translated page, so the text to
-        remove is the previous translation, not the source text. Only clearly
-        darker-than-background components are taken, which keeps balloon borders
-        and artwork out of the mask.
+    @classmethod
+    def _detect_text_polarity(cls, region: "np.ndarray") -> tuple[str, dict[str, Any]]:
+        """Decide whether the drawn text is darker or lighter than its balloon.
+
+        A dark balloon carries light glyphs, so masking "darker than background"
+        would find nothing and the new text would land on top of the old one.
+        The median alone is not enough, so both sides are measured and one has to
+        clearly dominate; otherwise the region is refused rather than guessed.
         """
 
         grey = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY) if region.ndim == 3 else region
         background = int(np.median(grey))
-        # Take the antialiased edge as well: masking only the dark glyph core
-        # leaves a light ghost of the previous translation behind.
-        threshold = max(0, background - 35)
-        mask = (grey <= threshold).astype(np.uint8) * 255
+        total = int(grey.size) or 1
+        darker = int((grey <= background - cls.TEXT_POLARITY_DELTA).sum())
+        lighter = int((grey >= background + cls.TEXT_POLARITY_DELTA).sum())
+        evidence = {
+            "background_level": background,
+            "darker_pixels": darker,
+            "lighter_pixels": lighter,
+            "darker_share": round(darker / total, 4),
+            "lighter_share": round(lighter / total, 4),
+        }
+        if darker == 0 and lighter == 0:
+            # Nothing stands out from the background: the region is already blank.
+            return "blank", evidence
+        dark_ok = 0 < darker and darker / total <= cls.TEXT_POLARITY_MAX_SHARE
+        light_ok = 0 < lighter and lighter / total <= cls.TEXT_POLARITY_MAX_SHARE
+        if dark_ok and darker >= lighter * cls.TEXT_POLARITY_DOMINANCE:
+            return "dark_text_on_light_background", evidence
+        if light_ok and lighter >= darker * cls.TEXT_POLARITY_DOMINANCE:
+            return "light_text_on_dark_background", evidence
+        return "ambiguous", evidence
+
+    @classmethod
+    def _previous_text_mask(cls, region: "np.ndarray", polarity: str = "") -> "np.ndarray":
+        """Mask the glyphs of the translation currently drawn in this region.
+
+        The revision re-renders on top of the translated page, so the text to
+        remove is the previous translation, not the source text. Only the side of
+        the histogram the glyphs live on is taken, which keeps balloon borders and
+        artwork out of the mask.
+        """
+
+        grey = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY) if region.ndim == 3 else region
+        background = int(np.median(grey))
+        if not polarity:
+            polarity, _ = cls._detect_text_polarity(region)
+        if polarity == "light_text_on_dark_background":
+            mask = (grey >= background + cls.TEXT_POLARITY_DELTA).astype(np.uint8) * 255
+        else:
+            mask = (grey <= background - cls.TEXT_POLARITY_DELTA).astype(np.uint8) * 255
         if not mask.any():
             return mask
-        # Close the remaining halo without letting the mask bleed into the art.
+        # Close the antialiased halo without letting the mask bleed into the art.
         return cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
 
     @staticmethod
@@ -2306,6 +2348,8 @@ class ChapterQualityRevision:
 
     # A cleanup mask that covers most of the region is not text: it is artwork.
     CLEANUP_MAX_MASK_RATIO = 0.60
+    # A single blob this large is a panel or the page around a balloon, not a glyph.
+    CLEANUP_MAX_COMPONENT_RATIO = 0.15
     # Below this median level the region is dark, so its text is light-on-dark
     # and the dark-glyph mask below would not find it.
     CLEANUP_MIN_BACKGROUND_LEVEL = 128
@@ -2327,22 +2371,25 @@ class ChapterQualityRevision:
         metrics: list[dict[str, Any]] = []
         for left, top, right, bottom in boxes:
             region = cleaned[top:bottom, left:right]
-            grey = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY) if region.ndim == 3 else region
-            if int(np.median(grey)) < self.CLEANUP_MIN_BACKGROUND_LEVEL:
-                # A predominantly dark region carries light-on-dark text, which
-                # this dark-glyph cleanup cannot isolate. Refuse instead of
-                # drawing the new text over the old one or erasing artwork.
+            polarity, evidence = self._detect_text_polarity(region)
+            if polarity == "ambiguous":
+                # Neither side of the histogram looks like glyphs: refuse rather
+                # than erase artwork or draw the new text over the old one.
                 metrics.append({
                     "box": [left, top, right, bottom],
-                    "reason_code": "clean_region_background_unavailable",
+                    "polarity": polarity,
+                    "polarity_evidence": evidence,
+                    "reason_code": "ambiguous_text_polarity",
                 })
-                return None, metrics, "clean_region_background_unavailable"
-            mask = self._previous_text_mask(region)
+                return None, metrics, "ambiguous_text_polarity"
+            mask = self._previous_text_mask(region, polarity)
             area = int((mask > 0).sum())
             total = int(mask.size) or 1
             ratio = area / total
             entry = {
                 "box": [left, top, right, bottom],
+                "polarity": polarity,
+                "polarity_evidence": evidence,
                 "mask_area": area,
                 "mask_ratio": round(ratio, 4),
                 "pixels_removed": area,
@@ -2357,6 +2404,17 @@ class ChapterQualityRevision:
                 entry["reason_code"] = "excessive_cleanup_mask"
                 metrics.append(entry)
                 return None, metrics, "excessive_cleanup_mask"
+            # Glyphs are many small blobs. One blob covering a large part of the
+            # region is artwork or the surrounding page, so erasing it would
+            # destroy the picture rather than the previous translation.
+            count, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+            largest = int(stats[1:, cv2.CC_STAT_AREA].max()) if count > 1 else 0
+            entry["components"] = max(0, count - 1)
+            entry["largest_component_ratio"] = round(largest / total, 4)
+            if largest / total > self.CLEANUP_MAX_COMPONENT_RATIO:
+                entry["reason_code"] = "light_text_components_not_isolated"
+                metrics.append(entry)
+                return None, metrics, "light_text_components_not_isolated"
             # Reconstruct the background from the surrounding balloon pixels.
             repaired = cv2.inpaint(region, mask, 3, cv2.INPAINT_TELEA)
             region[mask > 0] = repaired[mask > 0]
@@ -2365,10 +2423,17 @@ class ChapterQualityRevision:
         return cleaned, metrics, ""
 
     @staticmethod
-    def _ink(image: "np.ndarray") -> int:
-        """Count dark pixels: text drawn over text roughly doubles this."""
+    def _ink(image: "np.ndarray", polarity: str = "dark_text_on_light_background") -> int:
+        """Count text pixels: text drawn over text roughly doubles this.
+
+        On a dark balloon the balloon itself is dark, so counting dark pixels
+        would report the balloon as leftover text. Count in the direction the
+        glyphs were actually drawn instead.
+        """
 
         grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        if polarity == "light_text_on_dark_background":
+            return int((grey > 127).sum())
         return int((grey < 128).sum())
 
     def _render_changed_pages(self, pages: list[dict[str, Any]], changed_by_page: dict[int, list[dict[str, Any]]]) -> tuple[list[str], dict[str, Any]]:
@@ -2448,11 +2513,15 @@ class ChapterQualityRevision:
             # untouched pixel stays byte-identical to the base by construction.
             final = base.copy()
             overlap = []
+            polarity_by_box = {tuple(item.get("box") or ()): str(item.get("polarity") or "")
+                               for item in cleanup_metrics}
             for left, top, right, bottom in boxes:
                 patch = full[top:bottom, left:right]
-                before_ink = self._ink(base[top:bottom, left:right])
-                residual_ink = self._ink(cleaned[top:bottom, left:right])
-                after_ink = self._ink(patch)
+                polarity = polarity_by_box.get((left, top, right, bottom)) \
+                    or "dark_text_on_light_background"
+                before_ink = self._ink(base[top:bottom, left:right], polarity)
+                residual_ink = self._ink(cleaned[top:bottom, left:right], polarity)
+                after_ink = self._ink(patch, polarity)
                 # The safety property is that the previous translation was really
                 # erased. Once the region is blank the new text cannot be drawn on
                 # top of anything, so a longer translation legitimately adds ink.
@@ -2461,6 +2530,7 @@ class ChapterQualityRevision:
                                     "ink_before": before_ink,
                                     "ink_after_cleanup": residual_ink,
                                     "ink_final": after_ink,
+                                    "polarity": polarity,
                                     "detail": "previous translation still present after cleanup"})
                     continue
                 final[top:bottom, left:right] = patch
