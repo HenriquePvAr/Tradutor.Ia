@@ -269,7 +269,7 @@ class FakeProviderReviewer(ContextualNvidiaReviewer):
         self.responses = list(responses)
         self.sent = []
 
-    def _post_chat_completion(self, request_payload, started, purpose):
+    def _post_chat_completion(self, request_payload, started, purpose, **kwargs):
         self.requests += 1
         self.sent.append(purpose)
         content = self.responses.pop(0)
@@ -285,7 +285,7 @@ class FakeProviderReviewer(ContextualNvidiaReviewer):
 
 
 class FakeTransportFailureReviewer(FakeProviderReviewer):
-    def _post_chat_completion(self, request_payload, started, purpose):
+    def _post_chat_completion(self, request_payload, started, purpose, **kwargs):
         self.requests += 1
         self.sent.append(purpose)
         return {
@@ -367,6 +367,88 @@ class ReviewContractRecoveryContracts(unittest.TestCase):
     def test_subprocess_uses_current_environment_python_not_base_python(self) -> None:
         executable = ContextualNvidiaReviewer._subprocess_python_executable()
         self.assertEqual(Path(executable), Path(sys.executable))
+
+    def test_diagnostic_mode_disables_repair_and_individual_fallback(self) -> None:
+        reviewer = FakeProviderReviewer(["not json"])
+        reviews = reviewer.review_batch(self._records(), {}, batch_id="batch-1", diagnostic_mode=True)
+        self.assertEqual(reviewer.sent, ["review"])
+        self.assertEqual(reviewer.requests, 1)
+        self.assertEqual(reviewer.invalid_batches, 1)
+        self.assertTrue(all(item["action"] == "manual_review" for item in reviews))
+
+    def test_timeout_config_keeps_subprocess_above_http_read_timeout(self) -> None:
+        reviewer = ContextualNvidiaReviewer()
+        config = reviewer._timeout_config()
+        self.assertGreater(config["subprocess_seconds"], config["read_seconds"])
+        self.assertLess(config["connect_seconds"], config["read_seconds"])
+
+    def test_prompt_records_are_compact_without_cutting_core_text(self) -> None:
+        reviewer = ContextualNvidiaReviewer()
+        record = {
+            "region_id": "p001:REGION_001",
+            "source_text": "A" * 220,
+            "current_translation": "B" * 180,
+            "previous_context": "P" * 500,
+            "next_context": "N" * 500,
+            "text_type": "dialogue",
+            "ocr_confidence": 0.81234,
+        }
+        compact = reviewer._prompt_record(record)
+        self.assertEqual(compact["source_text"], record["source_text"])
+        self.assertEqual(compact["current_translation"], record["current_translation"])
+        self.assertLessEqual(len(compact["previous_context"]), 161)
+        self.assertLessEqual(len(compact["next_context"]), 161)
+        self.assertNotIn("page_id", compact)
+        self.assertNotIn("glossary", compact)
+
+    def test_glossary_is_filtered_to_terms_used_by_the_batch(self) -> None:
+        reviewer = ContextualNvidiaReviewer()
+        glossary = {"terms": [
+            {"term": "Sunny", "category": "name", "count": 9, "policy": "preserve"},
+            {"term": "UnusedTerm", "category": "name", "count": 9, "policy": "preserve"},
+        ]}
+        compact = reviewer._compact_glossary(glossary, [{"source_text": "Sunny speaks.", "current_translation": ""}])
+        self.assertEqual([item["term"] for item in compact["terms"]], ["Sunny"])
+
+    def test_minimal_health_check_uses_same_structured_contract(self) -> None:
+        reviewer = FakeProviderReviewer([{
+            "schema_version": REVIEW_SCHEMA_VERSION,
+            "batch_id": "health-check",
+            "results": [],
+        }])
+        result = reviewer.health_check(batch_id="health-check")
+        self.assertTrue(result["ok"])
+        self.assertEqual(reviewer.sent, ["health_check"])
+
+    def test_requests_use_honored_structured_output_mechanism(self) -> None:
+        captured: list[dict] = []
+
+        class RecordingReviewer(FakeProviderReviewer):
+            def _post_chat_completion(self, request_payload, started, purpose, **kwargs):
+                captured.append(request_payload)
+                return super()._post_chat_completion(request_payload, started, purpose, **kwargs)
+
+        reviewer = RecordingReviewer([{
+            "schema_version": REVIEW_SCHEMA_VERSION,
+            "batch_id": "batch-1",
+            "results": [{
+                "region_id": "p001:REGION_001",
+                "action": "keep",
+                "revised_translation": "",
+                "reason_code": "ok",
+                "confidence": 0.9,
+                "risk": "low",
+                "terminology": [],
+            }],
+        }])
+        reviewer.review_batch(self._records(), {}, batch_id="batch-1", diagnostic_mode=True)
+        payload = captured[0]
+        # The endpoint ignores nvext.guided_json for this model but honors
+        # response_format json_schema strict, so the payload must use it.
+        self.assertNotIn("nvext", payload)
+        self.assertEqual(payload["response_format"]["type"], "json_schema")
+        self.assertTrue(payload["response_format"]["json_schema"]["strict"])
+        self.assertFalse(payload["chat_template_kwargs"]["thinking"])
 
 
 class FullChapterQualityRevisionContracts(unittest.TestCase):
@@ -485,6 +567,13 @@ class FullChapterQualityRevisionContracts(unittest.TestCase):
             self.assertEqual(status["safe_changes_applied"], 1)
             self.assertEqual(status["publication_created"], False)
 
+    def test_canary_batch_size_is_staged_before_ten_regions(self) -> None:
+        revision = ChapterQualityRevision("unused", job_id="job-1", run_id="run-1")
+        records = [{"region_id": f"p001:REGION_{idx:03d}", "source_text": "HELLO", "current_translation": "Olá"} for idx in range(10)]
+        self.assertEqual(revision._revision_batch_size(records[:1], canary=True), 1)
+        self.assertEqual(revision._revision_batch_size(records[:3], canary=True), 3)
+        self.assertEqual(revision._revision_batch_size(records[:10], canary=True), 5)
+
     def test_revision_filters_progress_pages_to_quality_report_pages(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             output = self._fixture_output(Path(folder))
@@ -538,6 +627,8 @@ class FullChapterQualityRevisionContracts(unittest.TestCase):
         self.assertIn("qualityReviewDeveloperMode", source)
         self.assertIn("/api/ui/quality-review/revision/canary/start", source)
         self.assertIn("tradutorDeveloperMode", source)
+        self.assertIn("maxRegions = passed && reviewed >= 3", source)
+        self.assertIn("passed && reviewed >= 1 ? 3 : 1", source)
 
     def test_nvidia_review_accepts_region_id_keyed_json(self) -> None:
         parsed = {
