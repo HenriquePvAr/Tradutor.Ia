@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -2170,6 +2171,99 @@ class ChapterQualityRevision:
                 changed_by_page.setdefault(number, []).append(change)
         return changed_by_page
 
+    # A reviewed page is an edit of the translated page, never a rebuild of the
+    # English source. Overlap is detected by how much darker a region became.
+    RENDER_OVERLAP_INK_RATIO = 1.35
+
+    @staticmethod
+    def _resolve_incremental_render_base(page: dict[str, Any]) -> dict[str, Any]:
+        """Pick the image a reviewed page must be edited from.
+
+        The original scan still carries the source-language text, so it can never
+        be the base: rebuilding from it is what made earlier revisions show English
+        again. Only the translated pipeline output qualifies, and when it is
+        missing the page fails closed instead of silently falling back.
+        """
+
+        candidate = str(page.get("output_path") or "")
+        if candidate and Path(candidate).is_file():
+            return {
+                "path": candidate,
+                "base_kind": "translated_pipeline_output",
+                "reason_code": "",
+            }
+        return {
+            "path": "",
+            "base_kind": "unavailable",
+            "reason_code": "translated_render_base_unavailable",
+        }
+
+    @staticmethod
+    def _changed_region_boxes(
+        page: dict[str, Any],
+        changes: list[dict[str, Any]],
+        *,
+        width: int,
+        height: int,
+    ) -> tuple[list[tuple[int, int, int, int]], list[str]]:
+        """Clamped boxes for the regions this revision actually changed."""
+
+        wanted = {str(change.get("region_id") or "") for change in changes}
+        number = page_number(page)
+        boxes: list[tuple[int, int, int, int]] = []
+        rejected: list[str] = []
+        for item in page.get("debug_data", {}).get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            if stable_region_key(number, item) not in wanted:
+                continue
+            # Region geometry is stored as (x, y, width, height); draw_box covers
+            # the whole redraw area including padding, so it is the safe envelope.
+            raw = (item.get("draw_box") or item.get("safe_area")
+                   or item.get("allowed_modification_box") or item.get("bounding_box") or [])
+            try:
+                x, y, box_width, box_height = (int(v) for v in list(raw)[:4])
+            except (TypeError, ValueError):
+                rejected.append(stable_region_key(number, item))
+                continue
+            if box_width <= 0 or box_height <= 0:
+                rejected.append(stable_region_key(number, item))
+                continue
+            left, top = max(0, x), max(0, y)
+            right, bottom = min(width, x + box_width), min(height, y + box_height)
+            if right - left < 2 or bottom - top < 2:
+                rejected.append(stable_region_key(number, item))
+                continue
+            boxes.append((left, top, right, bottom))
+        return boxes, rejected
+
+    @staticmethod
+    def _pixels_outside_boxes_changed(
+        base: "np.ndarray",
+        result: "np.ndarray",
+        boxes: list[tuple[int, int, int, int]],
+    ) -> int:
+        """How many pixels changed outside the regions this revision may touch.
+
+        Compositing already guarantees zero, so a non-zero count means something
+        rewrote the page wholesale and the result must be rejected.
+        """
+
+        if base.shape != result.shape:
+            return int(base.size)
+        differing = np.any(base != result, axis=2) if base.ndim == 3 else base != result
+        allowed = np.zeros(differing.shape, dtype=bool)
+        for left, top, right, bottom in boxes:
+            allowed[top:bottom, left:right] = True
+        return int((differing & ~allowed).sum())
+
+    @staticmethod
+    def _ink(image: "np.ndarray") -> int:
+        """Count dark pixels: text drawn over text roughly doubles this."""
+
+        grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        return int((grey < 128).sum())
+
     def _render_changed_pages(self, pages: list[dict[str, Any]], changed_by_page: dict[int, list[dict[str, Any]]]) -> tuple[list[str], dict[str, Any]]:
         review_pages = self.output_dir / "quality_revision_pages"
         review_pages.mkdir(parents=True, exist_ok=True)
@@ -2187,8 +2281,33 @@ class ChapterQualityRevision:
                 rendered_paths.append(str(current_output))
                 render_records.append({"page": number, "status": "warning", "reason_code": "source_image_missing"})
                 continue
+            # The reviewed page is an edit of the translated page. Rebuilding from
+            # the English scan is what previously made the source text reappear.
+            base_info = self._resolve_incremental_render_base(page)
+            base = cv2.imread(base_info["path"]) if base_info["path"] else None
+            if base is None:
+                rendered_paths.append(str(current_output))
+                render_records.append({
+                    "page": number,
+                    "status": "rejected",
+                    "reason_code": base_info["reason_code"] or "translated_render_base_unavailable",
+                    "changed_regions": [item["region_id"] for item in changed_by_page[number]],
+                })
+                continue
+            height, width = base.shape[:2]
+            boxes, rejected_regions = self._changed_region_boxes(
+                page, changed_by_page[number], width=width, height=height)
+            if not boxes:
+                rendered_paths.append(str(current_output))
+                render_records.append({
+                    "page": number,
+                    "status": "rejected",
+                    "reason_code": "unsafe_incremental_mask",
+                    "rejected_regions": rejected_regions,
+                })
+                continue
             groups = self._groups_from_page_items(page)
-            final, debug_data = render_analyzed_image(
+            full, debug_data = render_analyzed_image(
                 original,
                 [],
                 [],
@@ -2197,13 +2316,71 @@ class ChapterQualityRevision:
                 page_index=number,
                 image_path=str(image_path),
             )
-            target = review_pages / f"page_{number:03d}.jpg"
-            cv2.imwrite(str(target), final)
+            if full is None or full.shape[:2] != base.shape[:2]:
+                rendered_paths.append(str(current_output))
+                render_records.append({
+                    "page": number,
+                    "status": "rejected",
+                    "reason_code": "render_dimension_mismatch",
+                })
+                continue
+            # Copy only the changed regions onto the translated page, so every
+            # untouched pixel stays byte-identical to the base by construction.
+            final = base.copy()
+            overlap = []
+            for left, top, right, bottom in boxes:
+                patch = full[top:bottom, left:right]
+                before_ink = self._ink(base[top:bottom, left:right])
+                after_ink = self._ink(patch)
+                if before_ink and after_ink > before_ink * self.RENDER_OVERLAP_INK_RATIO:
+                    # Far more ink than before means the new text was painted over
+                    # text the mask failed to clear.
+                    overlap.append({"box": [left, top, right, bottom],
+                                    "ink_before": before_ink, "ink_after": after_ink})
+                    continue
+                final[top:bottom, left:right] = patch
+            if overlap:
+                rendered_paths.append(str(current_output))
+                render_records.append({
+                    "page": number,
+                    "status": "rejected",
+                    "reason_code": "text_overlap_regression_detected",
+                    "changed_regions": [item["region_id"] for item in changed_by_page[number]],
+                    "overlap": overlap,
+                })
+                continue
+            outside_changed = self._pixels_outside_boxes_changed(base, final, boxes)
+            if outside_changed:
+                rendered_paths.append(str(current_output))
+                render_records.append({
+                    "page": number,
+                    "status": "rejected",
+                    "reason_code": "unexpected_pixels_outside_changed_regions",
+                    "outside_changed_pixels": outside_changed,
+                })
+                continue
+            target = review_pages / f"page_{number:03d}.png"
+            # Keep the image extension on the temp file: the encoder is chosen
+            # from it, so a bare ".tmp" suffix cannot be written at all.
+            tmp = review_pages / f"page_{number:03d}.tmp.png"
+            if not cv2.imwrite(str(tmp), final):
+                rendered_paths.append(str(current_output))
+                render_records.append({
+                    "page": number,
+                    "status": "rejected",
+                    "reason_code": "reviewed_page_write_failed",
+                })
+                continue
+            os.replace(str(tmp), str(target))
             rendered_paths.append(str(target))
             render_records.append({
                 "page": number,
                 "status": "rendered",
+                "base_kind": base_info["base_kind"],
+                "base_path": base_info["path"],
                 "changed_regions": [item["region_id"] for item in changed_by_page[number]],
+                "changed_boxes": [list(b) for b in boxes],
+                "rejected_regions": rejected_regions,
                 "redrawn_groups": debug_data.get("redrawn_group_count"),
             })
         return rendered_paths, {
