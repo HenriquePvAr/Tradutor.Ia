@@ -1366,7 +1366,10 @@
       renderSourceReview(runtime.source_review);
     }
     else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
-    if (!draftOnly && runtime.quality_review) renderQualityReview(runtime.quality_review);
+    // After the user leaves review_mode the form belongs to a new chapter, so an
+    // idle runtime's leftover review must not reappear over it.
+    const reviewDismissed = appState.reviewPanelDismissed && !inFlightStatuses.has(appState.status);
+    if (!draftOnly && !reviewDismissed && runtime.quality_review) renderQualityReview(runtime.quality_review);
     // In explicit review_mode the panel is owned by the selected finished chapter,
     // so a background poll of the (idle) active runtime must not hide it.
     else if (!appState.reviewMode && $('#qualityReviewPanel')) $('#qualityReviewPanel').hidden = true;
@@ -2114,6 +2117,7 @@
       appState.outputDirty = false;
       appState.qualityReview = null;
     }
+    appState.reviewPanelDismissed = true;
     const panel = $('#qualityReviewPanel');
     if (panel) panel.hidden = true;
     const revisionStatus = $('#qualityRevisionStatus');
@@ -2133,6 +2137,7 @@
     const {jobId, runId} = identity;
     appState.reviewMode = {jobId, runId, chapterName: record.chapter_name || record.slug || 'Capítulo'};
     appState.currentJobId = jobId;
+    appState.reviewPanelDismissed = false;
     if (!restore) {
       try {
         const url = new URL(window.location.href);
@@ -2144,16 +2149,23 @@
     }
     activateTab('nova');
     applyReviewMode(appState.reviewMode);
+    // The user may leave review_mode while these run; a late response must not
+    // resurrect the panel over a fresh Nova tradução form.
+    const stillReviewing = () => appState.reviewMode?.jobId === jobId;
     try {
       const review = await api(`/api/ui/quality-review/${encodeURIComponent(jobId)}`);
+      if (!stillReviewing()) return;
       if (review) renderQualityReview(review);
     } catch (_) {
-      setQualityReviewBulkMessage('Não foi possível carregar a revisão deste capítulo.', 'error');
+      if (stillReviewing()) setQualityReviewBulkMessage('Não foi possível carregar a revisão deste capítulo.', 'error');
     }
+    if (!stillReviewing()) return;
     try {
       const status = await api(`/api/ui/quality-review/revision/${encodeURIComponent(jobId)}`);
+      if (!stillReviewing()) return;
       renderQualityRevisionStatus(status);
     } catch (_) { /* revision status is optional context */ }
+    if (!stillReviewing()) return;
     updateQualityReviewDeveloperActions();
     const panel = $('#qualityReviewPanel');
     if (panel) {
