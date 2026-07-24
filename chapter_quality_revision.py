@@ -1627,19 +1627,14 @@ class ChapterQualityRevision:
         return selected[:max_regions]
 
     def _revision_batch_size(self, records: list[dict[str, Any]], *, canary: bool = False) -> int:
-        if canary:
-            total = len(records)
-            if total <= 1:
-                return 1
-            if total <= 3:
-                return 3
-            return min(5, total)
-        longest = max((len(str(item.get("source_text") or "")) + len(str(item.get("current_translation") or "")) for item in records), default=0)
-        if longest > 800:
-            return 2
-        if longest > 400:
-            return 4
-        return 6
+        # The reasoning model is 100% ID-complete with one region per request but
+        # silently omits regions when several share a batch, which the batch-level
+        # fail-closed parser then routes wholesale to manual review.  One region
+        # per request is the only proven-complete strategy for both the canary and
+        # the full revision.
+        # ponytail: fixed bs=1; only re-enable batching if repeated tests prove the
+        # provider returns 100% of the requested IDs per batch.
+        return 1
 
     def _normalize_reviews(self, batch: list[dict[str, Any]], raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         expected = {item["region_id"]: item for item in batch}

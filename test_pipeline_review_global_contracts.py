@@ -567,12 +567,14 @@ class FullChapterQualityRevisionContracts(unittest.TestCase):
             self.assertEqual(status["safe_changes_applied"], 1)
             self.assertEqual(status["publication_created"], False)
 
-    def test_canary_batch_size_is_staged_before_ten_regions(self) -> None:
+    def test_revision_sends_one_region_per_request(self) -> None:
+        # The model is 100% ID-complete only with one region per request; batching
+        # lets it silently omit regions, so both canary and full revision use bs=1.
         revision = ChapterQualityRevision("unused", job_id="job-1", run_id="run-1")
         records = [{"region_id": f"p001:REGION_{idx:03d}", "source_text": "HELLO", "current_translation": "Olá"} for idx in range(10)]
         self.assertEqual(revision._revision_batch_size(records[:1], canary=True), 1)
-        self.assertEqual(revision._revision_batch_size(records[:3], canary=True), 3)
-        self.assertEqual(revision._revision_batch_size(records[:10], canary=True), 5)
+        self.assertEqual(revision._revision_batch_size(records[:10], canary=True), 1)
+        self.assertEqual(revision._revision_batch_size(records[:10], canary=False), 1)
 
     def test_revision_filters_progress_pages_to_quality_report_pages(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
