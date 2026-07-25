@@ -1590,6 +1590,10 @@
   .quality-review-visual[data-visual-state="applied"]{color:#8fe3c2; border-color:rgba(143,227,194,.35);}
   .quality-review-visual[data-visual-state="rejected_visual_regression"]{color:#ffb0a8; border-color:rgba(255,120,100,.35);}
   .quality-review-visual[data-visual-state="manual_review"]{color:#ffd18a; border-color:rgba(255,209,138,.35);}
+  .quality-review-visual[data-visual-state="report_only"]{color:#9fb4d0; border-color:rgba(159,180,208,.35);}
+  .quality-review-pdf{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:8px 0;}
+  .quality-review-pdf .reviewed-pdf-name{font-size:10px; color:var(--muted); letter-spacing:.02em; word-break:break-all;}
+  .visual-comparison-empty{display:flex; align-items:center; justify-content:center; min-height:180px; padding:18px; border:1px dashed var(--line); border-radius:5px; color:var(--muted); font-size:12px; text-align:center;}
   .quality-review-visual-reason{font-size:11px; color:#ffb0a8; margin:0 0 7px;}
   .visual-comparison{border:1px solid var(--line); border-radius:8px; background:var(--panel); color:inherit; max-width:min(96vw,1100px); padding:14px;}
   .visual-comparison::backdrop{background:rgba(0,0,0,.72);}

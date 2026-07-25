@@ -434,6 +434,7 @@
             <div class="quality-review" id="qualityReviewPanel" hidden>
               <div class="panel-label">Revisão de qualidade</div>
               <div class="quality-review-meta" id="qualityReviewMeta"></div>
+              <div class="quality-review-pdf" id="reviewedPdfAction" hidden></div>
               <div class="quality-review-filters" role="group" aria-label="Filtrar revisão">
                 <button type="button" class="btn-ghost selected" data-review-filter="pending">Pendentes</button>
                 <button type="button" class="btn-ghost" data-review-filter="all">Todos</button>
@@ -442,6 +443,7 @@
                 <button type="button" class="btn-ghost" data-review-filter="rejected_visual_regression">Recusados pelo gate visual</button>
                 <button type="button" class="btn-ghost" data-review-filter="manual_review">Revisão manual</button>
                 <button type="button" class="btn-ghost" data-review-filter="unchanged">Sem alteração</button>
+                <button type="button" class="btn-ghost" data-review-filter="report_only">Somente relatório</button>
               </div>
               <div class="quality-review-bulk" id="qualityReviewBulk">
                 <label class="review-select-all"><input type="checkbox" id="qualityReviewSelectAll"> Selecionar todos do filtro atual</label>

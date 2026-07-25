@@ -1433,6 +1433,7 @@
     manual_review: 'revisão manual',
     unchanged: 'sem alteração',
     pending: 'pendentes',
+    report_only: 'somente relatório',
   };
 
   // Full sentence shown as each item's status, per the review spec.
@@ -1442,6 +1443,7 @@
     manual_review: 'Revisão humana necessária',
     unchanged: 'Sem alteração',
     pending: 'Aguardando o gate visual',
+    report_only: 'Não vinculado à revisão',
   };
 
   // Why the visual gate refused a region, in plain pt-BR. Unknown codes fall
@@ -1489,10 +1491,28 @@
       return acc;
     }, {LOW: 0, MEDIUM: 0, HIGH: 0});
     const visualSummary = review.visual_state_summary || {};
+    // The chapter-wide gate summary counts the reviewed regions only; report-only
+    // items are a panel bucket, appended separately so the region total stays 108.
     const visualParts = Object.keys(VISUAL_STATE_LABELS)
-      .filter(state => Number(visualSummary[state] || 0) > 0)
+      .filter(state => state !== 'report_only' && Number(visualSummary[state] || 0) > 0)
       .map(state => `${VISUAL_STATE_LABELS[state]} ${Number(visualSummary[state])}`);
+    const reportOnly = Number(review.report_only_count || 0);
+    if (reportOnly > 0) visualParts.push(`somente relatório ${reportOnly}`);
     $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · LOW ${counts.LOW || 0} · MEDIUM ${counts.MEDIUM || 0} · HIGH ${counts.HIGH || 0}${visualParts.length ? ` · gate visual: ${visualParts.join(' · ')}` : ''} · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
+    // Separate, clearly labelled action for the reviewed PDF; shown only when the
+    // revision manifest points to a real reviewed file (never a glob).
+    const reviewedPdf = $('#reviewedPdfAction');
+    if (reviewedPdf) {
+      const rp = review.reviewed_pdf;
+      if (rp && rp.path) {
+        reviewedPdf.hidden = false;
+        reviewedPdf.innerHTML = `<button type="button" class="btn-primary" data-open-reviewed-pdf>ABRIR PDF REVISADO</button>`
+          + `<span class="reviewed-pdf-name">${escapeHtml(rp.name || '')}${rp.sha256 ? ` · SHA ${escapeHtml(String(rp.sha256).slice(0, 16))}…` : ''}</span>`;
+      } else {
+        reviewedPdf.hidden = true;
+        reviewedPdf.innerHTML = '';
+      }
+    }
     const visibleKeys = new Set(visible.map(item => String(item.key || '')));
     appState.qualityReviewSelection = new Set([...appState.qualityReviewSelection].filter(key => visibleKeys.has(key)));
     list.innerHTML = visible.length ? visible.map(item => {
@@ -1508,7 +1528,12 @@
         ? `<div class="quality-review-visual-reason">${escapeHtml(visualReason)}</div>` : '';
       const compare = visualState && item.page_url
         ? `<button type="button" class="btn-ghost review-compare show" data-review-compare="${escapeAttr(item.page)}">ABRIR COMPARAÇÃO</button>` : '';
-      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label><input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> <strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(item.reason)}</div>${visualNote}<div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Proposta</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="cta-row"><button type="button" class="btn-ghost review-mark${actionClass}" data-review-action="reviewed">Marcar como revisado</button><button type="button" class="btn-ghost review-preserve${actionClass}" data-review-action="preserved_original">Manter original</button>${compare}</div></article>`;
+      // Report-only items are not part of the revision: no checkbox, no
+      // mark/preserve actions, so they can never enter a bulk operation.
+      const isReportOnly = visualState === 'report_only';
+      const selectBox = isReportOnly ? '' : `<input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> `;
+      const reviewActions = isReportOnly ? '' : `<button type="button" class="btn-ghost review-mark${actionClass}" data-review-action="reviewed">Marcar como revisado</button><button type="button" class="btn-ghost review-preserve${actionClass}" data-review-action="preserved_original">Manter original</button>`;
+      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(item.reason)}</div>${visualNote}<div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Proposta</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="cta-row">${reviewActions}${compare}</div></article>`;
     }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
     const confirm = $('#confirmQualityReview');
     if (confirm) {
@@ -1524,6 +1549,9 @@
     const root = $('#qualityReviewList');
     if (!root) return [];
     return $$('.quality-review-item', root)
+      // Report-only items are not part of the revision, so bulk actions and
+      // select-all must never include them.
+      .filter(item => item.dataset.visualState !== 'report_only')
       .filter(item => !risk || String(item.dataset.risk || '').toUpperCase() === String(risk).toUpperCase())
       .map(item => String(item.dataset.reviewKey || ''))
       .filter(Boolean);
@@ -1680,8 +1708,15 @@
     const body = $('#visualComparisonBody');
     if (!dialog || !body) return;
     const base = `/api/ui/quality-review/${encodeURIComponent(jobId)}/page/${encodeURIComponent(page)}`;
-    body.innerHTML = `<figure><figcaption>Publicado</figcaption><img src="${escapeAttr(base)}" alt="Página ${escapeAttr(page)} publicada"></figure>`
-      + `<figure><figcaption>Revisado</figcaption><img src="${escapeAttr(base)}?revision=latest" alt="Página ${escapeAttr(page)} revisada"></figure>`;
+    body.innerHTML = `<figure><figcaption>PDF base (publicado)</figcaption><img src="${escapeAttr(base)}" alt="Página ${escapeAttr(page)} publicada"></figure>`
+      + `<figure><figcaption>PDF revisado</figcaption><img id="visualComparisonRevised" src="${escapeAttr(base)}?revision=latest" alt="Página ${escapeAttr(page)} revisada"></figure>`;
+    // A region that was not applied (manual review, or a report-only item) has
+    // no revised page: show a clear note instead of a broken/404 image.
+    const revised = $('#visualComparisonRevised');
+    if (revised) revised.addEventListener('error', () => {
+      const fig = revised.closest('figure');
+      if (fig) fig.innerHTML = '<figcaption>PDF revisado</figcaption><div class="visual-comparison-empty">Não há versão revisada — alteração não aplicada</div>';
+    }, {once: true});
     dialog.hidden = false;
     if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
   }
@@ -1711,6 +1746,11 @@
   }
 
   $('#qualityReviewList')?.addEventListener('click', qualityReviewAction);
+  $('#reviewedPdfAction')?.addEventListener('click', event => {
+    if (!event.target.closest('[data-open-reviewed-pdf]')) return;
+    const path = appState.qualityReview?.reviewed_pdf?.path;
+    if (path) openArtifact(path);
+  });
   $('#visualComparisonClose')?.addEventListener('click', () => {
     const dialog = $('#visualComparisonDialog');
     if (!dialog) return;
@@ -3056,7 +3096,7 @@
   function renderArtifactButtons(container, record) {
     if (!container) return;
     container.innerHTML = [
-      ['PDF', record.pdf_path], ['Pasta', record.output_folder], ['Qualidade', record.quality_report_path],
+      ['PDF base', record.pdf_path], ['Pasta', record.output_folder], ['Qualidade', record.quality_report_path],
       ['Compare', record.compare_sheet_path], ['Contexto', record.session_context_path],
     ].filter(([, path]) => path).map(([label, path]) => `<button class="btn-ghost" data-path="${encodeURIComponent(path)}">${label}</button>`).join('');
   }

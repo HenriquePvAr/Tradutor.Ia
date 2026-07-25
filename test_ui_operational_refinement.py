@@ -119,6 +119,54 @@ class QualityReviewTests(unittest.TestCase):
         self.assertEqual(item["region_id"], "p008:REGION_001")
         self.assertEqual(item["visual_state"], "applied")
         self.assertEqual(item["proposed_translation"], "Ola revisado")
+        self.assertTrue(item["revision_linked"])
+
+    def _write_revision(self, region_states, manifest_extra=None):
+        rev_root = self.output / "quality_revision"
+        rev_dir = rev_root / "rev1"
+        rev_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = rev_dir / "revision_manifest.json"
+        manifest = {"revision_id": "rev1", "status": "review_required"}
+        manifest.update(manifest_extra or {})
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        (rev_root / "latest_revision.json").write_text(
+            json.dumps({"revision_id": "rev1", "manifest_path": str(manifest_path)}), encoding="utf-8")
+        (rev_dir / "incremental_render_audit.json").write_text(
+            json.dumps({"region_visual_states": region_states}), encoding="utf-8")
+
+    def test_item_without_a_reviewed_region_is_report_only_not_stateless(self):
+        # A preserved decorative/sfx region is flagged in the quality report but
+        # never enters the revision. It must be labelled report_only, not left
+        # with an empty visual state, and must not be revision-linked.
+        report_path = self.output / "quality_report.json"
+        report_path.write_text(json.dumps({"pages": [{
+            "index": 3, "output_path": str(self.output / "page_001.png"),
+            "suspicious_groups": [{
+                "id": "BALAO_2", "region_id": "REGION_002", "classification": "decorative",
+                "text": "KRAKOOM", "preserved_original": True,
+                "quality_reasons": ["long_token_without_spaces"]}],
+        }]}), encoding="utf-8")
+        # Revision exists, but only reviewed a different region.
+        self._write_revision({"p003:REGION_009": {"state": "applied"}})
+        payload = self.bridge.quality_review(self.job_id)
+        item = payload["items"][0]
+        self.assertEqual(item["visual_state"], "report_only")
+        self.assertFalse(item["revision_linked"])
+        self.assertEqual(payload["report_only_count"], 1)
+
+    def test_reviewed_pdf_is_exposed_from_the_manifest_not_a_glob(self):
+        pdf = self.output / "chapter_reviewed_v8.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        # The manifest stores a project-relative path; the basename is canonical.
+        self._write_revision({"p001:REGION_001": {"state": "applied"}}, manifest_extra={
+            "reviewed_pdf_path": "output/whatever/chapter_reviewed_v8.pdf",
+            "reviewed_pdf_sha256": "ABC123"})
+        rp = self.bridge.quality_review(self.job_id)["reviewed_pdf"]
+        self.assertIsNotNone(rp)
+        self.assertEqual(rp["name"], "chapter_reviewed_v8.pdf")
+        self.assertEqual(rp["sha256"], "ABC123")
+        self.assertTrue(rp["path"].endswith("chapter_reviewed_v8.pdf"))
+        self.assertTrue(Path(rp["path"]).is_file())
 
     def test_quality_review_falls_back_to_structured_json_next_to_html_report(self):
         html_path = self.output / "quality_report.html"

@@ -582,10 +582,24 @@ class UiBridge:
                 # region_id so per-item states are not silently dropped.
                 region_id = str(raw.get("region_id") or item_id)
                 visual = visual_states.get(f"p{page_number:03d}:{region_id}") or {}
+                # A panel item is linked to the revision only when its region was
+                # actually reviewed. Report-only items (preserved decorative/sfx
+                # flagged for OCR quality) never enter the revision, so mark them
+                # "report_only" instead of leaving them silently stateless.
+                if visual:
+                    visual_state = str(visual.get("state") or "")
+                    revision_linked = True
+                elif visual_states:
+                    visual_state = "report_only"
+                    revision_linked = False
+                else:
+                    visual_state = ""
+                    revision_linked = False
                 items.append({
                     "key": key,
                     "region_id": f"p{page_number:03d}:{region_id}",
-                    "visual_state": str(visual.get("state") or ""),
+                    "visual_state": visual_state,
+                    "revision_linked": revision_linked,
                     "visual_reason_code": str(visual.get("reason_code") or ""),
                     "proposed_translation": str(visual.get("proposed_translation") or ""),
                     "applied_translation": str(visual.get("applied_translation") or ""),
@@ -601,6 +615,7 @@ class UiBridge:
                     "preserved_original": bool(raw.get("preserved_original")),
                     "page_url": f"/api/ui/quality-review/{job['id']}/page/{page_number}",
                 })
+        report_only = sum(1 for item in items if item["visual_state"] == "report_only")
         return {
             "job_id": job["id"],
             "items": items,
@@ -608,7 +623,34 @@ class UiBridge:
             "confirmed": bool(job.get("review_confirmed_at")),
             "review_status": "completed" if job.get("review_confirmed_at") else "required",
             "status": job.get("status"),
+            # Chapter-wide gate summary stays the 108 reviewed regions; report-only
+            # items are a panel-only bucket and are counted separately.
             "visual_state_summary": ChapterQualityRevision._visual_state_summary(visual_states),
+            "report_only_count": report_only,
+            "reviewed_pdf": self._latest_reviewed_pdf(job),
+        }
+
+    def _latest_reviewed_pdf(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        """Canonical reviewed PDF from the revision manifest (never a glob)."""
+
+        output_dir = job.get("output_dir")
+        if not output_dir:
+            return None
+        revision = ChapterQualityRevision(output_dir, job_id=str(job["id"]),
+                                          run_id=str(job.get("run_id") or ""))
+        manifest = revision.latest_status() or {}
+        raw_path = str(manifest.get("reviewed_pdf_path") or "").strip()
+        if not raw_path:
+            return None
+        # The manifest stores the path relative to the project root; resolve it
+        # against the job's own output dir so the basename is authoritative.
+        pdf = Path(output_dir) / Path(raw_path).name
+        if not pdf.is_file():
+            return None
+        return {
+            "path": str(pdf.resolve()),
+            "name": pdf.name,
+            "sha256": str(manifest.get("reviewed_pdf_sha256") or ""),
         }
 
     def _region_visual_states(self, job: dict[str, Any]) -> dict[str, dict[str, Any]]:
