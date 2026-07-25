@@ -583,6 +583,49 @@ def api_page_revision_draft(job_id: str, page_revision_id: str, run_id: str = ""
     return FileResponse(path)
 
 
+def _audit_error(exc: ValueError) -> HTTPException:
+    return HTTPException(status_code=400, detail={
+        "code": str(exc),
+        "message": "Não foi possível concluir a ação da auditoria linguística.",
+        "action": "Confira o capítulo, a revisão e a decisão, e tente novamente.",
+    })
+
+
+@app.post("/api/ui/audit/review")
+def api_audit_review(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.linguistic_audit_review(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/audit/decision")
+def api_audit_decision(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.record_audit_decision(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""), decision=str(payload.get("decision") or ""),
+            user_id=principal.user_id, reason=str(payload.get("reason") or ""),
+            notes=str(payload.get("notes") or ""))
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/audit/decision/delete")
+def api_audit_decision_delete(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.delete_audit_decision(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            decision_id=str(payload.get("decision_id") or ""), user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
 @app.get("/api/ui/quality-review/{job_id}")
 def api_quality_review(job_id: str) -> dict[str, Any]:
     review = BRIDGE.quality_review(job_id)

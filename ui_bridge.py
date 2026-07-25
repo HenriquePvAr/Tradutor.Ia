@@ -42,6 +42,9 @@ from ui_helpers import (
 )
 from ui_history import UIHistoryStore, utc_now
 from chapter_quality_revision import REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision
+import audit_registry
+import linguistic_audit
+from audit_decisions import AuditDecisionStore
 
 
 PROFILE_PATH = REPO_ROOT / ".cache" / "ui_profile.json"
@@ -305,6 +308,7 @@ class UiBridge:
         self.history = self.history_store.discover_outputs()
         self.profile = self._load_profile()
         self.store = JobStore(JOBS_DB_PATH)
+        self.audit_decisions = AuditDecisionStore(JOBS_DB_PATH)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
@@ -1066,6 +1070,98 @@ class UiBridge:
         path = Path(draft).resolve()
         output_dir = Path(str(job.get("output_dir") or "")).resolve()
         return path if (output_dir in path.parents and path.is_file()) else None
+
+    # --- linguistic audit review (BLOCO 3) -----------------------------------
+    # The audit is a derived view. Human decisions are persisted separately and
+    # never touch a PDF, a historical revision or a publication. Selection is by
+    # real job/run/revision identity, never by title, glob or a latest heuristic
+    # of file mtime — the canonical base revision is the recorded pointer.
+
+    def _audit_context(self, job_id: str, run_id: str) -> dict[str, Any]:
+        """Resolve output dir + canonical base revision for a chapter. Validated."""
+        job = self._page_revision_job(job_id, run_id)  # validates job + run linkage
+        output_dir = str(job["output_dir"])
+        engine = ChapterQualityRevision(output_dir, job_id=str(job["id"]),
+                                        run_id=str(job.get("run_id") or ""))
+        status = engine.latest_status() or {}
+        revision_id = str(status.get("revision_id") or "")
+        if not revision_id:
+            raise ValueError("no_canonical_revision")
+        pdf_name = Path(str(status.get("reviewed_pdf_path") or "")).name
+        return {"job": job, "output_dir": output_dir, "revision_id": revision_id,
+                "pdf_name": pdf_name}
+
+    def _resolve_or_build_audit(self, ctx: dict[str, Any]) -> dict[str, Any]:
+        resolved = audit_registry.resolve_registered_audit(ctx["output_dir"], ctx["revision_id"])
+        if resolved:
+            return resolved
+        if not ctx["pdf_name"]:
+            raise ValueError("audit_source_pdf_unknown")
+        report = linguistic_audit.audit_chapter(
+            ctx["output_dir"], str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""),
+            pdf_name=ctx["pdf_name"])
+        entry = audit_registry.register_audit(ctx["output_dir"], ctx["revision_id"], report)
+        return {"entry": entry, "report": report}
+
+    def linguistic_audit_review(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._resolve_or_build_audit(ctx)
+        report, entry = resolved["report"], resolved["entry"]
+        decisions = {}
+        if user_id:
+            for row in self.audit_decisions.list_for(str(ctx["job"]["id"]),
+                                                     str(ctx["job"].get("run_id") or ""),
+                                                     ctx["revision_id"], created_by=str(user_id)):
+                decisions[row["region_id"]] = row
+        # Overlay each record with the caller's decision (a derived, per-user view).
+        records = []
+        for record in report.get("records", []):
+            item = dict(record)
+            item["human_decision"] = decisions.get(record.get("region_id"))
+            records.append(item)
+        return {
+            "job_id": str(ctx["job"]["id"]),
+            "run_id": str(ctx["job"].get("run_id") or ""),
+            "revision_id": ctx["revision_id"],
+            "audit_artifact_id": entry["audit_artifact_id"],
+            "source_audit_hash": entry["source_audit_hash"],
+            "taxonomy_version": report.get("taxonomy_version"),
+            "summary": {k: report.get(k) for k in (
+                "total_regions_audited", "by_normalized_category", "report_only_total",
+                "report_only_now_translatable", "report_only_still_preserved",
+                "needs_human_review_total", "provider_required_total")},
+            "records": records,
+            "decision_count": len(decisions),
+        }
+
+    def record_audit_decision(self, job_id: str, run_id: str, *, region_id: str, decision: str,
+                              user_id: str, reason: str = "", notes: str = "") -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._resolve_or_build_audit(ctx)
+        report, entry = resolved["report"], resolved["entry"]
+        record = next((r for r in report.get("records", []) if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")  # lineage: region must belong to the report
+        return self.audit_decisions.upsert(
+            job_id=str(ctx["job"]["id"]), run_id=str(ctx["job"].get("run_id") or ""),
+            revision_id=ctx["revision_id"], audit_artifact_id=entry["audit_artifact_id"],
+            page_id=str(record.get("page_id") or ""), region_id=str(region_id),
+            decision=decision, created_by=str(user_id), reason=reason, notes=notes,
+            taxonomy_version=str(report.get("taxonomy_version") or ""),
+            source_audit_hash=entry["source_audit_hash"])
+
+    def delete_audit_decision(self, job_id: str, run_id: str, *, decision_id: str, user_id: str) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        existing = self.audit_decisions.get(str(decision_id))
+        if not existing or str(existing.get("job_id")) != str(ctx["job"]["id"]) \
+                or str(existing.get("revision_id")) != ctx["revision_id"]:
+            raise ValueError("decision_not_found")
+        removed = self.audit_decisions.delete(str(decision_id), created_by=str(user_id))
+        return {"removed": bool(removed), "audit_decision_id": str(decision_id)}
 
     def start_quality_revision_canary(self, job_id: str, *, max_regions: int = 10) -> dict[str, Any]:
         payload = self.quality_review(job_id)
