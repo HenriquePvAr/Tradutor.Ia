@@ -1527,7 +1527,8 @@
       const visualNote = visualState === 'rejected_visual_regression' && visualReason
         ? `<div class="quality-review-visual-reason">${escapeHtml(visualReason)}</div>` : '';
       const compare = visualState && item.page_url
-        ? `<button type="button" class="btn-ghost review-compare show" data-review-compare="${escapeAttr(item.page)}">ABRIR COMPARAÇÃO</button>` : '';
+        ? `<button type="button" class="btn-ghost review-compare show" data-review-compare="${escapeAttr(item.page)}">ABRIR COMPARAÇÃO</button>`
+          + `<button type="button" class="btn-ghost review-compare show" data-revise-page="${escapeAttr(item.page)}">REVISAR ESTA PÁGINA</button>` : '';
       // Report-only items are not part of the revision: no checkbox, no
       // mark/preserve actions, so they can never enter a bulk operation.
       const isReportOnly = visualState === 'report_only';
@@ -1709,7 +1710,8 @@
     if (!dialog || !body) return;
     const base = `/api/ui/quality-review/${encodeURIComponent(jobId)}/page/${encodeURIComponent(page)}`;
     body.innerHTML = `<figure><figcaption>PDF base (publicado)</figcaption><img src="${escapeAttr(base)}" alt="Página ${escapeAttr(page)} publicada"></figure>`
-      + `<figure><figcaption>PDF revisado</figcaption><img id="visualComparisonRevised" src="${escapeAttr(base)}?revision=latest" alt="Página ${escapeAttr(page)} revisada"></figure>`;
+      + `<figure><figcaption>PDF revisado</figcaption><img id="visualComparisonRevised" src="${escapeAttr(base)}?revision=latest" alt="Página ${escapeAttr(page)} revisada"></figure>`
+      + `<div class="visual-comparison-cta"><button type="button" class="btn-ghost" data-revise-page="${escapeAttr(page)}">REVISAR ESTA PÁGINA</button></div>`;
     // A region that was not applied (manual review, or a report-only item) has
     // no revised page: show a clear note instead of a broken/404 image.
     const revised = $('#visualComparisonRevised');
@@ -1722,6 +1724,8 @@
   }
 
   async function qualityReviewAction(event) {
+    const revise = event.target.closest('[data-revise-page]');
+    if (revise) { openPageRevision(Number(revise.dataset.revisePage)); return; }
     const compare = event.target.closest('[data-review-compare]');
     if (compare) { openVisualComparison(compare.dataset.reviewCompare); return; }
     const button = event.target.closest('[data-review-action]');
@@ -1757,6 +1761,203 @@
     if (typeof dialog.close === 'function' && dialog.open) dialog.close();
     dialog.hidden = true;
   });
+
+  /* ---------- targeted page revision (BLOCO 1) ---------- */
+  const pageRevisionState = {page: null, pageRevisionId: null, regions: [], manifest: null};
+
+  function pageRevisionIdentity() {
+    let runId = '';
+    try { runId = String(new URLSearchParams(window.location.search || '').get('run_id') || ''); } catch (_) {}
+    return {job_id: String(appState.qualityReview?.job_id || ''), run_id: runId};
+  }
+
+  function pageRevisionMessage(message, type = '') {
+    const node = $('#pageRevisionMessage');
+    if (node) { node.textContent = message || ''; node.dataset.state = type || ''; }
+  }
+
+  function pageRevisionSyncUrl() {
+    try {
+      const url = new URL(window.location.href);
+      if (pageRevisionState.pageRevisionId) {
+        url.searchParams.set('page_rev', pageRevisionState.pageRevisionId);
+        url.searchParams.set('page_rev_page', String(pageRevisionState.page || ''));
+      } else {
+        url.searchParams.delete('page_rev'); url.searchParams.delete('page_rev_page');
+      }
+      window.history.replaceState({}, '', url);
+    } catch (_) {}
+  }
+
+  async function openPageRevision(page, {restore = false, pageRevisionId = ''} = {}) {
+    const id = pageRevisionIdentity();
+    const pageNo = Number(page);
+    if (!id.job_id || !pageNo) { showToast('Abra um capítulo em revisão primeiro.', 'error'); return; }
+    pageRevisionState.page = pageNo;
+    pageRevisionState.pageRevisionId = pageRevisionId || null;
+    const dialog = $('#pageRevisionPanel');
+    if (dialog) { dialog.hidden = false; if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal(); }
+    $('#pageRevisionTitle').textContent = `Revisão da página ${pageNo}`;
+    pageRevisionMessage('Carregando regiões detectadas…');
+    try {
+      const listing = await api('/api/ui/page-revision/regions', {method: 'POST', body: JSON.stringify({...id, page: pageNo})});
+      pageRevisionState.regions = listing.regions || [];
+      renderPageRevisionRegions(listing);
+    } catch (error) { pageRevisionMessage(error.message || 'Falha ao listar regiões.', 'error'); }
+    if (pageRevisionId) await refreshPageRevisionStatus();
+    pageRevisionSyncUrl();
+  }
+
+  function renderPageRevisionRegions(listing) {
+    const root = $('#pageRevisionRegions');
+    if (!root) return;
+    const rows = (listing.regions || []).map(r => {
+      const badge = !r.reviewable ? '<span class="pr-badge pr-preserved">preservada</span>'
+        : r.cache_hit ? '<span class="pr-badge pr-cache">cache</span>'
+        : '<span class="pr-badge pr-auth">exige NVIDIA</span>';
+      const box = r.reviewable ? `<input type="checkbox" class="pr-select" data-pr-region="${escapeAttr(r.region_id)}">` : '';
+      return `<label class="pr-region"><span class="pr-region-head">${box}<strong>${escapeHtml(r.region_id)}</strong> <em>${escapeHtml(r.classification)}</em> ${badge}</span>`
+        + `<span class="pr-region-text"><small>fonte</small> ${escapeHtml(r.source_text || '—')}</span>`
+        + `<span class="pr-region-text"><small>tradução</small> ${escapeHtml(r.current_translation || '—')}</span></label>`;
+    }).join('');
+    root.innerHTML = `<div class="pr-summary">${listing.reviewable_regions || 0} revisáveis · ${listing.requests_needed || 0} exigiriam NVIDIA (não serão chamadas)</div>${rows || '<div class="muted">Nenhuma região.</div>'}`;
+  }
+
+  function selectedPageRegions() {
+    return $$('.pr-select', $('#pageRevisionRegions')).filter(c => c.checked).map(c => String(c.dataset.prRegion || ''));
+  }
+
+  async function startPageRevisionDraft(regionIds) {
+    const id = pageRevisionIdentity();
+    pageRevisionMessage('Criando prévia a partir do cache…');
+    try {
+      const manifest = await api('/api/ui/page-revision/start', {method: 'POST',
+        body: JSON.stringify({...id, page: pageRevisionState.page, region_ids: regionIds || null})});
+      pageRevisionState.pageRevisionId = manifest.page_revision_id;
+      renderPageRevisionStatus(manifest);
+      pageRevisionSyncUrl();
+    } catch (error) { pageRevisionMessage(error.message || 'Falha ao criar a prévia.', 'error'); }
+  }
+
+  async function refreshPageRevisionStatus() {
+    if (!pageRevisionState.pageRevisionId) return;
+    const id = pageRevisionIdentity();
+    try {
+      const manifest = await api('/api/ui/page-revision/status', {method: 'POST',
+        body: JSON.stringify({...id, page_revision_id: pageRevisionState.pageRevisionId})});
+      renderPageRevisionStatus(manifest);
+    } catch (error) { pageRevisionMessage(error.message || 'Falha ao consultar estado.', 'error'); }
+  }
+
+  function renderPageRevisionStatus(manifest) {
+    pageRevisionState.manifest = manifest;
+    pageRevisionState.pageRevisionId = manifest.page_revision_id || pageRevisionState.pageRevisionId;
+    const auth = Number(manifest.requests_needed || 0);
+    $('#pageRevisionMeta').textContent = `id ${String(manifest.page_revision_id || '').slice(0, 8)} · ${manifest.status}`
+      + ` · ${manifest.safe_changes_applied || 0} aplicadas` + (auth ? ` · ${auth} exigem autorização NVIDIA` : '');
+    const preview = $('#pageRevisionPreview');
+    const id = pageRevisionIdentity();
+    const draft = manifest.draft_page_path
+      ? `/api/ui/page-revision/${encodeURIComponent(id.job_id)}/${encodeURIComponent(manifest.page_revision_id)}/draft?run_id=${encodeURIComponent(id.run_id)}`
+      : '';
+    if (preview) preview.innerHTML = draft
+      ? `<figure><figcaption>Prévia (rascunho)</figcaption><img src="${escapeAttr(draft)}" alt="Prévia da página ${escapeAttr(manifest.page)}"></figure>`
+      : (auth ? '<div class="muted">Sem prévia: regiões selecionadas exigem autorização do provedor.</div>' : '');
+    const active = ['running', 'cancelling'].includes(String(manifest.status));
+    const resumable = ['cancelled', 'awaiting_provider_authorization'].includes(String(manifest.status));
+    $('#pageRevisionCancel').hidden = !active;
+    $('#pageRevisionResume').hidden = !resumable;
+    $('#pageRevisionDecision').hidden = String(manifest.status) !== 'draft_ready';
+    if (manifest.status === 'awaiting_provider_authorization')
+      pageRevisionMessage(`${auth} região(ões) exigem autorização NVIDIA. Nenhuma chamada foi feita.`, 'warn');
+    else if (manifest.status === 'draft_ready') pageRevisionMessage('Prévia pronta. Aprove, rejeite ou descarte.', 'ok');
+    else pageRevisionMessage(`Estado: ${manifest.status}.`);
+  }
+
+  async function pageRevisionDecision(outcome) {
+    if (!pageRevisionState.pageRevisionId) return;
+    const id = pageRevisionIdentity();
+    try {
+      const manifest = await api('/api/ui/page-revision/decision', {method: 'POST',
+        body: JSON.stringify({...id, page_revision_id: pageRevisionState.pageRevisionId, outcome})});
+      renderPageRevisionStatus(manifest);
+      showToast(`Rascunho: ${manifest.status}. O v8 permanece intacto.`, 'ok');
+    } catch (error) { pageRevisionMessage(error.message || 'Falha na decisão.', 'error'); }
+  }
+
+  async function pageRevisionForgotten() {
+    const id = pageRevisionIdentity();
+    pageRevisionMessage('Procurando texto esquecido nesta página…');
+    try {
+      const result = await api('/api/ui/page-revision/forgotten-text', {method: 'POST',
+        body: JSON.stringify({...id, page: pageRevisionState.page})});
+      const rows = (result.candidates || []).map(c => `<div class="pr-candidate">${escapeHtml(c.region_id)} · ${escapeHtml(c.classification)}`
+        + `${c.do_not_translate ? ' · <em>não traduzir</em>' : ' · decisão humana'} — ${escapeHtml(c.source_text || c.current_translation || '')}</div>`).join('');
+      $('#pageRevisionPreview').innerHTML = `<div class="pr-candidates"><strong>${result.candidate_count} candidato(s)</strong>${rows}</div>`;
+      pageRevisionMessage('Candidatos exibidos para decisão humana. Nada foi traduzido.', 'ok');
+    } catch (error) { pageRevisionMessage(error.message || 'Falha na busca.', 'error'); }
+  }
+
+  async function pageRevisionManual() {
+    if (!pageRevisionState.pageRevisionId) { pageRevisionMessage('Crie uma prévia antes de adicionar região manual.', 'warn'); return; }
+    const raw = window.prompt('Caixa da região manual (x,y,largura,altura):', '20,20,120,60');
+    if (!raw) return;
+    const box = raw.split(',').map(n => parseInt(n.trim(), 10));
+    if (box.length !== 4 || box.some(n => Number.isNaN(n))) { pageRevisionMessage('Caixa inválida.', 'error'); return; }
+    const source = window.prompt('Texto fonte da região (opcional):', '') || '';
+    const id = pageRevisionIdentity();
+    try {
+      const entry = await api('/api/ui/page-revision/manual-region', {method: 'POST',
+        body: JSON.stringify({...id, page_revision_id: pageRevisionState.pageRevisionId, box, source_text: source, region_type: 'speech'})});
+      pageRevisionMessage(`Região manual ${entry.region_id} registrada (imagem não alterada).`, 'ok');
+    } catch (error) { pageRevisionMessage(error.message || 'Falha ao adicionar região.', 'error'); }
+  }
+
+  async function pageRevisionLifecycle(kind) {
+    if (!pageRevisionState.pageRevisionId) return;
+    const id = pageRevisionIdentity();
+    try {
+      const manifest = await api(`/api/ui/page-revision/${kind}`, {method: 'POST',
+        body: JSON.stringify({...id, page_revision_id: pageRevisionState.pageRevisionId})});
+      renderPageRevisionStatus(manifest);
+    } catch (error) { pageRevisionMessage(error.message || 'Falha na ação.', 'error'); }
+  }
+
+  $('#openPageRevision')?.addEventListener('click', () => openPageRevision(Number($('#pageRevisionPageInput')?.value || 0)));
+  $('#pageRevisionClose')?.addEventListener('click', () => {
+    const d = $('#pageRevisionPanel'); if (d) { if (typeof d.close === 'function' && d.open) d.close(); d.hidden = true; }
+    pageRevisionState.pageRevisionId = null; pageRevisionSyncUrl();
+  });
+  $('#pageRevisionStart')?.addEventListener('click', () => startPageRevisionDraft(selectedPageRegions().length ? selectedPageRegions() : null));
+  $('#pageRevisionBalloon')?.addEventListener('click', () => {
+    const sel = selectedPageRegions();
+    if (sel.length !== 1) { pageRevisionMessage('Selecione exatamente um balão para revisar.', 'warn'); return; }
+    startPageRevisionDraft(sel);
+  });
+  $('#pageRevisionForgotten')?.addEventListener('click', pageRevisionForgotten);
+  $('#pageRevisionManual')?.addEventListener('click', pageRevisionManual);
+  $('#pageRevisionCancel')?.addEventListener('click', () => pageRevisionLifecycle('cancel'));
+  $('#pageRevisionResume')?.addEventListener('click', () => pageRevisionLifecycle('resume'));
+  $('#pageRevisionDecision')?.addEventListener('click', event => {
+    const btn = event.target.closest('[data-page-decision]');
+    if (btn) pageRevisionDecision(btn.dataset.pageDecision);
+  });
+  $('#visualComparisonBody')?.addEventListener('click', event => {
+    const btn = event.target.closest('[data-revise-page]');
+    if (!btn) return;
+    const cmp = $('#visualComparisonDialog');
+    if (cmp) { if (typeof cmp.close === 'function' && cmp.open) cmp.close(); cmp.hidden = true; }
+    openPageRevision(Number(btn.dataset.revisePage));
+  });
+
+  // F5 restore: reopen a page revision from the URL once the chapter review is up.
+  function restorePageRevisionFromUrl() {
+    let params;
+    try { params = new URLSearchParams(window.location.search || ''); } catch (_) { return; }
+    const prid = String(params.get('page_rev') || '');
+    const page = Number(params.get('page_rev_page') || 0);
+    if (prid && page) openPageRevision(page, {restore: true, pageRevisionId: prid});
+  }
   $('#qualityReviewList')?.addEventListener('change', event => {
     const checkbox = event.target.closest?.('[data-review-select]');
     if (!checkbox) return;
@@ -2310,6 +2511,7 @@
       panel.hidden = false;
       panel.scrollIntoView({behavior: 'smooth', block: 'start'});
     }
+    if (restore) restorePageRevisionFromUrl();
   }
   function restoreReviewModeFromUrl() {
     let params;

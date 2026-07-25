@@ -467,9 +467,41 @@
               <div class="cta-row quality-review-actions">
                 <button class="btn-primary" type="button" id="confirmQualityReview">Confirmar revisão</button>
               </div>
+              <div class="page-revision-launch">
+                <label for="pageRevisionPageInput">Revisar uma página</label>
+                <input type="number" id="pageRevisionPageInput" min="1" placeholder="nº da página">
+                <button class="btn-ghost" type="button" id="openPageRevision">REVISAR ESTA PÁGINA</button>
+              </div>
               <dialog class="visual-comparison" id="visualComparisonDialog" hidden aria-label="Comparação visual da página">
                 <div class="visual-comparison-body" id="visualComparisonBody"></div>
                 <button class="btn-ghost" type="button" id="visualComparisonClose">Fechar</button>
+              </dialog>
+              <dialog class="page-revision" id="pageRevisionPanel" hidden aria-label="Revisão direcionada da página">
+                <div class="page-revision-head">
+                  <strong id="pageRevisionTitle">Revisão da página</strong>
+                  <span id="pageRevisionMeta" class="muted"></span>
+                  <button class="btn-ghost" type="button" id="pageRevisionClose">Fechar</button>
+                </div>
+                <div class="page-revision-body">
+                  <div class="page-revision-regions" id="pageRevisionRegions"></div>
+                  <div class="page-revision-side">
+                    <div class="page-revision-actions">
+                      <button class="btn-primary" type="button" id="pageRevisionStart">CRIAR PRÉVIA (usar cache)</button>
+                      <button class="btn-ghost" type="button" id="pageRevisionBalloon">REVISAR ESTE BALÃO</button>
+                      <button class="btn-ghost" type="button" id="pageRevisionForgotten">PROCURAR TEXTO ESQUECIDO</button>
+                      <button class="btn-ghost" type="button" id="pageRevisionManual">ADICIONAR REGIÃO MANUALMENTE</button>
+                      <button class="btn-ghost danger" type="button" id="pageRevisionCancel" hidden>CANCELAR REVISÃO DA PÁGINA</button>
+                      <button class="btn-ghost" type="button" id="pageRevisionResume" hidden>RETOMAR REVISÃO DA PÁGINA</button>
+                    </div>
+                    <div class="page-revision-preview" id="pageRevisionPreview"></div>
+                    <div class="page-revision-decision" id="pageRevisionDecision" hidden>
+                      <button class="btn-primary" type="button" data-page-decision="approved">APROVAR PRÉVIA</button>
+                      <button class="btn-ghost" type="button" data-page-decision="rejected">REJEITAR PRÉVIA</button>
+                      <button class="btn-ghost danger" type="button" data-page-decision="discarded">DESCARTAR RASCUNHO</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="page-revision-message" id="pageRevisionMessage" role="status" aria-live="polite"></div>
               </dialog>
             </div>
             <div class="artifact-actions" id="artifactActions"></div>
