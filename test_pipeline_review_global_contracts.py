@@ -1511,6 +1511,17 @@ class FullChapterQualityRevisionContracts(unittest.TestCase):
         self.assertEqual(items[0]["reason_code"], "non_contract_translation_only_response")
 
 
+class RaisingReviewer:
+    """Reviewer that fails if the provider is ever called — proves cache-only."""
+    model = "raising-reviewer"
+
+    def __init__(self) -> None:
+        self.requests = 0
+
+    def review_batch(self, records, glossary, **_kwargs):
+        raise AssertionError("provider must not be called without authorization")
+
+
 class TargetedPageRevisionContracts(unittest.TestCase):
     def _two_page_output(self, root: Path) -> Path:
         from PIL import Image
@@ -1583,6 +1594,85 @@ class TargetedPageRevisionContracts(unittest.TestCase):
             manifest = self._revision(output).revise_page(1, region_ids=["p001:REGION_002"])
             self.assertEqual(manifest["status"], "no_reviewable_regions")
             self.assertEqual(manifest["region_ids"], [])
+
+    def test_cache_only_never_calls_the_provider_and_flags_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = self._two_page_output(Path(folder))
+            revision = ChapterQualityRevision(output, job_id="job-1", run_id="run-1",
+                                              reviewer_factory=RaisingReviewer)
+            # No cache exists, so the one reviewable region needs authorization.
+            manifest = revision.revise_page(1, cache_only=True)
+            self.assertEqual(manifest["status"], "awaiting_provider_authorization")
+            self.assertEqual(manifest["requests_needed"], 1)
+            self.assertIn("p001:REGION_001", manifest["provider_authorization_required"])
+            self.assertEqual(manifest["safe_changes_applied"], 0)
+            self.assertEqual(list(output.glob("*_reviewed_*.pdf")), [])
+
+    def test_list_page_regions_reports_cache_and_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = self._two_page_output(Path(folder))
+            listing = ChapterQualityRevision(output, job_id="job-1", run_id="run-1",
+                                             reviewer_factory=RaisingReviewer).list_page_regions(1)
+            self.assertEqual(listing["page_id"], "p001")
+            self.assertEqual(listing["reviewable_regions"], 1)
+            self.assertEqual(listing["requests_needed"], 1)
+            by_id = {r["region_id"]: r for r in listing["regions"]}
+            self.assertTrue(by_id["p001:REGION_001"]["requires_authorization"])
+            self.assertFalse(by_id["p001:REGION_002"]["reviewable"])
+
+    def test_approve_reject_discard_transitions(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = self._two_page_output(Path(folder))
+            revision = self._revision(output)
+            pr = revision.revise_page(1)["page_revision_id"]
+            self.assertEqual(revision.set_page_revision_outcome(pr, "approved")["status"], "approved")
+            self.assertEqual(revision.set_page_revision_outcome(pr, "rejected")["status"], "rejected")
+            discarded = revision.set_page_revision_outcome(pr, "discarded")
+            self.assertEqual(discarded["status"], "discarded")
+            self.assertEqual(discarded["draft_page_path"], "")
+
+    def test_manual_region_validates_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = self._two_page_output(Path(folder))
+            revision = self._revision(output)
+            pr = revision.revise_page(1)["page_revision_id"]
+            entry = revision.add_manual_region(pr, box=[10, 10, 60, 40], source_text="HELLO", region_type="speech")
+            self.assertEqual(entry["box"], [10, 10, 60, 40])
+            self.assertTrue(entry["region_id"].endswith("MANUAL_001"))
+            with self.assertRaises(ValueError):
+                revision.add_manual_region(pr, box=[10, 10, 2, 2])          # too small
+            with self.assertRaises(ValueError):
+                revision.add_manual_region(pr, box=[10, 10, 5000, 5000])    # out of bounds
+            with self.assertRaises(ValueError):
+                revision.add_manual_region(pr, box=[12, 12, 60, 40])        # overlaps MANUAL_001
+
+    def test_forgotten_text_surfaces_candidates_without_translating(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = self._two_page_output(Path(folder))
+            result = self._revision(output).search_forgotten_text(1)
+            ids = {c["region_id"] for c in result["candidates"]}
+            self.assertIn("p001:REGION_002", ids)  # preserved sfx surfaces as a candidate
+            sfx = next(c for c in result["candidates"] if c["region_id"] == "p001:REGION_002")
+            self.assertEqual(sfx["suggested_action"], "human_decision")
+
+    def test_frontend_exposes_page_revision_controls(self) -> None:
+        shell = SHELL.read_text(encoding="utf-8")
+        js = JS.read_text(encoding="utf-8")
+        for label in ("REVISAR ESTA PÁGINA", "REVISAR ESTE BALÃO", "PROCURAR TEXTO ESQUECIDO",
+                      "ADICIONAR REGIÃO MANUALMENTE", "CANCELAR REVISÃO DA PÁGINA",
+                      "RETOMAR REVISÃO DA PÁGINA", "APROVAR PRÉVIA", "REJEITAR PRÉVIA", "DESCARTAR RASCUNHO"):
+            self.assertIn(label, shell, label)
+        for endpoint in ("/api/ui/page-revision/regions", "/api/ui/page-revision/start",
+                         "/api/ui/page-revision/status", "/api/ui/page-revision/decision",
+                         "/api/ui/page-revision/manual-region", "/api/ui/page-revision/forgotten-text"):
+            self.assertIn(endpoint, js, endpoint)
+        # cancel/resume share one templated call.
+        self.assertIn("/api/ui/page-revision/${kind}", js)
+        self.assertIn("pageRevisionLifecycle('cancel')", js)
+        self.assertIn("pageRevisionLifecycle('resume')", js)
+        # F5 restore keeps the page revision id in the URL.
+        self.assertIn("page_rev", js)
+        self.assertIn("restorePageRevisionFromUrl", js)
 
 
 if __name__ == "__main__":

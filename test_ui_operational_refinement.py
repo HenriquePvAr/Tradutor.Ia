@@ -352,5 +352,69 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         self.assertIn("updateQualityReviewDeveloperActions()", self.js)
 
 
+class PageRevisionBridgeTests(unittest.TestCase):
+    def setUp(self):
+        from PIL import Image
+        self.tmp = Path(tempfile.mkdtemp())
+        self.output = self.tmp / "output"
+        self.output.mkdir()
+        self.bridge = OperationalBridge(self.tmp / "jobs.sqlite3")
+        image = self.output / "page_001.jpg"
+        Image.new("RGB", (240, 320), "white").save(image, "JPEG")
+        progress = {"pdf_path": str(self.output / "c.pdf"), "pages": [{
+            "index": 1, "sequence_index": 1, "image_path": str(image), "output_path": str(image),
+            "debug_data": {"image_path": str(image), "items": [
+                {"id": "BALAO_1", "region_id": "REGION_001", "clean_text": "HELLO",
+                 "translation": "Olá.", "classification": "speech", "confidence": 0.9,
+                 "bounding_box": [20, 20, 160, 80], "redrawn": True},
+            ]}}]}
+        (self.output / "progress.json").write_text(json.dumps(progress), encoding="utf-8")
+        (self.output / "quality_report.json").write_text(json.dumps({"pages": [{"index": 1}]}), encoding="utf-8")
+        self.job_id = self.bridge.store.create_job(
+            source_url="https://example.test/c", output_dir=str(self.output),
+            command=["python", "run.py"], configuration={"job_type": "translation"})
+        self.run_id = self.bridge.store.get_job(self.job_id)["run_id"]
+
+    def tearDown(self):
+        self.bridge.close()
+
+    def test_wrong_run_id_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "run_id_mismatch"):
+            self.bridge.start_page_revision(self.job_id, "not-the-run", 1)
+
+    def test_unknown_job_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "job_not_found"):
+            self.bridge.list_page_revision_regions("nope", "", 1)
+
+    def test_start_is_cache_only_and_flags_authorization(self):
+        manifest = self.bridge.start_page_revision(self.job_id, self.run_id, 1)
+        self.assertEqual(manifest["status"], "awaiting_provider_authorization")
+        self.assertEqual(manifest["requests_needed"], 1)
+        self.assertEqual(list(self.output.glob("*_reviewed_*.pdf")), [])
+        # Status round-trips with the same page_revision_id (F5 restore).
+        again = self.bridge.page_revision_status(self.job_id, self.run_id, manifest["page_revision_id"])
+        self.assertEqual(again["page_revision_id"], manifest["page_revision_id"])
+
+    def test_page_revision_from_another_job_is_rejected(self):
+        manifest = self.bridge.start_page_revision(self.job_id, self.run_id, 1)
+        other = self.bridge.store.create_job(
+            source_url="https://example.test/other", output_dir=str(self.output),
+            command=["python", "run.py"], configuration={"job_type": "translation"})
+        other_run = self.bridge.store.get_job(other)["run_id"]
+        with self.assertRaisesRegex(ValueError, "page_revision_job_mismatch"):
+            self.bridge.page_revision_status(other, other_run, manifest["page_revision_id"])
+
+    def test_regions_manual_and_decision_round_trip(self):
+        listing = self.bridge.list_page_revision_regions(self.job_id, self.run_id, 1)
+        self.assertEqual(listing["requests_needed"], 1)
+        manifest = self.bridge.start_page_revision(self.job_id, self.run_id, 1)
+        pr = manifest["page_revision_id"]
+        entry = self.bridge.add_page_revision_manual_region(
+            self.job_id, self.run_id, pr, [10, 10, 60, 40], source_text="HI", region_type="speech")
+        self.assertTrue(entry["region_id"].endswith("MANUAL_001"))
+        rejected = self.bridge.decide_page_revision(self.job_id, self.run_id, pr, "rejected")
+        self.assertEqual(rejected["status"], "rejected")
+
+
 if __name__ == "__main__":
     unittest.main()
