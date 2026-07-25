@@ -1635,6 +1635,8 @@
   .audit-decided{border:1px solid rgba(143,227,194,.35); color:#8fe3c2; border-radius:999px; padding:1px 7px; font-size:10px; text-transform:uppercase; margin-left:auto;}
   .audit-texts{margin:5px 0;} .audit-texts small{color:var(--muted); text-transform:uppercase; font-size:9px; margin-right:4px;}
   .audit-reasons{color:var(--muted); font-size:10px; margin-bottom:6px;}
+  .audit-actions{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;}
+  .audit-actions .btn-ghost{display:inline-flex; align-items:center; font-size:10px;}
   .audit-decide.selected{border-color:var(--gold); color:var(--gold);}
   .linguistic-audit-message{font-size:11px; color:var(--muted); margin-top:8px;}
   .linguistic-audit-message[data-state="ok"]{color:#8fe3c2;} .linguistic-audit-message[data-state="error"]{color:#ffb0a8;}

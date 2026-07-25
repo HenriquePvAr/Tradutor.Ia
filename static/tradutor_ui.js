@@ -1989,7 +1989,19 @@
     if (dialog) { dialog.hidden = false; if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal(); }
     auditMessage('Carregando auditoria…');
     try {
-      const review = await api('/api/ui/audit/review', {method: 'POST', body: JSON.stringify(id)});
+      // On an F5 restore the auth token can still be initialising; retry a few
+      // times (condition, not a fixed sleep) so the panel populates once ready.
+      const attempts = restore ? 6 : 1;
+      let review, lastError;
+      for (let i = 0; i < attempts; i++) {
+        try { review = await api('/api/ui/audit/review', {method: 'POST', body: JSON.stringify(pageRevisionIdentity())}); break; }
+        catch (err) {
+          lastError = err;
+          if (!/authentication|401|forbidden|expired/i.test(String(err.message || ''))) throw err;
+          await new Promise(r => setTimeout(r, 400));
+        }
+      }
+      if (!review) throw lastError;
       auditState.review = review;
       renderAuditSummary(review);
       populateAuditCategoryFilter(review);
@@ -2058,7 +2070,7 @@
         + `<span class="audit-flags">${r.report_only ? ' report_only' : ''}${r.revision_linked ? ' vinculada' : ''}${r.provider_required ? ' provider' : ''} · cache:${escapeHtml(r.cache_status)}</span>${decisionBadge}</div>`
         + `<div class="audit-texts"><small>fonte</small> ${escapeHtml(r.source_text || '—')}<br><small>tradução</small> ${escapeHtml(r.current_translation || '—')}</div>`
         + `<div class="audit-reasons">ação sugerida: <strong>${escapeHtml(r.suggested_action)}</strong> · reasons: ${escapeHtml((r.reason_codes || []).join(', '))} · confiança: ${escapeHtml(String(r.confidence ?? '—'))}</div>`
-        + `<div class="cta-row"><button type="button" class="btn-ghost" data-audit-open-page="${escapeAttr(r.page_number)}">ABRIR PÁGINA</button>`
+        + `<div class="audit-actions"><button type="button" class="btn-ghost" data-audit-open-page="${escapeAttr(r.page_number)}">ABRIR PÁGINA</button>`
         + `<button type="button" class="btn-ghost" data-audit-revise-page="${escapeAttr(r.page_number)}">REVISAR ESTA PÁGINA</button>${buttons}${remove}</div></article>`;
     }).join('');
   }
