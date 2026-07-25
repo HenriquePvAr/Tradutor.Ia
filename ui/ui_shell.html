@@ -493,6 +493,20 @@
                       <button class="btn-ghost danger" type="button" id="pageRevisionCancel" hidden>CANCELAR REVISÃO DA PÁGINA</button>
                       <button class="btn-ghost" type="button" id="pageRevisionResume" hidden>RETOMAR REVISÃO DA PÁGINA</button>
                     </div>
+                    <form class="page-revision-manual-form" id="pageRevisionManualForm" hidden>
+                      <label>Caixa (x, y, largura, altura)</label>
+                      <div class="pr-manual-box">
+                        <input type="number" id="prManualX" placeholder="x" min="0">
+                        <input type="number" id="prManualY" placeholder="y" min="0">
+                        <input type="number" id="prManualW" placeholder="larg." min="1">
+                        <input type="number" id="prManualH" placeholder="alt." min="1">
+                      </div>
+                      <input type="text" id="prManualSource" placeholder="texto fonte (opcional)">
+                      <div class="cta-row">
+                        <button class="btn-ghost" type="submit">CONFIRMAR REGIÃO</button>
+                        <button class="btn-ghost" type="button" id="pageRevisionManualCancel">Cancelar</button>
+                      </div>
+                    </form>
                     <div class="page-revision-preview" id="pageRevisionPreview"></div>
                     <div class="page-revision-decision" id="pageRevisionDecision" hidden>
                       <button class="btn-primary" type="button" data-page-decision="approved">APROVAR PRÉVIA</button>

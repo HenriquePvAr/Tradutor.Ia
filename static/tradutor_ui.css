@@ -1615,6 +1615,10 @@
   .page-revision-side{display:flex; flex-direction:column; gap:10px;}
   .page-revision-actions{display:flex; flex-direction:column; gap:6px;}
   .page-revision-decision{display:flex; gap:6px; flex-wrap:wrap;}
+  .page-revision-manual-form{display:flex; flex-direction:column; gap:6px; border:1px solid var(--line); border-radius:6px; padding:8px; margin-bottom:8px;}
+  .page-revision-manual-form label{font-size:10px; color:var(--muted); text-transform:uppercase;}
+  .page-revision-manual-form input{background:var(--panel); border:1px solid var(--line); border-radius:5px; color:inherit; padding:5px 7px; font-size:11px;}
+  .pr-manual-box{display:grid; grid-template-columns:repeat(4,1fr); gap:5px;}
   .page-revision-preview img{max-width:100%; max-height:40vh; object-fit:contain; border:1px solid var(--line); border-radius:5px;}
   .page-revision-preview figcaption{font-size:10px; color:var(--muted); text-transform:uppercase; margin-bottom:4px;}
   .pr-candidate{font-size:11px; border-bottom:1px solid var(--line); padding:5px 0;}

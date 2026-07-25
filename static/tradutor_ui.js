@@ -1898,18 +1898,23 @@
     } catch (error) { pageRevisionMessage(error.message || 'Falha na busca.', 'error'); }
   }
 
-  async function pageRevisionManual() {
+  function pageRevisionManual() {
     if (!pageRevisionState.pageRevisionId) { pageRevisionMessage('Crie uma prévia antes de adicionar região manual.', 'warn'); return; }
-    const raw = window.prompt('Caixa da região manual (x,y,largura,altura):', '20,20,120,60');
-    if (!raw) return;
-    const box = raw.split(',').map(n => parseInt(n.trim(), 10));
-    if (box.length !== 4 || box.some(n => Number.isNaN(n))) { pageRevisionMessage('Caixa inválida.', 'error'); return; }
-    const source = window.prompt('Texto fonte da região (opcional):', '') || '';
+    const form = $('#pageRevisionManualForm');
+    if (form) form.hidden = !form.hidden;
+  }
+
+  async function pageRevisionManualSubmit(event) {
+    event.preventDefault();
+    const box = ['prManualX', 'prManualY', 'prManualW', 'prManualH'].map(id => parseInt($('#' + id)?.value, 10));
+    if (box.some(n => Number.isNaN(n))) { pageRevisionMessage('Caixa inválida. Preencha x, y, largura e altura.', 'error'); return; }
+    const source = String($('#prManualSource')?.value || '');
     const id = pageRevisionIdentity();
     try {
       const entry = await api('/api/ui/page-revision/manual-region', {method: 'POST',
         body: JSON.stringify({...id, page_revision_id: pageRevisionState.pageRevisionId, box, source_text: source, region_type: 'speech'})});
       pageRevisionMessage(`Região manual ${entry.region_id} registrada (imagem não alterada).`, 'ok');
+      const form = $('#pageRevisionManualForm'); if (form) form.hidden = true;
     } catch (error) { pageRevisionMessage(error.message || 'Falha ao adicionar região.', 'error'); }
   }
 
@@ -1936,6 +1941,8 @@
   });
   $('#pageRevisionForgotten')?.addEventListener('click', pageRevisionForgotten);
   $('#pageRevisionManual')?.addEventListener('click', pageRevisionManual);
+  $('#pageRevisionManualForm')?.addEventListener('submit', pageRevisionManualSubmit);
+  $('#pageRevisionManualCancel')?.addEventListener('click', () => { const f = $('#pageRevisionManualForm'); if (f) f.hidden = true; });
   $('#pageRevisionCancel')?.addEventListener('click', () => pageRevisionLifecycle('cancel'));
   $('#pageRevisionResume')?.addEventListener('click', () => pageRevisionLifecycle('resume'));
   $('#pageRevisionDecision')?.addEventListener('click', event => {
