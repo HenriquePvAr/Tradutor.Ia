@@ -1495,6 +1495,15 @@ class ChapterQualityRevision:
     def _page_revision_pointer(self, number: int) -> Path:
         return self.output_dir / "quality_revision" / "page_revisions" / f"page_{int(number):03d}_latest.json"
 
+    def _chapter_pages(self, progress: dict[str, Any]) -> list[dict[str, Any]]:
+        """The chapter's reviewable pages in the same set/order the full revision
+        uses, so region neighbour context (and therefore cache keys) match."""
+        quality = read_json(self.output_dir / "quality_report.json", {})
+        valid = {page_number(p) for p in (quality.get("pages") or [])
+                 if isinstance(p, dict) and page_number(p) > 0}
+        return [p for p in (progress.get("pages") or [])
+                if isinstance(p, dict) and p.get("debug_data") and (not valid or page_number(p) in valid)]
+
     def latest_page_revision(self, number: int) -> dict[str, Any] | None:
         """The most recent targeted revision for one page (for the UI and F5)."""
 
@@ -1547,8 +1556,13 @@ class ChapterQualityRevision:
         paths = self._page_revision_paths(page_revision_id)
         parent_revision_id = str((self.latest_status() or {}).get("revision_id") or "")
 
-        regions = self._collect_regions([page])
-        reviewable_ids = {str(r["region_id"]) for r in regions if self._is_reviewable(r)}
+        # Collect the whole chapter's regions so each review record carries the
+        # same neighbour context the full revision used — otherwise the cache key
+        # differs and cached answers would never be reused. Only the target page's
+        # regions are actually reviewed and rendered.
+        regions = self._collect_regions(self._chapter_pages(progress))
+        reviewable_ids = {str(r["region_id"]) for r in regions
+                          if int(r.get("page") or 0) == number and self._is_reviewable(r)}
         requested = {str(r) for r in region_ids} if region_ids else None
         scope = (requested & reviewable_ids) if requested is not None else reviewable_ids
 
@@ -1710,7 +1724,9 @@ class ChapterQualityRevision:
         if page is None:
             raise ValueError("page_not_found")
         number = page_number(page)
-        regions = self._collect_regions([page])
+        # Full-chapter context so the cache-hit probe uses the same key the full
+        # revision stored; only this page's regions are returned to the UI.
+        regions = self._collect_regions(self._chapter_pages(progress))
         cache = None
         if bool(getattr(config, "QUALITY_REVISION_CACHE", True)):
             cache = RevisionResponseCache(self.output_dir / "revision_request_cache.jsonl")
@@ -1719,6 +1735,8 @@ class ChapterQualityRevision:
         out = []
         need_auth = 0
         for idx, region in enumerate(regions):
+            if int(region.get("page") or 0) != number:
+                continue
             reviewable = self._is_reviewable(region)
             cached = False
             if reviewable:
