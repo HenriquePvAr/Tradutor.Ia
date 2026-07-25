@@ -1522,6 +1522,8 @@ class ChapterQualityRevision:
         *,
         region_ids: list[str] | None = None,
         resume: bool = False,
+        cache_only: bool = False,
+        page_revision_id: str | None = None,
     ) -> dict[str, Any]:
         """Revise a single page into a draft, never touching other pages or a PDF.
 
@@ -1539,7 +1541,9 @@ class ChapterQualityRevision:
             raise ValueError("page_not_found")
         number = page_number(page)
 
-        page_revision_id = uuid.uuid4().hex
+        # Resuming continues the same page revision (same id, same checkpoint);
+        # a fresh run mints a new id.
+        page_revision_id = str(page_revision_id) if page_revision_id else uuid.uuid4().hex
         paths = self._page_revision_paths(page_revision_id)
         parent_revision_id = str((self.latest_status() or {}).get("revision_id") or "")
 
@@ -1586,7 +1590,8 @@ class ChapterQualityRevision:
         glossary = self._build_glossary(regions)
         write_json(paths.glossary, glossary)
         contextual = self._review_translations(
-            regions, glossary, manifest, paths, scope_region_ids=scope, resume_reviews=resume_reviews)
+            regions, glossary, manifest, paths, scope_region_ids=scope,
+            resume_reviews=resume_reviews, cache_only=cache_only)
         write_json(paths.contextual_review, contextual)
         if contextual.get("cancelled"):
             manifest.update({"status": "cancelled", "phase": "cancelled",
@@ -1609,10 +1614,17 @@ class ChapterQualityRevision:
         write_json(paths.render_audit, render_audit)
 
         draft_page = paths.root / "draft_pages" / f"page_{number:03d}.png"
+        authorization_required = list(contextual.get("authorization_required") or [])
+        # A clean stop, never left "running": cached regions still produce a draft,
+        # the uncached ones wait for provider authorisation and can continue later.
+        status = "awaiting_provider_authorization" if authorization_required else "draft_ready"
         manifest.update({
-            "status": "draft_ready",
-            "phase": "draft_ready",
-            "phase_label": "Prévia pronta para aprovação",
+            "status": status,
+            "phase": status,
+            "phase_label": ("Autorização do provedor necessária"
+                            if authorization_required else "Prévia pronta para aprovação"),
+            "provider_authorization_required": authorization_required,
+            "requests_needed": len(authorization_required),
             "safe_changes_applied": sum(len(v) for v in changed_by_page.values()),
             "regions_changed": [item["region_id"] for items in changed_by_page.values() for item in items],
             "manual_review": sum(1 for r in contextual.get("reviews", []) if r.get("action") == "manual_review"),
@@ -1626,6 +1638,195 @@ class ChapterQualityRevision:
         })
         write_json(paths.manifest, manifest)
         return manifest
+
+    def page_revision_status(self, page_revision_id: str) -> dict[str, Any] | None:
+        paths = self._page_revision_paths(str(page_revision_id or ""))
+        return read_json(paths.manifest, {}) or None if paths.manifest.is_file() else None
+
+    def cancel_page_revision(self, page_revision_id: str) -> dict[str, Any]:
+        """Cooperative cancel: mark the manifest so a running review stops cleanly."""
+        paths = self._page_revision_paths(str(page_revision_id or ""))
+        manifest = read_json(paths.manifest, {})
+        if not manifest:
+            raise ValueError("page_revision_not_found")
+        manifest.update({"status": "cancelling", "phase": "cancelling",
+                         "phase_label": "Cancelando revisão da página", "resumable": True,
+                         "updated_at": utc_now()})
+        write_json(paths.manifest, manifest)
+        return manifest
+
+    def set_page_revision_outcome(self, page_revision_id: str, outcome: str) -> dict[str, Any]:
+        """Approve / reject / discard a draft. Never touches the reviewed PDF."""
+        if outcome not in {"approved", "rejected", "discarded"}:
+            raise ValueError("invalid_outcome")
+        paths = self._page_revision_paths(str(page_revision_id or ""))
+        manifest = read_json(paths.manifest, {})
+        if not manifest:
+            raise ValueError("page_revision_not_found")
+        if outcome == "approved" and manifest.get("status") not in {"draft_ready", "rejected"}:
+            raise ValueError("draft_not_ready_for_approval")
+        manifest.update({"status": outcome, "phase": outcome,
+                         "phase_label": {"approved": "Prévia aprovada (rascunho)",
+                                         "rejected": "Prévia rejeitada",
+                                         "discarded": "Rascunho descartado"}[outcome],
+                         "decided_at": utc_now(), "updated_at": utc_now()})
+        write_json(paths.manifest, manifest)
+        if outcome == "discarded":
+            draft_dir = paths.root / "draft_pages"
+            for stray in draft_dir.glob("*.png") if draft_dir.is_dir() else []:
+                try:
+                    stray.unlink()
+                except OSError:
+                    pass
+            manifest["draft_page_path"] = ""
+            write_json(paths.manifest, manifest)
+        return manifest
+
+    def _region_review_cached(self, record, glossary, reviewer, cache) -> bool:
+        if cache is None:
+            return False
+        prompt_record = record
+        if hasattr(reviewer, "_prompt_record"):
+            try:
+                prompt_record = reviewer._prompt_record(record)
+            except Exception:  # noqa: BLE001
+                prompt_record = record
+        cache_key, _ = cache.build_key(
+            prompt_record, provider="nvidia", model=getattr(reviewer, "model", "unknown"),
+            endpoint=str(getattr(reviewer, "base_url", "") or ""),
+            glossary=ContextualNvidiaReviewer._compact_glossary(glossary, [record]),
+            ocr_text=str(record.get("source_text") or ""))
+        return bool(cache.lookup(cache_key, str(record.get("region_id") or "")))
+
+    def list_page_regions(self, target_page: int) -> dict[str, Any]:
+        """Every detected region on one page with its class, texts, and cache state.
+
+        Read-only: it powers the selection UI and reveals how many regions would
+        need provider authorisation, without calling the provider.
+        """
+        progress = read_json(self.output_dir / "progress.json", {})
+        page = next((p for p in (progress.get("pages") or [])
+                     if isinstance(p, dict) and p.get("debug_data") and page_number(p) == int(target_page)), None)
+        if page is None:
+            raise ValueError("page_not_found")
+        number = page_number(page)
+        regions = self._collect_regions([page])
+        cache = None
+        if bool(getattr(config, "QUALITY_REVISION_CACHE", True)):
+            cache = RevisionResponseCache(self.output_dir / "revision_request_cache.jsonl")
+        reviewer = self.reviewer_factory()
+        glossary = self._build_glossary(regions)
+        out = []
+        need_auth = 0
+        for idx, region in enumerate(regions):
+            reviewable = self._is_reviewable(region)
+            cached = False
+            if reviewable:
+                cached = self._region_review_cached(self._review_record(regions, idx), glossary, reviewer, cache)
+                if not cached:
+                    need_auth += 1
+            out.append({
+                "region_id": str(region.get("region_id") or ""),
+                "classification": str(region.get("classification") or "unknown"),
+                "source_text": str(region.get("source_text") or ""),
+                "current_translation": str(region.get("current_translation") or ""),
+                "reviewable": reviewable,
+                "preserved_original": bool(region.get("preserved_original")),
+                "cache_hit": cached,
+                "requires_authorization": reviewable and not cached,
+            })
+        return {"page": number, "page_id": f"p{number:03d}", "regions": out,
+                "reviewable_regions": sum(1 for r in out if r["reviewable"]),
+                "requests_needed": need_auth}
+
+    def search_forgotten_text(self, target_page: int) -> dict[str, Any]:
+        """Candidates on one page that a human should decide on, never auto-translated.
+
+        Surfaces preserved/decorative/sfx regions and language-mixed text as
+        candidates. Watermark/credit/url/logo/confirmed-name stay flagged as
+        do-not-translate so the UI cannot silently convert them.
+        """
+        progress = read_json(self.output_dir / "progress.json", {})
+        page = next((p for p in (progress.get("pages") or [])
+                     if isinstance(p, dict) and p.get("debug_data") and page_number(p) == int(target_page)), None)
+        if page is None:
+            raise ValueError("page_not_found")
+        number = page_number(page)
+        regions = self._collect_regions([page])
+        candidates = []
+        for region in regions:
+            classification = str(region.get("classification") or "unknown").lower()
+            source = str(region.get("source_text") or "")
+            current = str(region.get("current_translation") or "")
+            preserved = bool(region.get("preserved_original"))
+            residual = looks_like_source_english(current) or looks_like_source_english(source) if current else False
+            do_not_translate = classification in {"watermark", "credit", "url", "logo"} or bool(region.get("preserve_as_name"))
+            if not (preserved or residual or classification in {"decorative", "sfx", "narration", "title"}):
+                continue
+            candidates.append({
+                "region_id": str(region.get("region_id") or ""),
+                "classification": classification,
+                "source_text": source,
+                "current_translation": current,
+                "preserved_original": preserved,
+                "language_residual": residual,
+                "do_not_translate": do_not_translate,
+                "suggested_action": "keep_preserved" if do_not_translate else "human_decision",
+            })
+        return {"page": number, "page_id": f"p{number:03d}", "candidates": candidates,
+                "candidate_count": len(candidates)}
+
+    MANUAL_REGION_MIN_SIDE = 6
+    MANUAL_REGION_MAX_AREA_RATIO = 0.6
+
+    def add_manual_region(self, page_revision_id: str, *, box, source_text: str = "",
+                          region_type: str = "speech", reason: str = "manual_region") -> dict[str, Any]:
+        """Register a human-drawn region on a page revision. Does not alter pixels."""
+        paths = self._page_revision_paths(str(page_revision_id or ""))
+        manifest = read_json(paths.manifest, {})
+        if not manifest:
+            raise ValueError("page_revision_not_found")
+        try:
+            x, y, w, h = (int(v) for v in list(box)[:4])
+        except (TypeError, ValueError):
+            raise ValueError("invalid_box")
+        if w < self.MANUAL_REGION_MIN_SIDE or h < self.MANUAL_REGION_MIN_SIDE:
+            raise ValueError("box_too_small")
+        if x < 0 or y < 0:
+            raise ValueError("box_out_of_bounds")
+        progress = read_json(self.output_dir / "progress.json", {})
+        page = next((p for p in (progress.get("pages") or [])
+                     if isinstance(p, dict) and page_number(p) == int(manifest.get("page") or 0)), None)
+        if page is not None:
+            base = cv2.imread(str(page.get("output_path") or ""))
+            if base is not None:
+                ph, pw = base.shape[:2]
+                if x + w > pw or y + h > ph:
+                    raise ValueError("box_out_of_bounds")
+                if (w * h) > (pw * ph) * self.MANUAL_REGION_MAX_AREA_RATIO:
+                    raise ValueError("box_area_excessive")
+        existing = manifest.get("manual_regions") or []
+        for prior in existing:
+            px, py, pw2, ph2 = prior.get("box", [0, 0, 0, 0])
+            if not (x + w <= px or px + pw2 <= x or y + h <= py or py + ph2 <= y):
+                raise ValueError("box_overlaps_existing")
+        region_id = f"{manifest.get('page_id', 'p000')}:MANUAL_{len(existing) + 1:03d}"
+        entry = {
+            "region_id": region_id,
+            "box": [x, y, w, h],
+            "type": str(region_type or "speech"),
+            "source_text": str(source_text or ""),
+            "classification": str(region_type or "speech"),
+            "reason": str(reason or "manual_region"),
+            "status": "manual_pending",
+            "page_revision_id": str(page_revision_id),
+            "created_at": utc_now(),
+        }
+        existing.append(entry)
+        manifest["manual_regions"] = existing
+        manifest["updated_at"] = utc_now()
+        write_json(paths.manifest, manifest)
+        return entry
 
     def start_canary(self, *, max_regions: int = 10) -> dict[str, Any]:
         progress = read_json(self.output_dir / "progress.json", {})
@@ -2027,6 +2228,7 @@ class ChapterQualityRevision:
         max_regions: int | None = None,
         resume_reviews: dict[str, dict[str, Any]] | None = None,
         scope_region_ids: set[str] | None = None,
+        cache_only: bool = False,
     ) -> dict[str, Any]:
         reviewable = [
             self._review_record(regions, idx)
@@ -2091,12 +2293,15 @@ class ChapterQualityRevision:
                     "created_at": utc_now(),
                 }
         reviews: list[dict[str, Any]] = []
+        authorization_required: list[str] = []
         cancelled = False
         review_started = time.perf_counter()
         # The canary is a live provider diagnostic, so it never reads or writes the
         # cache; a full revision reuses answers whose inputs are byte-identical.
+        # cache_only forces the cache on: it answers only from cache and never
+        # calls the provider, so an unauthorised revision cannot spend quota.
         cache: RevisionResponseCache | None = None
-        if not canary and bool(getattr(config, "QUALITY_REVISION_CACHE", True)):
+        if not canary and (cache_only or bool(getattr(config, "QUALITY_REVISION_CACHE", True))):
             cache = RevisionResponseCache(self.output_dir / "revision_request_cache.jsonl")
         pending_cache: dict[str, tuple[str, dict[str, str]]] = {}
         batch_size = self._revision_batch_size(reviewable, canary=canary)
@@ -2131,6 +2336,11 @@ class ChapterQualityRevision:
                 cached = cache.lookup(cache_key, str(record.get("region_id") or ""))
                 if cached:
                     reviews.append({**cached, "contract_path": "cache"})
+                    continue
+                if cache_only:
+                    # No cached answer and the provider is not authorised: record
+                    # the region as needing authorisation and never call out.
+                    authorization_required.append(str(record.get("region_id") or ""))
                     continue
                 pending_cache[str(record.get("region_id") or "")] = (cache_key, input_hashes)
             try:
@@ -2220,6 +2430,8 @@ class ChapterQualityRevision:
             "quality_passed": blocked == 0 and residual == 0,
             "connectivity_check": health_check or {},
             "cancelled": cancelled,
+            "authorization_required": authorization_required,
+            "requests_needed": len(authorization_required),
             "created_at": utc_now(),
         }
 

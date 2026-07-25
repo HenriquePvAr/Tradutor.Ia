@@ -967,6 +967,106 @@ class UiBridge:
         self.history_revision += 1
         return self.quality_revision_status(key) or {"status": "cancelled", "parent_job_id": key}
 
+    # --- targeted page revision (BLOCO 1) ------------------------------------
+    # All entry points validate the real job/run/page-revision linkage rather
+    # than trusting a card's title or visual index.
+
+    def _page_revision_job(self, job_id: str, run_id: str) -> dict[str, Any]:
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not job.get("output_dir"):
+            raise ValueError("job_not_found")
+        if str(run_id or "") and str(job.get("run_id") or "") != str(run_id or ""):
+            raise ValueError("run_id_mismatch")
+        return job
+
+    def _page_revision_engine(self, job: dict[str, Any]) -> ChapterQualityRevision:
+        return ChapterQualityRevision(str(job["output_dir"]), job_id=str(job["id"]),
+                                      run_id=str(job.get("run_id") or ""))
+
+    def _validated_page_revision(self, job: dict[str, Any], page_revision_id: str,
+                                 *, parent_revision_id: str | None = None):
+        engine = self._page_revision_engine(job)
+        manifest = engine.page_revision_status(str(page_revision_id or ""))
+        if not manifest:
+            raise ValueError("page_revision_not_found")
+        if str(manifest.get("parent_job_id") or "") != str(job["id"]):
+            raise ValueError("page_revision_job_mismatch")
+        if str(manifest.get("parent_run_id") or "") != str(job.get("run_id") or ""):
+            raise ValueError("page_revision_run_mismatch")
+        if parent_revision_id is not None and str(manifest.get("parent_revision_id") or "") != str(parent_revision_id):
+            raise ValueError("parent_revision_mismatch")
+        return engine, manifest
+
+    def list_page_revision_regions(self, job_id: str, run_id: str, page: int) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        return self._page_revision_engine(job).list_page_regions(int(page))
+
+    def start_page_revision(self, job_id: str, run_id: str, page: int,
+                            region_ids: list[str] | None = None) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        manifest = self._page_revision_engine(job).revise_page(
+            int(page), region_ids=region_ids or None, cache_only=True)
+        self.history_revision += 1
+        return manifest
+
+    def page_revision_status(self, job_id: str, run_id: str, page_revision_id: str) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        _, manifest = self._validated_page_revision(job, page_revision_id)
+        return manifest
+
+    def latest_page_revision(self, job_id: str, run_id: str, page: int) -> dict[str, Any] | None:
+        job = self._page_revision_job(job_id, run_id)
+        return self._page_revision_engine(job).latest_page_revision(int(page))
+
+    def cancel_page_revision(self, job_id: str, run_id: str, page_revision_id: str) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        engine, _ = self._validated_page_revision(job, page_revision_id)
+        result = engine.cancel_page_revision(str(page_revision_id))
+        self.history_revision += 1
+        return result
+
+    def resume_page_revision(self, job_id: str, run_id: str, page_revision_id: str) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        engine, manifest = self._validated_page_revision(job, page_revision_id)
+        result = engine.revise_page(int(manifest.get("page") or 0),
+                                    region_ids=manifest.get("region_ids") or None,
+                                    resume=True, cache_only=True, page_revision_id=str(page_revision_id))
+        self.history_revision += 1
+        return result
+
+    def decide_page_revision(self, job_id: str, run_id: str, page_revision_id: str,
+                             outcome: str) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        engine, _ = self._validated_page_revision(job, page_revision_id)
+        result = engine.set_page_revision_outcome(str(page_revision_id), str(outcome))
+        self.history_revision += 1
+        return result
+
+    def add_page_revision_manual_region(self, job_id: str, run_id: str, page_revision_id: str,
+                                        box: list[int], source_text: str = "",
+                                        region_type: str = "speech") -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        engine, _ = self._validated_page_revision(job, page_revision_id)
+        result = engine.add_manual_region(str(page_revision_id), box=box,
+                                          source_text=source_text, region_type=region_type)
+        self.history_revision += 1
+        return result
+
+    def page_revision_forgotten_text(self, job_id: str, run_id: str, page: int) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        return self._page_revision_engine(job).search_forgotten_text(int(page))
+
+    def page_revision_draft_page(self, job_id: str, run_id: str, page_revision_id: str) -> Path | None:
+        """Path to the draft page image, confined to the job's output dir."""
+        job = self._page_revision_job(job_id, run_id)
+        _, manifest = self._validated_page_revision(job, page_revision_id)
+        draft = str(manifest.get("draft_page_path") or "")
+        if not draft:
+            return None
+        path = Path(draft).resolve()
+        output_dir = Path(str(job.get("output_dir") or "")).resolve()
+        return path if (output_dir in path.parents and path.is_file()) else None
+
     def start_quality_revision_canary(self, job_id: str, *, max_regions: int = 10) -> dict[str, Any]:
         payload = self.quality_review(job_id)
         if not payload:

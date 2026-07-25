@@ -468,6 +468,119 @@ def api_quality_revision_canary_start(payload: dict[str, Any] = Body(default={})
         }) from exc
 
 
+def _page_revision_error(exc: ValueError) -> HTTPException:
+    return HTTPException(status_code=400, detail={
+        "code": str(exc),
+        "message": "Não foi possível concluir a ação da revisão da página.",
+        "action": "Confira job, run e a revisão da página e tente novamente.",
+    })
+
+
+@app.post("/api/ui/page-revision/regions")
+def api_page_revision_regions(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    _ui_principal(request)
+    try:
+        return BRIDGE.list_page_revision_regions(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""), int(payload.get("page") or 0))
+    except ValueError as exc:
+        raise _page_revision_error(exc) from exc
+
+
+@app.post("/api/ui/page-revision/forgotten-text")
+def api_page_revision_forgotten(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    _ui_principal(request)
+    try:
+        return BRIDGE.page_revision_forgotten_text(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""), int(payload.get("page") or 0))
+    except ValueError as exc:
+        raise _page_revision_error(exc) from exc
+
+
+@app.post("/api/ui/page-revision/start")
+def api_page_revision_start(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    _ui_principal(request, mutate=True)
+    region_ids = payload.get("region_ids")
+    region_ids = [str(r) for r in region_ids] if isinstance(region_ids, list) else None
+    try:
+        return BRIDGE.start_page_revision(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            int(payload.get("page") or 0), region_ids=region_ids)
+    except ValueError as exc:
+        raise _page_revision_error(exc) from exc
+
+
+@app.post("/api/ui/page-revision/status")
+def api_page_revision_status(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    _ui_principal(request)
+    try:
+        return BRIDGE.page_revision_status(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            str(payload.get("page_revision_id") or ""))
+    except ValueError as exc:
+        raise _page_revision_error(exc) from exc
+
+
+@app.post("/api/ui/page-revision/cancel")
+def api_page_revision_cancel(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.cancel_page_revision(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            str(payload.get("page_revision_id") or ""))
+    except ValueError as exc:
+        raise _page_revision_error(exc) from exc
+
+
+@app.post("/api/ui/page-revision/resume")
+def api_page_revision_resume(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.resume_page_revision(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            str(payload.get("page_revision_id") or ""))
+    except ValueError as exc:
+        raise _page_revision_error(exc) from exc
+
+
+@app.post("/api/ui/page-revision/decision")
+def api_page_revision_decision(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.decide_page_revision(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            str(payload.get("page_revision_id") or ""), str(payload.get("outcome") or ""))
+    except ValueError as exc:
+        raise _page_revision_error(exc) from exc
+
+
+@app.post("/api/ui/page-revision/manual-region")
+def api_page_revision_manual_region(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    _ui_principal(request, mutate=True)
+    box = payload.get("box")
+    if not isinstance(box, list):
+        raise HTTPException(status_code=400, detail={"code": "invalid_box", "message": "Caixa inválida."})
+    try:
+        return BRIDGE.add_page_revision_manual_region(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            str(payload.get("page_revision_id") or ""), box=box,
+            source_text=str(payload.get("source_text") or ""),
+            region_type=str(payload.get("region_type") or "speech"))
+    except ValueError as exc:
+        raise _page_revision_error(exc) from exc
+
+
+@app.get("/api/ui/page-revision/{job_id}/{page_revision_id}/draft")
+def api_page_revision_draft(request: Request, job_id: str, page_revision_id: str, run_id: str = "") -> FileResponse:
+    _ui_principal(request)
+    try:
+        path = BRIDGE.page_revision_draft_page(job_id, run_id, page_revision_id)
+    except ValueError as exc:
+        raise _page_revision_error(exc) from exc
+    if path is None:
+        raise HTTPException(status_code=404, detail="Prévia da página não encontrada.")
+    return FileResponse(path)
+
+
 @app.get("/api/ui/quality-review/{job_id}")
 def api_quality_review(job_id: str) -> dict[str, Any]:
     review = BRIDGE.quality_review(job_id)
