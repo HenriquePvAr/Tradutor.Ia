@@ -209,12 +209,18 @@ def write_report(report: dict[str, Any], out_dir: str) -> dict[str, str]:
 
 if __name__ == "__main__":
     import sys
-    _out_dir = sys.argv[1] if len(sys.argv) > 1 else ".runtime/linguistic-audit"
-    _job = "2c5aeb6f4b5343ada6f4394f6fc71726"
-    _run = "6728a95b-8eb3-40d1-b376-d30f52383532"
-    _report = audit_chapter(
-        resolve_output_dir(_job, _run), _job, _run,
-        pdf_name="shadow_slave_capitulo_shadow_slave_reviewed_v8.pdf")
+    if len(sys.argv) < 3:
+        print("usage: linguistic_audit.py <job_id> <run_id> [out_dir]", file=sys.stderr)
+        raise SystemExit(2)
+    _job, _run = sys.argv[1], sys.argv[2]
+    _out_dir = sys.argv[3] if len(sys.argv) > 3 else ".runtime/linguistic-audit"
+    _output = resolve_output_dir(_job, _run)
+    # Canonical base revision and its reviewed-PDF name, resolved dynamically from
+    # the recorded pointer — nothing chapter-specific is hardcoded.
+    _pointer = _read_json(Path(_output) / "quality_revision" / "latest_revision.json")
+    _manifest = _read_json(Path(str(_pointer.get("manifest_path") or "")))
+    _pdf_name = Path(str(_manifest.get("reviewed_pdf_path") or "")).name
+    _report = audit_chapter(_output, _job, _run, pdf_name=_pdf_name)
     _paths = write_report(_report, _out_dir)
     print(json.dumps({k: _report[k] for k in (
         "total_regions_audited", "by_normalized_category", "report_only_total",

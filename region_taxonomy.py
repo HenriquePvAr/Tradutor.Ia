@@ -11,7 +11,7 @@ Design goals:
   unrecognised label never becomes silently translatable *or* preservable — it
   becomes ``unknown_review_required``.
 - No hardcoded chapter pages or phrases: decisions come from text structure and
-  metadata, never from a specific string like "REAL COFFEE".
+  metadata, never from a specific known caption string.
 """
 from __future__ import annotations
 

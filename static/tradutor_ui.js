@@ -1965,6 +1965,153 @@
     const page = Number(params.get('page_rev_page') || 0);
     if (prid && page) openPageRevision(page, {restore: true, pageRevisionId: prid});
   }
+
+  /* ---------- linguistic audit review (BLOCO 3) ---------- */
+  const auditState = {review: null};
+
+  function auditMessage(text, type = '') {
+    const node = $('#auditMessage');
+    if (node) { node.textContent = text || ''; node.dataset.state = type || ''; }
+  }
+
+  function auditSyncUrl(open) {
+    try {
+      const url = new URL(window.location.href);
+      if (open) url.searchParams.set('audit', '1'); else url.searchParams.delete('audit');
+      window.history.replaceState({}, '', url);
+    } catch (_) {}
+  }
+
+  async function openLinguisticAudit({restore = false} = {}) {
+    const id = pageRevisionIdentity();
+    if (!id.job_id) { showToast('Abra um capítulo em revisão primeiro.', 'error'); return; }
+    const dialog = $('#linguisticAuditPanel');
+    if (dialog) { dialog.hidden = false; if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal(); }
+    auditMessage('Carregando auditoria…');
+    try {
+      const review = await api('/api/ui/audit/review', {method: 'POST', body: JSON.stringify(id)});
+      auditState.review = review;
+      renderAuditSummary(review);
+      populateAuditCategoryFilter(review);
+      renderAuditList();
+      auditMessage('');
+    } catch (error) { auditMessage(error.message || 'Falha ao carregar a auditoria.', 'error'); }
+    auditSyncUrl(true);
+  }
+
+  function renderAuditSummary(review) {
+    const s = review.summary || {};
+    $('#auditMeta').textContent = `revisão ${String(review.revision_id || '').slice(0, 8)} · taxonomia v${review.taxonomy_version || '?'}`;
+    const cats = Object.entries(s.by_normalized_category || {}).map(([k, v]) => `${escapeHtml(k)} ${Number(v)}`).join(' · ');
+    $('#auditSummary').innerHTML = `<div><strong>${Number(s.total_regions_audited || 0)}</strong> regiões · `
+      + `report_only ${Number(s.report_only_total || 0)} (traduzíveis ${Number(s.report_only_now_translatable || 0)}) · `
+      + `revisão humana ${Number(s.needs_human_review_total || 0)} · exigem provider ${Number(s.provider_required_total || 0)}</div>`
+      + (cats ? `<div class="audit-cats">${cats}</div>` : '');
+  }
+
+  function populateAuditCategoryFilter(review) {
+    const select = $('#auditFilterCategory');
+    if (!select) return;
+    const current = select.value;
+    const cats = Object.keys(review.summary?.by_normalized_category || {}).sort();
+    select.innerHTML = '<option value="">todas</option>' + cats.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join('');
+    select.value = current;
+  }
+
+  function auditVisibleRecords() {
+    const review = auditState.review;
+    if (!review) return [];
+    const cat = $('#auditFilterCategory')?.value || '';
+    const action = $('#auditFilterAction')?.value || '';
+    const hr = $('#auditFilterHumanReview')?.checked;
+    const ro = $('#auditFilterReportOnly')?.checked;
+    const prov = $('#auditFilterProvider')?.checked;
+    const cacheHit = $('#auditFilterCacheHit')?.checked;
+    const page = Number($('#auditFilterPage')?.value || 0);
+    return (review.records || []).filter(r =>
+      (!cat || r.classification_normalized === cat)
+      && (!action || r.suggested_action === action)
+      && (!hr || r.needs_human_review)
+      && (!ro || r.report_only)
+      && (!prov || r.provider_required)
+      && (!cacheHit || r.cache_status === 'answered')
+      && (!page || Number(r.page_number) === page));
+  }
+
+  const AUDIT_DECISIONS = [['translate', 'TRADUZÍVEL'], ['preserve', 'PRESERVAR'],
+    ['ocr_invalid', 'OCR INVÁLIDO'], ['needs_review', 'REVISÃO HUMANA'], ['dismissed', 'DESCARTAR DECISÃO']];
+
+  function renderAuditList() {
+    const list = $('#auditList');
+    if (!list) return;
+    const records = auditVisibleRecords();
+    if (!records.length) { list.innerHTML = '<div class="muted">Nenhum item neste filtro.</div>'; return; }
+    list.innerHTML = records.map(r => {
+      const decided = r.human_decision ? String(r.human_decision.decision) : '';
+      const decisionBadge = decided ? `<span class="audit-decided" data-decision="${escapeAttr(decided)}">decisão: ${escapeHtml(decided)}</span>` : '';
+      const buttons = AUDIT_DECISIONS.map(([value, label]) =>
+        `<button type="button" class="btn-ghost audit-decide${decided === value ? ' selected' : ''}" data-audit-decision="${escapeAttr(value)}" data-region="${escapeAttr(r.region_id)}">${label}</button>`).join('');
+      const remove = r.human_decision ? `<button type="button" class="btn-ghost" data-audit-remove="${escapeAttr(r.human_decision.audit_decision_id)}">Remover decisão</button>` : '';
+      return `<article class="audit-item" data-region="${escapeAttr(r.region_id)}" data-page="${escapeAttr(r.page_number)}">`
+        + `<div class="audit-item-head"><strong>${escapeHtml(r.region_id)}</strong> `
+        + `<span class="audit-cls">${escapeHtml(r.classification_original)} → ${escapeHtml(r.classification_normalized)}</span>`
+        + `<span class="audit-flags">${r.report_only ? ' report_only' : ''}${r.revision_linked ? ' vinculada' : ''}${r.provider_required ? ' provider' : ''} · cache:${escapeHtml(r.cache_status)}</span>${decisionBadge}</div>`
+        + `<div class="audit-texts"><small>fonte</small> ${escapeHtml(r.source_text || '—')}<br><small>tradução</small> ${escapeHtml(r.current_translation || '—')}</div>`
+        + `<div class="audit-reasons">ação sugerida: <strong>${escapeHtml(r.suggested_action)}</strong> · reasons: ${escapeHtml((r.reason_codes || []).join(', '))} · confiança: ${escapeHtml(String(r.confidence ?? '—'))}</div>`
+        + `<div class="cta-row"><button type="button" class="btn-ghost" data-audit-open-page="${escapeAttr(r.page_number)}">ABRIR PÁGINA</button>`
+        + `<button type="button" class="btn-ghost" data-audit-revise-page="${escapeAttr(r.page_number)}">REVISAR ESTA PÁGINA</button>${buttons}${remove}</div></article>`;
+    }).join('');
+  }
+
+  async function auditDecide(regionId, decision) {
+    const id = pageRevisionIdentity();
+    try {
+      await api('/api/ui/audit/decision', {method: 'POST', body: JSON.stringify({...id, region_id: regionId, decision})});
+      await refreshAuditReview();
+      auditMessage('Decisão registrada (não altera o PDF nem a revisão histórica).', 'ok');
+    } catch (error) { auditMessage(error.message || 'Falha ao registrar decisão.', 'error'); }
+  }
+
+  async function auditRemoveDecision(decisionId) {
+    const id = pageRevisionIdentity();
+    try {
+      await api('/api/ui/audit/decision/delete', {method: 'POST', body: JSON.stringify({...id, decision_id: decisionId})});
+      await refreshAuditReview();
+      auditMessage('Decisão removida.', 'ok');
+    } catch (error) { auditMessage(error.message || 'Falha ao remover decisão.', 'error'); }
+  }
+
+  async function refreshAuditReview() {
+    const id = pageRevisionIdentity();
+    const review = await api('/api/ui/audit/review', {method: 'POST', body: JSON.stringify(id)});
+    auditState.review = review;
+    renderAuditSummary(review);
+    renderAuditList();
+  }
+
+  function closeLinguisticAudit() {
+    const d = $('#linguisticAuditPanel');
+    if (d) { if (typeof d.close === 'function' && d.open) d.close(); d.hidden = true; }
+    auditSyncUrl(false);
+  }
+
+  $('#openLinguisticAudit')?.addEventListener('click', () => openLinguisticAudit());
+  $('#linguisticAuditClose')?.addEventListener('click', closeLinguisticAudit);
+  $('#auditFilters')?.addEventListener('input', renderAuditList);
+  $('#auditFilters')?.addEventListener('change', renderAuditList);
+  $('#auditList')?.addEventListener('click', event => {
+    const decide = event.target.closest('[data-audit-decision]');
+    if (decide) { auditDecide(decide.dataset.region, decide.dataset.auditDecision); return; }
+    const remove = event.target.closest('[data-audit-remove]');
+    if (remove) { auditRemoveDecision(remove.dataset.auditRemove); return; }
+    const revise = event.target.closest('[data-audit-revise-page]');
+    if (revise) { closeLinguisticAudit(); openPageRevision(Number(revise.dataset.auditRevisePage)); return; }
+    const openPage = event.target.closest('[data-audit-open-page]');
+    if (openPage) { openVisualComparison(Number(openPage.dataset.auditOpenPage)); }
+  });
+  function restoreAuditFromUrl() {
+    try { if (new URLSearchParams(window.location.search || '').get('audit') === '1') openLinguisticAudit({restore: true}); } catch (_) {}
+  }
   $('#qualityReviewList')?.addEventListener('change', event => {
     const checkbox = event.target.closest?.('[data-review-select]');
     if (!checkbox) return;
@@ -2518,7 +2665,7 @@
       panel.hidden = false;
       panel.scrollIntoView({behavior: 'smooth', block: 'start'});
     }
-    if (restore) restorePageRevisionFromUrl();
+    if (restore) { restorePageRevisionFromUrl(); restoreAuditFromUrl(); }
   }
   function restoreReviewModeFromUrl() {
     let params;

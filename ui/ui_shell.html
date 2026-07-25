@@ -471,7 +471,36 @@
                 <label for="pageRevisionPageInput">Revisar uma página</label>
                 <input type="number" id="pageRevisionPageInput" min="1" placeholder="nº da página">
                 <button class="btn-ghost" type="button" id="openPageRevision">REVISAR ESTA PÁGINA</button>
+                <button class="btn-ghost" type="button" id="openLinguisticAudit">AUDITORIA LINGUÍSTICA</button>
               </div>
+              <dialog class="linguistic-audit" id="linguisticAuditPanel" hidden aria-label="Auditoria linguística do capítulo">
+                <div class="linguistic-audit-head">
+                  <strong>Auditoria linguística</strong>
+                  <span id="auditMeta" class="muted"></span>
+                  <button class="btn-ghost" type="button" id="linguisticAuditClose" aria-label="Fechar auditoria">Fechar</button>
+                </div>
+                <div class="linguistic-audit-summary" id="auditSummary" aria-live="polite"></div>
+                <div class="linguistic-audit-filters" id="auditFilters" role="group" aria-label="Filtrar auditoria">
+                  <label>Classificação
+                    <select id="auditFilterCategory"><option value="">todas</option></select>
+                  </label>
+                  <label>Ação
+                    <select id="auditFilterAction">
+                      <option value="">todas</option>
+                      <option value="translate">traduzir</option>
+                      <option value="preserve">preservar</option>
+                      <option value="human_review">revisão humana</option>
+                    </select>
+                  </label>
+                  <label><input type="checkbox" id="auditFilterHumanReview"> revisão humana</label>
+                  <label><input type="checkbox" id="auditFilterReportOnly"> somente relatório</label>
+                  <label><input type="checkbox" id="auditFilterProvider"> exige provider</label>
+                  <label><input type="checkbox" id="auditFilterCacheHit"> cache disponível</label>
+                  <label>Página <input type="number" id="auditFilterPage" min="1" placeholder="nº"></label>
+                </div>
+                <div class="linguistic-audit-list" id="auditList"></div>
+                <div class="linguistic-audit-message" id="auditMessage" role="status" aria-live="polite"></div>
+              </dialog>
               <dialog class="visual-comparison" id="visualComparisonDialog" hidden aria-label="Comparação visual da página">
                 <div class="visual-comparison-body" id="visualComparisonBody"></div>
                 <button class="btn-ghost" type="button" id="visualComparisonClose">Fechar</button>
