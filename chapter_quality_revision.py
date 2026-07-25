@@ -1478,6 +1478,155 @@ class ChapterQualityRevision:
             write_json(paths.manifest, manifest)
             raise
 
+    def _page_revision_paths(self, page_revision_id: str) -> RevisionPaths:
+        root = self.output_dir / "quality_revision" / "page_revisions" / page_revision_id
+        return RevisionPaths(
+            root=root,
+            manifest=root / "page_revision_manifest.json",
+            page_audit=root / "page_audit.json",
+            contextual_review=root / "contextual_translation_review.json",
+            glossary=root / "chapter_glossary.json",
+            visual_inspection=root / "visual_inspection.json",
+            render_audit=root / "incremental_render_audit.json",
+            checkpoint=root / "nvidia_revision_checkpoint.json",
+            raw_responses=root / "nvidia_revision" / "raw-responses",
+        )
+
+    def _page_revision_pointer(self, number: int) -> Path:
+        return self.output_dir / "quality_revision" / "page_revisions" / f"page_{int(number):03d}_latest.json"
+
+    def latest_page_revision(self, number: int) -> dict[str, Any] | None:
+        """The most recent targeted revision for one page (for the UI and F5)."""
+
+        pointer = self._page_revision_pointer(number)
+        if not pointer.is_file():
+            return None
+        manifest_path = Path(str(read_json(pointer, {}).get("manifest_path") or ""))
+        return read_json(manifest_path, {}) if manifest_path.is_file() else None
+
+    def _latest_reviewed_page_base(self, number: int, page: dict[str, Any]) -> str:
+        """Edit from the latest reviewed page image so approved fixes stack.
+
+        A page the current reviewed PDF already changed has its rendered image in
+        quality_revision_pages; unchanged pages are still the translated output.
+        """
+
+        reviewed = self.output_dir / "quality_revision_pages" / f"page_{int(number):03d}.png"
+        if reviewed.is_file():
+            return str(reviewed)
+        return str(page.get("output_path") or "")
+
+    def revise_page(
+        self,
+        target_page: int,
+        *,
+        region_ids: list[str] | None = None,
+        resume: bool = False,
+    ) -> dict[str, Any]:
+        """Revise a single page into a draft, never touching other pages or a PDF.
+
+        Reuses the chapter review machinery scoped to one page: it reviews only the
+        requested regions, renders only that page into its own draft folder, and
+        records a page-scoped manifest with lineage. No reviewed PDF is produced
+        and the current one stays byte-identical.
+        """
+        progress = read_json(self.output_dir / "progress.json", {})
+        if not isinstance(progress, dict) or not progress.get("pages"):
+            raise ValueError("revision_progress_missing")
+        page = next((p for p in progress["pages"]
+                     if isinstance(p, dict) and p.get("debug_data") and page_number(p) == int(target_page)), None)
+        if page is None:
+            raise ValueError("page_not_found")
+        number = page_number(page)
+
+        page_revision_id = uuid.uuid4().hex
+        paths = self._page_revision_paths(page_revision_id)
+        parent_revision_id = str((self.latest_status() or {}).get("revision_id") or "")
+
+        regions = self._collect_regions([page])
+        reviewable_ids = {str(r["region_id"]) for r in regions if self._is_reviewable(r)}
+        requested = {str(r) for r in region_ids} if region_ids else None
+        scope = (requested & reviewable_ids) if requested is not None else reviewable_ids
+
+        manifest: dict[str, Any] = {
+            "page_revision_id": page_revision_id,
+            "parent_revision_id": parent_revision_id,
+            "parent_job_id": self.job_id,
+            "parent_run_id": self.run_id,
+            "page_id": f"p{number:03d}",
+            "page": number,
+            "region_ids": sorted(scope),
+            "status": "running",
+            "phase": "preparing",
+            "phase_label": "Preparando revisão da página",
+            "draft": True,
+            "reviewed_pdf_path": "",
+            "requests": 0,
+            "reason_codes": [],
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        }
+        write_json(paths.manifest, manifest)
+        write_json(self._page_revision_pointer(number),
+                   {"page_revision_id": page_revision_id, "manifest_path": str(paths.manifest),
+                    "updated_at": utc_now()})
+
+        if not scope:
+            manifest.update({"status": "no_reviewable_regions", "phase": "finalized",
+                             "phase_label": "Nenhuma região revisável nesta página", "updated_at": utc_now()})
+            write_json(paths.manifest, manifest)
+            return manifest
+
+        resume_reviews = None
+        if resume:
+            previous = read_json(paths.checkpoint, {})
+            resume_reviews = {str(r.get("region_id")): r
+                              for r in (previous.get("completed_reviews") or []) if isinstance(r, dict)}
+
+        glossary = self._build_glossary(regions)
+        write_json(paths.glossary, glossary)
+        contextual = self._review_translations(
+            regions, glossary, manifest, paths, scope_region_ids=scope, resume_reviews=resume_reviews)
+        write_json(paths.contextual_review, contextual)
+        if contextual.get("cancelled"):
+            manifest.update({"status": "cancelled", "phase": "cancelled",
+                             "phase_label": "Revisão da página cancelada", "resumable": True,
+                             "reason_code": "user_cancelled", "updated_at": utc_now()})
+            write_json(paths.manifest, manifest)
+            return manifest
+
+        applicable = self._select_safe_changes(regions, contextual.get("reviews", []))
+        # Edit from the latest reviewed page so the page's other regions keep the
+        # current reviewed state instead of reverting to the first translation.
+        render_page = dict(page)
+        render_page["output_path"] = self._latest_reviewed_page_base(number, page)
+        changed_by_page = self._apply_safe_changes_to_pages([render_page], applicable)
+        rendered, render_audit = self._render_changed_pages(
+            [render_page], changed_by_page, dest_dir=paths.root / "draft_pages")
+        visual_states = self._region_visual_states(
+            contextual.get("reviews", []), changed_by_page, render_audit.get("records", []))
+        render_audit["region_visual_states"] = visual_states
+        write_json(paths.render_audit, render_audit)
+
+        draft_page = paths.root / "draft_pages" / f"page_{number:03d}.png"
+        manifest.update({
+            "status": "draft_ready",
+            "phase": "draft_ready",
+            "phase_label": "Prévia pronta para aprovação",
+            "safe_changes_applied": sum(len(v) for v in changed_by_page.values()),
+            "regions_changed": [item["region_id"] for items in changed_by_page.values() for item in items],
+            "manual_review": sum(1 for r in contextual.get("reviews", []) if r.get("action") == "manual_review"),
+            "draft_page_path": str(draft_page) if draft_page.is_file() else "",
+            "review_summary": self._review_summary(
+                contextual.get("reviews", []), visual_states, render_audit.get("records", []),
+                changed_by_page, [render_page]),
+            "visual_state_summary": self._visual_state_summary(visual_states),
+            "reason_codes": sorted({str(r.get("reason_code")) for r in contextual.get("reviews", []) if r.get("reason_code")}),
+            "updated_at": utc_now(),
+        })
+        write_json(paths.manifest, manifest)
+        return manifest
+
     def start_canary(self, *, max_regions: int = 10) -> dict[str, Any]:
         progress = read_json(self.output_dir / "progress.json", {})
         quality = read_json(self.output_dir / "quality_report.json", {})
@@ -1877,6 +2026,7 @@ class ChapterQualityRevision:
         canary: bool = False,
         max_regions: int | None = None,
         resume_reviews: dict[str, dict[str, Any]] | None = None,
+        scope_region_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         reviewable = [
             self._review_record(regions, idx)
@@ -1887,7 +2037,21 @@ class ChapterQualityRevision:
             reviewable = self._select_canary_records(reviewable, max_regions=max_regions or 10)
         skipped_unchanged: list[dict[str, Any]] = []
         resumed: list[dict[str, Any]] = []
-        if not canary:
+        if scope_region_ids is not None:
+            # A targeted page/balloon revision reviews exactly the requested
+            # regions: the reviewer was pointed at them on purpose, so the
+            # "suspicious" heuristic that skips unchanged regions does not apply.
+            reviewable = [r for r in reviewable if str(r.get("region_id")) in scope_region_ids]
+            manifest["suspicious_regions"] = len(reviewable)
+            manifest["skipped_unchanged_regions"] = 0
+            manifest["resumed_regions"] = 0
+            if resume_reviews:
+                pending = [r for r in reviewable if str(r.get("region_id")) not in resume_reviews]
+                resumed = [resume_reviews[str(r["region_id"])] for r in reviewable
+                           if str(r.get("region_id")) in resume_reviews]
+                reviewable = pending
+                manifest["resumed_regions"] = len(resumed)
+        elif not canary:
             reviewable, skipped = self._partition_suspicious(reviewable)
             skipped_unchanged = [self._unchanged_review(record) for record in skipped]
             manifest["suspicious_regions"] = len(reviewable)
@@ -2456,8 +2620,10 @@ class ChapterQualityRevision:
             return int((grey > 127).sum())
         return int((grey < 128).sum())
 
-    def _render_changed_pages(self, pages: list[dict[str, Any]], changed_by_page: dict[int, list[dict[str, Any]]]) -> tuple[list[str], dict[str, Any]]:
-        review_pages = self.output_dir / "quality_revision_pages"
+    def _render_changed_pages(self, pages: list[dict[str, Any]], changed_by_page: dict[int, list[dict[str, Any]]], *, dest_dir: Path | None = None) -> tuple[list[str], dict[str, Any]]:
+        # A targeted page revision renders into its own draft folder so the
+        # chapter's reviewed pages (and the current PDF) stay untouched.
+        review_pages = dest_dir or (self.output_dir / "quality_revision_pages")
         review_pages.mkdir(parents=True, exist_ok=True)
         rendered_paths: list[str] = []
         render_records = []

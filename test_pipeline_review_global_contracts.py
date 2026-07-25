@@ -1511,5 +1511,79 @@ class FullChapterQualityRevisionContracts(unittest.TestCase):
         self.assertEqual(items[0]["reason_code"], "non_contract_translation_only_response")
 
 
+class TargetedPageRevisionContracts(unittest.TestCase):
+    def _two_page_output(self, root: Path) -> Path:
+        from PIL import Image
+
+        output = root / "output"
+        output.mkdir()
+        (output / "chapter.pdf").write_bytes(b"%PDF-1.4\n% fake\n" + b"0" * 1024)
+        pages = []
+        for index in (1, 2):
+            image = output / f"page_{index:03d}.jpg"
+            Image.new("RGB", (240, 320), "white").save(image, "JPEG")
+            pages.append({
+                "index": index, "sequence_index": index,
+                "image_path": str(image), "output_path": str(image),
+                "debug_data": {"image_path": str(image), "items": [
+                    {"id": "BALAO_1", "region_id": "REGION_001", "clean_text": "HELLO THERE",
+                     "translation": "Olá.", "classification": "speech", "confidence": 0.9,
+                     "bounding_box": [20, 20, 160, 80], "sent_to_nvidia": True, "redrawn": True},
+                    {"id": "SFX_1", "region_id": "REGION_002", "clean_text": "BANG",
+                     "translation": "BANG", "classification": "sfx", "confidence": 0.9,
+                     "bounding_box": [20, 200, 160, 60], "preserved_original": True},
+                ]},
+            })
+        (output / "progress.json").write_text(json.dumps({"pdf_path": str(output / "chapter.pdf"), "pages": pages}), encoding="utf-8")
+        (output / "quality_report.json").write_text(json.dumps({"pages": [{"index": 1}, {"index": 2}]}), encoding="utf-8")
+        return output
+
+    def _revision(self, output: Path) -> ChapterQualityRevision:
+        return ChapterQualityRevision(output, job_id="job-1", run_id="run-1", reviewer_factory=FakeRewriteReviewer)
+
+    def test_page_revision_drafts_only_the_target_page(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = self._two_page_output(Path(folder))
+            page2_before = (output / "page_002.jpg").read_bytes()
+            manifest = self._revision(output).revise_page(1)
+            self.assertEqual(manifest["status"], "draft_ready")
+            self.assertEqual(manifest["page_id"], "p001")
+            self.assertIn("p001:REGION_001", manifest["region_ids"])
+            self.assertEqual(manifest["safe_changes_applied"], 1)
+            self.assertTrue(Path(manifest["draft_page_path"]).is_file())
+            # Only page 1 has a draft; page 2 is never rendered.
+            draft_root = Path(manifest["draft_page_path"]).parent
+            self.assertFalse((draft_root / "page_002.png").exists())
+            # No reviewed PDF is produced by a page revision.
+            self.assertEqual(list(output.glob("*_reviewed_*.pdf")), [])
+            # Other pages stay byte-identical.
+            self.assertEqual((output / "page_002.jpg").read_bytes(), page2_before)
+
+    def test_page_revision_records_lineage_and_is_resumable_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = self._two_page_output(Path(folder))
+            revision = self._revision(output)
+            manifest = revision.revise_page(1)
+            self.assertIn("page_revision_id", manifest)
+            self.assertIn("parent_revision_id", manifest)
+            # The per-page pointer resolves back to this manifest (F5/resume).
+            latest = revision.latest_page_revision(1)
+            self.assertEqual(latest["page_revision_id"], manifest["page_revision_id"])
+
+    def test_page_revision_can_scope_to_one_region(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = self._two_page_output(Path(folder))
+            manifest = self._revision(output).revise_page(1, region_ids=["p001:REGION_001"])
+            self.assertEqual(manifest["region_ids"], ["p001:REGION_001"])
+
+    def test_page_revision_reports_when_nothing_is_reviewable(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            output = self._two_page_output(Path(folder))
+            # Scope to the preserved sfx region only: nothing reviewable remains.
+            manifest = self._revision(output).revise_page(1, region_ids=["p001:REGION_002"])
+            self.assertEqual(manifest["status"], "no_reviewable_regions")
+            self.assertEqual(manifest["region_ids"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
