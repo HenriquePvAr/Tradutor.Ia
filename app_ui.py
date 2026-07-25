@@ -570,8 +570,10 @@ def api_page_revision_manual_region(request: Request, payload: dict[str, Any] = 
 
 
 @app.get("/api/ui/page-revision/{job_id}/{page_revision_id}/draft")
-def api_page_revision_draft(request: Request, job_id: str, page_revision_id: str, run_id: str = "") -> FileResponse:
-    _ui_principal(request)
+def api_page_revision_draft(job_id: str, page_revision_id: str, run_id: str = "") -> FileResponse:
+    # Served to an <img> tag, which cannot carry the bearer token; like the
+    # reviewed-page image endpoint, safety comes from the bridge validating the
+    # job/run/page-revision linkage and confining the path to the output dir.
     try:
         path = BRIDGE.page_revision_draft_page(job_id, run_id, page_revision_id)
     except ValueError as exc:
