@@ -25,8 +25,12 @@ def _utc_now() -> str:
 class AuditDecisionStore:
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
-        self._conn = sqlite3.connect(self.db_path)
+        # The UI serves requests from a thread pool, so the connection must be
+        # usable across threads (WAL + busy_timeout keep concurrent access safe).
+        self._conn = sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS audit_decisions (
                 audit_decision_id TEXT PRIMARY KEY,
