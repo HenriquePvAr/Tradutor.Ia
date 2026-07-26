@@ -120,9 +120,12 @@ def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
         visual = visual_states.get(stable) or {}
         revision_linked = bool(visual)
         report_only = not revision_linked  # panel-flagged item outside the revision
-        # A region already answered by the revision has a reusable decision.
-        answered = bool(review) and (
-            bool(current_translation) and current_translation.strip() != source_text.strip())
+        # "Cached" must mean a usable correction, not merely that an answer
+        # exists: a cached keep/manual/empty proposal resolves nothing.
+        cache_proposal = linguistic_triage.evaluate_cache_proposal(
+            source_text=source_text, current_translation=current_translation,
+            cached_review=review, region_id=stable)
+        answered = bool(cache_proposal["answered"])
         was_preserved = bool(raw.get("preserved_original")) or (
             str(review.get("action") or "") in ("preserve_original", "keep")) or report_only
 
@@ -163,6 +166,8 @@ def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
             "visual_state": str(visual.get("state") or ""),
             "review_action": str(review.get("action") or ""),
             "cache_status": "answered" if answered else "not_answered",
+            "cache_correction_available": bool(cache_proposal["usable"]),
+            "cache_proposal": cache_proposal,
             "provider_required": policy["provider_required"],
             "confidence": raw.get("confidence"),
             "needs_human_review": policy["needs_human_review"],

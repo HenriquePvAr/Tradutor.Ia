@@ -15,7 +15,7 @@ import unicodedata
 
 import region_taxonomy as tax
 
-GATE_VERSION = "1"
+GATE_VERSION = "3"
 
 PASSED = "passed"
 FAILED = "failed"
@@ -138,6 +138,95 @@ def evaluate_linguistic_gate(*, source_text: str, current_translation: str,
         status = PASSED
     return {"status": status, "checks": checks, "reason_codes": reasons,
             "gate_version": GATE_VERSION}
+
+
+# --- cache proposals --------------------------------------------------------
+# A cached answer is only useful when it actually carries a correction that can
+# be applied to this region. "There is a cache entry" is not the same as "there
+# is a fix", and treating them alike is how a region silently looks resolved.
+CACHE_USABLE = "usable_correction"        # a fix exists and can be drafted
+CACHE_ANSWERED_NO_CHANGE = "answered_no_change"   # already reviewed, nothing to apply
+CACHE_ANSWERED_DEFERRED = "answered_deferred"     # model declined; a human must decide
+CACHE_ABSENT = "absent"                   # never asked
+
+
+def evaluate_cache_proposal(*, source_text: str, current_translation: str,
+                            cached_review: dict | None, region_id: str = "") -> dict:
+    """Classify what a cached review offers for one region.
+
+    Two different questions are kept apart, because conflating them either
+    invents a correction that does not exist or re-asks the provider about a
+    region it already answered:
+
+    - ``usable``  — there is a correction that can actually be drafted.
+    - ``answered`` — the provider already ruled on this region, so asking again
+      buys nothing.
+    """
+    source = str(source_text or "").strip()
+    current = str(current_translation or "").strip()
+    if not cached_review:
+        return {"state": CACHE_ABSENT, "usable": False, "answered": False,
+                "reason": "no_cached_answer", "proposal": ""}
+
+    # Lineage: an answer recorded for a different region can never be reused.
+    cached_region = str(cached_review.get("region_id") or "")
+    if region_id and cached_region and cached_region != str(region_id):
+        return {"state": CACHE_ABSENT, "usable": False, "answered": False,
+                "reason": "cached_answer_belongs_to_another_region", "proposal": ""}
+
+    action = str(cached_review.get("action") or "").strip().lower()
+    proposal = str(cached_review.get("revised_translation") or "").strip()
+
+    if action in ("keep", "preserve_original"):
+        return {"state": CACHE_ANSWERED_NO_CHANGE, "usable": False, "answered": True,
+                "reason": "cached_answer_keeps_the_original", "proposal": ""}
+    if action == "manual_review":
+        return {"state": CACHE_ANSWERED_DEFERRED, "usable": False, "answered": True,
+                "reason": "cached_answer_defers_to_a_human", "proposal": ""}
+    if not proposal:
+        return {"state": CACHE_ANSWERED_NO_CHANGE, "usable": False, "answered": True,
+                "reason": "cached_proposal_is_empty", "proposal": ""}
+    if source and _fold(proposal) == _fold(source):
+        return {"state": CACHE_ANSWERED_NO_CHANGE, "usable": False, "answered": True,
+                "reason": "cached_proposal_equals_source", "proposal": proposal}
+    if current and _fold(proposal) == _fold(current):
+        return {"state": CACHE_ANSWERED_NO_CHANGE, "usable": False, "answered": True,
+                "reason": "cached_proposal_already_applied", "proposal": proposal}
+    return {"state": CACHE_USABLE, "usable": True, "answered": True,
+            "reason": "cached_correction_available", "proposal": proposal}
+
+
+# --- targeted OCR candidates ------------------------------------------------
+def ocr_reprocessing_candidates(records: list[dict], *, decisions: dict | None = None) -> dict:
+    """Regions whose source text cannot be trusted and would need a fresh read.
+
+    Structural only: an explicit human ocr_invalid verdict, an unreadable
+    normalized class, or a gate that flagged the source as unreadable.
+    """
+    decisions = decisions or {}
+    candidates = []
+    for record in records:
+        region_id = str(record.get("region_id") or "")
+        verdict = str((decisions.get(region_id) or {}).get("decision") or "")
+        category = str(record.get("classification_normalized") or "")
+        gate = record.get("linguistic_gate") or {}
+        gate_flagged = "source_text_unreadable" in (gate.get("reason_codes") or [])
+        if not (verdict == "ocr_invalid" or tax.is_unreadable(category) or gate_flagged):
+            continue
+        candidates.append({
+            "page_id": record.get("page_id"), "page_number": record.get("page_number"),
+            "region_id": region_id,
+            "classification_normalized": category,
+            "source_text": record.get("source_text"),
+            "confidence": record.get("confidence"),
+            "reason_codes": list(record.get("reason_codes") or []),
+            "gate_reason_codes": list(gate.get("reason_codes") or []),
+            "human_decision": verdict,
+            "requested_action": "targeted_ocr",
+        })
+    pages = sorted({str(c["page_id"] or "") for c in candidates})
+    return {"candidates": candidates, "candidate_count": len(candidates),
+            "pages": pages, "page_count": len(pages), "ocr_executed": False}
 
 
 # --- explainable triage queue ----------------------------------------------

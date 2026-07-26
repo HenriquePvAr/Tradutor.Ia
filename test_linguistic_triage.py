@@ -193,3 +193,92 @@ class ProviderSetContracts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CacheProposalContracts(unittest.TestCase):
+    """"There is a cache entry" is not "there is a fix" — and not "must re-ask"."""
+
+    def _eval(self, source, current, review, region="p001:R1"):
+        return lt.evaluate_cache_proposal(source_text=source, current_translation=current,
+                                          cached_review=review, region_id=region)
+
+    def test_a_real_correction_is_usable_and_answered(self):
+        result = self._eval(_sentence(), "tradução antiga",
+                            {"region_id": "p001:R1", "action": "rewrite",
+                             "revised_translation": "uma correção nova e diferente"})
+        self.assertEqual(result["state"], lt.CACHE_USABLE)
+        self.assertTrue(result["usable"])
+        self.assertTrue(result["answered"])
+
+    def test_a_keep_answer_is_answered_but_offers_no_correction(self):
+        result = self._eval(_sentence(), "tradução aceita",
+                            {"region_id": "p001:R1", "action": "keep"})
+        self.assertEqual(result["state"], lt.CACHE_ANSWERED_NO_CHANGE)
+        self.assertFalse(result["usable"])
+        self.assertTrue(result["answered"])   # re-asking buys nothing
+
+    def test_a_deferred_answer_is_answered_and_needs_a_human(self):
+        result = self._eval(_sentence(), "", {"region_id": "p001:R1", "action": "manual_review"})
+        self.assertEqual(result["state"], lt.CACHE_ANSWERED_DEFERRED)
+        self.assertFalse(result["usable"])
+        self.assertTrue(result["answered"])
+
+    def test_no_cached_answer_means_unanswered(self):
+        result = self._eval(_sentence(), "", None)
+        self.assertEqual(result["state"], lt.CACHE_ABSENT)
+        self.assertFalse(result["answered"])
+
+    def test_a_proposal_equal_to_source_or_current_is_not_usable(self):
+        text = _sentence()
+        equal_source = self._eval(text, "algo", {"region_id": "p001:R1", "action": "rewrite",
+                                                 "revised_translation": text})
+        self.assertFalse(equal_source["usable"])
+        already = self._eval(text, "mesma coisa", {"region_id": "p001:R1", "action": "rewrite",
+                                                   "revised_translation": "mesma coisa"})
+        self.assertFalse(already["usable"])
+        self.assertEqual(already["reason"], "cached_proposal_already_applied")
+
+    def test_an_answer_recorded_for_another_region_is_never_reused(self):
+        result = self._eval(_sentence(), "", {"region_id": "p099:OTHER", "action": "rewrite",
+                                              "revised_translation": "algo"}, region="p001:R1")
+        self.assertEqual(result["state"], lt.CACHE_ABSENT)
+        self.assertFalse(result["usable"])
+        self.assertFalse(result["answered"])
+
+
+class OcrCandidateContracts(unittest.TestCase):
+    def _record(self, category, **kw):
+        return {"region_id": f"p{random.randint(1,99):03d}:{_rand_id()}",
+                "page_id": f"p{random.randint(1,99):03d}",
+                "classification_normalized": category,
+                "source_text": kw.get("source", _sentence()),
+                "confidence": kw.get("confidence", 0.9),
+                "reason_codes": [],
+                "linguistic_gate": {"status": kw.get("gate", lt.PASSED),
+                                    "reason_codes": kw.get("gate_reasons", [])}}
+
+    def test_unreadable_class_and_human_verdict_both_qualify(self):
+        unreadable = self._record(tax.OCR_INVALID, gate=lt.NEEDS_REVIEW,
+                                  gate_reasons=["source_text_unreadable"])
+        decided = self._record(tax.DIALOGUE_TRANSLATE)
+        clean = self._record(tax.DIALOGUE_TRANSLATE)
+        result = lt.ocr_reprocessing_candidates(
+            [unreadable, decided, clean],
+            decisions={decided["region_id"]: {"decision": "ocr_invalid"}})
+        ids = {c["region_id"] for c in result["candidates"]}
+        self.assertIn(unreadable["region_id"], ids)
+        self.assertIn(decided["region_id"], ids)
+        self.assertNotIn(clean["region_id"], ids)
+        self.assertFalse(result["ocr_executed"])
+        self.assertEqual(result["candidate_count"], 2)
+
+    def test_every_candidate_asks_for_targeted_ocr_only(self):
+        record = self._record(tax.OCR_INVALID, gate=lt.NEEDS_REVIEW,
+                              gate_reasons=["source_text_unreadable"])
+        result = lt.ocr_reprocessing_candidates([record])
+        self.assertTrue(all(c["requested_action"] == "targeted_ocr" for c in result["candidates"]))
+
+    def test_an_empty_report_yields_no_candidates(self):
+        result = lt.ocr_reprocessing_candidates([])
+        self.assertEqual(result["candidate_count"], 0)
+        self.assertEqual(result["pages"], [])
