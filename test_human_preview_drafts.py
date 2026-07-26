@@ -435,7 +435,8 @@ class NoHardcodedTranslations(unittest.TestCase):
     PRODUCTION = ("human_translation_decisions.py", "preview_gates.py",
                   "provider_execution.py", "chapter_quality_revision.py",
                   "ui_bridge.py", "app_ui.py", "linguistic_triage.py",
-                  "region_taxonomy.py", "static/tradutor_ui.js")
+                  "region_taxonomy.py", "font_fidelity.py", "art_text_inpainting.py",
+                  "visual_refinement_provider_guard.py", "static/tradutor_ui.js")
 
     def test_no_decided_phrase_appears_in_production(self):
         root = Path(__file__).resolve().parent

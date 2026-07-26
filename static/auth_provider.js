@@ -57,7 +57,7 @@ function betterAuthAdapter(config) {
       authTrace('better_auth_signup_started', {source: 'better_auth'});
       await requestJson(`${base}/sign-up/email`, {
         method: 'POST',
-        body: JSON.stringify({email, password, name: 'Kayden'}),
+        body: JSON.stringify({email, password, name: 'Tradutor'}),
         signal,
       });
       authTrace('better_auth_signup_finished', {source: 'better_auth'});
@@ -136,4 +136,3 @@ export async function signOut() {
 export async function onAuthChange(handler) {
   return (await provider()).onAuthChange(handler);
 }
-

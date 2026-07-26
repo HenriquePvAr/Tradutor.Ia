@@ -803,7 +803,7 @@ async function boot() {
   if (!root()) return;
   // The classic local UI owns this panel when it exposes the verified-PDF feed.
   // Do not mount the optional social experience over it: doing so hides local
-  // publications and duplicates the global Kayden/Sair controls.
+  // publications and duplicates the global profile/logout controls.
   if (document.getElementById('communityFeed')) {
     window.__socialCommunitySkipped = 'local_verified_feed_present';
     return;
