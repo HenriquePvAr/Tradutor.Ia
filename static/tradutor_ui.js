@@ -1995,7 +1995,8 @@
   }
 
   /* ---------- linguistic audit review (BLOCO 3) ---------- */
-  const auditState = {review: null, mode: 'list', triage: null, providerSet: null, selection: new Set()};
+  const auditState = {review: null, mode: 'list', triage: null, providerSet: null,
+    ocrCandidates: null, editorial: null, selection: new Set()};
 
   function auditMessage(text, type = '') {
     const node = $('#auditMessage');
@@ -2132,7 +2133,10 @@
     const review = await api('/api/ui/audit/review', {method: 'POST', body: JSON.stringify(id)});
     auditState.review = review;
     renderAuditSummary(review);
-    renderAuditList();
+    // A decision taken from a queue must refresh that queue, not drop the
+    // operator back into the flat list.
+    if (auditState.mode && auditState.mode !== 'list') await setAuditMode(auditState.mode);
+    else renderAuditList();
   }
 
   function closeLinguisticAudit() {
@@ -2193,7 +2197,7 @@
       const params = new URLSearchParams(window.location.search || '');
       if (params.get('audit') !== '1') return;
       const mode = String(params.get('audit_mode') || 'list');
-      if (['list', 'triage', 'provider'].includes(mode)) auditState.mode = mode;
+      if (AUDIT_MODES.includes(mode)) auditState.mode = mode;
       openLinguisticAudit({restore: true});
     } catch (_) {}
   }
@@ -2208,31 +2212,142 @@
     } catch (_) {}
   }
 
+  const AUDIT_MODES = ['list', 'triage', 'ocr', 'editorial', 'provider'];
+  // Bulk selection is only meaningful where every row is individually pickable.
+  const AUDIT_BULK_MODES = ['triage', 'ocr'];
+
   async function setAuditMode(mode) {
     auditState.mode = mode;
     $$('[data-audit-mode]').forEach(b => b.classList.toggle('selected', b.dataset.auditMode === mode));
     const bulk = $('#auditBulk');
-    if (bulk) bulk.hidden = mode !== 'triage';
+    if (bulk) bulk.hidden = !AUDIT_BULK_MODES.includes(mode);
     auditModeSyncUrl();
     const id = pageRevisionIdentity();
     try {
       if (mode === 'triage') {
         auditState.triage = await api('/api/ui/audit/triage', {method: 'POST', body: JSON.stringify(id)});
         renderTriageQueue();
+      } else if (mode === 'ocr') {
+        auditState.ocrCandidates = await api('/api/ui/audit/ocr-invalid-candidates', {method: 'POST', body: JSON.stringify(id)});
+        renderOcrCandidates();
+      } else if (mode === 'editorial') {
+        auditState.editorial = await api('/api/ui/audit/editorial-pending', {method: 'POST', body: JSON.stringify(id)});
+        renderEditorialPending();
       } else if (mode === 'provider') {
         auditState.providerSet = await api('/api/ui/audit/provider-set', {method: 'POST', body: JSON.stringify(id)});
         renderProviderSet();
       } else {
+        renderAuditCounters(null);
         renderAuditList();
       }
       auditMessage('');
     } catch (error) { auditMessage(error.message || 'Falha ao carregar.', 'error'); }
   }
 
+  // FASE 12 — three separate totals. Merging them would hide which step is
+  // actually blocking the chapter.
+  function renderAuditCounters(counters) {
+    const box = $('#auditCounters');
+    if (!box) return;
+    if (!counters) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false;
+    const cells = [
+      ['OCR DIRECIONADO FUTURO', counters.targeted_ocr_pending, 'ocr'],
+      ['DECISÃO EDITORIAL PENDENTE', counters.awaiting_editorial_decision, 'editorial'],
+      ['PRONTO PARA REVISÃO COM IA', counters.ready_for_ai_review, 'ready'],
+    ].map(([label, value, kind]) =>
+      `<span class="audit-counter" data-counter="${escapeAttr(kind)}">`
+      + `<strong>${Number(value || 0)}</strong> ${escapeHtml(label)}</span>`).join('');
+    box.innerHTML = cells + (counters.authorization_blocked
+      ? '<span class="audit-counter" data-counter="blocked">autorização bloqueada</span>' : '');
+  }
+
+  function auditTextsBlock(item) {
+    return `<div class="audit-texts"><small>fonte</small> ${escapeHtml(item.source_text || '—')}`
+      + `<br><small>tradução</small> ${escapeHtml(item.current_translation || '—')}</div>`;
+  }
+
+  function auditDecisionButtons(region, decided, values) {
+    return values.map(value => {
+      const label = (AUDIT_DECISIONS.find(([v]) => v === value) || [value, value])[1];
+      return `<button type="button" class="btn-ghost audit-decide${decided === value ? ' selected' : ''}"`
+        + ` data-audit-decision="${escapeAttr(value)}" data-region="${escapeAttr(region)}">${label}</button>`;
+    }).join('');
+  }
+
+  // FASE 6 — proposed candidates only. Nothing here is marked without a human.
+  function renderOcrCandidates() {
+    const list = $('#auditList');
+    const data = auditState.ocrCandidates;
+    if (!list || !data) return;
+    renderAuditCounters(data.editorial_counters);
+    const card = (item, group) => {
+      const a = item.ocr_assessment || {};
+      const evidence = (a.strong_evidence || []).concat(a.weak_evidence || []);
+      const pickable = group !== 'confirmed';
+      const checked = auditState.selection.has(String(item.region_id)) ? ' checked' : '';
+      const pick = pickable
+        ? `<label class="triage-pick"><input type="checkbox" data-triage-select="${escapeAttr(item.region_id)}"${checked}> `
+        : '<label class="triage-pick">';
+      return `<article class="audit-item" data-region="${escapeAttr(item.region_id)}" data-page="${escapeAttr(item.page_number)}" data-ocr-group="${escapeAttr(group)}">`
+        + `<div class="audit-item-head">${pick}<strong>${escapeHtml(item.region_id)}</strong></label> `
+        + `<span class="audit-cls">${escapeHtml(item.classification_normalized)}</span>`
+        + `<span class="triage-gate" data-gate="${escapeAttr(a.status || '')}">${escapeHtml(a.status || '—')}</span>`
+        + (item.human_decision ? `<span class="audit-decided">decisão: ${escapeHtml(item.human_decision)}</span>` : '')
+        + `</div>${auditTextsBlock(item)}`
+        + `<div class="audit-reasons">evidência: ${escapeHtml(evidence.join(', ') || 'nenhuma')}`
+        + ` · a favor do texto: ${escapeHtml((a.positive_evidence || []).join(', ') || 'nenhuma')}`
+        + ` · confiança do detector: ${escapeHtml(String(a.confidence ?? '—'))}</div>`
+        + `<div class="audit-actions">`
+        + auditDecisionButtons(item.region_id, item.human_decision, ['ocr_invalid', 'translate', 'preserve', 'needs_review'])
+        + `<button type="button" class="btn-ghost" data-audit-revise-region="${escapeAttr(item.region_id)}" data-region-page="${escapeAttr(item.page_number)}">REVISAR ESTA REGIÃO</button>`
+        + `</div></article>`;
+    };
+    const section = (title, note, items, group) => !items.length ? '' :
+      `<div class="audit-group"><h4>${escapeHtml(title)} <span class="muted">${items.length}</span></h4>`
+      + `<p class="muted">${escapeHtml(note)}</p>${items.map(i => card(i, group)).join('')}</div>`;
+    list.innerHTML = section('EVIDÊNCIA INEQUÍVOCA', 'Podem ser confirmadas em massa. A confirmação continua sendo sua.',
+        data.auto_markable || [], 'auto')
+      + section('EXIGEM ANÁLISE INDIVIDUAL', 'A leitura é duvidosa, mas pode ser um nome, uma sigla ou um termo legítimo.',
+        data.review_required || [], 'review')
+      + section('JÁ CONFIRMADAS', 'Retiradas da fila de tradução, aguardando OCR direcionado futuro.',
+        data.confirmed || [], 'confirmed')
+      || '<div class="muted">Nenhuma leitura suspeita.</div>';
+    updateBulkCount();
+  }
+
+  // FASE 9 — the questions a human has to answer before any provider call.
+  function renderEditorialPending() {
+    const list = $('#auditList');
+    const data = auditState.editorial;
+    if (!list || !data) return;
+    renderAuditCounters(data.editorial_counters);
+    const rows = (data.items || []).map(item => {
+      const a = item.ocr_assessment || {};
+      const gate = (item.linguistic_gate || {}).status || '—';
+      return `<article class="audit-item" data-region="${escapeAttr(item.region_id)}" data-page="${escapeAttr(item.page_number)}">`
+        + `<div class="audit-item-head"><strong>${escapeHtml(item.region_id)}</strong> `
+        + `<span class="audit-cls">${escapeHtml(item.classification_original)} → ${escapeHtml(item.classification_normalized)}</span>`
+        + `<span class="triage-gate" data-gate="${escapeAttr(gate)}">gate ${escapeHtml(gate)}</span></div>`
+        + auditTextsBlock(item)
+        + `<div class="audit-reasons">pendente porque: ${escapeHtml((item.editorial_reasons || []).join(', '))}`
+        + ` · leitura: ${escapeHtml(a.status || '—')}</div>`
+        + `<div class="audit-actions">`
+        + auditDecisionButtons(item.region_id, '', ['translate', 'preserve', 'ocr_invalid', 'needs_review', 'dismissed'])
+        + `<button type="button" class="btn-ghost" data-audit-revise-region="${escapeAttr(item.region_id)}" data-region-page="${escapeAttr(item.page_number)}">REVISAR ESTA REGIÃO</button>`
+        + `<button type="button" class="btn-ghost" data-audit-open-page="${escapeAttr(item.page_number)}">ABRIR PÁGINA</button>`
+        + `</div></article>`;
+    }).join('');
+    list.innerHTML = `<div class="pr-summary"><strong>${Number(data.item_count || 0)}</strong> região(ões) aguardando decisão editorial`
+      + ` em ${Number(data.page_count || 0)} página(s). Enquanto houver pendências, a autorização fica bloqueada.</div>`
+      + (rows || '<div class="muted">Nenhuma decisão editorial pendente.</div>');
+  }
+
   function renderTriageQueue() {
     const list = $('#auditList');
     const data = auditState.triage;
     if (!list || !data) return;
+    renderAuditCounters(null);
     const counters = Object.entries(data.counters || {}).filter(([k]) => !k.startsWith('class_'))
       .map(([k, v]) => `${escapeHtml(k)} ${Number(v)}`).join(' · ');
     const rows = (data.queue || []).map(item => {
@@ -2260,6 +2375,8 @@
     const list = $('#auditList');
     const data = auditState.providerSet;
     if (!list || !data) return;
+    renderAuditCounters(data.editorial_counters);
+    const blocked = Number(data.awaiting_editorial_count || 0);
     const rows = (data.items || []).map(item =>
       `<article class="audit-item" data-region="${escapeAttr(item.region_id)}">`
       + `<div class="audit-item-head"><strong>${escapeHtml(item.region_id)}</strong>`
@@ -2270,11 +2387,25 @@
       acc[e.excluded_reason] = (acc[e.excluded_reason] || 0) + 1; return acc;
     }, {});
     const excludedText = Object.entries(excluded).map(([k, v]) => `${escapeHtml(k)} ${v}`).join(' · ');
+    // Regions held back for a human ruling are shown, never billed.
+    const held = (data.awaiting_editorial || []).map(item =>
+      `<article class="audit-item" data-region="${escapeAttr(item.region_id)}" data-held="1">`
+      + `<div class="audit-item-head"><strong>${escapeHtml(item.region_id)}</strong>`
+      + `<span class="audit-cls">${escapeHtml(item.classification_normalized)}</span>`
+      + `<span class="triage-gate" data-gate="${escapeAttr(item.ocr_status || '')}">${escapeHtml(item.ocr_status || '')}</span></div>`
+      + auditTextsBlock(item)
+      + `<div class="audit-reasons">retida porque: ${escapeHtml((item.editorial_reasons || []).join(', '))}</div></article>`).join('');
     list.innerHTML = `<div class="pr-summary"><strong>${Number(data.estimated_requests || 0)}</strong> regiões exigiriam a IA`
-      + ` · ${Number(data.page_count || 0)} páginas · excluídas: ${escapeHtml(excludedText || 'nenhuma')}</div>`
-      + `<div class="provider-cta"><button type="button" class="btn-primary" id="requestProviderAuth">SOLICITAR AUTORIZAÇÃO PARA REVISÃO COM IA</button>`
-      + `<span class="muted">Cria apenas um pedido pendente. Nenhuma chamada externa é feita agora.</span></div>`
-      + (rows || '<div class="muted">Nenhuma região exige a IA.</div>');
+      + ` · ${Number(data.page_count || 0)} páginas · excluídas: ${escapeHtml(excludedText || 'nenhuma')}`
+      + (blocked ? ` · <strong>${blocked}</strong> retida(s) aguardando decisão editorial` : '') + `</div>`
+      + `<div class="provider-cta"><button type="button" class="btn-primary" id="requestProviderAuth"`
+      + (blocked ? ' disabled aria-disabled="true" title="Decida as regiões pendentes antes de autorizar"' : '')
+      + `>SOLICITAR AUTORIZAÇÃO PARA REVISÃO COM IA</button>`
+      + `<span class="muted">${blocked
+        ? 'Bloqueado: há regiões aguardando decisão editorial.'
+        : 'Cria apenas um pedido pendente. Nenhuma chamada externa é feita agora.'}</span></div>`
+      + (rows || '<div class="muted">Nenhuma região exige a IA.</div>')
+      + (held ? `<div class="audit-group"><h4>RETIDAS PARA DECISÃO EDITORIAL <span class="muted">${blocked}</span></h4>${held}</div>` : '');
   }
 
   function selectedTriageRegions() {
@@ -2286,11 +2417,60 @@
     if (label) label.textContent = `${auditState.selection.size} selecionado${auditState.selection.size === 1 ? '' : 's'}`;
   }
 
+  // An in-page dialog, not window.confirm: the operator has to see exactly what
+  // is about to change, and what is not.
+  function auditConfirm({title, summary, effect}) {
+    const dialog = $('#auditConfirmDialog');
+    if (!dialog) return Promise.resolve(true);
+    $('#auditConfirmTitle').textContent = title;
+    $('#auditConfirmSummary').innerHTML = summary;
+    $('#auditConfirmEffect').textContent = effect;
+    dialog.hidden = false;
+    if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+    return new Promise(resolve => {
+      const finish = value => {
+        $('#auditConfirmApply').removeEventListener('click', onApply);
+        $('#auditConfirmCancel').removeEventListener('click', onCancel);
+        dialog.removeEventListener('keydown', onKey);
+        if (typeof dialog.close === 'function' && dialog.open) dialog.close();
+        dialog.hidden = true;
+        resolve(value);
+      };
+      const onApply = () => finish(true);
+      const onCancel = () => finish(false);
+      const onKey = event => { if (event.key === 'Escape') { event.preventDefault(); finish(false); } };
+      $('#auditConfirmApply').addEventListener('click', onApply);
+      $('#auditConfirmCancel').addEventListener('click', onCancel);
+      dialog.addEventListener('keydown', onKey);
+    });
+  }
+
+  const BULK_EFFECTS = {
+    ocr_invalid: 'Estas regiões serão retiradas da fila de tradução e encaminhadas para '
+      + 'OCR direcionado futuro. Nenhum PDF ou tradução será alterado.',
+    translate: 'Estas regiões passam a valer como texto traduzível. Nenhum PDF ou tradução será alterado agora.',
+    preserve: 'Estas regiões passam a valer como texto preservado. Nenhum PDF ou tradução será alterado.',
+    needs_review: 'Estas regiões ficam marcadas para revisão humana. Nenhum PDF ou tradução será alterado.',
+    dismissed: 'Estas regiões saem da fila sem decisão de conteúdo. Nenhum PDF ou tradução será alterado.',
+    remove: 'As decisões registradas por você nestas regiões serão removidas. Nenhum PDF ou tradução será alterado.',
+  };
+
   async function applyBulkDecision(decision) {
     const regions = selectedTriageRegions();
     if (!regions.length) { auditMessage('Selecione ao menos uma região.', 'warn'); return; }
     const id = pageRevisionIdentity();
-    const hash = auditState.triage?.source_audit_hash || '';
+    const source = auditState.mode === 'ocr' ? auditState.ocrCandidates : auditState.triage;
+    const hash = source?.source_audit_hash || '';
+    const label = decision === 'remove' ? 'REMOVER DECISÃO'
+      : (AUDIT_DECISIONS.find(([v]) => v === decision) || [decision, decision])[1];
+    const preview = regions.slice(0, 8).map(r => `<li>${escapeHtml(r)}</li>`).join('');
+    const ok = await auditConfirm({
+      title: `${label} — ${regions.length} região(ões)`,
+      summary: `<ul class="audit-confirm-list">${preview}</ul>`
+        + (regions.length > 8 ? `<p class="muted">e mais ${regions.length - 8}.</p>` : ''),
+      effect: BULK_EFFECTS[decision] || 'Nenhum PDF ou tradução será alterado.',
+    });
+    if (!ok) { auditMessage('Operação cancelada.', 'warn'); return; }
     try {
       if (decision === 'remove') {
         // Removing is per-decision; resolve each region's decision id first.
@@ -2308,7 +2488,7 @@
         auditMessage(`${result.applied} decisão(ões) aplicadas em ${result.pages.length} página(s).`, 'ok');
       }
       auditState.selection.clear();
-      await setAuditMode('triage');
+      await setAuditMode(auditState.mode);
     } catch (error) { auditMessage(error.message || 'Falha na operação em massa.', 'error'); }
   }
 

@@ -502,8 +502,11 @@
                 <div class="linguistic-audit-modes" role="group" aria-label="Modo de visualização">
                   <button type="button" class="btn-ghost selected" data-audit-mode="list">LISTA</button>
                   <button type="button" class="btn-ghost" data-audit-mode="triage">FILA DE TRIAGEM</button>
+                  <button type="button" class="btn-ghost" data-audit-mode="ocr">CANDIDATOS A OCR INVÁLIDO</button>
+                  <button type="button" class="btn-ghost" data-audit-mode="editorial">DECISÕES EDITORIAIS PENDENTES</button>
                   <button type="button" class="btn-ghost" data-audit-mode="provider">CONJUNTO MÍNIMO PARA IA</button>
                 </div>
+                <div class="linguistic-audit-counters" id="auditCounters" role="status" aria-live="polite" hidden></div>
                 <div class="linguistic-audit-bulk" id="auditBulk" hidden>
                   <span id="auditBulkCount">0 selecionados</span>
                   <button type="button" class="btn-ghost" data-audit-bulk="translate">MARCAR COMO TRADUZÍVEL</button>
@@ -514,6 +517,15 @@
                 </div>
                 <div class="linguistic-audit-list" id="auditList"></div>
                 <div class="linguistic-audit-message" id="auditMessage" role="status" aria-live="polite"></div>
+              </dialog>
+              <dialog class="audit-confirm" id="auditConfirmDialog" hidden aria-label="Confirmar operação em massa">
+                <strong id="auditConfirmTitle">Confirmar</strong>
+                <div class="audit-confirm-summary" id="auditConfirmSummary"></div>
+                <p class="audit-confirm-effect" id="auditConfirmEffect"></p>
+                <div class="audit-confirm-actions">
+                  <button type="button" class="btn-primary" id="auditConfirmApply">CONFIRMAR</button>
+                  <button type="button" class="btn-ghost" id="auditConfirmCancel">CANCELAR</button>
+                </div>
               </dialog>
               <dialog class="visual-comparison" id="visualComparisonDialog" hidden aria-label="Comparação visual da página">
                 <div class="visual-comparison-body" id="visualComparisonBody"></div>
