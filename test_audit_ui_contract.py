@@ -77,6 +77,18 @@ class AuditUiContracts(unittest.TestCase):
                           "=== 'watermark'", "=== 'sfx_preserve'", "=== 'decorative_semantic_translate'"):
             self.assertNotIn(inference, self.js, f"frontend infers policy from {inference}")
 
+    def test_dialogs_close_on_escape_and_sync_state(self):
+        # Escape must close both panels and stop the URL advertising them.
+        self.assertIn("event.key === 'Escape'", self.js)
+        self.assertIn("closeLinguisticAudit()", self.js)
+        self.assertIn("addEventListener('close'", self.js)
+
+    def test_rejected_draft_can_still_be_discarded(self):
+        # A rejected draft still has files on disk, so discard stays reachable
+        # while approve is disabled.
+        self.assertIn("['draft_ready', 'rejected'].includes(status)", self.js)
+        self.assertIn("approve.disabled = status !== 'draft_ready'", self.js)
+
     def test_taxonomy_categories_are_not_page_conditioned(self):
         # No production module keys a decision on a literal page/region number.
         for rel in ("region_taxonomy.py", "linguistic_audit.py", "audit_registry.py",

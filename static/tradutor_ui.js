@@ -1876,7 +1876,12 @@
     const resumable = ['cancelled', 'awaiting_provider_authorization'].includes(String(manifest.status));
     $('#pageRevisionCancel').hidden = !active;
     $('#pageRevisionResume').hidden = !resumable;
-    $('#pageRevisionDecision').hidden = String(manifest.status) !== 'draft_ready';
+    // A rejected draft still has files on disk, so it must stay discardable;
+    // only approve is limited to a ready draft.
+    const status = String(manifest.status);
+    $('#pageRevisionDecision').hidden = !['draft_ready', 'rejected'].includes(status);
+    const approve = $('[data-page-decision="approved"]');
+    if (approve) approve.disabled = status !== 'draft_ready';
     if (manifest.status === 'awaiting_provider_authorization')
       pageRevisionMessage(`${auth} região(ões) exigem autorização NVIDIA. Nenhuma chamada foi feita.`, 'warn');
     else if (manifest.status === 'draft_ready') pageRevisionMessage('Prévia pronta. Aprove, rejeite ou descarte.', 'ok');
@@ -2122,6 +2127,32 @@
 
   $('#openLinguisticAudit')?.addEventListener('click', () => openLinguisticAudit());
   $('#linguisticAuditClose')?.addEventListener('click', closeLinguisticAudit);
+  // A native <dialog> closes itself on Escape; mirror that into our own state so
+  // the panel really hides and the URL stops advertising an open audit. The
+  // explicit keydown guarantees Escape works even when the native path does not
+  // fire (focus inside a select, embedded browsers).
+  $('#linguisticAuditPanel')?.addEventListener('close', () => {
+    const d = $('#linguisticAuditPanel');
+    if (d) d.hidden = true;
+    auditSyncUrl(false);
+  });
+  $('#linguisticAuditPanel')?.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeLinguisticAudit(); }
+  });
+  $('#pageRevisionPanel')?.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    const d = $('#pageRevisionPanel');
+    if (d) { if (typeof d.close === 'function' && d.open) d.close(); d.hidden = true; }
+    pageRevisionState.pageRevisionId = null;
+    pageRevisionSyncUrl();
+  });
+  $('#pageRevisionPanel')?.addEventListener('close', () => {
+    const d = $('#pageRevisionPanel');
+    if (d) d.hidden = true;
+    pageRevisionState.pageRevisionId = null;
+    pageRevisionSyncUrl();
+  });
   $('#auditFilters')?.addEventListener('input', renderAuditList);
   $('#auditFilters')?.addEventListener('change', renderAuditList);
   $('#auditList')?.addEventListener('click', event => {
