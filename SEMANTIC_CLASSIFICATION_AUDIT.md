@@ -306,3 +306,42 @@ stayed uncertain. That distinction is the whole point — `ocr_invalid` asks for
 re-read, while `classify_sfx` and `classify_watermark` preserve the art and
 record the corrected reading as audit metadata, without claiming the stored text
 was right. Neither touches a page, a PDF or a translation.
+
+## Human previews of an executed set (BLOCO 6C)
+
+A provider answer is a candidate. `human_translation_decisions` stores the line
+a human writes instead, bound to the provider execution and the exact source
+text it answers, owner-scoped and reversible; a decision that no longer matches
+what it was written for fails closed rather than rendering onto a region that
+has since changed. No phrase is mapped to another anywhere in production.
+
+`revise_page` accepts those lines as overrides. The regions carrying one leave
+the reviewable set before a reviewer exists, so no cache key is built and no
+request can be issued, and the path is handed a reviewer that raises on every
+entry point. Selecting safe changes gained one exception: a model rewrite of a
+never-redrawn region is still refused, but a human *promoting a preserved region
+to translated* is precisely the authorized edit, so applying it clears
+`preserved_original` and the renderer draws it.
+
+### Measuring instead of asserting
+
+`preview_gates` counts pixels changed in total, inside the allowed mask and
+outside it; whether the glyphs were clipped by their own box; and how much ink
+survives just outside the erase box. Changing a pixel outside the mask fails
+closed. That last measurement earned its place on the first real draft: a
+recorded region box can be *tighter than the glyphs already on the page*, so
+cleaning inside it leaves a fragment of the previous line beside the new one —
+invisible to a check that only counts what it was allowed to touch.
+
+### The boundary this block found
+
+Only one of the three authorized regions could be rendered. The other two are
+out-of-balloon captions — dark glyphs with a thick light outline drawn straight
+over artwork — and the cleanup refuses ambiguous polarity rather than painting a
+flat rectangle over the art. That refusal is correct: translating captions that
+sit on artwork needs the art behind them reconstructed, which is a different
+capability from wiping a balloon's flat interior, and it is not something to
+build silently under a preview task.
+
+Nothing is applied. A rendered draft is `draft_ready_for_human_visual_approval`
+and stays there until a human looks at it.
