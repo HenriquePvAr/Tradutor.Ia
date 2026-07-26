@@ -256,6 +256,8 @@ _DECISION_CATEGORY = {
 # A human may reclassify a region instead of giving a coarse verdict. The
 # category is what they asserted; the effect is how routing must treat it.
 DECISION_TARGET_CATEGORY = {
+    "classify_sfx": SFX_PRESERVE,
+    "classify_watermark": WATERMARK_PRESERVE,
     "classify_credit": CREDIT_PRESERVE,
     "classify_title_name": PROPER_NAME_PRESERVE,
     "classify_editorial": EDITORIAL_TRANSLATE,

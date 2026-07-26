@@ -2126,10 +2126,20 @@
     }).join('');
   }
 
+  // A preserved region can still have been read wrong. The corrected reading
+  // travels with the verdict as audit metadata; it never rewrites the page.
+  function auditCorrectedReading(regionId) {
+    const field = $(`#auditList [data-corrected-reading="${CSS.escape(String(regionId))}"]`);
+    return field ? String(field.value || '').trim() : '';
+  }
+
   async function auditDecide(regionId, decision) {
     const id = pageRevisionIdentity();
+    const corrected = auditCorrectedReading(regionId);
     try {
-      await api('/api/ui/audit/decision', {method: 'POST', body: JSON.stringify({...id, region_id: regionId, decision})});
+      await api('/api/ui/audit/decision', {method: 'POST', body: JSON.stringify({
+        ...id, region_id: regionId, decision,
+        notes: corrected ? `leitura_correta: ${corrected}` : ''})});
       await refreshAuditReview();
       auditMessage('Decisão registrada (não altera o PDF nem a revisão histórica).', 'ok');
     } catch (error) { auditMessage(error.message || 'Falha ao registrar decisão.', 'error'); }
@@ -2327,7 +2337,9 @@
     {needs_review: 'EXIGIR REVISÃO HUMANA',
      classify_credit: 'CLASSIFICAR COMO CRÉDITO',
      classify_title_name: 'CLASSIFICAR COMO TÍTULO/NOME',
-     classify_editorial: 'CLASSIFICAR COMO TEXTO EDITORIAL'});
+     classify_editorial: 'CLASSIFICAR COMO TEXTO EDITORIAL',
+     classify_sfx: 'CLASSIFICAR COMO SFX',
+     classify_watermark: 'CLASSIFICAR COMO WATERMARK/URL'});
 
   function auditDecisionButtons(region, decided, values, overrides = {}) {
     return values.map(value => {
@@ -2383,9 +2395,13 @@
         + `<br>confiança do detector: ${escapeHtml(String(a.confidence ?? '—'))}`
         + ` · vogais ${escapeHtml(String(a.vowel_ratio ?? '—'))} · alfabético ${escapeHtml(String(a.alphabetic_ratio ?? '—'))}`
         + `<br>impacto: ${escapeHtml(auditImpact(item))}</div></div></div>`
+        + `<div class="audit-corrected"><label>leitura correta (opcional, vai para os metadados)`
+        + ` <input type="text" data-corrected-reading="${escapeAttr(item.region_id)}"`
+        + ` placeholder="o que a imagem realmente diz"></label></div>`
         + `<div class="audit-actions">`
         + auditDecisionButtons(item.region_id, item.human_decision,
-            ['ocr_invalid', 'translate', 'needs_review', 'preserve'],
+            ['ocr_invalid', 'translate', 'needs_review', 'preserve',
+             'classify_sfx', 'classify_watermark'],
             {ocr_invalid: 'CONFIRMAR OCR INVÁLIDO', translate: 'MANTER COMO TEXTO',
              preserve: 'MARCAR COMO PRESERVÁVEL'})
         + auditRemoveButton(item)

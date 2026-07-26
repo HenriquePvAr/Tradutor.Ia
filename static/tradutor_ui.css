@@ -1714,6 +1714,10 @@
   .audit-crop img{display:block; max-width:100%; height:auto; border:1px solid var(--line); border-radius:4px; background:#fff;}
   .audit-crop figcaption{font-size:9px; color:var(--muted); margin-top:3px;}
   .audit-crop-missing{font-size:10px; color:var(--muted); border:1px dashed var(--line); border-radius:4px; padding:6px;}
+  .audit-corrected{margin:6px 0 0; font-size:10px;}
+  .audit-corrected label{display:flex; align-items:center; gap:6px; color:var(--muted);}
+  .audit-corrected input{flex:1 1 220px; min-width:0; background:var(--panel); border:1px solid var(--line);
+    border-radius:5px; color:var(--fg); padding:4px 7px; font-size:11px;}
   .audit-context{font-size:10px; color:var(--muted); margin-top:4px;}
   .audit-context small{text-transform:uppercase; letter-spacing:.05em; margin-right:4px;}
   @media (max-width:640px){
