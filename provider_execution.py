@@ -23,6 +23,36 @@ READY = "ready_for_human_authorization"
 EXECUTED = "executed"
 
 
+class ProviderCallNotAuthorized(RuntimeError):
+    """Raised the moment a path tries to reach a provider it may not use."""
+
+
+class NoProviderReviewer:
+    """A reviewer that cannot review.
+
+    Rendering a line a human already wrote must not be able to call out, so the
+    preview path is given this instead of a real client: any attempt to review,
+    health-check or translate fails loudly rather than quietly spending a
+    request. Structural, not a convention someone can forget.
+    """
+
+    model = "no-provider-guard"
+    base_url = ""
+    requests = 0
+    valid_batches = 0
+    repaired_batches = 0
+    fallback_individual = 0
+    invalid_batches = 0
+
+    def _refuse(self, *_args, **_kwargs):
+        raise ProviderCallNotAuthorized("provider_call_not_authorized")
+
+    review_batch = _refuse
+    translate_many = _refuse
+    translate = _refuse
+    health_check = _refuse
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
