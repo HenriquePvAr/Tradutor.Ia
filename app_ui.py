@@ -29,6 +29,8 @@ from community_http import (
     create_admin_community_router,
     create_community_router,
 )
+import audit_decisions
+import linguistic_triage
 import region_taxonomy
 from chapter_quality_revision import REVIEW_SCHEMA_VERSION
 from local_environment import load_local_environment_for_entrypoint
@@ -599,13 +601,21 @@ def api_diagnostics(request: Request) -> dict[str, Any]:
                        text=True, timeout=5, **hidden_console_options()).stdout.strip()
     except Exception:  # noqa: BLE001 - diagnostics must never break the UI
         head = ""
+    worker = BRIDGE.store.online_worker() if hasattr(BRIDGE.store, "online_worker") else None
     return {
         "git_head": head,
         "pid": os.getpid(),
         "server_started_at": _SERVER_STARTED_AT,
-        "worker_online": bool(BRIDGE.store.online_worker()) if hasattr(BRIDGE.store, "online_worker") else None,
+        "worker_online": bool(worker),
+        "worker_pid": (worker or {}).get("pid") if isinstance(worker, dict) else None,
+        "worker_id": (worker or {}).get("worker_id") if isinstance(worker, dict) else None,
         "taxonomy_version": region_taxonomy.TAXONOMY_VERSION,
         "review_schema_version": REVIEW_SCHEMA_VERSION,
+        # Schema versions of the triage layers, so a stale UI is detectable
+        # instead of silently rendering a payload it does not understand.
+        "gate_version": linguistic_triage.GATE_VERSION,
+        "ocr_plausibility_version": linguistic_triage.OCR_PLAUSIBILITY_VERSION,
+        "audit_decisions": list(audit_decisions.DECISIONS),
     }
 
 
@@ -713,6 +723,19 @@ def api_audit_ocr_invalid_candidates(request: Request, payload: dict[str, Any] =
             user_id=principal.user_id)
     except ValueError as exc:
         raise _audit_error(exc) from exc
+
+
+@app.get("/api/ui/audit/region-crop")
+def api_audit_region_crop(request: Request, job_id: str = "", run_id: str = "",
+                          region_id: str = "") -> FileResponse:
+    """Serve the region's own pixels so a verdict is given on the picture too."""
+    principal = _ui_principal(request)
+    try:
+        path = BRIDGE.audit_region_crop(job_id, run_id, region_id=region_id,
+                                        user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+    return FileResponse(path, media_type="image/png")
 
 
 @app.post("/api/ui/audit/editorial-pending")

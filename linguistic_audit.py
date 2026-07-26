@@ -19,6 +19,10 @@ from typing import Any
 import linguistic_triage
 import region_taxonomy as tax
 
+# Bumped whenever a record gains, loses or changes the meaning of a field, so a
+# report built by an older build is rebuilt instead of replayed.
+RECORD_VERSION = "2"
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -89,6 +93,30 @@ def _iter_report_items(quality_report: dict[str, Any]):
                     continue
                 seen.add(key)
                 yield number, key, raw
+
+
+def _attach_neighbour_context(records: list[dict[str, Any]]) -> None:
+    """Give each region the text that reads before and after it on its page.
+
+    A caption cannot be judged in isolation: whether a styled line is narration
+    or decoration usually only shows next to its neighbours. Reading order is
+    approximated top-to-bottom, then left-to-right, from the bounding boxes.
+    """
+    by_page: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        by_page.setdefault(str(record.get("page_id") or ""), []).append(record)
+    for page_records in by_page.values():
+        def order(record: dict[str, Any]) -> tuple[int, int, str]:
+            box = record.get("bounding_box") or [0, 0, 0, 0]
+            return (int(box[1]), int(box[0]), str(record.get("region_id") or ""))
+
+        ordered = sorted(page_records, key=order)
+        for index, record in enumerate(ordered):
+            before = ordered[index - 1] if index else None
+            after = ordered[index + 1] if index + 1 < len(ordered) else None
+            record["context_before"] = str((before or {}).get("source_text") or "")
+            record["context_after"] = str((after or {}).get("source_text") or "")
+            record["page_reading_index"] = index
 
 
 def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
@@ -175,7 +203,12 @@ def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
             "translatable": policy["translatable"],
             "preservable": policy["preservable"],
             "linguistic_gate": gate,
+            # (x, y, w, h) in page pixels — lets the UI crop the region so a
+            # human judges the picture, not only the transcription.
+            "bounding_box": [int(v) for v in (raw.get("bounding_box") or [])[:4]] or None,
         })
+
+    _attach_neighbour_context(records)
 
     by_category: dict[str, int] = {}
     for record in records:
@@ -186,6 +219,7 @@ def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
     return {
         "taxonomy_version": tax.TAXONOMY_VERSION,
         "gate_version": linguistic_triage.GATE_VERSION,
+        "record_version": RECORD_VERSION,
         "job_id": str(job_id),
         "run_id": str(run_id),
         "revision_id": str(revision.get("revision_id") or ""),

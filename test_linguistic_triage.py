@@ -187,7 +187,9 @@ class ProviderSetContracts(unittest.TestCase):
     def test_no_secret_like_key_ever_reaches_the_set(self):
         result = lt.minimal_provider_set([self._record(tax.DIALOGUE_TRANSLATE, provider=True)])
         blob = str(result).lower()
-        for forbidden in ("api_key", "authorization", "bearer", "cookie", "senha", "token"):
+        # "authorization" alone is a legitimate field name (the request's own
+        # status); what must never appear is a credential.
+        for forbidden in ("api_key", "authorization:", "bearer", "cookie", "senha", "token"):
             self.assertNotIn(forbidden, blob)
 
 

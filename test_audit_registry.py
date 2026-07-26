@@ -11,12 +11,14 @@ import unittest
 from pathlib import Path
 
 import audit_registry as reg
+import linguistic_audit as la
 import linguistic_triage as lt
 import region_taxonomy as tax
 
 
 def _report(revision_id="rev1", records=None):
     return {"taxonomy_version": tax.TAXONOMY_VERSION, "gate_version": lt.GATE_VERSION,
+            "record_version": la.RECORD_VERSION,
             "revision_id": revision_id,
             "records": records if records is not None else [{"region_id": "p001:R1"}],
             "by_normalized_category": {"dialogue_translate": 1}, "total_regions_audited": 1}

@@ -1276,9 +1276,12 @@ class UiBridge:
             return True
         if decision == "ocr_invalid":
             return not region_taxonomy.is_preservable(category) or bool(record.get("needs_human_review"))
-        if decision == "translate":
+        # A reclassification asserts what the region *is*; it is allowed wherever
+        # the verdict it implies would be.
+        effect = region_taxonomy.decision_effect(decision)
+        if effect == "translate":
             return not region_taxonomy.is_unreadable(category)
-        if decision == "preserve":
+        if effect == "preserve":
             return True
         return False
 
@@ -1329,6 +1332,57 @@ class UiBridge:
         return {**{k: review[k] for k in ("job_id", "run_id", "revision_id",
                                           "audit_artifact_id", "source_audit_hash")},
                 **result}
+
+    def audit_region_crop(self, job_id: str, run_id: str, *, region_id: str,
+                          user_id: str = "", padding: int = 12) -> Path:
+        """Crop one audited region out of its source page, for a human to look at.
+
+        Read-only with respect to the chapter: the crop is written to the local
+        cache, never into the output dir, so no page or PDF is ever touched.
+        """
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+        box = record.get("bounding_box") or []
+        if len(box) < 4:
+            raise ValueError("region_has_no_geometry")
+
+        ctx = self._audit_context(job_id, run_id)
+        report = read_json(Path(ctx["output_dir"]) / "quality_report.json", {})
+        page_number = int(record.get("page_number") or 0)
+        page = next((p for p in (report.get("pages") or [])
+                     if isinstance(p, dict)
+                     and int(p.get("index") or p.get("sequence_index") or 0) == page_number), None)
+        if page is None:
+            raise ValueError("page_not_in_report")
+        # The *input* page is what the OCR actually read, so that is what a human
+        # has to compare the transcription against.
+        source = next((Path(str(page.get(key) or "")) for key in ("image_path", "output_path")
+                       if str(page.get(key) or "") and Path(str(page[key])).is_file()), None)
+        if source is None:
+            raise ValueError("page_image_not_available")
+        # Path confinement: the page must belong to this chapter's output dir.
+        output_root = Path(ctx["output_dir"]).resolve()
+        if output_root not in source.resolve().parents:
+            raise ValueError("page_image_outside_chapter")
+
+        from PIL import Image
+
+        cache_dir = Path(".cache/runtime/region_crops") / str(ctx["revision_id"])
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / f"{hashlib.sha256(str(region_id).encode()).hexdigest()[:16]}.png"
+        with Image.open(source) as image:
+            x, y, w, h = (int(v) for v in box[:4])
+            pad = max(0, int(padding))
+            crop = image.convert("RGB").crop((
+                max(0, x - pad), max(0, y - pad),
+                min(image.width, x + w + pad), min(image.height, y + h + pad)))
+            crop.save(target, "PNG")
+        return target
 
     def request_provider_authorization(self, job_id: str, run_id: str, *, user_id: str,
                                        confirm: bool = False) -> dict[str, Any]:
