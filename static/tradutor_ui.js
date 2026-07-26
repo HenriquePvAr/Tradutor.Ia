@@ -2677,10 +2677,26 @@
       + ` · modelo ${escapeHtml(data.provider_model || '—')} · ${Number(data.api_requests || 0)} request(s) já feita(s)`
       + ` · nenhuma nova chamada é feita nesta tela.</div>`
       + (rows || '<div class="muted">Nenhuma execução de provider para revisar.</div>');
+    bindPreviewActionButtons(list);
     void loadPreviewCrops();
   }
 
   const previewCropUrls = new Map();
+
+  function bindPreviewActionButtons(root = $('#auditList')) {
+    if (!root) return;
+    $$('[data-preview-action]', root).forEach(button => {
+      if (button.dataset.previewBound === '1') return;
+      button.dataset.previewBound = '1';
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const target = event.currentTarget;
+        if (target.disabled) return;
+        void previewAction(target.dataset.previewAction, String(target.dataset.region || ''), target);
+      });
+    });
+  }
 
   async function loadPreviewCrops() {
     const id = pageRevisionIdentity();
@@ -2813,6 +2829,7 @@
             + `<div class="audit-actions"><button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">ABRIR AMPLIADO</button>`
             + `<button type="button" class="btn-ghost" data-preview-action="font-options" data-region="${escapeAttr(region)}">PEDIR OUTRAS OPÇÕES</button>`
             + `<button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">MANTER PENDENTE</button></div></section>`;
+          bindPreviewActionButtons(box);
         }
         return;
       }

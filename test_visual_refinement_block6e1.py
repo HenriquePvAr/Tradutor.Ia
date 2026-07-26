@@ -116,6 +116,9 @@ class HumanPreviewUiContractTests(unittest.TestCase):
         self.assertIn("$('#auditList')?.addEventListener('click'", ui_js)
         self.assertIn("event.target.closest('[data-preview-action]')", ui_js)
         self.assertIn("void previewAction(preview.dataset.previewAction", ui_js)
+        self.assertIn("function bindPreviewActionButtons", ui_js)
+        self.assertIn("event.stopPropagation()", ui_js)
+        self.assertIn("button.dataset.previewBound = '1'", ui_js)
         self.assertIn("data-preview-action=\"font-options\"", ui_js)
         self.assertIn("ESCOLHER TIPOGRAFIA", ui_js)
 
