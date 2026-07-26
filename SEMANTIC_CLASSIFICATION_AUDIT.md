@@ -201,3 +201,72 @@ The practical consequence on a real chapter: a provider set can be dominated by
 corrupted OCR reads that merely *look* word-like. Triaging those to
 `ocr_invalid` is what legitimately shrinks the set — never dropping items to
 make the number smaller.
+
+## Invalid OCR and editorial decisions (BLOCO 6A.1)
+
+The previous block ended with a provider set full of reads nobody had checked.
+Deciding those by hand is the work; this block makes the decision cheap without
+making it automatic.
+
+### The detector — `assess_ocr_plausibility`
+
+It judges a read from its **own shape**, never from a word list, so it carries
+nothing specific to a chapter: encoding damage, control characters, a digit
+substituted inside an otherwise alphabetic word, a url-shaped token whose
+suffix is not a real network suffix, vowel structure, symbol density,
+fragmentation, low OCR confidence, and text unrelated to its container. It also
+collects **protective** evidence — onomatopoeia shape, acronym shape, a proven
+proper name, a preservable class, plausible word shape, a real network suffix.
+
+It fails closed. An automatic `likely_ocr_invalid` needs one unambiguous signal
+or two independent weak ones with **no** protective evidence, so an uncommon
+name, an acronym, a short sfx, a foreign word, a work title, a place name, a
+fictional term, stuttering, an interjection, censored text, a valid address and
+valid branding all stay `ambiguous_review_required` and wait for a human. A
+short or rare token is not garbage by default. Two rules earn their keep:
+
+- Encoding damage overrides surrounding legible text, because it corrupts the
+  bytes rather than the shape.
+- `digit_inside_word` ignores alphanumeric identifiers. An invite code or model
+  number carries several digits by design; a substituted glyph is a single
+  digit inside an otherwise alphabetic word.
+
+### Four states, one source of truth
+
+`classify_editorial_state` puts every region in exactly one open state, in
+precedence order — a region whose text cannot be trusted is not an editorial
+question, and an editorial question is not yet a provider call:
+
+| state | meaning |
+|-------|---------|
+| `targeted_ocr_pending` | the read is out; a fresh, targeted OCR is owed |
+| `awaiting_editorial_decision` | it would be billed, but no human has ruled on the text |
+| `ready_for_ai_review` | trusted text that genuinely needs a call |
+| `settled` | preserved, cache-resolved, already decided or not translatable |
+
+`provider_exclusion_reason` is the single place that answers "does this need a
+call at all", so the two queues, the three counters and the provider set cannot
+report different numbers for the same chapter.
+
+### What that changes
+
+A region awaiting a decision is **held, not billed**: it leaves
+`estimated_requests` and appears under `awaiting_editorial`, and
+`request_provider_authorization` refuses with
+`blocked_pending_editorial_decisions` while any remains. A request that does go
+through records `ready_for_human_authorization` together with the counters that
+justified it. Still no credential is read and no provider is contacted.
+
+The audit panel gains two modes. **Candidatos a OCR inválido** splits proposals
+by how sure the detector is — unambiguous evidence may be confirmed in bulk, an
+ambiguous read is judged one region at a time, confirmed regions are listed
+apart — and shows both the evidence against the read and the evidence for it.
+**Decisões editoriais pendentes** shows each open question with the reason it is
+open and the five verdicts. A bulk verdict goes through an in-page confirmation
+that names the regions and states what does *not* change: no PDF, no
+translation. The three totals — future targeted OCR, pending editorial
+decision, ready for AI review — are rendered side by side and never summed.
+
+Nothing here decides for the operator. The detector proposes and explains;
+confirming is a human action, and a chapter with open questions simply cannot
+reach authorization.
