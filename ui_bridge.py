@@ -44,8 +44,11 @@ from ui_history import UIHistoryStore, utc_now
 from chapter_quality_revision import (REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision,
                                       read_json, write_json)
 import audit_registry
+import human_translation_decisions
 import linguistic_audit
 import linguistic_triage
+import preview_gates
+import provider_execution
 import region_taxonomy
 
 
@@ -316,6 +319,7 @@ class UiBridge:
         self.profile = self._load_profile()
         self.store = JobStore(JOBS_DB_PATH)
         self.audit_decisions = AuditDecisionStore(JOBS_DB_PATH)
+        self.human_translations = human_translation_decisions.HumanTranslationDecisionStore(JOBS_DB_PATH)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
@@ -990,9 +994,11 @@ class UiBridge:
             raise ValueError("run_id_mismatch")
         return job
 
-    def _page_revision_engine(self, job: dict[str, Any]) -> ChapterQualityRevision:
+    def _page_revision_engine(self, job: dict[str, Any], *,
+                              reviewer_factory=None) -> ChapterQualityRevision:
         return ChapterQualityRevision(str(job["output_dir"]), job_id=str(job["id"]),
-                                      run_id=str(job.get("run_id") or ""))
+                                      run_id=str(job.get("run_id") or ""),
+                                      reviewer_factory=reviewer_factory)
 
     def _validated_page_revision(self, job: dict[str, Any], page_revision_id: str,
                                  *, parent_revision_id: str | None = None):
@@ -1345,6 +1351,270 @@ class UiBridge:
         return {**{k: review[k] for k in ("job_id", "run_id", "revision_id",
                                           "audit_artifact_id", "source_audit_hash")},
                 **result}
+
+    # --- human overrides of a provider translation (BLOCO 6C) --------------
+    def _provider_execution(self, output_dir: str, revision_id: str,
+                            request_id: str = "") -> dict[str, Any]:
+        """The recorded execution, resolved by identity — never by newest file."""
+        root = Path(output_dir) / "quality_revision" / "linguistic_audit" / str(revision_id)
+        requests = read_json(provider_execution.requests_path(output_dir), {}).get("requests") or []
+        executed = [r for r in requests if isinstance(r, dict) and r.get("provider_executed")]
+        if request_id:
+            executed = [r for r in executed
+                        if str(r.get("authorization_request_id")) == str(request_id)]
+        if not executed:
+            raise ValueError("provider_execution_not_found")
+        if len(executed) > 1:
+            raise ValueError("ambiguous_provider_execution")
+        request = executed[0]
+        artifact = root / f"provider_execution_{request['authorization_request_id']}.json"
+        record = read_json(artifact, {})
+        if not record:
+            raise ValueError("provider_execution_artifact_missing")
+        return {"request": request, "execution": record, "artifact_path": str(artifact)}
+
+    def provider_execution_review(self, job_id: str, run_id: str, *, user_id: str = "",
+                                  request_id: str = "") -> dict[str, Any]:
+        """The executed set, each region overlaid with this user's own override."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._provider_execution(ctx["output_dir"], ctx["revision_id"], request_id)
+        execution = resolved["execution"]
+        by_region = {str(r.get("region_id")): r for r in view["records"]}
+        overrides = {d["region_id"]: d for d in self.human_translations.list_for(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            created_by=str(user_id))}
+        items = []
+        for result in execution.get("results", []):
+            region_id = str(result.get("region_id"))
+            record = by_region.get(region_id) or {}
+            decision = overrides.get(region_id)
+            items.append({
+                "region_id": region_id,
+                "page_id": result.get("page_id"),
+                "page_number": result.get("page_number"),
+                "ocr_source_text": result.get("ocr_source_text"),
+                "sent_text": result.get("text"),
+                "text_origin": result.get("text_origin"),
+                "current_translation": record.get("current_translation"),
+                "provider_candidate": result.get("translation"),
+                "human_candidate": (decision or {}).get("human_candidate", ""),
+                "human_decision": decision,
+                "bounding_box": record.get("bounding_box"),
+                "classification_normalized": record.get("classification_normalized"),
+            })
+        return {
+            **view["identity"],
+            "authorization_request_id": execution.get("authorization_request_id"),
+            "provider_model": execution.get("provider_model"),
+            "executed_at": execution.get("executed_at"),
+            "api_requests": execution.get("api_requests"),
+            "items": items,
+            "item_count": len(items),
+        }
+
+    def record_human_translation(self, job_id: str, run_id: str, *, region_id: str,
+                                 human_candidate: str, user_id: str, reason: str = "",
+                                 request_id: str = "") -> dict[str, Any]:
+        """Record a human line for one region of an executed provider set."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._provider_execution(ctx["output_dir"], ctx["revision_id"], request_id)
+        execution = resolved["execution"]
+        result = next((r for r in execution.get("results", [])
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if result is None:
+            # Only a region the provider actually answered can be overridden.
+            raise ValueError("region_not_in_provider_execution")
+        return self.human_translations.upsert(
+            provider_execution_id=str(execution.get("authorization_request_id")),
+            authorization_request_id=str(execution.get("authorization_request_id")),
+            job_id=str(ctx["job"]["id"]), run_id=str(ctx["job"].get("run_id") or ""),
+            revision_id=ctx["revision_id"],
+            page_id=str(result.get("page_id") or ""), region_id=str(region_id),
+            source_text=str(result.get("text") or ""),
+            provider_candidate=str(result.get("translation") or ""),
+            human_candidate=str(human_candidate),
+            created_by=str(user_id), reason=reason,
+            taxonomy_version=region_taxonomy.TAXONOMY_VERSION,
+            gate_version=linguistic_triage.GATE_VERSION)
+
+    def delete_human_translation(self, *, decision_id: str, user_id: str) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        removed = self.human_translations.delete(str(decision_id), created_by=str(user_id))
+        return {"removed": bool(removed), "human_translation_decision_id": str(decision_id)}
+
+    def create_human_preview_draft(self, job_id: str, run_id: str, *, region_id: str,
+                                   user_id: str, request_id: str = "") -> dict[str, Any]:
+        """Render one region's human line into its own page draft.
+
+        The reviewer is a guard that cannot call out, so this path is incapable
+        of reaching a provider however it is entered.
+        """
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        resolved = self._provider_execution(ctx["output_dir"], ctx["revision_id"], request_id)
+        decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        # Fails closed if the decision no longer answers the recorded execution.
+        human_translation_decisions.validate_against_execution(decision, resolved["execution"])
+
+        result = next(r for r in resolved["execution"]["results"]
+                      if str(r.get("region_id")) == str(region_id))
+        page = int(result.get("page_number") or 0)
+        if page <= 0:
+            raise ValueError("page_not_resolved_for_region")
+
+        engine = self._page_revision_engine(
+            job, reviewer_factory=provider_execution.NoProviderReviewer)
+        manifest = engine.revise_page(
+            page, region_ids=[str(region_id)], cache_only=True,
+            human_overrides={str(region_id): str(decision["human_candidate"])})
+        self.human_translations.set_status(
+            decision["human_translation_decision_id"], "draft_rendered", created_by=str(user_id))
+        self.history_revision += 1
+        return {"manifest": manifest, "human_decision": decision,
+                "provider_execution_id": resolved["execution"].get("authorization_request_id")}
+
+    def _human_draft_manifest(self, job: dict[str, Any], revision_id: str,
+                              region_id: str) -> dict[str, Any] | None:
+        """The draft this region's human line was rendered into, by lineage.
+
+        Resolved from the manifests themselves, never from the newest folder on
+        disk: a draft only counts when it belongs to this job, this run, this
+        base revision and this one region.
+        """
+        root = Path(job["output_dir"]) / "quality_revision" / "page_revisions"
+        if not root.is_dir():
+            return None
+        best = None
+        for child in sorted(root.iterdir()):
+            manifest = read_json(child / "revision_manifest.json", {}) or \
+                read_json(child / "page_revision_manifest.json", {})
+            if not manifest:
+                continue
+            if str(manifest.get("parent_job_id") or "") != str(job["id"]):
+                continue
+            if str(manifest.get("parent_run_id") or "") != str(job.get("run_id") or ""):
+                continue
+            if str(manifest.get("parent_revision_id") or "") != str(revision_id):
+                continue
+            if str(region_id) not in (manifest.get("human_overrides") or []):
+                continue
+            if best is None or str(manifest.get("updated_at") or "") > str(best.get("updated_at") or ""):
+                best = manifest
+        return best
+
+    def human_preview_gates(self, job_id: str, run_id: str, *, region_id: str,
+                            user_id: str = "") -> dict[str, Any]:
+        """Both gates for one region's draft, measured — never asserted."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        if not decision:
+            raise ValueError("human_decision_not_found")
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+
+        manifest = self._human_draft_manifest(job, ctx["revision_id"], str(region_id))
+        page = int(record.get("page_number") or 0)
+        base_page = Path(job["output_dir"]) / "pages" / f"p{page:03d}.png"
+        if not base_page.is_file():
+            base_page = Path(job["output_dir"]) / "pages" / f"page_{page:03d}.png"
+        draft_path = str((manifest or {}).get("draft_page_path") or "")
+
+        box = tuple(record.get("bounding_box") or ())
+        if draft_path and Path(draft_path).is_file() and base_page.is_file() and len(box) == 4:
+            visual = preview_gates.evaluate_visual_gate(base_page, draft_path, boxes=[box])
+        else:
+            # No image is a verdict of its own; the render audit says why.
+            audit = read_json(Path(job["output_dir"]) / "quality_revision" / "page_revisions"
+                              / str((manifest or {}).get("page_revision_id") or "")
+                              / "incremental_render_audit.json", {})
+            reason = str(((audit.get("records") or [{}])[0]).get("reason_code") or "draft_not_rendered")
+            visual = {"status": preview_gates.FAILED, "reason_codes": [reason],
+                      "gate_version": preview_gates.GATE_VERSION}
+
+        policy = tax_policy = {
+            "normalized_classification": record.get("classification_normalized"),
+            "translatable": True, "preservable": False,
+            "provider_required": False, "needs_human_review": False}
+        linguistic = linguistic_triage.evaluate_linguistic_gate(
+            source_text=str(decision["source_text"]),
+            current_translation=str(decision["human_candidate"]), policy=tax_policy)
+        provider_linguistic = linguistic_triage.evaluate_linguistic_gate(
+            source_text=str(decision["source_text"]),
+            current_translation=str(decision["provider_candidate"]), policy=policy)
+        return {
+            "region_id": str(region_id), "page_number": page,
+            "page_revision_id": str((manifest or {}).get("page_revision_id") or ""),
+            "parent_revision_id": str((manifest or {}).get("parent_revision_id") or ""),
+            "draft_status": str((manifest or {}).get("status") or ""),
+            "draft_available": bool(draft_path and Path(draft_path).is_file()),
+            "human_decision": decision,
+            "visual_gate": visual,
+            "linguistic_gate": linguistic,
+            "provider_linguistic_gate": provider_linguistic,
+            # Nothing here is final: a rendered draft still awaits a human eye.
+            "state": "draft_ready_for_human_visual_approval",
+        }
+
+    def human_preview_crop(self, job_id: str, run_id: str, *, region_id: str,
+                           kind: str = "draft", user_id: str = "") -> Path:
+        """Crop the region out of the current page or out of its draft."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        if kind not in ("base", "draft"):
+            raise ValueError("unknown_crop_kind")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+        box = record.get("bounding_box") or []
+        if len(box) < 4:
+            raise ValueError("region_has_no_geometry")
+        page = int(record.get("page_number") or 0)
+        output_root = Path(job["output_dir"]).resolve()
+        if kind == "base":
+            source = output_root / "pages" / f"page_{page:03d}.png"
+        else:
+            manifest = self._human_draft_manifest(job, ctx["revision_id"], str(region_id))
+            source = Path(str((manifest or {}).get("draft_page_path") or ""))
+        if not source or not source.is_file():
+            raise ValueError("preview_image_not_available")
+        # Path confinement: only images inside this chapter may ever be served.
+        if output_root not in source.resolve().parents:
+            raise ValueError("preview_image_outside_chapter")
+
+        from PIL import Image
+
+        cache_dir = Path(".cache/runtime/preview_crops") / str(ctx["revision_id"])
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / f"{hashlib.sha256(f'{region_id}:{kind}'.encode()).hexdigest()[:16]}.png"
+        with Image.open(source) as image:
+            x, y, w, h = (int(v) for v in box[:4])
+            pad = 16
+            image.convert("RGB").crop((
+                max(0, x - pad), max(0, y - pad),
+                min(image.width, x + w + pad), min(image.height, y + h + pad))).save(target, "PNG")
+        return target
 
     def audit_region_crop(self, job_id: str, run_id: str, *, region_id: str,
                           user_id: str = "", padding: int = 12) -> Path:

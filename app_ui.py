@@ -735,6 +735,79 @@ def api_audit_ocr_invalid_candidates(request: Request, payload: dict[str, Any] =
         raise _audit_error(exc) from exc
 
 
+@app.post("/api/ui/human-translation/review")
+def api_human_translation_review(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """The executed provider set with this user's own overrides overlaid."""
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.provider_execution_review(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            user_id=principal.user_id, request_id=str(payload.get("request_id") or ""))
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/human-translation/record")
+def api_human_translation_record(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.record_human_translation(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""),
+            human_candidate=str(payload.get("human_candidate") or ""),
+            user_id=principal.user_id, reason=str(payload.get("reason") or ""),
+            request_id=str(payload.get("request_id") or ""))
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/human-translation/delete")
+def api_human_translation_delete(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.delete_human_translation(
+            decision_id=str(payload.get("decision_id") or ""), user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/human-translation/draft")
+def api_human_translation_draft(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Render one region's human line into its own draft. Never calls a provider."""
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.create_human_preview_draft(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""), user_id=principal.user_id,
+            request_id=str(payload.get("request_id") or ""))
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/human-translation/gates")
+def api_human_translation_gates(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.human_preview_gates(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""), user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.get("/api/ui/human-translation/preview-crop")
+def api_human_translation_preview_crop(request: Request, job_id: str = "", run_id: str = "",
+                                       region_id: str = "", kind: str = "draft") -> FileResponse:
+    """The region as it is now, or as the draft would render it."""
+    principal = _ui_principal(request)
+    try:
+        path = BRIDGE.human_preview_crop(job_id, run_id, region_id=region_id, kind=kind,
+                                         user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+    return FileResponse(path, media_type="image/png")
+
+
 @app.get("/api/ui/audit/region-crop")
 def api_audit_region_crop(request: Request, job_id: str = "", run_id: str = "",
                           region_id: str = "") -> FileResponse:
