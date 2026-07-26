@@ -55,6 +55,7 @@ import art_text_inpainting
 import preview_gates
 import provider_execution
 import region_taxonomy
+import visual_review_decisions
 
 
 def _utc_now_iso() -> str:
@@ -327,6 +328,7 @@ class UiBridge:
         self.human_translations = human_translation_decisions.HumanTranslationDecisionStore(JOBS_DB_PATH)
         self.human_typography = human_typography_decisions.HumanTypographyDecisionStore(JOBS_DB_PATH)
         self.human_masks = human_mask_decisions.HumanMaskDecisionStore(JOBS_DB_PATH)
+        self.visual_reviews = visual_review_decisions.VisualReviewDecisionStore(JOBS_DB_PATH)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
@@ -1797,11 +1799,19 @@ class UiBridge:
         status = "confirmed" if confirm else "draft"
         validation = {}
         if confirm:
+            import cv2
+            image = cv2.imread(str(data["base_page"]))
+            if image is None:
+                raise ValueError("mask_base_page_unavailable")
+            x, y, w, h = [int(v) for v in state["region_box"]]
+            crop = image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+            final_metrics = self._human_mask_final_metrics(crop, payload, state)
             validation = human_mask_decisions.validate_mask_payload(
                 {
                     **payload,
                     "source_hash": state["source_hash"],
                     "base_segmentation_hash": state["base_segmentation_hash"],
+                    "final_mask_metrics": final_metrics,
                 },
                 region_box=state["region_box"],
                 base_segmentation_hash=state["base_segmentation_hash"],
@@ -1819,6 +1829,135 @@ class UiBridge:
             validation=validation, notes=str(payload.get("notes") or ""), status=status)
         self.history_revision += 1
         return {"ok": True, "mask_decision": decision, "inpainting_status": "blocked_pending_human_mask"}
+
+    @staticmethod
+    def _rect_mask_for_region(shape: tuple[int, int], rects: list[list[int]],
+                              region_box: list[int] | tuple[int, int, int, int]) -> "np.ndarray":
+        import numpy as np
+
+        height, width = shape[:2]
+        rx, ry, rw, rh = [int(v) for v in region_box[:4]]
+        mask = np.zeros((height, width), dtype=np.uint8)
+        for raw in rects or []:
+            x, y, w, h = [int(v) for v in list(raw)[:4]]
+            # UI brush data may be absolute page coordinates or crop-local
+            # operation data.  Support both without baking in a page/region.
+            if x >= rx and y >= ry and x + w <= rx + rw and y + h <= ry + rh:
+                x -= rx
+                y -= ry
+            left, top = max(0, x), max(0, y)
+            right, bottom = min(width, x + w), min(height, y + h)
+            if right > left and bottom > top:
+                mask[top:bottom, left:right] = 255
+        return mask
+
+    @staticmethod
+    def _mask_component_count(mask: "np.ndarray") -> int:
+        import cv2
+        import numpy as np
+
+        count, _labels, _stats, _centroids = cv2.connectedComponentsWithStats(
+            (np.asarray(mask) > 0).astype(np.uint8), 8)
+        return max(0, int(count) - 1)
+
+    def _human_mask_final_metrics(self, crop: "np.ndarray", payload: dict[str, Any],
+                                  state: dict[str, Any]) -> dict[str, Any]:
+        import cv2
+        import numpy as np
+
+        layers = art_text_inpainting.segment_text_layers(crop)
+        combined = layers.get("combined_inpainting_mask")
+        if combined is None:
+            raise ValueError("mask_combined_layer_unavailable")
+        include_rects = payload.get("include_mask") or []
+        include_area = self._rect_mask_for_region(combined.shape, include_rects, state["region_box"])
+        final_mask = cv2.bitwise_and(combined, include_area) if include_rects else combined.copy()
+        for key in ("exclude_mask", "protected_mask", "uncertain_mask"):
+            rect_mask = self._rect_mask_for_region(
+                final_mask.shape, payload.get(key) or [], state["region_box"])
+            if rect_mask.any():
+                final_mask[rect_mask > 0] = 0
+        final_mask = (final_mask > 0).astype(np.uint8) * 255
+        protected = np.asarray(layers.get("protected_edge_mask"), dtype=np.uint8)
+        return {
+            "final_mask_area": int((final_mask > 0).sum()),
+            "region_area": int(final_mask.size),
+            "mask_ratio": round(float((final_mask > 0).sum()) / max(1, int(final_mask.size)), 4),
+            "connected_components": self._mask_component_count(final_mask),
+            "protected_overlap": int(((protected > 0) & (final_mask > 0)).sum()),
+            "mask_hash": art_text_inpainting.mask_hash(final_mask),
+        }
+
+    def _confirmed_human_mask_override(self, job_id: str, run_id: str, *,
+                                       region_id: str, user_id: str) -> dict[str, Any] | None:
+        import cv2
+        import numpy as np
+
+        data = self._mask_editor_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        state = self.human_mask_editor_state(job_id, run_id, region_id=region_id, user_id=user_id)
+        decision = self.human_masks.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            base_segmentation_hash=str(state["base_segmentation_hash"]))
+        if not decision or str(decision.get("status") or "") != "confirmed":
+            return None
+        image = cv2.imread(str(data["base_page"]))
+        if image is None:
+            raise ValueError("mask_base_page_unavailable")
+        x, y, w, h = [int(v) for v in state["region_box"]]
+        crop = image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+        layers = art_text_inpainting.segment_text_layers(crop)
+        combined = layers.get("combined_inpainting_mask")
+        if combined is None:
+            raise ValueError("mask_combined_layer_unavailable")
+        include_rects = decision.get("include_mask") or []
+        include_area = self._rect_mask_for_region(combined.shape, include_rects, state["region_box"])
+        final_mask = cv2.bitwise_and(combined, include_area) if include_rects else combined.copy()
+        for key in ("exclude_mask", "protected_mask", "uncertain_mask"):
+            rect_mask = self._rect_mask_for_region(
+                final_mask.shape, decision.get(key) or [], state["region_box"])
+            if rect_mask.any():
+                final_mask[rect_mask > 0] = 0
+        final_mask = (final_mask > 0).astype(np.uint8) * 255
+        validation_halo = cv2.dilate(final_mask, np.ones((5, 5), np.uint8), iterations=1)
+        protected = np.asarray(layers.get("protected_edge_mask"), dtype=np.uint8)
+        protected_overlap = int(((protected > 0) & (final_mask > 0)).sum())
+        metrics = {
+            "final_mask_area": int((final_mask > 0).sum()),
+            "region_area": int(final_mask.size),
+            "mask_ratio": round(float((final_mask > 0).sum()) / max(1, int(final_mask.size)), 4),
+            "connected_components": self._mask_component_count(final_mask),
+            "protected_overlap": protected_overlap,
+            "mask_hash": art_text_inpainting.mask_hash(final_mask),
+        }
+        validation = human_mask_decisions.validate_mask_payload(
+            {
+                "source_hash": state["source_hash"],
+                "base_segmentation_hash": state["base_segmentation_hash"],
+                "include_mask": include_rects,
+                "exclude_mask": decision.get("exclude_mask") or [],
+                "protected_mask": decision.get("protected_mask") or [],
+                "uncertain_mask": decision.get("uncertain_mask") or [],
+                "final_mask_metrics": metrics,
+            },
+            region_box=state["region_box"],
+            base_segmentation_hash=state["base_segmentation_hash"],
+            source_hash=state["source_hash"],
+        )
+        if protected_overlap:
+            raise ValueError("mask_protected_overlap")
+        return {
+            "human_mask_decision_id": str(decision.get("human_mask_decision_id") or ""),
+            "box_ltrb": [x, y, x + w, y + h],
+            "combined_inpainting_mask": final_mask,
+            "validation_halo": validation_halo,
+            "protected_edge_mask": protected,
+            "mask_hash": metrics["mask_hash"],
+            "validation": {**validation, **metrics},
+            "source_hash": state["source_hash"],
+            "base_segmentation_hash": state["base_segmentation_hash"],
+        }
 
     def create_human_preview_draft(self, job_id: str, run_id: str, *, region_id: str,
                                    user_id: str, request_id: str = "",
@@ -1863,10 +2002,14 @@ class UiBridge:
                 "font_file_hash": str(choice.get("font_file_hash") or ""),
                 "style_score": 1.0,
             }}
+        mask_override = self._confirmed_human_mask_override(
+            job_id, run_id, region_id=region_id, user_id=user_id)
+        mask_overrides = {str(region_id): mask_override} if mask_override else None
         manifest = engine.revise_page(
             page, region_ids=[str(region_id)], cache_only=True,
             human_overrides={str(region_id): str(decision["human_candidate"])},
-            font_overrides=font_overrides)
+            font_overrides=font_overrides,
+            mask_overrides=mask_overrides)
         self.human_translations.set_status(
             decision["human_translation_decision_id"], "draft_rendered", created_by=str(user_id))
         if font_choice_decision_id:
@@ -2004,6 +2147,72 @@ class UiBridge:
             # Nothing here is final: a rendered draft still awaits a human eye.
             "state": "draft_ready_for_human_visual_approval",
         }
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def record_visual_review_decision(self, job_id: str, run_id: str, *,
+                                      region_id: str, page_revision_id: str,
+                                      decision: str, user_id: str,
+                                      reason_codes: list[str] | None = None,
+                                      visual_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        engine, manifest = self._validated_page_revision(job, page_revision_id)
+        if str(region_id) not in (manifest.get("region_ids") or manifest.get("regions_changed") or []):
+            raise ValueError("visual_review_region_mismatch")
+        draft_path = Path(str(manifest.get("draft_page_path") or ""))
+        if not draft_path.is_file():
+            raise ValueError("preview_asset_unavailable")
+        human_decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        if not human_decision:
+            raise ValueError("human_decision_not_found")
+        gates = self.human_preview_gates(job_id, run_id, region_id=region_id, user_id=user_id)
+        if decision == "approved":
+            if str(gates.get("visual_gate", {}).get("status") or "") != preview_gates.PASSED:
+                raise ValueError("visual_gate_not_passed")
+            if str(gates.get("linguistic_gate", {}).get("status") or "") != preview_gates.PASSED:
+                raise ValueError("linguistic_gate_not_passed")
+        preview_hash = self._sha256_file(draft_path)
+        record = self.visual_reviews.upsert(
+            owner=str(user_id), job_id=str(job["id"]), run_id=str(job.get("run_id") or ""),
+            revision_id=str(ctx["revision_id"]), page_id=str(human_decision.get("page_id") or ""),
+            region_id=str(region_id), page_revision_id=str(page_revision_id),
+            source_hash=str(human_decision.get("source_text_hash") or ""),
+            preview_asset_hash=preview_hash, decision=str(decision),
+            authorization="delegated_by_user", reviewer="codex",
+            reason_codes=[str(v) for v in (reason_codes or [])],
+            visual_evidence={
+                **(visual_evidence or {}),
+                "visual_gate": gates.get("visual_gate") or {},
+                "linguistic_gate": gates.get("linguistic_gate") or {},
+                "draft_status": manifest.get("status"),
+            },
+            status="active")
+        outcome = ""
+        if decision == "approved":
+            updated_manifest = engine.set_page_revision_outcome(str(page_revision_id), "approved")
+            outcome = str(updated_manifest.get("status") or "")
+            self.human_translations.set_status(
+                str(human_decision["human_translation_decision_id"]),
+                "visually_approved", created_by=str(user_id))
+        elif decision in {"needs_adjustment", "rejected"}:
+            updated_manifest = engine.set_page_revision_outcome(str(page_revision_id), "rejected")
+            outcome = str(updated_manifest.get("status") or "")
+        else:
+            updated_manifest = manifest
+        self.history_revision += 1
+        return {"ok": True, "visual_review_decision": record,
+                "page_revision_status": outcome or updated_manifest.get("status", "")}
 
     def pending_human_previews(self, *, user_id: str = "") -> dict[str, Any]:
         """Owner-scoped human preview drafts that still need a human verdict."""

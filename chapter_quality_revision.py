@@ -25,6 +25,7 @@ import cv2
 import numpy as np
 
 import config
+import art_text_inpainting
 import preview_gates
 import region_taxonomy
 from ocr_balloon import TextGroup, render_analyzed_image
@@ -1538,6 +1539,7 @@ class ChapterQualityRevision:
         page_revision_id: str | None = None,
         human_overrides: dict[str, str] | None = None,
         font_overrides: dict[str, dict[str, Any]] | None = None,
+        mask_overrides: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Revise a single page into a draft, never touching other pages or a PDF.
 
@@ -1642,7 +1644,7 @@ class ChapterQualityRevision:
         changed_by_page = self._apply_safe_changes_to_pages([render_page], applicable)
         rendered, render_audit = self._render_changed_pages(
             [render_page], changed_by_page, dest_dir=paths.root / "draft_pages",
-            font_overrides=font_overrides)
+            font_overrides=font_overrides, mask_overrides=mask_overrides)
         visual_states = self._region_visual_states(
             contextual.get("reviews", []), changed_by_page, render_audit.get("records", []))
         render_audit["region_visual_states"] = visual_states
@@ -3006,6 +3008,8 @@ class ChapterQualityRevision:
         self,
         base: "np.ndarray",
         boxes: list[tuple[int, int, int, int]],
+        *,
+        mask_overrides_by_box: dict[tuple[int, int, int, int], dict[str, Any]] | None = None,
     ) -> tuple["np.ndarray | None", list[dict[str, Any]], str]:
         """Erase the previous translation inside the changed regions.
 
@@ -3020,7 +3024,8 @@ class ChapterQualityRevision:
         for left, top, right, bottom in boxes:
             region = cleaned[top:bottom, left:right]
             polarity, evidence = self._detect_text_polarity(region)
-            if polarity == "ambiguous":
+            override = (mask_overrides_by_box or {}).get((left, top, right, bottom)) or {}
+            if polarity == "ambiguous" and not override:
                 # Neither side of the histogram looks like glyphs: refuse rather
                 # than erase artwork or draw the new text over the old one.
                 metrics.append({
@@ -3030,7 +3035,19 @@ class ChapterQualityRevision:
                     "reason_code": "ambiguous_text_polarity",
                 })
                 return None, metrics, "ambiguous_text_polarity"
-            mask = self._previous_text_mask(region, polarity)
+            if override:
+                mask = np.asarray(override.get("combined_inpainting_mask"), dtype=np.uint8)
+                if mask.shape[:2] != region.shape[:2] or not mask.any():
+                    metrics.append({
+                        "box": [left, top, right, bottom],
+                        "polarity": polarity,
+                        "polarity_evidence": evidence,
+                        "reason_code": "human_mask_shape_mismatch",
+                        "human_mask_decision_id": str(override.get("human_mask_decision_id") or ""),
+                    })
+                    return None, metrics, "human_mask_shape_mismatch"
+            else:
+                mask = self._previous_text_mask(region, polarity)
             area = int((mask > 0).sum())
             total = int(mask.size) or 1
             ratio = area / total
@@ -3043,6 +3060,14 @@ class ChapterQualityRevision:
                 "pixels_removed": area,
                 "pixels_preserved": total - area,
             }
+            if override:
+                entry.update({
+                    "reason_code": "",
+                    "human_mask_decision_id": str(override.get("human_mask_decision_id") or ""),
+                    "mask_hash": str(override.get("mask_hash") or ""),
+                    "mask_source": "confirmed_human_mask",
+                    "skip_whole_region_overlap_check": True,
+                })
             if area == 0:
                 # Nothing to erase: the region is already blank background.
                 entry["reason_code"] = "empty_previous_text_mask"
@@ -3064,8 +3089,36 @@ class ChapterQualityRevision:
                 metrics.append(entry)
                 return None, metrics, "light_text_components_not_isolated"
             # Reconstruct the background from the surrounding balloon pixels.
-            repaired = cv2.inpaint(region, mask, 3, cv2.INPAINT_TELEA)
-            region[mask > 0] = repaired[mask > 0]
+            if override:
+                masks = {
+                    "valid": True,
+                    "combined_inpainting_mask": mask,
+                    "validation_halo": np.asarray(
+                        override.get("validation_halo"), dtype=np.uint8),
+                    "protected_edge_mask": np.asarray(
+                        override.get("protected_edge_mask"), dtype=np.uint8),
+                    "mask_hash": str(override.get("mask_hash") or art_text_inpainting.mask_hash(mask)),
+                }
+                candidates = art_text_inpainting.generate_inpainting_candidates(region, masks)
+                selected = art_text_inpainting.select_best_candidate(candidates)
+                entry["inpainting_candidates"] = [
+                    {key: value for key, value in item.items() if key != "image"}
+                    for item in candidates
+                ]
+                entry["selected_inpainting"] = selected
+                if selected.get("status") != "passed":
+                    entry["reason_code"] = "inpainting_quality_insufficient"
+                    metrics.append(entry)
+                    return None, metrics, "inpainting_quality_insufficient"
+                selected_image = next(
+                    item["image"] for item in candidates
+                    if item.get("method") == selected.get("method")
+                    and item.get("radius") == selected.get("radius")
+                )
+                region[mask > 0] = selected_image[mask > 0]
+            else:
+                repaired = cv2.inpaint(region, mask, 3, cv2.INPAINT_TELEA)
+                region[mask > 0] = repaired[mask > 0]
             entry["reason_code"] = ""
             metrics.append(entry)
         return cleaned, metrics, ""
@@ -3084,7 +3137,7 @@ class ChapterQualityRevision:
             return int((grey > 127).sum())
         return int((grey < 128).sum())
 
-    def _render_changed_pages(self, pages: list[dict[str, Any]], changed_by_page: dict[int, list[dict[str, Any]]], *, dest_dir: Path | None = None, font_overrides: dict[str, dict[str, Any]] | None = None) -> tuple[list[str], dict[str, Any]]:
+    def _render_changed_pages(self, pages: list[dict[str, Any]], changed_by_page: dict[int, list[dict[str, Any]]], *, dest_dir: Path | None = None, font_overrides: dict[str, dict[str, Any]] | None = None, mask_overrides: dict[str, dict[str, Any]] | None = None) -> tuple[list[str], dict[str, Any]]:
         # A targeted page revision renders into its own draft folder so the
         # chapter's reviewed pages (and the current PDF) stay untouched.
         review_pages = dest_dir or (self.output_dir / "quality_revision_pages")
@@ -3131,10 +3184,34 @@ class ChapterQualityRevision:
             boxes, mask_refinements = self._refine_changed_region_boxes(
                 base, page, changed_by_page[number], boxes,
                 font_overrides=font_overrides)
+            mask_overrides_by_box: dict[tuple[int, int, int, int], dict[str, Any]] = {}
+            for index, change in enumerate(changed_by_page[number]):
+                region_id = str(change.get("region_id") or "")
+                override = (mask_overrides or {}).get(region_id) or {}
+                if not override or index >= len(boxes):
+                    continue
+                box = tuple(int(v) for v in (override.get("box_ltrb") or boxes[index]))
+                boxes[index] = box
+                mask_overrides_by_box[box] = override
+                if index < len(mask_refinements):
+                    mask_refinements[index] = {
+                        **mask_refinements[index],
+                        "human_mask_decision_id": str(override.get("human_mask_decision_id") or ""),
+                        "mask_hash": str(override.get("mask_hash") or ""),
+                        "human_mask_validation": override.get("validation") or {},
+                        "state": "confirmed_human_mask",
+                    }
+                for item in page.get("debug_data", {}).get("items") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    if stable_region_key(number, item) != region_id:
+                        continue
+                    item["draw_box"] = [box[0], box[1], box[2] - box[0], box[3] - box[1]]
             # Erase the previous translation inside the changed regions first, so
             # the renderer draws the new text on clean background instead of on
             # top of the text that is already there.
-            cleaned, cleanup_metrics, cleanup_reason = self._clean_previous_translation(base, boxes)
+            cleaned, cleanup_metrics, cleanup_reason = self._clean_previous_translation(
+                base, boxes, mask_overrides_by_box=mask_overrides_by_box)
             if cleaned is None:
                 rendered_paths.append(str(current_output))
                 render_records.append({
@@ -3167,11 +3244,11 @@ class ChapterQualityRevision:
             # untouched pixel stays byte-identical to the base by construction.
             final = base.copy()
             overlap = []
-            polarity_by_box = {tuple(item.get("box") or ()): str(item.get("polarity") or "")
-                               for item in cleanup_metrics}
+            cleanup_by_box = {tuple(item.get("box") or ()): item for item in cleanup_metrics}
             for left, top, right, bottom in boxes:
                 patch = full[top:bottom, left:right]
-                polarity = polarity_by_box.get((left, top, right, bottom)) \
+                cleanup_entry = cleanup_by_box.get((left, top, right, bottom)) or {}
+                polarity = str(cleanup_entry.get("polarity") or "") \
                     or "dark_text_on_light_background"
                 before_ink = self._ink(base[top:bottom, left:right], polarity)
                 residual_ink = self._ink(cleaned[top:bottom, left:right], polarity)
@@ -3179,7 +3256,9 @@ class ChapterQualityRevision:
                 # The safety property is that the previous translation was really
                 # erased. Once the region is blank the new text cannot be drawn on
                 # top of anything, so a longer translation legitimately adds ink.
-                if before_ink and residual_ink > before_ink * self.CLEANUP_RESIDUAL_INK_RATIO:
+                if (not cleanup_entry.get("skip_whole_region_overlap_check")
+                        and before_ink
+                        and residual_ink > before_ink * self.CLEANUP_RESIDUAL_INK_RATIO):
                     overlap.append({"box": [left, top, right, bottom],
                                     "ink_before": before_ink,
                                     "ink_after_cleanup": residual_ink,

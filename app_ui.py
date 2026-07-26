@@ -865,6 +865,23 @@ def api_human_translation_gates(request: Request, payload: dict[str, Any] = Body
         raise _audit_error(exc) from exc
 
 
+@app.post("/api/ui/human-translation/visual-review")
+def api_human_translation_visual_review(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.record_visual_review_decision(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""),
+            page_revision_id=str(payload.get("page_revision_id") or ""),
+            decision=str(payload.get("decision") or ""),
+            user_id=principal.user_id,
+            reason_codes=[str(v) for v in (payload.get("reason_codes") or [])],
+            visual_evidence=payload.get("visual_evidence") if isinstance(payload.get("visual_evidence"), dict) else {},
+        )
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
 @app.get("/api/ui/human-previews/pending")
 def api_pending_human_previews(request: Request) -> dict[str, Any]:
     principal = _ui_principal(request)

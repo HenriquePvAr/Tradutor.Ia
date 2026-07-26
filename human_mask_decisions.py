@@ -37,6 +37,18 @@ def _area(rects: list[list[int]]) -> int:
     return sum(max(0, int(w)) * max(0, int(h)) for _, _, w, h in rects)
 
 
+def _intersection_area(left: list[list[int]], right: list[list[int]]) -> int:
+    total = 0
+    for ax, ay, aw, ah in left:
+        ar, ab = ax + aw, ay + ah
+        for bx, by, bw, bh in right:
+            br, bb = bx + bw, by + bh
+            width = max(0, min(ar, br) - max(ax, bx))
+            height = max(0, min(ab, bb) - max(ay, by))
+            total += width * height
+    return total
+
+
 def validate_mask_payload(payload: dict[str, Any], *, region_box: list[int] | tuple[int, int, int, int],
                           base_segmentation_hash: str, source_hash: str) -> dict[str, Any]:
     """Validate a human mask draft without trusting it blindly."""
@@ -57,7 +69,8 @@ def validate_mask_payload(payload: dict[str, Any], *, region_box: list[int] | tu
         x, y, w, h = rect
         if x < rx or y < ry or x + w > rx + rw or y + h > ry + rh:
             raise ValueError("mask_outside_authorized_region")
-    include_area = _area(include)
+    final_metrics = payload.get("final_mask_metrics") if isinstance(payload.get("final_mask_metrics"), dict) else {}
+    include_area = int(final_metrics.get("final_mask_area") or _area(include))
     region_area = max(1, rw * rh)
     if include_area <= 0:
         raise ValueError("mask_empty")
@@ -66,7 +79,8 @@ def validate_mask_payload(payload: dict[str, Any], *, region_box: list[int] | tu
         raise ValueError("mask_area_excessive")
     protected_area = _area(protected)
     uncertain_area = _area(uncertain)
-    if protected_area:
+    protected_overlap = int(final_metrics.get("protected_overlap") or _intersection_area(include, protected))
+    if protected_overlap:
         raise ValueError("mask_protected_overlap")
     if uncertain_area:
         raise ValueError("mask_uncertain_pixels_unresolved")
@@ -74,10 +88,12 @@ def validate_mask_payload(payload: dict[str, Any], *, region_box: list[int] | tu
         "include_area": include_area,
         "exclude_area": _area(exclude),
         "protected_area": protected_area,
+        "protected_overlap": protected_overlap,
         "uncertain_area": uncertain_area,
         "region_area": region_area,
         "mask_ratio": round(mask_ratio, 4),
-        "connected_components": len(include),
+        "connected_components": int(final_metrics.get("connected_components") or len(include)),
+        "mask_hash": str(final_metrics.get("mask_hash") or ""),
         "status": "valid_for_local_preview_candidate",
     }
 

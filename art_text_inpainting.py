@@ -229,15 +229,23 @@ def select_best_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         return {"status": "blocked", "reason_codes": ["inpainting_candidates_unavailable"]}
     best = candidates[0]
     reasons: list[str] = []
+    def metric(name: str, default: float) -> float:
+        value = best.get(name)
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
     if best.get("changed_pixels_outside_change_mask"):
         reasons.append("changed_pixels_outside_change_mask")
-    if float(best.get("edge_continuity_score") or 0.0) < 0.82:
+    if metric("edge_continuity_score", 0.0) < 0.82:
         reasons.append("edge_continuity_low")
-    if float(best.get("texture_consistency_score") or 0.0) < 0.55:
+    if metric("texture_consistency_score", 0.0) < 0.55:
         reasons.append("texture_consistency_low")
-    if float(best.get("seam_score") or 999.0) > 36.0:
+    if metric("seam_score", 999.0) > 36.0:
         reasons.append("seam_score_high")
-    if float(best.get("artifact_score") or 999.0) > 0.55:
+    if metric("artifact_score", 999.0) > 0.55:
         reasons.append("artifact_score_high")
     status = "passed" if not reasons else "needs_review"
     return {k: v for k, v in best.items() if k != "image"} | {
