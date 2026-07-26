@@ -15,6 +15,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# A human who looked at the crop may record what the region really says. It is
+# audit metadata: it never rewrites a page, and it is what gets sent to the
+# provider in place of a read nobody believes.
+CORRECTED_READING_PREFIX = "leitura_correta: "
+
+
+def corrected_reading(decision: dict) -> str:
+    """The corrected reading a human attached to a decision, or ""."""
+    notes = str((decision or {}).get("notes") or "")
+    if not notes.startswith(CORRECTED_READING_PREFIX):
+        return ""
+    return notes[len(CORRECTED_READING_PREFIX):].strip()
+
+
 DECISIONS = ("translate", "preserve", "ocr_invalid", "needs_review", "dismissed",
              "classify_credit", "classify_title_name", "classify_editorial",
              "classify_sfx", "classify_watermark")
