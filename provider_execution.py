@@ -15,6 +15,7 @@ from typing import Any
 
 import audit_decisions
 import linguistic_triage
+import visual_refinement_provider_guard
 
 EXECUTION_VERSION = "1"
 _REQUESTS_NAME = "provider_authorization_requests.json"
@@ -45,7 +46,8 @@ class NoProviderReviewer:
     invalid_batches = 0
 
     def _refuse(self, *_args, **_kwargs):
-        raise ProviderCallNotAuthorized("provider_call_not_authorized")
+        raise ProviderCallNotAuthorized(
+            visual_refinement_provider_guard.FORBIDDEN_REASON)
 
     review_batch = _refuse
     translate_many = _refuse

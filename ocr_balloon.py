@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 import config
+import font_fidelity
 from classification_profiler import profile_step, record_count, record_group
 from json_utils import dump_json
 from ocr_engine import (
@@ -306,6 +307,7 @@ class TextGroup:
     redrawn: bool = False
     color_name: str = ""
     font_size: int = 0
+    font_runtime_validation: dict = field(default_factory=dict)
     region_brightness: float = 0.0
     region_saturation: float = 0.0
     region_hue: float = 0.0
@@ -1446,41 +1448,19 @@ def render_analyzed_image(
     return final, debug_data
 
 
-def get_font(font_path, size, role="regular"):
-    candidates = []
-    if font_path:
-        candidates.append(font_path)
-
-    role_candidates = {
-        "decorative": [
-            r"C:\Windows\Fonts\georgia.ttf",
-            r"C:\Windows\Fonts\georgiab.ttf",
-            r"C:\Windows\Fonts\calibril.ttf",
-        ],
-        "shout": [
-            r"C:\Windows\Fonts\arialbi.ttf",
-            r"C:\Windows\Fonts\ariali.ttf",
-            r"C:\Windows\Fonts\segoeuii.ttf",
-        ],
-        "regular": [
-            r"C:\Windows\Fonts\segoeui.ttf",
-            r"C:\Windows\Fonts\calibri.ttf",
-            r"C:\Windows\Fonts\arial.ttf",
-        ],
-    }
-    candidates.extend(role_candidates.get(role, role_candidates["regular"]))
-
-    for candidate in candidates:
-        try:
-            if candidate and os.path.exists(candidate):
-                return ImageFont.truetype(candidate, size)
-        except Exception:
-            pass
-
+def get_font(font_path, size, role="regular", *, prefer_role=False, text=""):
+    font, runtime = font_fidelity.resolve_font(
+        role,
+        size,
+        configured_font_path=font_path,
+        prefer_role=prefer_role,
+        text=text,
+    )
     try:
-        return ImageFont.truetype("arial.ttf", size)
+        setattr(font, "tradutor_font_runtime", runtime)
     except Exception:
-        return ImageFont.load_default()
+        pass
+    return font
 
 
 def _candidate_from_line(line, image_shape):
@@ -6561,8 +6541,10 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
     text_bbox = (0, 0, 0, 0)
 
     overflow_ratio = 1.0
+    prefer_preview_role = bool(preview_font_role)
     while font_size >= config.MIN_FONT_SIZE:
-        font = get_font(font_path, font_size, role=font_role)
+        font = get_font(font_path, font_size, role=font_role,
+                        prefer_role=prefer_preview_role, text=text)
         spacing = max(1, int(font_size * 0.1))
         wrap_width = int(content_w * 0.8) if style.name == "decorative_purple" else content_w
         lines = (
@@ -6598,7 +6580,9 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
         font_size -= 1
 
     font_size = max(config.MIN_FONT_SIZE, font_size)
-    font = get_font(font_path, font_size, role=font_role)
+    font = get_font(font_path, font_size, role=font_role,
+                    prefer_role=prefer_preview_role, text=text)
+    group.font_runtime_validation = dict(getattr(font, "tradutor_font_runtime", {}) or {})
     group.font_size = font_size
     group.text_overflow_ratio = float(overflow_ratio)
     group.draw_box = tuple(draw_box)
@@ -7522,6 +7506,7 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 ),
                 "text_color": group.color_name,
                 "font_size": group.font_size,
+                "font_runtime_validation": dict(group.font_runtime_validation),
                 "region_brightness": round(group.region_brightness, 2),
                 "region_saturation": round(group.region_saturation, 2),
                 "region_hue": round(group.region_hue, 2),

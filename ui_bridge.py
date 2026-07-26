@@ -48,6 +48,7 @@ import audit_registry
 import human_translation_decisions
 import linguistic_audit
 import linguistic_triage
+import font_fidelity
 import preview_gates
 import provider_execution
 import region_taxonomy
@@ -1544,18 +1545,45 @@ class UiBridge:
             if str(item.get("region_id") or "") == str(region_id)
         ), {})
         gate_box = tuple(mask_refinement.get("expanded_box_xywh") or box)
+        audit_path = Path(job["output_dir"]) / "quality_revision" / "page_revisions" \
+            / str((manifest or {}).get("page_revision_id") or "") / "incremental_render_audit.json"
+        audit = read_json(audit_path, {})
+        font_runtime = {}
+        for audit_record in audit.get("records", []) or []:
+            if str(region_id) in [str(value) for value in (audit_record.get("changed_regions") or [])]:
+                runtimes = audit_record.get("font_runtime_validation") or {}
+                if isinstance(runtimes, dict):
+                    font_runtime = runtimes.get(str(region_id)) or {}
+                break
+
         if draft_path and Path(draft_path).is_file() and base_page.is_file() and len(box) == 4:
             visual = preview_gates.evaluate_visual_gate(base_page, draft_path, boxes=[gate_box])
             visual["original_mask_bounds"] = list(box)
             visual["mask_refinement"] = mask_refinement
         else:
             # No image is a verdict of its own; the render audit says why.
-            audit = read_json(Path(job["output_dir"]) / "quality_revision" / "page_revisions"
-                              / str((manifest or {}).get("page_revision_id") or "")
-                              / "incremental_render_audit.json", {})
             reason = str(((audit.get("records") or [{}])[0]).get("reason_code") or "draft_not_rendered")
             visual = {"status": preview_gates.FAILED, "reason_codes": [reason],
                       "gate_version": preview_gates.GATE_VERSION}
+        style_score = {
+            "style_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "stroke_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "slant_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "condensation_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "spacing_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "alignment_similarity": 1.0,
+        }
+        font_gate = font_fidelity.typography_gate(font_runtime, style_score) if font_runtime else {
+            "status": preview_gates.NEEDS_REVIEW,
+            "reason_codes": ["font_runtime_validation_missing"],
+            "gate_version": font_fidelity.FONT_FIDELITY_VERSION,
+        }
+        if visual.get("status") == preview_gates.PASSED and font_gate.get("status") != preview_gates.PASSED:
+            visual["status"] = preview_gates.NEEDS_REVIEW
+            visual["reason_codes"] = sorted(set(
+                [str(v) for v in (visual.get("reason_codes") or []) if str(v)]
+                + [str(v) for v in (font_gate.get("reason_codes") or []) if str(v)]
+            ))
 
         policy = tax_policy = {
             "normalized_classification": record.get("classification_normalized"),
@@ -1580,6 +1608,8 @@ class UiBridge:
             "mask_refinement": mask_refinement,
             "font_profile": (mask_refinement or {}).get("font_profile") or {},
             "font_selection": (mask_refinement or {}).get("font_selection") or {},
+            "font_runtime_validation": font_runtime,
+            "font_gate": font_gate,
             # Nothing here is final: a rendered draft still awaits a human eye.
             "state": "draft_ready_for_human_visual_approval",
         }
@@ -1653,6 +1683,9 @@ class UiBridge:
                                             "reason_codes": [str(exc)]},
                         "mask_refinement": {},
                         "font_selection": {},
+                        "font_runtime_validation": {},
+                        "font_gate": {"status": preview_gates.NEEDS_REVIEW,
+                                      "reason_codes": [str(exc)]},
                     }
                 visual = gates.get("visual_gate") or {}
                 linguistic = gates.get("linguistic_gate") or {}
@@ -1713,6 +1746,8 @@ class UiBridge:
                     "approval_enabled": approval_enabled,
                     "mask_refinement": gates.get("mask_refinement") or {},
                     "font_selection": gates.get("font_selection") or {},
+                    "font_runtime_validation": gates.get("font_runtime_validation") or {},
+                    "font_gate": gates.get("font_gate") or {},
                     "comparison_url": (
                         f"?view=review&job_id={quote(job_id)}&run_id={quote(run_id)}"
                         f"&revision_id={quote(str(ctx['revision_id']))}&audit=1"

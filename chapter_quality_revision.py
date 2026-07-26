@@ -3200,6 +3200,15 @@ class ChapterQualityRevision:
                 })
                 continue
             os.replace(str(tmp), str(target))
+            font_runtime_by_region: dict[str, Any] = {}
+            for debug_item in debug_data.get("items", []) or []:
+                if not isinstance(debug_item, dict):
+                    continue
+                raw_region = str(debug_item.get("region_id") or "")
+                runtime = debug_item.get("font_runtime_validation") or {}
+                if raw_region and isinstance(runtime, dict) and runtime:
+                    font_runtime_by_region[raw_region] = runtime
+                    font_runtime_by_region[f"p{number:03d}:{raw_region}"] = runtime
             rendered_paths.append(str(target))
             render_records.append({
                 "page": number,
@@ -3211,6 +3220,7 @@ class ChapterQualityRevision:
                 "rejected_regions": rejected_regions,
                 "cleanup": cleanup_metrics,
                 "mask_refinements": mask_refinements,
+                "font_runtime_validation": font_runtime_by_region,
                 "redrawn_groups": debug_data.get("redrawn_group_count"),
             })
         return rendered_paths, {

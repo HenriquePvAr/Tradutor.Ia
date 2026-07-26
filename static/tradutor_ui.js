@@ -1757,6 +1757,9 @@
       `fora da máscara: ${Number(item.visual_gate?.isolation?.changed_pixels_outside_mask || 0)}`,
       `tinta residual: ${Number(item.visual_gate?.residual_source_pixels || 0)}`,
       item.font_selection?.selected_font ? `fonte: ${item.font_selection.selected_font}` : '',
+      item.font_runtime_validation?.actual_font_identity ? `fonte real: ${item.font_runtime_validation.actual_font_identity}` : '',
+      item.font_runtime_validation?.fallback_used ? 'fallback de fonte detectado' : '',
+      item.font_gate?.status ? `gate fonte: ${item.font_gate.status}` : '',
     ].filter(Boolean).join(' · ');
     body.innerHTML = `<section class="human-preview-comparison">`
       + `<div class="human-preview-comparison-head"><strong>PRÉVIA DA PÁGINA ${escapeHtml(page)}</strong>`
