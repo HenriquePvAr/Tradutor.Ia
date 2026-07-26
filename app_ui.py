@@ -641,6 +641,69 @@ def api_audit_decision(request: Request, payload: dict[str, Any] = Body(default=
         raise _audit_error(exc) from exc
 
 
+@app.post("/api/ui/audit/triage")
+def api_audit_triage(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.linguistic_triage_queue(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/audit/decision/bulk")
+def api_audit_decision_bulk(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    regions = payload.get("region_ids")
+    if not isinstance(regions, list):
+        raise HTTPException(status_code=400, detail={"code": "no_regions_selected",
+                                                     "message": "Selecione ao menos uma região."})
+    try:
+        return BRIDGE.bulk_audit_decisions(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_ids=[str(r) for r in regions], decision=str(payload.get("decision") or ""),
+            user_id=principal.user_id, reason=str(payload.get("reason") or ""),
+            source_audit_hash=str(payload.get("source_audit_hash") or ""))
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/audit/provider-set")
+def api_audit_provider_set(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.minimal_provider_set(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/audit/provider-authorization")
+def api_audit_provider_authorization(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    # Records a pending request only. It never reads a credential and never
+    # contacts the provider; running it stays a separate, explicit step.
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.request_provider_authorization(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            user_id=principal.user_id, confirm=bool(payload.get("confirm")))
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/audit/provider-authorization/cancel")
+def api_audit_provider_authorization_cancel(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.cancel_provider_authorization(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            request_id=str(payload.get("request_id") or ""), user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
 @app.post("/api/ui/audit/decision/delete")
 def api_audit_decision_delete(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     principal = _ui_principal(request, mutate=True)

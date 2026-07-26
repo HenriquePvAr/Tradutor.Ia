@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import linguistic_triage
 import region_taxonomy as tax
 
 
@@ -140,6 +141,12 @@ def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
         if str(review.get("reason_code") or ""):
             reason_codes.append(str(review.get("reason_code")))
 
+        # The linguistic gate is evaluated per region and kept separate from the
+        # visual gate: a page that renders cleanly can still read wrong.
+        gate = linguistic_triage.evaluate_linguistic_gate(
+            source_text=source_text, current_translation=current_translation,
+            policy=policy, evidence={"quality_reasons": raw.get("quality_reasons") or []})
+
         records.append({
             "page_number": number,
             "page_id": page_id,
@@ -162,6 +169,7 @@ def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
             "reviewable": policy["reviewable"],
             "translatable": policy["translatable"],
             "preservable": policy["preservable"],
+            "linguistic_gate": gate,
         })
 
     by_category: dict[str, int] = {}

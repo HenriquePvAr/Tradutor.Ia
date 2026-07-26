@@ -41,9 +41,16 @@ from ui_helpers import (
     suggest_chapter_details,
 )
 from ui_history import UIHistoryStore, utc_now
-from chapter_quality_revision import REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision
+from chapter_quality_revision import (REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision,
+                                      read_json, write_json)
 import audit_registry
 import linguistic_audit
+import linguistic_triage
+import region_taxonomy
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 from audit_decisions import AuditDecisionStore
 
 
@@ -1158,6 +1165,180 @@ class UiBridge:
             decision=decision, created_by=str(user_id), reason=reason, notes=notes,
             taxonomy_version=str(report.get("taxonomy_version") or ""),
             source_audit_hash=entry["source_audit_hash"])
+
+    def linguistic_triage_queue(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """The audit ordered by explainable priority, with live counters."""
+        review = self.linguistic_audit_review(job_id, run_id, user_id=user_id)
+        decisions = {str(r["region_id"]): r for r in review["records"] if r.get("human_decision")}
+        decisions = {k: v["human_decision"] for k, v in decisions.items()}
+        queue = linguistic_triage.build_triage_queue(review["records"], decisions=decisions)
+        counters: dict[str, int] = {}
+
+        def bump(key):
+            counters[key] = counters.get(key, 0) + 1
+
+        for item in queue:
+            gate = (item.get("linguistic_gate") or {}).get("status", "")
+            bump(f"gate_{gate or 'unknown'}")
+            bump(f"class_{item.get('classification_normalized') or 'unknown'}")
+            if item.get("translatable"):
+                bump("translatable")
+            if item.get("preservable"):
+                bump("preservable")
+            if item.get("provider_required"):
+                bump("provider_required")
+            if item.get("needs_human_review"):
+                bump("needs_human_review")
+            bump("cache_hit" if item.get("cache_status") == "answered" else "cache_miss")
+            if item.get("human_decision"):
+                bump("decided")
+            else:
+                bump("pending")
+        return {**{k: review[k] for k in ("job_id", "run_id", "revision_id",
+                                          "audit_artifact_id", "source_audit_hash",
+                                          "taxonomy_version", "summary")},
+                "counters": counters, "queue": queue, "total": len(queue)}
+
+    def bulk_audit_decisions(self, job_id: str, run_id: str, *, region_ids: list[str],
+                             decision: str, user_id: str, reason: str = "",
+                             source_audit_hash: str = "") -> dict[str, Any]:
+        """Apply one decision to several regions atomically, or nothing at all."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        wanted = [str(r) for r in (region_ids or []) if str(r or "").strip()]
+        if not wanted:
+            raise ValueError("no_regions_selected")
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._resolve_or_build_audit(ctx)
+        report, entry = resolved["report"], resolved["entry"]
+        if source_audit_hash and str(source_audit_hash) != entry["source_audit_hash"]:
+            # The operator acted on a stale view of the audit.
+            raise ValueError("source_audit_hash_mismatch")
+
+        by_region = {str(r.get("region_id")): r for r in report.get("records", [])}
+        unknown = [r for r in wanted if r not in by_region]
+        if unknown:
+            raise ValueError("region_not_in_audit")
+        # Compatibility: a decision must make sense for every selected region.
+        incompatible = [r for r in wanted
+                        if not self._decision_allowed(by_region[r], decision)]
+        if incompatible:
+            raise ValueError("incompatible_selection")
+
+        applied, previous = [], []
+        try:
+            for region_id in wanted:
+                record = by_region[region_id]
+                before = next((d for d in self.audit_decisions.list_for(
+                    str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+                    created_by=str(user_id)) if d["region_id"] == region_id), None)
+                previous.append((region_id, before))
+                applied.append(self.audit_decisions.upsert(
+                    job_id=str(ctx["job"]["id"]), run_id=str(ctx["job"].get("run_id") or ""),
+                    revision_id=ctx["revision_id"], audit_artifact_id=entry["audit_artifact_id"],
+                    page_id=str(record.get("page_id") or ""), region_id=region_id,
+                    decision=decision, created_by=str(user_id), reason=reason,
+                    taxonomy_version=str(report.get("taxonomy_version") or ""),
+                    source_audit_hash=entry["source_audit_hash"]))
+        except Exception:
+            # Roll back to the pre-operation state so a partial bulk never sticks.
+            for region_id, before in previous:
+                try:
+                    if before:
+                        self.audit_decisions.upsert(
+                            job_id=before["job_id"], run_id=before["run_id"],
+                            revision_id=before["revision_id"],
+                            audit_artifact_id=before["audit_artifact_id"],
+                            page_id=before["page_id"], region_id=before["region_id"],
+                            decision=before["decision"], created_by=before["created_by"],
+                            reason=before.get("reason") or "", notes=before.get("notes") or "")
+                    else:
+                        current = next((d for d in self.audit_decisions.list_for(
+                            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""),
+                            ctx["revision_id"], created_by=str(user_id))
+                            if d["region_id"] == region_id), None)
+                        if current:
+                            self.audit_decisions.delete(current["audit_decision_id"],
+                                                        created_by=str(user_id))
+                except Exception:  # noqa: BLE001 - best-effort rollback, error is re-raised
+                    pass
+            raise
+        self.history_revision += 1
+        return {"applied": len(applied), "decision": decision,
+                "region_ids": wanted,
+                "pages": sorted({str(by_region[r].get("page_id") or "") for r in wanted})}
+
+    @staticmethod
+    def _decision_allowed(record: dict[str, Any], decision: str) -> bool:
+        """A decision is offered only where it is meaningful for that region."""
+        category = str(record.get("classification_normalized") or "")
+        if decision in ("needs_review", "dismissed"):
+            return True
+        if decision == "ocr_invalid":
+            return not region_taxonomy.is_preservable(category) or bool(record.get("needs_human_review"))
+        if decision == "translate":
+            return not region_taxonomy.is_unreadable(category)
+        if decision == "preserve":
+            return True
+        return False
+
+    def minimal_provider_set(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """Regions that genuinely still need a provider call. Never calls one."""
+        review = self.linguistic_audit_review(job_id, run_id, user_id=user_id)
+        decisions = {str(r["region_id"]): r["human_decision"] for r in review["records"]
+                     if r.get("human_decision")}
+        result = linguistic_triage.minimal_provider_set(review["records"], decisions=decisions)
+        return {**{k: review[k] for k in ("job_id", "run_id", "revision_id",
+                                          "audit_artifact_id", "source_audit_hash")},
+                **result}
+
+    def request_provider_authorization(self, job_id: str, run_id: str, *, user_id: str,
+                                       confirm: bool = False) -> dict[str, Any]:
+        """Record a pending authorization request. Never contacts the provider."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        if not confirm:
+            raise ValueError("explicit_confirmation_required")
+        ctx = self._audit_context(job_id, run_id)
+        plan = self.minimal_provider_set(job_id, run_id, user_id=user_id)
+        request = {
+            "authorization_request_id": uuid.uuid4().hex,
+            "job_id": plan["job_id"], "run_id": plan["run_id"],
+            "revision_id": plan["revision_id"],
+            "audit_artifact_id": plan["audit_artifact_id"],
+            "source_audit_hash": plan["source_audit_hash"],
+            "requested_by": str(user_id),
+            "requested_at": _utc_now_iso(),
+            "status": "pending_human_authorization",
+            "estimated_requests": plan["estimated_requests"],
+            "pages": plan["pages"],
+            "region_ids": [item["region_id"] for item in plan["items"]],
+            "provider_executed": False,
+        }
+        path = Path(ctx["output_dir"]) / "quality_revision" / "provider_authorization_requests.json"
+        existing = read_json(path, {}) if path.is_file() else {}
+        requests_list = existing.get("requests") if isinstance(existing.get("requests"), list) else []
+        requests_list.append(request)
+        write_json(path, {"requests": requests_list, "updated_at": _utc_now_iso()})
+        self.history_revision += 1
+        return request
+
+    def cancel_provider_authorization(self, job_id: str, run_id: str, *,
+                                      request_id: str, user_id: str) -> dict[str, Any]:
+        ctx = self._audit_context(job_id, run_id)
+        path = Path(ctx["output_dir"]) / "quality_revision" / "provider_authorization_requests.json"
+        existing = read_json(path, {}) if path.is_file() else {}
+        requests_list = [r for r in (existing.get("requests") or [])
+                         if isinstance(r, dict)]
+        target = next((r for r in requests_list if str(r.get("authorization_request_id")) == str(request_id)), None)
+        if not target:
+            raise ValueError("authorization_request_not_found")
+        if str(target.get("requested_by")) != str(user_id):
+            raise ValueError("not_request_owner")
+        remaining = [r for r in requests_list if r is not target]
+        write_json(path, {"requests": remaining, "updated_at": _utc_now_iso()})
+        self.history_revision += 1
+        return {"cancelled": True, "authorization_request_id": str(request_id)}
 
     def delete_audit_decision(self, job_id: str, run_id: str, *, decision_id: str, user_id: str) -> dict[str, Any]:
         if not str(user_id or "").strip():
