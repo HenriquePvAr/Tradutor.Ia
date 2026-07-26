@@ -1292,6 +1292,16 @@ class UiBridge:
                                           "audit_artifact_id", "source_audit_hash")},
                 **result}
 
+    def ocr_reprocessing_candidates(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """Regions whose source text needs a fresh read. Never runs OCR here."""
+        review = self.linguistic_audit_review(job_id, run_id, user_id=user_id)
+        decisions = {str(r["region_id"]): r["human_decision"] for r in review["records"]
+                     if r.get("human_decision")}
+        result = linguistic_triage.ocr_reprocessing_candidates(review["records"], decisions=decisions)
+        return {**{k: review[k] for k in ("job_id", "run_id", "revision_id",
+                                          "audit_artifact_id", "source_audit_hash")},
+                **result}
+
     def request_provider_authorization(self, job_id: str, run_id: str, *, user_id: str,
                                        confirm: bool = False) -> dict[str, Any]:
         """Record a pending authorization request. Never contacts the provider."""

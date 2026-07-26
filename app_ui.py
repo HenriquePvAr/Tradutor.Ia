@@ -680,6 +680,17 @@ def api_audit_provider_set(request: Request, payload: dict[str, Any] = Body(defa
         raise _audit_error(exc) from exc
 
 
+@app.post("/api/ui/audit/ocr-candidates")
+def api_audit_ocr_candidates(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.ocr_reprocessing_candidates(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
 @app.post("/api/ui/audit/provider-authorization")
 def api_audit_provider_authorization(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     # Records a pending request only. It never reads a credential and never
