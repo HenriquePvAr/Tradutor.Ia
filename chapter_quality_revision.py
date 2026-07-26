@@ -7,6 +7,7 @@ revision run is a separate audit/review workspace tied to a parent job/run.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -1534,6 +1535,7 @@ class ChapterQualityRevision:
         resume: bool = False,
         cache_only: bool = False,
         page_revision_id: str | None = None,
+        human_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Revise a single page into a draft, never touching other pages or a PDF.
 
@@ -1541,6 +1543,10 @@ class ChapterQualityRevision:
         requested regions, renders only that page into its own draft folder, and
         records a page-scoped manifest with lineage. No reviewed PDF is produced
         and the current one stays byte-identical.
+
+        ``human_overrides`` maps a region id to a line a human wrote. Those
+        regions are answered from that line alone: they never reach the cache and
+        never reach the provider, so a preview costs nothing and cannot call out.
         """
         progress = read_json(self.output_dir / "progress.json", {})
         if not isinstance(progress, dict) or not progress.get("pages"):
@@ -1606,7 +1612,8 @@ class ChapterQualityRevision:
         write_json(paths.glossary, glossary)
         contextual = self._review_translations(
             regions, glossary, manifest, paths, scope_region_ids=scope,
-            resume_reviews=resume_reviews, cache_only=cache_only)
+            resume_reviews=resume_reviews, cache_only=cache_only,
+            human_overrides=human_overrides)
         write_json(paths.contextual_review, contextual)
         if contextual.get("cancelled"):
             manifest.update({"status": "cancelled", "phase": "cancelled",
@@ -1618,7 +1625,10 @@ class ChapterQualityRevision:
         applicable = self._select_safe_changes(regions, contextual.get("reviews", []))
         # Edit from the latest reviewed page so the page's other regions keep the
         # current reviewed state instead of reverting to the first translation.
-        render_page = dict(page)
+        # A deep copy: applying changes rewrites item fields, and a human override
+        # also clears preserved_original so the renderer really draws the region.
+        # Mutating the shared progress items instead would leak into the audit.
+        render_page = copy.deepcopy(page)
         render_page["output_path"] = self._latest_reviewed_page_base(number, page)
         changed_by_page = self._apply_safe_changes_to_pages([render_page], applicable)
         rendered, render_audit = self._render_changed_pages(
@@ -2268,6 +2278,7 @@ class ChapterQualityRevision:
         resume_reviews: dict[str, dict[str, Any]] | None = None,
         scope_region_ids: set[str] | None = None,
         cache_only: bool = False,
+        human_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         reviewable = [
             self._review_record(regions, idx)
@@ -2304,6 +2315,22 @@ class ChapterQualityRevision:
                 resumed = [resume_reviews[str(r["region_id"])] for r in reviewable if str(r.get("region_id")) in resume_reviews]
                 reviewable = pending
             manifest["resumed_regions"] = len(resumed)
+        # A region a human already answered is removed from the reviewable set
+        # before a reviewer is even constructed, so no cache key is built for it
+        # and no request can be issued on its behalf.
+        overrides = {str(k): str(v) for k, v in (human_overrides or {}).items() if str(v).strip()}
+        override_reviews: list[dict[str, Any]] = []
+        if overrides:
+            kept = []
+            for record in reviewable:
+                region_id = str(record.get("region_id") or "")
+                if region_id in overrides:
+                    override_reviews.append(self._human_override_review(record, overrides[region_id]))
+                else:
+                    kept.append(record)
+            reviewable = kept
+        manifest["human_overrides"] = sorted(overrides)
+
         reviewer = self.reviewer_factory()
         model = getattr(reviewer, "model", "unknown")
         manifest["model"] = model
@@ -2442,6 +2469,7 @@ class ChapterQualityRevision:
         # region accounted for: none is silently omitted or treated as approved.
         reviews.extend(resumed)
         reviews.extend(skipped_unchanged)
+        reviews.extend(override_reviews)
         manifest["requests"] = int(getattr(reviewer, "requests", manifest.get("requests", 0) or 0))
         blocked = sum(1 for item in reviews if item.get("action") == "manual_review")
         residual = sum(1 for item in reviews if item.get("reason_code") == "source_language_residual")
@@ -2566,6 +2594,29 @@ class ChapterQualityRevision:
             })
         return result
 
+    HUMAN_OVERRIDE_REASON = "human_override"
+
+    @staticmethod
+    def _human_override_review(record: dict[str, Any], translation: str) -> dict[str, Any]:
+        """A line a human wrote, shaped like any other answer.
+
+        It carries the same fields a reviewed region does, so everything
+        downstream — safe-change selection, rendering, the visual gate — treats
+        it identically. Only its provenance differs.
+        """
+        return {
+            "region_id": str(record.get("region_id") or ""),
+            "action": "rewrite",
+            "revised_translation": str(translation),
+            "reason_code": ChapterQualityRevision.HUMAN_OVERRIDE_REASON,
+            "confidence": 1.0,
+            "risk": "low",
+            "terminology": [],
+            "source_text": record.get("source_text"),
+            "previous_translation": record.get("current_translation"),
+            "contract_path": "human",
+        }
+
     def _select_safe_changes(self, regions: list[dict[str, Any]], reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_region = {region["region_id"]: region for region in regions}
         safe = []
@@ -2577,7 +2628,12 @@ class ChapterQualityRevision:
                 continue
             if review.get("risk") != "low" or float(review.get("confidence") or 0.0) < 0.95:
                 continue
-            if not region.get("redrawn") or region.get("preserved_original"):
+            human = str(review.get("reason_code") or "") == self.HUMAN_OVERRIDE_REASON
+            # A never-redrawn region still shows the source language, so a model
+            # rewrite of it would change nothing on the page and is refused. A
+            # human promoting a preserved region to translated is the opposite:
+            # that *is* the edit, and it is exactly what was authorized.
+            if not human and (not region.get("redrawn") or region.get("preserved_original")):
                 continue
             safe.append({
                 "region_id": region["region_id"],
@@ -2585,6 +2641,7 @@ class ChapterQualityRevision:
                 "previous_translation": region["current_translation"],
                 "revised_translation": review["revised_translation"],
                 "reason_code": review["reason_code"],
+                "human_override": human,
             })
         return safe
 
@@ -2603,6 +2660,14 @@ class ChapterQualityRevision:
                 item["translation"] = change["revised_translation"]
                 item["translation_candidate"] = change["revised_translation"]
                 item["translation_final_reason"] = change["reason_code"]
+                if change.get("human_override"):
+                    # The region was preserved, so the renderer would skip it and
+                    # the page would keep the source text. Promoting it here is
+                    # what turns the human decision into pixels.
+                    item["preserved_original"] = False
+                    item["redrawn"] = True
+                    item["translation_valid"] = True
+                    item["translation_final_state"] = "human_override"
                 changed_by_page.setdefault(number, []).append(change)
         return changed_by_page
 
