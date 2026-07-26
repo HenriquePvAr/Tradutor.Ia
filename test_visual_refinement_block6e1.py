@@ -126,8 +126,11 @@ class HumanPreviewUiContractTests(unittest.TestCase):
         ui_js = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         preview_block = ui_js[ui_js.index("async function previewAction"):
                               ui_js.index("function selectedTriageRegions")]
+        app_py = (ROOT / "app_ui.py").read_text(encoding="utf-8")
         self.assertIn("/api/ui/human-translation/font-candidates", ui_js)
         self.assertIn("/api/ui/human-translation/font-choice", ui_js)
+        self.assertIn("font_choice_base_page_unavailable", app_py)
+        self.assertIn("A página base desta região não foi encontrada.", app_py)
         self.assertIn("ESCOLHER ESTA TIPOGRAFIA", ui_js)
         self.assertIn("ABRIR AMPLIADO", ui_js)
         self.assertIn("PEDIR OUTRAS OPÇÕES", ui_js)
@@ -142,6 +145,15 @@ class HumanPreviewUiContractTests(unittest.TestCase):
         self.assertIn(".font-choice-grid", ui_css)
         self.assertIn("repeat(auto-fit,minmax(180px,1fr))", ui_css.replace(" ", ""))
         self.assertIn("overflow-wrap:anywhere", ui_css.replace(" ", ""))
+
+    def test_font_context_accepts_existing_page_name_variants(self):
+        bridge_py = (ROOT / "ui_bridge.py").read_text(encoding="utf-8")
+        context_block = bridge_py[bridge_py.index("def _human_font_context"):
+                                  bridge_py.index("def _font_candidate_cache_dir")]
+        self.assertIn('f"p{page:03d}.png"', context_block)
+        self.assertIn('f"page_{page:03d}.png"', context_block)
+        self.assertLess(context_block.index('f"p{page:03d}.png"'),
+                        context_block.index('f"page_{page:03d}.png"'))
 
 
 if __name__ == "__main__":

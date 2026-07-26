@@ -1472,7 +1472,9 @@ class UiBridge:
         box = tuple(int(v) for v in (record.get("bounding_box") or [])[:4])
         if page <= 0 or len(box) != 4:
             raise ValueError("font_choice_region_geometry_unavailable")
-        base_page = Path(job["output_dir"]) / "pages" / f"page_{page:03d}.png"
+        base_page = Path(job["output_dir"]) / "pages" / f"p{page:03d}.png"
+        if not base_page.is_file():
+            base_page = Path(job["output_dir"]) / "pages" / f"page_{page:03d}.png"
         if not base_page.is_file():
             raise ValueError("font_choice_base_page_unavailable")
         return {"ctx": ctx, "job": job, "decision": decision, "record": record,

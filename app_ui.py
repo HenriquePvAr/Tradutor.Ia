@@ -637,6 +637,15 @@ _AUDIT_ERROR_MESSAGES = {
         "A seleção contém leituras ambíguas.",
         "Em massa só é possível confirmar evidência inequívoca. "
         "Decida cada leitura ambígua individualmente, olhando o recorte."),
+    "font_choice_base_page_unavailable": (
+        "A página base desta região não foi encontrada.",
+        "Abra o capítulo revisado novamente e confirme que o artefato local ainda existe."),
+    "font_candidate_not_found": (
+        "A opção de tipografia não está mais disponível.",
+        "Peça outras opções e escolha novamente."),
+    "font_choice_region_geometry_unavailable": (
+        "A região não possui geometria suficiente para comparar tipografia.",
+        "Revise a região e confirme a caixa antes de escolher a fonte."),
 }
 
 
