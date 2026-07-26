@@ -193,6 +193,37 @@ class ProviderSetContracts(unittest.TestCase):
             self.assertNotIn(forbidden, blob)
 
 
+class OrthographySignal(unittest.TestCase):
+    """Missing diacritics is only evidence when the text is long enough."""
+
+    def _gate(self, source, candidate):
+        return lt.evaluate_linguistic_gate(
+            source_text=source, current_translation=candidate,
+            policy=_policy(tax.DIALOGUE_TRANSLATE))
+
+    def test_short_correct_portuguese_without_accents_is_not_flagged(self):
+        # Every one of these is valid pt-BR that simply has no accented word.
+        for candidate in ("PRECISA VALER A PENA.",
+                          "Ele saiu sem dizer nada",
+                          "A porta estava aberta",
+                          "Como gastei todo o dinheiro que me sobrava nisso..."):
+            gate = self._gate(_sentence(), candidate)
+            self.assertNotIn("no_target_language_orthography", gate["reason_codes"], candidate)
+
+    def test_long_text_without_a_single_diacritic_is_still_flagged(self):
+        candidate = ("ele disse que ia embora antes do amanhecer e nao voltaria "
+                     "nunca mais para esta casa vazia")
+        self.assertGreaterEqual(len(candidate.split()), lt._ORTHOGRAPHY_MIN_WORDS)
+        gate = self._gate(_sentence(), candidate)
+        self.assertIn("no_target_language_orthography", gate["reason_codes"])
+
+    def test_accented_text_always_passes_the_check(self):
+        candidate = ("Ela não sabia se devia voltar para casa naquela noite fria "
+                     "de inverno depois de tudo aquilo")
+        gate = self._gate(_sentence(), candidate)
+        self.assertNotIn("no_target_language_orthography", gate["reason_codes"])
+
+
 class EditorialQueues(unittest.TestCase):
     """The OCR queue, the editorial queue and the counters (BLOCO 6A.1)."""
 

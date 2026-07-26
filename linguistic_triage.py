@@ -15,7 +15,11 @@ import unicodedata
 
 import region_taxonomy as tax
 
-GATE_VERSION = "3"
+# One diacritic-free word in seven means P(none) stays high until the sentence
+# is long; below this the check is noise, not evidence.
+_ORTHOGRAPHY_MIN_WORDS = 12
+
+GATE_VERSION = "4"
 
 PASSED = "passed"
 FAILED = "failed"
@@ -106,10 +110,14 @@ def evaluate_linguistic_gate(*, source_text: str, current_translation: str,
     if candidate:
         mark("encoding_error", FAILED if _ENCODING_ARTEFACT.search(candidate) else PASSED,
              "encoding_artefact_in_candidate")
-        # A translated sentence normally carries target-language orthography.
-        multiword = len(_words(source)) >= 3
+        # Missing target-language orthography is only evidence in long text.
+        # Roughly one Portuguese word in seven carries a diacritic, so a short
+        # sentence with none is unremarkable - "Ele saiu sem dizer nada" is
+        # perfectly correct. Judging that as suspect flagged almost every
+        # translation and drowned the real signals.
+        long_enough = len(_words(candidate)) >= _ORTHOGRAPHY_MIN_WORDS
         mark("grammar_risk",
-             NEEDS_REVIEW if multiword and candidate and not _ACCENTED.search(candidate) else PASSED,
+             NEEDS_REVIEW if long_enough and not _ACCENTED.search(candidate) else PASSED,
              "no_target_language_orthography")
         if source:
             length_ratio = len(candidate) / max(1, len(source))
