@@ -25,6 +25,7 @@ import cv2
 import numpy as np
 
 import config
+import preview_gates
 import region_taxonomy
 from ocr_balloon import TextGroup, render_analyzed_image
 from ocr_engine import OCRLine
@@ -272,7 +273,7 @@ def utc_now() -> str:
 
 def read_json(path: Path, default: Any) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, TypeError):
         return default
 
@@ -1559,6 +1560,8 @@ class ChapterQualityRevision:
 
         # Resuming continues the same page revision (same id, same checkpoint);
         # a fresh run mints a new id.
+        previous_latest = self.latest_page_revision(number) if not resume else None
+        supersedes_page_revision_id = str((previous_latest or {}).get("page_revision_id") or "")
         page_revision_id = str(page_revision_id) if page_revision_id else uuid.uuid4().hex
         paths = self._page_revision_paths(page_revision_id)
         parent_revision_id = str((self.latest_status() or {}).get("revision_id") or "")
@@ -1576,6 +1579,11 @@ class ChapterQualityRevision:
         manifest: dict[str, Any] = {
             "page_revision_id": page_revision_id,
             "parent_revision_id": parent_revision_id,
+            "supersedes_page_revision_id": (
+                supersedes_page_revision_id
+                if supersedes_page_revision_id and supersedes_page_revision_id != page_revision_id
+                else ""
+            ),
             "parent_job_id": self.job_id,
             "parent_run_id": self.run_id,
             "page_id": f"p{number:03d}",
@@ -1639,6 +1647,12 @@ class ChapterQualityRevision:
         write_json(paths.render_audit, render_audit)
 
         draft_page = paths.root / "draft_pages" / f"page_{number:03d}.png"
+        mask_refinements = [
+            refinement
+            for record in render_audit.get("records", [])
+            for refinement in (record.get("mask_refinements") or [])
+            if isinstance(refinement, dict)
+        ]
         authorization_required = list(contextual.get("authorization_required") or [])
         # A clean stop, never left "running": cached regions still produce a draft,
         # the uncached ones wait for provider authorisation and can continue later.
@@ -1654,6 +1668,17 @@ class ChapterQualityRevision:
             "regions_changed": [item["region_id"] for items in changed_by_page.values() for item in items],
             "manual_review": sum(1 for r in contextual.get("reviews", []) if r.get("action") == "manual_review"),
             "draft_page_path": str(draft_page) if draft_page.is_file() else "",
+            "mask_refinements": mask_refinements,
+            "font_profiles": {
+                str(item.get("region_id") or ""): item.get("font_profile")
+                for item in mask_refinements
+                if isinstance(item.get("font_profile"), dict)
+            },
+            "font_selections": {
+                str(item.get("region_id") or ""): item.get("font_selection")
+                for item in mask_refinements
+                if isinstance(item.get("font_selection"), dict)
+            },
             "review_summary": self._review_summary(
                 contextual.get("reviews", []), visual_states, render_audit.get("records", []),
                 changed_by_page, [render_page]),
@@ -2741,6 +2766,107 @@ class ChapterQualityRevision:
             boxes.append((left, top, right, bottom))
         return boxes, rejected
 
+    @classmethod
+    def _page_item_box_ltrb(cls, item: dict[str, Any], *, width: int, height: int) -> tuple[int, int, int, int] | None:
+        raw = (item.get("draw_box") or item.get("safe_area")
+               or item.get("allowed_modification_box") or item.get("bounding_box") or [])
+        try:
+            x, y, box_width, box_height = (int(v) for v in list(raw)[:4])
+        except (TypeError, ValueError):
+            return None
+        return cls._clip_ltrb((x, y, x + box_width, y + box_height), width=width, height=height)
+
+    @classmethod
+    def _refine_changed_region_boxes(
+        cls,
+        base: "np.ndarray",
+        page: dict[str, Any],
+        changes: list[dict[str, Any]],
+        boxes: list[tuple[int, int, int, int]],
+    ) -> tuple[list[tuple[int, int, int, int]], list[dict[str, Any]]]:
+        """Expand change masks only when visual evidence proves residual ink.
+
+        The input boxes remain historical evidence; the expanded boxes are a
+        per-draft operational mask. Nothing here keys on a concrete page, region
+        or phrase.
+        """
+        height, width = base.shape[:2]
+        wanted = [str(change.get("region_id") or "") for change in changes]
+        number = page_number(page)
+        changed_items = []
+        protected_boxes: list[tuple[int, int, int, int]] = []
+        for item in page.get("debug_data", {}).get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_box = cls._page_item_box_ltrb(item, width=width, height=height)
+            if item_box is None:
+                continue
+            rid = stable_region_key(number, item)
+            if rid in wanted:
+                changed_items.append((rid, item, item_box))
+            else:
+                protected_boxes.append(item_box)
+
+        refined: list[tuple[int, int, int, int]] = []
+        records: list[dict[str, Any]] = []
+        by_box = {tuple(box): box for _, _, box in changed_items}
+        for index, box in enumerate(boxes):
+            rid = ""
+            item = None
+            original = by_box.get(tuple(box), box)
+            for candidate_rid, candidate_item, candidate_box in changed_items:
+                if candidate_box == box:
+                    rid, item, original = candidate_rid, candidate_item, candidate_box
+                    break
+            xywh = (original[0], original[1], original[2] - original[0], original[3] - original[1])
+            proposal = preview_gates.expand_box_using_residual_evidence(
+                base, xywh, protected_boxes=protected_boxes)
+            expanded = tuple(int(v) for v in proposal["expanded_box"])
+            if proposal["state"] == "safe_expansion_available":
+                refined.append(expanded)
+            else:
+                refined.append(box)
+            profile = preview_gates.extract_font_profile(base, xywh)
+            selection = preview_gates.select_font_candidate(profile)
+            if item is not None:
+                item.setdefault("preview_refinement", {})
+                item["preview_refinement"].update({
+                    "original_box": list(original),
+                    "expanded_box": list(refined[-1]),
+                    "expanded_box_xywh": [refined[-1][0], refined[-1][1],
+                                          refined[-1][2] - refined[-1][0],
+                                          refined[-1][3] - refined[-1][1]],
+                    "mask_expansion_state": proposal["state"],
+                    "font_profile": profile,
+                    "font_selection": selection,
+                })
+                metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                item["metadata"] = {
+                    **metadata,
+                    "preview_font_role": selection.get("selected_font"),
+                    "preview_font_match_score": selection.get("font_match_score"),
+                }
+                # The renderer consumes draw_box as the operational safe area for
+                # this draft only. The recorded OCR bounding_box is not rewritten.
+                item["draw_box"] = [refined[-1][0], refined[-1][1],
+                                    refined[-1][2] - refined[-1][0],
+                                    refined[-1][3] - refined[-1][1]]
+            records.append({
+                "region_id": rid or f"changed_region_{index + 1}",
+                "original_box": list(original),
+                "expanded_box": list(refined[-1]),
+                "original_box_xywh": list(xywh),
+                "expanded_box_xywh": [refined[-1][0], refined[-1][1],
+                                      refined[-1][2] - refined[-1][0],
+                                      refined[-1][3] - refined[-1][1]],
+                "expansion": proposal["expansion"],
+                "state": proposal["state"],
+                "residual_detection": proposal["residual_detection"],
+                "font_profile": profile,
+                "font_selection": selection,
+            })
+        return refined, records
+
     # Region geometry in the manifest is (x, y, width, height). Treating it as
     # (left, top, right, bottom) silently inverts the bottom of a page-bottom
     # balloon, so every conversion goes through these helpers.
@@ -2980,6 +3106,8 @@ class ChapterQualityRevision:
                     "rejected_regions": rejected_regions,
                 })
                 continue
+            boxes, mask_refinements = self._refine_changed_region_boxes(
+                base, page, changed_by_page[number], boxes)
             # Erase the previous translation inside the changed regions first, so
             # the renderer draws the new text on clean background instead of on
             # top of the text that is already there.
@@ -2991,6 +3119,7 @@ class ChapterQualityRevision:
                     "status": "rejected",
                     "reason_code": cleanup_reason or "clean_region_background_unavailable",
                     "cleanup": cleanup_metrics,
+                    "mask_refinements": mask_refinements,
                 })
                 continue
             groups = self._groups_from_page_items(page)
@@ -3044,6 +3173,7 @@ class ChapterQualityRevision:
                     "reason_code": "text_overlap_regression_detected",
                     "changed_regions": [item["region_id"] for item in changed_by_page[number]],
                     "overlap": overlap,
+                    "mask_refinements": mask_refinements,
                 })
                 continue
             outside_changed = self._pixels_outside_boxes_changed(base, final, boxes)
@@ -3054,6 +3184,7 @@ class ChapterQualityRevision:
                     "status": "rejected",
                     "reason_code": "unexpected_pixels_outside_changed_regions",
                     "outside_changed_pixels": outside_changed,
+                    "mask_refinements": mask_refinements,
                 })
                 continue
             target = review_pages / f"page_{number:03d}.png"
@@ -3079,6 +3210,7 @@ class ChapterQualityRevision:
                 "changed_boxes": [list(b) for b in boxes],
                 "rejected_regions": rejected_regions,
                 "cleanup": cleanup_metrics,
+                "mask_refinements": mask_refinements,
                 "redrawn_groups": debug_data.get("redrawn_group_count"),
             })
         return rendered_paths, {
@@ -3216,7 +3348,8 @@ class ChapterQualityRevision:
         for item in page.get("debug_data", {}).get("items") or []:
             if not isinstance(item, dict) or item.get("ignored"):
                 continue
-            box = tuple(int(v) for v in (item.get("bounding_box") or [0, 0, 1, 1])[:4])
+            original_box = tuple(int(v) for v in (item.get("bounding_box") or [0, 0, 1, 1])[:4])
+            box = tuple(int(v) for v in (item.get("draw_box") or item.get("bounding_box") or [0, 0, 1, 1])[:4])
             # bounding_box is (x, y, w, h); the polygon corners must come from
             # x+w / y+h, not from w / h treated as absolute right/bottom. The old
             # form built a page-tall vertical sliver whenever y > h, and that
@@ -3235,7 +3368,10 @@ class ChapterQualityRevision:
                 raw_text=str(item.get("raw_text") or item_text(item)),
                 engine=str(item.get("engine") or item.get("source_engine") or ""),
                 page=number,
-                metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
+                metadata={
+                    **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+                    "original_bounding_box": list(original_box),
+                },
                 original_text=str(item.get("original_text") or item_text(item)),
                 repaired_text=str(item.get("repaired_text") or item_text(item)),
                 repair_reason=str(item.get("repair_reason") or ""),

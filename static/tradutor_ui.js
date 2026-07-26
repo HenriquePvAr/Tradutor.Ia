@@ -2576,6 +2576,8 @@
         + `<dt>TRADUÇÃO ATUAL</dt><dd>${escapeHtml(item.current_translation || '—')}</dd>`
         + `<dt>RESPOSTA DO PROVIDER</dt><dd>${escapeHtml(item.provider_candidate || '—')}</dd>`
         + `<dt>DECISÃO HUMANA</dt><dd>${escapeHtml(human || '— ainda não decidida —')}</dd>`
+        + `<dt>MÁSCARAS</dt><dd data-preview-mask-summary="${escapeAttr(region)}">aguardando gate visual</dd>`
+        + `<dt>FONTE</dt><dd data-preview-font-summary="${escapeAttr(region)}">aguardando perfil visual</dd>`
         + `</dl>`
         + `<div class="preview-compare">`
         + `<figure><figcaption>ATUAL</figcaption>`
@@ -2592,10 +2594,12 @@
         + `<div class="audit-actions">`
         + `<button type="button" class="btn-ghost" data-preview-action="approve" data-region="${escapeAttr(region)}">APROVAR TEXTO PARA PRÉVIA</button>`
         + `<button type="button" class="btn-ghost" data-preview-action="edit" data-region="${escapeAttr(region)}">EDITAR TRADUÇÃO HUMANA</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="render" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de renderizar"'}>RENDERIZAR PRÉVIA</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="render" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de renderizar"'}>RENDERIZAR NOVA TENTATIVA</button>`
         + `<button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">ABRIR COMPARAÇÃO</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="reject" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>REJEITAR PRÉVIA</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="discard" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>DESCARTAR RASCUNHO</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="mask" data-region="${escapeAttr(region)}">VER MÁSCARA</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="residual" data-region="${escapeAttr(region)}">VER TINTA RESIDUAL</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="reject" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>REJEITAR NOVA TENTATIVA</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="discard" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>DESCARTAR NOVA TENTATIVA</button>`
         + `</div></article>`;
     }).join('');
     list.innerHTML = `<div class="pr-summary">${Number(data.item_count || 0)} região(ões) do pedido`
@@ -2665,7 +2669,28 @@
               ? `<br>pixels alterados: ${Number(iso.changed_pixels_total)} · dentro da máscara `
                 + `${Number(iso.changed_pixels_inside_mask)} · <strong>fora da máscara `
                 + `${Number(iso.changed_pixels_outside_mask)}</strong>` : '')
+            + `<br>tinta residual: ${Number(gates.visual_gate.residual_source_pixels || 0)}`
+            + ` · componentes ${Number(gates.visual_gate.residual_component_count || 0)}`
             + `<br>estado: ${escapeHtml(gates.state || '')}</div>`;
+        }
+        const maskSummary = $(`#auditList [data-preview-mask-summary="${CSS.escape(region)}"]`);
+        if (maskSummary) {
+          const refinement = gates.mask_refinement || {};
+          const expansion = refinement.expansion || {};
+          const halo = gates.visual_gate.validation_halo || {};
+          maskSummary.textContent = `original ${JSON.stringify(refinement.original_box || gates.visual_gate.original_mask_bounds || [])}`
+            + ` · expandida ${JSON.stringify(refinement.expanded_box || [])}`
+            + ` · halo ${JSON.stringify((halo.boxes || [])[0] || [])}`
+            + ` · expansão L${Number(expansion.left || 0)} R${Number(expansion.right || 0)}`
+            + ` T${Number(expansion.top || 0)} B${Number(expansion.bottom || 0)}`;
+        }
+        const fontSummary = $(`#auditList [data-preview-font-summary="${CSS.escape(region)}"]`);
+        if (fontSummary) {
+          const selection = gates.font_selection || {};
+          fontSummary.textContent = `${selection.selected_font || '—'}`
+            + ` · score ${Number(selection.font_match_score || 0).toFixed(3)}`
+            + ((selection.font_reason_codes || []).length
+              ? ` · ${selection.font_reason_codes.join(', ')}` : '');
         }
       } catch (error) { /* a region with no decision yet has no gate */ }
     }
@@ -2678,6 +2703,8 @@
     try {
       if (action === 'edit') { field?.focus(); field?.select(); return; }
       if (action === 'compare') { openVisualComparison(Number(item.page_number)); return; }
+      if (action === 'mask') { auditMessage('A máscara original, a expandida e o halo estão no bloco de evidências desta região.', 'ok'); return; }
+      if (action === 'residual') { auditMessage('A contagem de tinta residual está no gate visual medido desta região.', 'ok'); return; }
       if (action === 'approve') {
         const text = String(field?.value || '').trim();
         if (!text) { auditMessage('Escreva a tradução humana antes de aprovar.', 'warn'); return; }

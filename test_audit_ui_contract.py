@@ -232,10 +232,11 @@ class AuditUiContracts(unittest.TestCase):
                       "gate visual", "gate linguístico", "reason codes"):
             self.assertIn(label, self.js, label)
 
-    def test_the_six_preview_actions_are_offered(self):
+    def test_the_preview_actions_are_offered(self):
         for label in ("APROVAR TEXTO PARA PRÉVIA", "EDITAR TRADUÇÃO HUMANA",
-                      "RENDERIZAR PRÉVIA", "ABRIR COMPARAÇÃO", "REJEITAR PRÉVIA",
-                      "DESCARTAR RASCUNHO"):
+                      "RENDERIZAR NOVA TENTATIVA", "ABRIR COMPARAÇÃO",
+                      "VER MÁSCARA", "VER TINTA RESIDUAL",
+                      "REJEITAR NOVA TENTATIVA", "DESCARTAR NOVA TENTATIVA"):
             self.assertIn(label, self.js, label)
 
     def test_the_preview_panel_never_offers_to_finish_the_chapter(self):
@@ -255,6 +256,9 @@ class AuditUiContracts(unittest.TestCase):
     def test_the_visual_gate_is_rendered_from_measured_pixels(self):
         # The panel shows the backend's counts; it never decides a gate itself.
         self.assertIn("changed_pixels_outside_mask", self.js)
+        self.assertIn("residual_source_pixels", self.js)
+        self.assertIn("data-preview-mask-summary", self.js)
+        self.assertIn("data-preview-font-summary", self.js)
         self.assertIn("gates.visual_gate.status", self.js)
         self.assertNotIn("visual_gate = 'passed'", self.js)
 

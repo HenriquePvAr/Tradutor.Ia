@@ -25,6 +25,7 @@ import human_translation_decisions as htd
 import linguistic_triage as lt
 import preview_gates as pg
 import provider_execution as pe
+from chapter_quality_revision import ChapterQualityRevision, read_json
 
 
 def _rid(n=8):
@@ -192,6 +193,18 @@ class PreviewGates(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
+    def test_json_reader_accepts_utf8_bom_manifests(self):
+        path = self.out / "manifest.json"
+        path.write_text("\ufeff" + json.dumps({
+            "page_revision_id": "newer-preview",
+            "human_overrides": ["REGION_A"],
+        }), encoding="utf-8")
+
+        loaded = read_json(path, {})
+
+        self.assertEqual(loaded["page_revision_id"], "newer-preview")
+        self.assertEqual(loaded["human_overrides"], ["REGION_A"])
+
     def _pair(self, *, box=(40, 40, 300, 60), dark=False, new_text="TEXTO NOVO",
               draw_outside=False, clip=False):
         base = _page(dark=dark)
@@ -268,6 +281,86 @@ class PreviewGates(unittest.TestCase):
         self.assertIn("residual_ink_outside_mask", gate["reason_codes"])
         self.assertEqual(gate["status"], pg.NEEDS_REVIEW)
         self.assertGreater(gate["residual_ink"][0]["residual_ink_pixels"], 0)
+        self.assertIn("validation_halo", gate)
+
+    def test_residual_detector_proposes_evidence_based_expansion(self):
+        base = _page(width=460)
+        tight = (40, 40, 80, 60)
+        _draw_text(base, (40, 40, 210, 60), "OLD TEXT")
+        proposal = pg.expand_box_using_residual_evidence(base, tight, validation_margin=36)
+        self.assertEqual(proposal["state"], "safe_expansion_available", proposal)
+        self.assertGreater(proposal["expansion"]["right"], 0)
+        self.assertEqual(proposal["expansion"]["left"], 0)
+        self.assertEqual(proposal["residual_detection"]["blocked_directions"], [])
+
+    def test_no_residual_keeps_the_original_change_mask(self):
+        base = _page(width=460)
+        box = (40, 40, 220, 60)
+        _draw_text(base, box, "OLD")
+        proposal = pg.expand_box_using_residual_evidence(base, box)
+        self.assertEqual(proposal["state"], "no_expansion_needed")
+        self.assertEqual(proposal["original_box"], proposal["expanded_box"])
+
+    def test_residual_detector_fails_closed_near_protected_art(self):
+        base = _page(width=460)
+        tight = (40, 40, 80, 60)
+        _draw_text(base, (40, 40, 210, 60), "OLD TEXT")
+        protected = [(125, 38, 170, 104)]
+        proposal = pg.expand_box_using_residual_evidence(base, tight, protected_boxes=protected,
+                                                         validation_margin=36)
+        self.assertEqual(proposal["state"], "ambiguous_expansion")
+        self.assertIn("neighbor_region_collision",
+                      proposal["residual_detection"]["reason_codes"])
+
+    def test_font_profile_and_selection_are_generic(self):
+        base = _page(width=460)
+        box = (40, 40, 220, 60)
+        _draw_text(base, box, "OLD")
+        profile = pg.extract_font_profile(base, box)
+        selection = pg.select_font_candidate(profile)
+        self.assertTrue(profile["available"])
+        self.assertIn(selection["selected_font"], {"regular", "shout", "decorative"})
+        self.assertIn("font_match_score", selection)
+
+    def test_validation_halo_does_not_grant_change_permission(self):
+        bp, dp, box = self._pair()
+        draft = cv2.imread(str(dp))
+        # A deliberate edit in the halo must still fail the change mask rule.
+        x, y, w, h = box
+        cv2.circle(draft, (x + w + 4, y + 10), 3, (0, 0, 0), -1)
+        cv2.imwrite(str(dp), draft)
+        gate = pg.evaluate_visual_gate(bp, dp, boxes=[box])
+        self.assertEqual(gate["change_mask"]["changed_pixels_outside_change_mask"],
+                         gate["isolation"]["changed_pixels_outside_mask"])
+        self.assertGreater(gate["isolation"]["changed_pixels_outside_mask"], 0)
+        self.assertEqual(gate["status"], pg.FAILED)
+
+    def test_preview_draw_box_and_font_role_reach_renderable_group(self):
+        revision = object.__new__(ChapterQualityRevision)
+        page = {
+            "number": 7,
+            "debug_data": {
+                "items": [{
+                    "id": "REGION_A",
+                    "region_id": "REGION_A",
+                    "text": "SOME SOURCE.",
+                    "translation": "ALGUMA FONTE.",
+                    "classification": "speech",
+                    "bounding_box": [10, 20, 80, 30],
+                    "draw_box": [10, 20, 86, 30],
+                    "metadata": {
+                        "preview_font_role": "shout",
+                        "preview_font_match_score": 0.91,
+                    },
+                }]
+            },
+        }
+
+        group = revision._groups_from_page_items(page)[0]
+
+        self.assertEqual(group.box, (10, 20, 86, 30))
+        self.assertEqual(group.lines[0].metadata["original_bounding_box"], [10, 20, 80, 30])
+        self.assertEqual(group.lines[0].metadata["preview_font_role"], "shout")
 
     def test_mismatched_dimensions_fail(self):
         bp, dp, box = self._pair()

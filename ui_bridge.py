@@ -1538,8 +1538,15 @@ class UiBridge:
         draft_path = str((manifest or {}).get("draft_page_path") or "")
 
         box = tuple(record.get("bounding_box") or ())
+        mask_refinement = next((
+            item for item in ((manifest or {}).get("mask_refinements") or [])
+            if str(item.get("region_id") or "") == str(region_id)
+        ), {})
+        gate_box = tuple(mask_refinement.get("expanded_box_xywh") or box)
         if draft_path and Path(draft_path).is_file() and base_page.is_file() and len(box) == 4:
-            visual = preview_gates.evaluate_visual_gate(base_page, draft_path, boxes=[box])
+            visual = preview_gates.evaluate_visual_gate(base_page, draft_path, boxes=[gate_box])
+            visual["original_mask_bounds"] = list(box)
+            visual["mask_refinement"] = mask_refinement
         else:
             # No image is a verdict of its own; the render audit says why.
             audit = read_json(Path(job["output_dir"]) / "quality_revision" / "page_revisions"
@@ -1569,6 +1576,9 @@ class UiBridge:
             "visual_gate": visual,
             "linguistic_gate": linguistic,
             "provider_linguistic_gate": provider_linguistic,
+            "mask_refinement": mask_refinement,
+            "font_profile": (mask_refinement or {}).get("font_profile") or {},
+            "font_selection": (mask_refinement or {}).get("font_selection") or {},
             # Nothing here is final: a rendered draft still awaits a human eye.
             "state": "draft_ready_for_human_visual_approval",
         }

@@ -6539,7 +6539,17 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
     if len(text) > max(1, len(group.text)) * 1.2:
         font_size = max(config.MIN_FONT_SIZE, int(font_size * 0.92))
 
-    if style.name == "decorative_purple":
+    preview_font_role = ""
+    for line in getattr(group, "lines", []) or []:
+        metadata = getattr(line, "metadata", None) or {}
+        candidate_role = str(metadata.get("preview_font_role") or "").strip().lower()
+        if candidate_role in {"regular", "shout", "decorative"}:
+            preview_font_role = candidate_role
+            break
+
+    if preview_font_role:
+        font_role = preview_font_role
+    elif style.name == "decorative_purple":
         font_role = "decorative"
     elif "!" in group.text:
         font_role = "shout"
