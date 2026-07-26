@@ -218,6 +218,46 @@ class AuditUiContracts(unittest.TestCase):
         self.assertIn("createObjectURL", self.js)
         self.assertIn("revokeObjectURL", self.js)
 
+    # --- human previews (BLOCO 6C) ----------------------------------------
+    def test_the_preview_mode_and_its_endpoints_exist(self):
+        self.assertIn("PRÉVIAS HUMANAS", self.shell)
+        for endpoint in ("/api/ui/human-translation/review", "/api/ui/human-translation/record",
+                         "/api/ui/human-translation/draft", "/api/ui/human-translation/gates",
+                         "/api/ui/human-translation/preview-crop", "/api/ui/human-translation/delete"):
+            self.assertIn(endpoint, self.js, endpoint)
+
+    def test_every_state_the_reviewer_must_see_is_labelled(self):
+        for label in ("SOURCE OCR", "SOURCE CORRIGIDO", "TRADUÇÃO ATUAL",
+                      "RESPOSTA DO PROVIDER", "DECISÃO HUMANA",
+                      "gate visual", "gate linguístico", "reason codes"):
+            self.assertIn(label, self.js, label)
+
+    def test_the_six_preview_actions_are_offered(self):
+        for label in ("APROVAR TEXTO PARA PRÉVIA", "EDITAR TRADUÇÃO HUMANA",
+                      "RENDERIZAR PRÉVIA", "ABRIR COMPARAÇÃO", "REJEITAR PRÉVIA",
+                      "DESCARTAR RASCUNHO"):
+            self.assertIn(label, self.js, label)
+
+    def test_the_preview_panel_never_offers_to_finish_the_chapter(self):
+        start = self.js.index("function renderHumanPreviews")
+        body = self.js[start:self.js.index("async function previewAction", start)]
+        for forbidden in ("GERAR PDF", "GERAR V10", "PUBLICAR", "APLICAR CAPÍTULO"):
+            self.assertNotIn(forbidden, body, forbidden)
+
+    def test_rendering_a_preview_states_what_it_does_not_touch(self):
+        start = self.js.index("async function previewAction")
+        body = self.js[start:self.js.index("function selectedTriageRegions", start)]
+        self.assertIn("await auditConfirm(", body)
+        self.assertIn("Nenhuma chamada ao provider", body)
+        for banned in ("window.alert(", "window.confirm(", "window.prompt("):
+            self.assertNotIn(banned, body, banned)
+
+    def test_the_visual_gate_is_rendered_from_measured_pixels(self):
+        # The panel shows the backend's counts; it never decides a gate itself.
+        self.assertIn("changed_pixels_outside_mask", self.js)
+        self.assertIn("gates.visual_gate.status", self.js)
+        self.assertNotIn("visual_gate = 'passed'", self.js)
+
     def test_taxonomy_categories_are_not_page_conditioned(self):
         # No production module keys a decision on a literal page/region number.
         for rel in ("region_taxonomy.py", "linguistic_audit.py", "audit_registry.py",

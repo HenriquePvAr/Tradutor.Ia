@@ -1998,7 +1998,7 @@
 
   /* ---------- linguistic audit review (BLOCO 3) ---------- */
   const auditState = {review: null, mode: 'list', triage: null, providerSet: null,
-    ocrCandidates: null, editorial: null, selection: new Set()};
+    ocrCandidates: null, editorial: null, previews: null, selection: new Set()};
 
   function auditMessage(text, type = '') {
     const node = $('#auditMessage');
@@ -2202,6 +2202,12 @@
   $('#auditFilters')?.addEventListener('input', renderAuditList);
   $('#auditFilters')?.addEventListener('change', renderAuditList);
   $('#auditList')?.addEventListener('click', event => {
+    const preview = event.target.closest('[data-preview-action]');
+    if (preview) {
+      if (preview.disabled) return;
+      void previewAction(preview.dataset.previewAction, String(preview.dataset.region || ''));
+      return;
+    }
     const decide = event.target.closest('[data-audit-decision]');
     if (decide) { auditDecide(decide.dataset.region, decide.dataset.auditDecision); return; }
     const remove = event.target.closest('[data-audit-remove]');
@@ -2238,7 +2244,7 @@
     } catch (_) {}
   }
 
-  const AUDIT_MODES = ['list', 'triage', 'ocr', 'editorial', 'provider'];
+  const AUDIT_MODES = ['list', 'triage', 'ocr', 'editorial', 'provider', 'previews'];
   // Bulk selection is only meaningful where every row is individually pickable.
   const AUDIT_BULK_MODES = ['triage', 'ocr'];
 
@@ -2262,6 +2268,10 @@
       } else if (mode === 'provider') {
         auditState.providerSet = await api('/api/ui/audit/provider-set', {method: 'POST', body: JSON.stringify(id)});
         renderProviderSet();
+      } else if (mode === 'previews') {
+        auditState.previews = await api('/api/ui/human-translation/review', {method: 'POST', body: JSON.stringify(id)});
+        renderHumanPreviews();
+        void loadPreviewGates();
       } else {
         renderAuditCounters(null);
         renderAuditList();
@@ -2540,6 +2550,167 @@
       + `<span class="muted">${escapeHtml(authText)} provider_executed: ${String(auth.provider_executed === true)}</span></div>`
       + (rows || '<div class="muted">Nenhuma região exige a IA.</div>')
       + (held ? `<div class="audit-group"><h4>RETIDAS PARA DECISÃO EDITORIAL <span class="muted">${blocked}</span></h4>${held}</div>` : '');
+  }
+
+  // FASE 13 — every state a human needs to judge a preview, side by side.
+  function renderHumanPreviews() {
+    const list = $('#auditList');
+    const data = auditState.previews;
+    if (!list || !data) return;
+    renderAuditCounters(null);
+    const rows = (data.items || []).map(item => {
+      const region = String(item.region_id || '');
+      const human = item.human_candidate || '';
+      const decided = !!item.human_decision;
+      return `<article class="audit-item preview-item" data-region="${escapeAttr(region)}" data-page="${escapeAttr(item.page_number)}">`
+        + `<div class="audit-item-head"><strong>${escapeHtml(region)}</strong>`
+        + `<span class="audit-cls">${escapeHtml(item.classification_normalized || '')}</span>`
+        + `<span class="audit-flags">página ${escapeHtml(item.page_number)}</span>`
+        + `<span class="triage-gate" data-gate="" data-preview-visual="${escapeAttr(region)}">gate visual …</span>`
+        + `<span class="triage-gate" data-gate="" data-preview-linguistic="${escapeAttr(region)}">gate linguístico …</span>`
+        + `</div>`
+        + `<dl class="preview-states">`
+        + `<dt>SOURCE OCR</dt><dd>${escapeHtml(item.ocr_source_text || '—')}</dd>`
+        + `<dt>SOURCE CORRIGIDO</dt><dd>${escapeHtml(item.sent_text || '—')}`
+        + `<small> (${escapeHtml(item.text_origin || '')})</small></dd>`
+        + `<dt>TRADUÇÃO ATUAL</dt><dd>${escapeHtml(item.current_translation || '—')}</dd>`
+        + `<dt>RESPOSTA DO PROVIDER</dt><dd>${escapeHtml(item.provider_candidate || '—')}</dd>`
+        + `<dt>DECISÃO HUMANA</dt><dd>${escapeHtml(human || '— ainda não decidida —')}</dd>`
+        + `</dl>`
+        + `<div class="preview-compare">`
+        + `<figure><figcaption>ATUAL</figcaption>`
+        + `<img data-preview-crop="${escapeAttr(region)}" data-preview-kind="base" alt=""`
+        + ` aria-label="Região ${escapeAttr(region)} como está hoje"></figure>`
+        + `<figure><figcaption>PRÉVIA</figcaption>`
+        + `<img data-preview-crop="${escapeAttr(region)}" data-preview-kind="draft" alt=""`
+        + ` aria-label="Região ${escapeAttr(region)} na prévia"></figure>`
+        + `</div>`
+        + `<div class="preview-reasons" data-preview-reasons="${escapeAttr(region)}"></div>`
+        + `<div class="audit-corrected"><label>tradução humana`
+        + ` <input type="text" data-human-candidate="${escapeAttr(region)}"`
+        + ` value="${escapeAttr(human)}" placeholder="escreva a linha aprovada"></label></div>`
+        + `<div class="audit-actions">`
+        + `<button type="button" class="btn-ghost" data-preview-action="approve" data-region="${escapeAttr(region)}">APROVAR TEXTO PARA PRÉVIA</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="edit" data-region="${escapeAttr(region)}">EDITAR TRADUÇÃO HUMANA</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="render" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de renderizar"'}>RENDERIZAR PRÉVIA</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">ABRIR COMPARAÇÃO</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="reject" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>REJEITAR PRÉVIA</button>`
+        + `<button type="button" class="btn-ghost" data-preview-action="discard" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>DESCARTAR RASCUNHO</button>`
+        + `</div></article>`;
+    }).join('');
+    list.innerHTML = `<div class="pr-summary">${Number(data.item_count || 0)} região(ões) do pedido`
+      + ` <strong>${escapeHtml(String(data.authorization_request_id || '').slice(0, 8))}</strong>`
+      + ` · modelo ${escapeHtml(data.provider_model || '—')} · ${Number(data.api_requests || 0)} request(s) já feita(s)`
+      + ` · nenhuma nova chamada é feita nesta tela.</div>`
+      + (rows || '<div class="muted">Nenhuma execução de provider para revisar.</div>');
+    void loadPreviewCrops();
+  }
+
+  const previewCropUrls = new Map();
+
+  async function loadPreviewCrops() {
+    const id = pageRevisionIdentity();
+    if (!id.job_id) return;
+    for (const img of $$('#auditList img[data-preview-crop]')) {
+      if (img.dataset.cropLoaded === '1') continue;
+      img.dataset.cropLoaded = '1';
+      const region = String(img.dataset.previewCrop || '');
+      const kind = String(img.dataset.previewKind || 'draft');
+      try {
+        const response = await api('/api/ui/human-translation/preview-crop?' + new URLSearchParams({
+          job_id: id.job_id, run_id: id.run_id || '', region_id: region, kind}), {rawResponse: true});
+        const url = URL.createObjectURL(await response.blob());
+        const key = `${region}:${kind}`;
+        if (previewCropUrls.get(key)) URL.revokeObjectURL(previewCropUrls.get(key));
+        previewCropUrls.set(key, url);
+        img.src = url;
+      } catch (error) {
+        img.replaceWith(Object.assign(document.createElement('div'), {
+          className: 'audit-crop-missing',
+          textContent: kind === 'draft' ? `prévia indisponível: ${error.message || 'não renderizada'}`
+                                        : `imagem indisponível: ${error.message || ''}`,
+        }));
+      }
+    }
+  }
+
+  // Gates are fetched per region: a measured verdict, never inferred from the
+  // presence of a file.
+  async function loadPreviewGates() {
+    const id = pageRevisionIdentity();
+    if (!id.job_id) return;
+    for (const item of (auditState.previews?.items || [])) {
+      const region = String(item.region_id || '');
+      if (!item.human_candidate) continue;
+      try {
+        const gates = await api('/api/ui/human-translation/gates', {method: 'POST',
+          body: JSON.stringify({...id, region_id: region})});
+        const visual = $(`#auditList [data-preview-visual="${CSS.escape(region)}"]`);
+        const ling = $(`#auditList [data-preview-linguistic="${CSS.escape(region)}"]`);
+        if (visual) {
+          visual.textContent = `gate visual ${gates.visual_gate.status}`;
+          visual.dataset.gate = gates.visual_gate.status === 'passed' ? 'passed'
+            : (gates.visual_gate.status === 'failed' ? 'failed' : 'needs_review');
+        }
+        if (ling) {
+          ling.textContent = `gate linguístico ${gates.linguistic_gate.status}`;
+          ling.dataset.gate = gates.linguistic_gate.status;
+        }
+        const box = $(`#auditList [data-preview-reasons="${CSS.escape(region)}"]`);
+        if (box) {
+          const iso = gates.visual_gate.isolation || {};
+          box.innerHTML = `<div class="audit-reasons">reason codes: `
+            + escapeHtml((gates.visual_gate.reason_codes || []).join(', ') || 'nenhum')
+            + (iso.changed_pixels_total !== undefined && iso.changed_pixels_total !== null
+              ? `<br>pixels alterados: ${Number(iso.changed_pixels_total)} · dentro da máscara `
+                + `${Number(iso.changed_pixels_inside_mask)} · <strong>fora da máscara `
+                + `${Number(iso.changed_pixels_outside_mask)}</strong>` : '')
+            + `<br>estado: ${escapeHtml(gates.state || '')}</div>`;
+        }
+      } catch (error) { /* a region with no decision yet has no gate */ }
+    }
+  }
+
+  async function previewAction(action, region) {
+    const id = pageRevisionIdentity();
+    const field = $(`#auditList [data-human-candidate="${CSS.escape(region)}"]`);
+    const item = (auditState.previews?.items || []).find(i => String(i.region_id) === region) || {};
+    try {
+      if (action === 'edit') { field?.focus(); field?.select(); return; }
+      if (action === 'compare') { openVisualComparison(Number(item.page_number)); return; }
+      if (action === 'approve') {
+        const text = String(field?.value || '').trim();
+        if (!text) { auditMessage('Escreva a tradução humana antes de aprovar.', 'warn'); return; }
+        await api('/api/ui/human-translation/record', {method: 'POST',
+          body: JSON.stringify({...id, region_id: region, human_candidate: text})});
+        auditMessage('Texto aprovado para prévia. Nenhum PDF ou página foi alterado.', 'ok');
+      } else if (action === 'render') {
+        const ok = await auditConfirm({
+          title: `RENDERIZAR PRÉVIA — ${region}`,
+          summary: `<p>Cria um rascunho isolado da página, alterando somente esta região.</p>`,
+          effect: 'Nenhum PDF, nenhuma página final e nenhuma publicação são alterados. '
+            + 'Nenhuma chamada ao provider é feita.',
+        });
+        if (!ok) { auditMessage('Operação cancelada.', 'warn'); return; }
+        const result = await api('/api/ui/human-translation/draft', {method: 'POST',
+          body: JSON.stringify({...id, region_id: region})});
+        auditMessage(`Rascunho ${String(result.manifest?.page_revision_id || '').slice(0, 8)} criado `
+          + '(aguardando sua aprovação visual).', 'ok');
+      } else if (action === 'reject' || action === 'discard') {
+        const decision = item.human_decision;
+        if (!decision) { auditMessage('Nada a remover nesta região.', 'warn'); return; }
+        const ok = await auditConfirm({
+          title: `${action === 'reject' ? 'REJEITAR PRÉVIA' : 'DESCARTAR RASCUNHO'} — ${region}`,
+          summary: `<p>Remove a decisão humana registrada para esta região.</p>`,
+          effect: 'Nenhum PDF ou tradução aplicada é alterado.',
+        });
+        if (!ok) { auditMessage('Operação cancelada.', 'warn'); return; }
+        await api('/api/ui/human-translation/delete', {method: 'POST',
+          body: JSON.stringify({...id, decision_id: decision.human_translation_decision_id})});
+        auditMessage('Decisão removida.', 'ok');
+      }
+      await setAuditMode('previews');
+    } catch (error) { auditMessage(error.message || 'Falha na operação.', 'error'); }
   }
 
   function selectedTriageRegions() {
