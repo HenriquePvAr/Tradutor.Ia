@@ -113,3 +113,37 @@ from the report and the job/run/revision, proven against two unrelated synthetic
 chapters. A `provider_required` region is flagged but never triggers a provider
 call by being opened; applying an approved correction stays a later, explicitly
 authorized step.
+
+## Live taxonomy integration (BLOCO 4)
+
+The audit and the live targeted review used to disagree: `_is_reviewable`
+decided from the coarse legacy label alone, so anything bucketed `decorative`
+(or sfx/credit/watermark/editorial) was unreviewable even when the audit had
+normalized it to `decorative_semantic_translate`.
+
+`resolve_region_policy` in `region_taxonomy.py` is now the single source of
+truth. It returns the whole decision for a region:
+
+| field | meaning |
+|-------|---------|
+| `normalized_classification` / `semantic_role` | what the region is |
+| `reviewable` | may enter the targeted review |
+| `translatable` / `preservable` | may be translated / must be kept |
+| `ocr_retry_allowed` | targeted OCR may retry it |
+| `provider_required` | translatable and not answered by cache |
+| `needs_human_review` | ambiguous, unreadable, or preserved-but-semantic |
+| `suggested_action`, `reason_codes`, `confidence`, `taxonomy_version` | evidence trail |
+
+Categories added in taxonomy v2: `thought_translate`,
+`system_message_translate`, `location_translate`, `editorial_translate`,
+`logo_preserve`, `branding_preserve` and `ocr_invalid`.
+
+Every consumer reads that policy — `_is_reviewable`, `list_page_regions`,
+`search_forgotten_text` and the audit records — so the audit and the live review
+can no longer contradict each other. A human decision (`translate`, `preserve`,
+`ocr_invalid`, `needs_review`, `dismissed`) overrides the inferred class but
+never makes a region auto-apply. The frontend renders the backend's booleans and
+normalized class; it does not infer policy from a classification string.
+
+A registered audit built under an older taxonomy version is rebuilt on read;
+tamper, traversal and schema breakage still fail closed.
