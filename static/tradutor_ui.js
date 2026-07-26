@@ -2450,10 +2450,14 @@
         + `<br>recomendação da taxonomia: <strong>${escapeHtml(item.suggested_action || '—')}</strong>`
         + ` (motivos: ${escapeHtml((item.reason_codes || []).join(', ') || 'nenhum')})`
         + `<br>impacto: ${escapeHtml(auditImpact(item))}</div></div></div>`
+        + `<div class="audit-corrected"><label>leitura correta (opcional, vai para os metadados)`
+        + ` <input type="text" data-corrected-reading="${escapeAttr(item.region_id)}"`
+        + ` placeholder="o que a imagem realmente diz"></label></div>`
         + `<div class="audit-actions">`
         + auditDecisionButtons(item.region_id, item.human_decision,
             ['translate', 'preserve', 'needs_review', 'classify_credit',
-             'classify_title_name', 'classify_editorial'],
+             'classify_title_name', 'classify_editorial', 'classify_sfx',
+             'classify_watermark'],
             {translate: 'TRADUZIR', preserve: 'PRESERVAR', needs_review: 'MANTER PENDENTE'})
         + auditRemoveButton(item)
         + `<button type="button" class="btn-ghost" data-audit-revise-region="${escapeAttr(item.region_id)}" data-region-page="${escapeAttr(item.page_number)}">REVISAR ESTA REGIÃO</button>`
