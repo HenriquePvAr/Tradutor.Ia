@@ -627,6 +627,10 @@ _AUDIT_ERROR_MESSAGES = {
     "empty_provider_set": (
         "Nenhuma região precisa de chamada ao provider.",
         "Não há o que autorizar: o conjunto mínimo está vazio."),
+    "ambiguous_regions_need_individual_review": (
+        "A seleção contém leituras ambíguas.",
+        "Em massa só é possível confirmar evidência inequívoca. "
+        "Decida cada leitura ambígua individualmente, olhando o recorte."),
 }
 
 

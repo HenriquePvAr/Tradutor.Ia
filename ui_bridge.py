@@ -1224,6 +1224,19 @@ class UiBridge:
                         if not self._decision_allowed(by_region[r], decision)]
         if incompatible:
             raise ValueError("incompatible_selection")
+        # A bulk ocr_invalid is only for reads the detector could not defend.
+        # An ambiguous read may still be marked invalid, but one region at a
+        # time, after a human has looked at it. Enforced here rather than by
+        # hiding a checkbox, so no caller can route around it.
+        if decision == "ocr_invalid":
+            undefended = [r for r in wanted
+                          if not linguistic_triage.assess_ocr_plausibility(
+                              source_text=by_region[r].get("source_text") or "",
+                              confidence=by_region[r].get("confidence"),
+                              classification=str(by_region[r].get("classification_normalized") or ""),
+                          )["auto_markable"]]
+            if undefended:
+                raise ValueError("ambiguous_regions_need_individual_review")
 
         applied, previous = [], []
         try:

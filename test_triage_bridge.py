@@ -42,6 +42,14 @@ def _sentence():
     return " ".join(random.choice(stock) for _ in range(6)) + "."
 
 
+def _corrupted_read():
+    """A read with unambiguous corruption: one glyph substituted by a digit."""
+    word = random.choice(["MORNING", "SHADOW", "HARBOUR", "LANTERN", "WINDOW"])
+    index = random.randrange(len(word))
+    digit = random.choice("015")
+    return word[:index] + digit + word[index + 1:]
+
+
 class TriageBridgeContracts(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -79,6 +87,8 @@ class TriageBridgeContracts(unittest.TestCase):
              "text": "WHOOSH", "translation": "WHOOSH", "confidence": 0.9, "preserved_original": True},
             {"id": _rand(), "region_id": f"R{_rand()}", "classification": "unknown",
              "text": "QXZKV", "translation": "", "confidence": 0.2},
+            {"id": _rand(), "region_id": f"R{_rand()}", "classification": "speech",
+             "text": _corrupted_read(), "translation": "", "confidence": 0.6},
         ]}])
 
     def _chapter_b(self):
@@ -208,6 +218,31 @@ class TriageBridgeContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incompatible_selection"):
             self.bridge.bulk_audit_decisions(job_id, run_id, region_ids=unreadable,
                                              decision="translate", user_id="u1")
+
+    def test_bulk_ocr_invalid_refuses_ambiguous_reads(self):
+        """FASE 13: bulk is for unambiguous evidence only, from any queue."""
+        job_id, run_id = self._chapter_a()
+        candidates = self.bridge.ocr_invalid_candidates(job_id, run_id, user_id="u1")
+        ambiguous = [i["region_id"] for i in candidates["review_required"]]
+        if not ambiguous:
+            self.skipTest("synthetic chapter produced no ambiguous read this run")
+        with self.assertRaisesRegex(ValueError, "ambiguous_regions_need_individual_review"):
+            self.bridge.bulk_audit_decisions(job_id, run_id, region_ids=ambiguous,
+                                             decision="ocr_invalid", user_id="u1")
+        # The same region may still be decided one at a time.
+        recorded = self.bridge.record_audit_decision(
+            job_id, run_id, region_id=ambiguous[0], decision="ocr_invalid", user_id="u1")
+        self.assertEqual(recorded["decision"], "ocr_invalid")
+
+    def test_bulk_ocr_invalid_accepts_unambiguous_reads(self):
+        job_id, run_id = self._chapter_a()
+        candidates = self.bridge.ocr_invalid_candidates(job_id, run_id, user_id="u1")
+        certain = [i["region_id"] for i in candidates["auto_markable"]]
+        if not certain:
+            self.skipTest("synthetic chapter produced no unambiguous read this run")
+        result = self.bridge.bulk_audit_decisions(job_id, run_id, region_ids=certain,
+                                                  decision="ocr_invalid", user_id="u1")
+        self.assertEqual(result["applied"], len(certain))
 
     def test_bulk_requires_authentication_and_a_selection(self):
         job_id, run_id = self._chapter_a()
