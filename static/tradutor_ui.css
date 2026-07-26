@@ -14,6 +14,10 @@
     --line:rgba(239,231,216,0.14);
     --tab-accent:#c5372c;
     --tab-rgb:197,55,44;
+    /* Surface and foreground of a raised panel. Several dialogs already asked
+       for these and got nothing, which rendered them fully transparent. */
+    --panel:#141319;
+    --fg:var(--paper);
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   html,body{height:100%; overflow:hidden;}

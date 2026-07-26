@@ -161,6 +161,43 @@ class AuditUiContracts(unittest.TestCase):
         for mode in ("'ocr'", "'editorial'"):
             self.assertIn(mode, self.js, mode)
 
+    def test_the_audit_url_carries_the_chapter_identity(self):
+        """F5: 'audit=1' alone cannot be reopened — the restore needs the chapter."""
+        start = self.js.index("function auditSyncUrl")
+        body = self.js[start:self.js.index("async function openLinguisticAudit", start)]
+        for needle in ("'audit', '1'", "'view', 'review'", "'job_id'", "'run_id'"):
+            self.assertIn(needle, body, needle)
+
+    def test_every_css_variable_used_is_defined(self):
+        """An undefined var() silently resolves to nothing.
+
+        That is how four dialogs ended up with no background at all: they asked
+        for a surface colour that was never declared, so they rendered fully
+        transparent over the page behind them.
+        """
+        css = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
+        defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", css))
+        used = set(re.findall(r"var\(\s*(--[a-z0-9-]+)\s*[,)]", css))
+        # A var() with a fallback is fine; only bare ones must resolve.
+        with_fallback = set(re.findall(r"var\(\s*(--[a-z0-9-]+)\s*,", css))
+        missing = sorted((used - defined) - with_fallback)
+        self.assertEqual(missing, [], f"CSS variables used but never defined: {missing}")
+
+    def test_dialogs_declare_an_opaque_surface(self):
+        css = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
+        for selector in (".linguistic-audit{", ".audit-confirm{", ".page-revision{",
+                         ".visual-comparison{"):
+            block = css[css.index(selector):css.index("}", css.index(selector))]
+            self.assertIn("background:", block, selector)
+
+    def test_the_region_crop_is_fetched_with_authentication(self):
+        """An <img src> cannot carry the bearer token, so the bytes are fetched."""
+        self.assertIn("data-crop-region", self.js)
+        self.assertIn("loadAuditCrops", self.js)
+        self.assertIn("rawResponse: true", self.js)
+        self.assertIn("createObjectURL", self.js)
+        self.assertIn("revokeObjectURL", self.js)
+
     def test_taxonomy_categories_are_not_page_conditioned(self):
         # No production module keys a decision on a literal page/region number.
         for rel in ("region_taxonomy.py", "linguistic_audit.py", "audit_registry.py",

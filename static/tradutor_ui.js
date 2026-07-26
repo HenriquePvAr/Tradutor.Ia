@@ -2006,7 +2006,21 @@
   function auditSyncUrl(open) {
     try {
       const url = new URL(window.location.href);
-      if (open) url.searchParams.set('audit', '1'); else url.searchParams.delete('audit');
+      if (open) {
+        url.searchParams.set('audit', '1');
+        // The audit lives inside a chapter review, so its URL has to carry the
+        // chapter's identity too — 'audit=1' alone cannot be reopened after F5.
+        const id = pageRevisionIdentity();
+        const jobId = id.job_id || String(appState.reviewMode?.jobId || '');
+        const runId = id.run_id || String(appState.reviewMode?.runId || '');
+        if (jobId) {
+          url.searchParams.set('view', 'review');
+          url.searchParams.set('job_id', jobId);
+          if (runId) url.searchParams.set('run_id', runId);
+        }
+      } else {
+        url.searchParams.delete('audit');
+      }
       window.history.replaceState({}, '', url);
     } catch (_) {}
   }
@@ -2268,14 +2282,40 @@
   }
 
   // The region's own pixels. A transcription can only be judged against them.
+  // The <img> is filled in by loadAuditCrops: a plain src cannot carry the
+  // authorization header, so the bytes are fetched through the same helper as
+  // every other authenticated call.
   function auditCropBlock(item) {
     if (!item.bounding_box) return '<div class="audit-crop-missing">recorte indisponível: região sem geometria</div>';
-    const id = pageRevisionIdentity();
-    const url = '/api/ui/audit/region-crop?' + new URLSearchParams({
-      job_id: id.job_id || '', run_id: id.run_id || '', region_id: item.region_id || ''});
-    return `<figure class="audit-crop"><img src="${escapeAttr(url)}" loading="lazy"`
-      + ` alt="Recorte da região ${escapeAttr(item.region_id)} na página ${escapeAttr(item.page_number)}">`
+    return `<figure class="audit-crop"><img data-crop-region="${escapeAttr(item.region_id)}" alt=""`
+      + ` aria-label="Recorte da região ${escapeAttr(item.region_id)} na página ${escapeAttr(item.page_number)}">`
       + `<figcaption>página ${escapeHtml(item.page_number)} · caixa ${escapeHtml((item.bounding_box || []).join(', '))}</figcaption></figure>`;
+  }
+
+  const auditCropUrls = new Map();
+
+  async function loadAuditCrops() {
+    const id = pageRevisionIdentity();
+    if (!id.job_id) return;
+    for (const img of $$('#auditList img[data-crop-region]')) {
+      const region = String(img.dataset.cropRegion || '');
+      if (!region || img.dataset.cropLoaded === '1') continue;
+      img.dataset.cropLoaded = '1';
+      try {
+        const response = await api('/api/ui/audit/region-crop?' + new URLSearchParams({
+          job_id: id.job_id, run_id: id.run_id || '', region_id: region}), {rawResponse: true});
+        const url = URL.createObjectURL(await response.blob());
+        const previous = auditCropUrls.get(region);
+        if (previous) URL.revokeObjectURL(previous);
+        auditCropUrls.set(region, url);
+        img.src = url;
+      } catch (error) {
+        img.replaceWith(Object.assign(document.createElement('div'), {
+          className: 'audit-crop-missing',
+          textContent: `recorte indisponível: ${error.message || 'falha ao carregar'}`,
+        }));
+      }
+    }
   }
 
   // Every label the panel offers, including the reclassifications. Kept apart
@@ -2361,6 +2401,7 @@
         data.confirmed || [], 'confirmed')
       || '<div class="muted">Nenhuma leitura suspeita.</div>';
     updateBulkCount();
+    void loadAuditCrops();
   }
 
   // FASE 9 — the questions a human has to answer before any provider call.
@@ -2404,6 +2445,7 @@
     list.innerHTML = `<div class="pr-summary"><strong>${Number(data.item_count || 0)}</strong> região(ões) aguardando decisão editorial`
       + ` em ${Number(data.page_count || 0)} página(s). Enquanto houver pendências, a autorização fica bloqueada.</div>`
       + (rows || '<div class="muted">Nenhuma decisão editorial pendente.</div>');
+    void loadAuditCrops();
   }
 
   function renderTriageQueue() {
