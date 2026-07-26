@@ -176,3 +176,28 @@ rejected, and a failure rolls back. The provider mode ends in a button that only
 records a **pending** authorization request — it requires explicit confirmation,
 reads no credential and never contacts the provider. Running that set stays a
 separate, human-authorized step.
+
+## Final triage before provider authorization (BLOCO 6A)
+
+Two conflations were corrected here, both of which had been quietly distorting
+what still needs a provider call:
+
+1. **"A cache entry exists" ≠ "a fix exists" ≠ "must re-ask".**
+   `evaluate_cache_proposal` now reports `usable` (a correction that can be
+   drafted) and `answered` (the provider already ruled) separately, and refuses
+   an answer recorded for a different region. `cache_status` follows *answered*;
+   `cache_correction_available` follows *usable*.
+2. **An answered region is only resolved if the answer held up.** A cached
+   answer that left the region reading like its source, or empty, resolved
+   nothing, so it is no longer excluded from the provider set when the
+   linguistic gate failed on it.
+
+`ocr_reprocessing_candidates` lists regions whose source text cannot be trusted
+— an explicit human `ocr_invalid` verdict, an unreadable class, or a gate that
+flagged the source as unreadable. It only *requests* targeted OCR; it never runs
+OCR and never proposes a translation.
+
+The practical consequence on a real chapter: a provider set can be dominated by
+corrupted OCR reads that merely *look* word-like. Triaging those to
+`ocr_invalid` is what legitimately shrinks the set — never dropping items to
+make the number smaller.
