@@ -168,6 +168,26 @@ class AuditUiContracts(unittest.TestCase):
         for needle in ("'audit', '1'", "'view', 'review'", "'job_id'", "'run_id'"):
             self.assertIn(needle, body, needle)
 
+    def test_diagnostics_probes_a_method_the_store_really_has(self):
+        """A hasattr guard on a name that does not exist always reports offline."""
+        from job_store import JobStore
+
+        app = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        probe = re.search(r"BRIDGE\.store\.(\w+)\(\)\s*$", app, re.M)
+        block = app[app.index("def api_diagnostics"):app.index("_AUDIT_ERROR_MESSAGES")]
+        called = set(re.findall(r"BRIDGE\.store\.(\w+)\(", block))
+        self.assertTrue(called, "diagnostics must probe the worker")
+        for name in called:
+            self.assertTrue(hasattr(JobStore, name),
+                            f"diagnostics calls store.{name}(), which does not exist")
+
+    def test_diagnostics_reports_the_triage_schema_versions(self):
+        app = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        for key in ("gate_version", "ocr_plausibility_version", "worker_pid"):
+            self.assertIn(f'"{key}"', app, key)
+        for key in ("gate_version", "ocr_plausibility_version", "worker_pid"):
+            self.assertIn(key, self.js, f"{key} is not surfaced in the UI")
+
     def test_every_css_variable_used_is_defined(self):
         """An undefined var() silently resolves to nothing.
 

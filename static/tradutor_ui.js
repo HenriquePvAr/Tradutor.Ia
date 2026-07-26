@@ -1601,7 +1601,9 @@
       diagnostics.dataset.loaded = '1';
       api('/api/ui/diagnostics').then(info => {
         diagnostics.textContent = `build ${String(info.git_head || '').slice(0, 7)} · pid ${info.pid}`
-          + ` · worker ${info.worker_online ? 'online' : 'offline'} · taxonomia v${info.taxonomy_version}`
+          + ` · worker ${info.worker_online ? `online (pid ${info.worker_pid ?? '?'})` : 'offline'}`
+          + ` · taxonomia v${info.taxonomy_version} · gate v${info.gate_version ?? '?'}`
+          + ` · detector OCR v${info.ocr_plausibility_version ?? '?'}`
           + ` · schema ${info.review_schema_version} · desde ${String(info.server_started_at || '').slice(0, 19)}`;
       }).catch(() => { diagnostics.textContent = 'diagnóstico indisponível'; delete diagnostics.dataset.loaded; });
     }

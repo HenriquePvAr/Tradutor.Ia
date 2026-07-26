@@ -601,7 +601,13 @@ def api_diagnostics(request: Request) -> dict[str, Any]:
                        text=True, timeout=5, **hidden_console_options()).stdout.strip()
     except Exception:  # noqa: BLE001 - diagnostics must never break the UI
         head = ""
-    worker = BRIDGE.store.online_worker() if hasattr(BRIDGE.store, "online_worker") else None
+    # healthy_worker is the store's real probe. The previous name did not exist,
+    # so hasattr always failed and diagnostics reported the worker offline even
+    # while it was serving.
+    try:
+        worker = BRIDGE.store.healthy_worker()
+    except Exception:  # noqa: BLE001 - diagnostics must never break the UI
+        worker = None
     return {
         "git_head": head,
         "pid": os.getpid(),
