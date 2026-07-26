@@ -104,6 +104,12 @@ class NeverAutoMarked(unittest.TestCase):
         for text in ("Xi", "Qi", "Ur", "Zed"):
             self._assert_safe(text, confidence=0.9)
 
+    def test_alphanumeric_identifiers(self):
+        """An invite code or model number legitimately mixes letters and digits."""
+        for text in ("TY6EDWKC4G", "discord.gg/TY6EDWKC4G", "MODEL A4X7", "R2D2"):
+            result = self._assert_safe(text, confidence=0.9)
+            self.assertNotIn("digit_inside_word", result["strong_evidence"], text)
+
 
 class DetectsCorruptedReads(unittest.TestCase):
     """The positive side: unambiguous corruption is caught."""
