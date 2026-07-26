@@ -46,10 +46,12 @@ from chapter_quality_revision import (REVISION_IN_FLIGHT_STATUSES, ChapterQualit
                                       read_json, write_json)
 import audit_registry
 import human_translation_decisions
+import human_mask_decisions
 import human_typography_decisions
 import linguistic_audit
 import linguistic_triage
 import font_fidelity
+import art_text_inpainting
 import preview_gates
 import provider_execution
 import region_taxonomy
@@ -324,6 +326,7 @@ class UiBridge:
         self.audit_decisions = AuditDecisionStore(JOBS_DB_PATH)
         self.human_translations = human_translation_decisions.HumanTranslationDecisionStore(JOBS_DB_PATH)
         self.human_typography = human_typography_decisions.HumanTypographyDecisionStore(JOBS_DB_PATH)
+        self.human_masks = human_mask_decisions.HumanMaskDecisionStore(JOBS_DB_PATH)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
@@ -1599,6 +1602,53 @@ class UiBridge:
         self.history_revision += 1
         return {"ok": True, "font_choice": choice}
 
+    def choose_delegated_human_typography(self, job_id: str, run_id: str, *, region_id: str,
+                                          candidate_id: str, user_id: str,
+                                          selection: dict[str, Any]) -> dict[str, Any]:
+        """Persist an explicitly delegated font decision for one preview.
+
+        Delegation is operation-scoped metadata.  It does not create a runtime
+        rule and it does not render a draft by itself.
+        """
+        data = self._human_font_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        candidates = font_fidelity.generate_typography_candidates(
+            self._font_context_crop(data), str(data["decision"].get("human_candidate") or ""),
+            max_candidates=5, min_candidates=3,
+            target_box=(int(data["box"][2]), int(data["box"][3])))
+        candidate = next((item for item in candidates
+                          if str(item.get("candidate_id") or "") == str(candidate_id)), None)
+        if not candidate:
+            raise ValueError("font_candidate_not_found")
+        selected = selection.get("selected") or {}
+        runner_up = selection.get("runner_up") or {}
+        choice = self.human_typography.upsert(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""), revision_id=str(data["ctx"]["revision_id"]),
+            page_id=str(data["decision"].get("page_id") or ""), region_id=str(region_id),
+            source_hash=str(data["decision"].get("source_text_hash") or ""),
+            human_translation_decision_id=str(data["decision"].get("human_translation_decision_id") or ""),
+            candidate=candidate, status="selected_for_preview_generation",
+            visual_evidence={
+                "reason_codes": selection.get("reason_codes") or [],
+                "delegated_visual_score": selected.get("delegated_visual_score"),
+                "style_score": selected.get("style_score"),
+                "stroke_score": selected.get("stroke_score"),
+                "condensation_score": selected.get("condensation_score"),
+                "spacing_score": selected.get("spacing_score"),
+                "fit_score": selected.get("fit_score"),
+                "overall_score": selected.get("overall_score"),
+            },
+            selection_reason="best measured display-style match under delegated user authorization",
+            runner_authorization="delegated_by_user",
+            confidence=float(selection.get("confidence") or 0.0),
+            runner_up_candidate={
+                key: runner_up.get(key)
+                for key in ("candidate_id", "actual_font", "font_path_hash",
+                            "delegated_visual_score", "style_score", "overall_score")
+            })
+        self.history_revision += 1
+        return {"ok": True, "font_choice": choice, "selection": selection}
+
     def human_typography_candidate_asset(self, asset: str) -> Path:
         root = (REPO_ROOT / ".cache" / "runtime" / "human_font_candidates").resolve()
         path = (root / str(asset or "")).resolve()
@@ -1613,6 +1663,162 @@ class UiBridge:
             raise ValueError("font_choice_base_page_unavailable")
         x, y, w, h = data["box"]
         return image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+
+    def _mask_editor_context(self, job_id: str, run_id: str, *, region_id: str,
+                             user_id: str) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+        decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        if not decision:
+            raise ValueError("human_decision_not_found")
+        box = tuple(int(v) for v in (record.get("bounding_box") or [])[:4])
+        if len(box) != 4 or box[2] <= 0 or box[3] <= 0:
+            raise ValueError("mask_region_geometry_unavailable")
+        page = int(record.get("page_number") or 0)
+        if page <= 0:
+            raise ValueError("page_not_resolved_for_region")
+        base_page = Path(job["output_dir"]) / "pages" / f"p{page:03d}.png"
+        if not base_page.is_file():
+            base_page = Path(job["output_dir"]) / "pages" / f"page_{page:03d}.png"
+        if not base_page.is_file():
+            raise ValueError("mask_base_page_unavailable")
+        return {"ctx": ctx, "job": job, "record": record, "decision": decision,
+                "box": box, "page": page, "base_page": base_page}
+
+    def _mask_editor_cache_dir(self, *, job_id: str, run_id: str, revision_id: str,
+                               region_id: str, source_hash: str) -> Path:
+        token = hashlib.sha256(
+            f"{job_id}:{run_id}:{revision_id}:{region_id}:{source_hash}".encode("utf-8")
+        ).hexdigest()[:24]
+        return REPO_ROOT / ".cache" / "runtime" / "human_mask_editor" / token
+
+    def human_mask_editor_state(self, job_id: str, run_id: str, *, region_id: str,
+                                user_id: str) -> dict[str, Any]:
+        import cv2
+        import numpy as np
+
+        data = self._mask_editor_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        image = cv2.imread(str(data["base_page"]))
+        if image is None:
+            raise ValueError("mask_base_page_unavailable")
+        x, y, w, h = data["box"]
+        crop = image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+        layers = art_text_inpainting.segment_text_layers(crop)
+        combined_mask = layers.get("combined_text_mask")
+        if combined_mask is None:
+            combined_mask = layers.get("combined_inpainting_mask")
+        if combined_mask is None:
+            raise ValueError("mask_combined_layer_unavailable")
+        base_hash = hashlib.sha256(np.asarray(combined_mask).tobytes()).hexdigest()
+        cache_dir = self._mask_editor_cache_dir(
+            job_id=str(data["job"]["id"]), run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            source_hash=str(data["decision"].get("source_text_hash") or ""))
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        assets: dict[str, str] = {}
+        cv2.imwrite(str(cache_dir / "auto_segmentation.png"), crop)
+        assets["auto_segmentation"] = f"human_mask_editor/{cache_dir.name}/auto_segmentation.png"
+        layer_keys = (
+            ("text_core_mask", "text_core_mask"),
+            ("outline_mask", "outline_mask"),
+            ("antialias_mask", "antialias_mask"),
+            ("combined_text_mask", "combined_inpainting_mask"),
+            ("validation_halo", "validation_halo"),
+            ("protected_edge_mask", "protected_edge_mask"),
+            ("background_art_mask", "background_art_mask"),
+        )
+        for public_key, layer_key in layer_keys:
+            value = layers.get(public_key)
+            if value is None:
+                value = layers.get(layer_key)
+            if value is None:
+                continue
+            path = cache_dir / f"{public_key}.png"
+            cv2.imwrite(str(path), value)
+            assets[public_key] = f"human_mask_editor/{cache_dir.name}/{public_key}.png"
+        latest = self.human_masks.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            base_segmentation_hash=base_hash)
+        return {
+            "job_id": str(data["job"]["id"]),
+            "run_id": str(data["job"].get("run_id") or ""),
+            "revision_id": str(data["ctx"]["revision_id"]),
+            "page_id": str(data["decision"].get("page_id") or ""),
+            "region_id": str(region_id),
+            "source_hash": str(data["decision"].get("source_text_hash") or ""),
+            "base_segmentation_hash": base_hash,
+            "region_box": list(data["box"]),
+            "assets": assets,
+            "automatic_segmentation": {
+                "valid": bool(layers.get("valid")),
+                "reason_codes": [str(v) for v in (layers.get("reason_codes") or [])],
+                "mask_ratio": float(layers.get("mask_ratio") or 0.0),
+                "mask_precision": float(layers.get("mask_precision") or 0.0),
+                "mask_ambiguity": float(layers.get("mask_ambiguity") or 0.0),
+                "status": (
+                    "candidate_only" if layers.get("valid")
+                    else "blocked_pending_human_mask"
+                ),
+            },
+            "tools": [
+                "include_text", "exclude_art", "protect_lines", "mark_uncertain",
+                "eraser", "undo", "redo", "restore_automatic", "save_draft",
+                "confirm_mask",
+            ],
+            "message": "Confirmar esta máscara permite apenas criar uma tentativa de reconstrução local. Nenhuma página definitiva ou PDF será alterado.",
+            "decision": latest or {},
+            "inpainting_status": "blocked_pending_human_mask",
+        }
+
+    def human_mask_editor_asset(self, asset: str) -> Path:
+        root = (REPO_ROOT / ".cache" / "runtime").resolve()
+        path = (root / str(asset or "")).resolve()
+        allowed = (REPO_ROOT / ".cache" / "runtime" / "human_mask_editor").resolve()
+        if allowed not in path.parents or not path.is_file() or root not in path.parents:
+            raise ValueError("human_mask_asset_not_found")
+        return path
+
+    def save_human_mask_draft(self, job_id: str, run_id: str, *, region_id: str,
+                              user_id: str, payload: dict[str, Any],
+                              confirm: bool = False) -> dict[str, Any]:
+        data = self._mask_editor_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        state = self.human_mask_editor_state(job_id, run_id, region_id=region_id, user_id=user_id)
+        status = "confirmed" if confirm else "draft"
+        validation = {}
+        if confirm:
+            validation = human_mask_decisions.validate_mask_payload(
+                {
+                    **payload,
+                    "source_hash": state["source_hash"],
+                    "base_segmentation_hash": state["base_segmentation_hash"],
+                },
+                region_box=state["region_box"],
+                base_segmentation_hash=state["base_segmentation_hash"],
+                source_hash=state["source_hash"],
+            )
+        decision = self.human_masks.upsert(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""), revision_id=str(data["ctx"]["revision_id"]),
+            page_id=str(data["decision"].get("page_id") or ""), region_id=str(region_id),
+            source_hash=state["source_hash"], base_segmentation_hash=state["base_segmentation_hash"],
+            include_mask=payload.get("include_mask") or [],
+            exclude_mask=payload.get("exclude_mask") or [],
+            protected_mask=payload.get("protected_mask") or [],
+            uncertain_mask=payload.get("uncertain_mask") or [],
+            validation=validation, notes=str(payload.get("notes") or ""), status=status)
+        self.history_revision += 1
+        return {"ok": True, "mask_decision": decision, "inpainting_status": "blocked_pending_human_mask"}
 
     def create_human_preview_draft(self, job_id: str, run_id: str, *, region_id: str,
                                    user_id: str, request_id: str = "",

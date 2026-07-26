@@ -14,8 +14,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "1"
-STATUSES = ("selected", "draft_rendered", "discarded")
+SCHEMA_VERSION = "2"
+STATUSES = ("selected", "selected_for_preview_generation", "draft_rendered", "discarded")
+OPTIONAL_COLUMNS = {
+    "requested_font": "TEXT NOT NULL DEFAULT ''",
+    "visual_evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+    "selection_reason": "TEXT NOT NULL DEFAULT ''",
+    "runner_authorization": "TEXT NOT NULL DEFAULT ''",
+    "confidence": "REAL NOT NULL DEFAULT 0",
+    "runner_up_candidate_json": "TEXT NOT NULL DEFAULT '{}'",
+}
 
 
 def _utc_now() -> str:
@@ -52,7 +60,19 @@ class HumanTypographyDecisionStore:
                        human_translation_decision_id, candidate_id, font_file_hash)
             )
         """)
+        self._ensure_optional_columns()
         self._conn.commit()
+
+    def _ensure_optional_columns(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(human_typography_decisions)")
+        }
+        for name, ddl in OPTIONAL_COLUMNS.items():
+            if name not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE human_typography_decisions ADD COLUMN {name} {ddl}"
+                )
 
     def close(self) -> None:
         try:
@@ -63,7 +83,10 @@ class HumanTypographyDecisionStore:
     def upsert(self, *, owner: str, job_id: str, run_id: str, revision_id: str,
                page_id: str, region_id: str, source_hash: str,
                human_translation_decision_id: str, candidate: dict[str, Any],
-               status: str = "selected") -> dict[str, Any]:
+               status: str = "selected", visual_evidence: dict[str, Any] | None = None,
+               selection_reason: str = "", runner_authorization: str = "",
+               confidence: float = 0.0,
+               runner_up_candidate: dict[str, Any] | None = None) -> dict[str, Any]:
         if not str(owner or "").strip():
             raise ValueError("authentication_required")
         if status not in STATUSES:
@@ -91,11 +114,17 @@ class HumanTypographyDecisionStore:
             "candidate_id": candidate_id,
             "font_identity": str(candidate.get("actual_font") or candidate.get("font_identity") or ""),
             "font_file_hash": font_hash,
+            "requested_font": str(candidate.get("requested_font") or ""),
             "render_parameters_json": json.dumps({
                 key: candidate.get(key)
                 for key in ("requested_font", "font_size", "tracking", "slant", "resolved_font_path")
                 if key in candidate
             }, ensure_ascii=False, sort_keys=True),
+            "visual_evidence_json": json.dumps(visual_evidence or {}, ensure_ascii=False, sort_keys=True),
+            "selection_reason": str(selection_reason or ""),
+            "runner_authorization": str(runner_authorization or ""),
+            "confidence": float(confidence or 0.0),
+            "runner_up_candidate_json": json.dumps(runner_up_candidate or {}, ensure_ascii=False, sort_keys=True),
             "created_at": (existing or {}).get("created_at") or now,
             "updated_at": now,
             "status": status,
@@ -161,4 +190,12 @@ class HumanTypographyDecisionStore:
             payload["render_parameters"] = json.loads(str(payload.pop("render_parameters_json", "{}") or "{}"))
         except ValueError:
             payload["render_parameters"] = {}
+        for column, output_name in (
+            ("visual_evidence_json", "visual_evidence"),
+            ("runner_up_candidate_json", "runner_up_candidate"),
+        ):
+            try:
+                payload[output_name] = json.loads(str(payload.pop(column, "{}") or "{}"))
+            except ValueError:
+                payload[output_name] = {}
         return payload

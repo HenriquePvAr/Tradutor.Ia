@@ -1759,6 +1759,16 @@
   .font-choice-card dl{display:grid; grid-template-columns:auto 1fr; gap:2px 7px; font-size:10px; margin:0;}
   .font-choice-card dt{color:var(--muted); text-transform:uppercase;}
   .font-choice-card dd{margin:0; color:var(--paper); overflow-wrap:anywhere;}
+  .hm-refine-panel{margin-top:8px; border:1px solid var(--line); border-radius:8px; padding:10px; background:rgba(255,255,255,.025);}
+  .hm-refine-panel p{margin:0 0 9px; color:var(--muted); font-size:11px; line-height:1.45;}
+  .hm-refine-panel dl{display:grid; grid-template-columns:auto 1fr; gap:3px 8px; font-size:10px; margin:0 0 10px;}
+  .hm-refine-panel dt{color:var(--muted); text-transform:uppercase;}
+  .hm-refine-panel dd{margin:0; color:var(--paper); overflow-wrap:anywhere;}
+  .hm-refine-tools{display:flex; flex-wrap:wrap; gap:7px; margin:8px 0 10px;}
+  .hm-layer-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;}
+  .hm-layer-grid figure{margin:0; border:1px solid var(--line); border-radius:7px; padding:7px; background:var(--panel);}
+  .hm-layer-grid figcaption{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--gold); margin-bottom:5px;}
+  .hm-layer-grid img{width:100%; max-height:180px; object-fit:contain; background:#111; border-radius:5px;}
   @media (max-width:640px){ .preview-compare figure{flex:1 1 100%;} }
   .audit-context{font-size:10px; color:var(--muted); margin-top:4px;}
   .audit-context small{text-transform:uppercase; letter-spacing:.05em; margin-right:4px;}

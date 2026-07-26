@@ -433,6 +433,77 @@ def generate_typography_candidates(
     return unique
 
 
+def select_delegated_typography_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Select a preview font only after explicit user delegation.
+
+    The ranking is based on measured candidate properties.  It intentionally
+    does not inspect page ids, region ids, chapter names, source text, or font
+    names as special cases.
+    """
+    acceptable: list[dict[str, Any]] = []
+    for candidate in candidates:
+        glyph_status = (candidate.get("glyph_support") or {}).get("status")
+        if not candidate.get("font_load_success"):
+            continue
+        if candidate.get("fallback_used"):
+            continue
+        if glyph_status != "complete":
+            continue
+        if float(candidate.get("fit_score") or 0.0) < 1.0:
+            continue
+        visual_score = (
+            0.30 * float(candidate.get("style_score") or 0.0)
+            + 0.22 * float(candidate.get("stroke_score") or 0.0)
+            + 0.18 * float(candidate.get("condensation_score") or 0.0)
+            + 0.12 * float(candidate.get("spacing_score") or 0.0)
+            + 0.10 * float(candidate.get("raster_similarity") or 0.0)
+            + 0.08 * float(candidate.get("fit_score") or 0.0)
+        )
+        item = dict(candidate)
+        item["delegated_visual_score"] = round(visual_score, 4)
+        acceptable.append(item)
+    if not acceptable:
+        return {
+            "status": "no_acceptable_typography_candidate",
+            "selected": {},
+            "runner_up": {},
+            "confidence": 0.0,
+            "reason_codes": ["no_candidate_passed_safety_preconditions"],
+        }
+    acceptable.sort(
+        key=lambda item: (
+            float(item.get("delegated_visual_score") or 0.0),
+            float(item.get("style_score") or 0.0),
+            float(item.get("stroke_score") or 0.0),
+            float(item.get("condensation_score") or 0.0),
+            float(item.get("overall_score") or 0.0),
+        ),
+        reverse=True,
+    )
+    selected = acceptable[0]
+    runner_up = acceptable[1] if len(acceptable) > 1 else {}
+    delta = (
+        float(selected.get("delegated_visual_score") or 0.0)
+        - float(runner_up.get("delegated_visual_score") or 0.0)
+        if runner_up else float(selected.get("delegated_visual_score") or 0.0)
+    )
+    confidence = max(0.0, min(1.0, 0.65 + delta))
+    return {
+        "status": "selected_for_preview_generation",
+        "selected": selected,
+        "runner_up": runner_up,
+        "confidence": round(confidence, 3),
+        "reason_codes": [
+            "delegated_by_user",
+            "font_load_success",
+            "no_fallback",
+            "complete_glyph_support",
+            "text_fits_target",
+            "best_measured_visual_match",
+        ],
+    }
+
+
 def score_font_candidates(reference_raster: np.ndarray, text: str, *,
                           configured_font_path: str | None = None,
                           roles: tuple[str, ...] = ("regular", "shout", "decorative"),

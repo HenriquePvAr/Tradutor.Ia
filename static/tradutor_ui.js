@@ -2629,13 +2629,13 @@
       const actionButtons = blocked
         ? `<button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">VER DETALHES</button>`
           + fontButton
-          + `<button type="button" class="btn-ghost" data-preview-action="mask" data-region="${escapeAttr(region)}">VER MÁSCARA</button>`
+          + `<button type="button" class="btn-ghost" data-preview-action="mask-editor" data-region="${escapeAttr(region)}">REFINAR MÁSCARA</button>`
         : `<button type="button" class="btn-ghost" data-preview-action="approve" data-region="${escapeAttr(region)}">APROVAR TEXTO PARA PRÉVIA</button>`
           + `<button type="button" class="btn-ghost" data-preview-action="edit" data-region="${escapeAttr(region)}">EDITAR TRADUÇÃO HUMANA</button>`
           + fontButton
           + `<button type="button" class="btn-ghost" data-preview-action="render" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de renderizar"'}>RENDERIZAR NOVA TENTATIVA</button>`
           + `<button type="button" class="btn-primary" data-preview-action="compare" data-region="${escapeAttr(region)}">${ready ? 'ABRIR PRÉVIA DA PÁGINA' : 'ABRIR COMPARAÇÃO'}</button>`
-          + `<button type="button" class="btn-ghost" data-preview-action="mask" data-region="${escapeAttr(region)}">VER MÁSCARA</button>`
+          + `<button type="button" class="btn-ghost" data-preview-action="mask-editor" data-region="${escapeAttr(region)}">REFINAR MÁSCARA</button>`
           + `<button type="button" class="btn-ghost" data-preview-action="residual" data-region="${escapeAttr(region)}">VER TINTA RESIDUAL</button>`
           + `<button type="button" class="btn-ghost" data-preview-action="reject" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>PEDIR AJUSTE / REJEITAR PRÉVIA</button>`
           + `<button type="button" class="btn-ghost" data-preview-action="discard" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>DESCARTAR RASCUNHO</button>`;
@@ -2802,6 +2802,50 @@
         return;
       }
       if (action === 'mask') { auditMessage('A máscara original, a expandida e o halo estão no bloco de evidências desta região.', 'ok'); return; }
+      if (action === 'mask-editor') {
+        const data = await api('/api/ui/human-mask/editor-state', {method: 'POST',
+          body: JSON.stringify({...id, region_id: region})});
+        const box = $(`#auditList [data-preview-reasons="${CSS.escape(region)}"]`);
+        if (box) {
+          const assets = data.assets || {};
+          const assetImg = (key, label) => assets[key]
+            ? `<figure><figcaption>${escapeHtml(label)}</figcaption><img src="/api/ui/human-mask/asset?asset=${encodeURIComponent(assets[key])}" alt="${escapeAttr(label)} da região ${region}"></figure>`
+            : `<figure><figcaption>${escapeHtml(label)}</figcaption><div class="visual-comparison-empty">camada indisponível</div></figure>`;
+          const auto = data.automatic_segmentation || {};
+          box.innerHTML = `<section class="hm-refine-panel" aria-live="polite">`
+            + `<p>${escapeHtml(data.message || 'Refine a máscara com segurança antes de qualquer reconstrução local.')}</p>`
+            + `<dl><dt>estado</dt><dd>${escapeHtml(auto.status || 'blocked_pending_human_mask')}</dd>`
+            + `<dt>ratio</dt><dd>${Number(auto.mask_ratio || 0).toFixed(4)}</dd>`
+            + `<dt>precisão</dt><dd>${Number(auto.mask_precision || 0).toFixed(4)}</dd>`
+            + `<dt>guards</dt><dd>${escapeHtml((auto.reason_codes || []).join(', ') || 'sem bloqueio automático')}</dd></dl>`
+            + `<div class="hm-refine-tools" role="toolbar" aria-label="Ferramentas de refinamento de máscara">`
+            + `<button type="button" class="btn-ghost" data-mask-tool="include_text">INCLUIR TEXTO</button>`
+            + `<button type="button" class="btn-ghost" data-mask-tool="exclude_art">EXCLUIR ARTE</button>`
+            + `<button type="button" class="btn-ghost" data-mask-tool="protect_lines">PROTEGER LINHAS</button>`
+            + `<button type="button" class="btn-ghost" data-mask-tool="mark_uncertain">MARCAR INCERTO</button>`
+            + `<button type="button" class="btn-ghost" data-mask-tool="eraser">BORRACHA</button>`
+            + `<button type="button" class="btn-ghost" data-mask-tool="undo">DESFAZER</button>`
+            + `<button type="button" class="btn-ghost" data-mask-tool="redo">REFAZER</button>`
+            + `<button type="button" class="btn-ghost" data-mask-tool="restore_automatic">RESTAURAR AUTOMÁTICA</button>`
+            + `<button type="button" class="btn-ghost" data-preview-action="mask-save" data-region="${escapeAttr(region)}">SALVAR RASCUNHO</button>`
+            + `<button type="button" class="btn-primary" data-preview-action="mask-confirm" data-region="${escapeAttr(region)}">CONFIRMAR MÁSCARA</button></div>`
+            + `<div class="hm-layer-grid">${assetImg('auto_segmentation', 'original/recorte')}`
+            + assetImg('text_core_mask', 'texto core') + assetImg('outline_mask', 'contorno')
+            + assetImg('antialias_mask', 'antialias') + assetImg('combined_text_mask', 'máscara combinada')
+            + assetImg('validation_halo', 'halo de validação')
+            + assetImg('protected_edge_mask', 'arte protegida') + assetImg('background_art_mask', 'fundo/arte') + `</div>`
+            + `<p class="muted">Sem confirmação humana, o inpainting permanece bloqueado: ${escapeHtml(data.inpainting_status || 'blocked_pending_human_mask')}.</p>`
+            + `</section>`;
+          bindPreviewActionButtons(box);
+        }
+        return;
+      }
+      if (action === 'mask-save' || action === 'mask-confirm') {
+        auditMessage(action === 'mask-confirm'
+          ? 'Confirmação real da máscara exige edição humana na ferramenta; nenhum inpainting foi iniciado.'
+          : 'Rascunho visual preparado. Nenhum inpainting ou página definitiva foi alterado.', 'warn');
+        return;
+      }
       if (action === 'residual') { auditMessage('A contagem de tinta residual está no gate visual medido desta região.', 'ok'); return; }
       if (action === 'font-options') {
         const data = await api('/api/ui/human-translation/font-candidates', {method: 'POST',

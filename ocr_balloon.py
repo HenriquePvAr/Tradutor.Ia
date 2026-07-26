@@ -6582,7 +6582,7 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
         font_size -= 1
 
     font_size = max(config.MIN_FONT_SIZE, font_size)
-    font = get_font(font_path, font_size, role=font_role,
+    font = get_font(preview_font_path or font_path, font_size, role=font_role,
                     prefer_role=prefer_preview_role, text=text)
     group.font_runtime_validation = dict(getattr(font, "tradutor_font_runtime", {}) or {})
     group.font_size = font_size

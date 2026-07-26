@@ -646,6 +646,33 @@ _AUDIT_ERROR_MESSAGES = {
     "font_choice_region_geometry_unavailable": (
         "A região não possui geometria suficiente para comparar tipografia.",
         "Revise a região e confirme a caixa antes de escolher a fonte."),
+    "mask_region_geometry_unavailable": (
+        "A região não possui geometria suficiente para editar a máscara.",
+        "Mantenha a reconstrução bloqueada até haver uma caixa segura."),
+    "mask_base_page_unavailable": (
+        "A página base desta região não foi encontrada.",
+        "Abra o capítulo revisado novamente e confirme que o artefato local ainda existe."),
+    "mask_empty": (
+        "A máscara não possui área de texto.",
+        "Inclua somente os pixels do texto antes de confirmar."),
+    "mask_area_excessive": (
+        "A máscara cobre uma área grande demais.",
+        "Reduza a seleção para proteger a arte antes da reconstrução local."),
+    "mask_protected_overlap": (
+        "A máscara inclui pixels marcados como protegidos.",
+        "Remova as linhas protegidas da área de texto antes de confirmar."),
+    "mask_uncertain_pixels_unresolved": (
+        "Ainda há pixels incertos na máscara.",
+        "Resolva as áreas incertas antes de confirmar."),
+    "mask_segmentation_hash_mismatch": (
+        "A segmentação base mudou desde que a máscara foi editada.",
+        "Restaure a segmentação automática e revise novamente."),
+    "mask_source_hash_mismatch": (
+        "O texto-fonte mudou desde que a máscara foi editada.",
+        "Reabra a região e revise a máscara novamente."),
+    "mask_combined_layer_unavailable": (
+        "A segmentação não gerou uma máscara combinada confiável.",
+        "Mantenha a reconstrução bloqueada e revise a região manualmente."),
 }
 
 
@@ -855,6 +882,51 @@ def api_human_translation_preview_crop(request: Request, job_id: str = "", run_i
     try:
         path = BRIDGE.human_preview_crop(job_id, run_id, region_id=region_id, kind=kind,
                                          user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+    return FileResponse(path, media_type="image/png")
+
+
+@app.post("/api/ui/human-mask/editor-state")
+def api_human_mask_editor_state(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.human_mask_editor_state(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""), user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/human-mask/save")
+def api_human_mask_save(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.save_human_mask_draft(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""), user_id=principal.user_id,
+            payload=payload, confirm=False)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/human-mask/confirm")
+def api_human_mask_confirm(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.save_human_mask_draft(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""), user_id=principal.user_id,
+            payload=payload, confirm=True)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.get("/api/ui/human-mask/asset")
+def api_human_mask_asset(request: Request, asset: str = "") -> FileResponse:
+    _ui_principal(request)
+    try:
+        path = BRIDGE.human_mask_editor_asset(asset)
     except ValueError as exc:
         raise _audit_error(exc) from exc
     return FileResponse(path, media_type="image/png")
