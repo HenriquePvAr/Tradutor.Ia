@@ -1701,3 +1701,18 @@
   .audit-confirm-list{margin:8px 0; padding-left:18px; max-height:180px; overflow:auto; font-size:11px;}
   .audit-confirm-effect{font-size:11px; color:var(--muted); margin:8px 0 12px;}
   .audit-confirm-actions{display:flex; gap:8px; flex-wrap:wrap;}
+  .audit-confirm-facts{display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:10px; margin:8px 0 0;}
+  .audit-confirm-facts dt{color:var(--muted); text-transform:uppercase; letter-spacing:.04em;}
+  .audit-confirm-facts dd{margin:0;}
+  .audit-body{display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;}
+  .audit-body-text{flex:1 1 320px; min-width:0;}
+  .audit-crop{margin:0; flex:0 0 auto; max-width:min(260px,100%);}
+  .audit-crop img{display:block; max-width:100%; height:auto; border:1px solid var(--line); border-radius:4px; background:#fff;}
+  .audit-crop figcaption{font-size:9px; color:var(--muted); margin-top:3px;}
+  .audit-crop-missing{font-size:10px; color:var(--muted); border:1px dashed var(--line); border-radius:4px; padding:6px;}
+  .audit-context{font-size:10px; color:var(--muted); margin-top:4px;}
+  .audit-context small{text-transform:uppercase; letter-spacing:.05em; margin-right:4px;}
+  @media (max-width:640px){
+    .audit-body{flex-direction:column;}
+    .audit-crop{max-width:100%;}
+  }

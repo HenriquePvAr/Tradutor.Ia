@@ -2267,12 +2267,47 @@
       + `<br><small>tradução</small> ${escapeHtml(item.current_translation || '—')}</div>`;
   }
 
-  function auditDecisionButtons(region, decided, values) {
+  // The region's own pixels. A transcription can only be judged against them.
+  function auditCropBlock(item) {
+    if (!item.bounding_box) return '<div class="audit-crop-missing">recorte indisponível: região sem geometria</div>';
+    const id = pageRevisionIdentity();
+    const url = '/api/ui/audit/region-crop?' + new URLSearchParams({
+      job_id: id.job_id || '', run_id: id.run_id || '', region_id: item.region_id || ''});
+    return `<figure class="audit-crop"><img src="${escapeAttr(url)}" loading="lazy"`
+      + ` alt="Recorte da região ${escapeAttr(item.region_id)} na página ${escapeAttr(item.page_number)}">`
+      + `<figcaption>página ${escapeHtml(item.page_number)} · caixa ${escapeHtml((item.bounding_box || []).join(', '))}</figcaption></figure>`;
+  }
+
+  // Every label the panel offers, including the reclassifications. Kept apart
+  // from AUDIT_DECISIONS so the flat list keeps its five original buttons.
+  const AUDIT_DECISION_LABELS = Object.assign(
+    Object.fromEntries(AUDIT_DECISIONS),
+    {needs_review: 'EXIGIR REVISÃO HUMANA',
+     classify_credit: 'CLASSIFICAR COMO CRÉDITO',
+     classify_title_name: 'CLASSIFICAR COMO TÍTULO/NOME',
+     classify_editorial: 'CLASSIFICAR COMO TEXTO EDITORIAL'});
+
+  function auditDecisionButtons(region, decided, values, overrides = {}) {
     return values.map(value => {
-      const label = (AUDIT_DECISIONS.find(([v]) => v === value) || [value, value])[1];
+      const label = overrides[value] || AUDIT_DECISION_LABELS[value] || value;
       return `<button type="button" class="btn-ghost audit-decide${decided === value ? ' selected' : ''}"`
-        + ` data-audit-decision="${escapeAttr(value)}" data-region="${escapeAttr(region)}">${label}</button>`;
+        + ` data-audit-decision="${escapeAttr(value)}" data-region="${escapeAttr(region)}">${escapeHtml(label)}</button>`;
     }).join('');
+  }
+
+  function auditRemoveButton(item) {
+    if (!item.human_decision_id) return '';
+    return `<button type="button" class="btn-ghost" data-audit-remove="${escapeAttr(item.human_decision_id)}">REMOVER DECISÃO</button>`;
+  }
+
+  // What actually happens to this region once it is ruled on. Derived from the
+  // backend's own booleans, never from the text.
+  function auditImpact(item) {
+    if (item.human_decision === 'ocr_invalid') return 'sai da fila de tradução, entra em OCR direcionado futuro';
+    if (item.translatable && item.provider_required) return 'se TRADUZIR: entra no conjunto do provider (1 request estimada)';
+    if (item.translatable) return 'traduzível, já respondido pelo cache: sem request nova';
+    if (item.preservable) return 'preservada: nenhuma request, texto original mantido';
+    return 'sem política definida: permanece fora do conjunto do provider';
   }
 
   // FASE 6 — proposed candidates only. Nothing here is marked without a human.
@@ -2284,22 +2319,34 @@
     const card = (item, group) => {
       const a = item.ocr_assessment || {};
       const evidence = (a.strong_evidence || []).concat(a.weak_evidence || []);
-      const pickable = group !== 'confirmed';
+      // Only unambiguous evidence may be acted on in bulk; an ambiguous read
+      // has to be judged one region at a time.
+      const pickable = group === 'auto';
       const checked = auditState.selection.has(String(item.region_id)) ? ' checked' : '';
       const pick = pickable
         ? `<label class="triage-pick"><input type="checkbox" data-triage-select="${escapeAttr(item.region_id)}"${checked}> `
         : '<label class="triage-pick">';
       return `<article class="audit-item" data-region="${escapeAttr(item.region_id)}" data-page="${escapeAttr(item.page_number)}" data-ocr-group="${escapeAttr(group)}">`
         + `<div class="audit-item-head">${pick}<strong>${escapeHtml(item.region_id)}</strong></label> `
-        + `<span class="audit-cls">${escapeHtml(item.classification_normalized)}</span>`
+        + `<span class="audit-cls">${escapeHtml(item.classification_original)} → ${escapeHtml(item.classification_normalized)}</span>`
         + `<span class="triage-gate" data-gate="${escapeAttr(a.status || '')}">${escapeHtml(a.status || '—')}</span>`
+        + `<span class="audit-flags">OCR ${escapeHtml(String(item.confidence ?? '—'))}`
+        + ` · cache:${escapeHtml(item.cache_status)}${item.cache_correction_available ? ' (correção)' : ''}`
+        + ` · provider:${item.provider_required ? 'sim' : 'não'}</span>`
         + (item.human_decision ? `<span class="audit-decided">decisão: ${escapeHtml(item.human_decision)}</span>` : '')
-        + `</div>${auditTextsBlock(item)}`
-        + `<div class="audit-reasons">evidência: ${escapeHtml(evidence.join(', ') || 'nenhuma')}`
-        + ` · a favor do texto: ${escapeHtml((a.positive_evidence || []).join(', ') || 'nenhuma')}`
-        + ` · confiança do detector: ${escapeHtml(String(a.confidence ?? '—'))}</div>`
+        + `</div><div class="audit-body">${auditCropBlock(item)}<div class="audit-body-text">`
+        + auditTextsBlock(item)
+        + `<div class="audit-reasons">evidência contra a leitura: ${escapeHtml(evidence.join(', ') || 'nenhuma')}`
+        + `<br>evidência protetora: ${escapeHtml((a.positive_evidence || []).join(', ') || 'nenhuma')}`
+        + `<br>confiança do detector: ${escapeHtml(String(a.confidence ?? '—'))}`
+        + ` · vogais ${escapeHtml(String(a.vowel_ratio ?? '—'))} · alfabético ${escapeHtml(String(a.alphabetic_ratio ?? '—'))}`
+        + `<br>impacto: ${escapeHtml(auditImpact(item))}</div></div></div>`
         + `<div class="audit-actions">`
-        + auditDecisionButtons(item.region_id, item.human_decision, ['ocr_invalid', 'translate', 'preserve', 'needs_review'])
+        + auditDecisionButtons(item.region_id, item.human_decision,
+            ['ocr_invalid', 'translate', 'needs_review', 'preserve'],
+            {ocr_invalid: 'CONFIRMAR OCR INVÁLIDO', translate: 'MANTER COMO TEXTO',
+             preserve: 'MARCAR COMO PRESERVÁVEL'})
+        + auditRemoveButton(item)
         + `<button type="button" class="btn-ghost" data-audit-revise-region="${escapeAttr(item.region_id)}" data-region-page="${escapeAttr(item.page_number)}">REVISAR ESTA REGIÃO</button>`
         + `</div></article>`;
     };
@@ -2328,12 +2375,28 @@
       return `<article class="audit-item" data-region="${escapeAttr(item.region_id)}" data-page="${escapeAttr(item.page_number)}">`
         + `<div class="audit-item-head"><strong>${escapeHtml(item.region_id)}</strong> `
         + `<span class="audit-cls">${escapeHtml(item.classification_original)} → ${escapeHtml(item.classification_normalized)}</span>`
-        + `<span class="triage-gate" data-gate="${escapeAttr(gate)}">gate ${escapeHtml(gate)}</span></div>`
+        + `<span class="audit-flags">papel:${escapeHtml(item.semantic_role || '—')}`
+        + ` · cache:${escapeHtml(item.cache_status)}${item.cache_correction_available ? ' (correção)' : ''}`
+        + ` · provider:${item.provider_required ? 'sim' : 'não'}</span>`
+        + `<span class="triage-gate" data-gate="${escapeAttr(gate)}">gate ${escapeHtml(gate)}</span>`
+        + (item.human_decision ? `<span class="audit-decided">decisão: ${escapeHtml(item.human_decision)}</span>` : '')
+        + `</div><div class="audit-body">${auditCropBlock(item)}<div class="audit-body-text">`
         + auditTextsBlock(item)
+        + `<div class="audit-context"><small>antes</small> ${escapeHtml(item.context_before || '—')}`
+        + `<br><small>depois</small> ${escapeHtml(item.context_after || '—')}</div>`
         + `<div class="audit-reasons">pendente porque: ${escapeHtml((item.editorial_reasons || []).join(', '))}`
-        + ` · leitura: ${escapeHtml(a.status || '—')}</div>`
+        + `<br>leitura: ${escapeHtml(a.status || '—')} · evidência: `
+        + escapeHtml(((a.strong_evidence || []).concat(a.weak_evidence || [])).join(', ') || 'nenhuma')
+        + `<br>gate: ${escapeHtml(((item.linguistic_gate || {}).reason_codes || []).join(', ') || 'sem alertas')}`
+        + `<br>recomendação da taxonomia: <strong>${escapeHtml(item.suggested_action || '—')}</strong>`
+        + ` (motivos: ${escapeHtml((item.reason_codes || []).join(', ') || 'nenhum')})`
+        + `<br>impacto: ${escapeHtml(auditImpact(item))}</div></div></div>`
         + `<div class="audit-actions">`
-        + auditDecisionButtons(item.region_id, '', ['translate', 'preserve', 'ocr_invalid', 'needs_review', 'dismissed'])
+        + auditDecisionButtons(item.region_id, item.human_decision,
+            ['translate', 'preserve', 'needs_review', 'classify_credit',
+             'classify_title_name', 'classify_editorial'],
+            {translate: 'TRADUZIR', preserve: 'PRESERVAR', needs_review: 'MANTER PENDENTE'})
+        + auditRemoveButton(item)
         + `<button type="button" class="btn-ghost" data-audit-revise-region="${escapeAttr(item.region_id)}" data-region-page="${escapeAttr(item.page_number)}">REVISAR ESTA REGIÃO</button>`
         + `<button type="button" class="btn-ghost" data-audit-open-page="${escapeAttr(item.page_number)}">ABRIR PÁGINA</button>`
         + `</div></article>`;
@@ -2395,15 +2458,22 @@
       + `<span class="triage-gate" data-gate="${escapeAttr(item.ocr_status || '')}">${escapeHtml(item.ocr_status || '')}</span></div>`
       + auditTextsBlock(item)
       + `<div class="audit-reasons">retida porque: ${escapeHtml((item.editorial_reasons || []).join(', '))}</div></article>`).join('');
+    const auth = data.authorization || {};
+    const AUTH_TEXT = {
+      ready_for_human_authorization: 'Pronto para autorização humana. Cria apenas um pedido pendente; nenhuma chamada externa é feita agora.',
+      blocked_pending_editorial_decisions: 'Bloqueado: há regiões aguardando decisão editorial.',
+      blocked_by_ocr_review: 'Bloqueado: há leituras de OCR ainda não resolvidas.',
+    };
+    const authText = AUTH_TEXT[auth.status] || 'Estado da autorização indisponível.';
     list.innerHTML = `<div class="pr-summary"><strong>${Number(data.estimated_requests || 0)}</strong> regiões exigiriam a IA`
       + ` · ${Number(data.page_count || 0)} páginas · excluídas: ${escapeHtml(excludedText || 'nenhuma')}`
       + (blocked ? ` · <strong>${blocked}</strong> retida(s) aguardando decisão editorial` : '') + `</div>`
+      + `<div class="audit-counter" data-counter="${escapeAttr(auth.status === 'ready_for_human_authorization' ? 'ready' : 'blocked')}">`
+      + `autorização: ${escapeHtml(auth.status || '—')}</div>`
       + `<div class="provider-cta"><button type="button" class="btn-primary" id="requestProviderAuth"`
       + (blocked ? ' disabled aria-disabled="true" title="Decida as regiões pendentes antes de autorizar"' : '')
       + `>SOLICITAR AUTORIZAÇÃO PARA REVISÃO COM IA</button>`
-      + `<span class="muted">${blocked
-        ? 'Bloqueado: há regiões aguardando decisão editorial.'
-        : 'Cria apenas um pedido pendente. Nenhuma chamada externa é feita agora.'}</span></div>`
+      + `<span class="muted">${escapeHtml(authText)} provider_executed: ${String(auth.provider_executed === true)}</span></div>`
       + (rows || '<div class="muted">Nenhuma região exige a IA.</div>')
       + (held ? `<div class="audit-group"><h4>RETIDAS PARA DECISÃO EDITORIAL <span class="muted">${blocked}</span></h4>${held}</div>` : '');
   }
@@ -2445,6 +2515,34 @@
     });
   }
 
+  // FASE 13 — the operator sees the whole shape of the operation before it runs,
+  // including what is deliberately left out of it.
+  function bulkBreakdown(regions) {
+    const data = auditState.mode === 'ocr' ? auditState.ocrCandidates : auditState.triage;
+    if (!data) return '';
+    const pool = (data.auto_markable || []).concat(data.review_required || [], data.queue || []);
+    const picked = pool.filter(i => regions.includes(String(i.region_id)));
+    if (!picked.length) return '';
+    const tally = (values) => Object.entries(values.reduce((acc, v) => {
+      acc[v] = (acc[v] || 0) + 1; return acc;
+    }, {})).map(([k, v]) => `${escapeHtml(k)} ${v}`).join(' · ') || '—';
+    const pages = [...new Set(picked.map(i => String(i.page_id || '')))].sort();
+    const reasons = picked.flatMap(i => ((i.ocr_assessment || {}).strong_evidence || [])
+      .concat((i.ocr_assessment || {}).weak_evidence || []));
+    const confidences = picked.map(i => Number(i.confidence)).filter(n => Number.isFinite(n));
+    const ambiguous = (data.review_required || []).length;
+    const plausible = (data.auto_markable || []).length
+      ? pool.filter(i => (i.ocr_assessment || {}).status === 'plausible_semantic_text').length : 0;
+    return '<dl class="audit-confirm-facts">'
+      + `<dt>páginas</dt><dd>${pages.length} (${escapeHtml(pages.join(', '))})</dd>`
+      + `<dt>classes</dt><dd>${tally(picked.map(i => String(i.classification_normalized || '')))}</dd>`
+      + `<dt>reason codes</dt><dd>${tally(reasons)}</dd>`
+      + `<dt>confiança OCR mínima</dt><dd>${confidences.length ? Math.min(...confidences).toFixed(3) : '—'}</dd>`
+      + `<dt>ambíguos não incluídos</dt><dd>${ambiguous}</dd>`
+      + `<dt>semanticamente plausíveis não incluídos</dt><dd>${plausible}</dd>`
+      + '</dl>';
+  }
+
   const BULK_EFFECTS = {
     ocr_invalid: 'Estas regiões serão retiradas da fila de tradução e encaminhadas para '
       + 'OCR direcionado futuro. Nenhum PDF ou tradução será alterado.',
@@ -2462,12 +2560,13 @@
     const source = auditState.mode === 'ocr' ? auditState.ocrCandidates : auditState.triage;
     const hash = source?.source_audit_hash || '';
     const label = decision === 'remove' ? 'REMOVER DECISÃO'
-      : (AUDIT_DECISIONS.find(([v]) => v === decision) || [decision, decision])[1];
+      : (AUDIT_DECISION_LABELS[decision] || decision);
     const preview = regions.slice(0, 8).map(r => `<li>${escapeHtml(r)}</li>`).join('');
     const ok = await auditConfirm({
       title: `${label} — ${regions.length} região(ões)`,
       summary: `<ul class="audit-confirm-list">${preview}</ul>`
-        + (regions.length > 8 ? `<p class="muted">e mais ${regions.length - 8}.</p>` : ''),
+        + (regions.length > 8 ? `<p class="muted">e mais ${regions.length - 8}.</p>` : '')
+        + bulkBreakdown(regions),
       effect: BULK_EFFECTS[decision] || 'Nenhum PDF ou tradução será alterado.',
     });
     if (!ok) { auditMessage('Operação cancelada.', 'warn'); return; }
