@@ -223,7 +223,8 @@ class AuditUiContracts(unittest.TestCase):
         self.assertIn("PRÉVIAS HUMANAS", self.shell)
         for endpoint in ("/api/ui/human-translation/review", "/api/ui/human-translation/record",
                          "/api/ui/human-translation/draft", "/api/ui/human-translation/gates",
-                         "/api/ui/human-translation/preview-crop", "/api/ui/human-translation/delete"):
+                         "/api/ui/human-translation/preview-crop", "/api/ui/human-translation/delete",
+                         "/api/ui/human-previews/pending"):
             self.assertIn(endpoint, self.js, endpoint)
 
     def test_every_state_the_reviewer_must_see_is_labelled(self):
@@ -235,9 +236,34 @@ class AuditUiContracts(unittest.TestCase):
     def test_the_preview_actions_are_offered(self):
         for label in ("APROVAR TEXTO PARA PRÉVIA", "EDITAR TRADUÇÃO HUMANA",
                       "RENDERIZAR NOVA TENTATIVA", "ABRIR COMPARAÇÃO",
-                      "VER MÁSCARA", "VER TINTA RESIDUAL",
-                      "REJEITAR NOVA TENTATIVA", "DESCARTAR NOVA TENTATIVA"):
+                      "VER MÁSCARA", "VER TINTA RESIDUAL"):
             self.assertIn(label, self.js, label)
+        for marker in ('data-preview-action="reject"', 'data-preview-action="discard"'):
+            self.assertIn(marker, self.js, marker)
+
+    def test_pending_human_previews_are_discoverable_without_static_ids(self):
+        production = "\n".join((ROOT / rel).read_text(encoding="utf-8")
+                               for rel in ("static/tradutor_ui.js", "ui_bridge.py",
+                                           "app_ui.py", "ui/ui_shell.html"))
+        for marker in ("homePendingPreviews", "historyPendingPreviews",
+                       "reviewPreviewAccess", "loadPendingHumanPreviews",
+                       "openPendingPreview", "data-open-pending-preview",
+                       "preview_compare=1"):
+            self.assertIn(marker, production, marker)
+        for forbidden in ("598562fc33e84bb0ad191f475619bd86",
+                          "b98169427fb741339cc2f61cf7d47442",
+                          "CAFÃ‰ DE VERDADE", "p003:REGION_001"):
+            self.assertNotIn(forbidden, production, forbidden)
+
+    def test_blocked_preview_rows_do_not_offer_new_render_or_apply(self):
+        start = self.js.index("function renderHumanPreviews")
+        body = self.js[start:self.js.index("const previewCropUrls", start)]
+        self.assertIn("BLOQUEADA", body)
+        self.assertIn("requires_art_reconstruction", (ROOT / "ui_bridge.py").read_text(encoding="utf-8"))
+        blocked_branch = body[body.index("const actionButtons = blocked"):
+                              body.index(": `<button", body.index("const actionButtons = blocked"))]
+        self.assertNotIn("data-preview-action=\"render\"", blocked_branch)
+        self.assertNotIn("APLICAR", blocked_branch)
 
     def test_the_preview_panel_never_offers_to_finish_the_chapter(self):
         start = self.js.index("function renderHumanPreviews")

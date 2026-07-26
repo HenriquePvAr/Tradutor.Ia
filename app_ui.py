@@ -795,6 +795,15 @@ def api_human_translation_gates(request: Request, payload: dict[str, Any] = Body
         raise _audit_error(exc) from exc
 
 
+@app.get("/api/ui/human-previews/pending")
+def api_pending_human_previews(request: Request) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.pending_human_previews(user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
 @app.get("/api/ui/human-translation/preview-crop")
 def api_human_translation_preview_crop(request: Request, job_id: str = "", run_id: str = "",
                                        region_id: str = "", kind: str = "draft") -> FileResponse:

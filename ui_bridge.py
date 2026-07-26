@@ -26,6 +26,7 @@ import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from community_auth import RequestPrincipal, bind_is_loopback, peer_is_loopback
 from job_store import JobStatus, JobStore
@@ -1581,6 +1582,159 @@ class UiBridge:
             "font_selection": (mask_refinement or {}).get("font_selection") or {},
             # Nothing here is final: a rendered draft still awaits a human eye.
             "state": "draft_ready_for_human_visual_approval",
+        }
+
+    def pending_human_previews(self, *, user_id: str = "") -> dict[str, Any]:
+        """Owner-scoped human preview drafts that still need a human verdict."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+
+        items: list[dict[str, Any]] = []
+        for record in self._history_payload():
+            job_id = str(record.get("job_id") or "")
+            run_id = str(record.get("run_id") or "")
+            if not job_id or not run_id:
+                continue
+            try:
+                ctx = self._audit_context(job_id, run_id)
+                job = self._page_revision_job(job_id, run_id)
+            except Exception:
+                continue
+            decisions = self.human_translations.list_for(
+                str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""),
+                ctx["revision_id"], created_by=str(user_id))
+            for decision in decisions:
+                decision_status = str(decision.get("status") or "")
+                if decision_status in {"visually_approved", "discarded"}:
+                    continue
+                region_id = str(decision.get("region_id") or "")
+                if not region_id:
+                    continue
+
+                source_hash_valid = False
+                lineage_reason = ""
+                try:
+                    resolved = self._provider_execution(
+                        ctx["output_dir"], ctx["revision_id"],
+                        str(decision.get("authorization_request_id") or ""))
+                    human_translation_decisions.validate_against_execution(
+                        decision, resolved["execution"])
+                    source_hash_valid = True
+                except ValueError as exc:
+                    lineage_reason = str(exc)
+
+                manifest = self._human_draft_manifest(job, ctx["revision_id"], region_id) or {}
+                page_revision_id = str(manifest.get("page_revision_id") or "")
+                page_number = int(str(decision.get("page_id") or "p0").lstrip("p") or 0)
+                try:
+                    latest = self._page_revision_engine(job).latest_page_revision(page_number) or {}
+                except Exception:
+                    latest = {}
+                lineage_valid = (
+                    bool(page_revision_id)
+                    and str(manifest.get("parent_job_id") or "") == job_id
+                    and str(manifest.get("parent_run_id") or "") == run_id
+                    and str(manifest.get("parent_revision_id") or "") == str(ctx["revision_id"])
+                    and region_id in (manifest.get("human_overrides") or [])
+                    and (not latest or str(latest.get("page_revision_id") or "") == page_revision_id)
+                    and source_hash_valid
+                )
+                if not lineage_reason and not lineage_valid:
+                    lineage_reason = "preview_lineage_not_current"
+
+                try:
+                    gates = self.human_preview_gates(job_id, run_id, region_id=region_id,
+                                                     user_id=str(user_id))
+                except ValueError as exc:
+                    gates = {
+                        "visual_gate": {"status": preview_gates.FAILED,
+                                        "reason_codes": [str(exc)]},
+                        "linguistic_gate": {"status": preview_gates.FAILED,
+                                            "reason_codes": [str(exc)]},
+                        "mask_refinement": {},
+                        "font_selection": {},
+                    }
+                visual = gates.get("visual_gate") or {}
+                linguistic = gates.get("linguistic_gate") or {}
+                draft_path = Path(str(manifest.get("draft_page_path") or ""))
+                draft_available = bool(manifest.get("draft_page_path") and draft_path.is_file())
+                visual_passed = str(visual.get("status") or "") == preview_gates.PASSED
+                linguistic_passed = str(linguistic.get("status") or "") == linguistic_triage.PASSED
+                blocked = not draft_available or not visual_passed or not lineage_valid
+                approval_enabled = (
+                    draft_available and visual_passed and linguistic_passed
+                    and lineage_valid and decision_status == "draft_rendered"
+                    and str(manifest.get("status") or "") == "draft_ready"
+                )
+                crop_query = (
+                    f"job_id={quote(job_id)}&run_id={quote(run_id)}"
+                    f"&region_id={quote(region_id)}"
+                )
+                page_label = page_number or int(gates.get("page_number") or 0)
+                items.append({
+                    "job_id": job_id,
+                    "run_id": run_id,
+                    "revision_id": str(ctx["revision_id"]),
+                    "page_id": str(decision.get("page_id") or ""),
+                    "region_id": region_id,
+                    "page_revision_id": page_revision_id,
+                    "parent_revision_id": str(manifest.get("parent_revision_id") or ""),
+                    "supersedes_page_revision_id": str(manifest.get("supersedes_page_revision_id") or ""),
+                    "chapter_display_name": str(record.get("chapter_name") or record.get("slug") or "Capítulo"),
+                    "page_display_number": page_label,
+                    "preview_image_url": (
+                        f"/api/ui/human-translation/preview-crop?{crop_query}&kind=draft"
+                        if draft_available else ""
+                    ),
+                    "region_crop_url": f"/api/ui/human-translation/preview-crop?{crop_query}&kind=base",
+                    "human_candidate": str(decision.get("human_candidate") or ""),
+                    "visual_gate": visual,
+                    "linguistic_gate": linguistic,
+                    "approval_status": decision_status,
+                    "created_at": str(decision.get("created_at") or ""),
+                    "updated_at": str(decision.get("updated_at") or manifest.get("updated_at") or ""),
+                    "reason_codes": sorted(set(
+                        [str(v) for v in (visual.get("reason_codes") or []) if str(v)]
+                        + [str(v) for v in (linguistic.get("reason_codes") or []) if str(v)]
+                        + ([lineage_reason] if lineage_reason else [])
+                    )),
+                    "source_hash": str(decision.get("source_text_hash") or ""),
+                    "source_hash_valid": source_hash_valid,
+                    "lineage_status": "valid" if lineage_valid else "invalid",
+                    "lineage_valid": lineage_valid,
+                    "draft_available": draft_available,
+                    "blocked": blocked,
+                    "blocked_reason": (
+                        "requires_art_reconstruction" if not draft_available
+                        else "visual_gate_not_passed" if not visual_passed
+                        else "lineage_invalid" if not lineage_valid
+                        else ""
+                    ),
+                    "approval_enabled": approval_enabled,
+                    "mask_refinement": gates.get("mask_refinement") or {},
+                    "font_selection": gates.get("font_selection") or {},
+                    "comparison_url": (
+                        f"?view=review&job_id={quote(job_id)}&run_id={quote(run_id)}"
+                        f"&revision_id={quote(str(ctx['revision_id']))}&audit=1"
+                        f"&audit_mode=previews&review_mode=human_previews"
+                        f"&page_id={quote(str(decision.get('page_id') or ''))}"
+                        f"&region_id={quote(region_id)}&page_revision_id={quote(page_revision_id)}"
+                        f"&preview_compare=1"
+                    ),
+                })
+
+        items.sort(key=lambda item: (
+            1 if item.get("approval_enabled") else 2 if not item.get("blocked") else 3,
+            str(item.get("chapter_display_name") or ""),
+            int(item.get("page_display_number") or 0),
+            str(item.get("region_id") or ""),
+        ))
+        return {
+            "items": items,
+            "item_count": len(items),
+            "ready_count": sum(1 for item in items if item.get("approval_enabled")),
+            "blocked_count": sum(1 for item in items if item.get("blocked")),
+            "pending_count": len(items),
         }
 
     def human_preview_crop(self, job_id: str, run_id: str, *, region_id: str,

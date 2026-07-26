@@ -62,6 +62,7 @@
     claimRecord: null,
     claimBusy: false,
     publicationDrafts: Object.create(null),
+    pendingHumanPreviews: {items: [], item_count: 0, ready_count: 0, blocked_count: 0},
     communityObjectUrls: new Set(),
     communityTab: 'explore',
     communityCache: {explore: [], favorites: [], reading: [], mine: [], notifications: []},
@@ -1499,6 +1500,7 @@
     const reportOnly = Number(review.report_only_count || 0);
     if (reportOnly > 0) visualParts.push(`somente relatório ${reportOnly}`);
     $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · LOW ${counts.LOW || 0} · MEDIUM ${counts.MEDIUM || 0} · HIGH ${counts.HIGH || 0}${visualParts.length ? ` · gate visual: ${visualParts.join(' · ')}` : ''} · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
+    renderReviewPreviewAccess();
     // Separate, clearly labelled action for the reviewed PDF; shown only when the
     // revision manifest points to a real reviewed file (never a glob).
     const reviewedPdf = $('#reviewedPdfAction');
@@ -1737,6 +1739,58 @@
     }, {once: true});
     dialog.hidden = false;
     if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+  }
+
+  function openHumanPreviewComparison(item) {
+    if (!item) return;
+    const dialog = $('#visualComparisonDialog');
+    const body = $('#visualComparisonBody');
+    if (!dialog || !body) return;
+    const page = item.page_display_number || item.page_number || item.page_id || '';
+    const ready = item.approval_enabled === true && item.blocked !== true;
+    const status = ready ? 'PRONTA PARA REVISÃO HUMANA' : 'BLOQUEADA — REQUER RECONSTRUÇÃO DE ARTE';
+    const before = item.region_crop_url || '';
+    const after = item.preview_image_url || '';
+    const gates = [
+      `gate visual: ${item.visual_gate?.status || 'indisponível'}`,
+      `gate linguístico: ${item.linguistic_gate?.status || 'indisponível'}`,
+      `fora da máscara: ${Number(item.visual_gate?.isolation?.changed_pixels_outside_mask || 0)}`,
+      `tinta residual: ${Number(item.visual_gate?.residual_source_pixels || 0)}`,
+      item.font_selection?.selected_font ? `fonte: ${item.font_selection.selected_font}` : '',
+    ].filter(Boolean).join(' · ');
+    body.innerHTML = `<section class="human-preview-comparison">`
+      + `<div class="human-preview-comparison-head"><strong>PRÉVIA DA PÁGINA ${escapeHtml(page)}</strong>`
+      + `<span class="${ready ? 'ok' : 'warn'}">${escapeHtml(status)}</span>`
+      + `<small>${escapeHtml(item.region_id || '')} · ${escapeHtml(gates)}</small></div>`
+      + `<div class="preview-compare">`
+      + `<figure><figcaption>ANTES</figcaption>${before ? `<img data-human-preview-url="${escapeAttr(before)}" alt="Trecho original antes da prévia">` : '<div class="visual-comparison-empty">Imagem original indisponível</div>'}</figure>`
+      + `<figure><figcaption>DEPOIS</figcaption>${after ? `<img data-human-preview-url="${escapeAttr(after)}" alt="Rascunho isolado depois da prévia">` : '<div class="visual-comparison-empty">Prévia não renderizada</div>'}</figure>`
+      + `</div><div class="preview-approval-note">Aprovar, pedir ajuste, rejeitar ou descartar fica no painel de revisão aberto atrás desta comparação. Nenhum clique foi executado automaticamente.</div>`
+      + `</section>`;
+    dialog.hidden = false;
+    if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+    void loadHumanComparisonImages(body);
+  }
+
+  async function loadHumanComparisonImages(root) {
+    for (const img of $$('img[data-human-preview-url]', root || document)) {
+      const path = String(img.dataset.humanPreviewUrl || '');
+      if (!path || img.dataset.loaded === '1') continue;
+      img.dataset.loaded = '1';
+      try {
+        const response = await api(path, {rawResponse: true});
+        const url = URL.createObjectURL(await response.blob());
+        const key = `dialog:${path}`;
+        if (previewCropUrls.get(key)) URL.revokeObjectURL(previewCropUrls.get(key));
+        previewCropUrls.set(key, url);
+        img.src = url;
+      } catch (error) {
+        img.replaceWith(Object.assign(document.createElement('div'), {
+          className: 'visual-comparison-empty',
+          textContent: `Imagem indisponível: ${error.message || ''}`,
+        }));
+      }
+    }
   }
 
   async function qualityReviewAction(event) {
@@ -2562,10 +2616,27 @@
       const region = String(item.region_id || '');
       const human = item.human_candidate || '';
       const decided = !!item.human_decision;
+      const pending = pendingPreviewItems().find(candidate =>
+        String(candidate.region_id || '') === region &&
+        String(candidate.job_id || '').toLowerCase() === String(appState.qualityReview?.job_id || '').toLowerCase());
+      const blocked = pending?.blocked === true || pending?.approval_enabled === false;
+      const ready = pending?.approval_enabled === true && pending?.blocked !== true;
+      const previewStatus = pending ? (ready ? 'PRONTA PARA REVISÃO HUMANA' : 'BLOQUEADA — REQUER RECONSTRUÇÃO DE ARTE') : '';
+      const actionButtons = blocked
+        ? `<button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">VER DETALHES</button>`
+        : `<button type="button" class="btn-ghost" data-preview-action="approve" data-region="${escapeAttr(region)}">APROVAR TEXTO PARA PRÉVIA</button>`
+          + `<button type="button" class="btn-ghost" data-preview-action="edit" data-region="${escapeAttr(region)}">EDITAR TRADUÇÃO HUMANA</button>`
+          + `<button type="button" class="btn-ghost" data-preview-action="render" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de renderizar"'}>RENDERIZAR NOVA TENTATIVA</button>`
+          + `<button type="button" class="btn-primary" data-preview-action="compare" data-region="${escapeAttr(region)}">${ready ? 'ABRIR PRÉVIA DA PÁGINA' : 'ABRIR COMPARAÇÃO'}</button>`
+          + `<button type="button" class="btn-ghost" data-preview-action="mask" data-region="${escapeAttr(region)}">VER MÁSCARA</button>`
+          + `<button type="button" class="btn-ghost" data-preview-action="residual" data-region="${escapeAttr(region)}">VER TINTA RESIDUAL</button>`
+          + `<button type="button" class="btn-ghost" data-preview-action="reject" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>PEDIR AJUSTE / REJEITAR PRÉVIA</button>`
+          + `<button type="button" class="btn-ghost" data-preview-action="discard" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>DESCARTAR RASCUNHO</button>`;
       return `<article class="audit-item preview-item" data-region="${escapeAttr(region)}" data-page="${escapeAttr(item.page_number)}">`
         + `<div class="audit-item-head"><strong>${escapeHtml(region)}</strong>`
         + `<span class="audit-cls">${escapeHtml(item.classification_normalized || '')}</span>`
         + `<span class="audit-flags">página ${escapeHtml(item.page_number)}</span>`
+        + (previewStatus ? `<span class="triage-gate" data-gate="${ready ? 'passed' : 'failed'}">${escapeHtml(previewStatus)}</span>` : '')
         + `<span class="triage-gate" data-gate="" data-preview-visual="${escapeAttr(region)}">gate visual …</span>`
         + `<span class="triage-gate" data-gate="" data-preview-linguistic="${escapeAttr(region)}">gate linguístico …</span>`
         + `</div>`
@@ -2588,19 +2659,11 @@
         + ` aria-label="Região ${escapeAttr(region)} na prévia"></figure>`
         + `</div>`
         + `<div class="preview-reasons" data-preview-reasons="${escapeAttr(region)}"></div>`
+        + (pending ? `<div class="preview-approval-note">${ready ? 'A prévia isolada está pronta para comparação. Aprovar a página, pedir ajuste, rejeitar ou descartar exige clique humano; nada é aplicado automaticamente.' : 'Este rascunho não passou pelos critérios seguros. Não há botão de aplicar ou nova renderização aqui; requer reconstrução de arte.'}</div>` : '')
         + `<div class="audit-corrected"><label>tradução humana`
         + ` <input type="text" data-human-candidate="${escapeAttr(region)}"`
-        + ` value="${escapeAttr(human)}" placeholder="escreva a linha aprovada"></label></div>`
-        + `<div class="audit-actions">`
-        + `<button type="button" class="btn-ghost" data-preview-action="approve" data-region="${escapeAttr(region)}">APROVAR TEXTO PARA PRÉVIA</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="edit" data-region="${escapeAttr(region)}">EDITAR TRADUÇÃO HUMANA</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="render" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de renderizar"'}>RENDERIZAR NOVA TENTATIVA</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">ABRIR COMPARAÇÃO</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="mask" data-region="${escapeAttr(region)}">VER MÁSCARA</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="residual" data-region="${escapeAttr(region)}">VER TINTA RESIDUAL</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="reject" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>REJEITAR NOVA TENTATIVA</button>`
-        + `<button type="button" class="btn-ghost" data-preview-action="discard" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true"'}>DESCARTAR NOVA TENTATIVA</button>`
-        + `</div></article>`;
+        + ` value="${escapeAttr(human)}" placeholder="escreva a linha aprovada"${blocked ? ' disabled aria-disabled="true"' : ''}></label></div>`
+        + `<div class="audit-actions">${actionButtons}</div></article>`;
     }).join('');
     list.innerHTML = `<div class="pr-summary">${Number(data.item_count || 0)} região(ões) do pedido`
       + ` <strong>${escapeHtml(String(data.authorization_request_id || '').slice(0, 8))}</strong>`
@@ -2702,7 +2765,19 @@
     const item = (auditState.previews?.items || []).find(i => String(i.region_id) === region) || {};
     try {
       if (action === 'edit') { field?.focus(); field?.select(); return; }
-      if (action === 'compare') { openVisualComparison(Number(item.page_number)); return; }
+      if (action === 'compare') {
+        const pending = pendingPreviewItems().find(candidate =>
+          String(candidate.region_id || '') === region &&
+          String(candidate.job_id || '').toLowerCase() === String(id.job_id || '').toLowerCase());
+        if (pending) {
+          if (pending.comparison_url) {
+            try { window.history.replaceState({}, '', pending.comparison_url); } catch (_) { /* url is advisory */ }
+          }
+          openHumanPreviewComparison(pending);
+        }
+        else openVisualComparison(Number(item.page_number));
+        return;
+      }
       if (action === 'mask') { auditMessage('A máscara original, a expandida e o halo estão no bloco de evidências desta região.', 'ok'); return; }
       if (action === 'residual') { auditMessage('A contagem de tinta residual está no gate visual medido desta região.', 'ok'); return; }
       if (action === 'approve') {
@@ -3329,6 +3404,102 @@
     const label = reviewActionLabel(record);
     return `<button class="btn-ghost hm-review-action" data-action="review" title="Revisar OCR, tradução e qualidade deste capítulo" aria-label="${escapeAttr(`${label}: ${record.chapter_name || record.slug || 'capítulo'}`)}">${escapeHtml(label)}</button>`;
   }
+  function pendingPreviewItems() {
+    return Array.isArray(appState.pendingHumanPreviews?.items) ? appState.pendingHumanPreviews.items : [];
+  }
+  function pendingPreviewsForRecord(record) {
+    const identity = reviewIdentity(record);
+    if (!identity) return [];
+    return pendingPreviewItems().filter(item =>
+      String(item.job_id || '').toLowerCase() === identity.jobId &&
+      String(item.run_id || '') === identity.runId);
+  }
+  function readyPreviewsForRecord(record) {
+    return pendingPreviewsForRecord(record).filter(item => item.approval_enabled === true && item.blocked !== true);
+  }
+  function pendingPreviewLabel(item) {
+    const page = item.page_display_number || item.page_number || item.page_id || '—';
+    const region = item.region_id || 'região';
+    return `página ${page} · ${region}`;
+  }
+  function firstReadyPreviewForRecord(record) {
+    return readyPreviewsForRecord(record)[0] || null;
+  }
+  function historyPreviewAction(record) {
+    const all = pendingPreviewsForRecord(record);
+    if (!all.length) return '';
+    const ready = all.filter(item => item.approval_enabled === true && item.blocked !== true);
+    const blocked = all.length - ready.length;
+    const label = ready.length ? `${ready.length} prévia${ready.length === 1 ? '' : 's'} pronta${ready.length === 1 ? '' : 's'}` : `${blocked} prévia${blocked === 1 ? '' : 's'} bloqueada${blocked === 1 ? '' : 's'}`;
+    const action = ready.length ? 'open-preview' : 'review';
+    return `<span class="badge preview ${ready.length ? 'ready' : 'blocked'}">${escapeHtml(label)}</span>`
+      + `<button class="btn-primary hm-preview-action" data-action="${escapeAttr(action)}">${ready.length ? 'Abrir prévia' : 'Ver bloqueio'}</button>`;
+  }
+  function renderPendingPreviewSummary(target, {compact = false} = {}) {
+    const node = typeof target === 'string' ? $(target) : target;
+    if (!node) return;
+    const items = pendingPreviewItems();
+    if (!items.length) {
+      node.hidden = true;
+      node.innerHTML = '';
+      return;
+    }
+    const ready = items.filter(item => item.approval_enabled === true && item.blocked !== true);
+    const blocked = items.filter(item => item.blocked === true);
+    const cards = items.slice(0, compact ? 2 : 4).map(item => {
+      const enabled = item.approval_enabled === true && item.blocked !== true;
+      const status = enabled ? 'PRONTA PARA REVISÃO HUMANA' : 'BLOQUEADA — REQUER RECONSTRUÇÃO DE ARTE';
+      return `<button type="button" class="pending-preview-row ${enabled ? 'ready' : 'blocked'}" data-open-pending-preview="${escapeAttr(item.region_id || '')}" data-job-id="${escapeAttr(item.job_id || '')}" data-run-id="${escapeAttr(item.run_id || '')}">`
+        + `<span><strong>${escapeHtml(item.chapter_display_name || item.chapter_name || 'Capítulo')}</strong>`
+        + `<small>${escapeHtml(pendingPreviewLabel(item))}</small></span>`
+        + `<span class="pending-preview-status">${escapeHtml(status)}</span></button>`;
+    }).join('');
+    node.hidden = false;
+    node.innerHTML = `<div class="pending-preview-head"><strong>Prévia humana pendente</strong>`
+      + `<span>${ready.length} pronta${ready.length === 1 ? '' : 's'} · ${blocked.length} bloqueada${blocked.length === 1 ? '' : 's'}</span></div>`
+      + cards;
+  }
+  function renderPendingPreviewSurfaces() {
+    renderPendingPreviewSummary('#homePendingPreviews');
+    renderPendingPreviewSummary('#historyPendingPreviews', {compact: true});
+    const count = Number(appState.pendingHumanPreviews?.item_count || pendingPreviewItems().length || 0);
+    $$('[data-audit-mode="previews"]').forEach(button => {
+      button.textContent = count ? `PRÉVIAS HUMANAS (${count})` : 'PRÉVIAS HUMANAS';
+    });
+  }
+  function renderReviewPreviewAccess() {
+    const node = $('#reviewPreviewAccess');
+    if (!node) return;
+    const jobId = String(appState.reviewMode?.jobId || '').toLowerCase();
+    const runId = String(appState.reviewMode?.runId || '');
+    const items = pendingPreviewItems().filter(item =>
+      String(item.job_id || '').toLowerCase() === jobId && String(item.run_id || '') === runId);
+    if (!items.length) {
+      node.hidden = true;
+      node.innerHTML = '';
+      return;
+    }
+    const ready = items.filter(item => item.approval_enabled === true && item.blocked !== true);
+    const first = ready[0] || items[0];
+    node.hidden = false;
+    node.innerHTML = `<span>${ready.length} prévia${ready.length === 1 ? '' : 's'} pronta${ready.length === 1 ? '' : 's'} para inspeção · ${items.length - ready.length} bloqueada${items.length - ready.length === 1 ? '' : 's'}</span>`
+      + `<button type="button" class="btn-primary" data-open-pending-preview="${escapeAttr(first.region_id || '')}" data-job-id="${escapeAttr(first.job_id || '')}" data-run-id="${escapeAttr(first.run_id || '')}">Abrir prévia</button>`;
+  }
+  async function loadPendingHumanPreviews() {
+    try {
+      const data = await api('/api/ui/human-previews/pending');
+      appState.pendingHumanPreviews = {
+        ...data,
+        items: Array.isArray(data.items) ? data.items : [],
+      };
+    } catch (error) {
+      appState.pendingHumanPreviews = {items: [], item_count: 0, ready_count: 0, blocked_count: 0, error: error.message || 'preview_unavailable'};
+    }
+    renderPendingPreviewSurfaces();
+    renderReviewPreviewAccess();
+    restorePendingPreviewFromUrl();
+    return appState.pendingHumanPreviews;
+  }
   function applyReviewMode(info) {
     document.documentElement.dataset.reviewMode = '1';
     const banner = $('#reviewModeBanner');
@@ -3431,6 +3602,57 @@
     }
     if (restore) { restorePageRevisionFromUrl(); restoreAuditFromUrl(); }
   }
+  async function openPendingPreview(item, {preserveUrl = false} = {}) {
+    if (!item) return;
+    const record = appState.history.find(candidate =>
+      String(candidate.job_id || '').toLowerCase() === String(item.job_id || '').toLowerCase() &&
+      String(candidate.run_id || '') === String(item.run_id || ''));
+    if (!record) {
+      showToast('Prévia encontrada, mas o capítulo não está no histórico carregado.', 'warn');
+      return;
+    }
+    if (!preserveUrl && item.comparison_url) {
+      try { window.history.replaceState({}, '', item.comparison_url); } catch (_) { /* url is advisory */ }
+    }
+    await openChapterReview(record, {restore: true});
+    await setAuditMode('previews');
+    if (item.page_number && item.page_revision_id) {
+      await openPageRevision(Number(item.page_number), {
+        restore: true,
+        pageRevisionId: String(item.page_revision_id || ''),
+        focusRegion: String(item.region_id || ''),
+      });
+    }
+    openHumanPreviewComparison(item);
+    const node = $(`#auditList [data-region="${CSS.escape(String(item.region_id || ''))}"]`);
+    if (node) node.scrollIntoView({behavior: 'smooth', block: 'center'});
+  }
+  function pendingPreviewFromDataset(element) {
+    if (!element) return null;
+    const region = String(element.dataset.openPendingPreview || '');
+    const jobId = String(element.dataset.jobId || '').toLowerCase();
+    const runId = String(element.dataset.runId || '');
+    return pendingPreviewItems().find(item =>
+      String(item.region_id || '') === region &&
+      String(item.job_id || '').toLowerCase() === jobId &&
+      String(item.run_id || '') === runId) || null;
+  }
+  function restorePendingPreviewFromUrl() {
+    if (appState.previewRestoreAttempted) return;
+    let params;
+    try { params = new URLSearchParams(window.location.search || ''); } catch (_) { return; }
+    if (params.get('preview_compare') !== '1') return;
+    const jobId = String(params.get('job_id') || '').toLowerCase();
+    const runId = String(params.get('run_id') || '');
+    const region = String(params.get('region_id') || '');
+    const item = pendingPreviewItems().find(candidate =>
+      String(candidate.job_id || '').toLowerCase() === jobId &&
+      String(candidate.run_id || '') === runId &&
+      String(candidate.region_id || '') === region);
+    if (!item) return;
+    appState.previewRestoreAttempted = true;
+    void openPendingPreview(item, {preserveUrl: true});
+  }
   function restoreReviewModeFromUrl() {
     let params;
     try { params = new URLSearchParams(window.location.search || ''); } catch (_) { return; }
@@ -3448,16 +3670,18 @@
     const gate = gateValue === true ? 'gate aprovado' : gateValue === false ? 'gate reprovado' : 'gate pendente';
     const provenance = record.output_verification === 'legacy_unverified' ? 'origem não verificada' : record.output_verification === 'e2e_evidence' ? 'evidência E2E' : record.output_verification === 'manifest_verified' ? 'manifest verificado' : 'origem não informada';
     const meta = `${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)} · ${gate} · ${provenance}`;
+    const previewActionHtml = historyPreviewAction(record);
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
-      <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span></div></div>
-      <div class="hm-actions">${reviewAction(record)}${actionButton('Abrir PDF', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
+      <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span>${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
+      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${reviewAction(record)}${actionButton('Abrir PDF', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
     </div>`;
   }
   function renderHistory() {
     const list = $('#histList');
     if (!list) return;
+    renderPendingPreviewSurfaces();
     const query = ($('#histSearch')?.value || '').trim().toLowerCase();
     const records = appState.history.filter(record => !query || `${record.chapter_name || ''} ${record.slug || ''}`.toLowerCase().includes(query));
     $('#histCount').textContent = query ? `${records.length} de ${appState.history.length}` : `${records.length} ${records.length === 1 ? 'capítulo' : 'capítulos'}`;
@@ -3503,6 +3727,21 @@
     renderHistory();
   }
   $('#histSearch')?.addEventListener('input', renderHistory);
+  $('#homePendingPreviews')?.addEventListener('click', event => {
+    const target = event.target.closest('[data-open-pending-preview]');
+    if (!target) return;
+    void openPendingPreview(pendingPreviewFromDataset(target));
+  });
+  $('#historyPendingPreviews')?.addEventListener('click', event => {
+    const target = event.target.closest('[data-open-pending-preview]');
+    if (!target) return;
+    void openPendingPreview(pendingPreviewFromDataset(target));
+  });
+  $('#reviewPreviewAccess')?.addEventListener('click', event => {
+    const target = event.target.closest('[data-open-pending-preview]');
+    if (!target) return;
+    void openPendingPreview(pendingPreviewFromDataset(target));
+  });
   $('#reviewModeExit')?.addEventListener('click', () => { exitReviewMode(); activateTab('hist'); });
   const developerModeToggle = $('#developerModeToggle');
   if (developerModeToggle) {
@@ -3535,6 +3774,10 @@
     if (!button) return;
     const record = appState.history.find(item => String(item.id) === String(button.closest('.hist-item')?.dataset.id));
     if (!record) return;
+    if (button.dataset.action === 'open-preview') {
+      void openPendingPreview(firstReadyPreviewForRecord(record) || pendingPreviewsForRecord(record)[0]);
+      return;
+    }
     if (button.dataset.action === 'review') { void openChapterReview(record); return; }
     if (button.dataset.action === 'reprocess') { loadRecordIntoForm(record); return; }
     if (button.dataset.action === 'claim') { openClaimModal(record); return; }
@@ -4290,6 +4533,7 @@
     requestAnimationFrame(tick);
   }
   function renderDashboard() {
+    renderPendingPreviewSurfaces();
     const hour = new Date().getHours();
     $('#dashGreeting').textContent = `${hour < 12 ? 'Bom dia' : hour < 18 ? 'Boa tarde' : 'Boa noite'}. Seu painel mostra somente dados locais reais.`;
     $('#dashStreak').textContent = '';
@@ -4761,6 +5005,7 @@
         applyProfileToForm(appState.profile);
         void loadProductSettings();
       }
+      await loadPendingHumanPreviews();
       renderHistory();
       renderDashboard();
       if (!appState.reviewRestoreAttempted) {

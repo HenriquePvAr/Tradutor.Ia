@@ -180,6 +180,8 @@
         </div>
       </div>
 
+      <div class="pending-previews-card" id="homePendingPreviews" hidden aria-live="polite"></div>
+
       <div class="dash-stats" id="dashStats">
         <div class="dash-stat-card">
           <span class="dsc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z"/></svg></span>
@@ -434,6 +436,7 @@
             <div class="quality-review" id="qualityReviewPanel" hidden>
               <div class="panel-label">Revisão de qualidade</div>
               <div class="quality-review-meta" id="qualityReviewMeta"></div>
+              <div class="review-preview-access" id="reviewPreviewAccess" hidden aria-live="polite"></div>
               <div class="quality-review-pdf" id="reviewedPdfAction" hidden></div>
               <div class="quality-review-filters" role="group" aria-label="Filtrar revisão">
                 <button type="button" class="btn-ghost selected" data-review-filter="pending">Pendentes</button>
@@ -645,6 +648,7 @@
         </div>
         <span class="hist-count" id="histCount">0 capítulos</span>
       </div>
+      <div class="pending-previews-card" id="historyPendingPreviews" hidden aria-live="polite"></div>
       <div class="hist-list" id="histList"></div>
     </section>
 

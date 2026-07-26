@@ -598,6 +598,18 @@
   .badge.ep{background:rgba(239,231,216,0.07); color:var(--paper); border:1px solid var(--line); font-family:'Black Han Sans',sans-serif; letter-spacing:.02em;}
   .badge.paddle{background:rgba(47,122,107,0.15); color:var(--teal); border:1px solid rgba(47,122,107,0.4);}
   .badge.rapid{background:rgba(201,162,39,0.15); color:var(--gold); border:1px solid rgba(201,162,39,0.4);}
+  .badge.preview.ready{background:rgba(143,227,194,.12); color:#8fe3c2; border:1px solid rgba(143,227,194,.36);}
+  .badge.preview.blocked{background:rgba(255,209,138,.12); color:#ffd18a; border:1px solid rgba(255,209,138,.34);}
+  .pending-previews-card{margin:0 0 14px; padding:12px; border:1px solid rgba(143,227,194,.28); border-radius:10px; background:linear-gradient(135deg, rgba(143,227,194,.08), rgba(255,255,255,.025));}
+  .pending-preview-head{display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; font-size:12px;}
+  .pending-preview-head strong{color:var(--paper);}
+  .pending-preview-head span{color:var(--muted); font-size:11px;}
+  .pending-preview-row{width:100%; display:flex; justify-content:space-between; align-items:center; gap:12px; padding:9px 10px; margin-top:6px; border:1px solid var(--line); border-radius:8px; background:rgba(0,0,0,.12); color:var(--fg); text-align:left; cursor:pointer;}
+  .pending-preview-row:hover,.pending-preview-row:focus-visible{border-color:rgba(143,227,194,.45); outline:none;}
+  .pending-preview-row small{display:block; color:var(--muted); margin-top:2px;}
+  .pending-preview-status{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:#8fe3c2; white-space:nowrap;}
+  .pending-preview-row.blocked .pending-preview-status{color:#ffd18a;}
+  .review-preview-access{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin:8px 0 12px; padding:10px; border:1px solid rgba(143,227,194,.26); border-radius:8px; background:rgba(143,227,194,.06); font-size:12px;}
   .hist-actions{display:flex; gap:8px; flex-wrap:wrap; max-width:260px; justify-content:flex-end;}
   .hist-actions .btn-ghost{padding:7px 10px; font-size:10.5px;}
 
@@ -1660,6 +1672,14 @@
   .visual-comparison-body figure{margin:0;}
   .visual-comparison-body figcaption{font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px;}
   .visual-comparison-body img{display:block; width:100%; max-height:70vh; object-fit:contain; border:1px solid var(--line); border-radius:5px;}
+  .human-preview-comparison{grid-column:1/-1;}
+  .human-preview-comparison-head{display:flex; flex-direction:column; gap:4px; margin-bottom:10px;}
+  .human-preview-comparison-head strong{font-size:13px; color:var(--paper);}
+  .human-preview-comparison-head span{font-size:10px; letter-spacing:.07em; text-transform:uppercase;}
+  .human-preview-comparison-head .ok{color:#8fe3c2;}
+  .human-preview-comparison-head .warn{color:#ffd18a;}
+  .human-preview-comparison-head small{color:var(--muted);}
+  .preview-approval-note{margin:8px 0; padding:8px 10px; border:1px dashed var(--line); border-radius:7px; color:var(--muted); font-size:11px; line-height:1.45;}
   .quality-review-reason{font-size:11px; color:var(--muted); margin:7px 0;}
   .quality-review-text{display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11px;}
   .quality-review-text div{border:1px solid var(--line); border-radius:5px; padding:7px; min-height:32px; white-space:pre-wrap; overflow-wrap:anywhere;}
