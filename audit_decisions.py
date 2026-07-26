@@ -15,7 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DECISIONS = ("translate", "preserve", "ocr_invalid", "needs_review", "dismissed")
+DECISIONS = ("translate", "preserve", "ocr_invalid", "needs_review", "dismissed",
+             "classify_credit", "classify_title_name", "classify_editorial")
 
 
 def _utc_now() -> str:

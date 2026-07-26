@@ -253,6 +253,26 @@ _DECISION_CATEGORY = {
 }
 
 
+# A human may reclassify a region instead of giving a coarse verdict. The
+# category is what they asserted; the effect is how routing must treat it.
+DECISION_TARGET_CATEGORY = {
+    "classify_credit": CREDIT_PRESERVE,
+    "classify_title_name": PROPER_NAME_PRESERVE,
+    "classify_editorial": EDITORIAL_TRANSLATE,
+}
+
+
+def decision_effect(decision: str) -> str:
+    """``"translate"``, ``"preserve"`` or ``""`` for a human decision."""
+    name = str(decision or "")
+    if name in ("translate", "preserve"):
+        return name
+    category = DECISION_TARGET_CATEGORY.get(name)
+    if category is None:
+        return ""
+    return "translate" if is_translatable(category) else "preserve"
+
+
 def resolve_region_policy(*, original_classification: str = "", source_text: str = "",
                           preserve_as_name: bool = False, evidence: dict | None = None,
                           audit_flags: dict | None = None, user_decision: str = "",

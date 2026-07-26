@@ -305,9 +305,10 @@ def provider_exclusion_reason(record: dict, verdict: str = "") -> str | None:
     all ask this, so they cannot drift apart.
     """
     category = str(record.get("classification_normalized") or "")
-    if verdict in ("preserve", "ocr_invalid", "dismissed"):
+    effect = tax.decision_effect(verdict)
+    if effect == "preserve" or verdict in ("ocr_invalid", "dismissed"):
         return _EXCLUDED_REASONS["decision"]
-    if tax.is_preservable(category) and verdict != "translate":
+    if tax.is_preservable(category) and effect != "translate":
         return _EXCLUDED_REASONS["preservable"]
     if tax.is_unreadable(category):
         return _EXCLUDED_REASONS["unreadable"]
@@ -317,7 +318,7 @@ def provider_exclusion_reason(record: dict, verdict: str = "") -> str | None:
     gate_status = (record.get("linguistic_gate") or {}).get("status")
     if not record.get("provider_required") and gate_status != FAILED:
         return _EXCLUDED_REASONS["cache"]
-    if not (record.get("translatable") or verdict == "translate"):
+    if not (record.get("translatable") or effect == "translate"):
         return _EXCLUDED_REASONS["not_translatable"]
     return None
 
@@ -333,20 +334,20 @@ def minimal_provider_set(records: list[dict], *, decisions: dict | None = None) 
     for record in records:
         decision = decisions.get(str(record.get("region_id") or "")) or {}
         verdict = str(decision.get("decision") or "")
-        reason = provider_exclusion_reason(record, verdict)
-        if reason is not None:
-            item = {**_slim(record), "excluded_reason": reason}
-            if verdict:
-                item["human_decision"] = verdict
-            excluded.append(item)
-            continue
         state = classify_editorial_state(record, decision=decision)
-        if state["state"] == AWAITING_EDITORIAL_DECISION:
-            awaiting.append({**_slim(record), "editorial_reasons": state["reasons"],
-                             "ocr_status": state["ocr_assessment"]["status"]})
-            continue
-        included.append({**_slim(record), "human_decision": verdict,
-                         "risk": _risk(record)})
+        item = {**_slim(record), "editorial_reasons": state["reasons"],
+                "ocr_status": state["ocr_assessment"]["status"]}
+        if verdict:
+            item["human_decision"] = verdict
+            item["human_decision_id"] = str(decision.get("audit_decision_id") or "")
+        if state["state"] == READY_FOR_AI_REVIEW:
+            included.append({**item, "risk": _risk(record)})
+        elif state["state"] == AWAITING_EDITORIAL_DECISION:
+            awaiting.append(item)
+        else:
+            excluded.append({**item, "excluded_reason":
+                             provider_exclusion_reason(record, verdict)
+                             or _EXCLUDED_REASONS["unreadable"]})
 
     pages = sorted({str(item.get("page_id") or "") for item in included})
     return {
@@ -358,6 +359,7 @@ def minimal_provider_set(records: list[dict], *, decisions: dict | None = None) 
         "pages": pages,
         "page_count": len(pages),
         "excluded_count": len(excluded),
+        "authorization": authorization_status(records, decisions=decisions),
     }
 
 
@@ -370,13 +372,21 @@ AWAITING_EDITORIAL_DECISION = "awaiting_editorial_decision"
 READY_FOR_AI_REVIEW = "ready_for_ai_review"
 SETTLED = "settled"
 
-_HUMAN_RULED = ("translate", "preserve", "dismissed", "needs_review")
+# Reasons that keep a billable region from being billed. Each one is a question
+# only a human can close.
+_OCR_REASONS = ("ocr_read_implausible", "ocr_read_ambiguous")
 
 
 def classify_editorial_state(record: dict, *, decision: dict | None = None) -> dict:
-    """Where one region stands between a bad read and a provider call."""
+    """Where one region stands between a bad read and a provider call.
+
+    This is the only authority on whether a region gets billed: the provider
+    set and the counters both derive from it, so "ready for ai review" and
+    "estimated requests" can never disagree.
+    """
     decision = decision or {}
     verdict = str(decision.get("decision") or "")
+    effect = tax.decision_effect(verdict)
     category = str(record.get("classification_normalized") or "")
     assessment = assess_ocr_plausibility(
         source_text=record.get("source_text") or "",
@@ -389,24 +399,60 @@ def classify_editorial_state(record: dict, *, decision: dict | None = None) -> d
         state, reasons = TARGETED_OCR_PENDING, ["human_confirmed_ocr_invalid"]
     elif tax.is_unreadable(category):
         state, reasons = TARGETED_OCR_PENDING, ["unreadable_classification"]
-    elif verdict in _HUMAN_RULED:
-        state, reasons = SETTLED, [f"human_decision_{verdict}"]
-    elif provider_exclusion_reason(record, verdict) is not None:
-        state = SETTLED
     else:
-        # Only a region that would actually be billed can block authorization;
-        # flagging preserved text as "pending" would just be noise.
-        if assessment["status"] == LIKELY_OCR_INVALID:
-            reasons.append("ocr_read_implausible")
-        elif assessment["status"] == AMBIGUOUS_OCR:
-            reasons.append("ocr_read_ambiguous")
-        if record.get("needs_human_review"):
-            reasons.append("taxonomy_needs_human_review")
-        state = AWAITING_EDITORIAL_DECISION if reasons else READY_FOR_AI_REVIEW
+        exclusion = provider_exclusion_reason(record, verdict)
+        if exclusion is not None:
+            # Never going to a provider anyway: an open question about it would
+            # only be noise, so it does not block authorization.
+            state, reasons = SETTLED, [exclusion]
+        elif effect == "translate":
+            # An explicit ruling closes the question, ambiguous read or not.
+            state, reasons = READY_FOR_AI_REVIEW, [f"human_decision_{verdict}"]
+        else:
+            # A human asking for more review is a non-decision: it must keep the
+            # region out of the provider set, not quietly let it through.
+            if verdict == "needs_review":
+                reasons.append("human_requested_review")
+            if assessment["status"] == LIKELY_OCR_INVALID:
+                reasons.append("ocr_read_implausible")
+            elif assessment["status"] == AMBIGUOUS_OCR:
+                reasons.append("ocr_read_ambiguous")
+            if record.get("needs_human_review"):
+                reasons.append("taxonomy_needs_human_review")
+            state = AWAITING_EDITORIAL_DECISION if reasons else READY_FOR_AI_REVIEW
     if not reasons:
-        reasons = ["no_open_question"] if state == SETTLED else ["source_text_trusted"]
+        reasons = ["source_text_trusted"]
     return {"state": state, "reasons": reasons, "ocr_assessment": assessment,
             "human_decision": verdict}
+
+
+def authorization_status(records: list[dict], *, decisions: dict | None = None) -> dict:
+    """Whether the chapter may be authorized, and precisely what blocks it."""
+    decisions = decisions or {}
+    ocr_blocked, editorial_blocked, billable = [], [], 0
+    for record in records:
+        decision = decisions.get(str(record.get("region_id") or "")) or {}
+        state = classify_editorial_state(record, decision=decision)
+        if state["state"] == READY_FOR_AI_REVIEW:
+            billable += 1
+        elif state["state"] == AWAITING_EDITORIAL_DECISION:
+            region_id = str(record.get("region_id") or "")
+            if any(r in _OCR_REASONS for r in state["reasons"]):
+                ocr_blocked.append(region_id)
+            else:
+                editorial_blocked.append(region_id)
+    # An unresolved read is reported ahead of an editorial question: re-reading
+    # the text can change what the editorial question even is.
+    if ocr_blocked:
+        status = "blocked_by_ocr_review"
+    elif editorial_blocked:
+        status = "blocked_pending_editorial_decisions"
+    else:
+        status = "ready_for_human_authorization"
+    return {"status": status, "billable": billable,
+            "blocked_by_ocr_review": sorted(ocr_blocked),
+            "blocked_pending_editorial_decisions": sorted(editorial_blocked),
+            "provider_executed": False}
 
 
 def ocr_invalid_candidates(records: list[dict], *, decisions: dict | None = None) -> dict:
@@ -425,6 +471,7 @@ def ocr_invalid_candidates(records: list[dict], *, decisions: dict | None = None
         item = {**_slim(record), "ocr_assessment": assessment,
                 "editorial_state": state["state"],
                 "human_decision": state["human_decision"],
+                "human_decision_id": str(decision.get("audit_decision_id") or ""),
                 "requested_action": "targeted_ocr"}
         if state["human_decision"] == "ocr_invalid":
             confirmed.append(item)
@@ -450,8 +497,8 @@ def pending_editorial_decisions(records: list[dict], *, decisions: dict | None =
             continue
         items.append({**_slim(record), "editorial_reasons": state["reasons"],
                       "ocr_assessment": state["ocr_assessment"],
-                      "current_translation": record.get("current_translation"),
-                      "linguistic_gate": record.get("linguistic_gate")})
+                      "human_decision": state["human_decision"],
+                      "human_decision_id": str(decision.get("audit_decision_id") or "")})
     items.sort(key=lambda i: str(i.get("region_id") or ""))
     pages = sorted({str(i.get("page_id") or "") for i in items})
     return {"items": items, "item_count": len(items),
@@ -478,8 +525,12 @@ def editorial_counters(records: list[dict], *, decisions: dict | None = None) ->
 
 def _slim(record: dict) -> dict:
     keep = ("page_id", "page_number", "region_id", "classification_original",
-            "classification_normalized", "source_text", "current_translation",
-            "reason_codes", "cache_status", "provider_required")
+            "classification_normalized", "semantic_role", "source_text",
+            "current_translation", "reason_codes", "cache_status",
+            "cache_correction_available", "provider_required", "confidence",
+            "needs_human_review", "suggested_action", "reviewable",
+            "translatable", "preservable", "bounding_box",
+            "context_before", "context_after", "linguistic_gate")
     return {k: record.get(k) for k in keep}
 
 
@@ -497,6 +548,8 @@ def _risk(record: dict) -> str:
 # an acronym, a short sfx or a fictional term must never be discarded
 # automatically, so a single weak signal is not enough: an automatic
 # likely_ocr_invalid needs one unambiguous signal or two independent ones.
+
+OCR_PLAUSIBILITY_VERSION = "1"
 
 PLAUSIBLE_SEMANTIC = "plausible_semantic_text"
 LIKELY_OCR_INVALID = "likely_ocr_invalid"
