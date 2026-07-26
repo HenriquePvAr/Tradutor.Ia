@@ -1282,15 +1282,43 @@ class UiBridge:
             return True
         return False
 
-    def minimal_provider_set(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
-        """Regions that genuinely still need a provider call. Never calls one."""
+    def _editorial_view(self, job_id: str, run_id: str, *, user_id: str) -> dict[str, Any]:
+        """The audit, its per-user decisions and the shared identity fields.
+
+        One read for every editorial queue, so the queues and the counters
+        always describe the same audit.
+        """
         review = self.linguistic_audit_review(job_id, run_id, user_id=user_id)
         decisions = {str(r["region_id"]): r["human_decision"] for r in review["records"]
                      if r.get("human_decision")}
-        result = linguistic_triage.minimal_provider_set(review["records"], decisions=decisions)
-        return {**{k: review[k] for k in ("job_id", "run_id", "revision_id",
-                                          "audit_artifact_id", "source_audit_hash")},
-                **result}
+        identity = {k: review[k] for k in ("job_id", "run_id", "revision_id",
+                                           "audit_artifact_id", "source_audit_hash")}
+        return {"records": review["records"], "decisions": decisions, "identity": identity}
+
+    def minimal_provider_set(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """Regions that genuinely still need a provider call. Never calls one."""
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        result = linguistic_triage.minimal_provider_set(view["records"], decisions=view["decisions"])
+        counters = linguistic_triage.editorial_counters(view["records"], decisions=view["decisions"])
+        return {**view["identity"], **result, "editorial_counters": counters}
+
+    def ocr_invalid_candidates(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """Reads that look corrupted, split by how sure the detector is.
+
+        Read-only: it proposes, it never marks. Confirming a candidate is a
+        separate human action through the bulk decision endpoint.
+        """
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        result = linguistic_triage.ocr_invalid_candidates(view["records"], decisions=view["decisions"])
+        counters = linguistic_triage.editorial_counters(view["records"], decisions=view["decisions"])
+        return {**view["identity"], **result, "editorial_counters": counters}
+
+    def pending_editorial_decisions(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """Regions a human must rule on before any provider call is authorized."""
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        result = linguistic_triage.pending_editorial_decisions(view["records"], decisions=view["decisions"])
+        counters = linguistic_triage.editorial_counters(view["records"], decisions=view["decisions"])
+        return {**view["identity"], **result, "editorial_counters": counters}
 
     def ocr_reprocessing_candidates(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
         """Regions whose source text needs a fresh read. Never runs OCR here."""
@@ -1311,6 +1339,12 @@ class UiBridge:
             raise ValueError("explicit_confirmation_required")
         ctx = self._audit_context(job_id, run_id)
         plan = self.minimal_provider_set(job_id, run_id, user_id=user_id)
+        # A set that still holds unruled text would spend calls on reads nobody
+        # confirmed. The editorial queue has to be empty first.
+        if plan["awaiting_editorial_count"]:
+            raise ValueError("blocked_pending_editorial_decisions")
+        if not plan["estimated_requests"]:
+            raise ValueError("empty_provider_set")
         request = {
             "authorization_request_id": uuid.uuid4().hex,
             "job_id": plan["job_id"], "run_id": plan["run_id"],
@@ -1319,7 +1353,8 @@ class UiBridge:
             "source_audit_hash": plan["source_audit_hash"],
             "requested_by": str(user_id),
             "requested_at": _utc_now_iso(),
-            "status": "pending_human_authorization",
+            "status": "ready_for_human_authorization",
+            "editorial_counters": plan["editorial_counters"],
             "estimated_requests": plan["estimated_requests"],
             "pages": plan["pages"],
             "region_ids": [item["region_id"] for item in plan["items"]],

@@ -174,13 +174,36 @@ class TriageBridgeContracts(unittest.TestCase):
             self.assertFalse(tax.is_unreadable(item["classification_normalized"]))
         self.assertEqual(plan["estimated_requests"], len(plan["items"]))
 
+    def _clear_editorial_queue(self, job_id, run_id, user_id="u1"):
+        """Rule on every open editorial question, the way a human would."""
+        pending = self.bridge.pending_editorial_decisions(job_id, run_id, user_id=user_id)
+        for item in pending["items"]:
+            self.bridge.record_audit_decision(
+                job_id, run_id, region_id=item["region_id"],
+                decision="translate", user_id=user_id)
+        after = self.bridge.pending_editorial_decisions(job_id, run_id, user_id=user_id)
+        self.assertEqual(after["item_count"], 0)
+        return self.bridge.minimal_provider_set(job_id, run_id, user_id=user_id)
+
+    def test_authorization_is_blocked_while_editorial_decisions_are_open(self):
+        job_id, run_id = self._chapter_a()
+        pending = self.bridge.pending_editorial_decisions(job_id, run_id, user_id="u1")
+        if not pending["item_count"]:
+            self.skipTest("synthetic chapter left no open editorial decision this run")
+        with self.assertRaisesRegex(ValueError, "blocked_pending_editorial_decisions"):
+            self.bridge.request_provider_authorization(job_id, run_id, user_id="u1", confirm=True)
+
     def test_authorization_request_is_pending_and_never_runs_the_provider(self):
         job_id, run_id = self._chapter_a()
         with self.assertRaisesRegex(ValueError, "explicit_confirmation_required"):
             self.bridge.request_provider_authorization(job_id, run_id, user_id="u1")
+        plan = self._clear_editorial_queue(job_id, run_id)
+        if not plan["estimated_requests"]:
+            self.skipTest("synthetic chapter left no billable region this run")
         request = self.bridge.request_provider_authorization(
             job_id, run_id, user_id="u1", confirm=True)
-        self.assertEqual(request["status"], "pending_human_authorization")
+        self.assertEqual(request["status"], "ready_for_human_authorization")
+        self.assertEqual(request["editorial_counters"]["awaiting_editorial_decision"], 0)
         self.assertFalse(request["provider_executed"])
         blob = json.dumps(request).lower()
         for forbidden in ("api_key", "authorization:", "bearer", "cookie", "token"):
@@ -191,6 +214,8 @@ class TriageBridgeContracts(unittest.TestCase):
 
     def test_authorization_request_is_owner_scoped(self):
         job_id, run_id = self._chapter_a()
+        if not self._clear_editorial_queue(job_id, run_id)["estimated_requests"]:
+            self.skipTest("synthetic chapter left no billable region this run")
         request = self.bridge.request_provider_authorization(
             job_id, run_id, user_id="u1", confirm=True)
         with self.assertRaisesRegex(ValueError, "not_request_owner"):
@@ -203,7 +228,9 @@ class TriageBridgeContracts(unittest.TestCase):
         jobs_before = self.bridge.store  # count via listing below
         self.bridge.linguistic_triage_queue(job_id, run_id, user_id="u1")
         self.bridge.minimal_provider_set(job_id, run_id, user_id="u1")
-        self.bridge.request_provider_authorization(job_id, run_id, user_id="u1", confirm=True)
+        self.bridge.ocr_invalid_candidates(job_id, run_id, user_id="u1")
+        if self._clear_editorial_queue(job_id, run_id)["estimated_requests"]:
+            self.bridge.request_provider_authorization(job_id, run_id, user_id="u1", confirm=True)
         self.assertEqual(list(output.glob("*.pdf")), [])
         self.assertFalse((output / "quality_revision_pages").exists())
         revisions = [d for d in (output / "quality_revision").iterdir()

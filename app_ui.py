@@ -609,11 +609,23 @@ def api_diagnostics(request: Request) -> dict[str, Any]:
     }
 
 
+# A refusal has to say what is blocking it, otherwise the operator cannot act.
+_AUDIT_ERROR_MESSAGES = {
+    "blocked_pending_editorial_decisions": (
+        "Ainda há regiões aguardando decisão editorial.",
+        "Abra DECISÕES EDITORIAIS PENDENTES e decida cada região antes de autorizar."),
+    "empty_provider_set": (
+        "Nenhuma região precisa de chamada ao provider.",
+        "Não há o que autorizar: o conjunto mínimo está vazio."),
+}
+
+
 def _audit_error(exc: ValueError) -> HTTPException:
+    message, action = _AUDIT_ERROR_MESSAGES.get(str(exc), (
+        "Não foi possível concluir a ação da auditoria linguística.",
+        "Confira o capítulo, a revisão e a decisão, e tente novamente."))
     return HTTPException(status_code=400, detail={
-        "code": str(exc),
-        "message": "Não foi possível concluir a ação da auditoria linguística.",
-        "action": "Confira o capítulo, a revisão e a decisão, e tente novamente.",
+        "code": str(exc), "message": message, "action": action,
     })
 
 
@@ -685,6 +697,29 @@ def api_audit_ocr_candidates(request: Request, payload: dict[str, Any] = Body(de
     principal = _ui_principal(request)
     try:
         return BRIDGE.ocr_reprocessing_candidates(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/audit/ocr-invalid-candidates")
+def api_audit_ocr_invalid_candidates(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    # Proposes candidates only. Confirming one is a separate human decision.
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.ocr_invalid_candidates(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/audit/editorial-pending")
+def api_audit_editorial_pending(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.pending_editorial_decisions(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
             user_id=principal.user_id)
     except ValueError as exc:
