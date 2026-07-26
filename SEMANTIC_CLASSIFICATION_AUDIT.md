@@ -147,3 +147,32 @@ normalized class; it does not infer policy from a classification string.
 
 A registered audit built under an older taxonomy version is rebuilt on read;
 tamper, traversal and schema breakage still fail closed.
+
+## Human linguistic triage (BLOCO 5)
+
+`linguistic_triage.py` adds three pure layers on top of the taxonomy policy:
+
+- **Per-region linguistic gate**, deliberately separate from the visual gate.
+  Checks: residual source language, mixed language, candidate equal to source,
+  empty candidate, encoding artefacts, truncation, dropped sentence punctuation,
+  semantic inversion and terminology hints; on the preserve side, an altered sfx
+  or watermark; and an unreadable source. Status is `passed`, `failed`,
+  `needs_review` or `not_applicable`. A clean render never implies a correct
+  translation, and neither gate alone approves anything.
+- **Explainable triage queue.** Every region carries a weighted score *and* the
+  labels that produced it (unreadable source, undetermined class, flagged
+  preservable, failed gate, translatable with cache, needs human review,
+  provider required). A region already decided by a human drops to the bottom
+  but stays visible. Ordering is deterministic.
+- **Minimal provider set.** Keeps only regions that genuinely still need a call,
+  recording why each other one was excluded (preservable class, unreadable,
+  resolved by cache, human decision, not translatable). Estimated requests is
+  one per region.
+
+The audit panel exposes these as three modes (list, triage queue, provider set).
+Bulk decisions apply one verdict to many regions atomically: the audit hash is
+revalidated, regions outside the report and policy-incompatible selections are
+rejected, and a failure rolls back. The provider mode ends in a button that only
+records a **pending** authorization request — it requires explicit confirmation,
+reads no credential and never contacts the provider. Running that set stays a
+separate, human-authorized step.
