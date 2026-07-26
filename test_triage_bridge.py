@@ -108,6 +108,59 @@ class TriageBridgeContracts(unittest.TestCase):
                 self.assertTrue(item["triage_reasons"])
                 self.assertIn("linguistic_gate", item)
 
+    # --- editorial queues -------------------------------------------------
+    def test_editorial_queues_are_dynamic_for_two_unrelated_chapters(self):
+        for build in (self._chapter_a, self._chapter_b):
+            job_id, run_id = build()
+            ocr = self.bridge.ocr_invalid_candidates(job_id, run_id, user_id="u1")
+            pending = self.bridge.pending_editorial_decisions(job_id, run_id, user_id="u1")
+            plan = self.bridge.minimal_provider_set(job_id, run_id, user_id="u1")
+            counters = plan["editorial_counters"]
+            # The three views describe the same audit.
+            for payload in (ocr, pending, plan):
+                self.assertEqual(payload["source_audit_hash"], plan["source_audit_hash"])
+            self.assertEqual(pending["item_count"], counters["awaiting_editorial_decision"])
+            self.assertEqual(plan["estimated_requests"], counters["ready_for_ai_review"])
+            self.assertEqual(plan["awaiting_editorial_count"], pending["item_count"])
+            self.assertFalse(ocr["ocr_executed"])
+            self.assertEqual(counters["targeted_ocr_pending"]
+                             + counters["awaiting_editorial_decision"]
+                             + counters["ready_for_ai_review"] + counters["settled"],
+                             counters["total"])
+
+    def test_reading_the_ocr_queue_records_no_decision(self):
+        job_id, run_id = self._chapter_a()
+        before = self.bridge.linguistic_audit_review(job_id, run_id, user_id="u1")
+        self.bridge.ocr_invalid_candidates(job_id, run_id, user_id="u1")
+        self.bridge.pending_editorial_decisions(job_id, run_id, user_id="u1")
+        after = self.bridge.linguistic_audit_review(job_id, run_id, user_id="u1")
+        self.assertEqual([r.get("human_decision") for r in before["records"]],
+                         [r.get("human_decision") for r in after["records"]])
+
+    def test_confirming_a_candidate_shrinks_the_provider_set(self):
+        job_id, run_id = self._chapter_a()
+        pending = self.bridge.pending_editorial_decisions(job_id, run_id, user_id="u1")
+        if not pending["item_count"]:
+            self.skipTest("synthetic chapter left no open editorial decision this run")
+        target = pending["items"][0]["region_id"]
+        before = self.bridge.minimal_provider_set(job_id, run_id, user_id="u1")
+        self.bridge.record_audit_decision(job_id, run_id, region_id=target,
+                                          decision="ocr_invalid", user_id="u1")
+        after = self.bridge.minimal_provider_set(job_id, run_id, user_id="u1")
+        self.assertLess(after["awaiting_editorial_count"], before["awaiting_editorial_count"])
+        self.assertEqual(after["editorial_counters"]["targeted_ocr_pending"],
+                         before["editorial_counters"]["targeted_ocr_pending"] + 1)
+
+    def test_editorial_queues_are_owner_scoped(self):
+        job_id, run_id = self._chapter_a()
+        pending = self.bridge.pending_editorial_decisions(job_id, run_id, user_id="u1")
+        if not pending["item_count"]:
+            self.skipTest("synthetic chapter left no open editorial decision this run")
+        self.bridge.record_audit_decision(job_id, run_id, region_id=pending["items"][0]["region_id"],
+                                          decision="preserve", user_id="u1")
+        other = self.bridge.pending_editorial_decisions(job_id, run_id, user_id="u2")
+        self.assertEqual(other["item_count"], pending["item_count"])
+
     # --- bulk decisions ---------------------------------------------------
     def test_bulk_decision_applies_to_every_selected_region(self):
         job_id, run_id = self._chapter_a()

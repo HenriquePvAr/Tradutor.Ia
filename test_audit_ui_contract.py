@@ -113,6 +113,54 @@ class AuditUiContracts(unittest.TestCase):
     def test_audit_mode_is_restored_from_the_url(self):
         self.assertIn("audit_mode", self.js)
 
+    # --- editorial queues (BLOCO 6A.1) ------------------------------------
+    def test_editorial_modes_and_endpoints_exist(self):
+        for label in ("CANDIDATOS A OCR INVÁLIDO", "DECISÕES EDITORIAIS PENDENTES"):
+            self.assertIn(label, self.shell, label)
+        for endpoint in ("/api/ui/audit/ocr-invalid-candidates", "/api/ui/audit/editorial-pending"):
+            self.assertIn(endpoint, self.js, endpoint)
+
+    def test_the_three_counters_are_separate(self):
+        for label in ("OCR DIRECIONADO FUTURO", "DECISÃO EDITORIAL PENDENTE",
+                      "PRONTO PARA REVISÃO COM IA"):
+            self.assertIn(label, self.js, label)
+        # They are read from the backend, never summed into one number.
+        self.assertIn("counters.targeted_ocr_pending", self.js)
+        self.assertIn("counters.awaiting_editorial_decision", self.js)
+        self.assertIn("counters.ready_for_ai_review", self.js)
+
+    def test_bulk_confirmation_states_what_does_not_change(self):
+        self.assertIn("auditConfirmDialog", self.shell)
+        self.assertIn("retiradas da fila de tradução e encaminhadas para", self.js)
+        self.assertIn("Nenhum PDF ou tradução será alterado.", self.js)
+        # The bulk path confirms through the in-page dialog, never a browser prompt.
+        start = self.js.index("async function applyBulkDecision")
+        body = self.js[start:self.js.index("\n  $$('[data-audit-mode]')", start)]
+        self.assertIn("await auditConfirm(", body)
+        for banned in ("window.confirm(", "window.prompt("):
+            self.assertNotIn(banned, body, banned)
+
+    def test_authorization_is_visibly_blocked_while_decisions_are_open(self):
+        self.assertIn("awaiting_editorial_count", self.js)
+        self.assertIn("Bloqueado: há regiões aguardando decisão editorial.", self.js)
+        self.assertIn("blocked ? ' disabled aria-disabled=\"true\"", self.js)
+
+    def test_candidates_are_proposed_not_marked(self):
+        # The panel shows the detector's evidence and both sides of it; the
+        # verdict is a button a human presses.
+        self.assertIn("auto_markable", self.js)
+        self.assertIn("positive_evidence", self.js)
+        self.assertIn("A confirmação continua sendo sua.", self.js)
+
+    def test_editorial_queue_explains_why_each_region_is_open(self):
+        self.assertIn("editorial_reasons", self.js)
+        self.assertIn("pendente porque", self.js)
+
+    def test_new_modes_survive_f5(self):
+        self.assertIn("AUDIT_MODES", self.js)
+        for mode in ("'ocr'", "'editorial'"):
+            self.assertIn(mode, self.js, mode)
+
     def test_taxonomy_categories_are_not_page_conditioned(self):
         # No production module keys a decision on a literal page/region number.
         for rel in ("region_taxonomy.py", "linguistic_audit.py", "audit_registry.py",

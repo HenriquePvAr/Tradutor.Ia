@@ -191,6 +191,122 @@ class ProviderSetContracts(unittest.TestCase):
             self.assertNotIn(forbidden, blob)
 
 
+class EditorialQueues(unittest.TestCase):
+    """The OCR queue, the editorial queue and the counters (BLOCO 6A.1)."""
+
+    def _record(self, category, source, **kw):
+        return {"region_id": f"p{random.randint(1, 99):03d}:{_rand_id()}",
+                "page_id": f"p{random.randint(1, 99):03d}",
+                "classification_original": "unknown",
+                "classification_normalized": category,
+                "source_text": source,
+                "current_translation": kw.get("current_translation", ""),
+                "translatable": tax.is_translatable(category),
+                "preservable": tax.is_preservable(category),
+                "provider_required": kw.get("provider", True),
+                "needs_human_review": kw.get("human", False),
+                "confidence": kw.get("confidence", 0.9),
+                "cache_status": kw.get("cache", "not_answered"),
+                "linguistic_gate": {"status": kw.get("gate", lt.PASSED), "checks": {}}}
+
+    def _corpus(self):
+        return [
+            self._record(tax.DIALOGUE_TRANSLATE, _sentence()),          # clean
+            self._record(tax.DIALOGUE_TRANSLATE, "S0METHING"),          # corrupted read
+            self._record(tax.DIALOGUE_TRANSLATE, _sentence(), human=True),
+            self._record(tax.SFX_PRESERVE, "BAM"),                      # preserved
+            self._record(tax.OCR_INVALID, _sentence()),                 # unreadable class
+        ]
+
+    def test_the_counters_partition_the_chapter(self):
+        records = self._corpus()
+        counters = lt.editorial_counters(records)
+        self.assertEqual(counters["total"], len(records))
+        self.assertEqual(
+            counters["targeted_ocr_pending"] + counters["awaiting_editorial_decision"]
+            + counters["ready_for_ai_review"] + counters["settled"], len(records))
+
+    def test_every_region_lands_in_exactly_one_state(self):
+        for record in self._corpus():
+            state = lt.classify_editorial_state(record)
+            self.assertIn(state["state"], (lt.TARGETED_OCR_PENDING, lt.AWAITING_EDITORIAL_DECISION,
+                                           lt.READY_FOR_AI_REVIEW, lt.SETTLED))
+            self.assertTrue(state["reasons"], "a state must explain itself")
+
+    def test_the_provider_set_accounts_for_every_region(self):
+        records = self._corpus()
+        plan = lt.minimal_provider_set(records)
+        self.assertEqual(len(plan["items"]) + len(plan["awaiting_editorial"])
+                         + len(plan["excluded"]), len(records))
+        self.assertEqual(plan["estimated_requests"], len(plan["items"]))
+
+    def test_a_region_awaiting_a_decision_is_never_billed(self):
+        record = self._record(tax.DIALOGUE_TRANSLATE, "S0METHING")
+        plan = lt.minimal_provider_set([record])
+        self.assertEqual(plan["estimated_requests"], 0)
+        self.assertEqual(plan["awaiting_editorial_count"], 1)
+
+    def test_a_clean_region_is_ready_without_any_decision(self):
+        record = self._record(tax.DIALOGUE_TRANSLATE, _sentence())
+        self.assertEqual(lt.classify_editorial_state(record)["state"], lt.READY_FOR_AI_REVIEW)
+        self.assertEqual(lt.minimal_provider_set([record])["estimated_requests"], 1)
+
+    def test_confirming_ocr_invalid_moves_a_region_out_of_the_provider_set(self):
+        record = self._record(tax.DIALOGUE_TRANSLATE, "S0METHING")
+        decisions = {record["region_id"]: {"decision": "ocr_invalid"}}
+        counters = lt.editorial_counters([record], decisions=decisions)
+        self.assertEqual(counters["targeted_ocr_pending"], 1)
+        self.assertEqual(counters["awaiting_editorial_decision"], 0)
+        plan = lt.minimal_provider_set([record], decisions=decisions)
+        self.assertEqual(plan["estimated_requests"], 0)
+        self.assertEqual(plan["awaiting_editorial_count"], 0)
+
+    def test_ruling_on_every_open_question_unblocks_authorization(self):
+        records = self._corpus()
+        pending = lt.pending_editorial_decisions(records)
+        decisions = {i["region_id"]: {"decision": "translate"} for i in pending["items"]}
+        self.assertFalse(lt.editorial_counters(records, decisions=decisions)["authorization_blocked"])
+        self.assertEqual(lt.pending_editorial_decisions(records, decisions=decisions)["item_count"], 0)
+
+    def test_the_ocr_queue_marks_nothing_by_itself(self):
+        records = self._corpus()
+        result = lt.ocr_invalid_candidates(records)
+        self.assertFalse(result["ocr_executed"])
+        self.assertEqual(result["confirmed_count"], 0)
+        for item in result["auto_markable"] + result["review_required"]:
+            self.assertEqual(item["human_decision"], "")
+
+    def test_only_unambiguous_evidence_reaches_the_bulk_group(self):
+        records = self._corpus()
+        result = lt.ocr_invalid_candidates(records)
+        for item in result["auto_markable"]:
+            self.assertTrue(item["ocr_assessment"]["auto_markable"])
+            self.assertTrue(item["ocr_assessment"]["strong_evidence"])
+        for item in result["review_required"]:
+            self.assertFalse(item["ocr_assessment"]["auto_markable"])
+
+    def test_a_confirmed_region_moves_to_the_confirmed_group(self):
+        record = self._record(tax.DIALOGUE_TRANSLATE, "S0METHING")
+        result = lt.ocr_invalid_candidates(
+            [record], decisions={record["region_id"]: {"decision": "ocr_invalid"}})
+        self.assertEqual(result["confirmed_count"], 1)
+        self.assertEqual(result["auto_markable_count"], 0)
+
+    def test_queues_and_counters_agree(self):
+        records = self._corpus()
+        counters = lt.editorial_counters(records)
+        self.assertEqual(lt.pending_editorial_decisions(records)["item_count"],
+                         counters["awaiting_editorial_decision"])
+        self.assertEqual(lt.minimal_provider_set(records)["estimated_requests"],
+                         counters["ready_for_ai_review"])
+
+    def test_the_queues_are_deterministic(self):
+        records = self._corpus()
+        self.assertEqual(lt.pending_editorial_decisions(records),
+                         lt.pending_editorial_decisions(records))
+        self.assertEqual(lt.editorial_counters(records), lt.editorial_counters(records))
+
+
 if __name__ == "__main__":
     unittest.main()
 
