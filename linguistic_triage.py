@@ -318,7 +318,11 @@ def minimal_provider_set(records: list[dict], *, decisions: dict | None = None) 
         if tax.is_unreadable(category):
             excluded.append({**_slim(record), "excluded_reason": _EXCLUDED_REASONS["unreadable"]})
             continue
-        if not record.get("provider_required"):
+        # "Answered by the provider" only counts as resolved when the result
+        # actually holds up. A cached answer that left the region reading like
+        # the source (or empty) resolved nothing, so it still needs a call.
+        gate_status = (record.get("linguistic_gate") or {}).get("status")
+        if not record.get("provider_required") and gate_status != FAILED:
             excluded.append({**_slim(record), "excluded_reason": _EXCLUDED_REASONS["cache"]})
             continue
         if not (record.get("translatable") or verdict == "translate"):

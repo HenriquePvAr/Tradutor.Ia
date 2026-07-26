@@ -282,3 +282,32 @@ class OcrCandidateContracts(unittest.TestCase):
         result = lt.ocr_reprocessing_candidates([])
         self.assertEqual(result["candidate_count"], 0)
         self.assertEqual(result["pages"], [])
+
+
+class CacheDidNotResolveContracts(unittest.TestCase):
+    """A cached answer that left the region broken has not resolved it."""
+
+    def _record(self, gate_status, **kw):
+        return {"region_id": f"p{random.randint(1,99):03d}:{_rand_id()}",
+                "page_id": f"p{random.randint(1,99):03d}",
+                "classification_normalized": tax.DIALOGUE_TRANSLATE,
+                "translatable": True, "preservable": False,
+                "provider_required": kw.get("provider", False),
+                "cache_status": kw.get("cache", "answered"),
+                "source_text": _sentence(),
+                "linguistic_gate": {"status": gate_status}}
+
+    def test_a_cached_answer_with_a_failed_gate_still_needs_the_provider(self):
+        broken = self._record(lt.FAILED, provider=False, cache="answered")
+        result = lt.minimal_provider_set([broken])
+        self.assertEqual([i["region_id"] for i in result["items"]], [broken["region_id"]])
+
+    def test_a_cached_answer_that_holds_up_is_excluded(self):
+        fine = self._record(lt.PASSED, provider=False, cache="answered")
+        result = lt.minimal_provider_set([fine])
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["excluded"][0]["excluded_reason"], "resolved_by_cache")
+
+    def test_a_needs_review_gate_with_cache_is_still_excluded(self):
+        soft = self._record(lt.NEEDS_REVIEW, provider=False, cache="answered")
+        self.assertEqual(lt.minimal_provider_set([soft])["items"], [])
