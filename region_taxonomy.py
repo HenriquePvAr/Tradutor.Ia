@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-TAXONOMY_VERSION = "1"
+TAXONOMY_VERSION = "2"
 
 # --- categories -------------------------------------------------------------
 # Preserve (never auto-translated).
@@ -26,20 +26,31 @@ CREDIT_PRESERVE = "credit_preserve"
 WATERMARK_PRESERVE = "watermark_preserve"
 URL_PRESERVE = "url_preserve"
 PROPER_NAME_PRESERVE = "proper_name_preserve"
+LOGO_PRESERVE = "logo_preserve"
+BRANDING_PRESERVE = "branding_preserve"
 # Translate (carry semantic meaning).
 DECORATIVE_SEMANTIC_TRANSLATE = "decorative_semantic_translate"
 TITLE_SEMANTIC_TRANSLATE = "title_semantic_translate"
 NARRATION_TRANSLATE = "narration_translate"
 DIALOGUE_TRANSLATE = "dialogue_translate"
+THOUGHT_TRANSLATE = "thought_translate"
+SYSTEM_MESSAGE_TRANSLATE = "system_message_translate"
+LOCATION_TRANSLATE = "location_translate"
+EDITORIAL_TRANSLATE = "editorial_translate"
+# Unreadable source: never translated, never invented; targeted OCR may retry.
+OCR_INVALID = "ocr_invalid"
 # Uncertain (fail closed: human decides, provider is never called automatically).
 UNKNOWN_REVIEW_REQUIRED = "unknown_review_required"
 
 PRESERVE = frozenset({SFX_PRESERVE, CREDIT_PRESERVE, WATERMARK_PRESERVE,
-                      URL_PRESERVE, PROPER_NAME_PRESERVE})
+                      URL_PRESERVE, PROPER_NAME_PRESERVE, LOGO_PRESERVE,
+                      BRANDING_PRESERVE})
 TRANSLATE = frozenset({DECORATIVE_SEMANTIC_TRANSLATE, TITLE_SEMANTIC_TRANSLATE,
-                       NARRATION_TRANSLATE, DIALOGUE_TRANSLATE})
+                       NARRATION_TRANSLATE, DIALOGUE_TRANSLATE, THOUGHT_TRANSLATE,
+                       SYSTEM_MESSAGE_TRANSLATE, LOCATION_TRANSLATE, EDITORIAL_TRANSLATE})
 UNCERTAIN = frozenset({UNKNOWN_REVIEW_REQUIRED})
-ALL_CATEGORIES = PRESERVE | TRANSLATE | UNCERTAIN
+INVALID = frozenset({OCR_INVALID})
+ALL_CATEGORIES = PRESERVE | TRANSLATE | UNCERTAIN | INVALID
 
 
 def is_preservable(category: str) -> bool:
@@ -52,6 +63,10 @@ def is_translatable(category: str) -> bool:
 
 def needs_human_review(category: str) -> bool:
     return category in UNCERTAIN
+
+
+def is_unreadable(category: str) -> bool:
+    return category in INVALID
 
 
 # --- structural detectors (no hardcoded phrases) ----------------------------
@@ -132,13 +147,27 @@ def has_semantic_content(text: str) -> bool:
 # semantic text was being lost.
 _DIRECT_LEGACY = {
     "speech": DIALOGUE_TRANSLATE,
-    "thought": DIALOGUE_TRANSLATE,
     "dialogue": DIALOGUE_TRANSLATE,
+    "thought": THOUGHT_TRANSLATE,
     "narration": NARRATION_TRANSLATE,
+    "system_message": SYSTEM_MESSAGE_TRANSLATE,
+    "location": LOCATION_TRANSLATE,
     "credit": CREDIT_PRESERVE,
     "watermark": WATERMARK_PRESERVE,
     "url": URL_PRESERVE,
     "proper_name": PROPER_NAME_PRESERVE,
+    "logo": LOGO_PRESERVE,
+    "branding": BRANDING_PRESERVE,
+}
+
+# Legacy buckets whose meaning is decided by the text, not by the coarse label.
+# This is where semantic text used to be lost as a "graphic".
+_EVIDENCE_LEGACY = {
+    "sfx": DECORATIVE_SEMANTIC_TRANSLATE,
+    "decorative": DECORATIVE_SEMANTIC_TRANSLATE,
+    "editorial": EDITORIAL_TRANSLATE,
+    "unknown": DECORATIVE_SEMANTIC_TRANSLATE,
+    "": DECORATIVE_SEMANTIC_TRANSLATE,
 }
 
 
@@ -175,13 +204,13 @@ def normalize(legacy_label: str, *, text: str = "", preserve_as_name: bool = Fal
     # The visual/uncertain buckets are re-evaluated from the text — this is where
     # semantic text was being lost. "unknown"/"" is a real legacy label ("the
     # classifier was unsure"), so it is judged by evidence, not fail-closed blind.
-    if label in ("sfx", "decorative", "unknown", ""):
+    if label in _EVIDENCE_LEGACY:
         if looks_like_sfx(body):
             return SFX_PRESERVE, "onomatopoeia_shape"
         if has_semantic_content(body):
             # Styled/out-of-balloon text that carries meaning is translatable,
             # not a preserved graphic effect. Human confirms the exact subtype.
-            return DECORATIVE_SEMANTIC_TRANSLATE, f"legacy_{label or 'blank'}_semantic_content"
+            return _EVIDENCE_LEGACY[label], f"legacy_{label or 'blank'}_semantic_content"
         return UNKNOWN_REVIEW_REQUIRED, f"legacy_{label or 'blank'}_without_semantic_content"
 
     # An unrecognised legacy label: never silently translate or preserve.
@@ -193,4 +222,108 @@ def suggested_action(category: str) -> str:
         return "translate"
     if is_preservable(category):
         return "preserve"
+    if is_unreadable(category):
+        return "targeted_ocr"
     return "human_review"
+
+
+# --- canonical policy -------------------------------------------------------
+# The one place that decides what may happen to a region. Every consumer (live
+# review, targeted page/region revision, forgotten-text search, audit, UI) reads
+# this instead of re-deriving rules from a legacy label.
+
+SEMANTIC_ROLES = {
+    DIALOGUE_TRANSLATE: "dialogue", THOUGHT_TRANSLATE: "thought",
+    NARRATION_TRANSLATE: "narration", SYSTEM_MESSAGE_TRANSLATE: "system_message",
+    LOCATION_TRANSLATE: "location", TITLE_SEMANTIC_TRANSLATE: "title",
+    DECORATIVE_SEMANTIC_TRANSLATE: "styled_semantic", EDITORIAL_TRANSLATE: "editorial",
+    SFX_PRESERVE: "sound_effect", CREDIT_PRESERVE: "credit",
+    WATERMARK_PRESERVE: "watermark", URL_PRESERVE: "url",
+    PROPER_NAME_PRESERVE: "proper_name", LOGO_PRESERVE: "logo",
+    BRANDING_PRESERVE: "branding", OCR_INVALID: "unreadable",
+    UNKNOWN_REVIEW_REQUIRED: "undetermined",
+}
+
+# A human decision maps onto a category, overriding the inferred one.
+_DECISION_CATEGORY = {
+    "translate": DECORATIVE_SEMANTIC_TRANSLATE,   # a semantic subtype; human confirmed meaning
+    "preserve": PROPER_NAME_PRESERVE,             # a preserve subtype; human confirmed keep-as-is
+    "ocr_invalid": OCR_INVALID,
+    "needs_review": UNKNOWN_REVIEW_REQUIRED,
+}
+
+
+def resolve_region_policy(*, original_classification: str = "", source_text: str = "",
+                          preserve_as_name: bool = False, evidence: dict | None = None,
+                          audit_flags: dict | None = None, user_decision: str = "",
+                          cache_status: str = "") -> dict:
+    """Return the full, structured policy for one region.
+
+    Decisions come from the normalised category plus evidence — never from a
+    specific phrase, page, chapter or id. A human decision, when present, wins
+    over inference but still cannot make a region auto-apply.
+    """
+    evidence = dict(evidence or {})
+    audit_flags = dict(audit_flags or {})
+    reason_codes: list[str] = []
+
+    category, reason = normalize(original_classification, text=source_text,
+                                 preserve_as_name=preserve_as_name)
+    reason_codes.append(reason)
+
+    text = str(source_text or "").strip()
+    try:
+        confidence = float(evidence.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    # Unreadable source: letters present but no real word and the reader was not
+    # confident. Never translated, never invented; targeted OCR may retry it.
+    low_conf_floor = float(evidence.get("low_confidence_floor") or 0.5)
+    if text and not has_semantic_content(text) and not looks_like_sfx(text) \
+            and 0.0 < confidence < low_conf_floor:
+        category = OCR_INVALID
+        reason_codes.append("unreadable_low_confidence_text")
+
+    decision = str(user_decision or "").strip().lower()
+    if decision in _DECISION_CATEGORY:
+        category = _DECISION_CATEGORY[decision]
+        reason_codes.append(f"human_decision_{decision}")
+    elif decision == "dismissed":
+        reason_codes.append("human_decision_dismissed")
+
+    translatable = is_translatable(category)
+    preservable = is_preservable(category)
+    uncertain = needs_human_review(category)
+    unreadable = is_unreadable(category)
+    dismissed = decision == "dismissed"
+
+    # Reviewable: anything a human may still act on. Preservable regions are not
+    # routed automatically, but an explicit human decision can open them.
+    reviewable = bool(text) and not dismissed and (
+        translatable or uncertain or unreadable
+        or (preservable and decision in ("translate", "needs_review")))
+
+    cached = str(cache_status or "").strip().lower() in ("hit", "answered", "cached")
+    provider_required = bool(translatable and not cached)
+    human_review = bool(uncertain or unreadable
+                        or (translatable and audit_flags.get("was_preserved")))
+
+    if audit_flags.get("report_only"):
+        reason_codes.append("report_only_region")
+
+    return {
+        "normalized_classification": category,
+        "semantic_role": SEMANTIC_ROLES.get(category, "undetermined"),
+        "reviewable": reviewable,
+        "translatable": translatable,
+        "preservable": preservable,
+        "ocr_retry_allowed": bool(unreadable or uncertain),
+        "provider_required": provider_required,
+        "needs_human_review": human_review,
+        "suggested_action": suggested_action(category),
+        "reason_codes": reason_codes,
+        "confidence": confidence,
+        "user_decision": decision,
+        "taxonomy_version": TAXONOMY_VERSION,
+    }
