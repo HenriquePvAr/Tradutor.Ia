@@ -1537,6 +1537,7 @@ class ChapterQualityRevision:
         cache_only: bool = False,
         page_revision_id: str | None = None,
         human_overrides: dict[str, str] | None = None,
+        font_overrides: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Revise a single page into a draft, never touching other pages or a PDF.
 
@@ -1640,7 +1641,8 @@ class ChapterQualityRevision:
         render_page["output_path"] = self._latest_reviewed_page_base(number, page)
         changed_by_page = self._apply_safe_changes_to_pages([render_page], applicable)
         rendered, render_audit = self._render_changed_pages(
-            [render_page], changed_by_page, dest_dir=paths.root / "draft_pages")
+            [render_page], changed_by_page, dest_dir=paths.root / "draft_pages",
+            font_overrides=font_overrides)
         visual_states = self._region_visual_states(
             contextual.get("reviews", []), changed_by_page, render_audit.get("records", []))
         render_audit["region_visual_states"] = visual_states
@@ -1679,6 +1681,7 @@ class ChapterQualityRevision:
                 for item in mask_refinements
                 if isinstance(item.get("font_selection"), dict)
             },
+            "font_overrides": font_overrides or {},
             "review_summary": self._review_summary(
                 contextual.get("reviews", []), visual_states, render_audit.get("records", []),
                 changed_by_page, [render_page]),
@@ -2783,6 +2786,8 @@ class ChapterQualityRevision:
         page: dict[str, Any],
         changes: list[dict[str, Any]],
         boxes: list[tuple[int, int, int, int]],
+        *,
+        font_overrides: dict[str, dict[str, Any]] | None = None,
     ) -> tuple[list[tuple[int, int, int, int]], list[dict[str, Any]]]:
         """Expand change masks only when visual evidence proves residual ink.
 
@@ -2828,6 +2833,20 @@ class ChapterQualityRevision:
                 refined.append(box)
             profile = preview_gates.extract_font_profile(base, xywh)
             selection = preview_gates.select_font_candidate(profile)
+            font_override = (font_overrides or {}).get(str(rid or "")) or {}
+            if font_override:
+                selection = {
+                    **selection,
+                    "selected_font": str(font_override.get("requested_font") or selection.get("selected_font") or "regular"),
+                    "font_match_score": float(font_override.get("style_score") or selection.get("font_match_score") or 0.0),
+                    "font_reason_codes": sorted(set(
+                        [str(v) for v in (selection.get("font_reason_codes") or []) if str(v)]
+                        + ["human_typography_choice"]
+                    )),
+                    "fallback_used": bool(font_override.get("fallback_used", False)),
+                    "font_choice_decision_id": str(font_override.get("font_choice_decision_id") or ""),
+                    "font_file_hash": str(font_override.get("font_file_hash") or font_override.get("font_path_hash") or ""),
+                }
             if item is not None:
                 item.setdefault("preview_refinement", {})
                 item["preview_refinement"].update({
@@ -2845,6 +2864,9 @@ class ChapterQualityRevision:
                     **metadata,
                     "preview_font_role": selection.get("selected_font"),
                     "preview_font_match_score": selection.get("font_match_score"),
+                    "preview_font_choice_decision_id": selection.get("font_choice_decision_id", ""),
+                    "preview_font_path": str(font_override.get("resolved_font_path") or ""),
+                    "preview_font_file_hash": str(font_override.get("font_file_hash") or font_override.get("font_path_hash") or ""),
                 }
                 # The renderer consumes draw_box as the operational safe area for
                 # this draft only. The recorded OCR bounding_box is not rewritten.
@@ -3062,7 +3084,7 @@ class ChapterQualityRevision:
             return int((grey > 127).sum())
         return int((grey < 128).sum())
 
-    def _render_changed_pages(self, pages: list[dict[str, Any]], changed_by_page: dict[int, list[dict[str, Any]]], *, dest_dir: Path | None = None) -> tuple[list[str], dict[str, Any]]:
+    def _render_changed_pages(self, pages: list[dict[str, Any]], changed_by_page: dict[int, list[dict[str, Any]]], *, dest_dir: Path | None = None, font_overrides: dict[str, dict[str, Any]] | None = None) -> tuple[list[str], dict[str, Any]]:
         # A targeted page revision renders into its own draft folder so the
         # chapter's reviewed pages (and the current PDF) stay untouched.
         review_pages = dest_dir or (self.output_dir / "quality_revision_pages")
@@ -3107,7 +3129,8 @@ class ChapterQualityRevision:
                 })
                 continue
             boxes, mask_refinements = self._refine_changed_region_boxes(
-                base, page, changed_by_page[number], boxes)
+                base, page, changed_by_page[number], boxes,
+                font_overrides=font_overrides)
             # Erase the previous translation inside the changed regions first, so
             # the renderer draws the new text on clean background instead of on
             # top of the text that is already there.

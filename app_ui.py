@@ -771,6 +771,39 @@ def api_human_translation_delete(request: Request, payload: dict[str, Any] = Bod
         raise _audit_error(exc) from exc
 
 
+@app.post("/api/ui/human-translation/font-candidates")
+def api_human_translation_font_candidates(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    try:
+        return BRIDGE.human_typography_candidates(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""), user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/human-translation/font-choice")
+def api_human_translation_font_choice(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    try:
+        return BRIDGE.choose_human_typography(
+            str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
+            region_id=str(payload.get("region_id") or ""),
+            candidate_id=str(payload.get("candidate_id") or ""), user_id=principal.user_id)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+
+
+@app.get("/api/ui/human-translation/font-candidate-preview")
+def api_human_translation_font_candidate_preview(request: Request, asset: str = "") -> FileResponse:
+    _ui_principal(request)
+    try:
+        path = BRIDGE.human_typography_candidate_asset(asset)
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+    return FileResponse(path, media_type="image/png")
+
+
 @app.post("/api/ui/human-translation/draft")
 def api_human_translation_draft(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """Render one region's human line into its own draft. Never calls a provider."""
@@ -779,7 +812,8 @@ def api_human_translation_draft(request: Request, payload: dict[str, Any] = Body
         return BRIDGE.create_human_preview_draft(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
             region_id=str(payload.get("region_id") or ""), user_id=principal.user_id,
-            request_id=str(payload.get("request_id") or ""))
+            request_id=str(payload.get("request_id") or ""),
+            font_choice_decision_id=str(payload.get("font_choice_decision_id") or ""))
     except ValueError as exc:
         raise _audit_error(exc) from exc
 

@@ -2262,7 +2262,7 @@
     const preview = event.target.closest('[data-preview-action]');
     if (preview) {
       if (preview.disabled) return;
-      void previewAction(preview.dataset.previewAction, String(preview.dataset.region || ''));
+      void previewAction(preview.dataset.previewAction, String(preview.dataset.region || ''), preview);
       return;
     }
     const decide = event.target.closest('[data-audit-decision]');
@@ -2625,10 +2625,14 @@
       const blocked = pending?.blocked === true || pending?.approval_enabled === false;
       const ready = pending?.approval_enabled === true && pending?.blocked !== true;
       const previewStatus = pending ? (ready ? 'PRONTA PARA REVISÃO HUMANA' : 'BLOQUEADA — REQUER RECONSTRUÇÃO DE ARTE') : '';
+      const fontButton = `<button type="button" class="btn-ghost" data-preview-action="font-options" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de escolher tipografia"'}>ESCOLHER TIPOGRAFIA</button>`;
       const actionButtons = blocked
         ? `<button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">VER DETALHES</button>`
+          + fontButton
+          + `<button type="button" class="btn-ghost" data-preview-action="mask" data-region="${escapeAttr(region)}">VER MÁSCARA</button>`
         : `<button type="button" class="btn-ghost" data-preview-action="approve" data-region="${escapeAttr(region)}">APROVAR TEXTO PARA PRÉVIA</button>`
           + `<button type="button" class="btn-ghost" data-preview-action="edit" data-region="${escapeAttr(region)}">EDITAR TRADUÇÃO HUMANA</button>`
+          + fontButton
           + `<button type="button" class="btn-ghost" data-preview-action="render" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de renderizar"'}>RENDERIZAR NOVA TENTATIVA</button>`
           + `<button type="button" class="btn-primary" data-preview-action="compare" data-region="${escapeAttr(region)}">${ready ? 'ABRIR PRÉVIA DA PÁGINA' : 'ABRIR COMPARAÇÃO'}</button>`
           + `<button type="button" class="btn-ghost" data-preview-action="mask" data-region="${escapeAttr(region)}">VER MÁSCARA</button>`
@@ -2762,7 +2766,7 @@
     }
   }
 
-  async function previewAction(action, region) {
+  async function previewAction(action, region, sourceElement = null) {
     const id = pageRevisionIdentity();
     const field = $(`#auditList [data-human-candidate="${CSS.escape(region)}"]`);
     const item = (auditState.previews?.items || []).find(i => String(i.region_id) === region) || {};
@@ -2783,6 +2787,44 @@
       }
       if (action === 'mask') { auditMessage('A máscara original, a expandida e o halo estão no bloco de evidências desta região.', 'ok'); return; }
       if (action === 'residual') { auditMessage('A contagem de tinta residual está no gate visual medido desta região.', 'ok'); return; }
+      if (action === 'font-options') {
+        const data = await api('/api/ui/human-translation/font-candidates', {method: 'POST',
+          body: JSON.stringify({...id, region_id: region})});
+        const box = $(`#auditList [data-preview-reasons="${CSS.escape(region)}"]`);
+        if (box) {
+          const selected = data.selected_choice || {};
+          const cards = (data.candidates || []).map(candidate => {
+            const chosen = selected.candidate_id && String(selected.candidate_id) === String(candidate.candidate_id);
+            return `<article class="font-choice-card${chosen ? ' is-selected' : ''}">`
+              + `<strong>${escapeHtml(candidate.option_label || 'OPÇÃO')}</strong>`
+              + `<img src="${escapeAttr(candidate.preview_asset || '')}" alt="Comparação tipográfica ${escapeAttr(candidate.option_label || '')}">`
+              + `<dl><dt>Fonte real</dt><dd>${escapeHtml(candidate.actual_font || '—')}</dd>`
+              + `<dt>fallback</dt><dd>${candidate.fallback_used ? 'sim' : 'não'}</dd>`
+              + `<dt>glyphs</dt><dd>${escapeHtml(candidate.glyph_support?.status || '—')}</dd>`
+              + `<dt>score</dt><dd>${Number(candidate.overall_score || 0).toFixed(3)}</dd>`
+              + `<dt>estilo</dt><dd>${Number(candidate.style_score || 0).toFixed(3)}</dd>`
+              + `<dt>encaixe</dt><dd>${Number(candidate.fit_score || 0).toFixed(3)}</dd></dl>`
+              + `<button type="button" class="btn-primary" data-preview-action="font-choose" data-region="${escapeAttr(region)}" data-candidate-id="${escapeAttr(candidate.candidate_id || '')}">ESCOLHER ESTA TIPOGRAFIA</button>`
+              + `</article>`;
+          }).join('');
+          box.innerHTML = `<section class="font-choice-panel" aria-live="polite">`
+            + `<p>${escapeHtml(data.message || 'Escolher cria uma nova tentativa de prévia; nada é aplicado automaticamente.')}</p>`
+            + `<div class="font-choice-grid">${cards || '<div class="visual-comparison-empty">Nenhuma fonte compatível encontrada.</div>'}</div>`
+            + `<div class="audit-actions"><button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">ABRIR AMPLIADO</button>`
+            + `<button type="button" class="btn-ghost" data-preview-action="font-options" data-region="${escapeAttr(region)}">PEDIR OUTRAS OPÇÕES</button>`
+            + `<button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">MANTER PENDENTE</button></div></section>`;
+        }
+        return;
+      }
+      if (action === 'font-choose') {
+        const candidateId = String(sourceElement?.dataset?.candidateId || '');
+        if (!candidateId) { auditMessage('Candidato de fonte indisponível.', 'error'); return; }
+        const result = await api('/api/ui/human-translation/font-choice', {method: 'POST',
+          body: JSON.stringify({...id, region_id: region, candidate_id: candidateId})});
+        auditMessage(`Tipografia escolhida (${String(result.font_choice?.font_choice_decision_id || '').slice(0, 8)}). Renderize uma nova tentativa quando quiser; nada foi aplicado automaticamente.`, 'ok');
+        await previewAction('font-options', region);
+        return;
+      }
       if (action === 'approve') {
         const text = String(field?.value || '').trim();
         if (!text) { auditMessage('Escreva a tradução humana antes de aprovar.', 'warn'); return; }
@@ -2797,8 +2839,14 @@
             + 'Nenhuma chamada ao provider é feita.',
         });
         if (!ok) { auditMessage('Operação cancelada.', 'warn'); return; }
+        let fontChoiceId = '';
+        try {
+          const fontData = await api('/api/ui/human-translation/font-candidates', {method: 'POST',
+            body: JSON.stringify({...id, region_id: region})});
+          fontChoiceId = String(fontData.selected_choice?.font_choice_decision_id || '');
+        } catch (_) { /* draft can still use the generic font selection */ }
         const result = await api('/api/ui/human-translation/draft', {method: 'POST',
-          body: JSON.stringify({...id, region_id: region})});
+          body: JSON.stringify({...id, region_id: region, font_choice_decision_id: fontChoiceId})});
         auditMessage(`Rascunho ${String(result.manifest?.page_revision_id || '').slice(0, 8)} criado `
           + '(aguardando sua aprovação visual).', 'ok');
       } else if (action === 'reject' || action === 'discard') {

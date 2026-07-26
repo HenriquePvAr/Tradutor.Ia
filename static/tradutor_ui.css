@@ -1749,6 +1749,16 @@
   .preview-compare img{display:block; max-width:100%; height:auto; border:1px solid var(--line);
     border-radius:4px; background:#fff;}
   .preview-reasons .audit-reasons{margin-top:2px;}
+  .font-choice-panel{margin-top:8px; border:1px solid var(--line); border-radius:8px; padding:10px; background:rgba(255,255,255,.025);}
+  .font-choice-panel p{margin:0 0 9px; color:var(--muted); font-size:11px; line-height:1.45;}
+  .font-choice-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;}
+  .font-choice-card{border:1px solid var(--line); border-radius:7px; padding:8px; display:flex; flex-direction:column; gap:7px; background:var(--panel);}
+  .font-choice-card.is-selected{border-color:var(--gold); box-shadow:0 0 0 1px rgba(201,162,39,.35);}
+  .font-choice-card strong{font-size:10px; letter-spacing:.08em; color:var(--gold);}
+  .font-choice-card img{width:100%; max-height:170px; object-fit:contain; border:1px solid var(--line); border-radius:5px; background:#111;}
+  .font-choice-card dl{display:grid; grid-template-columns:auto 1fr; gap:2px 7px; font-size:10px; margin:0;}
+  .font-choice-card dt{color:var(--muted); text-transform:uppercase;}
+  .font-choice-card dd{margin:0; color:var(--paper); overflow-wrap:anywhere;}
   @media (max-width:640px){ .preview-compare figure{flex:1 1 100%;} }
   .audit-context{font-size:10px; color:var(--muted); margin-top:4px;}
   .audit-context small{text-transform:uppercase; letter-spacing:.05em; margin-right:4px;}

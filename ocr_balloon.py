@@ -6520,11 +6520,13 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
         font_size = max(config.MIN_FONT_SIZE, int(font_size * 0.92))
 
     preview_font_role = ""
+    preview_font_path = ""
     for line in getattr(group, "lines", []) or []:
         metadata = getattr(line, "metadata", None) or {}
         candidate_role = str(metadata.get("preview_font_role") or "").strip().lower()
-        if candidate_role in {"regular", "shout", "decorative"}:
+        if candidate_role in {"regular", "bold", "shout", "decorative"}:
             preview_font_role = candidate_role
+            preview_font_path = str(metadata.get("preview_font_path") or "").strip()
             break
 
     if preview_font_role:
@@ -6541,9 +6543,9 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
     text_bbox = (0, 0, 0, 0)
 
     overflow_ratio = 1.0
-    prefer_preview_role = bool(preview_font_role)
+    prefer_preview_role = bool(preview_font_role and not preview_font_path)
     while font_size >= config.MIN_FONT_SIZE:
-        font = get_font(font_path, font_size, role=font_role,
+        font = get_font(preview_font_path or font_path, font_size, role=font_role,
                         prefer_role=prefer_preview_role, text=text)
         spacing = max(1, int(font_size * 0.1))
         wrap_width = int(content_w * 0.8) if style.name == "decorative_purple" else content_w

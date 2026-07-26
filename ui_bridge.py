@@ -46,6 +46,7 @@ from chapter_quality_revision import (REVISION_IN_FLIGHT_STATUSES, ChapterQualit
                                       read_json, write_json)
 import audit_registry
 import human_translation_decisions
+import human_typography_decisions
 import linguistic_audit
 import linguistic_triage
 import font_fidelity
@@ -322,6 +323,7 @@ class UiBridge:
         self.store = JobStore(JOBS_DB_PATH)
         self.audit_decisions = AuditDecisionStore(JOBS_DB_PATH)
         self.human_translations = human_translation_decisions.HumanTranslationDecisionStore(JOBS_DB_PATH)
+        self.human_typography = human_typography_decisions.HumanTypographyDecisionStore(JOBS_DB_PATH)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
@@ -1450,8 +1452,169 @@ class UiBridge:
         removed = self.human_translations.delete(str(decision_id), created_by=str(user_id))
         return {"removed": bool(removed), "human_translation_decision_id": str(decision_id)}
 
+    def _human_font_context(self, job_id: str, run_id: str, *, region_id: str,
+                            user_id: str) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        if not decision:
+            raise ValueError("human_decision_not_found")
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+        page = int(record.get("page_number") or 0)
+        box = tuple(int(v) for v in (record.get("bounding_box") or [])[:4])
+        if page <= 0 or len(box) != 4:
+            raise ValueError("font_choice_region_geometry_unavailable")
+        base_page = Path(job["output_dir"]) / "pages" / f"page_{page:03d}.png"
+        if not base_page.is_file():
+            raise ValueError("font_choice_base_page_unavailable")
+        return {"ctx": ctx, "job": job, "decision": decision, "record": record,
+                "page": page, "box": box, "base_page": base_page}
+
+    def _font_candidate_cache_dir(self, *, job_id: str, run_id: str, revision_id: str,
+                                  region_id: str, source_hash: str) -> Path:
+        token = hashlib.sha256(
+            f"{job_id}:{run_id}:{revision_id}:{region_id}:{source_hash}".encode("utf-8")
+        ).hexdigest()[:24]
+        return REPO_ROOT / ".cache" / "runtime" / "human_font_candidates" / token
+
+    @staticmethod
+    def _render_font_candidate_crop(base_crop: Any, text: str, candidate: dict[str, Any]) -> Any:
+        import cv2
+        import numpy as np
+        from PIL import Image, ImageDraw, ImageFont
+
+        crop = np.asarray(base_crop).copy()
+        if crop.size == 0:
+            return crop
+        background = np.median(crop.reshape(-1, crop.shape[2]), axis=0).astype(np.uint8)
+        cleaned = np.zeros_like(crop)
+        cleaned[:, :] = background
+        rgb = cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(img)
+        size = int(candidate["font_size"])
+        font = ImageFont.truetype(str(candidate["resolved_font_path"]), size)
+        bbox = draw.textbbox((0, 0), str(text), font=font, stroke_width=1)
+        while size > 8 and (bbox[2] - bbox[0] > img.size[0] - 4 or bbox[3] - bbox[1] > img.size[1] - 4):
+            size -= 1
+            font = ImageFont.truetype(str(candidate["resolved_font_path"]), size)
+            bbox = draw.textbbox((0, 0), str(text), font=font, stroke_width=1)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = max(2, int((img.size[0] - tw) / 2) - bbox[0])
+        y = max(2, int((img.size[1] - th) / 2) - bbox[1])
+        draw.text((x, y), str(text), font=font, fill=(28, 28, 28),
+                  stroke_width=1, stroke_fill=(245, 245, 245))
+        return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+
+    def human_typography_candidates(self, job_id: str, run_id: str, *, region_id: str,
+                                    user_id: str) -> dict[str, Any]:
+        import cv2
+        import numpy as np
+
+        data = self._human_font_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        decision = data["decision"]
+        box = data["box"]
+        image = cv2.imread(str(data["base_page"]))
+        if image is None:
+            raise ValueError("font_choice_base_page_unavailable")
+        x, y, w, h = box
+        crop = image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+        candidates = font_fidelity.generate_typography_candidates(
+            crop, str(decision.get("human_candidate") or ""), max_candidates=5,
+            min_candidates=3, target_box=(w, h))
+        cache_dir = self._font_candidate_cache_dir(
+            job_id=str(data["job"]["id"]), run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            source_hash=str(decision.get("source_text_hash") or ""))
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        before_path = cache_dir / "before.png"
+        cv2.imwrite(str(before_path), crop)
+        public_candidates = []
+        for index, candidate in enumerate(candidates, start=1):
+            after = self._render_font_candidate_crop(crop, str(decision.get("human_candidate") or ""), candidate)
+            before = cv2.imread(str(before_path))
+            comparison = np.hstack([before, after]) if before is not None and before.shape == after.shape else after
+            name = f"candidate_{index:02d}_{candidate['candidate_id']}.png"
+            path = cache_dir / name
+            cv2.imwrite(str(path), comparison)
+            public = {
+                key: value for key, value in candidate.items()
+                if key not in {"resolved_font_path"}
+            }
+            public["preview_asset"] = f"/api/ui/human-translation/font-candidate-preview?asset={quote(str(cache_dir.name + '/' + name))}"
+            public["option_label"] = f"OPÇÃO {index}"
+            public_candidates.append(public)
+        selected = self.human_typography.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""), revision_id=str(data["ctx"]["revision_id"]),
+            region_id=str(region_id))
+        return {
+            "job_id": str(data["job"]["id"]),
+            "run_id": str(data["job"].get("run_id") or ""),
+            "revision_id": str(data["ctx"]["revision_id"]),
+            "page_id": str(decision.get("page_id") or ""),
+            "region_id": str(region_id),
+            "source_hash": str(decision.get("source_text_hash") or ""),
+            "human_translation_decision_id": str(decision.get("human_translation_decision_id") or ""),
+            "human_candidate": str(decision.get("human_candidate") or ""),
+            "font_inventory": [
+                {key: value for key, value in item.items() if key != "resolved_font_path"}
+                for item in font_fidelity.authorized_font_inventory(
+                    text=str(decision.get("human_candidate") or ""))
+            ],
+            "candidate_count": len(public_candidates),
+            "candidates": public_candidates,
+            "selected_choice": selected or {},
+            "message": "Escolher esta tipografia cria uma nova tentativa de prévia. Não altera o PDF, não publica e não modifica outras páginas.",
+        }
+
+    def choose_human_typography(self, job_id: str, run_id: str, *, region_id: str,
+                                candidate_id: str, user_id: str) -> dict[str, Any]:
+        data = self._human_font_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        candidates = font_fidelity.generate_typography_candidates(
+            self._font_context_crop(data), str(data["decision"].get("human_candidate") or ""),
+            max_candidates=5, min_candidates=3,
+            target_box=(int(data["box"][2]), int(data["box"][3])))
+        candidate = next((item for item in candidates
+                          if str(item.get("candidate_id") or "") == str(candidate_id)), None)
+        if not candidate:
+            raise ValueError("font_candidate_not_found")
+        choice = self.human_typography.upsert(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""), revision_id=str(data["ctx"]["revision_id"]),
+            page_id=str(data["decision"].get("page_id") or ""), region_id=str(region_id),
+            source_hash=str(data["decision"].get("source_text_hash") or ""),
+            human_translation_decision_id=str(data["decision"].get("human_translation_decision_id") or ""),
+            candidate=candidate, status="selected")
+        self.history_revision += 1
+        return {"ok": True, "font_choice": choice}
+
+    def human_typography_candidate_asset(self, asset: str) -> Path:
+        root = (REPO_ROOT / ".cache" / "runtime" / "human_font_candidates").resolve()
+        path = (root / str(asset or "")).resolve()
+        if root == path or root not in path.parents or not path.is_file():
+            raise ValueError("font_candidate_asset_not_found")
+        return path
+
+    def _font_context_crop(self, data: dict[str, Any]) -> Any:
+        import cv2
+        image = cv2.imread(str(data["base_page"]))
+        if image is None:
+            raise ValueError("font_choice_base_page_unavailable")
+        x, y, w, h = data["box"]
+        return image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+
     def create_human_preview_draft(self, job_id: str, run_id: str, *, region_id: str,
-                                   user_id: str, request_id: str = "") -> dict[str, Any]:
+                                   user_id: str, request_id: str = "",
+                                   font_choice_decision_id: str = "") -> dict[str, Any]:
         """Render one region's human line into its own page draft.
 
         The reviewer is a guard that cannot call out, so this path is incapable
@@ -1476,11 +1639,31 @@ class UiBridge:
 
         engine = self._page_revision_engine(
             job, reviewer_factory=provider_execution.NoProviderReviewer)
+        font_overrides = None
+        if str(font_choice_decision_id or "").strip():
+            choice = self.human_typography.get(str(font_choice_decision_id), owner=str(user_id))
+            if not choice:
+                raise ValueError("font_choice_not_found")
+            if str(choice.get("region_id") or "") != str(region_id):
+                raise ValueError("font_choice_region_mismatch")
+            if str(choice.get("source_hash") or "") != str(decision.get("source_text_hash") or ""):
+                raise ValueError("font_choice_source_hash_mismatch")
+            params = dict(choice.get("render_parameters") or {})
+            font_overrides = {str(region_id): {
+                **params,
+                "font_choice_decision_id": str(choice.get("font_choice_decision_id") or ""),
+                "font_file_hash": str(choice.get("font_file_hash") or ""),
+                "style_score": 1.0,
+            }}
         manifest = engine.revise_page(
             page, region_ids=[str(region_id)], cache_only=True,
-            human_overrides={str(region_id): str(decision["human_candidate"])})
+            human_overrides={str(region_id): str(decision["human_candidate"])},
+            font_overrides=font_overrides)
         self.human_translations.set_status(
             decision["human_translation_decision_id"], "draft_rendered", created_by=str(user_id))
+        if font_choice_decision_id:
+            self.human_typography.set_status(
+                str(font_choice_decision_id), "draft_rendered", owner=str(user_id))
         self.history_revision += 1
         return {"manifest": manifest, "human_decision": decision,
                 "provider_execution_id": resolved["execution"].get("authorization_request_id")}
