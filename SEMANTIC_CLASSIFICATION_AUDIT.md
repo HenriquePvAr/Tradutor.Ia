@@ -270,3 +270,39 @@ decision, ready for AI review — are rendered side by side and never summed.
 Nothing here decides for the operator. The detector proposes and explains;
 confirming is a human action, and a chapter with open questions simply cannot
 reach authorization.
+
+## Authenticated proof (BLOCO 6A.2)
+
+Running the queues with a real session found six defects that no offline test
+could reach, because each one only exists once a token, a rendered dialog or a
+persisted decision is involved.
+
+1. **A `needs_review` verdict was billed.** The fail-closed option the operator
+   is offered fell through every exclusion, so asking for more review
+   authorized the call it was meant to stop.
+2. **A `translate` verdict was billed but counted as settled**, so "ready for
+   ai review" undercounted exactly the regions a human had just approved.
+   `classify_editorial_state` is now the only authority on what gets billed and
+   the provider set derives from it.
+3. **Bulk `ocr_invalid` was reachable from the triage queue** over every region,
+   so restricting the checkboxes in the OCR queue had hidden the path rather
+   than closed it. The rule now lives in the bridge.
+4. **F5 never restored the audit**: the url carried only `audit=1`, but the
+   restore path needs the chapter the audit lives inside.
+5. **Every region crop came back 401**: an `<img src>` cannot carry a bearer
+   token. The bytes are fetched through the authenticated helper instead.
+6. **Four dialogs had no background at all** — they asked for a surface colour
+   that was never declared, so `var()` resolved to nothing and they rendered
+   transparent. A contract test now fails on any `var()` used without a
+   definition, and another asserts diagnostics only probes store methods that
+   exist (it had reported the worker offline while it was serving).
+
+### What the crops changed
+
+Nine of seventeen inspected reads were wrong, and the image said so: a
+watermark suffix, and eight stylised sound effects whose letters were
+substituted or whose box clipped the art. Six were legible enough to name; three
+stayed uncertain. That distinction is the whole point — `ocr_invalid` asks for a
+re-read, while `classify_sfx` and `classify_watermark` preserve the art and
+record the corrected reading as audit metadata, without claiming the stored text
+was right. Neither touches a page, a PDF or a translation.
