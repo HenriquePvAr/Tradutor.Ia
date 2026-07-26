@@ -236,7 +236,7 @@ class AuditUiContracts(unittest.TestCase):
     def test_the_preview_actions_are_offered(self):
         for label in ("APROVAR TEXTO PARA PRÉVIA", "EDITAR TRADUÇÃO HUMANA",
                       "RENDERIZAR NOVA TENTATIVA", "ABRIR COMPARAÇÃO",
-                      "VER MÁSCARA", "VER TINTA RESIDUAL"):
+                      "REFINAR MÁSCARA", "VER TINTA RESIDUAL"):
             self.assertIn(label, self.js, label)
         for marker in ('data-preview-action="reject"', 'data-preview-action="discard"'):
             self.assertIn(marker, self.js, marker)
