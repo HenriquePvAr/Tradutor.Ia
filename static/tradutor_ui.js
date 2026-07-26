@@ -1589,8 +1589,22 @@
   }
 
   function updateQualityReviewDeveloperActions() {
+    const dev = qualityReviewDeveloperMode();
     const canary = $('#nvidiaContractCanary');
-    if (canary) canary.hidden = !qualityReviewDeveloperMode();
+    if (canary) canary.hidden = !dev;
+    const diagnostics = $('#runtimeDiagnostics');
+    if (!diagnostics) return;
+    diagnostics.hidden = !dev;
+    // Which build is actually serving this page — developer mode only, so a
+    // regular user never sees process internals.
+    if (dev && !diagnostics.dataset.loaded) {
+      diagnostics.dataset.loaded = '1';
+      api('/api/ui/diagnostics').then(info => {
+        diagnostics.textContent = `build ${String(info.git_head || '').slice(0, 7)} · pid ${info.pid}`
+          + ` · worker ${info.worker_online ? 'online' : 'offline'} · taxonomia v${info.taxonomy_version}`
+          + ` · schema ${info.review_schema_version} · desde ${String(info.server_started_at || '').slice(0, 19)}`;
+      }).catch(() => { diagnostics.textContent = 'diagnóstico indisponível'; delete diagnostics.dataset.loaded; });
+    }
   }
 
   const REVISION_CANCELLABLE_STATES = new Set(['queued', 'running', 'cancelling']);

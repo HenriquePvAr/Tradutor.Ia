@@ -29,7 +29,10 @@ from community_http import (
     create_admin_community_router,
     create_community_router,
 )
+import region_taxonomy
+from chapter_quality_revision import REVIEW_SCHEMA_VERSION
 from local_environment import load_local_environment_for_entrypoint
+from process_options import hidden_console_options
 from ui_bridge import UiBridge, local_folder_ui_allowed
 
 
@@ -37,6 +40,8 @@ if not load_local_environment_for_entrypoint():
     raise SystemExit(2)
 
 ROOT = Path(__file__).resolve().parent
+_SERVER_STARTED_AT = __import__("datetime").datetime.now(
+    __import__("datetime").timezone.utc).isoformat()
 STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
 AUTH_UI_ASSET = ROOT / "static" / "auth_ui.js"
@@ -581,6 +586,27 @@ def api_page_revision_draft(job_id: str, page_revision_id: str, run_id: str = ""
     if path is None:
         raise HTTPException(status_code=404, detail="Prévia da página não encontrada.")
     return FileResponse(path)
+
+
+@app.get("/api/ui/diagnostics")
+def api_diagnostics(request: Request) -> dict[str, Any]:
+    """Developer-only runtime facts: which build is serving, and since when."""
+    _ui_principal(request)
+    import subprocess as _sp
+    head = ""
+    try:
+        head = _sp.run(["git", "rev-parse", "HEAD"], cwd=str(ROOT), capture_output=True,
+                       text=True, timeout=5, **hidden_console_options()).stdout.strip()
+    except Exception:  # noqa: BLE001 - diagnostics must never break the UI
+        head = ""
+    return {
+        "git_head": head,
+        "pid": os.getpid(),
+        "server_started_at": _SERVER_STARTED_AT,
+        "worker_online": bool(BRIDGE.store.online_worker()) if hasattr(BRIDGE.store, "online_worker") else None,
+        "taxonomy_version": region_taxonomy.TAXONOMY_VERSION,
+        "review_schema_version": REVIEW_SCHEMA_VERSION,
+    }
 
 
 def _audit_error(exc: ValueError) -> HTTPException:
