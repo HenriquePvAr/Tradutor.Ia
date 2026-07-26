@@ -499,6 +499,19 @@
                   <label><input type="checkbox" id="auditFilterCacheHit"> cache disponível</label>
                   <label>Página <input type="number" id="auditFilterPage" min="1" placeholder="nº"></label>
                 </div>
+                <div class="linguistic-audit-modes" role="group" aria-label="Modo de visualização">
+                  <button type="button" class="btn-ghost selected" data-audit-mode="list">LISTA</button>
+                  <button type="button" class="btn-ghost" data-audit-mode="triage">FILA DE TRIAGEM</button>
+                  <button type="button" class="btn-ghost" data-audit-mode="provider">CONJUNTO MÍNIMO PARA IA</button>
+                </div>
+                <div class="linguistic-audit-bulk" id="auditBulk" hidden>
+                  <span id="auditBulkCount">0 selecionados</span>
+                  <button type="button" class="btn-ghost" data-audit-bulk="translate">MARCAR COMO TRADUZÍVEL</button>
+                  <button type="button" class="btn-ghost" data-audit-bulk="preserve">MARCAR COMO PRESERVAR</button>
+                  <button type="button" class="btn-ghost" data-audit-bulk="ocr_invalid">MARCAR COMO OCR INVÁLIDO</button>
+                  <button type="button" class="btn-ghost" data-audit-bulk="needs_review">EXIGIR REVISÃO HUMANA</button>
+                  <button type="button" class="btn-ghost" data-audit-bulk="remove">REMOVER DECISÃO</button>
+                </div>
                 <div class="linguistic-audit-list" id="auditList"></div>
                 <div class="linguistic-audit-message" id="auditMessage" role="status" aria-live="polite"></div>
               </dialog>

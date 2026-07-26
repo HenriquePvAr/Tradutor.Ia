@@ -89,6 +89,30 @@ class AuditUiContracts(unittest.TestCase):
         self.assertIn("['draft_ready', 'rejected'].includes(status)", self.js)
         self.assertIn("approve.disabled = status !== 'draft_ready'", self.js)
 
+    def test_triage_modes_and_bulk_actions_exist(self):
+        for label in ("FILA DE TRIAGEM", "CONJUNTO MÍNIMO PARA IA",
+                      "MARCAR COMO TRADUZÍVEL", "MARCAR COMO PRESERVAR",
+                      "MARCAR COMO OCR INVÁLIDO", "EXIGIR REVISÃO HUMANA", "REMOVER DECISÃO"):
+            self.assertIn(label, self.shell, label)
+        for endpoint in ("/api/ui/audit/triage", "/api/ui/audit/decision/bulk",
+                         "/api/ui/audit/provider-set", "/api/ui/audit/provider-authorization"):
+            self.assertIn(endpoint, self.js, endpoint)
+
+    def test_triage_shows_priority_reason_and_gate(self):
+        self.assertIn("motivo da prioridade", self.js)
+        self.assertIn("triage_reasons", self.js)
+        self.assertIn("linguistic_gate", self.js)
+
+    def test_authorization_button_states_no_external_call_is_made(self):
+        self.assertIn("SOLICITAR AUTORIZAÇÃO PARA REVISÃO COM IA", self.js)
+        self.assertIn("Nenhuma chamada externa", self.js)
+        # confirmation is explicit, never a pre-checked box
+        self.assertIn("confirm: true", self.js)
+        self.assertNotIn("checked disabled", self.js)
+
+    def test_audit_mode_is_restored_from_the_url(self):
+        self.assertIn("audit_mode", self.js)
+
     def test_taxonomy_categories_are_not_page_conditioned(self):
         # No production module keys a decision on a literal page/region number.
         for rel in ("region_taxonomy.py", "linguistic_audit.py", "audit_registry.py",

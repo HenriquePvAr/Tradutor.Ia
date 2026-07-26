@@ -1995,7 +1995,7 @@
   }
 
   /* ---------- linguistic audit review (BLOCO 3) ---------- */
-  const auditState = {review: null};
+  const auditState = {review: null, mode: 'list', triage: null, providerSet: null, selection: new Set()};
 
   function auditMessage(text, type = '') {
     const node = $('#auditMessage');
@@ -2187,8 +2187,152 @@
     if (openPage) { openVisualComparison(Number(openPage.dataset.auditOpenPage)); }
   });
   function restoreAuditFromUrl() {
-    try { if (new URLSearchParams(window.location.search || '').get('audit') === '1') openLinguisticAudit({restore: true}); } catch (_) {}
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      if (params.get('audit') !== '1') return;
+      const mode = String(params.get('audit_mode') || 'list');
+      if (['list', 'triage', 'provider'].includes(mode)) auditState.mode = mode;
+      openLinguisticAudit({restore: true});
+    } catch (_) {}
   }
+
+  /* ---------- triage, bulk decisions and provider set (BLOCO 5) ---------- */
+  function auditModeSyncUrl() {
+    try {
+      const url = new URL(window.location.href);
+      if (auditState.mode && auditState.mode !== 'list') url.searchParams.set('audit_mode', auditState.mode);
+      else url.searchParams.delete('audit_mode');
+      window.history.replaceState({}, '', url);
+    } catch (_) {}
+  }
+
+  async function setAuditMode(mode) {
+    auditState.mode = mode;
+    $$('[data-audit-mode]').forEach(b => b.classList.toggle('selected', b.dataset.auditMode === mode));
+    const bulk = $('#auditBulk');
+    if (bulk) bulk.hidden = mode !== 'triage';
+    auditModeSyncUrl();
+    const id = pageRevisionIdentity();
+    try {
+      if (mode === 'triage') {
+        auditState.triage = await api('/api/ui/audit/triage', {method: 'POST', body: JSON.stringify(id)});
+        renderTriageQueue();
+      } else if (mode === 'provider') {
+        auditState.providerSet = await api('/api/ui/audit/provider-set', {method: 'POST', body: JSON.stringify(id)});
+        renderProviderSet();
+      } else {
+        renderAuditList();
+      }
+      auditMessage('');
+    } catch (error) { auditMessage(error.message || 'Falha ao carregar.', 'error'); }
+  }
+
+  function renderTriageQueue() {
+    const list = $('#auditList');
+    const data = auditState.triage;
+    if (!list || !data) return;
+    const counters = Object.entries(data.counters || {}).filter(([k]) => !k.startsWith('class_'))
+      .map(([k, v]) => `${escapeHtml(k)} ${Number(v)}`).join(' · ');
+    const rows = (data.queue || []).map(item => {
+      const gate = (item.linguistic_gate || {}).status || '—';
+      const decided = item.human_decision ? String(item.human_decision.decision) : '';
+      const checked = auditState.selection.has(String(item.region_id)) ? ' checked' : '';
+      return `<article class="audit-item" data-region="${escapeAttr(item.region_id)}" data-page="${escapeAttr(item.page_number)}">`
+        + `<div class="audit-item-head"><label class="triage-pick"><input type="checkbox" data-triage-select="${escapeAttr(item.region_id)}"${checked}> `
+        + `<strong>${escapeHtml(item.region_id)}</strong></label> `
+        + `<span class="audit-cls">${escapeHtml(item.classification_original)} → ${escapeHtml(item.classification_normalized)}</span>`
+        + `<span class="triage-gate" data-gate="${escapeAttr(gate)}">gate ${escapeHtml(gate)}</span>`
+        + `<span class="triage-score">prioridade ${Number(item.triage_score)}</span>`
+        + (decided ? `<span class="audit-decided">decisão: ${escapeHtml(decided)}</span>` : '') + `</div>`
+        + `<div class="audit-texts"><small>fonte</small> ${escapeHtml(item.source_text || '—')}<br><small>tradução</small> ${escapeHtml(item.current_translation || '—')}</div>`
+        + `<div class="audit-reasons">motivo da prioridade: ${escapeHtml((item.triage_reasons || []).join(', '))}`
+        + ` · gate: ${escapeHtml(((item.linguistic_gate || {}).reason_codes || []).join(', ') || 'sem alertas')}</div>`
+        + `<div class="audit-actions"><button type="button" class="btn-ghost" data-audit-revise-region="${escapeAttr(item.region_id)}" data-region-page="${escapeAttr(item.page_number)}"${item.reviewable ? '' : ' disabled aria-disabled="true" title="Região preservada pela política atual"'}>REVISAR ESTA REGIÃO</button></div></article>`;
+    }).join('');
+    list.innerHTML = `<div class="pr-summary">${Number(data.total || 0)} na fila · ${escapeHtml(counters)}</div>`
+      + (rows || '<div class="muted">Fila vazia.</div>');
+    updateBulkCount();
+  }
+
+  function renderProviderSet() {
+    const list = $('#auditList');
+    const data = auditState.providerSet;
+    if (!list || !data) return;
+    const rows = (data.items || []).map(item =>
+      `<article class="audit-item" data-region="${escapeAttr(item.region_id)}">`
+      + `<div class="audit-item-head"><strong>${escapeHtml(item.region_id)}</strong>`
+      + `<span class="audit-cls">${escapeHtml(item.classification_normalized)}</span>`
+      + `<span class="triage-gate" data-gate="${escapeAttr(item.risk)}">risco ${escapeHtml(item.risk)}</span></div>`
+      + `<div class="audit-texts"><small>fonte</small> ${escapeHtml(item.source_text || '—')}<br><small>tradução</small> ${escapeHtml(item.current_translation || '—')}</div></article>`).join('');
+    const excluded = (data.excluded || []).reduce((acc, e) => {
+      acc[e.excluded_reason] = (acc[e.excluded_reason] || 0) + 1; return acc;
+    }, {});
+    const excludedText = Object.entries(excluded).map(([k, v]) => `${escapeHtml(k)} ${v}`).join(' · ');
+    list.innerHTML = `<div class="pr-summary"><strong>${Number(data.estimated_requests || 0)}</strong> regiões exigiriam a IA`
+      + ` · ${Number(data.page_count || 0)} páginas · excluídas: ${escapeHtml(excludedText || 'nenhuma')}</div>`
+      + `<div class="provider-cta"><button type="button" class="btn-primary" id="requestProviderAuth">SOLICITAR AUTORIZAÇÃO PARA REVISÃO COM IA</button>`
+      + `<span class="muted">Cria apenas um pedido pendente. Nenhuma chamada externa é feita agora.</span></div>`
+      + (rows || '<div class="muted">Nenhuma região exige a IA.</div>');
+  }
+
+  function selectedTriageRegions() {
+    return [...auditState.selection];
+  }
+
+  function updateBulkCount() {
+    const label = $('#auditBulkCount');
+    if (label) label.textContent = `${auditState.selection.size} selecionado${auditState.selection.size === 1 ? '' : 's'}`;
+  }
+
+  async function applyBulkDecision(decision) {
+    const regions = selectedTriageRegions();
+    if (!regions.length) { auditMessage('Selecione ao menos uma região.', 'warn'); return; }
+    const id = pageRevisionIdentity();
+    const hash = auditState.triage?.source_audit_hash || '';
+    try {
+      if (decision === 'remove') {
+        // Removing is per-decision; resolve each region's decision id first.
+        const review = await api('/api/ui/audit/review', {method: 'POST', body: JSON.stringify(id)});
+        const byRegion = new Map((review.records || []).filter(r => r.human_decision)
+          .map(r => [String(r.region_id), r.human_decision.audit_decision_id]));
+        for (const region of regions) {
+          const decisionId = byRegion.get(region);
+          if (decisionId) await api('/api/ui/audit/decision/delete', {method: 'POST', body: JSON.stringify({...id, decision_id: decisionId})});
+        }
+        auditMessage(`Decisões removidas: ${regions.length}.`, 'ok');
+      } else {
+        const result = await api('/api/ui/audit/decision/bulk', {method: 'POST',
+          body: JSON.stringify({...id, region_ids: regions, decision, source_audit_hash: hash})});
+        auditMessage(`${result.applied} decisão(ões) aplicadas em ${result.pages.length} página(s).`, 'ok');
+      }
+      auditState.selection.clear();
+      await setAuditMode('triage');
+    } catch (error) { auditMessage(error.message || 'Falha na operação em massa.', 'error'); }
+  }
+
+  $$('[data-audit-mode]').forEach(button => button.addEventListener('click', () => setAuditMode(button.dataset.auditMode)));
+  $('#auditBulk')?.addEventListener('click', event => {
+    const btn = event.target.closest('[data-audit-bulk]');
+    if (btn) applyBulkDecision(btn.dataset.auditBulk);
+  });
+  $('#auditList')?.addEventListener('change', event => {
+    const box = event.target.closest('[data-triage-select]');
+    if (!box) return;
+    const region = String(box.dataset.triageSelect || '');
+    if (box.checked) auditState.selection.add(region); else auditState.selection.delete(region);
+    updateBulkCount();
+  });
+  $('#auditList')?.addEventListener('click', async event => {
+    if (!event.target.closest('#requestProviderAuth')) return;
+    const id = pageRevisionIdentity();
+    try {
+      const request = await api('/api/ui/audit/provider-authorization', {method: 'POST',
+        body: JSON.stringify({...id, confirm: true})});
+      auditMessage(`Pedido ${String(request.authorization_request_id).slice(0, 8)} criado: `
+        + `${request.estimated_requests} região(ões), ${request.pages.length} página(s). `
+        + 'Nenhuma chamada externa foi feita.', 'ok');
+    } catch (error) { auditMessage(error.message || 'Falha ao registrar o pedido.', 'error'); }
+  });
   $('#qualityReviewList')?.addEventListener('change', event => {
     const checkbox = event.target.closest?.('[data-review-select]');
     if (!checkbox) return;
