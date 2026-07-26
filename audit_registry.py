@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import linguistic_triage
 import region_taxonomy as tax
 
 REGISTRY_SCHEMA_VERSION = "1"
@@ -44,6 +45,8 @@ def validate_report_schema(report: dict[str, Any]) -> None:
             raise ValueError(f"audit_report_missing_{key}")
     if str(report.get("taxonomy_version") or "") != tax.TAXONOMY_VERSION:
         raise ValueError("audit_report_taxonomy_version_mismatch")
+    if str(report.get("gate_version") or "") != linguistic_triage.GATE_VERSION:
+        raise ValueError("audit_report_gate_version_mismatch")
     if not isinstance(report.get("records"), list):
         raise ValueError("audit_report_records_not_a_list")
 

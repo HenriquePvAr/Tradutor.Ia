@@ -180,6 +180,7 @@ def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
 
     return {
         "taxonomy_version": tax.TAXONOMY_VERSION,
+        "gate_version": linguistic_triage.GATE_VERSION,
         "job_id": str(job_id),
         "run_id": str(run_id),
         "revision_id": str(revision.get("revision_id") or ""),

@@ -11,11 +11,13 @@ import unittest
 from pathlib import Path
 
 import audit_registry as reg
+import linguistic_triage as lt
 import region_taxonomy as tax
 
 
 def _report(revision_id="rev1", records=None):
-    return {"taxonomy_version": tax.TAXONOMY_VERSION, "revision_id": revision_id,
+    return {"taxonomy_version": tax.TAXONOMY_VERSION, "gate_version": lt.GATE_VERSION,
+            "revision_id": revision_id,
             "records": records if records is not None else [{"region_id": "p001:R1"}],
             "by_normalized_category": {"dialogue_translate": 1}, "total_regions_audited": 1}
 
@@ -57,6 +59,7 @@ class AuditRegistryContracts(unittest.TestCase):
     def test_schema_and_taxonomy_version_validation(self):
         with self.assertRaisesRegex(ValueError, "missing_records"):
             reg.validate_report_schema({"taxonomy_version": tax.TAXONOMY_VERSION,
+                                        "gate_version": lt.GATE_VERSION,
                                         "revision_id": "r", "by_normalized_category": {},
                                         "total_regions_audited": 0})
         with self.assertRaisesRegex(ValueError, "taxonomy_version_mismatch"):

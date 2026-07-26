@@ -1104,7 +1104,7 @@ class UiBridge:
         except ValueError as exc:
             # A stale audit (built under an older taxonomy) is rebuilt; anything
             # else — tamper, traversal, unreadable — still fails closed.
-            if "taxonomy_version_mismatch" not in str(exc):
+            if "version_mismatch" not in str(exc):
                 raise
             resolved = None
         if resolved:

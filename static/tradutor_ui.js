@@ -2033,7 +2033,9 @@
       auditState.review = review;
       renderAuditSummary(review);
       populateAuditCategoryFilter(review);
-      renderAuditList();
+      // Restoring a non-default mode must re-render that mode, not the list.
+      if (auditState.mode && auditState.mode !== 'list') await setAuditMode(auditState.mode);
+      else renderAuditList();
       auditMessage('');
     } catch (error) { auditMessage(error.message || 'Falha ao carregar a auditoria.', 'error'); }
     auditSyncUrl(true);
