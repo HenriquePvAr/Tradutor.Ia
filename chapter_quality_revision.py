@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 
 import config
+import region_taxonomy
 from ocr_balloon import TextGroup, render_analyzed_image
 from ocr_engine import OCRLine
 from pdf import generate_pdf
@@ -1737,21 +1738,30 @@ class ChapterQualityRevision:
         for idx, region in enumerate(regions):
             if int(region.get("page") or 0) != number:
                 continue
-            reviewable = self._is_reviewable(region)
+            policy = self.region_policy(region)
+            reviewable = bool(policy["reviewable"])
             cached = False
             if reviewable:
                 cached = self._region_review_cached(self._review_record(regions, idx), glossary, reviewer, cache)
-                if not cached:
+                if not cached and policy["translatable"]:
                     need_auth += 1
             out.append({
                 "region_id": str(region.get("region_id") or ""),
                 "classification": str(region.get("classification") or "unknown"),
+                # The frontend renders the backend's policy; it never infers one.
+                "classification_normalized": policy["normalized_classification"],
+                "semantic_role": policy["semantic_role"],
+                "suggested_action": policy["suggested_action"],
+                "reason_codes": policy["reason_codes"],
                 "source_text": str(region.get("source_text") or ""),
                 "current_translation": str(region.get("current_translation") or ""),
                 "reviewable": reviewable,
+                "translatable": bool(policy["translatable"]),
+                "preservable": bool(policy["preservable"]),
+                "needs_human_review": bool(policy["needs_human_review"]),
                 "preserved_original": bool(region.get("preserved_original")),
                 "cache_hit": cached,
-                "requires_authorization": reviewable and not cached,
+                "requires_authorization": reviewable and policy["translatable"] and not cached,
             })
         return {"page": number, "page_id": f"p{number:03d}", "regions": out,
                 "reviewable_regions": sum(1 for r in out if r["reviewable"]),
@@ -1778,18 +1788,29 @@ class ChapterQualityRevision:
             current = str(region.get("current_translation") or "")
             preserved = bool(region.get("preserved_original"))
             residual = looks_like_source_english(current) or looks_like_source_english(source) if current else False
-            do_not_translate = classification in {"watermark", "credit", "url", "logo"} or bool(region.get("preserve_as_name"))
-            if not (preserved or residual or classification in {"decorative", "sfx", "narration", "title"}):
+            # Same canonical policy the targeted review uses: a candidate is
+            # anything a human may still act on, and a preservable class stays
+            # flagged do-not-translate instead of being silently promoted.
+            policy = self.region_policy(region)
+            do_not_translate = bool(policy["preservable"])
+            if not (policy["reviewable"] or residual or preserved):
                 continue
             candidates.append({
                 "region_id": str(region.get("region_id") or ""),
                 "classification": classification,
+                "classification_normalized": policy["normalized_classification"],
+                "semantic_role": policy["semantic_role"],
                 "source_text": source,
                 "current_translation": current,
                 "preserved_original": preserved,
                 "language_residual": residual,
                 "do_not_translate": do_not_translate,
-                "suggested_action": "keep_preserved" if do_not_translate else "human_decision",
+                "reviewable": policy["reviewable"],
+                "provider_required": policy["provider_required"],
+                "needs_human_review": policy["needs_human_review"],
+                "reason_codes": policy["reason_codes"],
+                "confidence": policy["confidence"],
+                "suggested_action": "keep_preserved" if do_not_translate else policy["suggested_action"],
             })
         return {"page": number, "page_id": f"p{number:03d}", "candidates": candidates,
                 "candidate_count": len(candidates)}
@@ -3207,13 +3228,32 @@ class ChapterQualityRevision:
                 return candidate
             idx += 1
 
-    def _is_reviewable(self, region: dict[str, Any]) -> bool:
-        classification = str(region.get("classification") or "unknown").lower()
-        if classification in PRESERVED_CLASSES:
-            return False
-        if classification not in TRANSLATABLE_CLASSES:
-            return False
-        return bool(str(region.get("source_text") or "").strip())
+    def region_policy(self, region: dict[str, Any], *, user_decision: str = "",
+                      cache_status: str = "") -> dict[str, Any]:
+        """Canonical policy for one region — the single source of truth.
+
+        Every caller (targeted page/region revision, forgotten-text search, the
+        audit and the UI) reads this instead of re-deriving rules from the coarse
+        legacy label, which is what made a semantically meaningful styled caption
+        unreviewable just because it was bucketed as "decorative".
+        """
+        raw = region.get("raw_item") if isinstance(region.get("raw_item"), dict) else {}
+        return region_taxonomy.resolve_region_policy(
+            original_classification=str(region.get("classification") or ""),
+            source_text=str(region.get("source_text") or ""),
+            preserve_as_name=bool(raw.get("preserve_as_name")),
+            evidence={
+                "confidence": region.get("confidence"),
+                "quality_reasons": region.get("quality_reasons") or [],
+                "bounding_box": region.get("bounding_box"),
+            },
+            audit_flags={"was_preserved": bool(region.get("preserved_original"))},
+            user_decision=user_decision,
+            cache_status=cache_status,
+        )
+
+    def _is_reviewable(self, region: dict[str, Any], *, user_decision: str = "") -> bool:
+        return bool(self.region_policy(region, user_decision=user_decision)["reviewable"])
 
     @staticmethod
     def _word_tokens(text: str) -> list[str]:

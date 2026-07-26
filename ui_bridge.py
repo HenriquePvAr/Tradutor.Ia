@@ -1092,7 +1092,14 @@ class UiBridge:
                 "pdf_name": pdf_name}
 
     def _resolve_or_build_audit(self, ctx: dict[str, Any]) -> dict[str, Any]:
-        resolved = audit_registry.resolve_registered_audit(ctx["output_dir"], ctx["revision_id"])
+        try:
+            resolved = audit_registry.resolve_registered_audit(ctx["output_dir"], ctx["revision_id"])
+        except ValueError as exc:
+            # A stale audit (built under an older taxonomy) is rebuilt; anything
+            # else — tamper, traversal, unreadable — still fails closed.
+            if "taxonomy_version_mismatch" not in str(exc):
+                raise
+            resolved = None
         if resolved:
             return resolved
         if not ctx["pdf_name"]:

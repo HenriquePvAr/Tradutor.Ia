@@ -114,25 +114,29 @@ def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
         source_text = str(raw.get("text") or raw.get("clean_text") or "")
         current_translation = str(raw.get("translation") or raw.get("translation_candidate") or "")
         preserve_as_name = bool(raw.get("preserve_as_name"))
-        category, reason = tax.normalize(legacy, text=source_text, preserve_as_name=preserve_as_name)
 
         review = reviews.get(stable) or {}
         visual = visual_states.get(stable) or {}
         revision_linked = bool(visual)
         report_only = not revision_linked  # panel-flagged item outside the revision
-        # Cache/provider: a region already answered by the revision has a reusable
-        # decision; a translatable one never answered would need the provider.
-        answered = bool(review)
-        provider_required = tax.is_translatable(category) and not answered and (
-            not current_translation or current_translation.strip() == source_text.strip())
+        # A region already answered by the revision has a reusable decision.
+        answered = bool(review) and (
+            bool(current_translation) and current_translation.strip() != source_text.strip())
+        was_preserved = bool(raw.get("preserved_original")) or (
+            str(review.get("action") or "") in ("preserve_original", "keep")) or report_only
 
-        # A region whose normalized category disagrees with how it was handled
-        # (preserved but now judged translatable) is the interesting audit signal.
-        was_preserved = bool(raw.get("preserved_original")) or (str(review.get("action") or "") in ("preserve_original", "keep")) or report_only
-        needs_human_review = tax.needs_human_review(category) or (
-            tax.is_translatable(category) and was_preserved)
+        # One canonical policy, shared with the live targeted review: the audit
+        # never re-derives its own rules from the legacy label.
+        policy = tax.resolve_region_policy(
+            original_classification=legacy, source_text=source_text,
+            preserve_as_name=preserve_as_name,
+            evidence={"confidence": raw.get("confidence"),
+                      "quality_reasons": raw.get("quality_reasons") or []},
+            audit_flags={"was_preserved": was_preserved, "report_only": report_only},
+            cache_status="answered" if answered else "")
+        category = policy["normalized_classification"]
 
-        reason_codes = [reason]
+        reason_codes = list(policy["reason_codes"])
         if str(review.get("reason_code") or ""):
             reason_codes.append(str(review.get("reason_code")))
 
@@ -142,18 +146,22 @@ def audit_chapter(output_dir: str, job_id: str, run_id: str, *,
             "region_id": stable,
             "classification_original": legacy,
             "classification_normalized": category,
+            "semantic_role": policy["semantic_role"],
             "source_text": source_text,
             "current_translation": current_translation,
-            "suggested_action": tax.suggested_action(category),
+            "suggested_action": policy["suggested_action"],
             "reason_codes": reason_codes,
             "revision_linked": revision_linked,
             "report_only": report_only,
             "visual_state": str(visual.get("state") or ""),
             "review_action": str(review.get("action") or ""),
             "cache_status": "answered" if answered else "not_answered",
-            "provider_required": provider_required,
+            "provider_required": policy["provider_required"],
             "confidence": raw.get("confidence"),
-            "needs_human_review": needs_human_review,
+            "needs_human_review": policy["needs_human_review"],
+            "reviewable": policy["reviewable"],
+            "translatable": policy["translatable"],
+            "preservable": policy["preservable"],
         })
 
     by_category: dict[str, int] = {}

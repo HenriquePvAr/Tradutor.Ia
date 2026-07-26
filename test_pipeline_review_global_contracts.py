@@ -1653,7 +1653,11 @@ class TargetedPageRevisionContracts(unittest.TestCase):
             ids = {c["region_id"] for c in result["candidates"]}
             self.assertIn("p001:REGION_002", ids)  # preserved sfx surfaces as a candidate
             sfx = next(c for c in result["candidates"] if c["region_id"] == "p001:REGION_002")
-            self.assertEqual(sfx["suggested_action"], "human_decision")
+            # A real onomatopoeia resolves to a preserve class, so the search
+            # surfaces it for inspection but never proposes translating it.
+            self.assertEqual(sfx["suggested_action"], "keep_preserved")
+            self.assertTrue(sfx["do_not_translate"])
+            self.assertEqual(sfx["classification_normalized"], "sfx_preserve")
 
     def test_frontend_exposes_page_revision_controls(self) -> None:
         shell = SHELL.read_text(encoding="utf-8")
