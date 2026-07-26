@@ -1789,12 +1789,13 @@
     } catch (_) {}
   }
 
-  async function openPageRevision(page, {restore = false, pageRevisionId = ''} = {}) {
+  async function openPageRevision(page, {restore = false, pageRevisionId = '', focusRegion = ''} = {}) {
     const id = pageRevisionIdentity();
     const pageNo = Number(page);
     if (!id.job_id || !pageNo) { showToast('Abra um capítulo em revisão primeiro.', 'error'); return; }
     pageRevisionState.page = pageNo;
     pageRevisionState.pageRevisionId = pageRevisionId || null;
+    pageRevisionState.focusRegion = focusRegion || '';
     const dialog = $('#pageRevisionPanel');
     if (dialog) { dialog.hidden = false; if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal(); }
     $('#pageRevisionTitle').textContent = `Revisão da página ${pageNo}`;
@@ -1811,12 +1812,20 @@
   function renderPageRevisionRegions(listing) {
     const root = $('#pageRevisionRegions');
     if (!root) return;
+    const focus = String(pageRevisionState.focusRegion || '');
     const rows = (listing.regions || []).map(r => {
+      // Badges render the backend's resolved policy; the UI never infers one
+      // from a classification string.
       const badge = !r.reviewable ? '<span class="pr-badge pr-preserved">preservada</span>'
         : r.cache_hit ? '<span class="pr-badge pr-cache">cache</span>'
-        : '<span class="pr-badge pr-auth">exige NVIDIA</span>';
-      const box = r.reviewable ? `<input type="checkbox" class="pr-select" data-pr-region="${escapeAttr(r.region_id)}">` : '';
-      return `<label class="pr-region"><span class="pr-region-head">${box}<strong>${escapeHtml(r.region_id)}</strong> <em>${escapeHtml(r.classification)}</em> ${badge}</span>`
+        : r.translatable ? '<span class="pr-badge pr-auth">exige NVIDIA</span>'
+        : '<span class="pr-badge pr-review">revisão humana</span>';
+      const checked = focus && focus === String(r.region_id) ? ' checked' : '';
+      const box = r.reviewable ? `<input type="checkbox" class="pr-select" data-pr-region="${escapeAttr(r.region_id)}"${checked}>` : '';
+      const normalized = r.classification_normalized
+        ? `<em class="pr-normalized">${escapeHtml(r.classification_normalized)}</em>` : '';
+      return `<label class="pr-region"${focus === String(r.region_id) ? ' data-focus="1"' : ''}>`
+        + `<span class="pr-region-head">${box}<strong>${escapeHtml(r.region_id)}</strong> <em>${escapeHtml(r.classification)}</em> ${normalized} ${badge}</span>`
         + `<span class="pr-region-text"><small>fonte</small> ${escapeHtml(r.source_text || '—')}</span>`
         + `<span class="pr-region-text"><small>tradução</small> ${escapeHtml(r.current_translation || '—')}</span></label>`;
     }).join('');
@@ -2071,7 +2080,11 @@
         + `<div class="audit-texts"><small>fonte</small> ${escapeHtml(r.source_text || '—')}<br><small>tradução</small> ${escapeHtml(r.current_translation || '—')}</div>`
         + `<div class="audit-reasons">ação sugerida: <strong>${escapeHtml(r.suggested_action)}</strong> · reasons: ${escapeHtml((r.reason_codes || []).join(', '))} · confiança: ${escapeHtml(String(r.confidence ?? '—'))}</div>`
         + `<div class="audit-actions"><button type="button" class="btn-ghost" data-audit-open-page="${escapeAttr(r.page_number)}">ABRIR PÁGINA</button>`
-        + `<button type="button" class="btn-ghost" data-audit-revise-page="${escapeAttr(r.page_number)}">REVISAR ESTA PÁGINA</button>${buttons}${remove}</div></article>`;
+        + `<button type="button" class="btn-ghost" data-audit-revise-page="${escapeAttr(r.page_number)}">REVISAR ESTA PÁGINA</button>`
+        // Region-scoped review is only offered when the backend policy says the
+        // region is reviewable; a preserved class shows a disabled control.
+        + `<button type="button" class="btn-ghost" data-audit-revise-region="${escapeAttr(r.region_id)}" data-region-page="${escapeAttr(r.page_number)}"${r.reviewable ? '' : ' disabled aria-disabled="true" title="Região preservada pela política atual"'}>REVISAR ESTA REGIÃO</button>`
+        + `${buttons}${remove}</div></article>`;
     }).join('');
   }
 
@@ -2116,6 +2129,13 @@
     if (decide) { auditDecide(decide.dataset.region, decide.dataset.auditDecision); return; }
     const remove = event.target.closest('[data-audit-remove]');
     if (remove) { auditRemoveDecision(remove.dataset.auditRemove); return; }
+    const reviseRegion = event.target.closest('[data-audit-revise-region]');
+    if (reviseRegion) {
+      if (reviseRegion.disabled) return;
+      closeLinguisticAudit();
+      openPageRevision(Number(reviseRegion.dataset.regionPage), {focusRegion: reviseRegion.dataset.auditReviseRegion});
+      return;
+    }
     const revise = event.target.closest('[data-audit-revise-page]');
     if (revise) { closeLinguisticAudit(); openPageRevision(Number(revise.dataset.auditRevisePage)); return; }
     const openPage = event.target.closest('[data-audit-open-page]');

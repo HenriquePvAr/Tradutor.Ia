@@ -62,6 +62,21 @@ class AuditUiContracts(unittest.TestCase):
             for needle in forbidden:
                 self.assertNotIn(needle, text, f"{needle!r} found in production file {rel}")
 
+    def test_region_scoped_review_action_exists(self):
+        self.assertIn("REVISAR ESTA REGIÃO", self.js)
+        self.assertIn("data-audit-revise-region", self.js)
+        # It is gated by the backend's reviewable flag, not by a string check.
+        self.assertIn("r.reviewable ? '' : ' disabled", self.js)
+
+    def test_frontend_renders_backend_policy_not_its_own(self):
+        # The panel shows the backend's normalized class and booleans; it must not
+        # re-derive policy by comparing classification strings.
+        self.assertIn("classification_normalized", self.js)
+        self.assertIn("r.translatable", self.js)
+        for inference in ("=== 'decorative'", '=== "decorative"', "=== 'sfx'", '=== "sfx"',
+                          "=== 'watermark'", "=== 'sfx_preserve'", "=== 'decorative_semantic_translate'"):
+            self.assertNotIn(inference, self.js, f"frontend infers policy from {inference}")
+
     def test_taxonomy_categories_are_not_page_conditioned(self):
         # No production module keys a decision on a literal page/region number.
         for rel in ("region_taxonomy.py", "linguistic_audit.py", "audit_registry.py",

@@ -1612,6 +1612,10 @@
   .pr-badge.pr-cache{color:#8fe3c2; border-color:rgba(143,227,194,.35);}
   .pr-badge.pr-auth{color:#ffd18a; border-color:rgba(255,209,138,.35);}
   .pr-badge.pr-preserved{color:#9fb4d0; border-color:rgba(159,180,208,.35);}
+  .pr-badge.pr-review{color:#ffd18a; border-color:rgba(255,209,138,.35);}
+  .pr-normalized{color:var(--gold); font-style:normal; font-size:10px;}
+  .pr-region[data-focus="1"]{border-color:var(--gold);}
+  .audit-actions .btn-ghost[disabled]{opacity:.45; cursor:not-allowed;}
   .page-revision-side{display:flex; flex-direction:column; gap:10px;}
   .page-revision-actions{display:flex; flex-direction:column; gap:6px;}
   .page-revision-decision{display:flex; gap:6px; flex-wrap:wrap;}
