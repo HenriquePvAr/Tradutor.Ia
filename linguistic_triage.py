@@ -356,3 +356,151 @@ def _risk(record: dict) -> str:
     if gate == NEEDS_REVIEW or record.get("needs_human_review"):
         return "medium"
     return "low"
+
+
+# --- OCR plausibility -------------------------------------------------------
+# Recognises the *shape* of a corrupted read, never a known token. A rare name,
+# an acronym, a short sfx or a fictional term must never be discarded
+# automatically, so a single weak signal is not enough: an automatic
+# likely_ocr_invalid needs one unambiguous signal or two independent ones.
+
+PLAUSIBLE_SEMANTIC = "plausible_semantic_text"
+LIKELY_OCR_INVALID = "likely_ocr_invalid"
+AMBIGUOUS_OCR = "ambiguous_review_required"
+PRESERVABLE_NONSEMANTIC = "preservable_nonsemantic"
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_URL_SHAPE = re.compile(r"\b[\w-]+\.[A-Za-z]{2,5}\b")
+_KNOWN_TLDS = frozenset({"com", "net", "org", "io", "br", "co", "us", "xyz", "info",
+                         "gg", "me", "tv", "app", "dev", "site", "online"})
+# A word that starts upper and then mixes case mid-token is a classic bad read.
+_MIXED_CASE_WORD = re.compile(r"\b(?=[A-Za-z]{3,}\b)[A-Z]{2,}[a-z]|[a-z][A-Z]{2,}")
+_DIGIT_IN_WORD = re.compile(r"[A-Za-z][0-9]|[0-9][A-Za-z]")
+
+
+def assess_ocr_plausibility(*, source_text: str, confidence=None,
+                            classification: str = "", container_evidence: dict | None = None) -> dict:
+    """Structured, explainable judgement about whether a read can be trusted."""
+    container_evidence = dict(container_evidence or {})
+    text = str(source_text or "")
+    stripped = text.strip()
+    letters = [c for c in stripped if c.isalpha()]
+    digits = [c for c in stripped if c.isdigit()]
+    symbols = [c for c in stripped if not c.isalnum() and not c.isspace()]
+    total = max(1, len(stripped.replace(" ", "")))
+    vowels = [c for c in letters if c.upper() in "AEIOUY" or unicodedata.normalize("NFKD", c)[0].upper() in "AEIOU"]
+    words = _words(stripped)
+
+    try:
+        conf = float(confidence) if confidence is not None else None
+    except (TypeError, ValueError):
+        conf = None
+
+    metrics = {
+        "alphabetic_ratio": round(len(letters) / total, 3),
+        "digit_ratio": round(len(digits) / total, 3),
+        "symbol_ratio": round(len(symbols) / total, 3),
+        "vowel_ratio": round(len(vowels) / max(1, len(letters)), 3),
+        "repetition_score": round(max((len(m) for m in re.findall(r"(.)\1+", stripped)), default=0) / total, 3),
+        "word_count": len(words),
+    }
+
+    strong: list[str] = []
+    weak: list[str] = []
+    positive: list[str] = []
+
+    if _ENCODING_ARTEFACT.search(stripped):
+        strong.append("mojibake_detected")
+    if _CONTROL_CHARS.search(text):
+        strong.append("control_characters_present")
+    if _DIGIT_IN_WORD.search(stripped):
+        strong.append("digit_inside_word")
+    # A url-shaped token whose suffix is not a real network suffix is a corrupted
+    # address or watermark — shape-based, not a specific domain.
+    for match in _URL_SHAPE.finditer(stripped):
+        suffix = match.group(0).rsplit(".", 1)[-1].lower()
+        if suffix not in _KNOWN_TLDS:
+            strong.append("corrupted_url_or_watermark_suffix")
+            break
+        positive.append("valid_network_suffix")
+
+    if _MIXED_CASE_WORD.search(stripped):
+        weak.append("mixed_case_inside_word")
+    if letters and metrics["vowel_ratio"] < 0.2 and len(letters) >= 4:
+        weak.append("implausible_vowel_ratio")
+    if metrics["symbol_ratio"] > 0.4:
+        weak.append("symbol_heavy_text")
+    if words and sum(1 for w in words if len(w) <= 2) / len(words) >= 0.6 and len(words) >= 3:
+        weak.append("extreme_fragmentation")
+    if conf is not None and conf < 0.5:
+        weak.append("very_low_ocr_confidence")
+    if container_evidence.get("text_unrelated_to_container"):
+        weak.append("text_unrelated_to_container")
+
+    # Positive (protective) evidence: things that make a token legitimate even
+    # when short or rare. These keep names, acronyms and sfx out of the bin.
+    if tax.looks_like_sfx(stripped):
+        positive.append("onomatopoeia_shape")
+    # "Multiple words" means whitespace-separated words: a single dotted token
+    # such as a corrupted address is one token, not a phrase.
+    whitespace_words = [w for w in stripped.split() if _words(w)]
+    if tax.has_semantic_content(stripped) and len(whitespace_words) >= 2:
+        positive.append("multi_word_semantic_text")
+    if stripped.isupper() and 2 <= len(stripped.replace(".", "")) <= 6 and stripped.replace(".", "").isalpha():
+        positive.append("acronym_shape")   # an acronym is not garbage
+    if tax.has_semantic_content(stripped) and "multi_word_semantic_text" not in positive:
+        positive.append("plausible_word_shape")
+    if container_evidence.get("proven_proper_name"):
+        positive.append("proven_proper_name")
+    category = str(classification or "")
+    if tax.is_preservable(category):
+        positive.append("preservable_classification")
+
+    # Encoding damage corrupts the read itself; unlike the shape heuristics it
+    # is not softened by the text around it reading like a phrase.
+    corrupted_encoding = [c for c in ("mojibake_detected", "control_characters_present")
+                          if c in strong]
+    if corrupted_encoding:
+        status = LIKELY_OCR_INVALID
+    elif tax.is_preservable(category) and not strong:
+        status = PRESERVABLE_NONSEMANTIC
+    elif strong and not ("multi_word_semantic_text" in positive):
+        status = LIKELY_OCR_INVALID
+    elif len(weak) >= 2 and not positive:
+        status = LIKELY_OCR_INVALID
+    elif strong or weak:
+        status = AMBIGUOUS_OCR
+    elif "multi_word_semantic_text" in positive:
+        status = PLAUSIBLE_SEMANTIC
+    else:
+        status = AMBIGUOUS_OCR
+
+    # Confidence in *this* judgement, not in the OCR read.
+    if status == LIKELY_OCR_INVALID:
+        judgement = 0.9 if strong else 0.7
+    elif status == PLAUSIBLE_SEMANTIC:
+        judgement = 0.8
+    elif status == PRESERVABLE_NONSEMANTIC:
+        judgement = 0.75
+    else:
+        judgement = 0.4
+
+    recommended = {LIKELY_OCR_INVALID: "confirm_ocr_invalid",
+                   PLAUSIBLE_SEMANTIC: "keep_as_text",
+                   PRESERVABLE_NONSEMANTIC: "confirm_preservation"}.get(status, "human_review")
+
+    return {
+        "status": status,
+        "confidence": judgement,
+        "reason_codes": strong + weak,
+        "positive_evidence": positive,
+        "strong_evidence": strong,
+        "weak_evidence": weak,
+        **metrics,
+        "lexical_plausibility": round(len(positive) / (len(positive) + len(strong) + len(weak) + 1), 3),
+        "encoding_flags": corrupted_encoding,
+        "container_evidence": container_evidence,
+        "classification_evidence": category,
+        "recommended_action": recommended,
+        "auto_markable": status == LIKELY_OCR_INVALID,
+    }
