@@ -56,6 +56,7 @@ import preview_gates
 import provider_execution
 import region_taxonomy
 import residual_mask_revisions
+import residual_analysis_artifacts
 import visual_review_decisions
 
 
@@ -330,6 +331,8 @@ class UiBridge:
         self.human_typography = human_typography_decisions.HumanTypographyDecisionStore(JOBS_DB_PATH)
         self.human_masks = human_mask_decisions.HumanMaskDecisionStore(JOBS_DB_PATH)
         self.mask_revisions = residual_mask_revisions.MaskRevisionStore(JOBS_DB_PATH)
+        self.residual_analyses = residual_analysis_artifacts.ResidualAnalysisStore(
+            JOBS_DB_PATH)
         self.visual_reviews = visual_review_decisions.VisualReviewDecisionStore(JOBS_DB_PATH)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
@@ -1754,6 +1757,18 @@ class UiBridge:
             run_id=str(data["job"].get("run_id") or ""),
             revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
             base_segmentation_hash=base_hash)
+        residual_analysis = self.residual_analyses.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]),
+            region_id=str(region_id))
+        latest_mask_revision = self.mask_revisions.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]),
+            region_id=str(region_id),
+            supersedes_mask_decision_id=str(
+                (latest or {}).get("human_mask_decision_id") or ""))
         return {
             "job_id": str(data["job"]["id"]),
             "run_id": str(data["job"].get("run_id") or ""),
@@ -1782,6 +1797,8 @@ class UiBridge:
             ],
             "message": "Confirmar esta máscara permite apenas criar uma tentativa de reconstrução local. Nenhuma página definitiva ou PDF será alterado.",
             "decision": latest or {},
+            "residual_analysis": residual_analysis or {},
+            "mask_revision": latest_mask_revision or {},
             "inpainting_status": "blocked_pending_human_mask",
         }
 
