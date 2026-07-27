@@ -59,6 +59,8 @@ import residual_mask_revisions
 import residual_analysis_artifacts
 import residual_component_reviews
 import visual_review_decisions
+import source_glyph_envelope
+import glyph_art_boundary_review
 
 
 def _utc_now_iso() -> str:
@@ -1761,6 +1763,76 @@ class UiBridge:
             run_id=str(data["job"].get("run_id") or ""),
             revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
             base_segmentation_hash=base_hash)
+        latest_mask_revision = self.mask_revisions.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]),
+            region_id=str(region_id),
+            supersedes_mask_decision_id=str(
+                (latest or {}).get("human_mask_decision_id") or ""))
+        reviewed_seed = combined_mask
+        final_mask_asset = str(
+            (latest_mask_revision or {}).get("final_mask_asset") or "")
+        if final_mask_asset:
+            candidate_path = (
+                REPO_ROOT / ".cache" / "runtime" / final_mask_asset).resolve()
+            runtime_root = (REPO_ROOT / ".cache" / "runtime").resolve()
+            if runtime_root in candidate_path.parents and candidate_path.is_file():
+                loaded = cv2.imread(str(candidate_path), cv2.IMREAD_GRAYSCALE)
+                if loaded is not None and loaded.shape == combined_mask.shape:
+                    reviewed_seed = loaded
+        envelope = source_glyph_envelope.derive_source_glyph_visual_envelope(
+            source_bgr=crop,
+            confirmed_text_seed=reviewed_seed,
+            fill_evidence=layers.get("text_core_mask"),
+            outline_evidence=layers.get("outline_mask"),
+            antialias_evidence=layers.get("antialias_mask"),
+            shadow_evidence=layers.get("shadow_mask"),
+            protected_art=layers.get("protected_edge_mask"),
+            identity={
+                "owner": str(user_id),
+                "job_id": str(data["job"]["id"]),
+                "run_id": str(data["job"].get("run_id") or ""),
+                "revision_id": str(data["ctx"]["revision_id"]),
+                "page_id": str(data["decision"].get("page_id") or ""),
+                "region_id": str(region_id),
+            },
+        )
+        conflict = glyph_art_boundary_review.build_conflict_artifact(
+            envelope["uncertain_mask"],
+            identity={
+                "owner": str(user_id),
+                "job_id": str(data["job"]["id"]),
+                "run_id": str(data["job"].get("run_id") or ""),
+                "revision_id": str(data["ctx"]["revision_id"]),
+                "page_id": str(data["decision"].get("page_id") or ""),
+                "region_id": str(region_id),
+                "source_hash": str(
+                    data["decision"].get("source_text_hash") or ""),
+            },
+            glyph_envelope_id=envelope["glyph_envelope_id"],
+            protected_art_hash=envelope["hashes"]["protected_art_mask_hash"],
+            previous_mask_hash=source_glyph_envelope._hash_mask(reviewed_seed),
+        )
+        for public_key, value in (
+            ("glyph_envelope", envelope["complete_glyph_mask"]),
+            ("glyph_art_conflict", conflict["conflict_bitmap"]),
+            ("glyph_art_uncertain", envelope["uncertain_mask"]),
+        ):
+            path = cache_dir / f"{public_key}.png"
+            cv2.imwrite(str(path), value)
+            assets[public_key] = (
+                f"human_mask_editor/{cache_dir.name}/{public_key}.png")
+        artifact_path = cache_dir / "glyph_art_conflict.json"
+        artifact_path.write_text(json.dumps({
+            key: value for key, value in conflict.items()
+            if key != "conflict_bitmap"
+        }, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        latest = self.human_masks.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            base_segmentation_hash=base_hash)
         residual_analysis = self.residual_analyses.latest_for_region(
             owner=str(user_id), job_id=str(data["job"]["id"]),
             run_id=str(data["job"].get("run_id") or ""),
@@ -1792,6 +1864,16 @@ class UiBridge:
             "base_segmentation_hash": base_hash,
             "region_box": list(data["box"]),
             "assets": assets,
+            "boundary_review": {
+                "conflict_artifact_id": conflict["conflict_artifact_id"],
+                "conflict_pixel_count": conflict["conflict_pixel_count"],
+                "status": conflict["status"],
+                "segments": conflict["segments"],
+                "first_pending_segment_id": (
+                    conflict["segments"][0]["segment_id"]
+                    if conflict["segments"] else ""),
+                "confirmation_blocked": bool(conflict["segments"]),
+            },
             "automatic_segmentation": {
                 "valid": bool(layers.get("valid")),
                 "reason_codes": [str(v) for v in (layers.get("reason_codes") or [])],
