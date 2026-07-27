@@ -153,15 +153,25 @@ class NaturalRefinementTests(unittest.TestCase):
             is_configured = True
             def __init__(self):
                 self.messages = None
-            def _request_json_with_retry(self, messages, expected_ids):
+                self._clock = lambda: 10.0
+                self.timeout_policy = type(
+                    "Policy", (), {"total_timeout_seconds": 30.0})()
+                self.json_retry_limit = 3
+                self.stats = {"json_repair_attempts": 0}
+            def _request_with_retry(
+                self, messages, deadline=None, response_format=None
+            ):
                 self.messages = messages
-                self.expected_ids = expected_ids
-                return valid()
+                self.response_format = response_format
+                return json.dumps(valid())
+            def _increment_stat(self, key, value=1):
+                self.stats[key] = self.stats.get(key, 0) + value
         translator = FakeTranslator()
-        raw = npr.NvidiaRefinementProvider(translator)("prompt")
-        self.assertEqual(raw["natural_ptbr"], "Estou pronto!")
+        raw = npr.NvidiaRefinementProvider(translator).refine(
+            "prompt", request=request())
+        self.assertEqual(raw.payload["natural_ptbr"], "Estou pronto!")
         self.assertEqual(translator.messages[-1]["content"], "prompt")
-        self.assertEqual(set(translator.expected_ids), npr.RESULT_KEYS)
+        self.assertEqual(translator.response_format["type"], "json_schema")
 
 
 if __name__ == "__main__":
