@@ -178,6 +178,27 @@ class RepairTests(unittest.TestCase):
             result["status"],
             {"repair_semantic_content_changed", "provider_unavailable"})
 
+    def test_type_only_repair_preserves_semantic_signature(self):
+        self.assertEqual(
+            npr.NvidiaRefinementProvider._content_signature(stringly()),
+            npr.NvidiaRefinementProvider._content_signature(valid()),
+        )
+
+    def test_repair_cannot_silently_change_flags_or_warnings(self):
+        for mutation in (
+            {"meaning_preserved": False},
+            {"warnings": ["Atenção adicional."]},
+        ):
+            with self.subTest(mutation=mutation):
+                changed = valid()
+                changed.update(mutation)
+                provider, _translator = self.provider([stringly(), changed])
+                outcome = provider.refine("prompt", request=request())
+                self.assertEqual(
+                    outcome.trace["status"],
+                    "repair_semantic_content_changed",
+                )
+
     def test_repair_identity_is_deterministic(self):
         first = npr.NvidiaRefinementProvider._repair_hash(
             "parent", 1, stringly(), ["schema"])

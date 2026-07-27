@@ -325,10 +325,24 @@ class NvidiaRefinementProvider:
             value = json.loads(payload) if isinstance(payload, str) else dict(payload)
         except (TypeError, ValueError, json.JSONDecodeError):
             return {}
+        comparable = dict(value)
+        for key in BOOLEAN_RESULT_KEYS:
+            raw = comparable.get(key)
+            if isinstance(raw, str) and raw.strip().lower() in {"true", "false"}:
+                comparable[key] = raw.strip().lower() == "true"
+        warnings = comparable.get("warnings")
+        if isinstance(warnings, str):
+            try:
+                parsed_warnings = json.loads(warnings)
+                if isinstance(parsed_warnings, list):
+                    comparable["warnings"] = parsed_warnings
+            except json.JSONDecodeError:
+                pass
         return {
-            key: value.get(key) for key in (
-                "natural_ptbr", "compact_ptbr", "neutral_ptbr", "brief_reason")
-            if value.get(key) not in (None, "")
+            key: comparable.get(key) for key in (
+                "natural_ptbr", "compact_ptbr", "neutral_ptbr", "brief_reason",
+                "warnings", *sorted(BOOLEAN_RESULT_KEYS))
+            if comparable.get(key) not in (None, "")
         }
 
     def refine(self, prompt: str, *, request: dict[str, Any]) -> "RefinementProviderResponse":
