@@ -17,9 +17,13 @@ from typing import Any
 import cv2
 import numpy as np
 
-SCHEMA_VERSION = "1"
+import residual_analysis_artifacts
+
+SCHEMA_VERSION = "3"
+COMPONENT_DECOMPOSITION_VERSION = "1"
 REVISION_STATUSES = (
     "confirmed",
+    "blocked_pending_component_review",
     "blocked_by_mask_revision_gate",
     "needs_adjustment",
     "discarded",
@@ -118,8 +122,15 @@ def detect_residual_components(*, previous_mask: np.ndarray,
             and float(raw.get("fill_ratio") or 0.0) >= 0.04
         )
         confidence = 0.9 if safe_to_include else (0.2 if protected_overlap else 0.45)
+        component_bounds = raw["bounds"]
+        local_component = component[
+            component_bounds[1]:component_bounds[3],
+            component_bounds[0]:component_bounds[2]]
         record = {
             **raw,
+            "component_bitmap_hash": hashlib.sha256(
+                residual_analysis_artifacts.canonical_bitmap_bytes(
+                    local_component.astype(np.uint8) * 255)).hexdigest(),
             "component_type": component_type,
             "component_confidence": round(confidence, 3),
             "related_to_text_core": core_overlap > 0,
@@ -208,6 +219,203 @@ def build_revised_mask(previous_mask: np.ndarray, residual_report: dict[str, Any
         "status": status,
         "reason_codes": reason_codes,
     }
+
+
+def derive_component_seeds(*, component_mask: np.ndarray,
+                           text_core_mask: np.ndarray,
+                           outline_mask: np.ndarray,
+                           antialias_mask: np.ndarray,
+                           protected_edge_mask: np.ndarray | None = None,
+                           art_context_mask: np.ndarray | None = None) -> dict[str, Any]:
+    """Derive conservative text, art and unknown seeds from persisted layers."""
+    component = _binary(component_mask)
+    core = _binary(text_core_mask, component.shape)
+    outline = _binary(outline_mask, component.shape)
+    antialias = _binary(antialias_mask, component.shape)
+    protected = (_binary(protected_edge_mask, component.shape)
+                 if protected_edge_mask is not None else np.zeros_like(component))
+    art_context = (_binary(art_context_mask, component.shape)
+                   if art_context_mask is not None else np.zeros_like(component))
+    inside = component > 0
+    evidence_count = (
+        (core > 0).astype(np.uint8)
+        + (outline > 0).astype(np.uint8)
+        + (antialias > 0).astype(np.uint8)
+    )
+    text = inside & (evidence_count >= 2) & (protected == 0) & (art_context == 0)
+    art = inside & ((protected > 0) | (art_context > 0)) & ~text
+    unknown = inside & ~text & ~art
+    conflict = inside & (evidence_count >= 2) & ((protected > 0) | (art_context > 0))
+    text[conflict] = False
+    art[conflict] = False
+    unknown[conflict] = True
+    text_mask = text.astype(np.uint8) * 255
+    art_mask = art.astype(np.uint8) * 255
+    unknown_mask = unknown.astype(np.uint8) * 255
+    total = max(1, int(inside.sum()))
+    return {
+        "component_decomposition_version": COMPONENT_DECOMPOSITION_VERSION,
+        "text_seed_mask": text_mask,
+        "art_seed_mask": art_mask,
+        "unknown_seed_mask": unknown_mask,
+        "conflict_seed_mask": conflict.astype(np.uint8) * 255,
+        "text_seed_confidence": round(float(text.sum()) / total, 4),
+        "art_seed_confidence": round(float(art.sum()) / total, 4),
+        "text_seed_sources": ["text_core", "outline", "antialias"],
+        "art_seed_sources": ["protected_edges", "background_art_context"],
+        "text_seed_hash": mask_hash(text_mask),
+        "art_seed_hash": mask_hash(art_mask),
+        "unknown_seed_hash": mask_hash(unknown_mask),
+        "seed_conflict_pixels": int(conflict.sum()),
+    }
+
+
+def decompose_ambiguous_component(*, component_mask: np.ndarray,
+                                  seeds: dict[str, Any],
+                                  protected_edge_mask: np.ndarray | None = None,
+                                  residual_analysis_id: str = "",
+                                  component_id: str = "",
+                                  expected_component_bitmap_hash: str = ""
+                                  ) -> dict[str, Any]:
+    """Classify a connected residual component using independent local votes.
+
+    The three votes intentionally use different evidence paths. Pixels without
+    unanimous support remain ambiguous and can never enter an erase mask.
+    """
+    component = _binary(component_mask)
+    component_bounds = _bounds_from_mask(component)
+    local_component = (
+        component[
+            component_bounds[1]:component_bounds[3],
+            component_bounds[0]:component_bounds[2]]
+        if component_bounds else component)
+    component_bitmap_hash = hashlib.sha256(
+        residual_analysis_artifacts.canonical_bitmap_bytes(
+            local_component)).hexdigest()
+    if expected_component_bitmap_hash and component_bitmap_hash != expected_component_bitmap_hash:
+        raise ValueError("component_bitmap_hash_mismatch")
+    if component_id and not residual_analysis_id:
+        raise ValueError("residual_analysis_id_required")
+    text_seed = _binary(seeds.get("text_seed_mask"), component.shape)
+    art_seed = _binary(seeds.get("art_seed_mask"), component.shape)
+    conflict_seed = _binary(seeds.get("conflict_seed_mask"), component.shape)
+    protected = (_binary(protected_edge_mask, component.shape)
+                 if protected_edge_mask is not None else np.zeros_like(component))
+    inside = component > 0
+
+    eligible = inside & (conflict_seed == 0)
+    direct_text = eligible & (text_seed > 0) & (protected == 0)
+    direct_art = eligible & ((art_seed > 0) | (protected > 0))
+
+    kernel = np.ones((3, 3), np.uint8)
+    text_reach = cv2.dilate(text_seed, kernel, iterations=1) > 0
+    art_reach = cv2.dilate(cv2.bitwise_or(art_seed, protected), kernel, iterations=1) > 0
+    region_text = eligible & text_reach & ~art_reach
+    region_art = eligible & art_reach & ~text_reach
+
+    text_distance = cv2.distanceTransform((text_seed == 0).astype(np.uint8), cv2.DIST_L2, 3)
+    art_sources = cv2.bitwise_or(art_seed, protected)
+    if np.any(art_sources):
+        art_distance = cv2.distanceTransform((art_sources == 0).astype(np.uint8), cv2.DIST_L2, 3)
+        geodesic_text = eligible & (text_distance < art_distance) & (protected == 0)
+        geodesic_art = eligible & (art_distance < text_distance)
+    else:
+        geodesic_text = eligible & text_reach & (protected == 0)
+        geodesic_art = np.zeros_like(inside)
+
+    methods = [
+        ("layer_seed", direct_text, direct_art),
+        ("controlled_region_growing", region_text, region_art),
+        ("geodesic_propagation", geodesic_text, geodesic_art),
+    ]
+    text_votes = sum(mask.astype(np.uint8) for _name, mask, _art in methods)
+    art_votes = sum(mask.astype(np.uint8) for _name, _text, mask in methods)
+    confirmed_text = inside & (text_votes >= 2) & (art_votes == 0) & (protected == 0)
+    confirmed_art = inside & (art_votes >= 2) & (text_votes == 0)
+    still_ambiguous = inside & ~confirmed_text & ~confirmed_art
+    total = max(1, int(inside.sum()))
+    candidates = []
+    for name, text_mask, art_mask in methods:
+        unknown = inside & ~text_mask & ~art_mask
+        parameters = {"connectivity": 8}
+        candidate_identity = json.dumps({
+            "component_id": component_id,
+            "method": name,
+            "parameters": parameters,
+            "text_hash": mask_hash(text_mask.astype(np.uint8)),
+            "art_hash": mask_hash(art_mask.astype(np.uint8)),
+            "unknown_hash": mask_hash(unknown.astype(np.uint8)),
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        candidates.append({
+            "candidate_id": hashlib.sha256(candidate_identity).hexdigest(),
+            "method": name,
+            "parameters": parameters,
+            "component_id": component_id,
+            "component_bitmap_hash": component_bitmap_hash,
+            "residual_analysis_id": residual_analysis_id,
+            "text_seed_hash": str(seeds.get("text_seed_hash") or ""),
+            "art_seed_hash": str(seeds.get("art_seed_hash") or ""),
+            "unknown_seed_hash": str(seeds.get("unknown_seed_hash") or ""),
+            "candidate_text_hash": mask_hash(text_mask.astype(np.uint8)),
+            "candidate_art_hash": mask_hash(art_mask.astype(np.uint8)),
+            "candidate_unknown_hash": mask_hash(unknown.astype(np.uint8)),
+            "text_pixels": int(text_mask.sum()),
+            "art_pixels": int(art_mask.sum()),
+            "unknown_pixels": int(unknown.sum()),
+            "seed_agreement": round(float(((text_mask & (text_seed > 0)) | (art_mask & (art_seed > 0))).sum()) / total, 4),
+            "protected_overlap": int((text_mask & (protected > 0)).sum()),
+            "unknown_ratio": round(float(unknown.sum()) / total, 4),
+        })
+    protected_overlap = int((confirmed_text & (protected > 0)).sum())
+    status = ("confirmed" if not still_ambiguous.any() and not protected_overlap
+              else "blocked_pending_component_review")
+    return {
+        "component_decomposition_version": COMPONENT_DECOMPOSITION_VERSION,
+        "residual_analysis_id": residual_analysis_id,
+        "component_id": component_id,
+        "component_bitmap_hash": component_bitmap_hash,
+        "candidates": candidates,
+        "confirmed_text_mask": confirmed_text.astype(np.uint8) * 255,
+        "confirmed_art_mask": confirmed_art.astype(np.uint8) * 255,
+        "still_ambiguous_mask": still_ambiguous.astype(np.uint8) * 255,
+        "confirmed_text_pixels": int(confirmed_text.sum()),
+        "confirmed_art_pixels": int(confirmed_art.sum()),
+        "still_ambiguous_pixels": int(still_ambiguous.sum()),
+        "unknown_ratio": round(float(still_ambiguous.sum()) / total, 4),
+        "protected_overlap": protected_overlap,
+        "text_seed_preserved": not np.any((text_seed > 0) & ~confirmed_text),
+        "art_seed_preserved": not np.any((art_seed > 0) & ~confirmed_art),
+        "no_full_bounding_box": int(inside.sum()) < int(np.prod(_component_box_shape(component))),
+        "component_decomposition_hash": mask_hash(
+            np.maximum(confirmed_text.astype(np.uint8), confirmed_art.astype(np.uint8) * 2)),
+        "status": status,
+        "reason_codes": [] if status == "confirmed" else ["ambiguous_component_consensus_incomplete"],
+    }
+
+
+def _component_box_shape(mask: np.ndarray) -> tuple[int, int]:
+    bounds = _bounds_from_mask(mask)
+    if not bounds:
+        return (0, 0)
+    return (bounds[3] - bounds[1], bounds[2] - bounds[0])
+
+
+def apply_component_consensus(residual_report: dict[str, Any],
+                              decomposition: dict[str, Any]) -> dict[str, Any]:
+    """Return a residual report whose delta includes only confirmed text."""
+    report = dict(residual_report)
+    delta = _binary(report.get("suggested_mask_delta"))
+    confirmed = _binary(decomposition.get("confirmed_text_mask"), delta.shape)
+    report["suggested_mask_delta"] = cv2.bitwise_or(delta, confirmed)
+    unresolved = int(decomposition.get("still_ambiguous_pixels") or 0)
+    report["unresolved_residual_components"] = 1 if unresolved else 0
+    report["component_decomposition"] = {
+        key: value for key, value in decomposition.items()
+        if not isinstance(value, np.ndarray)
+    }
+    report["reason_codes"] = (list(decomposition.get("reason_codes") or [])
+                              or ["component_consensus_confirmed"])
+    return report
 
 
 def layout_candidates_for_text(text: str, *, available_width: int, available_height: int,
@@ -336,9 +544,29 @@ class MaskRevisionStore:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 schema_version TEXT NOT NULL,
+                supersedes_mask_revision_id TEXT NOT NULL DEFAULT '',
+                residual_analysis_id TEXT NOT NULL DEFAULT '',
+                residual_bitmap_hash TEXT NOT NULL DEFAULT '',
+                component_manifest_hash TEXT NOT NULL DEFAULT '',
+                component_decomposition_hashes_json TEXT NOT NULL DEFAULT '[]',
                 UNIQUE(owner, job_id, run_id, revision_id, region_id, supersedes_mask_decision_id, final_mask_hash)
             )
         """)
+        existing_columns = {
+            str(row[1]) for row in
+            self._conn.execute("PRAGMA table_info(human_mask_revisions)")
+        }
+        migrations = {
+            "supersedes_mask_revision_id": "TEXT NOT NULL DEFAULT ''",
+            "residual_analysis_id": "TEXT NOT NULL DEFAULT ''",
+            "residual_bitmap_hash": "TEXT NOT NULL DEFAULT ''",
+            "component_manifest_hash": "TEXT NOT NULL DEFAULT ''",
+            "component_decomposition_hashes_json": "TEXT NOT NULL DEFAULT '[]'",
+        }
+        for column, declaration in migrations.items():
+            if column not in existing_columns:
+                self._conn.execute(
+                    f"ALTER TABLE human_mask_revisions ADD COLUMN {column} {declaration}")
         self._conn.commit()
 
     def close(self) -> None:
@@ -355,6 +583,11 @@ class MaskRevisionStore:
                protected_delta: Any = None, uncertain_delta: Any = None,
                final_mask_asset: str = "", residual_evidence: dict[str, Any] | None = None,
                validation: dict[str, Any] | None = None,
+               supersedes_mask_revision_id: str = "",
+               residual_analysis_id: str = "",
+               residual_bitmap_hash: str = "",
+               component_manifest_hash: str = "",
+               component_decomposition_hashes: list[str] | None = None,
                authorization: str = "delegated_by_user", reviewer: str = "codex",
                status: str = "confirmed") -> dict[str, Any]:
         if not str(owner or "").strip():
@@ -398,6 +631,13 @@ class MaskRevisionStore:
             "created_at": (existing or {}).get("created_at") or now,
             "updated_at": now,
             "schema_version": SCHEMA_VERSION,
+            "supersedes_mask_revision_id": str(supersedes_mask_revision_id or ""),
+            "residual_analysis_id": str(residual_analysis_id or ""),
+            "residual_bitmap_hash": str(residual_bitmap_hash or ""),
+            "component_manifest_hash": str(component_manifest_hash or ""),
+            "component_decomposition_hashes_json": json.dumps(
+                component_decomposition_hashes or [], ensure_ascii=False,
+                sort_keys=True),
         }
         columns = ", ".join(record)
         placeholders = ", ".join(f":{key}" for key in record)
@@ -434,6 +674,8 @@ class MaskRevisionStore:
             ("uncertain_delta_json", "uncertain_delta", []),
             ("residual_evidence_json", "residual_evidence", {}),
             ("validation_json", "validation", {}),
+            ("component_decomposition_hashes_json",
+             "component_decomposition_hashes", []),
         ):
             try:
                 payload[output_name] = json.loads(str(payload.pop(column, "") or "null"))
