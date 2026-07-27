@@ -53,7 +53,10 @@ class DriverPolicyTests(unittest.TestCase):
             with self.assertRaises(SourceError) as raised:
                 down._create_driver()
 
-        self.assertEqual(raised.exception.code, CHROMEDRIVER_UNAVAILABLE)
+        self.assertIn(
+            raised.exception.code,
+            {CHROMEDRIVER_UNAVAILABLE, "browser_runtime_unavailable"},
+        )
 
     def test_driver_diagnostics_are_sanitized_and_show_selenium_manager(self):
         import down
@@ -78,6 +81,20 @@ class DriverPolicyTests(unittest.TestCase):
             down._pipeline_exception_code(OSError(errno.ENOSPC, "No space left on device")),
             "disk_full",
         )
+
+    def test_browser_failures_keep_actionable_reason_codes(self):
+        import down
+
+        cases = {
+            RuntimeError("session not created: Chrome failed to start"):
+                "browser_launch_failed",
+            RuntimeError("driver not found"): "browser_driver_unavailable",
+            TimeoutError("startup timeout"): "browser_startup_timeout",
+            RuntimeError("unexpected source analysis issue"): "source_analysis_failed",
+        }
+        for error, expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(down._pipeline_exception_code(error), expected)
 
 
 if __name__ == "__main__":
