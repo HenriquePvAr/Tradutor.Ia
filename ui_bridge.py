@@ -3021,6 +3021,7 @@ class UiBridge:
 
     def settings(self) -> dict[str, Any]:
         from down import driver_resolution_diagnostics
+        from browser_runtime import BrowserRuntimeResolver
 
         values = _read_env_file()
         env = env_status()
@@ -3028,6 +3029,19 @@ class UiBridge:
             "NVIDIA_TRANSLATION_MODEL", "nvidia/nemotron-3-super-120b-a12b"
         )
         driver = driver_resolution_diagnostics()
+        try:
+            browser_runtime = BrowserRuntimeResolver().resolve(
+                operation="source_analysis",
+                preferred_engine=str(os.getenv("SOURCE_BROWSER_ENGINE", "") or ""),
+                configured_executable=str(os.getenv("SOURCE_BROWSER_EXECUTABLE", "") or ""),
+                configured_driver=str(os.getenv("CHROMEDRIVER_PATH", "") or ""),
+                headless=str(os.getenv("SOURCE_BROWSER_HEADLESS", "1")).strip() != "0",
+            ).public()
+        except ValueError as exc:
+            browser_runtime = {
+                "availability_status": str(exc),
+                "engine": "", "runtime_source": "", "headless_mode": "",
+            }
         return {
             "env_exists": env["env_exists"],
             "nvidia_configured": env["nvidia_configured"],
@@ -3059,6 +3073,7 @@ class UiBridge:
             "chromedriver_path_configured": driver["chromedriver_path_configured"],
             "selenium_manager_available": driver["selenium_manager_available"],
             "driver_resolution_source": driver["driver_resolution_source"],
+            "source_browser_runtime": browser_runtime,
             "port": int(os.getenv("TRADUTOR_UI_PORT", "8080")),
         }
 

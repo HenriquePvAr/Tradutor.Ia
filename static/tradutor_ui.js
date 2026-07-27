@@ -550,8 +550,18 @@
 
   /* ---------- visual feedback ---------- */
   const reasonMessages = {
-    source_not_ready: 'Não foi possível abrir o navegador necessário para analisar a fonte.',
-    chromedriver_unavailable: 'O navegador necessário para analisar esta fonte não está disponível.',
+    source_not_ready: 'Não foi possível analisar a fonte.',
+    source_analysis_failed: 'A análise da fonte falhou antes de reconhecer sua estrutura.',
+    browser_runtime_unavailable: 'Nenhum navegador compatível foi encontrado no computador.',
+    browser_executable_not_found: 'O navegador configurado não foi encontrado.',
+    browser_driver_unavailable: 'O navegador foi encontrado, mas seu driver não está disponível.',
+    browser_driver_incompatible: 'A versão do driver não é compatível com o navegador instalado.',
+    browser_launch_failed: 'O navegador foi encontrado, mas não conseguiu iniciar.',
+    browser_startup_timeout: 'O navegador ultrapassou o tempo limite de inicialização.',
+    browser_profile_locked: 'O perfil temporário do navegador não pôde ser aberto.',
+    browser_process_exited: 'O navegador encerrou antes de concluir a análise.',
+    source_navigation_timeout: 'A página ultrapassou o tempo limite de navegação.',
+    chromedriver_unavailable: 'O navegador foi encontrado, mas seu driver não está disponível.',
     disk_full: 'Disco cheio ao gravar as páginas baixadas. Libere espaço e tente novamente.',
     authentication_required: 'Essa fonte exige autenticação.',
     challenge_required: 'A fonte exige uma verificação interativa.',
