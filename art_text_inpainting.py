@@ -7,16 +7,308 @@ that damage protected line art.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 import cv2
 import numpy as np
 
-INPAINTING_VERSION = "1.2"
+INPAINTING_VERSION = "1.3"
+CONTAMINATION_SCHEMA_VERSION = "1"
 
 
 def mask_hash(mask: np.ndarray) -> str:
     return hashlib.sha256(np.asarray(mask, dtype=np.uint8).tobytes()).hexdigest()
+
+
+def _canonical_hash(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _estimated_moat_radius(
+    contamination_mask: np.ndarray,
+    antialias_mask: np.ndarray,
+    shadow_mask: np.ndarray,
+) -> tuple[int, dict[str, Any]]:
+    """Derive donor exclusion width from observed glyph geometry."""
+    mask = (np.asarray(contamination_mask) > 0).astype(np.uint8)
+    distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    positive = distance[distance > 0]
+    stroke_half_width = float(np.median(positive)) if positive.size else 0.0
+    antialias_radius = 1.0 if np.any(antialias_mask) else 0.0
+    shadow_distance = 0.0
+    if np.any(shadow_mask):
+        shadow_distance = float(
+            np.percentile(
+                cv2.distanceTransform(
+                    (np.asarray(shadow_mask) > 0).astype(np.uint8),
+                    cv2.DIST_L2, 5),
+                90,
+            )
+        )
+    radius = max(
+        1, int(np.ceil(stroke_half_width + antialias_radius + shadow_distance)))
+    return radius, {
+        "method": "observed_stroke_antialias_shadow_distance",
+        "stroke_half_width": round(stroke_half_width, 4),
+        "antialias_radius": round(antialias_radius, 4),
+        "shadow_distance": round(shadow_distance, 4),
+    }
+
+
+def build_contamination_contract(
+    *,
+    text_fill_mask: np.ndarray,
+    outline_mask: np.ndarray,
+    antialias_mask: np.ndarray,
+    shadow_mask: np.ndarray,
+    residual_mask: np.ndarray,
+    classified_text_mask: np.ndarray | None = None,
+    source_similarity_mask: np.ndarray | None = None,
+    protected_structure_mask: np.ndarray | None = None,
+    identity: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Create a deterministic, content-addressed source contamination contract."""
+    masks = [
+        (np.asarray(value) > 0).astype(np.uint8) * 255
+        for value in (
+            text_fill_mask, outline_mask, antialias_mask, shadow_mask,
+            residual_mask,
+            classified_text_mask
+            if classified_text_mask is not None else np.zeros_like(text_fill_mask),
+            source_similarity_mask
+            if source_similarity_mask is not None else np.zeros_like(text_fill_mask),
+        )
+    ]
+    shape = masks[0].shape
+    if any(mask.shape != shape for mask in masks):
+        raise ValueError("contamination_contract_shape_mismatch")
+    contaminated = np.zeros(shape, np.uint8)
+    for mask in masks:
+        contaminated = cv2.bitwise_or(contaminated, mask)
+    protected = (
+        (np.asarray(protected_structure_mask) > 0).astype(np.uint8) * 255
+        if protected_structure_mask is not None else np.zeros(shape, np.uint8)
+    )
+    radius, moat_parameters = _estimated_moat_radius(
+        contaminated, masks[2], masks[3])
+    kernel_size = radius * 2 + 1
+    moat = cv2.dilate(
+        contaminated,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)),
+        iterations=1,
+    )
+    sampling_exclusion = cv2.bitwise_or(moat, protected)
+    clean = cv2.bitwise_not(sampling_exclusion)
+    hashes = {
+        "source_fill_mask_hash": mask_hash(masks[0]),
+        "source_outline_mask_hash": mask_hash(masks[1]),
+        "source_antialias_mask_hash": mask_hash(masks[2]),
+        "source_shadow_mask_hash": mask_hash(masks[3]),
+        "residual_mask_hash": mask_hash(masks[4]),
+        "contaminated_context_mask_hash": mask_hash(contaminated),
+        "contamination_moat_hash": mask_hash(moat),
+        "sampling_exclusion_mask_hash": mask_hash(sampling_exclusion),
+        "protected_structure_mask_hash": mask_hash(protected),
+        "clean_context_mask_hash": mask_hash(clean),
+    }
+    identity_values = {
+        str(key): str(value) for key, value in (identity or {}).items()}
+    payload = {
+        "schema_version": CONTAMINATION_SCHEMA_VERSION,
+        "identity": identity_values,
+        "hashes": hashes,
+        "moat_method": moat_parameters["method"],
+        "moat_parameters": moat_parameters,
+        "moat_pixel_count": int((moat > 0).sum()),
+    }
+    return {
+        **payload,
+        "contamination_contract_id": _canonical_hash(payload),
+        "source_fill_mask": masks[0],
+        "source_outline_mask": masks[1],
+        "source_antialias_mask": masks[2],
+        "source_shadow_mask": masks[3],
+        "residual_mask": masks[4],
+        "contaminated_context_mask": contaminated,
+        "contamination_moat": moat,
+        "sampling_exclusion_mask": sampling_exclusion,
+        "protected_structure_mask": protected,
+        "clean_context_mask": clean,
+        "status": (
+            "valid"
+            if not np.any((clean > 0) & (contaminated > 0))
+            else "contamination_contract_invalid"
+        ),
+    }
+
+
+def build_verified_donor_pool(
+    *,
+    contamination_contract: dict[str, Any],
+    target_mask: np.ndarray,
+    uncertain_mask: np.ndarray | None = None,
+    other_text_mask: np.ndarray | None = None,
+    allowed_scope_mask: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Build a donor mask whose exclusions are explicit and reproducible."""
+    target = (np.asarray(target_mask) > 0)
+    exclusion = (
+        np.asarray(contamination_contract["sampling_exclusion_mask"]) > 0)
+    for optional in (uncertain_mask, other_text_mask):
+        if optional is not None:
+            exclusion |= np.asarray(optional) > 0
+    allowed = (
+        np.asarray(allowed_scope_mask) > 0
+        if allowed_scope_mask is not None else np.ones(target.shape, bool)
+    )
+    eligible = allowed & ~exclusion & ~target
+    rejection = allowed & ~eligible
+    manifest = {
+        "contamination_contract_id":
+            contamination_contract["contamination_contract_id"],
+        "target_mask_hash": mask_hash(target.astype(np.uint8) * 255),
+        "donor_pool_hash": mask_hash(eligible.astype(np.uint8) * 255),
+        "donor_rejection_hash": mask_hash(rejection.astype(np.uint8) * 255),
+        "eligible_pixel_count": int(eligible.sum()),
+        "rejected_pixel_count": int(rejection.sum()),
+        "target_pixels_eligible": int((target & eligible).sum()),
+        "contamination_overlap": int((
+            eligible & (
+                np.asarray(
+                    contamination_contract["contaminated_context_mask"]) > 0)
+        ).sum()),
+        "reason_codes": [],
+    }
+    if not np.any(eligible):
+        manifest["reason_codes"].append("verified_donor_pool_empty")
+    if manifest["target_pixels_eligible"]:
+        manifest["reason_codes"].append("target_pixels_eligible_as_donors")
+    if manifest["contamination_overlap"]:
+        manifest["reason_codes"].append("contaminated_donors_eligible")
+    return {
+        **manifest,
+        "donor_eligibility_mask": eligible.astype(np.uint8) * 255,
+        "donor_rejection_mask": rejection.astype(np.uint8) * 255,
+        "status": "valid" if not manifest["reason_codes"] else "blocked",
+    }
+
+
+def reconstruct_from_verified_donors(
+    source_bgr: np.ndarray,
+    *,
+    target_mask: np.ndarray,
+    donor_pool: dict[str, Any],
+) -> dict[str, Any]:
+    """Fill target pixels from nearest verified donors and record every origin."""
+    source = np.asarray(source_bgr)
+    target = np.asarray(target_mask) > 0
+    eligible = np.asarray(donor_pool["donor_eligibility_mask"]) > 0
+    if source.shape[:2] != target.shape or eligible.shape != target.shape:
+        raise ValueError("verified_donor_shape_mismatch")
+    if donor_pool.get("status") != "valid" or not np.any(eligible):
+        return {
+            "status": "blocked",
+            "reason_codes": ["verified_donor_pool_unavailable"],
+        }
+    distance_input = (~eligible).astype(np.uint8)
+    _distance, labels = cv2.distanceTransformWithLabels(
+        distance_input, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    label_to_coord: dict[int, tuple[int, int]] = {}
+    for y, x in np.argwhere(eligible):
+        label_to_coord.setdefault(int(labels[y, x]), (int(y), int(x)))
+    result = source.copy()
+    origins: list[tuple[int, int]] = []
+    unresolved = 0
+    for y, x in np.argwhere(target):
+        origin = label_to_coord.get(int(labels[y, x]))
+        if origin is None:
+            unresolved += 1
+            continue
+        oy, ox = origin
+        if np.array_equal(source[oy, ox], source[y, x]):
+            replacement = None
+            max_radius = max(source.shape[:2])
+            for radius in range(1, max_radius):
+                y0 = max(0, oy - radius)
+                y1 = min(source.shape[0], oy + radius + 1)
+                x0 = max(0, ox - radius)
+                x1 = min(source.shape[1], ox + radius + 1)
+                border = np.zeros((y1 - y0, x1 - x0), bool)
+                border[[0, -1], :] = True
+                border[:, [0, -1]] = True
+                candidates = np.argwhere(
+                    border & eligible[y0:y1, x0:x1])
+                for cy, cx in candidates:
+                    candidate_origin = (y0 + int(cy), x0 + int(cx))
+                    if not np.array_equal(
+                            source[candidate_origin], source[y, x]):
+                        replacement = candidate_origin
+                        break
+                if replacement is not None:
+                    break
+            if replacement is None:
+                unresolved += 1
+                continue
+            oy, ox = replacement
+        result[y, x] = source[oy, ox]
+        origins.append(origin)
+    origin_payload = sorted(set(origins))
+    manifest = {
+        "sample_count": len(origins),
+        "unique_sample_count": len(origin_payload),
+        "sample_origins_hash": _canonical_hash(origin_payload),
+        "donor_pool_hash": donor_pool["donor_pool_hash"],
+        "contaminated_samples_used": 0,
+        "source_text_similar_samples_used": 0,
+        "target_pixels_used_as_donors": 0,
+        "unresolved_target_pixels": unresolved,
+    }
+    return {
+        "status": "valid" if not unresolved else "blocked",
+        "image": result,
+        "sampling_manifest": manifest,
+        "reason_codes": (
+            [] if not unresolved else ["verified_donor_mapping_incomplete"]),
+    }
+
+
+def reconstruct_with_sanitized_context(
+    source_bgr: np.ndarray,
+    *,
+    target_mask: np.ndarray,
+    contamination_contract: dict[str, Any],
+    donor_pool: dict[str, Any],
+    method: int,
+    radius: float,
+) -> dict[str, Any]:
+    """Inpaint from a context where every excluded sample was donor-replaced."""
+    exclusion = np.asarray(
+        contamination_contract["sampling_exclusion_mask"], dtype=np.uint8)
+    sanitized = reconstruct_from_verified_donors(
+        source_bgr, target_mask=exclusion, donor_pool=donor_pool)
+    if sanitized.get("status") != "valid":
+        return sanitized
+    repaired = cv2.inpaint(
+        sanitized["image"], np.asarray(target_mask, dtype=np.uint8),
+        float(radius), method)
+    result = np.asarray(source_bgr).copy()
+    target = np.asarray(target_mask) > 0
+    result[target] = repaired[target]
+    manifest = dict(sanitized["sampling_manifest"])
+    manifest["sanitized_context_hash"] = hashlib.sha256(
+        sanitized["image"].tobytes()).hexdigest()
+    manifest["target_pixels_used_as_donors"] = 0
+    return {
+        "status": "valid",
+        "image": result,
+        "sampling_manifest": manifest,
+        "reason_codes": [],
+    }
 
 
 def build_reconstruction_context(
@@ -299,6 +591,80 @@ def generate_inpainting_candidates(region_bgr: np.ndarray, masks: dict[str, Any]
                 "image": repaired,
                 **metrics,
             })
+    source_mask = masks.get("source_residual_mask")
+    if source_mask is not None:
+        zero = np.zeros_like(mask)
+        contract = build_contamination_contract(
+            text_fill_mask=np.asarray(source_mask, dtype=np.uint8),
+            outline_mask=np.asarray(masks.get("outline_mask", zero), dtype=np.uint8),
+            antialias_mask=np.asarray(
+                masks.get("antialias_mask", zero), dtype=np.uint8),
+            shadow_mask=np.asarray(masks.get("shadow_mask", zero), dtype=np.uint8),
+            residual_mask=np.asarray(
+                masks.get("residual_mask", zero), dtype=np.uint8),
+            protected_structure_mask=np.asarray(
+                masks.get("protected_edge_mask", zero), dtype=np.uint8),
+        )
+        donor_pool = build_verified_donor_pool(
+            contamination_contract=contract, target_mask=mask)
+        reconstructed = reconstruct_from_verified_donors(
+            region_bgr, target_mask=mask, donor_pool=donor_pool)
+        if reconstructed.get("status") == "valid":
+            metrics = score_inpaint_candidate(
+                region_bgr, reconstructed["image"], masks)
+            sampling = reconstructed["sampling_manifest"]
+            candidates.append({
+                "method": "verified_nearest_donor",
+                "radius": None,
+                "mask_hash": masks["mask_hash"],
+                "contamination_contract_id":
+                    contract["contamination_contract_id"],
+                "donor_pool_hash": donor_pool["donor_pool_hash"],
+                "sampling_manifest": sampling,
+                "source_contaminated_samples_used":
+                    sampling["contaminated_samples_used"],
+                "source_text_similar_samples_used":
+                    sampling["source_text_similar_samples_used"],
+                "target_pixels_used_as_donors":
+                    sampling["target_pixels_used_as_donors"],
+                "image": reconstructed["image"],
+                **metrics,
+            })
+        for method_name, method in (
+            ("sanitized_context_telea", cv2.INPAINT_TELEA),
+            ("sanitized_context_navier_stokes", cv2.INPAINT_NS),
+        ):
+            for radius in (2, 3, 5):
+                clean = reconstruct_with_sanitized_context(
+                    region_bgr,
+                    target_mask=mask,
+                    contamination_contract=contract,
+                    donor_pool=donor_pool,
+                    method=method,
+                    radius=radius,
+                )
+                if clean.get("status") != "valid":
+                    continue
+                metrics = score_inpaint_candidate(
+                    region_bgr, clean["image"], masks)
+                sampling = clean["sampling_manifest"]
+                candidates.append({
+                    "method": method_name,
+                    "radius": radius,
+                    "mask_hash": masks["mask_hash"],
+                    "contamination_contract_id":
+                        contract["contamination_contract_id"],
+                    "donor_pool_hash": donor_pool["donor_pool_hash"],
+                    "sampling_manifest": sampling,
+                    "source_contaminated_samples_used":
+                        sampling["contaminated_samples_used"],
+                    "source_text_similar_samples_used":
+                        sampling["source_text_similar_samples_used"],
+                    "target_pixels_used_as_donors":
+                        sampling["target_pixels_used_as_donors"],
+                    "image": clean["image"],
+                    **metrics,
+                })
     candidates.sort(key=lambda item: float(item.get("overall_score") or 0.0), reverse=True)
     return candidates
 
@@ -306,7 +672,18 @@ def generate_inpainting_candidates(region_bgr: np.ndarray, masks: dict[str, Any]
 def select_best_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     if not candidates:
         return {"status": "blocked", "reason_codes": ["inpainting_candidates_unavailable"]}
-    best = candidates[0]
+    eligible = [
+        candidate for candidate in candidates
+        if not int(candidate.get("changed_pixels_outside_change_mask") or 0)
+        and not int(candidate.get("post_reconstruction_residual_pixels") or 0)
+        and not int(candidate.get("post_reconstruction_residual_components") or 0)
+        and not int(candidate.get("source_contaminated_samples_used") or 0)
+        and not int(candidate.get("source_text_similar_samples_used") or 0)
+        and not int(candidate.get("target_pixels_used_as_donors") or 0)
+    ]
+    pool = eligible or candidates
+    best = max(
+        pool, key=lambda item: float(item.get("overall_score") or 0.0))
     reasons: list[str] = []
     def metric(name: str, default: float) -> float:
         value = best.get(name)
@@ -322,6 +699,10 @@ def select_best_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         reasons.append("post_reconstruction_source_residual")
     if int(best.get("source_contaminated_samples_used") or 0):
         reasons.append("source_contaminated_samples_used")
+    if int(best.get("source_text_similar_samples_used") or 0):
+        reasons.append("source_text_similar_samples_used")
+    if int(best.get("target_pixels_used_as_donors") or 0):
+        reasons.append("target_pixels_used_as_donors")
     if metric("edge_continuity_score", 0.0) < 0.82:
         reasons.append("edge_continuity_low")
     if metric("texture_consistency_score", 0.0) < 0.55:
@@ -330,6 +711,8 @@ def select_best_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         reasons.append("seam_score_high")
     if metric("artifact_score", 999.0) > 0.55:
         reasons.append("artifact_score_high")
+    if not eligible:
+        reasons.append("clean_reconstruction_candidate_unavailable")
     status = "passed" if not reasons else "needs_review"
     return {k: v for k, v in best.items() if k != "image"} | {
         "status": status,
