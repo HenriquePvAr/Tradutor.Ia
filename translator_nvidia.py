@@ -392,7 +392,7 @@ class TranslatorNvidiaBatch:
                 ]
         raise last_error or ValueError("Resposta JSON invalida.")
 
-    def _request_with_retry(self, messages, *, deadline=None):
+    def _request_with_retry(self, messages, *, deadline=None, response_format=None):
         retry_statuses = {429, 500, 502, 503, 504}
         last_error = None
         deadline = (
@@ -417,12 +417,15 @@ class TranslatorNvidiaBatch:
                 client = self._get_client(remaining_total_seconds=remaining)
                 self._increment_stat("api_requests")
                 self._increment_stat("transport_attempts")
-                completion = client.chat.completions.create(
+                request_kwargs = dict(
                     model=self.model,
                     messages=messages,
                     temperature=0.2,
                     max_tokens=4096,
                 )
+                if response_format is not None:
+                    request_kwargs["response_format"] = response_format
+                completion = client.chat.completions.create(**request_kwargs)
                 content = completion.choices[0].message.content or ""
                 if self._clock() > deadline:
                     raise ProviderTransportError(
