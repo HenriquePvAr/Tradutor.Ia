@@ -2886,8 +2886,11 @@
         const showResult = value => {
           refinement = value || null;
           const result = refinement?.result || {};
+          const trace = refinement?.provider_trace || {};
+          const repairCount = (trace.repair_attempts || []).length;
           if (resultBox) resultBox.innerHTML = refinement
             ? `<p>Status: ${escapeHtml(refinement.status || '—')} · confiança: ${escapeHtml(String(result.confidence ?? '—'))}</p>`
+              + `<p>Formato: ${escapeHtml(trace.status || 'validando tradução')} · correções JSON: ${repairCount}</p>`
               + `<p>Natural: ${escapeHtml(result.natural_ptbr || '—')}</p><p>Compacta: ${escapeHtml(result.compact_ptbr || '—')}</p>`
               + `<p>Neutra: ${escapeHtml(result.neutral_ptbr || '—')}</p><p>Warnings: ${escapeHtml((result.warnings || refinement.reason_codes || []).join(', ') || 'nenhum')}</p>`
             : 'Nenhuma sugestão solicitada.';
@@ -2907,6 +2910,7 @@
               effect: 'Nenhuma sugestão substitui uma decisão humana automaticamente.'
             });
             if (!authorized) return;
+            if (resultBox) resultBox.textContent = 'Gerando sugestão e validando estrutura...';
             const response = await api('/api/ui/human-translation/refinement', {method: 'POST',
               body: JSON.stringify({...refinementPayload, authorized: true})});
             showResult(response.refinement); return;
