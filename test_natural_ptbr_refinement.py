@@ -87,6 +87,18 @@ class NaturalRefinementTests(unittest.TestCase):
         self.assertEqual(result["status"], "provider_unavailable")
         self.assertFalse(result["applied_automatically"])
 
+    def test_structured_human_review_result_is_idempotent(self):
+        value = valid()
+        value["information_removed"] = True
+        calls = []
+        service = npr.RefinementService(
+            lambda prompt: calls.append(prompt) or value)
+        first = service.refine(request(), authorized=True)
+        second = service.refine(request(), authorized=True)
+        self.assertEqual(first["status"], "needs_human_review")
+        self.assertTrue(second["cache_hit"])
+        self.assertEqual(len(calls), 1)
+
     def test_store_restores_result_without_provider_call_and_is_owner_scoped(self):
         calls = []
         with tempfile.TemporaryDirectory() as folder:

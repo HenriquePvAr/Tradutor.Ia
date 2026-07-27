@@ -128,6 +128,12 @@ class RefinementService:
         with self._global_locks_guard:
             return self._global_request_locks.setdefault(key, threading.Lock())
 
+    @staticmethod
+    def _cacheable(record: dict[str, Any] | None) -> bool:
+        return bool(record) and record.get("status") in {
+            "valid_suggestion", "needs_human_review"
+        }
+
     def refine(self, request: dict[str, Any], *, authorized: bool) -> dict[str, Any]:
         if not authorized:
             raise ValueError("refinement_explicit_authorization_required")
@@ -136,12 +142,9 @@ class RefinementService:
             if self.store:
                 persisted = self.store.get_result(
                     key, owner=str(request.get("owner") or ""))
-                if persisted and persisted.get("status") == "valid_suggestion":
+                if self._cacheable(persisted):
                     return {**persisted, "cache_hit": True}
-            if (
-                key in self.cache
-                and self.cache[key].get("status") == "valid_suggestion"
-            ):
+            if self._cacheable(self.cache.get(key)):
                 return {**self.cache[key], "cache_hit": True}
             try:
                 validated = validate_result(
