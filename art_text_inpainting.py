@@ -15,6 +15,7 @@ import numpy as np
 
 INPAINTING_VERSION = "1.3"
 CONTAMINATION_SCHEMA_VERSION = "1"
+TEXTURE_METRIC_VERSION = "2"
 
 
 def mask_hash(mask: np.ndarray) -> str:
@@ -26,6 +27,96 @@ def _canonical_hash(value: Any) -> str:
         value, sort_keys=True, separators=(",", ":"),
         ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def evaluate_texture_consistency(
+    candidate_bgr: np.ndarray,
+    reference_bgr: np.ndarray,
+    *,
+    evaluation_mask: np.ndarray,
+    reference_mask: np.ndarray,
+) -> dict[str, Any]:
+    """Compare reconstructed texture with verified clean context explicitly."""
+    candidate = np.asarray(candidate_bgr)
+    reference = np.asarray(reference_bgr)
+    evaluation = np.asarray(evaluation_mask) > 0
+    reference_area = np.asarray(reference_mask) > 0
+    diagnostic = {
+        "texture_metric_version": TEXTURE_METRIC_VERSION,
+        "candidate_hash": hashlib.sha256(candidate.tobytes()).hexdigest(),
+        "reference_hash": hashlib.sha256(reference.tobytes()).hexdigest(),
+        "evaluation_mask_hash":
+            mask_hash(evaluation.astype(np.uint8) * 255),
+        "reference_mask_hash":
+            mask_hash(reference_area.astype(np.uint8) * 255),
+        "evaluation_sample_count": int(evaluation.sum()),
+        "reference_sample_count": int(reference_area.sum()),
+        "nan_detected": False,
+        "division_by_zero": False,
+        "fallback_used": False,
+        "reason_codes": [],
+    }
+    if candidate.shape != reference.shape or candidate.shape[:2] != evaluation.shape:
+        raise ValueError("texture_metric_shape_mismatch")
+    if not np.any(evaluation) or not np.any(reference_area):
+        diagnostic["reason_codes"].append("texture_metric_empty_roi")
+        return {**diagnostic, "status": "invalid", "raw_score": None,
+                "normalized_score": None, "fragmentation_score": None}
+    if not np.isfinite(candidate).all() or not np.isfinite(reference).all():
+        diagnostic["nan_detected"] = True
+        diagnostic["reason_codes"].append("texture_metric_non_finite_input")
+        return {**diagnostic, "status": "invalid", "raw_score": None,
+                "normalized_score": None, "fragmentation_score": None}
+    candidate_gray = (
+        cv2.cvtColor(candidate.astype(np.uint8), cv2.COLOR_BGR2GRAY)
+        if candidate.ndim == 3 else candidate.astype(np.float32))
+    reference_gray = (
+        cv2.cvtColor(reference.astype(np.uint8), cv2.COLOR_BGR2GRAY)
+        if reference.ndim == 3 else reference.astype(np.float32))
+    candidate_grad = cv2.magnitude(
+        cv2.Sobel(candidate_gray, cv2.CV_32F, 1, 0),
+        cv2.Sobel(candidate_gray, cv2.CV_32F, 0, 1))
+    reference_grad = cv2.magnitude(
+        cv2.Sobel(reference_gray, cv2.CV_32F, 1, 0),
+        cv2.Sobel(reference_gray, cv2.CV_32F, 0, 1))
+    values = candidate_gray[evaluation].astype(np.float32)
+    reference_values = reference_gray[reference_area].astype(np.float32)
+    gradients = candidate_grad[evaluation]
+    reference_gradients = reference_grad[reference_area]
+    intensity_cost = (
+        abs(float(values.mean()) - float(reference_values.mean())) / 255.0
+        + abs(float(values.std()) - float(reference_values.std())) / 128.0
+    ) / 2.0
+    gradient_cost = (
+        abs(float(gradients.mean()) - float(reference_gradients.mean()))
+        / max(1.0, float(reference_gradients.mean()) + 32.0)
+        + abs(float(gradients.std()) - float(reference_gradients.std()))
+        / max(1.0, float(reference_gradients.std()) + 32.0)
+    ) / 2.0
+    candidate_laplacian = np.abs(
+        cv2.Laplacian(candidate_gray, cv2.CV_32F))[evaluation]
+    reference_laplacian = np.abs(
+        cv2.Laplacian(reference_gray, cv2.CV_32F))[reference_area]
+    threshold = max(
+        8.0, float(np.percentile(reference_laplacian, 95)) + 4.0)
+    fragmentation = float((candidate_laplacian > threshold).mean())
+    raw = 1.0 - min(
+        1.0, intensity_cost * 0.35 + gradient_cost * 0.4
+        + fragmentation * 0.25)
+    if not np.isfinite(raw):
+        diagnostic["nan_detected"] = True
+        diagnostic["reason_codes"].append("texture_metric_non_finite_result")
+        return {**diagnostic, "status": "invalid", "raw_score": None,
+                "normalized_score": None, "fragmentation_score": None}
+    return {
+        **diagnostic,
+        "status": "valid",
+        "raw_score": round(float(raw), 6),
+        "normalized_score": round(float(raw), 6),
+        "fragmentation_score": round(fragmentation, 6),
+        "intensity_cost": round(float(intensity_cost), 6),
+        "gradient_cost": round(float(gradient_cost), 6),
+    }
 
 
 def _estimated_moat_radius(
@@ -540,6 +631,15 @@ def score_inpaint_candidate(original_bgr: np.ndarray, candidate_bgr: np.ndarray,
     lap_after = cv2.Laplacian(gray_after, cv2.CV_32F)
     texture = 1.0 - min(1.0, abs(float(lap_before[halo].std() if np.any(halo) else 0.0)
                                   - float(lap_after[halo].std() if np.any(halo) else 0.0)) / 80.0)
+    texture_diagnostic = None
+    if masks.get("texture_reference_mask") is not None:
+        texture_diagnostic = evaluate_texture_consistency(
+            candidate_bgr, original_bgr,
+            evaluation_mask=masks["combined_inpainting_mask"],
+            reference_mask=masks["texture_reference_mask"])
+        texture = (
+            float(texture_diagnostic["normalized_score"])
+            if texture_diagnostic["status"] == "valid" else 0.0)
     changed_outside = int((np.any(original_bgr != candidate_bgr, axis=2) if original_bgr.ndim == 3
                            else original_bgr != candidate_bgr)[~combined].sum())
     artifact = min(1.0, (seam / 80.0) + (line_breaks / max(1, int((protected > 0).sum()))))
@@ -561,6 +661,7 @@ def score_inpaint_candidate(original_bgr: np.ndarray, candidate_bgr: np.ndarray,
         "edge_continuity_score": round(continuity, 3),
         "line_break_count": int(line_breaks),
         "texture_consistency_score": round(texture, 3),
+        "texture_metric": texture_diagnostic,
         "seam_score": round(seam, 3),
         "color_discontinuity_score": round(color, 3),
         "artifact_score": round(artifact, 3),
@@ -610,8 +711,13 @@ def generate_inpainting_candidates(region_bgr: np.ndarray, masks: dict[str, Any]
         reconstructed = reconstruct_from_verified_donors(
             region_bgr, target_mask=mask, donor_pool=donor_pool)
         if reconstructed.get("status") == "valid":
+            clean_masks = {
+                **masks,
+                "texture_reference_mask":
+                    donor_pool["donor_eligibility_mask"],
+            }
             metrics = score_inpaint_candidate(
-                region_bgr, reconstructed["image"], masks)
+                region_bgr, reconstructed["image"], clean_masks)
             sampling = reconstructed["sampling_manifest"]
             candidates.append({
                 "method": "verified_nearest_donor",
@@ -645,8 +751,13 @@ def generate_inpainting_candidates(region_bgr: np.ndarray, masks: dict[str, Any]
                 )
                 if clean.get("status") != "valid":
                     continue
+                clean_masks = {
+                    **masks,
+                    "texture_reference_mask":
+                        donor_pool["donor_eligibility_mask"],
+                }
                 metrics = score_inpaint_candidate(
-                    region_bgr, clean["image"], masks)
+                    region_bgr, clean["image"], clean_masks)
                 sampling = clean["sampling_manifest"]
                 candidates.append({
                     "method": method_name,
