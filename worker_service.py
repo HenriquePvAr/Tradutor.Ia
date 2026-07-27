@@ -241,7 +241,9 @@ class Worker:
 
     def _fail_source(self, job_id: str, exc: BaseException) -> None:
         """Record a sanitized terminal source failure; never start a runner after one."""
-        code = getattr(exc, "code", None) or "source_not_ready"
+        from down import _pipeline_exception_code
+
+        code = _pipeline_exception_code(exc)
         try:
             if code == "cancelled":
                 current = self.store.get_job(job_id)

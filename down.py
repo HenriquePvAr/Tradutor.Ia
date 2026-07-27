@@ -7,6 +7,7 @@ import math
 import os
 import re
 import shutil
+import tempfile
 import stat
 import threading
 import time
@@ -524,16 +525,47 @@ def _pipeline_exception_code(exc: BaseException) -> str:
     """Classify local operational failures without leaking provider/browser details."""
     if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC:
         return "disk_full"
-    return "source_not_ready"
+    existing = str(getattr(exc, "code", "") or "")
+    if existing:
+        return existing
+    message = str(exc).lower()
+    if "timed out" in message or "timeout" in message:
+        return "browser_startup_timeout"
+    if "user data directory is already in use" in message or "profile" in message and "lock" in message:
+        return "browser_profile_locked"
+    if "only supports chrome version" in message or "version of chromedriver" in message:
+        return "browser_driver_incompatible"
+    if "unable to obtain driver" in message or "driver" in message and "not found" in message:
+        return "browser_driver_unavailable"
+    if "session not created" in message or "chrome failed to start" in message:
+        return "browser_launch_failed"
+    return "source_analysis_failed"
 
 
 def _create_driver():
+    from browser_runtime import BrowserRuntimeResolver
+    from chapter_source import SourceError
+
+    try:
+        runtime = BrowserRuntimeResolver().resolve(
+            operation="source_analysis",
+            preferred_engine=str(os.getenv("SOURCE_BROWSER_ENGINE", "") or ""),
+            configured_executable=str(os.getenv("SOURCE_BROWSER_EXECUTABLE", "") or ""),
+            configured_driver=str(CHROMEDRIVER_PATH or ""),
+            headless=str(os.getenv("SOURCE_BROWSER_HEADLESS", "1")).strip() != "0",
+        )
+    except ValueError as exc:
+        raise SourceError(str(exc), "browser runtime resolution failed") from exc
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--log-level=3")
     chrome_options.add_argument("--window-size=1400,2200")
+    if runtime.executable_path:
+        chrome_options.binary_location = runtime.executable_path
+    profile_dir = tempfile.mkdtemp(prefix="tradutor-source-browser-")
+    chrome_options.add_argument(f"--user-data-dir={profile_dir}")
     # ``collect_from_driver`` can consume Chrome's bounded performance log as additional
     # browser-observed evidence.  Old/embedded Selenium option objects need not support this,
     # so capability setup is strictly best-effort and never changes browser behaviour otherwise.
@@ -544,25 +576,27 @@ def _create_driver():
         except Exception:
             pass
 
-    driver_path = CHROMEDRIVER_PATH if CHROMEDRIVER_PATH and os.path.isfile(CHROMEDRIVER_PATH) else (
-        shutil.which("chromedriver") or shutil.which("chromedriver.exe")
-    )
-    if driver_path:
-        return webdriver.Chrome(service=Service(driver_path), options=chrome_options)
-    if driver_download_allowed():
-        # Opt-in only. Selenium Manager is the official resolver bundled with Selenium; it
-        # fetches from Chrome for Testing and caches under Selenium's own directory. Left
-        # implicit this would give source analysis an unrelated network side effect, which
-        # is why the default below still fails closed.
-        return webdriver.Chrome(service=Service(), options=chrome_options)
-    from chapter_source import CHROMEDRIVER_UNAVAILABLE, SourceError
-
-    raise SourceError(
-        CHROMEDRIVER_UNAVAILABLE,
-        "Defina CHROMEDRIVER_PATH, instale chromedriver no PATH ou habilite "
-        "TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1 para permitir que o Selenium Manager oficial "
-        "resolva o driver.",
-    )
+    driver_path = runtime.driver_path
+    try:
+        if driver_path:
+            driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
+        elif driver_download_allowed():
+            driver = webdriver.Chrome(service=Service(), options=chrome_options)
+        else:
+            from chapter_source import CHROMEDRIVER_UNAVAILABLE
+            raise SourceError(
+                CHROMEDRIVER_UNAVAILABLE,
+                "Configure CHROMEDRIVER_PATH, instale chromedriver no PATH ou habilite "
+                "TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1 para o Selenium Manager oficial.")
+        try:
+            setattr(driver, "_tradutor_profile_dir", profile_dir)
+            setattr(driver, "_tradutor_browser_runtime", runtime.public())
+        except (AttributeError, TypeError):
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        return driver
+    except Exception:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+        raise
 
 
 def _set_browser_timeouts(driver, timeout_seconds=45):
@@ -1424,6 +1458,10 @@ def _bounded_driver_teardown(
 
     result["thread_alive_after_cleanup"] = worker.is_alive()
     result["duration_seconds"] = round(time.perf_counter() - started, 6)
+    profile_dir = str(getattr(driver, "_tradutor_profile_dir", "") or "")
+    if profile_dir:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+        result["profile_removed"] = not os.path.exists(profile_dir)
     return result
 
 
