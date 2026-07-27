@@ -830,7 +830,7 @@ def api_human_translation_refinement(
     if payload.get("authorized") is not True:
         raise HTTPException(
             status_code=403, detail="refinement_explicit_authorization_required")
-    translator = TranslatorNvidiaBatch()
+    translator = TranslatorNvidiaBatch(operation="natural_ptbr_refinement")
     service = natural_ptbr_refinement.RefinementService(
         natural_ptbr_refinement.NvidiaRefinementProvider(translator), store=store)
     return {"ok": True, "refinement": service.refine(

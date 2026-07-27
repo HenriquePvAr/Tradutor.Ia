@@ -9,6 +9,13 @@ from pathlib import Path
 
 import config
 from pipeline_cache import atomic_write_json, load_json, stable_hash
+from provider_transport import (
+    CircuitBreakerPolicy,
+    ProviderTimeoutPolicy,
+    ProviderTransportError,
+    circuit_scope_key,
+    shared_circuit_breaker,
+)
 
 
 PROMPT_VERSION = "nvidia-manga-v3-json-qa"
@@ -37,6 +44,10 @@ class TranslatorNvidiaBatch:
         parallel=None,
         workers=None,
         force_cache=False,
+        operation="translation",
+        clock=None,
+        sleeper=None,
+        circuit_breaker=None,
     ):
         self.api_key = api_key if api_key is not None else config.NVIDIA_API_KEY
         self.base_url = base_url or config.NVIDIA_BASE_URL
@@ -56,6 +67,48 @@ class TranslatorNvidiaBatch:
             int(config.TRANSLATION_WORKERS if workers is None else workers),
         )
         self.force_cache = bool(force_cache)
+        self.operation = str(operation or "translation")
+        self._clock = clock or time.monotonic
+        self._sleep = sleeper or time.sleep
+        self.timeout_policy = ProviderTimeoutPolicy(
+            connect_timeout_seconds=float(config.NVIDIA_CONNECT_TIMEOUT_SECONDS),
+            read_timeout_seconds=float(config.NVIDIA_READ_TIMEOUT_SECONDS),
+            write_timeout_seconds=float(config.NVIDIA_WRITE_TIMEOUT_SECONDS),
+            pool_timeout_seconds=float(config.NVIDIA_POOL_TIMEOUT_SECONDS),
+            total_timeout_seconds=float(config.NVIDIA_TOTAL_TIMEOUT_SECONDS),
+            source="config",
+            provider="nvidia",
+            operation=self.operation,
+        )
+        counted = (
+            "provider_connect_timeout", "provider_read_timeout",
+            "provider_total_deadline_exceeded", "provider_connection_error",
+            "provider_server_error", "provider_unavailable",
+        )
+        ignored = (
+            "provider_rate_limited", "provider_client_error",
+            "provider_response_invalid", "provider_schema_invalid",
+        )
+        self.circuit_policy = CircuitBreakerPolicy(
+            failure_threshold=int(config.NVIDIA_CIRCUIT_FAILURE_THRESHOLD),
+            recovery_timeout_seconds=float(config.NVIDIA_CIRCUIT_RECOVERY_SECONDS),
+            half_open_max_calls=int(config.NVIDIA_CIRCUIT_HALF_OPEN_MAX_CALLS),
+            success_threshold=int(config.NVIDIA_CIRCUIT_SUCCESS_THRESHOLD),
+            counted_failure_types=counted,
+            ignored_failure_types=ignored,
+        )
+        scope = circuit_scope_key("nvidia", self.base_url, self.operation)
+        self.circuit_breaker = circuit_breaker or shared_circuit_breaker(
+            scope, self.circuit_policy)
+        self.transport_retry_limit = int(config.NVIDIA_TRANSPORT_RETRY_LIMIT)
+        self.json_retry_limit = int(config.NVIDIA_JSON_RETRY_LIMIT)
+        self.retry_backoff_seconds = float(config.NVIDIA_RETRY_BACKOFF_SECONDS)
+        if (
+            self.transport_retry_limit <= 0
+            or self.json_retry_limit <= 0
+            or self.retry_backoff_seconds < 0
+        ):
+            raise ValueError("provider_retry_policy_invalid")
         self.session_context_prompt = ""
         self.session_context_signature = ""
         self.detected_names_prompt = ""
@@ -78,6 +131,10 @@ class TranslatorNvidiaBatch:
             "invalid_json_retries": 0,
             "invalid_json_failures": 0,
             "detected_name_count": 0,
+            "transport_attempts": 0,
+            "json_repair_attempts": 0,
+            "circuit_rejections": 0,
+            "last_transport_reason": "",
         }
 
     @property
@@ -259,18 +316,14 @@ class TranslatorNvidiaBatch:
         finally:
             self._increment_stat("api_seconds", time.perf_counter() - started)
 
-    def _get_client(self):
-        client = getattr(self._thread_local, "client", None)
-        if client is None:
-            from openai import OpenAI
+    def _get_client(self, *, remaining_total_seconds=None):
+        from openai import OpenAI
 
-            client = OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=120.0,
-            )
-            self._thread_local.client = client
-        return client
+        return OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.timeout_policy.httpx_timeout(remaining_total_seconds),
+        )
 
     def _translate_batch(self, texts):
         ids = [f"BALAO_{idx}" for idx in range(1, len(texts) + 1)]
@@ -295,15 +348,18 @@ class TranslatorNvidiaBatch:
         )
         return [parsed.get(text_id, original) or original for text_id, original in zip(ids, texts)]
 
-    def _request_json_with_retry(self, messages, expected_ids, attempts=3):
+    def _request_json_with_retry(self, messages, expected_ids, attempts=None):
         """Retry model-format failures separately from HTTP/transport retries."""
 
         expected_ids = [str(item) for item in expected_ids]
         base_messages = [dict(message) for message in messages]
         request_messages = list(base_messages)
         last_error = None
-        for attempt in range(1, max(1, int(attempts)) + 1):
-            response_text = self._request_with_retry(request_messages)
+        attempts = self.json_retry_limit if attempts is None else int(attempts)
+        deadline = self._clock() + self.timeout_policy.total_timeout_seconds
+        for attempt in range(1, max(1, attempts) + 1):
+            response_text = self._request_with_retry(
+                request_messages, deadline=deadline)
             try:
                 parsed = self._parse_json_response(response_text)
                 missing = [text_id for text_id in expected_ids if not parsed.get(text_id)]
@@ -318,6 +374,7 @@ class TranslatorNvidiaBatch:
                     self._increment_stat("invalid_json_failures")
                     raise
                 self._increment_stat("invalid_json_retries")
+                self._increment_stat("json_repair_attempts")
                 request_messages = base_messages + [
                     {
                         "role": "assistant",
@@ -335,47 +392,82 @@ class TranslatorNvidiaBatch:
                 ]
         raise last_error or ValueError("Resposta JSON invalida.")
 
-    def _request_with_retry(self, messages):
+    def _request_with_retry(self, messages, *, deadline=None):
         retry_statuses = {429, 500, 502, 503, 504}
         last_error = None
-
-        for attempt in range(1, 5):
+        deadline = (
+            self._clock() + self.timeout_policy.total_timeout_seconds
+            if deadline is None else float(deadline)
+        )
+        for attempt in range(1, max(1, self.transport_retry_limit) + 1):
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                raise ProviderTransportError("provider_total_deadline_exceeded")
             try:
-                self._wait_for_rate_limit()
-                client = self._get_client()
+                self.circuit_breaker.before_call()
+            except ProviderTransportError:
+                self._increment_stat("circuit_rejections")
+                raise
+            try:
+                self._wait_for_rate_limit(deadline=deadline)
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise ProviderTransportError(
+                        "provider_total_deadline_exceeded")
+                client = self._get_client(remaining_total_seconds=remaining)
                 self._increment_stat("api_requests")
+                self._increment_stat("transport_attempts")
                 completion = client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     temperature=0.2,
                     max_tokens=4096,
                 )
-                return completion.choices[0].message.content or ""
+                content = completion.choices[0].message.content or ""
+                if self._clock() > deadline:
+                    raise ProviderTransportError(
+                        "provider_total_deadline_exceeded")
+                self.circuit_breaker.record_success()
+                return content
             except Exception as exc:
                 last_error = exc
                 status = self._status_code_from_exception(exc)
-                error_name = type(exc).__name__.lower()
-                transient_transport_error = (
-                    "timeout" in error_name or "connection" in error_name
+                reason = self._transport_reason(exc, status)
+                self.stats["last_transport_reason"] = reason
+                self.circuit_breaker.record_failure(reason)
+                retryable = (
+                    status in retry_statuses
+                    or reason in {
+                        "provider_connect_timeout", "provider_read_timeout",
+                        "provider_connection_error", "provider_server_error",
+                        "provider_rate_limited",
+                    }
                 )
-
-                if (
-                    status not in retry_statuses
-                    and not transient_transport_error
-                ) or attempt == 4:
-                    raise
-
-                time.sleep(min(2**attempt, 30))
+                if not retryable or attempt >= self.transport_retry_limit:
+                    if isinstance(exc, ProviderTransportError):
+                        raise
+                    raise ProviderTransportError(
+                        "provider_retry_exhausted" if retryable else reason,
+                        status_code=status) from exc
+                retry_after = self._retry_after_seconds(exc) if status == 429 else None
+                backoff = (
+                    retry_after if retry_after is not None
+                    else min(self.retry_backoff_seconds * (2 ** (attempt - 1)), 30.0)
+                )
+                if self._clock() + backoff >= deadline:
+                    raise ProviderTransportError(
+                        "provider_total_deadline_exceeded") from exc
+                self._sleep(backoff)
 
         raise last_error
 
-    def _wait_for_rate_limit(self):
+    def _wait_for_rate_limit(self, *, deadline=None):
         if self.max_requests_per_minute <= 0:
             return
 
         while True:
             with self._rate_lock:
-                now = time.monotonic()
+                now = self._clock()
                 while self._request_times and now - self._request_times[0] >= 60:
                     self._request_times.popleft()
 
@@ -385,7 +477,43 @@ class TranslatorNvidiaBatch:
 
                 sleep_for = 60 - (now - self._request_times[0]) + 0.1
             if sleep_for > 0:
-                time.sleep(sleep_for)
+                if deadline is not None and self._clock() + sleep_for >= deadline:
+                    raise ProviderTransportError(
+                        "provider_total_deadline_exceeded")
+                self._sleep(sleep_for)
+
+    @staticmethod
+    def _transport_reason(exc, status):
+        if isinstance(exc, ProviderTransportError):
+            return exc.reason_code
+        name = type(exc).__name__.casefold()
+        text = str(exc).casefold()
+        if "connecttimeout" in name or ("connect" in text and "timeout" in text):
+            return "provider_connect_timeout"
+        if "readtimeout" in name or ("read" in text and "timeout" in text):
+            return "provider_read_timeout"
+        if "timeout" in name:
+            return "provider_read_timeout"
+        if "connection" in name or "connecterror" in name:
+            return "provider_connection_error"
+        if status == 429:
+            return "provider_rate_limited"
+        if status in {500, 502, 503, 504}:
+            return "provider_server_error"
+        if status and 400 <= status < 500:
+            return "provider_client_error"
+        return "provider_unavailable"
+
+    @staticmethod
+    def _retry_after_seconds(exc):
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", {}) or {}
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if 0 <= value <= 300 else None
 
     def _translation_cache_key(self, text):
         return stable_hash(

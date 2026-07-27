@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from datetime import datetime, timezone
+import threading
 from typing import Any, Callable
 
 from pipeline_cache import atomic_write_json, load_json
@@ -98,36 +99,49 @@ def validate_result(raw: Any, *, request: dict[str, Any]) -> dict[str, Any]:
 
 class RefinementService:
     """Idempotent adapter; the caller must inject the configured provider."""
+    _global_locks_guard = threading.Lock()
+    _global_request_locks: dict[str, threading.Lock] = {}
+
     def __init__(self, provider: Callable[[str], Any], *, store: "RefinementStore | None" = None):
         self.provider = provider
         self.cache: dict[str, dict[str, Any]] = {}
         self.store = store
 
+    def _request_lock(self, key: str) -> threading.Lock:
+        with self._global_locks_guard:
+            return self._global_request_locks.setdefault(key, threading.Lock())
+
     def refine(self, request: dict[str, Any], *, authorized: bool) -> dict[str, Any]:
         if not authorized:
             raise ValueError("refinement_explicit_authorization_required")
         key = str(request["request_hash"])
-        if self.store:
-            persisted = self.store.get_result(key, owner=str(request.get("owner") or ""))
-            if persisted:
-                return {**persisted, "cache_hit": True}
-        if key in self.cache:
-            return {**self.cache[key], "cache_hit": True}
-        try:
-            validated = validate_result(
-                self.provider(build_prompt(request)), request=request)
-        except Exception as exc:
-            validated = {
-                "status": "provider_unavailable",
-                "reason_codes": ["provider_unavailable"],
-                "error_type": type(exc).__name__,
-            }
-        stored = {**validated, "request_hash": key, "cache_hit": False,
-                  "applied_automatically": False}
-        self.cache[key] = stored
-        if self.store:
-            self.store.put_result(request, stored)
-        return stored
+        with self._request_lock(key):
+            if self.store:
+                persisted = self.store.get_result(
+                    key, owner=str(request.get("owner") or ""))
+                if persisted and persisted.get("status") == "valid_suggestion":
+                    return {**persisted, "cache_hit": True}
+            if (
+                key in self.cache
+                and self.cache[key].get("status") == "valid_suggestion"
+            ):
+                return {**self.cache[key], "cache_hit": True}
+            try:
+                validated = validate_result(
+                    self.provider(build_prompt(request)), request=request)
+            except Exception as exc:
+                reason = str(getattr(exc, "reason_code", "") or "provider_unavailable")
+                validated = {
+                    "status": reason,
+                    "reason_codes": [reason],
+                    "error_type": type(exc).__name__,
+                }
+            stored = {**validated, "request_hash": key, "cache_hit": False,
+                      "applied_automatically": False}
+            self.cache[key] = stored
+            if self.store:
+                self.store.put_result(request, stored)
+            return stored
 
 
 def select_option(result: dict[str, Any], *, owner: str, option: str,
@@ -185,13 +199,13 @@ class NvidiaRefinementProvider:
     def __init__(self, translator: Any):
         self.translator = translator
 
-    def __call__(self, prompt: str) -> str:
+    def __call__(self, prompt: str) -> Any:
         if not getattr(self.translator, "is_configured", False):
             raise RuntimeError("provider_not_configured")
-        return self.translator._request_with_retry([
+        return self.translator._request_json_with_retry([
             {
                 "role": "system",
                 "content": "Retorne somente o JSON solicitado para revisão linguística.",
             },
             {"role": "user", "content": prompt},
-        ])
+        ], expected_ids=sorted(RESULT_KEYS))
