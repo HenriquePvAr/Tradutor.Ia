@@ -2698,6 +2698,8 @@ class ChapterQualityRevision:
                     item["redrawn"] = True
                     item["translation_valid"] = True
                     item["translation_final_state"] = "human_override"
+                    item["sent_to_translation"] = True
+                    item["sent_to_nvidia"] = False
                 changed_by_page.setdefault(number, []).append(change)
         return changed_by_page
 
@@ -3093,6 +3095,9 @@ class ChapterQualityRevision:
                 masks = {
                     "valid": True,
                     "combined_inpainting_mask": mask,
+                    "source_residual_mask": np.asarray(
+                        override.get("source_residual_mask"), dtype=np.uint8)
+                    if override.get("source_residual_mask") is not None else None,
                     "validation_halo": np.asarray(
                         override.get("validation_halo"), dtype=np.uint8),
                     "protected_edge_mask": np.asarray(

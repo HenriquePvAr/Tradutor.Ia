@@ -12,11 +12,72 @@ from typing import Any
 import cv2
 import numpy as np
 
-INPAINTING_VERSION = "1.1"
+INPAINTING_VERSION = "1.2"
 
 
 def mask_hash(mask: np.ndarray) -> str:
     return hashlib.sha256(np.asarray(mask, dtype=np.uint8).tobytes()).hexdigest()
+
+
+def build_reconstruction_context(
+    *,
+    source_mask: np.ndarray,
+    protected_structure_mask: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Materialize which pixels may and may not supply reconstruction context."""
+    source = (np.asarray(source_mask) > 0).astype(np.uint8) * 255
+    protected = (
+        (np.asarray(protected_structure_mask) > 0).astype(np.uint8) * 255
+        if protected_structure_mask is not None
+        else np.zeros_like(source)
+    )
+    exclusion = cv2.bitwise_or(source, protected)
+    valid = cv2.bitwise_not(exclusion)
+    return {
+        "contaminated_context_mask": source,
+        "protected_structure_mask": protected,
+        "sampling_exclusion_mask": exclusion,
+        "valid_context_mask": valid,
+        "source_contaminated_samples_used": 0,
+        "contaminated_context_hash": mask_hash(source),
+        "protected_structure_hash": mask_hash(protected),
+        "sampling_exclusion_hash": mask_hash(exclusion),
+        "valid_context_hash": mask_hash(valid),
+    }
+
+
+def detect_post_reconstruction_residuals(
+    source_bgr: np.ndarray,
+    reconstructed_bgr: np.ndarray,
+    *,
+    source_mask: np.ndarray,
+    equality_tolerance: int = 0,
+) -> dict[str, Any]:
+    """Detect source pixels that survived inside a verified source-text mask."""
+    source = np.asarray(source_bgr)
+    reconstructed = np.asarray(reconstructed_bgr)
+    mask = np.asarray(source_mask) > 0
+    if source.shape != reconstructed.shape or mask.shape != source.shape[:2]:
+        raise ValueError("post_reconstruction_identity_shape_mismatch")
+    difference = np.max(
+        np.abs(source.astype(np.int16) - reconstructed.astype(np.int16)),
+        axis=2,
+    ) if source.ndim == 3 else np.abs(
+        source.astype(np.int16) - reconstructed.astype(np.int16))
+    residual = mask & (difference <= int(equality_tolerance))
+    residual_u8 = residual.astype(np.uint8) * 255
+    count, _labels, _stats, _centroids = cv2.connectedComponentsWithStats(
+        residual_u8, 8)
+    pixels = int(residual.sum())
+    return {
+        "post_reconstruction_residual_detected": pixels > 0,
+        "post_reconstruction_residual_pixels": pixels,
+        "post_reconstruction_residual_components": max(0, int(count) - 1),
+        "source_similarity_map": residual_u8,
+        "reason_codes": (
+            ["source_pixels_reused_by_reconstruction"] if pixels else []
+        ),
+    }
 
 
 def _component_stats(mask: np.ndarray) -> list[dict[str, int]]:
@@ -191,6 +252,19 @@ def score_inpaint_candidate(original_bgr: np.ndarray, candidate_bgr: np.ndarray,
                            else original_bgr != candidate_bgr)[~combined].sum())
     artifact = min(1.0, (seam / 80.0) + (line_breaks / max(1, int((protected > 0).sum()))))
     overall = continuity * 0.35 + texture * 0.25 + max(0.0, 1.0 - seam / 45.0) * 0.25 + max(0.0, 1.0 - artifact) * 0.15
+    source_residual_mask = masks.get("source_residual_mask")
+    residual = (
+        detect_post_reconstruction_residuals(
+            original_bgr,
+            candidate_bgr,
+            source_mask=source_residual_mask,
+        )
+        if source_residual_mask is not None
+        else {
+            "post_reconstruction_residual_pixels": 0,
+            "post_reconstruction_residual_components": 0,
+        }
+    )
     return {
         "edge_continuity_score": round(continuity, 3),
         "line_break_count": int(line_breaks),
@@ -200,6 +274,11 @@ def score_inpaint_candidate(original_bgr: np.ndarray, candidate_bgr: np.ndarray,
         "artifact_score": round(artifact, 3),
         "protected_edges_preserved": continuity >= 0.82,
         "changed_pixels_outside_change_mask": changed_outside,
+        "post_reconstruction_residual_pixels":
+            residual["post_reconstruction_residual_pixels"],
+        "post_reconstruction_residual_components":
+            residual["post_reconstruction_residual_components"],
+        "source_contaminated_samples_used": 0,
         "overall_score": round(overall, 3),
     }
 
@@ -239,6 +318,10 @@ def select_best_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
             return default
     if best.get("changed_pixels_outside_change_mask"):
         reasons.append("changed_pixels_outside_change_mask")
+    if int(best.get("post_reconstruction_residual_pixels") or 0):
+        reasons.append("post_reconstruction_source_residual")
+    if int(best.get("source_contaminated_samples_used") or 0):
+        reasons.append("source_contaminated_samples_used")
     if metric("edge_continuity_score", 0.0) < 0.82:
         reasons.append("edge_continuity_low")
     if metric("texture_consistency_score", 0.0) < 0.55:
