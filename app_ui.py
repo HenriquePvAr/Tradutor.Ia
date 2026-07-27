@@ -32,6 +32,8 @@ from community_http import (
 import audit_decisions
 import linguistic_triage
 import region_taxonomy
+import natural_ptbr_refinement
+from translator_nvidia import TranslatorNvidiaBatch
 from chapter_quality_revision import REVIEW_SCHEMA_VERSION
 from local_environment import load_local_environment_for_entrypoint
 from process_options import hidden_console_options
@@ -805,6 +807,51 @@ def api_human_translation_delete(request: Request, payload: dict[str, Any] = Bod
             decision_id=str(payload.get("decision_id") or ""), user_id=principal.user_id)
     except ValueError as exc:
         raise _audit_error(exc) from exc
+
+
+@app.post("/api/ui/human-translation/refinement")
+def api_human_translation_refinement(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    """Explicit, owner-scoped linguistic suggestion; never applies a translation."""
+    principal = _ui_principal(request, mutate=True)
+    request_fields = {key: value for key, value in payload.items()
+                      if key not in {"owner", "provider", "model"}}
+    refinement_request = natural_ptbr_refinement.build_request(
+        **request_fields, owner=principal.user_id,
+        provider=str(payload.get("provider") or "nvidia"),
+        model=str(payload.get("model") or "configured"))
+    store = natural_ptbr_refinement.RefinementStore(
+        ROOT / ".cache" / "runtime" / "natural_ptbr_refinement")
+    if str(payload.get("operation") or "") == "restore":
+        existing = store.get_result(
+            refinement_request["request_hash"], owner=principal.user_id)
+        return {"ok": True, "refinement": existing, "restored": bool(existing)}
+    if payload.get("authorized") is not True:
+        raise HTTPException(
+            status_code=403, detail="refinement_explicit_authorization_required")
+    translator = TranslatorNvidiaBatch()
+    service = natural_ptbr_refinement.RefinementService(
+        natural_ptbr_refinement.NvidiaRefinementProvider(translator), store=store)
+    return {"ok": True, "refinement": service.refine(
+        refinement_request, authorized=True)}
+
+
+@app.post("/api/ui/human-translation/refinement/decision")
+def api_human_translation_refinement_decision(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    decision = natural_ptbr_refinement.select_option(
+        dict(payload.get("result") or {}), owner=principal.user_id,
+        option=str(payload.get("option") or ""),
+        reviewer=principal.user_id,
+        authorization=str(payload.get("authorization") or ""),
+        previous_decision_id=str(payload.get("previous_decision_id") or ""),
+        manual_text=str(payload.get("manual_text") or ""))
+    store = natural_ptbr_refinement.RefinementStore(
+        ROOT / ".cache" / "runtime" / "natural_ptbr_refinement")
+    return {"ok": True, "decision": store.append_decision(decision)}
 
 
 @app.post("/api/ui/human-translation/font-candidates")

@@ -2626,13 +2626,14 @@
       const ready = pending?.approval_enabled === true && pending?.blocked !== true;
       const previewStatus = pending ? (ready ? 'PRONTA PARA REVISÃO HUMANA' : 'BLOQUEADA — REQUER RECONSTRUÇÃO DE ARTE') : '';
       const fontButton = `<button type="button" class="btn-ghost" data-preview-action="font-options" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de escolher tipografia"'}>ESCOLHER TIPOGRAFIA</button>`;
+      const refineButton = `<button type="button" class="btn-ghost" data-preview-action="refine-ptbr" data-region="${escapeAttr(region)}">REFINAR PT-BR</button>`;
       const actionButtons = blocked
         ? `<button type="button" class="btn-ghost" data-preview-action="compare" data-region="${escapeAttr(region)}">VER DETALHES</button>`
-          + fontButton
+          + refineButton + fontButton
           + `<button type="button" class="btn-ghost" data-preview-action="mask-editor" data-region="${escapeAttr(region)}">REFINAR MÁSCARA</button>`
         : `<button type="button" class="btn-ghost" data-preview-action="approve" data-region="${escapeAttr(region)}">APROVAR TEXTO PARA PRÉVIA</button>`
           + `<button type="button" class="btn-ghost" data-preview-action="edit" data-region="${escapeAttr(region)}">EDITAR TRADUÇÃO HUMANA</button>`
-          + fontButton
+          + refineButton + fontButton
           + `<button type="button" class="btn-ghost" data-preview-action="render" data-region="${escapeAttr(region)}"${decided ? '' : ' disabled aria-disabled="true" title="Aprove um texto antes de renderizar"'}>RENDERIZAR NOVA TENTATIVA</button>`
           + `<button type="button" class="btn-primary" data-preview-action="compare" data-region="${escapeAttr(region)}">${ready ? 'ABRIR PRÉVIA DA PÁGINA' : 'ABRIR COMPARAÇÃO'}</button>`
           + `<button type="button" class="btn-ghost" data-preview-action="mask-editor" data-region="${escapeAttr(region)}">REFINAR MÁSCARA</button>`
@@ -2857,6 +2858,72 @@
     const item = (auditState.previews?.items || []).find(i => String(i.region_id) === region) || {};
     try {
       if (action === 'edit') { field?.focus(); field?.select(); return; }
+      if (action === 'refine-ptbr') {
+        const box = $(`#auditList [data-preview-reasons="${CSS.escape(region)}"]`);
+        const refinementPayload = {
+          ...id, revision_id: item.revision_id || '', page_id: item.page_id || String(item.page_number || ''),
+          region_id: region, source_text: item.sent_text || item.ocr_source_text || '',
+          current_translation: item.current_translation || item.human_candidate || field?.value || '',
+          context_before: item.context_before || '', context_after: item.context_after || '',
+          region_type: item.region_type || item.classification || '', speaker: item.speaker || '',
+          tone: item.tone || '', emotion: item.emotion || '', register: item.register || '',
+          visual_character_limit: item.visual_character_limit || 0, glossary: item.glossary || {},
+          previous_decision_id: item.human_translation_decision_id || ''
+        };
+        if (box) box.innerHTML = `<section class="natural-refinement-panel" aria-live="polite"><h4>REFINAR PT-BR</h4>`
+          + `<p>Original: <strong>${escapeHtml(item.sent_text || item.ocr_source_text || '—')}</strong></p>`
+          + `<p>Tradução atual: <strong>${escapeHtml(item.current_translation || item.human_candidate || '—')}</strong></p>`
+          + `<p class="muted">A NVIDIA exige autorização explícita. Uma sugestão nunca substitui uma decisão humana sem confirmação.</p>`
+          + `<div data-refinement-result class="muted">Nenhuma sugestão solicitada.</div>`
+          + `<div class="audit-actions"><button type="button" class="btn-primary" data-refinement-action="request">GERAR SUGESTÕES</button>`
+          + `<button type="button" class="btn-ghost" data-refinement-action="natural">USAR NATURAL</button><button type="button" class="btn-ghost" data-refinement-action="compact">USAR COMPACTA</button>`
+          + `<button type="button" class="btn-ghost" data-refinement-action="neutral">USAR NEUTRA</button><button type="button" class="btn-ghost" data-refinement-action="manual">EDITAR MANUALMENTE</button>`
+          + `<button type="button" class="btn-ghost" data-refinement-action="keep_current">MANTER ATUAL</button><button type="button" class="btn-ghost" data-refinement-action="request">PEDIR NOVA SUGESTÃO</button>`
+          + `<button type="button" class="btn-ghost" data-refinement-action="discard">DESCARTAR</button></div>`
+          + `<p class="muted">Warnings, confiança e limite visual aparecerão após uma resposta estruturada válida.</p></section>`;
+        let refinement = null;
+        const resultBox = box?.querySelector('[data-refinement-result]');
+        const showResult = value => {
+          refinement = value || null;
+          const result = refinement?.result || {};
+          if (resultBox) resultBox.innerHTML = refinement
+            ? `<p>Status: ${escapeHtml(refinement.status || '—')} · confiança: ${escapeHtml(String(result.confidence ?? '—'))}</p>`
+              + `<p>Natural: ${escapeHtml(result.natural_ptbr || '—')}</p><p>Compacta: ${escapeHtml(result.compact_ptbr || '—')}</p>`
+              + `<p>Neutra: ${escapeHtml(result.neutral_ptbr || '—')}</p><p>Warnings: ${escapeHtml((result.warnings || refinement.reason_codes || []).join(', ') || 'nenhum')}</p>`
+            : 'Nenhuma sugestão solicitada.';
+        };
+        try {
+          const restored = await api('/api/ui/human-translation/refinement', {method: 'POST',
+            body: JSON.stringify({...refinementPayload, operation: 'restore'})});
+          if (restored.restored) showResult(restored.refinement);
+        } catch (_) { /* no persisted suggestion is expected on first use */ }
+        box?.querySelectorAll('[data-refinement-action]').forEach(button => button.addEventListener('click', async () => {
+          const operation = button.dataset.refinementAction;
+          if (operation === 'discard') { box.innerHTML = ''; return; }
+          if (operation === 'request') {
+            const authorized = await auditConfirm({
+              title: 'AUTORIZAR REFINAMENTO LINGUÍSTICO',
+              summary: '<p>Solicita três opções contextuais em PT-BR ao provider configurado.</p>',
+              effect: 'Nenhuma sugestão substitui uma decisão humana automaticamente.'
+            });
+            if (!authorized) return;
+            const response = await api('/api/ui/human-translation/refinement', {method: 'POST',
+              body: JSON.stringify({...refinementPayload, authorized: true})});
+            showResult(response.refinement); return;
+          }
+          if (!refinement) { auditMessage('Gere ou restaure sugestões antes de escolher.', 'warn'); return; }
+          const manualText = operation === 'manual' ? String(field?.value || '').trim() : '';
+          if (operation === 'manual' && !manualText) {
+            auditMessage('Edite a tradução no campo da região antes de confirmar a opção manual.', 'warn');
+            field?.focus(); return;
+          }
+          const response = await api('/api/ui/human-translation/refinement/decision', {method: 'POST',
+            body: JSON.stringify({result: refinement, option: operation, manual_text: manualText,
+              authorization: 'delegated_by_user', previous_decision_id: refinementPayload.previous_decision_id})});
+          auditMessage(`Decisão linguística registrada: ${response.decision?.status || 'confirmada'}.`, 'ok');
+        }));
+        return;
+      }
       if (action === 'compare') {
         const pending = pendingPreviewItems().find(candidate =>
           String(candidate.region_id || '') === region &&
