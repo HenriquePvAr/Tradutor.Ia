@@ -19,7 +19,7 @@ import numpy as np
 
 import residual_analysis_artifacts
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 COMPONENT_DECOMPOSITION_VERSION = "1"
 REVISION_STATUSES = (
     "confirmed",
@@ -567,6 +567,67 @@ class MaskRevisionStore:
             if column not in existing_columns:
                 self._conn.execute(
                     f"ALTER TABLE human_mask_revisions ADD COLUMN {column} {declaration}")
+        table_sql = str(self._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='human_mask_revisions'"
+        ).fetchone()[0] or "")
+        legacy_unique = (
+            "supersedes_mask_decision_id, final_mask_hash)" in table_sql
+            and "supersedes_mask_revision_id, final_mask_hash)" not in table_sql
+        )
+        if legacy_unique:
+            columns = [
+                str(row[1]) for row in
+                self._conn.execute(
+                    "PRAGMA table_info(human_mask_revisions)")
+            ]
+            column_sql = ", ".join(f'"{column}"' for column in columns)
+            self._conn.execute(
+                "ALTER TABLE human_mask_revisions "
+                "RENAME TO human_mask_revisions_legacy_identity")
+            self._conn.execute("""
+                CREATE TABLE human_mask_revisions (
+                    mask_revision_id TEXT PRIMARY KEY,
+                    supersedes_mask_decision_id TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    revision_id TEXT NOT NULL,
+                    page_id TEXT NOT NULL,
+                    region_id TEXT NOT NULL,
+                    source_hash TEXT NOT NULL,
+                    base_segmentation_hash TEXT NOT NULL,
+                    previous_mask_hash TEXT NOT NULL,
+                    final_mask_hash TEXT NOT NULL,
+                    include_delta_json TEXT NOT NULL,
+                    exclude_delta_json TEXT NOT NULL,
+                    protected_delta_json TEXT NOT NULL,
+                    uncertain_delta_json TEXT NOT NULL,
+                    final_mask_asset TEXT NOT NULL,
+                    residual_evidence_json TEXT NOT NULL,
+                    validation_json TEXT NOT NULL,
+                    authorization TEXT NOT NULL,
+                    reviewer TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    schema_version TEXT NOT NULL,
+                    supersedes_mask_revision_id TEXT NOT NULL DEFAULT '',
+                    residual_analysis_id TEXT NOT NULL DEFAULT '',
+                    residual_bitmap_hash TEXT NOT NULL DEFAULT '',
+                    component_manifest_hash TEXT NOT NULL DEFAULT '',
+                    component_decomposition_hashes_json TEXT NOT NULL DEFAULT '[]',
+                    UNIQUE(owner, job_id, run_id, revision_id, region_id,
+                           supersedes_mask_decision_id,
+                           supersedes_mask_revision_id, final_mask_hash)
+                )
+            """)
+            self._conn.execute(
+                f"INSERT INTO human_mask_revisions ({column_sql}) "
+                f"SELECT {column_sql} "
+                "FROM human_mask_revisions_legacy_identity")
+            self._conn.execute(
+                "DROP TABLE human_mask_revisions_legacy_identity")
         self._conn.commit()
 
     def close(self) -> None:
@@ -601,10 +662,20 @@ class MaskRevisionStore:
         if not str(previous_mask_hash or "").strip() or not str(final_mask_hash or "").strip():
             raise ValueError("mask_revision_hash_required")
         now = _utc_now()
-        existing = self.latest_for_region(
-            owner=owner, job_id=job_id, run_id=run_id, revision_id=revision_id,
-            region_id=region_id, supersedes_mask_decision_id=supersedes_mask_decision_id,
-            final_mask_hash=final_mask_hash)
+        params = (
+            str(owner), str(job_id), str(run_id), str(revision_id),
+            str(region_id), str(supersedes_mask_decision_id),
+            str(supersedes_mask_revision_id or ""), str(final_mask_hash),
+        )
+        row = self._conn.execute("""
+            SELECT * FROM human_mask_revisions
+            WHERE owner=? AND job_id=? AND run_id=? AND revision_id=?
+              AND region_id=? AND supersedes_mask_decision_id=?
+              AND supersedes_mask_revision_id=? AND final_mask_hash=?
+              AND status != 'discarded'
+            ORDER BY updated_at DESC LIMIT 1
+        """, params).fetchone()
+        existing = self._row_payload(dict(row)) if row else None
         record = {
             "mask_revision_id": (existing or {}).get("mask_revision_id") or uuid.uuid4().hex,
             "supersedes_mask_decision_id": str(supersedes_mask_decision_id),

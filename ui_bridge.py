@@ -57,6 +57,7 @@ import provider_execution
 import region_taxonomy
 import residual_mask_revisions
 import residual_analysis_artifacts
+import residual_component_reviews
 import visual_review_decisions
 
 
@@ -333,6 +334,9 @@ class UiBridge:
         self.mask_revisions = residual_mask_revisions.MaskRevisionStore(JOBS_DB_PATH)
         self.residual_analyses = residual_analysis_artifacts.ResidualAnalysisStore(
             JOBS_DB_PATH)
+        self.residual_component_reviews = (
+            residual_component_reviews.ResidualComponentReviewStore(
+                JOBS_DB_PATH))
         self.visual_reviews = visual_review_decisions.VisualReviewDecisionStore(JOBS_DB_PATH)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
@@ -1769,6 +1773,15 @@ class UiBridge:
             region_id=str(region_id),
             supersedes_mask_decision_id=str(
                 (latest or {}).get("human_mask_decision_id") or ""))
+        component_reviews = (
+            self.residual_component_reviews.list_latest_for_analysis(
+                owner=str(user_id),
+                residual_analysis_id=str(
+                    (residual_analysis or {}).get(
+                        "residual_analysis_id") or ""),
+            )
+            if residual_analysis else []
+        )
         return {
             "job_id": str(data["job"]["id"]),
             "run_id": str(data["job"].get("run_id") or ""),
@@ -1799,6 +1812,7 @@ class UiBridge:
             "decision": latest or {},
             "residual_analysis": residual_analysis or {},
             "mask_revision": latest_mask_revision or {},
+            "residual_component_reviews": component_reviews,
             "inpainting_status": "blocked_pending_human_mask",
         }
 
@@ -1993,6 +2007,7 @@ class UiBridge:
             "mask_revision_id": mask_revision_id,
             "box_ltrb": [x, y, x + w, y + h],
             "combined_inpainting_mask": final_mask,
+            "source_residual_mask": final_mask.copy(),
             "validation_halo": validation_halo,
             "protected_edge_mask": protected,
             "mask_hash": metrics["mask_hash"],
