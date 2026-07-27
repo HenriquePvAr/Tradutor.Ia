@@ -1769,6 +1769,15 @@
   .hm-layer-grid figure{margin:0; border:1px solid var(--line); border-radius:7px; padding:7px; background:var(--panel);}
   .hm-layer-grid figcaption{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--gold); margin-bottom:5px;}
   .hm-layer-grid img{width:100%; max-height:180px; object-fit:contain; background:#111; border-radius:5px;}
+  .boundary-editor{margin:12px 0; padding:10px; border:1px solid var(--gold); border-radius:8px; background:#101010;}
+  .boundary-editor h4{margin:0 0 8px; color:var(--gold); letter-spacing:.08em;}
+  .boundary-stage{position:relative; overflow:auto; min-height:180px; max-height:55vh; margin:9px 0; background:#050505; border:1px solid var(--line); outline-offset:3px;}
+  .boundary-stage img{display:block; width:100%; height:auto; image-rendering:pixelated;}
+  .boundary-stage .boundary-overlay{position:absolute; inset:0; mix-blend-mode:screen; filter:sepia(1) saturate(8) hue-rotate(320deg);}
+  .boundary-segments{display:flex; gap:6px; overflow:auto; padding:5px 0;}
+  .boundary-segment.is-current{border-color:var(--gold); color:var(--gold);}
+  .boundary-editor input[type="range"]{width:min(320px,65vw); vertical-align:middle;}
+  @media (max-width:640px){.boundary-stage{max-height:42vh}.boundary-editor .hm-refine-tools{display:grid;grid-template-columns:1fr 1fr}}
   @media (max-width:640px){ .preview-compare figure{flex:1 1 100%;} }
   .audit-context{font-size:10px; color:var(--muted); margin-top:4px;}
   .audit-context small{text-transform:uppercase; letter-spacing:.05em; margin-right:4px;}

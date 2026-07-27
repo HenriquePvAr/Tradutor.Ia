@@ -2782,6 +2782,75 @@
     }
   }
 
+  function bindBoundaryEditor(panel, data, region) {
+    if (!panel) return;
+    const boundary = data.boundary_review || {};
+    const storageKey = `tradutor-boundary-review:${boundary.conflict_artifact_id || region}`;
+    let state = {};
+    try { state = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch (_) { /* fail closed */ }
+    state.decisions ||= {};
+    state.history ||= [];
+    state.redo ||= [];
+    state.current ||= boundary.first_pending_segment_id || '';
+    const persist = () => {
+      state.opacity = Number(panel.querySelector('[data-boundary-opacity]')?.value || 50);
+      localStorage.setItem(storageKey, JSON.stringify(state));
+      const pending = (boundary.segments || []).filter(segment =>
+        !state.decisions[segment.segment_id] || state.decisions[segment.segment_id] === 'uncertain').length;
+      const status = panel.querySelector('[data-boundary-status]');
+      if (status) status.textContent = pending
+        ? `${pending} segmento(s) pendente(s). Rascunho restaurável após F5; confirmar continua bloqueado.`
+        : 'Todos os segmentos foram classificados. Salve o rascunho antes de confirmar.';
+    };
+    const select = id => {
+      state.current = id;
+      panel.querySelectorAll('[data-boundary-segment]').forEach(button =>
+        button.classList.toggle('is-current', button.dataset.boundarySegment === id));
+      persist();
+    };
+    panel.querySelectorAll('[data-boundary-segment]').forEach(button =>
+      button.addEventListener('click', () => select(button.dataset.boundarySegment)));
+    panel.querySelectorAll('[data-boundary-class]').forEach(button =>
+      button.addEventListener('click', () => {
+        if (!state.current) return;
+        state.history.push(JSON.stringify(state.decisions));
+        state.redo.length = 0;
+        state.decisions[state.current] = button.dataset.boundaryClass;
+        persist();
+      }));
+    panel.querySelectorAll('[data-boundary-tool]').forEach(button =>
+      button.addEventListener('click', () => {
+        const tool = button.dataset.boundaryTool;
+        if (tool === 'undo' && state.history.length) {
+          state.redo.push(JSON.stringify(state.decisions));
+          state.decisions = JSON.parse(state.history.pop());
+        } else if (tool === 'redo' && state.redo.length) {
+          state.history.push(JSON.stringify(state.decisions));
+          state.decisions = JSON.parse(state.redo.pop());
+        } else if (tool === 'restore') {
+          state.history.push(JSON.stringify(state.decisions));
+          state.decisions = {};
+          state.redo.length = 0;
+        }
+        persist();
+      }));
+    const opacity = panel.querySelector('[data-boundary-opacity]');
+    if (opacity) {
+      opacity.value = String(state.opacity ?? 50);
+      const apply = () => {
+        const value = Number(opacity.value);
+        const overlay = panel.querySelector('.boundary-overlay');
+        if (overlay) overlay.style.opacity = String(value / 100);
+        const output = panel.querySelector('[data-boundary-opacity-value]');
+        if (output) output.textContent = `${value}%`;
+        persist();
+      };
+      opacity.addEventListener('input', apply);
+      apply();
+    }
+    select(state.current);
+  }
+
   async function previewAction(action, region, sourceElement = null) {
     const id = pageRevisionIdentity();
     const field = $(`#auditList [data-human-candidate="${CSS.escape(region)}"]`);
@@ -2812,6 +2881,9 @@
             ? `<figure><figcaption>${escapeHtml(label)}</figcaption><img src="/api/ui/human-mask/asset?asset=${encodeURIComponent(assets[key])}" alt="${escapeAttr(label)} da região ${region}"></figure>`
             : `<figure><figcaption>${escapeHtml(label)}</figcaption><div class="visual-comparison-empty">camada indisponível</div></figure>`;
           const auto = data.automatic_segmentation || {};
+          const boundary = data.boundary_review || {};
+          const segments = (boundary.segments || []).map((segment, index) =>
+            `<button type="button" class="btn-ghost boundary-segment${index === 0 ? ' is-current' : ''}" data-boundary-segment="${escapeAttr(segment.segment_id || '')}">SEGMENTO ${index + 1} · ${Number(segment.pixel_count || 0)} px</button>`).join('');
           box.innerHTML = `<section class="hm-refine-panel" aria-live="polite">`
             + `<p>${escapeHtml(data.message || 'Refine a máscara com segurança antes de qualquer reconstrução local.')}</p>`
             + `<dl><dt>estado</dt><dd>${escapeHtml(auto.status || 'blocked_pending_human_mask')}</dd>`
@@ -2829,6 +2901,20 @@
             + `<button type="button" class="btn-ghost" data-mask-tool="restore_automatic">RESTAURAR AUTOMÁTICA</button>`
             + `<button type="button" class="btn-ghost" data-preview-action="mask-save" data-region="${escapeAttr(region)}">SALVAR RASCUNHO</button>`
             + `<button type="button" class="btn-primary" data-preview-action="mask-confirm" data-region="${escapeAttr(region)}">CONFIRMAR MÁSCARA</button></div>`
+            + `<section class="boundary-editor" data-boundary-editor="${escapeAttr(region)}"><h4>REVISAR TEXTO × ARTE</h4>`
+            + `<p><strong>${Number(boundary.conflict_pixel_count || 0)}</strong> pixels em conflito. Sugestões não são decisões.</p>`
+            + `<label>OPACIDADE <input type="range" min="0" max="100" value="50" data-boundary-opacity> <output data-boundary-opacity-value>50%</output></label>`
+            + `<div class="boundary-stage" tabindex="0" aria-label="Original com camadas de revisão">`
+            + (assets.auto_segmentation ? `<img class="boundary-base" src="/api/ui/human-mask/asset?asset=${encodeURIComponent(assets.auto_segmentation)}" alt="Imagem original">` : '')
+            + (assets.glyph_art_conflict ? `<img class="boundary-overlay" src="/api/ui/human-mask/asset?asset=${encodeURIComponent(assets.glyph_art_conflict)}" alt="Pixels em conflito">` : '')
+            + `</div><div class="boundary-segments" aria-label="Segmentos pendentes">${segments || '<span>Sem segmentos</span>'}</div>`
+            + `<div class="hm-refine-tools"><button type="button" class="btn-ghost" data-boundary-class="glyph_outline">MARCAR COMO TEXTO</button>`
+            + `<button type="button" class="btn-ghost" data-boundary-class="protected_art">MARCAR COMO ARTE</button>`
+            + `<button type="button" class="btn-ghost" data-boundary-class="uncertain">MANTER INCERTO</button>`
+            + `<button type="button" class="btn-ghost" data-boundary-tool="undo">DESFAZER</button>`
+            + `<button type="button" class="btn-ghost" data-boundary-tool="redo">REFAZER</button>`
+            + `<button type="button" class="btn-ghost" data-boundary-tool="restore">RESTAURAR</button></div>`
+            + `<p class="muted" data-boundary-status>A confirmação permanece bloqueada enquanto houver incerteza.</p></section>`
             + `<div class="hm-layer-grid">${assetImg('auto_segmentation', 'original/recorte')}`
             + assetImg('text_core_mask', 'texto core') + assetImg('outline_mask', 'contorno')
             + assetImg('antialias_mask', 'antialias') + assetImg('combined_text_mask', 'máscara combinada')
@@ -2837,6 +2923,7 @@
             + `<p class="muted">Sem confirmação humana, o inpainting permanece bloqueado: ${escapeHtml(data.inpainting_status || 'blocked_pending_human_mask')}.</p>`
             + `</section>`;
           bindPreviewActionButtons(box);
+          bindBoundaryEditor(box.querySelector('[data-boundary-editor]'), data, region);
         }
         return;
       }
