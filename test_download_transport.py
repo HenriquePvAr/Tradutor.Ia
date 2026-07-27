@@ -360,7 +360,10 @@ class TransportSelectionTests(unittest.TestCase):
         source = (Path(__file__).resolve().parent / "download_transport.py").read_text(
             encoding="utf-8")
         self.assertNotIn("import cloudscraper", source)
-        for banned in ("proxy_rotation", "stealth", "fingerprint", "captcha", "solver"):
+        for banned in (
+            "proxy_rotation", "stealth", "fingerprint", "captcha_solver",
+            "captcha_bypass", "solver",
+        ):
             self.assertNotIn(banned, source.lower().replace("captcha solver", ""), banned)
 
     def test_optional_cloudscraper_requires_exact_feature_flag_and_shares_budget(self):

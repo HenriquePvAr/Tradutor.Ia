@@ -13,6 +13,8 @@ persisted.
 from __future__ import annotations
 
 import importlib
+import hashlib
+import json
 import os
 import threading
 import time
@@ -63,6 +65,7 @@ class DownloadLimits:
     max_total_bytes: int = 1024 * 1024 * 1024         # 1 GiB per chapter
     max_files: int = 400
     max_duration_seconds: float = 900.0
+    preflight_transport_attempts: int = 2
 
     @property
     def timeout(self) -> tuple[float, float]:
@@ -82,6 +85,106 @@ class FetchResult:
     content_type: str
     final_url: str
     status: int
+
+
+@dataclass(frozen=True)
+class SourcePreflightResult:
+    schema_version: int
+    normalized_url_hash: str
+    adapter: str
+    status: str
+    reason_code: str
+    http_method: str
+    http_status: int | None
+    content_type: str
+    redirect_count: int
+    final_host: str
+    response_size_class: str
+    html_shell_detected: bool
+    javascript_required_possible: bool
+    browser_inspection_allowed: bool
+    browser_inspection_reason: str
+    authentication_required: bool
+    access_restricted: bool
+    captcha_detected: bool
+    security_blocked: bool
+    transport_error: str
+    elapsed_ms: int
+    policy_hash: str
+    navigation_url: str
+
+    def public(self) -> dict[str, Any]:
+        value = {
+            key: getattr(self, key)
+            for key in self.__dataclass_fields__
+            if key != "navigation_url"
+        }
+        return value
+
+
+def _preflight_policy_hash(adapter) -> str:
+    capabilities = getattr(adapter, "capabilities", None)
+    public = capabilities.public() if hasattr(capabilities, "public") else {}
+    encoded = json.dumps(
+        {"schema_version": 1, "capabilities": public, "max_redirects": 3},
+        sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _response_size_class(response) -> str:
+    try:
+        size = int(response.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size <= 0:
+        return "unknown"
+    if size <= 16 * 1024:
+        return "small"
+    if size <= 256 * 1024:
+        return "medium"
+    return "large"
+
+
+def _preflight_result(adapter, url: str, *, status: str, reason_code: str,
+                      started: float, http_status: int | None = None,
+                      content_type: str = "", redirect_count: int = 0,
+                      response_size_class: str = "unknown",
+                      html_shell_detected: bool = False,
+                      javascript_required_possible: bool = False,
+                      browser_inspection_allowed: bool = False,
+                      browser_inspection_reason: str = "",
+                      authentication_required: bool = False,
+                      access_restricted: bool = False,
+                      captcha_detected: bool = False,
+                      security_blocked: bool = False,
+                      transport_error: str = "") -> SourcePreflightResult:
+    normalized = str(url or "")
+    return SourcePreflightResult(
+        schema_version=1,
+        normalized_url_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        adapter=str(getattr(adapter, "name", "") or ""),
+        status=status,
+        reason_code=reason_code,
+        http_method="GET",
+        http_status=http_status,
+        content_type=content_type,
+        redirect_count=redirect_count,
+        final_host=host_of(normalized),
+        response_size_class=response_size_class,
+        html_shell_detected=html_shell_detected,
+        javascript_required_possible=javascript_required_possible,
+        browser_inspection_allowed=browser_inspection_allowed,
+        browser_inspection_reason=browser_inspection_reason,
+        authentication_required=authentication_required,
+        access_restricted=access_restricted,
+        captcha_detected=captcha_detected,
+        security_blocked=security_blocked,
+        transport_error=transport_error,
+        elapsed_ms=max(0, int((time.perf_counter() - started) * 1000)),
+        policy_hash=_preflight_policy_hash(adapter),
+        navigation_url=normalized,
+    )
 
 
 class DownloadTransport(Protocol):
@@ -404,21 +507,17 @@ def reserve_local_content(transports: Iterable[DownloadTransport] | None, size: 
             return
 
 
-def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | None = None,
-                                 session: Any = None, cancel_check=None) -> str:
-    """Resolve and revalidate each top-level HTTP redirect before Chrome navigates.
-
-    Selenium exposes a final URL only after it has followed redirects.  A bounded ordinary
-    HTTP preflight gives the adapter an opportunity to reject a private, credentialed or
-    unrelated hop *before* a browser is pointed at it.  It has no cookies, never follows a
-    redirect implicitly and persists no response data.  A preflight failure is fail-closed.
-    """
+def inspect_source_preflight(adapter, url: str, *, limits: DownloadLimits | None = None,
+                             session: Any = None, cancel_check=None) -> SourcePreflightResult:
+    """Return a sanitized, deterministic decision before browser navigation."""
     limits = limits or DownloadLimits()
     own_session = session is None
     session = session or requests.Session()
     if own_session and hasattr(session, "trust_env"):
         session.trust_env = False
     current = str(url or "")
+    started = time.perf_counter()
+    redirect_count = 0
     try:
         for _ in range(limits.max_redirects + 1):
             adapter.validate_navigation_url(current)
@@ -426,86 +525,199 @@ def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | 
             # series, account or home page before Selenium is ever pointed at it; generic
             # adapters deliberately have no path markers and remain unaffected.
             adapter.validate_path(current)
-            try:
-                request_args = {
-                    "headers": {"User-Agent": DEFAULT_USER_AGENT,
-                                "Accept": "text/html,application/xhtml+xml"},
-                    "timeout": limits.timeout,
-                    "stream": True,
-                    "allow_redirects": False,
-                }
-                if not cancel_check:
-                    response = session.get(current, **request_args)
-                else:
-                    result: dict[str, Any] = {}
+            request_args = {
+                "headers": {"User-Agent": DEFAULT_USER_AGENT,
+                            "Accept": "text/html,application/xhtml+xml"},
+                "timeout": limits.timeout,
+                "stream": True,
+                "allow_redirects": False,
+            }
+            response = None
+            last_transport_error = ""
+            for attempt in range(max(1, int(limits.preflight_transport_attempts))):
+                try:
+                    if not cancel_check:
+                        response = session.get(current, **request_args)
+                    else:
+                        result: dict[str, Any] = {}
 
-                    def fetch() -> None:
-                        try:
-                            result["response"] = session.get(current, **request_args)
-                        except BaseException as exc:  # noqa: BLE001 - re-raised below
-                            result["error"] = exc
-
-                    request_thread = threading.Thread(target=fetch, daemon=True)
-                    request_thread.start()
-                    while request_thread.is_alive():
-                        if cancel_check():
+                        def fetch() -> None:
                             try:
-                                session.close()
-                            except Exception:  # noqa: BLE001 - cancellation is fail-closed
-                                pass
-                            request_thread.join(timeout=1.0)
-                            raise SourceError("cancelled", "during_navigation_preflight")
-                        request_thread.join(timeout=0.1)
-                    if "error" in result:
-                        raise result["error"]
-                    response = result.get("response")
+                                result["response"] = session.get(current, **request_args)
+                            except BaseException as exc:  # noqa: BLE001 - re-raised below
+                                result["error"] = exc
+
+                        request_thread = threading.Thread(target=fetch, daemon=True)
+                        request_thread.start()
+                        while request_thread.is_alive():
+                            if cancel_check():
+                                try:
+                                    session.close()
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                request_thread.join(timeout=1.0)
+                                raise SourceError(
+                                    "cancelled", "during_navigation_preflight")
+                            request_thread.join(timeout=0.1)
+                        if "error" in result:
+                            raise result["error"]
+                        response = result.get("response")
                     if response is None:
-                        raise SourceError(SOURCE_NOT_READY, "navigation_preflight")
-            except SourceError:
-                raise
-            except requests.Timeout as exc:
-                raise SourceError(
-                    SOURCE_NAVIGATION_TIMEOUT, "navigation_preflight_timeout"
-                ) from exc
-            except requests.ConnectionError as exc:
-                raise SourceError(
-                    SOURCE_ANALYSIS_FAILED, "navigation_preflight_connection"
-                ) from exc
-            except Exception as exc:  # noqa: BLE001 - do not leak network internals to UI
-                raise SourceError(SOURCE_NOT_READY, "navigation_preflight") from exc
+                        raise requests.ConnectionError("empty preflight response")
+                    break
+                except SourceError:
+                    raise
+                except requests.Timeout:
+                    last_transport_error = "timeout"
+                except requests.ConnectionError:
+                    last_transport_error = "connection"
+                except Exception:  # noqa: BLE001 - never persist transport internals
+                    last_transport_error = "unexpected"
+                if attempt + 1 < max(1, int(limits.preflight_transport_attempts)):
+                    continue
+            if response is None:
+                if last_transport_error == "timeout":
+                    return _preflight_result(
+                        adapter, current, status="source_navigation_timeout",
+                        reason_code=SOURCE_NAVIGATION_TIMEOUT, started=started,
+                        redirect_count=redirect_count, transport_error="timeout")
+                reason = (
+                    "source_transport_failed"
+                    if last_transport_error == "connection"
+                    else SOURCE_ANALYSIS_FAILED
+                )
+                return _preflight_result(
+                    adapter, current, status=reason, reason_code=reason,
+                    started=started, redirect_count=redirect_count,
+                    transport_error=last_transport_error or "unexpected")
             try:
                 status = int(response.status_code)
+                content_type = str(
+                    response.headers.get("Content-Type") or ""
+                ).split(";", 1)[0].strip().casefold()
                 if status in (301, 302, 303, 307, 308):
                     location = response.headers.get("Location") or ""
                     if not location:
-                        raise SourceError(SOURCE_NOT_READY, "redirect_without_location")
+                        return _preflight_result(
+                            adapter, current, status="source_redirect_blocked",
+                            reason_code="source_redirect_blocked", started=started,
+                            http_status=status, redirect_count=redirect_count,
+                            security_blocked=True)
                     current = requests.compat.urljoin(current, location)
                     adapter.validate_navigation_url(current)
                     adapter.validate_path(current)
+                    redirect_count += 1
                     continue
+                body = RequestsTransport._peek(response)
+                captcha = looks_like_challenge(body)
+                if captcha:
+                    return _preflight_result(
+                        adapter, current, status="source_captcha_detected",
+                        reason_code=CHALLENGE_REQUIRED, started=started,
+                        http_status=status, content_type=content_type,
+                        redirect_count=redirect_count, captcha_detected=True,
+                        security_blocked=True)
+                capabilities = getattr(adapter, "capabilities", None)
+                browser_capable = bool(
+                    getattr(capabilities, "supports_browser_inspection", False))
                 if status in (401, 403):
-                    # A registered browser-based reader routinely refuses a cookieless HTTP
-                    # client while serving the same page fine to Chrome. Vetoing navigation
-                    # here would break the adapter whose entire strategy is a real browser,
-                    # for no security gain: the host was already validated and every hop is
-                    # revalidated above. Generic sources keep failing closed, because there
-                    # is no vetted reader behind them to fall back on.
-                    if getattr(adapter, "browser_owned_readiness", False):
-                        return current
-                    if looks_like_challenge(RequestsTransport._peek(response)):
-                        raise ChallengeRequired(f"http_{status}")
-                    raise SourceError(SOURCE_ACCESS_DENIED, str(status))
+                    if (getattr(adapter, "browser_owned_readiness", False)
+                            and browser_capable):
+                        return _preflight_result(
+                            adapter, current, status="browser_inspection_required",
+                            reason_code="browser_inspection_required", started=started,
+                            http_status=status, content_type=content_type,
+                            redirect_count=redirect_count,
+                            response_size_class=_response_size_class(response),
+                            javascript_required_possible=True,
+                            browser_inspection_allowed=True,
+                            browser_inspection_reason="browser_owned_readiness")
+                    return _preflight_result(
+                        adapter, current, status="source_access_restricted",
+                        reason_code=SOURCE_ACCESS_DENIED, started=started,
+                        http_status=status, content_type=content_type,
+                        redirect_count=redirect_count, access_restricted=True,
+                        security_blocked=True)
                 if status in (429, 503):
-                    raise SourceError(SOURCE_RATE_LIMITED, str(status))
+                    return _preflight_result(
+                        adapter, current, status="source_unavailable",
+                        reason_code=SOURCE_RATE_LIMITED, started=started,
+                        http_status=status, content_type=content_type,
+                        redirect_count=redirect_count)
                 if status >= 400:
-                    raise SourceError(SOURCE_NOT_READY, f"http_{status}")
-                return current
+                    return _preflight_result(
+                        adapter, current, status="source_unavailable",
+                        reason_code="source_unavailable", started=started,
+                        http_status=status, content_type=content_type,
+                        redirect_count=redirect_count)
+                if content_type and content_type not in {
+                    "text/html", "application/xhtml+xml"
+                }:
+                    return _preflight_result(
+                        adapter, current, status="source_content_type_unsupported",
+                        reason_code="source_content_type_unsupported", started=started,
+                        http_status=status, content_type=content_type,
+                        redirect_count=redirect_count, security_blocked=True)
+                html_shell = bool(
+                    body and len(body.strip()) < 4096
+                    and any(marker in body.casefold() for marker in (
+                        "<script", "id=\"root\"", "id=\"app\"", "__next_data__"
+                    ))
+                )
+                requires_dom = bool(
+                    getattr(capabilities, "requires_rendered_dom", False))
+                if browser_capable and (requires_dom or html_shell):
+                    return _preflight_result(
+                        adapter, current, status="browser_inspection_required",
+                        reason_code="browser_inspection_required", started=started,
+                        http_status=status, content_type=content_type,
+                        redirect_count=redirect_count,
+                        response_size_class=_response_size_class(response),
+                        html_shell_detected=html_shell,
+                        javascript_required_possible=requires_dom or html_shell,
+                        browser_inspection_allowed=True,
+                        browser_inspection_reason=(
+                            "requires_rendered_dom" if requires_dom else "html_shell"))
+                return _preflight_result(
+                    adapter, current, status="preflight_ready",
+                    reason_code="preflight_ready", started=started,
+                    http_status=status, content_type=content_type,
+                    redirect_count=redirect_count,
+                    response_size_class=_response_size_class(response),
+                    browser_inspection_allowed=browser_capable,
+                    browser_inspection_reason=(
+                        "adapter_browser_capable" if browser_capable else "not_required"))
             finally:
                 response.close()
-        raise SourceError(SOURCE_NOT_READY, "max_navigation_redirects")
+        return _preflight_result(
+            adapter, current, status="source_redirect_blocked",
+            reason_code="source_redirect_blocked", started=started,
+            redirect_count=redirect_count, security_blocked=True)
     finally:
         if own_session:
             try:
                 session.close()
             except Exception:  # noqa: BLE001
                 pass
+
+
+def require_browser_navigation(result: SourcePreflightResult) -> str:
+    """Return the validated navigation URL or raise the result's sanitized failure."""
+    if result.status in {"preflight_ready", "browser_inspection_required"}:
+        return result.navigation_url
+    detail = {
+        "source_navigation_timeout": "navigation_preflight_timeout",
+        "source_transport_failed": "navigation_preflight_connection",
+        "source_redirect_blocked": "navigation_preflight_redirect",
+        "source_content_type_unsupported": "navigation_preflight_content_type",
+        "source_unavailable": "navigation_preflight_http",
+    }.get(result.status, "navigation_preflight")
+    raise SourceError(result.reason_code or SOURCE_NOT_READY, detail)
+
+
+def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | None = None,
+                                 session: Any = None, cancel_check=None) -> str:
+    """Compatibility boundary returning a safe browser URL or a coded failure."""
+    result = inspect_source_preflight(
+        adapter, url, limits=limits, session=session, cancel_check=cancel_check)
+    return require_browser_navigation(result)

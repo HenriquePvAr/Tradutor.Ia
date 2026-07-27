@@ -26,7 +26,9 @@ import chapter_source
 from chapter_source import (
     SOURCE_ACCESS_DENIED, SourceError, UniversalChapterAdapter, select_adapter,
 )
-from download_transport import preflight_browser_navigation
+from download_transport import (
+    DownloadLimits, inspect_source_preflight, preflight_browser_navigation,
+)
 
 OFFICIAL = ("https://www.webtoons.com/en/drama/daytime-in-the-bunker/episode-1/viewer"
             "?title_no=9842&episode_no=1")
@@ -172,9 +174,76 @@ class PreflightRegressionTests(unittest.TestCase):
         with self.assertRaises(SourceError) as raised:
             preflight_browser_navigation(adapter, OFFICIAL, session=session)
 
-        self.assertEqual(raised.exception.code, "source_analysis_failed")
+        self.assertEqual(raised.exception.code, "source_transport_failed")
         self.assertEqual(raised.exception.detail, "navigation_preflight_connection")
         self.assertNotIn("private endpoint detail", str(raised.exception))
+
+    def test_transient_transport_failure_retries_then_allows_browser_inspection(self):
+        adapter = select_adapter(OFFICIAL)
+        session = mock.Mock()
+        session.get.side_effect = [
+            requests.ConnectionError("transient"),
+            _Response(status=200, headers={"Content-Type": "text/html"}),
+        ]
+
+        result = inspect_source_preflight(
+            adapter, OFFICIAL, session=session,
+            limits=DownloadLimits(preflight_transport_attempts=2))
+
+        self.assertEqual(session.get.call_count, 2)
+        self.assertEqual(result.status, "browser_inspection_required")
+        self.assertTrue(result.browser_inspection_allowed)
+        self.assertEqual(result.browser_inspection_reason, "requires_rendered_dom")
+        self.assertEqual(result.transport_error, "")
+
+    def test_persistent_transport_failure_stays_fail_closed(self):
+        adapter = select_adapter(OFFICIAL)
+        session = mock.Mock()
+        session.get.side_effect = requests.ConnectionError("private endpoint detail")
+
+        result = inspect_source_preflight(
+            adapter, OFFICIAL, session=session,
+            limits=DownloadLimits(preflight_transport_attempts=2))
+
+        self.assertEqual(session.get.call_count, 2)
+        self.assertEqual(result.status, "source_transport_failed")
+        self.assertFalse(result.browser_inspection_allowed)
+        self.assertEqual(result.transport_error, "connection")
+        self.assertNotIn("private endpoint detail", str(result.public()))
+
+    def test_preflight_result_is_sanitized_and_deterministic(self):
+        adapter = select_adapter(OFFICIAL)
+        response = _Response(
+            status=200,
+            headers={"Content-Type": "text/html", "Content-Length": "128"},
+            body=b"<html><script src='/app.js'></script><div id='root'></div></html>",
+        )
+
+        first = inspect_source_preflight(
+            adapter, OFFICIAL, session=_Session([response]))
+        second = inspect_source_preflight(
+            adapter, OFFICIAL, session=_Session([_Response(
+                status=200,
+                headers={"Content-Type": "text/html", "Content-Length": "128"},
+                body=b"<html><script src='/app.js'></script></html>",
+            )]))
+
+        self.assertEqual(first.status, "browser_inspection_required")
+        self.assertTrue(first.html_shell_detected)
+        self.assertEqual(first.normalized_url_hash, second.normalized_url_hash)
+        self.assertEqual(first.policy_hash, second.policy_hash)
+        self.assertNotIn(OFFICIAL, str(first.public()))
+
+    def test_adapter_capabilities_are_explicit_and_hashed(self):
+        capabilities = select_adapter(OFFICIAL).capabilities
+
+        self.assertEqual(capabilities.schema_version, 1)
+        self.assertEqual(capabilities.adapter_name, "webtoons")
+        self.assertTrue(capabilities.supports_http_preflight)
+        self.assertTrue(capabilities.supports_browser_inspection)
+        self.assertTrue(capabilities.requires_rendered_dom)
+        self.assertTrue(capabilities.supports_retry)
+        self.assertEqual(len(capabilities.policy_hash), 64)
 
 
 class ReaderSelectorOwnershipTests(unittest.TestCase):

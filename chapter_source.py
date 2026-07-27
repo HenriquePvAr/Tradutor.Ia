@@ -10,6 +10,8 @@ never bypasses a challenge or authentication wall.
 from __future__ import annotations
 
 import ipaddress
+import hashlib
+import json
 import re
 import socket
 from contextvars import ContextVar
@@ -32,6 +34,10 @@ BROWSER_PROFILE_LOCKED = "browser_profile_locked"
 BROWSER_PROCESS_EXITED = "browser_process_exited"
 SOURCE_NAVIGATION_TIMEOUT = "source_navigation_timeout"
 SOURCE_ANALYSIS_FAILED = "source_analysis_failed"
+SOURCE_TRANSPORT_FAILED = "source_transport_failed"
+SOURCE_REDIRECT_BLOCKED = "source_redirect_blocked"
+SOURCE_CONTENT_TYPE_UNSUPPORTED = "source_content_type_unsupported"
+SOURCE_UNAVAILABLE = "source_unavailable"
 CHALLENGE_REQUIRED = "challenge_required"
 SOURCE_ACCESS_DENIED = "source_access_denied"
 SOURCE_RATE_LIMITED = "source_rate_limited"
@@ -75,6 +81,32 @@ class SourceError(ValueError):
         super().__init__(f"{code}: {detail}" if detail else code)
         self.code = code
         self.detail = detail
+
+
+@dataclass(frozen=True)
+class SourceAdapterCapabilities:
+    schema_version: int
+    adapter_name: str
+    supports_http_preflight: bool
+    supports_browser_inspection: bool
+    requires_rendered_dom: bool
+    can_estimate_assets_without_download: bool
+    supports_public_metadata: bool
+    supports_retry: bool
+    supports_full_download: bool
+    requires_authentication: bool
+    policy_hash: str
+
+    def public(self) -> dict[str, Any]:
+        return {
+            key: getattr(self, key)
+            for key in self.__dataclass_fields__
+        }
+
+
+def _capability_policy_hash(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class UnsupportedSource(SourceError):
@@ -310,6 +342,25 @@ class BaseAdapter:
     # cross-origin network noise into the candidate set and produced warnings about
     # collectors the adapter never needed.
     collection_strategy: str = "generic_multisource"
+
+    @property
+    def capabilities(self) -> SourceAdapterCapabilities:
+        values = {
+            "schema_version": 1,
+            "adapter_name": self.name,
+            "supports_http_preflight": True,
+            "supports_browser_inspection": True,
+            "requires_rendered_dom": bool(self.browser_owned_readiness),
+            "can_estimate_assets_without_download": True,
+            "supports_public_metadata": True,
+            "supports_retry": True,
+            "supports_full_download": bool(self.runner),
+            "requires_authentication": False,
+        }
+        return SourceAdapterCapabilities(
+            **values,
+            policy_hash=_capability_policy_hash(values),
+        )
 
     @staticmethod
     def _matches_host(host: str, hosts: tuple[str, ...]) -> bool:
