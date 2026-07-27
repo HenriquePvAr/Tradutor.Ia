@@ -52,6 +52,21 @@ def build_prompt(request: dict[str, Any]) -> str:
         "source_text", "current_translation", "context_before",
         "context_after", "region_type", "speaker", "tone", "emotion",
         "register", "visual_character_limit", "glossary")}
+    schema = {
+        "natural_ptbr": "string",
+        "compact_ptbr": "string",
+        "neutral_ptbr": "string",
+        "literalness_detected": False,
+        "meaning_preserved": True,
+        "emotion_preserved": True,
+        "information_added": False,
+        "information_removed": False,
+        "glossary_respected": True,
+        "fits_visual_limit": True,
+        "confidence": 0.0,
+        "warnings": [],
+        "brief_reason": "string curta",
+    }
     return (
         "Você é um revisor profissional de tradução de quadrinhos para "
         "português brasileiro. Use o texto original como fonte de verdade. "
@@ -59,8 +74,10 @@ def build_prompt(request: dict[str, Any]) -> str:
         "preservando significado, intenção, emoção, intensidade, nomes próprios "
         "e glossário. Não acrescente nem remova informação. Produza opções "
         "natural, compacta e neutra; a compacta não pode omitir informação. "
-        "Retorne somente JSON válido no schema solicitado, sem explicações "
-        "externas. brief_reason deve ser curto.\nENTRADA:\n" + _canonical(data))
+        "Retorne somente JSON válido exatamente no schema abaixo, sem chaves "
+        "adicionais e sem explicações externas. brief_reason deve ser curto."
+        "\nSCHEMA:\n" + _canonical(schema)
+        + "\nENTRADA:\n" + _canonical(data))
 
 
 def validate_result(raw: Any, *, request: dict[str, Any]) -> dict[str, Any]:

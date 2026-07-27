@@ -33,6 +33,8 @@ class NaturalRefinementTests(unittest.TestCase):
         prompt = npr.build_prompt(request())
         self.assertIn("português brasileiro", prompt)
         self.assertIn("context_before", prompt)
+        for key in npr.RESULT_KEYS:
+            self.assertIn(f'"{key}"', prompt)
 
     def test_valid_and_invalid_json(self):
         self.assertEqual(npr.validate_result(
