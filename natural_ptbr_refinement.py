@@ -242,7 +242,7 @@ class RefinementService:
                     "reason_codes": [reason],
                     "error_type": type(exc).__name__,
                 }
-            stored = {**validated, "request_hash": key, "cache_hit": False,
+            stored = {"request": request, **validated, "request_hash": key, "cache_hit": False,
                       "applied_automatically": False}
             self.cache[key] = stored
             if self.store:

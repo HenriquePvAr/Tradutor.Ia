@@ -2895,10 +2895,19 @@
               + `<p>Neutra: ${escapeHtml(result.neutral_ptbr || '—')}</p><p>Warnings: ${escapeHtml((result.warnings || refinement.reason_codes || []).join(', ') || 'nenhum')}</p>`
             : 'Nenhuma sugestão solicitada.';
         };
+        const showSelection = selection => {
+          if (!selection || !resultBox) return;
+          const label = selection.selected_action === 'keep_current' ? 'MANTER ATUAL' : 'USAR NATURAL';
+          resultBox.insertAdjacentHTML('beforeend',
+            `<p><strong>Decisão humana confirmada:</strong> ${escapeHtml(label)}</p>`
+            + `<p>Tradução linguística efetiva: ${escapeHtml(selection.effective_translation_after || '—')}</p>`
+            + '<p class="muted">Aplicação visual ainda não realizada.</p>');
+        };
         try {
           const restored = await api('/api/ui/human-translation/refinement', {method: 'POST',
             body: JSON.stringify({...refinementPayload, operation: 'restore'})});
           if (restored.restored) showResult(restored.refinement);
+          showSelection(restored.selection);
         } catch (_) { /* no persisted suggestion is expected on first use */ }
         box?.querySelectorAll('[data-refinement-action]').forEach(button => button.addEventListener('click', async () => {
           const operation = button.dataset.refinementAction;
@@ -2924,6 +2933,7 @@
           const response = await api('/api/ui/human-translation/refinement/decision', {method: 'POST',
             body: JSON.stringify({result: refinement, option: operation, manual_text: manualText,
               authorization: 'delegated_by_user', previous_decision_id: refinementPayload.previous_decision_id})});
+          showSelection(response.decision);
           auditMessage(`Decisão linguística registrada: ${response.decision?.status || 'confirmada'}.`, 'ok');
         }));
         return;

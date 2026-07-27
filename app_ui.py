@@ -33,6 +33,7 @@ import audit_decisions
 import linguistic_triage
 import region_taxonomy
 import natural_ptbr_refinement
+import refinement_selection_decisions
 from translator_nvidia import TranslatorNvidiaBatch
 from chapter_quality_revision import REVIEW_SCHEMA_VERSION
 from local_environment import load_local_environment_for_entrypoint
@@ -826,7 +827,19 @@ def api_human_translation_refinement(
     if str(payload.get("operation") or "") == "restore":
         existing = store.get_result(
             refinement_request["request_hash"], owner=principal.user_id)
-        return {"ok": True, "refinement": existing, "restored": bool(existing)}
+        selection_store = refinement_selection_decisions.RefinementSelectionStore(
+            ROOT / ".cache" / "runtime" / "jobs.sqlite3")
+        try:
+            selection = selection_store.latest_for_region(
+                str(refinement_request.get("job_id") or ""),
+                str(refinement_request.get("run_id") or ""),
+                str(refinement_request.get("revision_id") or ""),
+                str(refinement_request.get("region_id") or ""),
+                owner=principal.user_id)
+        finally:
+            selection_store.close()
+        return {"ok": True, "refinement": existing, "selection": selection,
+                "restored": bool(existing)}
     if payload.get("authorized") is not True:
         raise HTTPException(
             status_code=403, detail="refinement_explicit_authorization_required")
@@ -842,16 +855,47 @@ def api_human_translation_refinement_decision(
     request: Request, payload: dict[str, Any] = Body(default={})
 ) -> dict[str, Any]:
     principal = _ui_principal(request, mutate=True)
-    decision = natural_ptbr_refinement.select_option(
-        dict(payload.get("result") or {}), owner=principal.user_id,
-        option=str(payload.get("option") or ""),
-        reviewer=principal.user_id,
-        authorization=str(payload.get("authorization") or ""),
-        previous_decision_id=str(payload.get("previous_decision_id") or ""),
-        manual_text=str(payload.get("manual_text") or ""))
-    store = natural_ptbr_refinement.RefinementStore(
-        ROOT / ".cache" / "runtime" / "natural_ptbr_refinement")
-    return {"ok": True, "decision": store.append_decision(decision)}
+    result = dict(payload.get("result") or {})
+    request_fields = dict(result.get("request") or {})
+    option = str(payload.get("option") or "")
+    if option not in {"natural", "keep_current"}:
+        raise HTTPException(status_code=422, detail="refinement_selection_invalid")
+    action = "keep_current" if option == "keep_current" else "select_option"
+    intent = {
+        **{key: request_fields.get(key) for key in (
+            "job_id", "run_id", "revision_id", "page_id", "region_id")},
+        "owner": principal.user_id,
+        "source_hash": __import__("hashlib").sha256(
+            str(request_fields.get("source_text") or "").encode("utf-8")).hexdigest(),
+        "current_translation_before": str(
+            request_fields.get("current_translation") or ""),
+        "previous_decision_id": str(payload.get("previous_decision_id") or ""),
+        "selected_action": action,
+        "selected_option": "current" if action == "keep_current" else "natural",
+        "result": result,
+        "reviewer": principal.user_id,
+        "authorization": str(payload.get("authorization") or ""),
+        "authorization_scope": "interactive_ui",
+        "reason": str(payload.get("reason") or ""),
+    }
+    if intent["authorization"] != "delegated_by_user":
+        raise HTTPException(
+            status_code=403, detail="refinement_selection_authorization_required")
+    plan_hash = refinement_selection_decisions._hash({
+        "operation": "confirm_refinement_selection",
+        "owner": principal.user_id,
+        "request_hash": request_fields.get("request_hash"),
+        "selected_action": action,
+    })
+    selection_store = refinement_selection_decisions.RefinementSelectionStore(
+        ROOT / ".cache" / "runtime" / "jobs.sqlite3")
+    try:
+        decision = selection_store.confirm_batch([intent], plan_hash=plan_hash)[0]
+    except ValueError as exc:
+        raise _audit_error(exc) from exc
+    finally:
+        selection_store.close()
+    return {"ok": True, "decision": decision}
 
 
 @app.post("/api/ui/human-translation/font-candidates")
