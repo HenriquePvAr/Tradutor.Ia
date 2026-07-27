@@ -552,6 +552,10 @@
   const reasonMessages = {
     source_not_ready: 'Não foi possível analisar a fonte.',
     source_analysis_failed: 'A análise da fonte falhou antes de reconhecer sua estrutura.',
+    source_transport_failed: 'Não foi possível conectar à fonte após tentativas controladas.',
+    source_unavailable: 'A página da fonte não está disponível.',
+    source_redirect_blocked: 'A fonte tentou redirecionar para um endereço não permitido.',
+    source_content_type_unsupported: 'A fonte não respondeu com uma página web compatível.',
     browser_runtime_unavailable: 'Nenhum navegador compatível foi encontrado no computador.',
     browser_executable_not_found: 'O navegador configurado não foi encontrado.',
     browser_driver_unavailable: 'O navegador foi encontrado, mas seu driver não está disponível.',
