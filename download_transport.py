@@ -24,7 +24,7 @@ import requests
 
 from chapter_source import (
     ALLOWED_IMAGE_MIME, INCOMPLETE_DOWNLOAD, INVALID_IMAGE_RESPONSE, SOURCE_ACCESS_DENIED,
-    SOURCE_NOT_READY, SOURCE_RATE_LIMITED,
+    SOURCE_ANALYSIS_FAILED, SOURCE_NAVIGATION_TIMEOUT, SOURCE_NOT_READY, SOURCE_RATE_LIMITED,
     SourceError, host_of, raw_host_of, looks_like_challenge,
 )
 from chapter_source import ChallengeRequired
@@ -463,6 +463,14 @@ def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | 
                         raise SourceError(SOURCE_NOT_READY, "navigation_preflight")
             except SourceError:
                 raise
+            except requests.Timeout as exc:
+                raise SourceError(
+                    SOURCE_NAVIGATION_TIMEOUT, "navigation_preflight_timeout"
+                ) from exc
+            except requests.ConnectionError as exc:
+                raise SourceError(
+                    SOURCE_ANALYSIS_FAILED, "navigation_preflight_connection"
+                ) from exc
             except Exception as exc:  # noqa: BLE001 - do not leak network internals to UI
                 raise SourceError(SOURCE_NOT_READY, "navigation_preflight") from exc
             try:

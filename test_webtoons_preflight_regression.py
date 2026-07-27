@@ -20,6 +20,8 @@ import _test_bootstrap  # noqa: F401
 import unittest
 from unittest import mock
 
+import requests
+
 import chapter_source
 from chapter_source import (
     SOURCE_ACCESS_DENIED, SourceError, UniversalChapterAdapter, select_adapter,
@@ -149,6 +151,30 @@ class PreflightRegressionTests(unittest.TestCase):
             with self.assertRaises(SourceError) as ctx:
                 preflight_browser_navigation(adapter, OFFICIAL, session=session)
         self.assertEqual(ctx.exception.code, "source_rate_limited")
+
+    def test_timeout_has_an_actionable_navigation_code(self):
+        adapter = select_adapter(OFFICIAL)
+        session = mock.Mock()
+        session.get.side_effect = requests.Timeout("private transport detail")
+
+        with self.assertRaises(SourceError) as raised:
+            preflight_browser_navigation(adapter, OFFICIAL, session=session)
+
+        self.assertEqual(raised.exception.code, "source_navigation_timeout")
+        self.assertEqual(raised.exception.detail, "navigation_preflight_timeout")
+        self.assertNotIn("private transport detail", str(raised.exception))
+
+    def test_connection_failure_is_sanitized_and_not_called_a_browser_failure(self):
+        adapter = select_adapter(OFFICIAL)
+        session = mock.Mock()
+        session.get.side_effect = requests.ConnectionError("private endpoint detail")
+
+        with self.assertRaises(SourceError) as raised:
+            preflight_browser_navigation(adapter, OFFICIAL, session=session)
+
+        self.assertEqual(raised.exception.code, "source_analysis_failed")
+        self.assertEqual(raised.exception.detail, "navigation_preflight_connection")
+        self.assertNotIn("private endpoint detail", str(raised.exception))
 
 
 class ReaderSelectorOwnershipTests(unittest.TestCase):
