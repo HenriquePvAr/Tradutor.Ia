@@ -17,6 +17,11 @@ RESULT_KEYS = {
     "information_added", "information_removed", "glossary_respected",
     "fits_visual_limit", "confidence", "warnings", "brief_reason",
 }
+BOOLEAN_RESULT_KEYS = {
+    "literalness_detected", "meaning_preserved", "emotion_preserved",
+    "information_added", "information_removed", "glossary_respected",
+    "fits_visual_limit",
+}
 
 
 def _canonical(value: Any) -> str:
@@ -75,7 +80,9 @@ def build_prompt(request: dict[str, Any]) -> str:
         "e glossário. Não acrescente nem remova informação. Produza opções "
         "natural, compacta e neutra; a compacta não pode omitir informação. "
         "Retorne somente JSON válido exatamente no schema abaixo, sem chaves "
-        "adicionais e sem explicações externas. brief_reason deve ser curto."
+        "adicionais e sem explicações externas. Use booleanos JSON reais "
+        "(true/false), confidence como número entre 0 e 1 e warnings como array. "
+        "Não coloque esses tipos entre aspas. brief_reason deve ser curto."
         "\nSCHEMA:\n" + _canonical(schema)
         + "\nENTRADA:\n" + _canonical(data))
 
@@ -88,27 +95,34 @@ def validate_result(raw: Any, *, request: dict[str, Any]) -> dict[str, Any]:
                 "reason_codes": ["provider_response_invalid"]}
     missing = sorted(RESULT_KEYS - set(value))
     reasons = ["provider_response_schema_incomplete"] if missing else []
+    if any(not isinstance(value.get(key), bool) for key in BOOLEAN_RESULT_KEYS):
+        reasons.append("provider_response_schema_invalid")
+    if not isinstance(value.get("warnings"), list):
+        reasons.append("provider_response_schema_invalid")
     for key in ("natural_ptbr", "compact_ptbr", "neutral_ptbr"):
-        if not str(value.get(key) or "").strip():
+        if not isinstance(value.get(key), str) or not value.get(key).strip():
             reasons.append("refinement_option_empty")
     confidence = value.get("confidence")
     if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         reasons.append("refinement_confidence_invalid")
-    if value.get("information_added"):
+    if value.get("information_added") is True:
         reasons.append("information_added")
-    if value.get("information_removed"):
+    if value.get("information_removed") is True:
         reasons.append("information_removed")
-    if not value.get("meaning_preserved"):
+    if value.get("meaning_preserved") is False:
         reasons.append("semantic_drift_detected")
-    if not value.get("emotion_preserved"):
+    if value.get("emotion_preserved") is False:
         reasons.append("emotion_not_preserved")
-    if not value.get("glossary_respected"):
+    if value.get("glossary_respected") is False:
         reasons.append("glossary_violation")
     limit = int(request.get("visual_character_limit") or 0)
     if limit and len(str(value.get("compact_ptbr") or "")) > limit:
         reasons.append("visual_limit_exceeded")
     status = "valid_suggestion" if not reasons else "needs_human_review"
-    if "provider_response_schema_incomplete" in reasons:
+    if {
+        "provider_response_schema_incomplete",
+        "provider_response_schema_invalid",
+    } & set(reasons):
         status = "provider_response_invalid"
     return {"status": status, "reason_codes": sorted(set(reasons)),
             "result": value, "result_hash": _hash(value)}

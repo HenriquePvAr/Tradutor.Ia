@@ -43,6 +43,17 @@ class NaturalRefinementTests(unittest.TestCase):
         self.assertEqual(npr.validate_result(
             "{", request=request())["status"], "provider_response_invalid")
 
+    def test_json_scalar_types_are_strict_and_never_coerced(self):
+        value = valid()
+        value.update(
+            confidence="0.95", meaning_preserved="True",
+            information_added="False", warnings="[]")
+        result = npr.validate_result(value, request=request())
+        self.assertEqual(result["status"], "provider_response_invalid")
+        self.assertIn(
+            "provider_response_schema_invalid", result["reason_codes"])
+        self.assertNotIn("information_added", result["reason_codes"])
+
     def test_semantic_and_information_failures_block(self):
         value = valid()
         value.update(meaning_preserved=False, information_added=True)
