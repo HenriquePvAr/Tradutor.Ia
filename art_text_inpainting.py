@@ -12,6 +12,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+import multiscale_patch_synthesis as mps
 
 INPAINTING_VERSION = "1.3"
 CONTAMINATION_SCHEMA_VERSION = "1"
@@ -774,6 +775,42 @@ def generate_inpainting_candidates(region_bgr: np.ndarray, masks: dict[str, Any]
                     "target_pixels_used_as_donors":
                         sampling["target_pixels_used_as_donors"],
                     "image": clean["image"],
+                    **metrics,
+                })
+        profile = mps.analyze_texture_profile(
+            region_bgr, donor_pool["donor_eligibility_mask"])
+        schedule = mps.derive_patch_schedule(
+            profile, mask)
+        if schedule.get("status") == "valid":
+            multiscale = mps.synthesize_multiscale(
+                region_bgr,
+                target_mask=mask,
+                donor_eligibility_mask=
+                    donor_pool["donor_eligibility_mask"],
+                patch_schedule=schedule,
+            )
+            if multiscale.get("status") == "valid":
+                clean_masks = {
+                    **masks,
+                    "texture_reference_mask":
+                        donor_pool["donor_eligibility_mask"],
+                }
+                metrics = score_inpaint_candidate(
+                    region_bgr, multiscale["image"], clean_masks)
+                sampling = multiscale["sampling_manifest"]
+                candidates.append({
+                    "method": "deterministic_multiscale_patch",
+                    "radius": None,
+                    "mask_hash": masks["mask_hash"],
+                    "texture_profile_id": profile["texture_profile_id"],
+                    "patch_schedule_id": schedule["patch_schedule_id"],
+                    "pyramid_id": sampling["pyramid_id"],
+                    "donor_pool_hash": donor_pool["donor_pool_hash"],
+                    "sampling_manifest": sampling,
+                    "source_contaminated_samples_used": 0,
+                    "source_text_similar_samples_used": 0,
+                    "target_pixels_used_as_donors": 0,
+                    "image": multiscale["image"],
                     **metrics,
                 })
     candidates.sort(key=lambda item: float(item.get("overall_score") or 0.0), reverse=True)
