@@ -3197,6 +3197,7 @@ class ChapterQualityRevision:
                     mask_refinements[index] = {
                         **mask_refinements[index],
                         "human_mask_decision_id": str(override.get("human_mask_decision_id") or ""),
+                        "mask_revision_id": str(override.get("mask_revision_id") or ""),
                         "mask_hash": str(override.get("mask_hash") or ""),
                         "human_mask_validation": override.get("validation") or {},
                         "state": "confirmed_human_mask",

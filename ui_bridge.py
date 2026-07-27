@@ -55,6 +55,7 @@ import art_text_inpainting
 import preview_gates
 import provider_execution
 import region_taxonomy
+import residual_mask_revisions
 import visual_review_decisions
 
 
@@ -328,6 +329,7 @@ class UiBridge:
         self.human_translations = human_translation_decisions.HumanTranslationDecisionStore(JOBS_DB_PATH)
         self.human_typography = human_typography_decisions.HumanTypographyDecisionStore(JOBS_DB_PATH)
         self.human_masks = human_mask_decisions.HumanMaskDecisionStore(JOBS_DB_PATH)
+        self.mask_revisions = residual_mask_revisions.MaskRevisionStore(JOBS_DB_PATH)
         self.visual_reviews = visual_review_decisions.VisualReviewDecisionStore(JOBS_DB_PATH)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
@@ -1911,14 +1913,33 @@ class UiBridge:
         combined = layers.get("combined_inpainting_mask")
         if combined is None:
             raise ValueError("mask_combined_layer_unavailable")
-        include_rects = decision.get("include_mask") or []
-        include_area = self._rect_mask_for_region(combined.shape, include_rects, state["region_box"])
-        final_mask = cv2.bitwise_and(combined, include_area) if include_rects else combined.copy()
-        for key in ("exclude_mask", "protected_mask", "uncertain_mask"):
-            rect_mask = self._rect_mask_for_region(
-                final_mask.shape, decision.get(key) or [], state["region_box"])
-            if rect_mask.any():
-                final_mask[rect_mask > 0] = 0
+        revision = self.mask_revisions.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            supersedes_mask_decision_id=str(decision.get("human_mask_decision_id") or ""))
+        if revision and str(revision.get("status") or "") == "confirmed":
+            root = (REPO_ROOT / ".cache" / "runtime").resolve()
+            asset = (root / str(revision.get("final_mask_asset") or "")).resolve()
+            if root not in asset.parents or not asset.is_file():
+                raise ValueError("mask_revision_asset_unavailable")
+            final_mask = cv2.imread(str(asset), cv2.IMREAD_GRAYSCALE)
+            if final_mask is None or final_mask.shape[:2] != combined.shape[:2]:
+                raise ValueError("mask_revision_shape_mismatch")
+            final_mask = (np.asarray(final_mask) > 0).astype(np.uint8) * 255
+            mask_revision_id = str(revision.get("mask_revision_id") or "")
+            validation = dict(revision.get("validation") or {})
+        else:
+            include_rects = decision.get("include_mask") or []
+            include_area = self._rect_mask_for_region(combined.shape, include_rects, state["region_box"])
+            final_mask = cv2.bitwise_and(combined, include_area) if include_rects else combined.copy()
+            for key in ("exclude_mask", "protected_mask", "uncertain_mask"):
+                rect_mask = self._rect_mask_for_region(
+                    final_mask.shape, decision.get(key) or [], state["region_box"])
+                if rect_mask.any():
+                    final_mask[rect_mask > 0] = 0
+            mask_revision_id = ""
+            validation = {}
         final_mask = (final_mask > 0).astype(np.uint8) * 255
         validation_halo = cv2.dilate(final_mask, np.ones((5, 5), np.uint8), iterations=1)
         protected = np.asarray(layers.get("protected_edge_mask"), dtype=np.uint8)
@@ -1931,24 +1952,28 @@ class UiBridge:
             "protected_overlap": protected_overlap,
             "mask_hash": art_text_inpainting.mask_hash(final_mask),
         }
-        validation = human_mask_decisions.validate_mask_payload(
-            {
-                "source_hash": state["source_hash"],
-                "base_segmentation_hash": state["base_segmentation_hash"],
-                "include_mask": include_rects,
-                "exclude_mask": decision.get("exclude_mask") or [],
-                "protected_mask": decision.get("protected_mask") or [],
-                "uncertain_mask": decision.get("uncertain_mask") or [],
-                "final_mask_metrics": metrics,
-            },
-            region_box=state["region_box"],
-            base_segmentation_hash=state["base_segmentation_hash"],
-            source_hash=state["source_hash"],
-        )
+        if mask_revision_id:
+            validation = {**validation, **metrics}
+        else:
+            validation = human_mask_decisions.validate_mask_payload(
+                {
+                    "source_hash": state["source_hash"],
+                    "base_segmentation_hash": state["base_segmentation_hash"],
+                    "include_mask": include_rects,
+                    "exclude_mask": decision.get("exclude_mask") or [],
+                    "protected_mask": decision.get("protected_mask") or [],
+                    "uncertain_mask": decision.get("uncertain_mask") or [],
+                    "final_mask_metrics": metrics,
+                },
+                region_box=state["region_box"],
+                base_segmentation_hash=state["base_segmentation_hash"],
+                source_hash=state["source_hash"],
+            )
         if protected_overlap:
             raise ValueError("mask_protected_overlap")
         return {
             "human_mask_decision_id": str(decision.get("human_mask_decision_id") or ""),
+            "mask_revision_id": mask_revision_id,
             "box_ltrb": [x, y, x + w, y + h],
             "combined_inpainting_mask": final_mask,
             "validation_halo": validation_halo,
