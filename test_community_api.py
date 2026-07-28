@@ -5,8 +5,11 @@ import _test_bootstrap  # noqa: F401
 import tempfile
 import threading
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 import community_api
 from community_auth import RequestPrincipal, ResourceNotFound
@@ -24,6 +27,43 @@ NON_ADMIN = RequestPrincipal(
 MEMBER = RequestPrincipal(
     "member-x", True, auth_source="test", session_id="test-member")
 ANONYMOUS = RequestPrincipal.anonymous()
+
+
+def test_local_test_auth_never_inherits_external_community_storage():
+    env = {
+        "APP_ENV": "test",
+        "AUTH_PROVIDER": "local_test",
+        "ALLOW_LOCAL_TEST_IDENTITIES": "1",
+        "COMMUNITY_STORAGE_PROVIDER": "google_drive",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with pytest.raises(
+            community_api.StorageError, match="local_test_external_storage_blocked"
+        ):
+            community_api.storage_provider_name()
+
+
+def test_local_test_auth_requires_explicit_isolated_storage(tmp_path):
+    env = {
+        "APP_ENV": "test",
+        "AUTH_PROVIDER": "local_test",
+        "ALLOW_LOCAL_TEST_IDENTITIES": "1",
+        "STORAGE_PROVIDER": "local_test",
+        "LOCAL_TEST_STORAGE_ROOT": str(tmp_path / "storage"),
+        "TRADUTOR_UI_HOST": "127.0.0.1",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        assert community_api.storage_provider_name() == "local_test"
+
+
+def test_non_test_runtime_keeps_configured_community_storage():
+    env = {
+        "APP_ENV": "production",
+        "AUTH_PROVIDER": "supabase",
+        "COMMUNITY_STORAGE_PROVIDER": "google_drive",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        assert community_api.storage_provider_name() == "google_drive"
 
 
 def _write_pdf(path: Path, size=2000):
@@ -72,6 +112,30 @@ class CommunityApiTests(unittest.TestCase):
                                   principal=OWNER)
         self.assertTrue(result["job_id"])
         self.assertEqual(self.api.store.get_post(result["post_id"])["status"], PostStatus.PUBLISHING)
+
+    def test_local_test_publish_uses_only_owner_scoped_local_storage(self):
+        self.api.close()
+        with patch.object(community_api, "storage_provider_name", lambda: "local_test"), patch.dict(
+            os.environ,
+            {"LOCAL_TEST_STORAGE_ROOT": str(self.storage_root)},
+            clear=False,
+        ):
+            self.api = CommunityApi(
+                self.jobs,
+                community_db_path=self.tmp / "community-local-test.sqlite3",
+                output_root=self.output_root,
+                storage_root=self.storage_root,
+            )
+            with patch("google_drive_factory.build_google_drive_provider") as remote:
+                result = self._publish_and_run()
+                remote.assert_not_called()
+        record = self.api.store.get_file(result["file_id"])
+        self.assertEqual(record["storage_provider"], "local_test")
+        self.assertTrue(str(record["storage_file_id"]).startswith("ltf."))
+        provider = community_api.LocalTestStorageProvider(
+            self.storage_root, owner_id=OWNER.user_id
+        )
+        self.assertTrue(provider.exists(record["storage_file_id"]))
 
     def test_publish_rejects_missing_identifier(self):
         with self.assertRaises(community_api.CommunityError):
