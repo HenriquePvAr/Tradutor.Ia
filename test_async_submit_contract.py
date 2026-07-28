@@ -210,6 +210,34 @@ class RuntimeStateLatestJobTests(unittest.TestCase):
         self.assertEqual(state["latest"]["reason_code"], "chromedriver_unavailable")
         self.assertEqual(state["latest_result"]["id"], finished)
 
+    def test_active_operation_does_not_receive_an_unrelated_quality_review(self):
+        finished = self._create_terminal(
+            job_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            status=JobStatus.FINISHED,
+            stage="review_completed",
+            reason_code="quality_review_completed",
+            output_dir="finished",
+        )
+        (self.tmp / "finished").mkdir()
+        active = self.bridge.store.create_job(
+            job_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            source_url=OTHER,
+            output_dir=str(self.tmp / "active"),
+            command=["python", "run_webtoon.py"],
+            run_id="run-active",
+            configuration={"job_type": "translation", "chapter_name": "Current"},
+            initial_status=JobStatus.STAGING,
+        )
+
+        with mock.patch.object(
+            self.bridge, "quality_review", return_value={"job_id": finished}
+        ) as quality_review:
+            state = self.bridge.runtime_state(0)
+
+        self.assertEqual(state["active"]["id"], active)
+        self.assertIsNone(state["quality_review"])
+        quality_review.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -930,6 +930,10 @@
   }
 
   function resetActivePipelineIdentity(sourceUrl = '') {
+    // A new operation owns every pipeline/result panel immediately. Clear terminal
+    // artifacts before adopting its identity so a polling tick cannot leave the last
+    // chapter's failure or quality review under the new active stage.
+    clearNewTranslationDraftPanels();
     appState.currentRequestId = correlationId();
     appState.currentJobId = '';
     appState.currentRunId = '';
@@ -937,7 +941,6 @@
     appState.currentChapterName = $('#nameInput')?.value?.trim() || '';
     appState.currentStageVersion += 1;
     appState.newTranslationDraft = false;
-    resetRunPreview();
     $('#balloonText') && ($('#balloonText').textContent = window.TradutorI18n?.t('pipeline.validating_source') || 'Validando fonte');
     persistPipelineIdentity('validating_source');
     uiTrace('pipeline_request_created', {request_id: appState.currentRequestId});

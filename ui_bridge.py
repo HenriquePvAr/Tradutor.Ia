@@ -2986,7 +2986,13 @@ class UiBridge:
         latest_operational_job = self._latest_operational_job()
         latest_record = record or self._job_record(latest_operational_job or latest_result_job)
         latest_result_record = self._job_record(latest_result_job)
-        quality_review = self.quality_review(latest_result_job["id"]) if latest_result_job else None
+        # A historical review never belongs to an active/staging operation. Returning it
+        # here made a new source analysis render beside another chapter's PDF and metrics.
+        quality_review = (
+            self.quality_review(latest_result_job["id"])
+            if latest_result_job and not (present_job or pending)
+            else None
+        )
         return {
             "status": status if status in JobStatus.ALL else "ready",
             "pending": pending,

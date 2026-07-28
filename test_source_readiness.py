@@ -339,6 +339,10 @@ class UiContractTests(unittest.TestCase):
         script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn("appState.newTranslationDraft = true;", script)
         self.assertIn("clearNewTranslationDraftPanels();", script)
+        reset = script.split("function resetActivePipelineIdentity", 1)[1].split(
+            "function persistPipelineIdentity", 1)[0]
+        self.assertIn("clearNewTranslationDraftPanels();", reset)
+        self.assertNotIn("resetRunPreview();", reset)
 
 
 if __name__ == "__main__":
