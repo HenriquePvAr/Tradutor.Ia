@@ -433,6 +433,42 @@
                 <button class="btn-ghost" type="button" id="cancelSourceReview">Cancelar</button>
               </div>
             </div>
+            <div class="source-review" id="sourceReadyPanel" hidden aria-live="polite">
+              <div class="panel-label">Fonte analisada</div>
+              <div class="source-review-meta" id="sourceReadyMeta"></div>
+              <p>Nenhuma página foi baixada e nenhuma tradução foi iniciada.</p>
+              <div class="cta-row source-review-actions">
+                <button class="btn-primary" type="button" id="reviewDownloadAuthorization">
+                  Revisar próxima etapa
+                </button>
+                <button class="btn-primary" type="button" id="continueAuthorizedDownload" hidden>
+                  Iniciar download autorizado
+                </button>
+              </div>
+            </div>
+            <dialog class="audit-confirm" id="downloadAuthorizationDialog" hidden
+                    aria-labelledby="downloadAuthorizationTitle">
+              <form method="dialog" id="downloadAuthorizationForm">
+                <h3 id="downloadAuthorizationTitle">Continuar com conteúdo autorizado</h3>
+                <p>A análise da fonte foi concluída. O download é uma operação separada e
+                  nenhuma operação será iniciada sem nova autorização.</p>
+                <p>Processe somente conteúdo próprio, licenciado, autorizado ou de domínio público.</p>
+                <label>Base de direitos
+                  <select id="downloadRightsBasis" required>
+                    <option value="">Selecione uma base verificável</option>
+                    <option value="owned_content">Conteúdo próprio</option>
+                    <option value="licensed_content">Conteúdo licenciado</option>
+                    <option value="explicit_permission">Permissão explícita</option>
+                    <option value="public_domain">Domínio público</option>
+                  </select>
+                </label>
+                <div class="field-error" id="downloadAuthorizationError" hidden></div>
+                <div class="cta-row">
+                  <button class="btn-primary" type="submit">Registrar autorização</button>
+                  <button class="btn-ghost" type="button" id="cancelDownloadAuthorization">Cancelar</button>
+                </div>
+              </form>
+            </dialog>
             <div class="quality-review" id="qualityReviewPanel" hidden>
               <div class="panel-label">Revisão de qualidade</div>
               <div class="quality-review-meta" id="qualityReviewMeta"></div>

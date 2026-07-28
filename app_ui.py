@@ -16,6 +16,7 @@ from nicegui import app, ui
 from community_auth import (
     AuthConfigurationError,
     AuthenticationRequired,
+    AuthorizationDenied,
     CsrfRejected,
     RequestPrincipal,
     SESSION_COOKIE_NAME,
@@ -1217,6 +1218,60 @@ async def api_source_retry(payload: dict[str, Any] = Body(default={})) -> dict[s
             "code": str(exc), "stage": "revisao_da_fonte",
             "message": "Esta revisão de fonte não pode mais ser repetida.",
             "action": "Atualize a tela e escolha a revisão atualmente exibida.",
+        }) from exc
+
+
+@app.post("/api/ui/source/authorization")
+def api_source_authorization(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
+    try:
+        principal = _ui_principal(request, mutate=True)
+        operations = payload.get("allowed_operations")
+        analysis_result_id = str(payload.get("analysis_result_id") or "")
+        if analysis_result_id and not str(payload.get("job_id") or ""):
+            return BRIDGE.authorize_standalone_source_analysis(
+                analysis_result_id,
+                principal=principal,
+                rights_basis=str(payload.get("rights_basis") or ""),
+                allowed_operations=operations if isinstance(operations, list) else [],
+            )
+        return BRIDGE.authorize_source_download(
+            str(payload.get("job_id") or ""),
+            principal=principal,
+            rights_basis=str(payload.get("rights_basis") or ""),
+            allowed_operations=operations if isinstance(operations, list) else [],
+        )
+    except AuthenticationRequired as exc:
+        raise HTTPException(status_code=401, detail="authentication_required") from exc
+    except (AuthorizationDenied, CsrfRejected) as exc:
+        raise HTTPException(status_code=403, detail="authorization_denied") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={
+            "code": str(exc),
+            "message": "É necessária uma autorização de conteúdo antes de iniciar o download.",
+        }) from exc
+
+
+@app.post("/api/ui/source/continue")
+def api_source_continue(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
+    try:
+        return BRIDGE.continue_authorized_download(
+            str(payload.get("job_id") or ""),
+            principal=_ui_principal(request, mutate=True),
+        )
+    except AuthenticationRequired as exc:
+        raise HTTPException(status_code=401, detail="authentication_required") from exc
+    except (AuthorizationDenied, CsrfRejected) as exc:
+        raise HTTPException(status_code=403, detail="authorization_denied") from exc
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=422, detail={
+            "code": str(exc),
+            "message": "É necessária uma autorização de conteúdo antes de iniciar o download.",
         }) from exc
 
 

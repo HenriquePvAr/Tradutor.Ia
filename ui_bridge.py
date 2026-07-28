@@ -460,6 +460,18 @@ class UiBridge:
         local_summary = config.get("local_source_summary")
         if not isinstance(local_summary, dict):
             local_summary = {}
+        source_analysis_result = {}
+        result_id = str(config.get("source_analysis_result_id") or "") if isinstance(config, dict) else ""
+        if result_id:
+            from source_readiness import SourceReadinessStore
+
+            readiness = SourceReadinessStore(self.store.db_path)
+            try:
+                owner = str(config.get("community_owner_id") or "local")
+                stored_result = readiness.get_analysis(owner, result_id)
+                source_analysis_result = stored_result.public() if stored_result else {}
+            finally:
+                readiness.close()
         return {
             "id": job["id"],
             "run_id": job.get("run_id"),
@@ -494,6 +506,11 @@ class UiBridge:
             "error_message": sanitize_diagnostic_text(job.get("error_message") or ""),
             "source_analysis": job.get("source_analysis") or {},
             "source_selection": job.get("source_selection") or {},
+            "source_analysis_result": source_analysis_result,
+            "download_authorization": (
+                config.get("download_authorization") if isinstance(
+                    config.get("download_authorization"), dict) else {}
+            ),
             "source_provenance": self._public_job_source_provenance(job),
             "started_at": _epoch_to_iso(job.get("started_at")),
             "finished_at": _epoch_to_iso(job.get("finished_at")),
@@ -2790,14 +2807,47 @@ class UiBridge:
             key=lambda job: float(job.get("updated_at") or 0), default=None,
         )
 
+    def _displayed_source_ready(self) -> dict[str, Any] | None:
+        return max(
+            (job for job in self.store.list_jobs(
+                statuses=[JobStatus.SOURCE_ANALYSIS_READY], limit=None)
+             if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+
     def bootstrap(self, cursor: int = 0) -> dict[str, Any]:
+        source_ready = self.latest_source_analysis("local")
         return {
             **self.runtime_state(cursor),
             "history": self._history_payload(),
             "profile": self._profile_payload(),
             "settings": self.settings(),
             "community": {"available": False, "posts": 0},
+            "standalone_source_ready": source_ready,
         }
+
+    def latest_source_analysis(self, owner: str) -> dict[str, Any] | None:
+        from source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            result = readiness.latest_analysis(owner)
+            if result is None or result.status != "source_analysis_ready":
+                return None
+            authorization = readiness.latest_authorization(
+                owner=owner, analysis_result_id=result.analysis_id)
+            return {
+                "id": result.analysis_id,
+                "analysis_result_id": result.analysis_id,
+                "job_id": "",
+                "status": JobStatus.SOURCE_ANALYSIS_READY,
+                "stage": "source_analysis_ready",
+                "source_type": result.source_kind,
+                "source_analysis_result": result.public(),
+                "download_authorization": authorization.public() if authorization else {},
+            }
+        finally:
+            readiness.close()
 
     def profile_for_user(self, user_id: str) -> dict[str, Any]:
         """Expose only the profile bound to the authenticated principal."""
@@ -2852,12 +2902,13 @@ class UiBridge:
             default=None,
         )
         waiting = self._displayed_source_review()
+        source_ready = self._displayed_source_ready()
         staging_jobs = self.store.list_jobs(statuses=[JobStatus.STAGING], limit=None)
         staging = max(
             (job for job in staging_jobs if self._is_translation_job(job)),
             key=lambda job: float(job.get("updated_at") or 0), default=None,
         )
-        present_job = active or waiting or staging
+        present_job = active or waiting or source_ready or staging
         record = self._job_record(present_job)
         status = (present_job["status"] if present_job else "ready")
         stage = str((present_job or {}).get("stage") or "created")
@@ -2910,7 +2961,10 @@ class UiBridge:
         logs = self._tail_job_logs(active, cursor)
         # A queued job is pending work, not "pronto". Reporting it as ready is what made a
         # successful submit look like nothing happened.
-        pending = bool(queued) and not running and waiting is None and staging is None
+        pending = (
+            bool(queued) and not running and waiting is None
+            and source_ready is None and staging is None
+        )
         if pending:
             status = JobStatus.QUEUED
         blocked = pending and not worker
@@ -2957,6 +3011,7 @@ class UiBridge:
             "queue_running": running or pending,   # a queued job is still "em andamento"
             "resumable": resumable,
             "source_review": self._job_record(waiting),
+            "source_ready": self._job_record(source_ready),
             "quality_review": quality_review,
             "worker": {
                 "online": bool(worker),
@@ -3501,6 +3556,7 @@ class UiBridge:
             return None
         pending = self.store.list_jobs(
             statuses=[JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
+                      JobStatus.SOURCE_ANALYSIS_READY,
                       *JobStatus.IN_FLIGHT], limit=None)
         for job in pending:
             if not self._is_translation_job(job):
@@ -3576,6 +3632,125 @@ class UiBridge:
         job = self.store.transition(job["id"], JobStatus.QUEUED)
         self.history_revision += 1
         return {"ok": True, "job_id": job["id"], "worker": self.ensure_worker()}
+
+    def authorize_source_download(
+        self,
+        job_id: str,
+        *,
+        principal: RequestPrincipal,
+        rights_basis: str,
+        allowed_operations: list[str],
+    ) -> dict[str, Any]:
+        """Persist explicit rights scope without starting a worker or download."""
+        if not isinstance(principal, RequestPrincipal) or not principal.authenticated:
+            raise ValueError("authentication_required")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or job.get("status") != JobStatus.SOURCE_ANALYSIS_READY:
+            raise ValueError("source_analysis_not_ready")
+        config = dict(job.get("configuration") or {})
+        owner = str(config.get("community_owner_id") or "")
+        if not owner or owner != principal.user_id:
+            raise ValueError("source_analysis_owner_mismatch")
+        result_id = str(config.get("source_analysis_result_id") or "")
+        if not result_id:
+            raise ValueError("source_analysis_result_missing")
+        from source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            decision = readiness.authorize(
+                owner=principal.user_id,
+                analysis_result_id=result_id,
+                rights_basis=rights_basis,
+                allowed_operations=allowed_operations,
+                reviewer=principal.user_id,
+            )
+        finally:
+            readiness.close()
+        config["download_authorization"] = decision.public()
+        self.store.update_fields(
+            job["id"], configuration_json=json.dumps(config, ensure_ascii=False),
+            reason_code="download_authorized", stage="source_analysis_ready",
+        )
+        self.history_revision += 1
+        return {
+            "ok": True,
+            "job_id": job["id"],
+            "status": JobStatus.SOURCE_ANALYSIS_READY,
+            "stage": "source_analysis_ready",
+            "authorization": decision.public(),
+            "download_started": False,
+        }
+
+    def authorize_standalone_source_analysis(
+        self,
+        analysis_result_id: str,
+        *,
+        principal: RequestPrincipal,
+        rights_basis: str,
+        allowed_operations: list[str],
+    ) -> dict[str, Any]:
+        """Authorize a machine-scoped analysis without creating or starting a job."""
+        if not isinstance(principal, RequestPrincipal) or not principal.authenticated:
+            raise ValueError("authentication_required")
+        from source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            decision = readiness.authorize(
+                owner="local",
+                analysis_result_id=analysis_result_id,
+                rights_basis=rights_basis,
+                allowed_operations=allowed_operations,
+                reviewer=principal.user_id,
+            )
+        finally:
+            readiness.close()
+        return {
+            "ok": True,
+            "analysis_result_id": analysis_result_id,
+            "authorization": decision.public(),
+            "download_started": False,
+        }
+
+    def continue_authorized_download(
+        self,
+        job_id: str,
+        *,
+        principal: RequestPrincipal,
+    ) -> dict[str, Any]:
+        """Queue the existing operation only after a separate scoped authorization."""
+        if not isinstance(principal, RequestPrincipal) or not principal.authenticated:
+            raise ValueError("authentication_required")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or job.get("status") != JobStatus.SOURCE_ANALYSIS_READY:
+            raise ValueError("source_analysis_not_ready")
+        config = dict(job.get("configuration") or {})
+        if str(config.get("community_owner_id") or "") != principal.user_id:
+            raise ValueError("source_analysis_owner_mismatch")
+        result_id = str(config.get("source_analysis_result_id") or "")
+        from source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            decision = readiness.require_operation(
+                owner=principal.user_id,
+                analysis_result_id=result_id,
+                operation="download_assets",
+            )
+        finally:
+            readiness.close()
+        if not (job.get("source_selection") or {}).get("candidate_ids"):
+            raise ValueError("missing_source_selection")
+        queued = self.store.transition(
+            job["id"], JobStatus.QUEUED, stage="created", reason_code="download_authorized")
+        self.history_revision += 1
+        return {
+            "ok": True, "job_id": queued["id"], "run_id": queued["run_id"],
+            "authorization_id": decision.authorization_id,
+            "status": JobStatus.QUEUED, "stage": "created",
+            "worker": self.ensure_worker(),
+        }
 
     def _create_job(
         self,

@@ -81,9 +81,9 @@
     newTranslationDraft: false,
     terminalStatusByIdentity: new Map(),
   };
-  const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
+  const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', source_analysis_ready: 'fonte analisada', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed', 'failed', 'cancelled']);
-  const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
+  const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review', 'source_analysis_ready']);
   const MAX_VISIBLE_TOASTS = 3;
   const TOAST_DISMISS_MS = 3200;
   const TOAST_DEDUP_LIMIT = 80;
@@ -552,6 +552,7 @@
   const reasonMessages = {
     source_not_ready: 'Não foi possível analisar a fonte.',
     source_analysis_failed: 'A análise da fonte falhou antes de reconhecer sua estrutura.',
+    download_authorization_required: 'É necessária uma autorização de conteúdo antes de iniciar o download.',
     source_transport_failed: 'Não foi possível conectar à fonte após tentativas controladas.',
     source_unavailable: 'A página da fonte não está disponível.',
     source_redirect_blocked: 'A fonte tentou redirecionar para um endereço não permitido.',
@@ -601,6 +602,7 @@
     worker_starting: 'Iniciando o worker...',
     starting: 'Iniciando o worker...',
     source_analysis: 'Analisando o capítulo...',
+    source_analysis_ready: 'Fonte analisada',
     browser_loading: 'Analisando o capítulo...',
     collecting_candidates: 'Analisando o capítulo...',
     clustering_candidates: 'Analisando o capítulo...',
@@ -907,7 +909,9 @@
     appState.lastFinishedId = '';
     appState.previewJobId = '';
     appState.sourceReview = null;
+    appState.sourceReady = null;
     $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
+    $('#sourceReadyPanel') && ($('#sourceReadyPanel').hidden = true);
   }
   function clearNewTranslationDraftPanels() {
     resetRunPreview();
@@ -1144,6 +1148,7 @@
     source_validation: 'source_analysis',
     source_verified: 'source_analysis',
     source_analysis: 'source_analysis',
+    source_analysis_ready: 'source_analysis',
     browser_loading: 'source_analysis',
     collecting_candidates: 'source_analysis',
     clustering_candidates: 'source_analysis',
@@ -1216,7 +1221,7 @@
     if (boot && !document.documentElement.dataset.visualBootTest) boot.classList.add('hide');
   }
   function rememberRuntimeTerminalState(runtime) {
-    const record = runtime.active || runtime.source_review || runtime.latest || null;
+    const record = runtime.active || runtime.source_review || runtime.source_ready || runtime.latest || null;
     const identity = terminalIdentity(record);
     if (!identity) return;
     const status = String(record?.status || runtime.status || '').toLowerCase();
@@ -1228,7 +1233,7 @@
     }
   }
   function handleTerminalRuntimeTransition(runtime) {
-    const record = runtime.active || runtime.source_review || runtime.latest || null;
+    const record = runtime.active || runtime.source_review || runtime.source_ready || runtime.latest || null;
     const identity = terminalIdentity(record);
     if (!identity) return;
     const status = String(record?.status || runtime.status || '').toLowerCase();
@@ -1266,7 +1271,7 @@
     return fallback;
   }
   function buildPipelineState(runtime, progress = {}) {
-    const record = runtime.active || runtime.source_review || runtime.latest || runtime.latest_result || null;
+    const record = runtime.active || runtime.source_review || runtime.source_ready || runtime.latest || runtime.latest_result || null;
     const status = String(record?.status || runtime.status || 'ready').toLowerCase();
     const rawStage = canonicalProgressStage(runtime, record, progress);
     const visualStage = visualStageKey(rawStage);
@@ -1349,9 +1354,9 @@
     }
     const pipelineState = buildPipelineState(runtime, visibleProgress);
     appState.currentPipelineState = pipelineState;
-    appState.activeJobId = runtime.active?.id || runtime.source_review?.id || '';
+    appState.activeJobId = runtime.active?.id || runtime.source_review?.id || runtime.source_ready?.id || '';
     appState.latestJobId = runtime.latest?.id || '';
-    const incoming = runtime.active || runtime.source_review || runtime.latest || null;
+    const incoming = runtime.active || runtime.source_review || runtime.source_ready || runtime.latest || null;
     const incomingJobId = String(incoming?.id || incoming?.job_id || '');
     const incomingRunId = String(incoming?.run_id || '');
     if (incomingJobId && (!appState.currentJobId || incomingJobId === appState.currentJobId)) {
@@ -1381,6 +1386,11 @@
       renderSourceReview(runtime.source_review);
     }
     else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
+    if (appState.status === 'source_analysis_ready' && runtime.source_ready) {
+      renderSourceAnalysisReady(runtime.source_ready);
+    } else if ($('#sourceReadyPanel')) {
+      $('#sourceReadyPanel').hidden = true;
+    }
     // After the user leaves review_mode the form belongs to a new chapter, so an
     // idle runtime's leftover review must not reappear over it.
     const reviewDismissed = appState.reviewPanelDismissed && !inFlightStatuses.has(appState.status);
@@ -3364,17 +3374,24 @@
     const key = state.visualStage || visualStageKey(runtimeKey);
     const activeIndex = stageOrder.indexOf(key);
     const terminalOk = ['finished', 'review_required', 'review_completed'].includes(state.status);
+    const sourceReady = appState.status === 'source_analysis_ready';
     $$('.stage-item').forEach(item => {
       const index = stageOrder.indexOf(item.dataset.stage);
       const pct = $('.stage-pct', item);
       const fill = $('.stage-fill', item);
       const failedHere = ['failed', 'cancelled'].includes(state.status) && item.dataset.stage === key;
-      item.classList.toggle('done', terminalOk || key === 'final' || (activeIndex >= 0 && index < activeIndex));
+      item.classList.toggle('done', terminalOk || key === 'final'
+        || (sourceReady && item.dataset.stage === 'source_analysis')
+        || (activeIndex >= 0 && index < activeIndex));
       item.classList.toggle('active', item.dataset.stage === key && !terminalOk && (appState.status === 'running' || appState.status === 'staging' || appState.status === 'awaiting_source_review' || state.status === 'queued' || state.status === 'starting'));
       item.classList.toggle('failed', failedHere && state.status === 'failed');
       item.classList.toggle('cancelled', failedHere && state.status === 'cancelled');
       item.classList.toggle('indeterminate', item.classList.contains('active') && progress.indeterminate);
-      if (item.classList.contains('done')) { pct.textContent = '100%'; fill.style.width = '100%'; }
+      if (sourceReady && item.dataset.stage === 'source_analysis') {
+        pct.textContent = 'concluída';
+        fill.style.width = '100%';
+      }
+      else if (item.classList.contains('done')) { pct.textContent = '100%'; fill.style.width = '100%'; }
       else if (item.classList.contains('active') && progress.fraction != null) {
         const percent = Math.max(0, Math.min(100, Math.round(progress.fraction * 100)));
         pct.textContent = progress.total ? `${progress.current}/${progress.total} · ${percent}%` : `${percent}%`;
@@ -3698,6 +3715,107 @@
     const label = reviewActionLabel(record);
     return `<button class="btn-ghost hm-review-action" data-action="review" title="Revisar OCR, tradução e qualidade deste capítulo" aria-label="${escapeAttr(`${label}: ${record.chapter_name || record.slug || 'capítulo'}`)}">${escapeHtml(label)}</button>`;
   }
+  function renderSourceAnalysisReady(record) {
+    const panel = $('#sourceReadyPanel');
+    if (!panel) return;
+    const result = record?.source_analysis_result || {};
+    appState.sourceReady = record || null;
+    const authorization = record?.download_authorization || {};
+    const safe = value => escapeHtml(String(value || '—'));
+    const operation = String(result.operation_id || '').slice(0, 12);
+    const completed = result.completed_at
+      ? new Date(Number(result.completed_at) * 1000).toLocaleString('pt-BR') : '—';
+    $('#sourceReadyMeta').innerHTML = [
+      '<strong>A página pública foi reconhecida e está pronta para uma próxima etapa autorizada.</strong>',
+      `Fonte: ${safe(record?.source_type || result.source_kind)}`,
+      `Adapter: ${safe(result.adapter)}`,
+      `Inspeção: ${result.browser_inspection_performed ? 'navegador controlado' : 'preflight'}`,
+      `Navegador: ${safe(result.browser_engine)}`,
+      `Estrutura: ${result.public_structure_indicators_present ? 'compatível' : 'não confirmada'}`,
+      `Concluída: ${safe(completed)}`,
+      `Operação: ${safe(operation)}`,
+      `Motivo: <code>${safe(result.reason_code)}</code>`,
+    ].join('<br>');
+    panel.hidden = false;
+    const authorized = authorization.status === 'active'
+      && Array.isArray(authorization.allowed_operations)
+      && authorization.allowed_operations.includes('download_assets');
+    $('#reviewDownloadAuthorization').hidden = authorized;
+    $('#continueAuthorizedDownload').hidden = !authorized || !record?.job_id;
+  }
+  function openDownloadAuthorizationDialog() {
+    const dialog = $('#downloadAuthorizationDialog');
+    if (!dialog) return;
+    $('#downloadAuthorizationError').hidden = true;
+    dialog.hidden = false;
+    if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+  }
+  function closeDownloadAuthorizationDialog() {
+    const dialog = $('#downloadAuthorizationDialog');
+    if (!dialog) return;
+    if (dialog.open) dialog.close();
+    dialog.hidden = true;
+  }
+  async function submitDownloadAuthorization(event) {
+    event.preventDefault();
+    const basis = $('#downloadRightsBasis')?.value || '';
+    const error = $('#downloadAuthorizationError');
+    if (!basis) {
+      error.textContent = 'Selecione uma base de direitos verificável.';
+      error.hidden = false;
+      return;
+    }
+    const readyRecord = appState.sourceReady || appState.bootstrap?.source_ready
+      || appState.bootstrap?.standalone_source_ready || {};
+    const jobId = String(readyRecord.job_id || appState.currentJobId || '');
+    const analysisResultId = String(
+      readyRecord.analysis_result_id || readyRecord.source_analysis_result?.analysis_id || '');
+    try {
+      const result = await api('/api/ui/source/authorization', {
+        method: 'POST',
+        body: JSON.stringify({
+          job_id: jobId,
+          analysis_result_id: analysisResultId,
+          rights_basis: basis,
+          allowed_operations: ['analyze_metadata', 'download_assets'],
+        }),
+      });
+      closeDownloadAuthorizationDialog();
+      $('#reviewDownloadAuthorization').hidden = true;
+      $('#continueAuthorizedDownload').hidden = !jobId;
+      showToast('Autorização registrada. O download ainda não foi iniciado.', 'ok');
+      return result;
+    } catch (requestError) {
+      error.textContent = requestError.message
+        || 'Não foi possível registrar a autorização.';
+      error.hidden = false;
+    }
+  }
+  async function continueAuthorizedDownload() {
+    const button = $('#continueAuthorizedDownload');
+    if (!button || button.dataset.busy === '1') return;
+    button.dataset.busy = '1';
+    button.disabled = true;
+    try {
+      const result = await api('/api/ui/source/continue', {
+        method: 'POST',
+        body: JSON.stringify({job_id: appState.currentJobId || appState.active?.id || ''}),
+      });
+      $('#sourceReadyPanel').hidden = true;
+      renderLocalPipelineState('queued', {status: 'queued', message: 'Download autorizado e enfileirado'});
+      showToast('Download autorizado e enfileirado.', 'ok');
+      return result;
+    } catch (error) {
+      showToast(error.message || 'Não foi possível iniciar o download autorizado.', 'error');
+    } finally {
+      button.disabled = false;
+      delete button.dataset.busy;
+    }
+  }
+  $('#reviewDownloadAuthorization')?.addEventListener('click', openDownloadAuthorizationDialog);
+  $('#cancelDownloadAuthorization')?.addEventListener('click', closeDownloadAuthorizationDialog);
+  $('#downloadAuthorizationForm')?.addEventListener('submit', submitDownloadAuthorization);
+  $('#continueAuthorizedDownload')?.addEventListener('click', continueAuthorizedDownload);
   function pendingPreviewItems() {
     return Array.isArray(appState.pendingHumanPreviews?.items) ? appState.pendingHumanPreviews.items : [];
   }
@@ -5291,6 +5409,10 @@
       setBootStage(4);
       setGlobal('__tradutorDisplayName', authenticated ? String(appState.profile.display_name || '').trim() : '');
       appState.settings = data.settings || {};
+      if (!data.source_ready && data.standalone_source_ready) {
+        data.source_ready = data.standalone_source_ready;
+        if (!data.active && data.status === 'ready') data.status = 'source_analysis_ready';
+      }
       setBootStage(5);
       appState.historyRevision = data.history_revision || appState.historyRevision;
       renderSettings(appState.settings);
