@@ -320,6 +320,12 @@ def download_images(
             _write_download_report(debug_folder, report)
 
 
+def _resolve_canonical_source(adapter, normalized_url):
+    """Injection seam for hermetic analysis tests."""
+    resolver = getattr(adapter, "resolve_canonical_url", None)
+    return resolver(normalized_url) if callable(resolver) else None
+
+
 def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
     """Analyse a reader without creating output files or starting OCR.
 
@@ -333,6 +339,11 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
     adapter.validate_url(url)
     adapter.validate_path(url)
     normalized = adapter.normalize_url(url)
+    canonical_identity = _resolve_canonical_source(adapter, normalized)
+    if canonical_identity is not None:
+        normalized = adapter.normalize_url(canonical_identity.canonical_url)
+        adapter.validate_url(normalized)
+        adapter.validate_path(normalized)
     navigation_url = preflight_browser_navigation(
         adapter, normalized, cancel_check=cancel_check)
     if cancel_check and cancel_check():
@@ -371,6 +382,9 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
             },
             profile=_load_source_profile(final_url, adapter),
             extra_warnings=source_warnings)
+        if canonical_identity is not None:
+            source_analysis.canonical_url = normalized
+            source_analysis.canonical_identity = canonical_identity.public()
         source_analysis, _ = _maybe_collect_paginated_reader(
             driver,
             adapter,

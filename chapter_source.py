@@ -129,6 +129,7 @@ class ChapterSourceAdapter(Protocol):
 
     def supports(self, url: str) -> bool: ...
     def normalize_url(self, url: str) -> str: ...
+    def resolve_canonical_url(self, url: str, **kwargs: Any) -> Any: ...
     def validate_url(self, url: str) -> None: ...
     def validate_navigation_url(self, url: str) -> None: ...
     def validate_observed_url(self, url: str) -> None: ...
@@ -657,18 +658,33 @@ class BaseAdapter:
                 "adapter_version": self.adapter_version}
 
 
-# Webtoons keeps its own selectors; the downloader no longer knows about them.
-WEBTOONS = BaseAdapter(
-    name="webtoons",
-    allowed_hosts=("webtoons.com", "webtoon.com"),
-    resource_hosts=("webtoon-phinf.pstatic.net",),
-    runner="run_webtoon.py",
-    chapter_path_markers=("/viewer", "/episode"),
-    coverage_strategy="reader_container",
-    collection_strategy="adapter_specific",
-    container_selector="#_imageList, .viewer_img, .viewer_lst",
-    image_selector="#_imageList img, .viewer_img img._images",
-)
+class WebtoonsAdapter(BaseAdapter):
+    """Webtoons reader plus its official public chapter-identity contract."""
+
+    adapter_version = "2"
+
+    def __init__(self):
+        super().__init__(
+            name="webtoons",
+            adapter_version="2",
+            allowed_hosts=("webtoons.com", "webtoon.com"),
+            resource_hosts=("webtoon-phinf.pstatic.net",),
+            runner="run_webtoon.py",
+            chapter_path_markers=("/viewer", "/episode"),
+            coverage_strategy="reader_container",
+            collection_strategy="adapter_specific",
+            container_selector="#_imageList, .viewer_img, .viewer_lst",
+            image_selector="#_imageList img, .viewer_img img._images",
+        )
+
+    def resolve_canonical_url(self, url: str, **kwargs: Any) -> Any:
+        from canonical_source_identity import canonicalize_webtoons_url
+
+        return canonicalize_webtoons_url(url, adapter=self, **kwargs)
+
+
+# Webtoons keeps its own selectors and metadata resolver; the downloader contains neither.
+WEBTOONS = WebtoonsAdapter()
 
 
 class GenericImageChapterAdapter(BaseAdapter):

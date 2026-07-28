@@ -348,6 +348,7 @@ class DriverLifecycleTests(unittest.TestCase):
 
             with (
                 mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns),
+                mock.patch("down._resolve_canonical_source", return_value=None),
                 mock.patch("down.preflight_browser_navigation", side_effect=lambda _adapter, value, **_: value),
                 mock.patch("down._create_driver", side_effect=lambda: created.append(driver) or driver),
                 mock.patch("down._capture_driver_ownership", return_value={}),

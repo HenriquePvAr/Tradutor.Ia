@@ -312,6 +312,10 @@ class SourceAnalysis:
     # The selection is deliberately opaque: candidate ids only, never a source URL or a
     # signed query string.  It lets jobs and review UI share the adapter-owned manifest.
     page_manifest: dict[str, Any] = field(default_factory=dict)
+    # Internal only: the worker uses the validated official URL for the eventual runner.
+    # It is intentionally excluded from ``public()`` so diagnostics do not echo URLs.
+    canonical_url: str = ""
+    canonical_identity: dict[str, Any] = field(default_factory=dict)
 
     @property
     def requires_review(self) -> bool:
@@ -353,6 +357,7 @@ class SourceAnalysis:
             "network_metadata": list(self.network_metadata),
             "reader_diagnostics": reader,
             "page_manifest": dict(self.page_manifest),
+            "canonical_identity": dict(self.canonical_identity),
         }
 
 

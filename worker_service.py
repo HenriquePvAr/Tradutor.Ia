@@ -223,6 +223,11 @@ class Worker:
             return self._fail_source(job["id"], exc)
         if cancelled():
             return None
+        canonical_url = str(getattr(analysis, "canonical_url", "") or "")
+        if canonical_url and canonical_url != str(current.get("source_url") or ""):
+            # The official metadata decision becomes the sole URL used by the runner.
+            # The public analysis persists only the sanitized identity fields.
+            self.store.update_fields(job["id"], source_url=canonical_url)
         return self._apply_phase(job["id"])(analysis)
 
     def _apply_phase(self, job_id: str):

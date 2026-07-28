@@ -35,12 +35,13 @@ class FakeCandidate:
 class FakeAnalysis:
     """Mimics the analysis object the phase consumes."""
 
-    def __init__(self, outcome, *, accepted=5, warnings=()):
+    def __init__(self, outcome, *, accepted=5, warnings=(), canonical_url=""):
         from universal_chapter_adapter import SUPPORTED_SPECIFIC_ADAPTER  # noqa: F401
 
         self.outcome = outcome
         self.accepted = [FakeCandidate(i) for i in range(accepted)]
         self._warnings = list(warnings)
+        self.canonical_url = canonical_url
 
     def public(self):
         return {"adapter": "webtoons", "adapter_version": "1",
@@ -253,6 +254,25 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertIn("c000", row["command"])
         self.assertIn("c001", row["command"])
         self.assertNotIn("c002", row["command"])
+
+    def test_official_canonical_url_replaces_submitted_url_before_command_is_built(self):
+        canonical = URL.replace("episode_no=1", "episode_no=7")
+        job = self.queued_url_job(
+            configuration_json='{"job_type":"translation","mode":"fast","full":false,'
+                               '"max_images":2,"force":false,"use_cache":true,'
+                               '"use_context":true}',
+        )
+        worker = _Worker(
+            self.store,
+            analysis=FakeAnalysis(specific_outcome(), accepted=3, canonical_url=canonical),
+        )
+
+        self.assertIsNone(worker._prepare_source(job))
+
+        row = self.store.get_job(job["id"])
+        self.assertEqual(row["source_url"], canonical)
+        self.assertIn(canonical, row["command"])
+        self.assertNotIn(URL, row["command"])
 
     def test_workspace_policy_authorizes_and_requeues_without_spawning_runner(self):
         workspace_id = default_workspace_id(self.store.db_path)
