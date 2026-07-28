@@ -326,21 +326,49 @@ class UiBridge:
     """Own the single local worker, queue and persistent UI state."""
 
     def __init__(self) -> None:
-        self.history_store = UIHistoryStore()
+        requested_root = str(os.getenv("TRADUTOR_TEST_RUNTIME_ROOT") or "").strip()
+        test_override_allowed = (
+            os.getenv("APP_ENV") == "test"
+            and os.getenv("ALLOW_LOCAL_TEST_IDENTITIES") == "1"
+        )
+        if requested_root and not test_override_allowed:
+            raise RuntimeError("test_runtime_root_not_allowed")
+        self.runtime_root = (
+            Path(requested_root).expanduser().resolve()
+            if requested_root else (REPO_ROOT / ".cache" / "runtime").resolve()
+        )
+        self.output_root = (
+            (self.runtime_root / "output").resolve()
+            if requested_root else OUTPUT_ROOT.resolve()
+        )
+        self.profile_root = (
+            self.runtime_root / "profiles"
+            if requested_root else REPO_ROOT / ".cache" / "ui_profiles"
+        )
+        self.profile_media_root = (
+            self.runtime_root / "profile_media"
+            if requested_root else PROFILE_MEDIA_DIR
+        )
+        self.legacy_profile_path = PROFILE_PATH
+        db_path = self.runtime_root / "jobs.sqlite3" if requested_root else JOBS_DB_PATH
+        self.history_store = (
+            UIHistoryStore(self.runtime_root / "ui_history.json")
+            if requested_root else UIHistoryStore()
+        )
         self.history = self.history_store.discover_outputs()
         self.profile = self._load_profile()
-        self.store = JobStore(JOBS_DB_PATH)
-        self.audit_decisions = AuditDecisionStore(JOBS_DB_PATH)
-        self.human_translations = human_translation_decisions.HumanTranslationDecisionStore(JOBS_DB_PATH)
-        self.human_typography = human_typography_decisions.HumanTypographyDecisionStore(JOBS_DB_PATH)
-        self.human_masks = human_mask_decisions.HumanMaskDecisionStore(JOBS_DB_PATH)
-        self.mask_revisions = residual_mask_revisions.MaskRevisionStore(JOBS_DB_PATH)
+        self.store = JobStore(db_path)
+        self.audit_decisions = AuditDecisionStore(db_path)
+        self.human_translations = human_translation_decisions.HumanTranslationDecisionStore(db_path)
+        self.human_typography = human_typography_decisions.HumanTypographyDecisionStore(db_path)
+        self.human_masks = human_mask_decisions.HumanMaskDecisionStore(db_path)
+        self.mask_revisions = residual_mask_revisions.MaskRevisionStore(db_path)
         self.residual_analyses = residual_analysis_artifacts.ResidualAnalysisStore(
-            JOBS_DB_PATH)
+            db_path)
         self.residual_component_reviews = (
             residual_component_reviews.ResidualComponentReviewStore(
-                JOBS_DB_PATH))
-        self.visual_reviews = visual_review_decisions.VisualReviewDecisionStore(JOBS_DB_PATH)
+                db_path))
+        self.visual_reviews = visual_review_decisions.VisualReviewDecisionStore(db_path)
         self.history_revision = 1
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
@@ -1603,7 +1631,11 @@ class UiBridge:
                 key: value for key, value in candidate.items()
                 if key not in {"resolved_font_path"}
             }
-            public["preview_asset"] = f"/api/ui/human-translation/font-candidate-preview?asset={quote(str(cache_dir.name + '/' + name))}"
+            public["preview_asset"] = (
+                "/api/ui/human-translation/font-candidate-preview"
+                f"?job_id={quote(str(data['job']['id']))}"
+                f"&asset={quote(str(cache_dir.name + '/' + name))}"
+            )
             public["option_label"] = f"OPÇÃO {index}"
             public_candidates.append(public)
         selected = self.human_typography.latest_for_region(
@@ -2826,6 +2858,14 @@ class UiBridge:
             key=lambda job: float(job.get("updated_at") or 0), default=None,
         )
 
+    def _displayed_source_review_for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        return max(
+            (job for job in self.store.list_jobs_for_owner(
+                owner_id, statuses=[JobStatus.AWAITING_SOURCE_REVIEW], limit=None)
+             if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+
     def _displayed_source_ready(self) -> dict[str, Any] | None:
         return max(
             (job for job in self.store.list_jobs(
@@ -2834,13 +2874,24 @@ class UiBridge:
             key=lambda job: float(job.get("updated_at") or 0), default=None,
         )
 
-    def bootstrap(self, cursor: int = 0) -> dict[str, Any]:
-        source_ready = self.latest_source_analysis("local")
+    def _displayed_source_ready_for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        return max(
+            (job for job in self.store.list_jobs_for_owner(
+                owner_id, statuses=[JobStatus.SOURCE_ANALYSIS_READY], limit=None)
+             if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+
+    def bootstrap(self, cursor: int = 0, *, principal: RequestPrincipal) -> dict[str, Any]:
+        if not principal.authenticated:
+            raise ValueError("authentication_required")
+        owner_id = principal.owner_id
+        source_ready = self.latest_source_analysis(owner_id)
         return {
-            **self.runtime_state(cursor),
-            "history": self._history_payload(),
-            "profile": self._profile_payload(),
-            "settings": self.settings(),
+            **self.runtime_state_for_owner(owner_id, cursor),
+            "history": self._history_payload_for_owner(owner_id),
+            "profile": self.profile_for_user(owner_id),
+            "settings": self.settings(owner_id=owner_id),
             "community": {"available": False, "posts": 0},
             "standalone_source_ready": source_ready,
         }
@@ -2874,12 +2925,13 @@ class UiBridge:
     def profile_for_user(self, user_id: str) -> dict[str, Any]:
         """Expose only the profile bound to the authenticated principal."""
         normalized = str(user_id or "").strip()
-        if not normalized or str(self.profile.get("user_id") or "") != normalized:
+        if not normalized:
             profile = _profile_default()
             profile["avatar_media_url"] = ""
             profile["banner_media_url"] = ""
             return profile
-        return self._profile_payload()
+        return self._profile_payload(
+            self._load_profile_for_user(normalized), user_id=normalized)
 
     def _history_payload(self) -> list[dict[str, Any]]:
         # Terminal jobs from the store, plus legacy output discovery for old runs.
@@ -2912,20 +2964,54 @@ class UiBridge:
             record["review_confirmed_at"] = _epoch_to_iso(job.get("review_confirmed_at"))
         return self.history
 
+    def _history_payload_for_owner(self, owner_id: str) -> list[dict[str, Any]]:
+        """Build private history only from the SQL owner scope.
+
+        Filesystem discovery remains an explicit operator/legacy maintenance surface;
+        it is never part of an authenticated user's bootstrap.
+        """
+        records = []
+        for job in self.store.list_jobs_for_owner(
+            owner_id, statuses=list(JobStatus.TERMINAL), limit=None
+        ):
+            if not self._is_translation_job(job):
+                continue
+            record = self._job_record(job)
+            if record:
+                records.append(record)
+        return records
+
+    def runtime_state_for_owner(self, owner_id: str, cursor: int = 0) -> dict[str, Any]:
+        return self._runtime_state(cursor=cursor, owner_id=owner_id)
+
     def runtime_state(self, cursor: int = 0) -> dict[str, Any]:
+        """Operator-local global state; never expose this method through HTTP."""
+        return self._runtime_state(cursor=cursor, owner_id=None)
+
+    def _runtime_state(self, *, cursor: int = 0, owner_id: str | None) -> dict[str, Any]:
+        list_jobs = (
+            (lambda **kwargs: self.store.list_jobs_for_owner(owner_id, **kwargs))
+            if owner_id is not None
+            else self.store.list_jobs
+        )
+        active_job = (
+            (lambda: self.store.active_job_for_owner(owner_id))
+            if owner_id is not None
+            else self.store.active_job
+        )
         # Reconcile on every poll, not only at startup: a runner can die at any moment and
         # the UI must stop claiming PROCESSANDO within one polling interval.
         self.store.reconcile_confirmed_reviews()
         self.reconcile_orphans()
-        active_jobs = self.store.list_jobs(statuses=JobStatus.IN_FLIGHT, limit=None)
+        active_jobs = list_jobs(statuses=JobStatus.IN_FLIGHT, limit=None)
         active = max(
             (job for job in active_jobs if self._is_translation_job(job)),
             key=lambda job: float(job.get("claimed_at") or 0),
             default=None,
         )
-        waiting = self._displayed_source_review()
-        source_ready = self._displayed_source_ready()
-        staging_jobs = self.store.list_jobs(statuses=[JobStatus.STAGING], limit=None)
+        waiting = self._displayed_source_review_for_owner(owner_id) if owner_id else self._displayed_source_review()
+        source_ready = self._displayed_source_ready_for_owner(owner_id) if owner_id else self._displayed_source_ready()
+        staging_jobs = list_jobs(statuses=[JobStatus.STAGING], limit=None)
         staging = max(
             (job for job in staging_jobs if self._is_translation_job(job)),
             key=lambda job: float(job.get("updated_at") or 0), default=None,
@@ -2973,10 +3059,10 @@ class UiBridge:
         )
         queued = [
             self._job_record(job)
-            for job in self.store.list_jobs(statuses=[JobStatus.QUEUED])
+            for job in list_jobs(statuses=[JobStatus.QUEUED])
             if self._is_translation_job(job)
         ]
-        resumable = [self._job_record(job) for job in self.store.list_jobs(
+        resumable = [self._job_record(job) for job in list_jobs(
             statuses=[JobStatus.INTERRUPTED, JobStatus.RESUMABLE])
             if self._is_translation_job(job)]
         worker = self.store.healthy_worker(stale_seconds=15)
@@ -2996,13 +3082,13 @@ class UiBridge:
         # polling interval. Active/review/staging/queued work still wins.
         standalone_source_ready = None
         if not (active or waiting or source_ready or staging or pending):
-            standalone_source_ready = self.latest_source_analysis("local")
+            standalone_source_ready = self.latest_source_analysis(owner_id or "local")
             if standalone_source_ready:
                 status = JobStatus.SOURCE_ANALYSIS_READY
                 stage = JobStatus.SOURCE_ANALYSIS_READY
                 progress_message = "Fonte analisada"
-        latest_result_job = self._latest_terminal_job()
-        latest_operational_job = self._latest_operational_job()
+        latest_result_job = self._latest_terminal_job_for_owner(owner_id) if owner_id else self._latest_terminal_job()
+        latest_operational_job = self._latest_operational_job_for_owner(owner_id) if owner_id else self._latest_operational_job()
         latest_record = record or self._job_record(latest_operational_job or latest_result_job)
         latest_result_record = self._job_record(latest_result_job)
         # A historical review never belongs to an active/staging operation. Returning it
@@ -3090,9 +3176,27 @@ class UiBridge:
         return next((job for job in jobs
                      if self._is_translation_job(job) and self._is_presentable_result(job)), None)
 
+    def _latest_terminal_job_for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        jobs = self.store.list_jobs_for_owner(
+            owner_id, statuses=list(JobStatus.TERMINAL), limit=None)
+        return next((job for job in jobs
+                     if self._is_translation_job(job) and self._is_presentable_result(job)), None)
+
     def _latest_operational_job(self) -> dict[str, Any] | None:
         """Most recent terminal translation attempt, even when it produced no artifact."""
         jobs = self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=None)
+        return next((
+            job for job in jobs
+            if self._is_translation_job(job)
+            and (
+                str(job.get("status") or "") in {JobStatus.FAILED, JobStatus.CANCELLED}
+                or self._is_presentable_result(job)
+            )
+        ), None)
+
+    def _latest_operational_job_for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        jobs = self.store.list_jobs_for_owner(
+            owner_id, statuses=list(JobStatus.TERMINAL), limit=None)
         return next((
             job for job in jobs
             if self._is_translation_job(job)
@@ -3126,7 +3230,7 @@ class UiBridge:
         ]
         return {"entries": entries, "cursor": len(lines[-MAX_LOG_LINES:])}
 
-    def settings(self) -> dict[str, Any]:
+    def settings(self, *, owner_id: str = "") -> dict[str, Any]:
         from down import driver_resolution_diagnostics
         from browser_runtime import BrowserRuntimeResolver
         from source_readiness import SourceReadinessStore, default_workspace_id
@@ -3154,7 +3258,7 @@ class UiBridge:
         try:
             workspace_id = default_workspace_id(self.store.db_path)
             workspace_policy = readiness.active_workspace_policy(
-                owner="local", workspace_id=workspace_id)
+                owner=str(owner_id or "").strip(), workspace_id=workspace_id)
         finally:
             readiness.close()
         return {
@@ -3608,7 +3712,9 @@ class UiBridge:
             raise TypeError("principal must be a RequestPrincipal")
         from local_folder_job import SOURCE_TYPE_LOCAL_FOLDER
 
-        output_folder = (OUTPUT_ROOT / normalized["slug"]).resolve()
+        output_folder = (
+            getattr(self, "output_root", OUTPUT_ROOT) / normalized["slug"]
+        ).resolve()
         configuration: dict[str, Any] = {
             "job_type": "translation",
             "source_type": SOURCE_TYPE_LOCAL_FOLDER,
@@ -3955,7 +4061,9 @@ class UiBridge:
             download_only=normalized["download_only"],
             python_executable=sys.executable,
         )
-        output_folder = (OUTPUT_ROOT / normalized["slug"]).resolve()
+        output_folder = (
+            getattr(self, "output_root", OUTPUT_ROOT) / normalized["slug"]
+        ).resolve()
         details = suggest_chapter_details(normalized["url"])
         configuration = {
             "job_type": "translation",
@@ -4244,6 +4352,34 @@ class UiBridge:
         return {"ok": True, "status": "ready", "cancelable": False,
                 "message": "Nenhum processamento ativo para cancelar."}
 
+    async def cancel_for_owner(
+        self, owner_id: str, *, queue: bool = False, job_id: str = ""
+    ) -> dict[str, Any]:
+        requested_id = str(job_id or "").strip()
+        if requested_id:
+            if self.store.get_job_for_owner(owner_id, requested_id) is None:
+                raise ValueError("job_not_found")
+            return await self.cancel(job_id=requested_id)
+        active = self.store.active_job_for_owner(owner_id)
+        if active and self._is_translation_job(active):
+            return await self.cancel(job_id=str(active["id"]))
+        if queue:
+            for job in self.store.list_jobs_for_owner(
+                owner_id, statuses=[JobStatus.QUEUED], limit=None
+            ):
+                if self._is_translation_job(job):
+                    try:
+                        self.store.transition(
+                            job["id"], JobStatus.CANCELLED,
+                            interrupted_reason="queue_cleared",
+                            reason_code="user_cancelled",
+                        )
+                    except Exception:
+                        pass
+        self.history_revision += 1
+        return {"ok": True, "status": "ready", "cancelable": False,
+                "message": "Nenhum processamento ativo para cancelar."}
+
     async def retry_source_review(self, job_id: str) -> dict[str, Any]:
         """Discard one displayed review hold and rerun only its safe source analysis."""
         job = self._displayed_source_review()
@@ -4311,6 +4447,11 @@ class UiBridge:
         }
         return self._job_record(self._create_job(payload, require_environment=False,
                                                  initial_status=JobStatus.QUEUED)) or {}
+
+    def retry_job_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        if self.store.get_job_for_owner(owner_id, str(job_id or "")) is None:
+            raise ValueError("job_not_retryable")
+        return self.retry_job(job_id)
 
     def resume(self, job_id: str) -> dict[str, Any]:
         job = self.store.get_job(job_id)
@@ -4388,13 +4529,21 @@ class UiBridge:
         )
         return self._job_record(job)  # type: ignore[return-value]
 
+    def remove_queue_item_for_owner(self, owner_id: str, item_id: str) -> None:
+        job = self.store.get_job_for_owner(owner_id, item_id)
+        if self._is_translation_job(job) and job["status"] == JobStatus.QUEUED:
+            self.store.transition(item_id, JobStatus.CANCELLED, interrupted_reason="removed")
+
     def remove_queue_item(self, item_id: str) -> None:
+        """Operator-local compatibility surface; never expose through HTTP."""
         job = self.store.get_job(item_id)
         if self._is_translation_job(job) and job["status"] == JobStatus.QUEUED:
             self.store.transition(item_id, JobStatus.CANCELLED, interrupted_reason="removed")
 
-    def clear_queue(self) -> None:
-        for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+    def clear_queue_for_owner(self, owner_id: str) -> None:
+        for job in self.store.list_jobs_for_owner(
+            owner_id, statuses=[JobStatus.QUEUED], limit=None
+        ):
             if not self._is_translation_job(job):
                 continue
             try:
@@ -4402,8 +4551,32 @@ class UiBridge:
             except Exception:  # noqa: BLE001
                 pass
 
-    async def start_queue(self) -> dict[str, Any]:
+    def clear_queue(self) -> None:
+        """Operator-local compatibility surface; never expose through HTTP."""
+        for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+            if self._is_translation_job(job):
+                try:
+                    self.store.transition(
+                        job["id"], JobStatus.CANCELLED,
+                        interrupted_reason="queue_cleared")
+                except Exception:
+                    pass
+
+    async def start_queue_for_owner(self, owner_id: str) -> dict[str, Any]:
         # Jobs are already queued in the store; the independent worker drains them.
+        if not any(
+            self._is_translation_job(job)
+            for job in self.store.list_jobs_for_owner(
+                owner_id, statuses=[JobStatus.QUEUED], limit=None)
+        ):
+            raise ValueError("A fila não tem itens aguardando.")
+        status = env_status()
+        if not status["env_exists"] or not status["nvidia_configured"]:
+            raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
+        return {"ok": True}
+
+    async def start_queue(self) -> dict[str, Any]:
+        """Operator-local compatibility surface; never expose through HTTP."""
         if not any(
             self._is_translation_job(job)
             for job in self.store.list_jobs(statuses=[JobStatus.QUEUED])
@@ -4419,9 +4592,7 @@ class UiBridge:
         if not normalized_user_id:
             raise ValueError("authentication_required")
         allowed_status = {"online", "away", "busy", "offline"}
-        profile = _profile_default()
-        if str(self.profile.get("user_id") or "") == normalized_user_id:
-            profile.update(self.profile)
+        profile = self._load_profile_for_user(normalized_user_id)
         display_name = " ".join(str(payload.get("display_name") or "você").split())[:40]
         if display_name.casefold() in PROFILE_RESERVED_NAMES:
             raise ValueError("display_name_reserved")
@@ -4444,9 +4615,8 @@ class UiBridge:
             }
         )
         profile["display_name"] = display_name
-        self.profile = profile
-        self._write_profile()
-        return self._profile_payload()
+        self._write_profile(profile, user_id=normalized_user_id)
+        return self._profile_payload(profile, user_id=normalized_user_id)
 
     def save_profile_media(
         self,
@@ -4463,9 +4633,7 @@ class UiBridge:
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
             raise ValueError("authentication_required")
-        if str(self.profile.get("user_id") or "") != normalized_user_id:
-            self.profile = _profile_default()
-            self.profile["user_id"] = normalized_user_id
+        profile = self._load_profile_for_user(normalized_user_id)
         expected_type = PROFILE_MEDIA_TYPES.get(suffix)
         if not expected_type or content_type.casefold().split(";", 1)[0] != expected_type:
             raise ValueError("Use PNG, JPG, JPEG ou WEBP.")
@@ -4475,11 +4643,12 @@ class UiBridge:
         if not content or len(content) > MAX_PROFILE_MEDIA_BYTES:
             raise ValueError("A mídia deve ter no máximo 12 MB.")
 
-        PROFILE_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        user_dir = PROFILE_MEDIA_DIR / hashlib.sha256(normalized_user_id.encode("utf-8")).hexdigest()[:24]
+        media_root = getattr(self, "profile_media_root", PROFILE_MEDIA_DIR)
+        media_root.mkdir(parents=True, exist_ok=True)
+        user_dir = media_root / hashlib.sha256(normalized_user_id.encode("utf-8")).hexdigest()[:24]
         user_dir.mkdir(parents=True, exist_ok=True)
         target = (user_dir / f"{kind}{suffix}").resolve()
-        if PROFILE_MEDIA_DIR.resolve() not in target.parents:
+        if media_root.resolve() not in target.parents:
             raise ValueError("Nome de mídia inválido.")
         temporary = target.with_suffix(target.suffix + ".tmp")
         temporary.write_bytes(content)
@@ -4488,56 +4657,67 @@ class UiBridge:
             if candidate.resolve() != target and candidate.suffix != ".tmp":
                 candidate.unlink(missing_ok=True)
 
-        self.profile[f"{kind}_media_path"] = str(target)
-        self.profile[f"{kind}_media_type"] = expected_type
-        self.profile[f"{kind}_media_name"] = Path(filename).name[:120]
-        self.profile[f"{kind}_media_size"] = len(content)
-        self.profile[f"{kind}_media_updated_at"] = utc_now()
+        profile[f"{kind}_media_path"] = str(target)
+        profile[f"{kind}_media_type"] = expected_type
+        profile[f"{kind}_media_name"] = Path(filename).name[:120]
+        profile[f"{kind}_media_size"] = len(content)
+        profile[f"{kind}_media_updated_at"] = utc_now()
         if kind == "avatar":
-            self.profile["avatar_mode"] = "image"
+            profile["avatar_mode"] = "image"
         else:
-            self.profile["banner"] = "custom"
-        self._write_profile()
-        return self._profile_payload()
+            profile["banner"] = "custom"
+        self._write_profile(profile, user_id=normalized_user_id)
+        return self._profile_payload(profile, user_id=normalized_user_id)
 
     def remove_profile_media(self, kind: str, *, user_id: str = "") -> dict[str, Any]:
-        if str(user_id or "").strip() != str(self.profile.get("user_id") or ""):
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            raise ValueError("authentication_required")
+        profile_path = self._profile_path(normalized_user_id)
+        legacy = getattr(self, "profile", {})
+        if (
+            not profile_path.is_file()
+            and str(legacy.get("user_id") or "") != normalized_user_id
+        ):
             raise ValueError("authentication_required")
         if kind not in {"avatar", "banner"}:
             raise ValueError("Tipo de mídia de perfil inválido.")
-        path = self.profile_media_path(kind)
+        profile = self._load_profile_for_user(normalized_user_id)
+        path = self.profile_media_path(kind, user_id=normalized_user_id)
         if path:
             path.unlink(missing_ok=True)
         for key in ("path", "type", "name", "size", "updated_at"):
-            self.profile.pop(f"{kind}_media_{key}", None)
-        self.profile[f"{kind}_media_path"] = ""
-        self.profile[f"{kind}_media_type"] = ""
-        self.profile[f"{kind}_media_name"] = ""
-        self.profile[f"{kind}_media_size"] = 0
+            profile.pop(f"{kind}_media_{key}", None)
+        profile[f"{kind}_media_path"] = ""
+        profile[f"{kind}_media_type"] = ""
+        profile[f"{kind}_media_name"] = ""
+        profile[f"{kind}_media_size"] = 0
         if kind == "avatar":
-            self.profile["avatar_mode"] = "letter"
+            profile["avatar_mode"] = "letter"
         else:
-            self.profile["banner"] = "ink"
-        self._write_profile()
-        return self._profile_payload()
+            profile["banner"] = "ink"
+        self._write_profile(profile, user_id=normalized_user_id)
+        return self._profile_payload(profile, user_id=normalized_user_id)
 
     def profile_media_path(self, kind: str, *, user_id: str = "") -> Path | None:
         if kind not in {"avatar", "banner"}:
             return None
-        if user_id and str(user_id).strip() != str(self.profile.get("user_id") or ""):
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
             return None
-        raw_path = str(self.profile.get(f"{kind}_media_path") or "")
+        profile = self._load_profile_for_user(normalized_user_id)
+        raw_path = str(profile.get(f"{kind}_media_path") or "")
         if not raw_path:
             return None
         path = Path(raw_path).resolve()
-        media_root = PROFILE_MEDIA_DIR.resolve()
+        media_root = getattr(self, "profile_media_root", PROFILE_MEDIA_DIR).resolve()
         if media_root not in path.parents or not path.is_file():
             return None
         return path
 
-    def open_artifact(self, path_value: str, *, select: bool = False) -> None:
+    def _open_artifact_path(self, path_value: str, *, select: bool = False) -> None:
         path = Path(str(path_value or "")).expanduser().resolve()
-        output_root = OUTPUT_ROOT.resolve()
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
         if path != output_root and output_root not in path.parents:
             raise ValueError("A interface só abre artefatos dentro de output/.")
         if not path.exists():
@@ -4551,6 +4731,33 @@ class UiBridge:
             import webbrowser
 
             webbrowser.open(path.as_uri())
+
+    def open_artifact_for_owner(
+        self,
+        owner_id: str,
+        job_id: str,
+        artifact: str,
+        *,
+        select: bool = False,
+    ) -> None:
+        """Resolve an opaque artifact name only after an owner-scoped SQL lookup."""
+        job = self.store.get_job_for_owner(
+            str(owner_id or "").strip(), str(job_id or "").strip())
+        if job is None:
+            raise ValueError("artifact_not_found")
+        record = self._job_record(job)
+        fields = {
+            "pdf": "pdf_path",
+            "folder": "output_folder",
+            "report": "quality_report_path",
+            "compare": "compare_sheet_path",
+            "context": "session_context_path",
+        }
+        field = fields.get(str(artifact or "").strip())
+        path_value = str(record.get(field) or "") if field else ""
+        if not path_value:
+            raise ValueError("artifact_not_found")
+        self._open_artifact_path(path_value, select=select)
 
     def resolve_local_artifact_for_action(self, local_artifact_id: str) -> dict[str, Any]:
         """Resolve an opaque UI history identifier to a server-side local artifact.
@@ -4701,9 +4908,12 @@ class UiBridge:
         self.history_revision += 1
 
     def _load_profile(self) -> dict[str, Any]:
+        """Load the legacy singleton only for a safe, lazy per-owner migration."""
         profile = _profile_default()
         try:
-            stored = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+            stored = json.loads(
+                getattr(self, "legacy_profile_path", PROFILE_PATH).read_text(
+                    encoding="utf-8"))
             if isinstance(stored, dict):
                 profile.update(stored)
         except (OSError, ValueError, TypeError):
@@ -4715,19 +4925,44 @@ class UiBridge:
             profile["avatar_mode"] = "letter"
         return profile
 
-    def _write_profile(self) -> None:
-        PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temporary = PROFILE_PATH.with_suffix(".tmp")
+    def _profile_path(self, user_id: str) -> Path:
+        digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
+        root = getattr(self, "profile_root", PROFILE_PATH.parent / "ui_profiles")
+        return (root / f"{digest}.json").resolve()
+
+    def _load_profile_for_user(self, user_id: str) -> dict[str, Any]:
+        normalized = str(user_id or "").strip()
+        if not normalized:
+            raise ValueError("authentication_required")
+        path = self._profile_path(normalized)
+        profile = _profile_default()
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(stored, dict) and str(stored.get("user_id") or "") == normalized:
+                profile.update(stored)
+        except (OSError, ValueError, TypeError):
+            legacy = getattr(self, "profile", {})
+            if str(legacy.get("user_id") or "") == normalized:
+                profile.update(legacy)
+        profile["user_id"] = normalized
+        return profile
+
+    def _write_profile(self, profile: dict[str, Any], *, user_id: str) -> None:
+        path = self._profile_path(user_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
         temporary.write_text(
-            json.dumps(self.profile, ensure_ascii=False, indent=2),
+            json.dumps(profile, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        temporary.replace(PROFILE_PATH)
+        temporary.replace(path)
 
-    def _profile_payload(self) -> dict[str, Any]:
-        payload = dict(self.profile)
+    def _profile_payload(
+        self, profile: dict[str, Any], *, user_id: str
+    ) -> dict[str, Any]:
+        payload = dict(profile)
         for kind in ("avatar", "banner"):
-            path = self.profile_media_path(kind)
+            path = self.profile_media_path(kind, user_id=user_id)
             updated = str(payload.get(f"{kind}_media_updated_at") or "")
             payload[f"{kind}_media_url"] = (
                 f"/api/ui/profile/media/{kind}?v={updated}"

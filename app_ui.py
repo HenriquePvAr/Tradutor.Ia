@@ -81,7 +81,12 @@ def _asset_url(path: Path) -> str:
 APP_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
 APP_HOST = configured_bind_host()
 BRIDGE = UiBridge()
-COMMUNITY = CommunityApi(BRIDGE.store)
+COMMUNITY = CommunityApi(
+    BRIDGE.store,
+    community_db_path=BRIDGE.runtime_root / "community.sqlite3",
+    output_root=BRIDGE.output_root,
+    storage_root=BRIDGE.runtime_root / "community_storage",
+)
 AUTH = build_auth_provider()
 
 
@@ -220,7 +225,7 @@ try:
         from social_pdf_http import create_social_pdf_router
 
         _ASSET_REPO = ChapterAssetRepository(
-            ROOT / ".cache" / "runtime" / "social_assets.sqlite3", community_store=COMMUNITY.store)
+            BRIDGE.runtime_root / "social_assets.sqlite3", community_store=COMMUNITY.store)
         _CONTENT = SocialContentService(_SOCIAL_REPO, _ASSET_REPO)
         # Retention: a replaced/unlinked PDF is retained (never deleted) so the owner can
         # restore it. Nothing sweeps automatically here — trashing is operator-invoked via
@@ -275,6 +280,16 @@ def _ui_principal(request: Request, *, mutate: bool = False) -> RequestPrincipal
         raise HTTPException(status_code=401, detail="authentication_required") from exc
 
 
+def _owned_ui_job(
+    request: Request, job_id: str, *, mutate: bool = False
+) -> RequestPrincipal:
+    principal = _ui_principal(request, mutate=mutate)
+    if BRIDGE.store.get_job_for_owner(principal.owner_id, str(job_id or "")) is None:
+        # Deliberately indistinguishable from an absent resource.
+        raise HTTPException(status_code=404, detail="not_found")
+    return principal
+
+
 def _local_folder_submit_allowed(request: Request) -> bool:
     """A browser may submit a filesystem folder only to a loopback-only UI server."""
 
@@ -312,10 +327,33 @@ async def better_auth_proxy(auth_path: str, request: Request) -> Response:
 
 @app.get("/api/ui/bootstrap")
 def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, Any]:
-    payload = BRIDGE.bootstrap(cursor)
-    _enrich_history_publications(payload.get("history") or [])
+    payload: dict[str, Any] = {
+        "status": "ready",
+        "history": [],
+        "queue": [],
+        "resumable": [],
+        "active": None,
+        "latest": None,
+        "latest_result": None,
+        "quality_review": None,
+        "logs": [],
+        "log_cursor": 0,
+        "profile": {},
+        "settings": {},
+        "standalone_source_ready": None,
+        "community": {
+            "authenticated": False,
+            "auth_state": "unauthenticated",
+            "user_id": "",
+            "available": True,
+        },
+    }
     try:
         principal = AUTH.authenticate_request(request)
+        if not principal.authenticated:
+            return payload
+        payload = BRIDGE.bootstrap(cursor, principal=principal)
+        _enrich_history_publications(payload.get("history") or [])
         payload["community"] = {
             **(payload.get("community") or {}),
             "authenticated": bool(principal.authenticated),
@@ -347,8 +385,9 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
 
 
 @app.get("/api/ui/state")
-def api_state(cursor: int = Query(0, ge=0)) -> dict[str, Any]:
-    return BRIDGE.runtime_state(cursor)
+def api_state(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, Any]:
+    principal = _ui_principal(request)
+    return BRIDGE.runtime_state_for_owner(principal.owner_id, cursor)
 
 
 @app.post("/api/ui/run")
@@ -373,7 +412,7 @@ async def api_run(
             })
         return await BRIDGE.start(
             payload,
-            principal=_job_principal(request),
+            principal=_ui_principal(request, mutate=True),
             local_folder_allowed=requests_local_folder,
         )
     except SourceError as exc:
@@ -439,9 +478,13 @@ async def api_run(
 
 
 @app.post("/api/ui/cancel")
-async def api_cancel(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+async def api_cancel(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
-        return await BRIDGE.cancel(
+        principal = _ui_principal(request, mutate=True)
+        return await BRIDGE.cancel_for_owner(
+            principal.owner_id,
             queue=bool(payload.get("queue", False)),
             job_id=str(payload.get("job_id") or ""),
         )
@@ -455,10 +498,12 @@ async def api_cancel(payload: dict[str, Any] = Body(default={})) -> dict[str, An
 
 
 @app.post("/api/ui/jobs/{job_id}/cancel")
-async def api_job_cancel(job_id: str) -> JSONResponse:
+async def api_job_cancel(request: Request, job_id: str) -> JSONResponse:
     """Cancel exactly the job named by the caller without waiting for its runner."""
     try:
-        result = await BRIDGE.cancel(job_id=str(job_id or ""))
+        principal = _owned_ui_job(request, job_id, mutate=True)
+        result = await BRIDGE.cancel_for_owner(
+            principal.owner_id, job_id=str(job_id or ""))
     except ValueError as exc:
         code = str(exc)
         messages = {
@@ -474,7 +519,8 @@ async def api_job_cancel(job_id: str) -> JSONResponse:
 
 
 @app.get("/api/ui/quality-review/revision/{job_id}")
-def api_quality_revision_status(job_id: str) -> dict[str, Any]:
+def api_quality_revision_status(request: Request, job_id: str) -> dict[str, Any]:
+    _owned_ui_job(request, job_id)
     status = BRIDGE.quality_revision_status(job_id)
     if status is None:
         raise HTTPException(status_code=404, detail={
@@ -485,9 +531,13 @@ def api_quality_revision_status(job_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/ui/quality-review/revision/start")
-def api_quality_revision_start(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_quality_revision_start(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
-        return BRIDGE.start_quality_revision(str(payload.get("job_id") or ""))
+        job_id = str(payload.get("job_id") or "")
+        _owned_ui_job(request, job_id, mutate=True)
+        return BRIDGE.start_quality_revision(job_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={
             "code": str(exc),
@@ -497,9 +547,13 @@ def api_quality_revision_start(payload: dict[str, Any] = Body(default={})) -> di
 
 
 @app.post("/api/ui/quality-review/revision/cancel")
-def api_quality_revision_cancel(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_quality_revision_cancel(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
-        return BRIDGE.cancel_quality_revision(str(payload.get("job_id") or ""))
+        job_id = str(payload.get("job_id") or "")
+        _owned_ui_job(request, job_id, mutate=True)
+        return BRIDGE.cancel_quality_revision(job_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={
             "code": str(exc),
@@ -509,10 +563,14 @@ def api_quality_revision_cancel(payload: dict[str, Any] = Body(default={})) -> d
 
 
 @app.post("/api/ui/quality-review/revision/canary/start")
-def api_quality_revision_canary_start(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_quality_revision_canary_start(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
+        job_id = str(payload.get("job_id") or "")
+        _owned_ui_job(request, job_id, mutate=True)
         return BRIDGE.start_quality_revision_canary(
-            str(payload.get("job_id") or ""),
+            job_id,
             max_regions=int(payload.get("max_regions") or 10),
         )
     except ValueError as exc:
@@ -533,7 +591,7 @@ def _page_revision_error(exc: ValueError) -> HTTPException:
 
 @app.post("/api/ui/page-revision/regions")
 def api_page_revision_regions(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    _ui_principal(request)
+    _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.list_page_revision_regions(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""), int(payload.get("page") or 0))
@@ -543,7 +601,7 @@ def api_page_revision_regions(request: Request, payload: dict[str, Any] = Body(d
 
 @app.post("/api/ui/page-revision/forgotten-text")
 def api_page_revision_forgotten(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    _ui_principal(request)
+    _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.page_revision_forgotten_text(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""), int(payload.get("page") or 0))
@@ -553,7 +611,7 @@ def api_page_revision_forgotten(request: Request, payload: dict[str, Any] = Body
 
 @app.post("/api/ui/page-revision/start")
 def api_page_revision_start(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    _ui_principal(request, mutate=True)
+    _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
     region_ids = payload.get("region_ids")
     region_ids = [str(r) for r in region_ids] if isinstance(region_ids, list) else None
     try:
@@ -566,7 +624,7 @@ def api_page_revision_start(request: Request, payload: dict[str, Any] = Body(def
 
 @app.post("/api/ui/page-revision/status")
 def api_page_revision_status(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    _ui_principal(request)
+    _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.page_revision_status(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -577,7 +635,7 @@ def api_page_revision_status(request: Request, payload: dict[str, Any] = Body(de
 
 @app.post("/api/ui/page-revision/cancel")
 def api_page_revision_cancel(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    _ui_principal(request, mutate=True)
+    _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.cancel_page_revision(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -588,7 +646,7 @@ def api_page_revision_cancel(request: Request, payload: dict[str, Any] = Body(de
 
 @app.post("/api/ui/page-revision/resume")
 def api_page_revision_resume(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    _ui_principal(request, mutate=True)
+    _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.resume_page_revision(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -599,7 +657,7 @@ def api_page_revision_resume(request: Request, payload: dict[str, Any] = Body(de
 
 @app.post("/api/ui/page-revision/decision")
 def api_page_revision_decision(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    _ui_principal(request, mutate=True)
+    _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.decide_page_revision(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -610,7 +668,7 @@ def api_page_revision_decision(request: Request, payload: dict[str, Any] = Body(
 
 @app.post("/api/ui/page-revision/manual-region")
 def api_page_revision_manual_region(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    _ui_principal(request, mutate=True)
+    _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
     box = payload.get("box")
     if not isinstance(box, list):
         raise HTTPException(status_code=400, detail={"code": "invalid_box", "message": "Caixa inválida."})
@@ -625,10 +683,13 @@ def api_page_revision_manual_region(request: Request, payload: dict[str, Any] = 
 
 
 @app.get("/api/ui/page-revision/{job_id}/{page_revision_id}/draft")
-def api_page_revision_draft(job_id: str, page_revision_id: str, run_id: str = "") -> FileResponse:
+def api_page_revision_draft(
+    request: Request, job_id: str, page_revision_id: str, run_id: str = ""
+) -> FileResponse:
     # Served to an <img> tag, which cannot carry the bearer token; like the
     # reviewed-page image endpoint, safety comes from the bridge validating the
     # job/run/page-revision linkage and confining the path to the output dir.
+    _owned_ui_job(request, job_id)
     try:
         path = BRIDGE.page_revision_draft_page(job_id, run_id, page_revision_id)
     except ValueError as exc:
@@ -735,7 +796,7 @@ def _audit_error(exc: ValueError) -> HTTPException:
 
 @app.post("/api/ui/audit/review")
 def api_audit_review(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.linguistic_audit_review(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -746,7 +807,8 @@ def api_audit_review(request: Request, payload: dict[str, Any] = Body(default={}
 
 @app.post("/api/ui/audit/decision")
 def api_audit_decision(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.record_audit_decision(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -759,7 +821,7 @@ def api_audit_decision(request: Request, payload: dict[str, Any] = Body(default=
 
 @app.post("/api/ui/audit/triage")
 def api_audit_triage(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.linguistic_triage_queue(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -770,7 +832,8 @@ def api_audit_triage(request: Request, payload: dict[str, Any] = Body(default={}
 
 @app.post("/api/ui/audit/decision/bulk")
 def api_audit_decision_bulk(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     regions = payload.get("region_ids")
     if not isinstance(regions, list):
         raise HTTPException(status_code=400, detail={"code": "no_regions_selected",
@@ -787,7 +850,7 @@ def api_audit_decision_bulk(request: Request, payload: dict[str, Any] = Body(def
 
 @app.post("/api/ui/audit/provider-set")
 def api_audit_provider_set(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.minimal_provider_set(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -798,7 +861,7 @@ def api_audit_provider_set(request: Request, payload: dict[str, Any] = Body(defa
 
 @app.post("/api/ui/audit/ocr-candidates")
 def api_audit_ocr_candidates(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.ocr_reprocessing_candidates(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -810,7 +873,7 @@ def api_audit_ocr_candidates(request: Request, payload: dict[str, Any] = Body(de
 @app.post("/api/ui/audit/ocr-invalid-candidates")
 def api_audit_ocr_invalid_candidates(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     # Proposes candidates only. Confirming one is a separate human decision.
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.ocr_invalid_candidates(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -822,7 +885,7 @@ def api_audit_ocr_invalid_candidates(request: Request, payload: dict[str, Any] =
 @app.post("/api/ui/human-translation/review")
 def api_human_translation_review(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """The executed provider set with this user's own overrides overlaid."""
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.provider_execution_review(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -833,7 +896,8 @@ def api_human_translation_review(request: Request, payload: dict[str, Any] = Bod
 
 @app.post("/api/ui/human-translation/record")
 def api_human_translation_record(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.record_human_translation(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -847,7 +911,8 @@ def api_human_translation_record(request: Request, payload: dict[str, Any] = Bod
 
 @app.post("/api/ui/human-translation/delete")
 def api_human_translation_delete(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.delete_human_translation(
             decision_id=str(payload.get("decision_id") or ""), user_id=principal.user_id)
@@ -860,7 +925,8 @@ def api_human_translation_refinement(
     request: Request, payload: dict[str, Any] = Body(default={})
 ) -> dict[str, Any]:
     """Explicit, owner-scoped linguistic suggestion; never applies a translation."""
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     request_fields = {key: value for key, value in payload.items()
                       if key not in {"owner", "provider", "model"}}
     refinement_request = natural_ptbr_refinement.build_request(
@@ -868,12 +934,12 @@ def api_human_translation_refinement(
         provider=str(payload.get("provider") or "nvidia"),
         model=str(payload.get("model") or "configured"))
     store = natural_ptbr_refinement.RefinementStore(
-        ROOT / ".cache" / "runtime" / "natural_ptbr_refinement")
+        BRIDGE.runtime_root / "natural_ptbr_refinement")
     if str(payload.get("operation") or "") == "restore":
         existing = store.get_result(
             refinement_request["request_hash"], owner=principal.user_id)
         selection_store = refinement_selection_decisions.RefinementSelectionStore(
-            ROOT / ".cache" / "runtime" / "jobs.sqlite3")
+            BRIDGE.store.db_path)
         try:
             selection = selection_store.latest_for_region(
                 str(refinement_request.get("job_id") or ""),
@@ -899,7 +965,8 @@ def api_human_translation_refinement(
 def api_human_translation_refinement_decision(
     request: Request, payload: dict[str, Any] = Body(default={})
 ) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     result = dict(payload.get("result") or {})
     request_fields = dict(result.get("request") or {})
     option = str(payload.get("option") or "")
@@ -933,7 +1000,7 @@ def api_human_translation_refinement_decision(
         "selected_action": action,
     })
     selection_store = refinement_selection_decisions.RefinementSelectionStore(
-        ROOT / ".cache" / "runtime" / "jobs.sqlite3")
+        BRIDGE.store.db_path)
     try:
         decision = selection_store.confirm_batch([intent], plan_hash=plan_hash)[0]
     except ValueError as exc:
@@ -945,7 +1012,7 @@ def api_human_translation_refinement_decision(
 
 @app.post("/api/ui/human-translation/font-candidates")
 def api_human_translation_font_candidates(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.human_typography_candidates(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -956,7 +1023,8 @@ def api_human_translation_font_candidates(request: Request, payload: dict[str, A
 
 @app.post("/api/ui/human-translation/font-choice")
 def api_human_translation_font_choice(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.choose_human_typography(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -967,8 +1035,10 @@ def api_human_translation_font_choice(request: Request, payload: dict[str, Any] 
 
 
 @app.get("/api/ui/human-translation/font-candidate-preview")
-def api_human_translation_font_candidate_preview(request: Request, asset: str = "") -> FileResponse:
-    _ui_principal(request)
+def api_human_translation_font_candidate_preview(
+    request: Request, job_id: str = "", asset: str = ""
+) -> FileResponse:
+    _owned_ui_job(request, job_id)
     try:
         path = BRIDGE.human_typography_candidate_asset(asset)
     except ValueError as exc:
@@ -979,7 +1049,8 @@ def api_human_translation_font_candidate_preview(request: Request, asset: str = 
 @app.post("/api/ui/human-translation/draft")
 def api_human_translation_draft(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """Render one region's human line into its own draft. Never calls a provider."""
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.create_human_preview_draft(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -992,7 +1063,7 @@ def api_human_translation_draft(request: Request, payload: dict[str, Any] = Body
 
 @app.post("/api/ui/human-translation/gates")
 def api_human_translation_gates(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.human_preview_gates(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -1003,7 +1074,8 @@ def api_human_translation_gates(request: Request, payload: dict[str, Any] = Body
 
 @app.post("/api/ui/human-translation/visual-review")
 def api_human_translation_visual_review(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.record_visual_review_decision(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -1031,7 +1103,7 @@ def api_pending_human_previews(request: Request) -> dict[str, Any]:
 def api_human_translation_preview_crop(request: Request, job_id: str = "", run_id: str = "",
                                        region_id: str = "", kind: str = "draft") -> FileResponse:
     """The region as it is now, or as the draft would render it."""
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, job_id)
     try:
         path = BRIDGE.human_preview_crop(job_id, run_id, region_id=region_id, kind=kind,
                                          user_id=principal.user_id)
@@ -1042,7 +1114,7 @@ def api_human_translation_preview_crop(request: Request, job_id: str = "", run_i
 
 @app.post("/api/ui/human-mask/editor-state")
 def api_human_mask_editor_state(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.human_mask_editor_state(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -1053,7 +1125,8 @@ def api_human_mask_editor_state(request: Request, payload: dict[str, Any] = Body
 
 @app.post("/api/ui/human-mask/save")
 def api_human_mask_save(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.save_human_mask_draft(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -1065,7 +1138,8 @@ def api_human_mask_save(request: Request, payload: dict[str, Any] = Body(default
 
 @app.post("/api/ui/human-mask/confirm")
 def api_human_mask_confirm(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.save_human_mask_draft(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -1076,8 +1150,10 @@ def api_human_mask_confirm(request: Request, payload: dict[str, Any] = Body(defa
 
 
 @app.get("/api/ui/human-mask/asset")
-def api_human_mask_asset(request: Request, asset: str = "") -> FileResponse:
-    _ui_principal(request)
+def api_human_mask_asset(
+    request: Request, job_id: str = "", asset: str = ""
+) -> FileResponse:
+    _owned_ui_job(request, job_id)
     try:
         path = BRIDGE.human_mask_editor_asset(asset)
     except ValueError as exc:
@@ -1089,7 +1165,7 @@ def api_human_mask_asset(request: Request, asset: str = "") -> FileResponse:
 def api_audit_region_crop(request: Request, job_id: str = "", run_id: str = "",
                           region_id: str = "") -> FileResponse:
     """Serve the region's own pixels so a verdict is given on the picture too."""
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, job_id)
     try:
         path = BRIDGE.audit_region_crop(job_id, run_id, region_id=region_id,
                                         user_id=principal.user_id)
@@ -1100,7 +1176,7 @@ def api_audit_region_crop(request: Request, job_id: str = "", run_id: str = "",
 
 @app.post("/api/ui/audit/editorial-pending")
 def api_audit_editorial_pending(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request)
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""))
     try:
         return BRIDGE.pending_editorial_decisions(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -1113,7 +1189,8 @@ def api_audit_editorial_pending(request: Request, payload: dict[str, Any] = Body
 def api_audit_provider_authorization(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     # Records a pending request only. It never reads a credential and never
     # contacts the provider; running it stays a separate, explicit step.
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.request_provider_authorization(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -1124,7 +1201,8 @@ def api_audit_provider_authorization(request: Request, payload: dict[str, Any] =
 
 @app.post("/api/ui/audit/provider-authorization/cancel")
 def api_audit_provider_authorization_cancel(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.cancel_provider_authorization(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -1135,7 +1213,8 @@ def api_audit_provider_authorization_cancel(request: Request, payload: dict[str,
 
 @app.post("/api/ui/audit/decision/delete")
 def api_audit_decision_delete(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
     try:
         return BRIDGE.delete_audit_decision(
             str(payload.get("job_id") or ""), str(payload.get("run_id") or ""),
@@ -1145,7 +1224,8 @@ def api_audit_decision_delete(request: Request, payload: dict[str, Any] = Body(d
 
 
 @app.get("/api/ui/quality-review/{job_id}")
-def api_quality_review(job_id: str) -> dict[str, Any]:
+def api_quality_review(request: Request, job_id: str) -> dict[str, Any]:
+    _owned_ui_job(request, job_id)
     review = BRIDGE.quality_review(job_id)
     if review is None:
         raise HTTPException(status_code=404, detail={
@@ -1156,7 +1236,10 @@ def api_quality_review(job_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/ui/quality-review/{job_id}/page/{page_number}")
-def api_quality_review_page(job_id: str, page_number: int, revision: str = "") -> FileResponse:
+def api_quality_review_page(
+    request: Request, job_id: str, page_number: int, revision: str = ""
+) -> FileResponse:
+    _owned_ui_job(request, job_id)
     path = BRIDGE.quality_review_page(job_id, page_number, revision=revision)
     if path is None:
         raise HTTPException(status_code=404, detail="Página de revisão não encontrada.")
@@ -1164,8 +1247,11 @@ def api_quality_review_page(job_id: str, page_number: int, revision: str = "") -
 
 
 @app.post("/api/ui/quality-review/action")
-def api_quality_review_action(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_quality_review_action(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
+        _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
         return BRIDGE.quality_review_action(
             str(payload.get("job_id") or ""),
             str(payload.get("item_key") or ""),
@@ -1180,8 +1266,11 @@ def api_quality_review_action(payload: dict[str, Any] = Body(default={})) -> dic
 
 
 @app.post("/api/ui/quality-review/bulk-action")
-def api_quality_review_bulk_action(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_quality_review_bulk_action(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
+        _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
         raw_keys = payload.get("item_keys") or []
         item_keys = [str(item) for item in raw_keys] if isinstance(raw_keys, list) else []
         raw_restore = payload.get("restore_actions") or {}
@@ -1203,8 +1292,11 @@ def api_quality_review_bulk_action(payload: dict[str, Any] = Body(default={})) -
 
 
 @app.post("/api/ui/quality-review/global-review")
-def api_quality_review_global_review(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_quality_review_global_review(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
+        _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
         return BRIDGE.translation_global_review(str(payload.get("job_id") or ""))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={
@@ -1215,8 +1307,11 @@ def api_quality_review_global_review(payload: dict[str, Any] = Body(default={}))
 
 
 @app.post("/api/ui/quality-review/confirm")
-def api_quality_review_confirm(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_quality_review_confirm(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
+        _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
         return BRIDGE.confirm_quality_review(str(payload.get("job_id") or ""))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={
@@ -1227,9 +1322,13 @@ def api_quality_review_confirm(payload: dict[str, Any] = Body(default={})) -> di
 
 
 @app.post("/api/ui/retry")
-def api_retry(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_retry(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
-        return BRIDGE.retry_job(str(payload.get("job_id") or ""))
+        job_id = str(payload.get("job_id") or "")
+        principal = _owned_ui_job(request, job_id, mutate=True)
+        return BRIDGE.retry_job_for_owner(principal.owner_id, job_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={
             "code": str(exc),
@@ -1239,10 +1338,14 @@ def api_retry(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
 
 
 @app.post("/api/ui/source/confirm")
-def api_source_confirm(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_source_confirm(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
+        job_id = str(payload.get("job_id") or "")
+        _owned_ui_job(request, job_id, mutate=True)
         return BRIDGE.confirm_source_pages(
-            str(payload.get("job_id") or ""),
+            job_id,
             payload.get("candidate_ids") if isinstance(payload.get("candidate_ids"), list) else [],
         )
     except ValueError as exc:
@@ -1254,9 +1357,13 @@ def api_source_confirm(payload: dict[str, Any] = Body(default={})) -> dict[str, 
 
 
 @app.post("/api/ui/source/retry")
-async def api_source_retry(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+async def api_source_retry(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
-        return await BRIDGE.retry_source_review(str(payload.get("job_id") or ""))
+        job_id = str(payload.get("job_id") or "")
+        _owned_ui_job(request, job_id, mutate=True)
+        return await BRIDGE.retry_source_review(job_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={
             "code": str(exc), "stage": "revisao_da_fonte",
@@ -1320,7 +1427,8 @@ def api_source_continue(
 
 
 @app.get("/api/ui/source-policy")
-def api_source_policy() -> dict[str, Any]:
+def api_source_policy(request: Request) -> dict[str, Any]:
+    _ui_principal(request)
     return {"ok": True, "policy": BRIDGE.settings()["workspace_source_policy"]}
 
 
@@ -1354,34 +1462,44 @@ def api_queue_add(
         "item": _api_call(
             BRIDGE.add_queue_item,
             payload,
-            principal=_job_principal(request),
+            principal=_ui_principal(request, mutate=True),
         ),
     }
 
 
 @app.post("/api/ui/queue/remove")
-def api_queue_remove(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    BRIDGE.remove_queue_item(str(payload.get("id") or ""))
+def api_queue_remove(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    BRIDGE.remove_queue_item_for_owner(
+        principal.owner_id, str(payload.get("id") or ""))
     return {"ok": True}
 
 
 @app.post("/api/ui/queue/clear")
-def api_queue_clear() -> dict[str, Any]:
-    BRIDGE.clear_queue()
+def api_queue_clear(request: Request) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
+    BRIDGE.clear_queue_for_owner(principal.owner_id)
     return {"ok": True}
 
 
 @app.post("/api/ui/queue/start")
-async def api_queue_start() -> dict[str, Any]:
+async def api_queue_start(request: Request) -> dict[str, Any]:
     try:
-        return await BRIDGE.start_queue()
+        principal = _ui_principal(request, mutate=True)
+        return await BRIDGE.start_queue_for_owner(principal.owner_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/ui/resume")
-def api_resume(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    return _api_call(BRIDGE.resume, str(payload.get("job_id") or payload.get("id") or ""))
+def api_resume(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    job_id = str(payload.get("job_id") or payload.get("id") or "")
+    _owned_ui_job(request, job_id, mutate=True)
+    return _api_call(BRIDGE.resume, job_id)
 
 
 @app.post("/api/ui/profile")
@@ -1458,20 +1576,30 @@ def api_community_profile_media(user_id: str, kind: str, request: Request) -> Fi
 
 
 @app.post("/api/ui/open")
-def api_open(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_open(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    principal = _ui_principal(request, mutate=True)
     _api_call(
-        BRIDGE.open_artifact,
-        str(payload.get("path") or ""),
+        BRIDGE.open_artifact_for_owner,
+        principal.owner_id,
+        str(payload.get("job_id") or ""),
+        str(payload.get("artifact") or ""),
         select=bool(payload.get("select", False)),
     )
     return {"ok": True}
 
 
 @app.post("/api/ui/history/delete")
-def api_history_delete(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def api_history_delete(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
     try:
+        record_id = str(
+            payload.get("local_artifact_id") or payload.get("record_id") or "")
+        _owned_ui_job(request, record_id, mutate=True)
         return BRIDGE.delete_local_artifact(
-            str(payload.get("local_artifact_id") or payload.get("record_id") or ""),
+            record_id,
             delete_files=bool(payload.get("delete_files", False)),
             confirm=str(payload.get("confirmation") or payload.get("confirm") or ""),
         )

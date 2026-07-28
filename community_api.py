@@ -81,14 +81,22 @@ def build_read_provider():
 class CommunityApi:
     def __init__(self, job_store, *, community_db_path: Path = COMMUNITY_DB_PATH,
                  output_root: Path = OUTPUT_ROOT,
+                 storage_root: Path = COMMUNITY_STORAGE_ROOT,
                  read_provider_factory: Callable[[], Any] | None = None,
                  profile_sync: Callable[[RequestPrincipal], Any] | None = None):
+        storage_root = Path(storage_root).resolve()
         self.store = CommunityStore(community_db_path)
         self.service = CommunityService(
             self.store, job_store, output_root=Path(output_root),
             provider_name=storage_provider_name(), community_db_path=str(community_db_path),
-            storage_config={k: v for k, v in _storage_config().items() if k != "storage_provider"})
-        self._read_provider_factory = read_provider_factory or build_read_provider
+            storage_config={
+                **{k: v for k, v in _storage_config().items() if k != "storage_provider"},
+                "storage_root": str(storage_root),
+            })
+        self._read_provider_factory = read_provider_factory or (
+            (lambda: FilesystemStorageProvider(storage_root))
+            if storage_provider_name() == "filesystem" else build_read_provider
+        )
         self._profile_sync = profile_sync
         # The community DB and jobs DB cannot share one transaction.  The local API
         # serializes the short draft+enqueue boundary so duplicate clicks observe the
