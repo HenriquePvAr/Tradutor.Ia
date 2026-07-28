@@ -148,10 +148,11 @@ class PreflightRegressionTests(unittest.TestCase):
     def test_rate_limiting_is_still_reported_for_a_reader(self):
         # 429 is about the origin being busy, not about needing a browser: keep reporting it.
         adapter = select_adapter(OFFICIAL)
-        session = _Session([_Response(status=429)])
+        session = _Session([_Response(status=429), _Response(status=429)])
         with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
             with self.assertRaises(SourceError) as ctx:
                 preflight_browser_navigation(adapter, OFFICIAL, session=session)
+        self.assertEqual(len(session.requests), 2)
         self.assertEqual(ctx.exception.code, "source_rate_limited")
 
     def test_timeout_has_an_actionable_navigation_code(self):
@@ -195,6 +196,55 @@ class PreflightRegressionTests(unittest.TestCase):
         self.assertTrue(result.browser_inspection_allowed)
         self.assertEqual(result.browser_inspection_reason, "requires_rendered_dom")
         self.assertEqual(result.transport_error, "")
+
+    def test_transient_http_failure_retries_then_allows_browser_inspection(self):
+        adapter = select_adapter(OFFICIAL)
+        for status in (429, 500, 502, 503, 504):
+            with self.subTest(status=status):
+                session = _Session([
+                    _Response(status=status, headers={"Content-Type": "text/html"}),
+                    _Response(status=200, headers={"Content-Type": "text/html"}),
+                ])
+
+                result = inspect_source_preflight(
+                    adapter, OFFICIAL, session=session,
+                    limits=DownloadLimits(preflight_transport_attempts=2))
+
+                self.assertEqual(len(session.requests), 2)
+                self.assertEqual(result.status, "browser_inspection_required")
+                self.assertTrue(result.browser_inspection_allowed)
+                self.assertEqual(result.browser_inspection_reason, "requires_rendered_dom")
+
+    def test_persistent_transient_http_failure_exhausts_bounded_retries(self):
+        adapter = select_adapter(OFFICIAL)
+        session = _Session([
+            _Response(status=503, headers={"Content-Type": "text/html"}),
+            _Response(status=503, headers={"Content-Type": "text/html"}),
+        ])
+
+        result = inspect_source_preflight(
+            adapter, OFFICIAL, session=session,
+            limits=DownloadLimits(preflight_transport_attempts=2))
+
+        self.assertEqual(len(session.requests), 2)
+        self.assertEqual(result.status, "source_unavailable")
+        self.assertEqual(result.reason_code, "source_rate_limited")
+        self.assertFalse(result.browser_inspection_allowed)
+
+    def test_conclusive_not_found_is_never_retried_or_sent_to_browser(self):
+        adapter = select_adapter(OFFICIAL)
+        session = _Session([
+            _Response(status=404, headers={"Content-Type": "text/html"}),
+            _Response(status=200, headers={"Content-Type": "text/html"}),
+        ])
+
+        result = inspect_source_preflight(
+            adapter, OFFICIAL, session=session,
+            limits=DownloadLimits(preflight_transport_attempts=2))
+
+        self.assertEqual(len(session.requests), 1)
+        self.assertEqual(result.status, "source_unavailable")
+        self.assertFalse(result.browser_inspection_allowed)
 
     def test_persistent_transport_failure_stays_fail_closed(self):
         adapter = select_adapter(OFFICIAL)

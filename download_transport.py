@@ -534,7 +534,8 @@ def inspect_source_preflight(adapter, url: str, *, limits: DownloadLimits | None
             }
             response = None
             last_transport_error = ""
-            for attempt in range(max(1, int(limits.preflight_transport_attempts))):
+            preflight_attempts = max(1, int(limits.preflight_transport_attempts))
+            for attempt in range(preflight_attempts):
                 try:
                     if not cancel_check:
                         response = session.get(current, **request_args)
@@ -564,6 +565,14 @@ def inspect_source_preflight(adapter, url: str, *, limits: DownloadLimits | None
                         response = result.get("response")
                     if response is None:
                         raise requests.ConnectionError("empty preflight response")
+                    # Retry only statuses whose semantics are explicitly transient.  The
+                    # response is closed before the next bounded attempt; conclusive client
+                    # errors (including 401/403/404) remain single-shot and fail closed.
+                    if (int(response.status_code) in {429, 500, 502, 503, 504}
+                            and attempt + 1 < preflight_attempts):
+                        response.close()
+                        response = None
+                        continue
                     break
                 except SourceError:
                     raise
@@ -573,7 +582,7 @@ def inspect_source_preflight(adapter, url: str, *, limits: DownloadLimits | None
                     last_transport_error = "connection"
                 except Exception:  # noqa: BLE001 - never persist transport internals
                     last_transport_error = "unexpected"
-                if attempt + 1 < max(1, int(limits.preflight_transport_attempts)):
+                if attempt + 1 < preflight_attempts:
                     continue
             if response is None:
                 if last_transport_error == "timeout":
