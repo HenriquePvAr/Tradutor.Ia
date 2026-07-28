@@ -1870,8 +1870,8 @@
   $('#qualityReviewList')?.addEventListener('click', qualityReviewAction);
   $('#reviewedPdfAction')?.addEventListener('click', event => {
     if (!event.target.closest('[data-open-reviewed-pdf]')) return;
-    const path = appState.qualityReview?.reviewed_pdf?.path;
-    if (path) openArtifact(path);
+    const jobId = appState.qualityReview?.job_id;
+    if (jobId) openArtifact(jobId, 'pdf');
   });
   $('#visualComparisonClose')?.addEventListener('click', () => {
     const dialog = $('#visualComparisonDialog');
@@ -3003,8 +3003,9 @@
         const box = $(`#auditList [data-preview-reasons="${CSS.escape(region)}"]`);
         if (box) {
           const assets = data.assets || {};
+          const maskAssetUrl = (asset) => `/api/ui/human-mask/asset?job_id=${encodeURIComponent(id.job_id || '')}&asset=${encodeURIComponent(asset)}`;
           const assetImg = (key, label) => assets[key]
-            ? `<figure><figcaption>${escapeHtml(label)}</figcaption><img src="/api/ui/human-mask/asset?asset=${encodeURIComponent(assets[key])}" alt="${escapeAttr(label)} da região ${region}"></figure>`
+            ? `<figure><figcaption>${escapeHtml(label)}</figcaption><img src="${maskAssetUrl(assets[key])}" alt="${escapeAttr(label)} da região ${region}"></figure>`
             : `<figure><figcaption>${escapeHtml(label)}</figcaption><div class="visual-comparison-empty">camada indisponível</div></figure>`;
           const auto = data.automatic_segmentation || {};
           const boundary = data.boundary_review || {};
@@ -3031,8 +3032,8 @@
             + `<p><strong>${Number(boundary.conflict_pixel_count || 0)}</strong> pixels em conflito. Sugestões não são decisões.</p>`
             + `<label>OPACIDADE <input type="range" min="0" max="100" value="50" data-boundary-opacity> <output data-boundary-opacity-value>50%</output></label>`
             + `<div class="boundary-stage" tabindex="0" aria-label="Original com camadas de revisão">`
-            + (assets.auto_segmentation ? `<img class="boundary-base" src="/api/ui/human-mask/asset?asset=${encodeURIComponent(assets.auto_segmentation)}" alt="Imagem original">` : '')
-            + (assets.glyph_art_conflict ? `<img class="boundary-overlay" src="/api/ui/human-mask/asset?asset=${encodeURIComponent(assets.glyph_art_conflict)}" alt="Pixels em conflito">` : '')
+            + (assets.auto_segmentation ? `<img class="boundary-base" src="${maskAssetUrl(assets.auto_segmentation)}" alt="Imagem original">` : '')
+            + (assets.glyph_art_conflict ? `<img class="boundary-overlay" src="${maskAssetUrl(assets.glyph_art_conflict)}" alt="Pixels em conflito">` : '')
             + `</div><div class="boundary-segments" aria-label="Segmentos pendentes">${segments || '<span>Sem segmentos</span>'}</div>`
             + `<div class="hm-refine-tools"><button type="button" class="btn-ghost" data-boundary-class="glyph_outline">MARCAR COMO TEXTO</button>`
             + `<button type="button" class="btn-ghost" data-boundary-class="protected_art">MARCAR COMO ARTE</button>`
@@ -4150,7 +4151,7 @@
     }
     if (button.dataset.action === 'publish') { openPublicationModal(record); return; }
     if (['pdf','folder','report','compare','context'].includes(button.dataset.action || '')) {
-      await openArtifact(decodeURIComponent(button.dataset.path || ''));
+      await openArtifact(record.job_id, button.dataset.action);
     }
   });
   $('#histList')?.addEventListener('keydown', event => {
@@ -4820,17 +4821,19 @@
   function renderArtifactButtons(container, record) {
     if (!container) return;
     container.innerHTML = [
-      ['PDF base', record.pdf_path], ['Pasta', record.output_folder], ['Qualidade', record.quality_report_path],
-      ['Compare', record.compare_sheet_path], ['Contexto', record.session_context_path],
-    ].filter(([, path]) => path).map(([label, path]) => `<button class="btn-ghost" data-path="${encodeURIComponent(path)}">${label}</button>`).join('');
+      ['PDF base', 'pdf', record.pdf_path], ['Pasta', 'folder', record.output_folder],
+      ['Qualidade', 'report', record.quality_report_path],
+      ['Compare', 'compare', record.compare_sheet_path],
+      ['Contexto', 'context', record.session_context_path],
+    ].filter(([, , path]) => path).map(([label, artifact]) => `<button class="btn-ghost" data-job-id="${escapeAttr(record.job_id || '')}" data-artifact="${artifact}">${label}</button>`).join('');
   }
   $('#artifactActions')?.addEventListener('click', event => {
-    const button = event.target.closest('[data-path]');
-    if (button) openArtifact(decodeURIComponent(button.dataset.path));
+    const button = event.target.closest('[data-artifact]');
+    if (button) openArtifact(button.dataset.jobId, button.dataset.artifact);
   });
-  async function openArtifact(path) {
-    if (!path) return;
-    try { await api('/api/ui/open', {method: 'POST', body: JSON.stringify({path})}); }
+  async function openArtifact(jobId, artifact) {
+    if (!jobId || !artifact) return;
+    try { await api('/api/ui/open', {method: 'POST', body: JSON.stringify({job_id: jobId, artifact})}); }
     catch (error) { showToast(error.message, 'error'); }
   }
 
@@ -4864,7 +4867,7 @@
     const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 12 4 4 8-9"/></svg>';
     const closeIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m6 6 12 12M18 6 6 18"/></svg>';
     const queueClass = status => status === 'finished' ? 'done' : status === 'review_required' ? 'review_required' : escapeAttr(status);
-    list.innerHTML = items.length ? items.map((item, index) => `<div class="queue-item status-${queueClass(item.status)}" data-id="${escapeAttr(item.id)}"><span class="qi-num">${terminalRunStatuses.has(item.status) ? checkIcon : index + 1}</span><span class="qi-url">${escapeHtml(item.chapter_name || item.url)}</span><span class="qi-status">${runStatusLabels[item.status] || item.status}</span>${item.status === 'waiting' ? `<button class="qi-remove" data-id="${escapeAttr(item.id)}" aria-label="Remover da fila">${closeIcon}</button>` : ''}</div>`).join('') : '<div class="empty-real-state">fila vazia · adicione uma URL acima</div>';
+    list.innerHTML = items.length ? items.map((item, index) => `<div class="queue-item status-${queueClass(item.status)}" data-id="${escapeAttr(item.id)}"><span class="qi-num">${terminalRunStatuses.has(item.status) ? checkIcon : index + 1}</span><span class="qi-url">${escapeHtml(item.chapter_name || item.url)}</span><span class="qi-status">${runStatusLabels[item.status] || item.status}</span>${['waiting','queued'].includes(item.status) ? `<button class="qi-remove" data-id="${escapeAttr(item.id)}" aria-label="Remover da fila">${closeIcon}</button>` : ''}</div>`).join('') : '<div class="empty-real-state">fila vazia · adicione uma URL acima</div>';
   }
   $('#queueAddBtn')?.addEventListener('click', addQueueItem);
   $('#queueUrlInput')?.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); addQueueItem(); } });
