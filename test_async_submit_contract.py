@@ -10,6 +10,7 @@ Hermetic: no browser, no network, no analyzer is ever reached.
 
 import _test_bootstrap  # noqa: F401
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -237,6 +238,34 @@ class RuntimeStateLatestJobTests(unittest.TestCase):
         self.assertEqual(state["active"]["id"], active)
         self.assertIsNone(state["quality_review"])
         quality_review.assert_not_called()
+
+    def test_terminal_runtime_record_uses_persisted_report_metrics(self):
+        job_id = self._create_terminal(
+            job_id="cccccccccccccccccccccccccccccccc",
+            status=JobStatus.REVIEW_REQUIRED,
+            stage="Finalizado",
+            reason_code="quality_review_required",
+            output_dir="reported",
+        )
+        output = self.tmp / "reported"
+        output.mkdir()
+        (output / "timing_report.json").write_text(
+            json.dumps({
+                "processed_images": 88,
+                "groups_translated": 124,
+                "pages_with_error": 0,
+                "quality_validation": {"passed": False},
+            }),
+            encoding="utf-8",
+        )
+
+        record = self.bridge.runtime_state(0)["latest"]
+
+        self.assertEqual(record["id"], job_id)
+        self.assertEqual(record["pages_processed"], 88)
+        self.assertEqual(record["groups_translated"], 124)
+        self.assertEqual(record["errors"], 0)
+        self.assertFalse(record["quality_gate"])
 
 
 if __name__ == "__main__":

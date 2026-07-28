@@ -103,6 +103,22 @@ class StageMachineTests(unittest.TestCase):
             progress = self.bridge.runtime_state()["progress"]
         self.assertEqual((progress["current"], progress["total"]), (12, 40))
 
+    def test_browser_log_redacts_local_absolute_paths(self):
+        job_id = self.make_running()
+        log_path = self.tmp / "runner.log"
+        log_path.write_text(
+            "PDF: C:\\Projetos\\Tradutor.Ia\\output\\chapter\\result.pdf\n",
+            encoding="utf-8",
+        )
+        self.bridge.store.update_fields(job_id, log_path=str(log_path))
+
+        entries = self.bridge._tail_job_logs(
+            self.bridge.store.get_job(job_id), 0)["entries"]
+
+        self.assertEqual(len(entries), 1)
+        self.assertNotIn("C:\\", entries[0]["text"])
+        self.assertIn("[CAMINHO LOCAL]", entries[0]["text"])
+
 
 class RunnerHandoffTests(unittest.TestCase):
     """The layer that was never proven: job → runner → outputs → terminal state."""

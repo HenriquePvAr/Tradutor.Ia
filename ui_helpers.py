@@ -361,7 +361,10 @@ _STAGES = (
     (("classifica", "agrup"), "Classificação", 0.48),
     # Provider/configuration lines such as "Usando NVIDIA API" are emitted while
     # OCR is still running. Translation has an explicit phase marker.
-    (("tradução nvidia:", "traducao nvidia:", "traduzindo"), "Tradução NVIDIA", 0.58),
+    # ``NVIDIA:`` is the stable ASCII suffix of the explicit phase marker. It also
+    # survives a Windows child console that corrupts only the accented word before it.
+    # Provider setup lines say ``NVIDIA API`` and therefore do not match.
+    (("tradução nvidia:", "traducao nvidia:", " nvidia:", "traduzindo"), "Tradução NVIDIA", 0.58),
     (("inpaint", "render", "redesen", "salvando página"), "Renderização", 0.78),
     (("gerando pdf", "pdf:"), "Geração de PDF", 0.9),
     (("relatório", "relatorio", "quality_report", "compare sheet"), "Relatórios", 0.95),

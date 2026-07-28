@@ -29,6 +29,7 @@ import process_tree
 from job_store import JobStatus, JobStore
 from local_environment import load_local_environment_for_entrypoint
 from process_options import build_background_process_options
+from ui_helpers import sanitize_diagnostic_text
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
@@ -84,6 +85,25 @@ class Worker:
     def another_worker_alive(self) -> bool:
         healthy = self.store.healthy_worker(stale_seconds=self.stale_seconds / 2)
         return bool(healthy and healthy["worker_id"] != self.worker_id)
+
+    def _append_job_log(self, job_id: str, stage: str, message: str = "") -> None:
+        """Persist sanitized source-phase events before a runner exists."""
+        safe_stage = str(stage or "source_analysis").strip().casefold()
+        safe_stage = "".join(
+            character for character in safe_stage
+            if character.isascii() and (character.isalnum() or character in "_-")
+        )[:64] or "source_analysis"
+        safe_message = sanitize_diagnostic_text(str(message or "")).strip()
+        log_dir = Path(getattr(
+            self, "log_dir", Path(self.store.db_path).parent / "logs"))
+        path = log_dir / f"{job_id}.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = f"{time.strftime('%H:%M:%S')} [{safe_stage}]"
+        if safe_message:
+            line += f" {safe_message[:500]}"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        self.store.update_fields(job_id, log_path=str(path))
 
     # Runner script per job type. Only translation is the default; more handlers register
     # here without spreading job-type ifs through the worker loop.
@@ -184,6 +204,7 @@ class Worker:
         self.store.update_progress(
             job["id"], stage="source_validation", message="Validando fonte…",
             counter_stage="source_validation")
+        self._append_job_log(job["id"], "source_validation", "Validando fonte")
         self.store.heartbeat(job["id"])
         try:
             def progress(event: dict) -> None:
@@ -197,6 +218,8 @@ class Worker:
                     message=str(payload.get("message") or ""),
                     counter_stage=str(payload.get("counter_stage") or stage),
                 )
+                self._append_job_log(
+                    job["id"], stage, str(payload.get("message") or ""))
                 self.store.worker_heartbeat(self.worker_id)
 
             result: dict[str, object] = {}

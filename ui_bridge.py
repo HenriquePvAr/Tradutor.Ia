@@ -75,6 +75,7 @@ WORKER_ENV_COMPATIBILITY_KEYS = ("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "CHROMEDRIVER
 JOB_LOG_DIR = REPO_ROOT / ".cache" / "runtime" / "logs"
 MAX_LOG_LINES = 3000
 SOURCE_ANALYSIS_TIMEOUT_SECONDS = 180
+_WINDOWS_LOCAL_PATH = re.compile(r"(?i)\b[A-Z]:\\[^\r\n]+")
 _UI_STAGE_LABELS = {
     "created": "Preparando",
     # Worker-owned stages. The submit returns before any of these, so the screen only shows
@@ -472,6 +473,23 @@ class UiBridge:
                 source_analysis_result = stored_result.public() if stored_result else {}
             finally:
                 readiness.close()
+        result_metrics: dict[str, Any] = {}
+        if str(job.get("status") or "") in JobStatus.TERMINAL:
+            report_path = Path(str(job.get("output_dir") or "")) / "timing_report.json"
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                report = {}
+            if isinstance(report, dict):
+                quality = report.get("quality_validation")
+                quality = quality if isinstance(quality, dict) else {}
+                result_metrics = {
+                    "pages_processed": int(
+                        report.get("processed_images") or report.get("total_images") or 0),
+                    "groups_translated": int(report.get("groups_translated") or 0),
+                    "errors": int(report.get("pages_with_error") or 0),
+                    "quality_gate": quality.get("passed"),
+                }
         return {
             "id": job["id"],
             "run_id": job.get("run_id"),
@@ -523,6 +541,7 @@ class UiBridge:
             "review_confirmed_at": _epoch_to_iso(job.get("review_confirmed_at")),
             "cancellation_requested_at": _epoch_to_iso(job.get("cancellation_requested_at")),
             "cancellation_completed_at": _epoch_to_iso(job.get("cancellation_completed_at")),
+            **result_metrics,
         }
 
     @staticmethod
@@ -3006,10 +3025,16 @@ class UiBridge:
                 "stage_key": stage,
                 "current": current,
                 "total": total,
+                "counter_stage": counter_stage,
                 "fraction": stage_fraction,
                 "indeterminate": stage_fraction is None and running,
-                "pages": current,
-                "groups": int((present_job or {}).get("progress_current") or 0),
+                "pages": (
+                    current if stage in {
+                        "Baixando imagens", "Validando imagens", "OCR",
+                        "Renderização", "Geração de PDF",
+                    } else 0
+                ),
+                "groups": current if stage == "Classificação" else 0,
                 "errors": 0,
                 "last_message": progress_message,
                 "elapsed_seconds": elapsed,
@@ -3089,7 +3114,13 @@ class UiBridge:
             return {"entries": [], "cursor": int(cursor or 0)}
         start = int(cursor or 0)
         entries = [
-            {"seq": index + 1, "time": "", "kind": "info", "text": sanitize_diagnostic_text(line)}
+            {
+                "seq": index + 1,
+                "time": "",
+                "kind": "info",
+                "text": _WINDOWS_LOCAL_PATH.sub(
+                    "[CAMINHO LOCAL]", sanitize_diagnostic_text(line)),
+            }
             for index, line in enumerate(lines[-MAX_LOG_LINES:])
             if index + 1 > start
         ]

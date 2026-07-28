@@ -75,6 +75,7 @@ class _Worker(Worker):
         self._analysis = analysis
         self._error = error
         self.spawns = 0
+        self.log_dir = Path(self.store.db_path).parent / "logs"
 
     def _analyze_source(self, url, *, cancel_check=None, on_progress=None):
         if self._error is not None:
@@ -231,6 +232,28 @@ class WorkerPhaseTests(unittest.TestCase):
             prepared = worker._prepare_source(job)
         self.assertIsNotNone(prepared)
         self.assertEqual(prepared["id"], job["id"])
+
+    def test_source_phase_is_visible_in_the_per_job_log_before_runner_spawn(self):
+        class LoggingWorker(_Worker):
+            def _analyze_source(self, url, *, cancel_check=None, on_progress=None):
+                on_progress({
+                    "stage": "browser_loading",
+                    "message": "Inspecionando fonte autorizada",
+                })
+                return self._analysis
+
+        job = self.queued_url_job()
+        worker = LoggingWorker(self.store, analysis=FakeAnalysis(review_outcome()))
+
+        self.assertIsNone(worker._prepare_source(job))
+
+        row = self.store.get_job(job["id"])
+        log_path = Path(row["log_path"])
+        self.assertTrue(log_path.is_file())
+        text = log_path.read_text(encoding="utf-8")
+        self.assertIn("[source_validation]", text)
+        self.assertIn("[browser_loading]", text)
+        self.assertNotIn(URL, text)
 
     def test_automatic_selection_is_persisted_but_runner_waits_for_authorization(self):
         job = self.queued_url_job(

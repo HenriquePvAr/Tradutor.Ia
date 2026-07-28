@@ -1329,12 +1329,6 @@
     const activeMetric = metricFromProgress(progress, 'em andamento');
     if (stage === state.visualStage && activeMetric !== '0/0') return activeMetric || 'em andamento';
     if (stage === 'awaiting_source_review' && state.totalPages) return `${state.totalPages} páginas`;
-    if (stage === 'download' && state.totalPages) return `${state.totalPages}/${state.totalPages}`;
-    if (stage === 'validation' && state.totalGroups) return `${state.totalGroups} grupos`;
-    if (stage === 'ocr' && state.totalPages) return `${state.totalPages}/${state.totalPages}`;
-    if (stage === 'translate' && state.totalTranslations) return `${state.completedTranslations || state.totalTranslations}/${state.totalTranslations}`;
-    if (stage === 'render' && state.totalPages) return `${state.totalPages}/${state.totalPages}`;
-    if (stage === 'pdf' && state.totalPages) return `${state.totalPages} páginas`;
     if (stage === 'quality_review' && state.pendingReview) return `${state.pendingReview} pendências`;
     return '';
   }

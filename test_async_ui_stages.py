@@ -72,6 +72,12 @@ class CounterOwnershipTests(unittest.TestCase):
         # Without this the lazy 20/20 would still be on screen during the download.
         self.assertIn("contador indisponível", block)
 
+    def test_future_stages_do_not_project_the_active_page_counter(self):
+        block = JS[JS.index("function canonicalStageMetric"):]
+        block = block[:block.index("\n  function renderPipelinePreview")]
+        self.assertNotIn("state.totalPages}/${state.totalPages", block)
+        self.assertNotIn("state.totalGroups} grupos", block)
+
 
 class ReasonMessageTests(unittest.TestCase):
     def test_each_coded_failure_has_a_sentence(self):

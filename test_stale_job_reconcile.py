@@ -85,6 +85,12 @@ class ProgressBindingTests(unittest.TestCase):
         self.assertEqual(snap.counter_stage, "Tradução NVIDIA")
         self.assertEqual((snap.current, snap.total), (5, 40))
 
+    def test_corrupted_explicit_translation_marker_still_advances_stage(self):
+        snap = parse_progress_line("OCR: 87/87", ProgressSnapshot())
+        snap = parse_progress_line("Traduï¿½ï¿½o NVIDIA: iniciando", snap)
+        self.assertEqual(snap.stage, "Tradução NVIDIA")
+        self.assertEqual(snap.counter_stage, "OCR")
+
 
 class _Bridge(ui_bridge.UiBridge):
     """UiBridge with only the job store wired — no profile/history side effects."""
@@ -297,6 +303,9 @@ class ReconcileTests(unittest.TestCase):
         with mock.patch.object(ui_bridge, "_runner_still_alive", return_value=True):
             progress = self.bridge.runtime_state()["progress"]
         self.assertEqual((progress["current"], progress["total"]), (5, 40))
+        self.assertEqual(progress["counter_stage"], "Tradução NVIDIA")
+        self.assertEqual(progress["pages"], 0)
+        self.assertEqual(progress["groups"], 0)
 
     def test_stale_updates_are_labelled_not_invented(self):
         job = self.make_running()
