@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
@@ -112,7 +112,7 @@ class TransitionError(RuntimeError):
 # Columns that make up a job row. Kept explicit so the schema and the row->dict mapping
 # never drift. Timestamps are epoch seconds (REAL); NULL means "not yet".
 _JOB_COLUMNS = (
-    "id", "run_id", "source_url", "series_title", "series_slug", "episode_number",
+    "id", "owner_id", "run_id", "source_url", "series_title", "series_slug", "episode_number",
     "output_dir", "configuration_json", "command_json", "status", "stage",
     "progress_current", "progress_total", "progress_message", "progress_counter_stage",
     "source_type", "adapter_name", "adapter_version", "transport_name", "source_score",
@@ -170,6 +170,8 @@ class JobStore:
             self._migrate_v5()
         if version < 6:
             self._migrate_v6()
+        if version < 7:
+            self._migrate_v7()
         self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
@@ -192,6 +194,37 @@ class JobStore:
         self._migrate_v4()
         self._migrate_v5()
         self._migrate_v6()
+        self._migrate_v7()
+
+    def _migrate_v7(self) -> None:
+        """Materialize private ownership for fail-closed SQL-scoped reads."""
+        job_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        if "owner_id" not in job_cols:
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
+        rows = self._conn.execute(
+            "SELECT id,configuration_json FROM jobs WHERE owner_id=''"
+        ).fetchall()
+        for row in rows:
+            try:
+                config = json.loads(row["configuration_json"] or "{}")
+            except (TypeError, ValueError):
+                config = {}
+            owner_id = str(
+                config.get("community_owner_id") or ""
+            ).strip() if isinstance(config, dict) else ""
+            if owner_id:
+                self._conn.execute(
+                    "UPDATE jobs SET owner_id=? WHERE id=? AND owner_id=''",
+                    (owner_id, row["id"]),
+                )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_owner_created "
+            "ON jobs(owner_id,created_at DESC)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_owner_status_created "
+            "ON jobs(owner_id,status,created_at DESC)"
+        )
 
     def _migrate_v2(self) -> None:
         # Additive: process start times let recovery tell a live runner from a reused PID,
@@ -273,6 +306,7 @@ class JobStore:
             """
             CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL DEFAULT '',
                 run_id TEXT,
                 source_url TEXT,
                 series_title TEXT,
@@ -393,26 +427,29 @@ class JobStore:
                                   JobStatus.AWAITING_SOURCE_REVIEW}:
             raise ValueError("invalid_initial_job_status")
         now = time.time()
+        configuration = dict(configuration or {})
+        owner_id = str(configuration.get("community_owner_id") or "").strip()
         self._conn.execute(
             """
             INSERT INTO jobs (
-                id, run_id, source_url, series_title, series_slug, episode_number,
+                id, owner_id, run_id, source_url, series_title, series_slug, episode_number,
                 output_dir, configuration_json, command_json, status, stage,
                 progress_current, progress_total, created_at, queued_at, updated_at,
                 worker_pid, worker_create_time,
                 cancel_requested, recoverable, attempt, previous_job_id,
                 resume_from_stage, commit_hash, branch
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,0,0,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,0,0,?,?,?,?,?)
             """,
             (
                 job_id,
+                owner_id,
                 run_id or uuid.uuid4().hex,
                 source_url,
                 series_title,
                 series_slug,
                 episode_number,
                 output_dir,
-                json.dumps(configuration or {}, ensure_ascii=False),
+                json.dumps(configuration, ensure_ascii=False),
                 json.dumps(list(command), ensure_ascii=False),
                 initial_status,
                 "created",
@@ -433,6 +470,43 @@ class JobStore:
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return self._row_to_dict(row)
+
+    @staticmethod
+    def _required_owner(owner_id: str) -> str:
+        owner = str(owner_id or "").strip()
+        if not owner or len(owner) > 128:
+            raise ValueError("owner_required")
+        return owner
+
+    def get_job_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any] | None:
+        owner = self._required_owner(owner_id)
+        row = self._conn.execute(
+            "SELECT * FROM jobs WHERE owner_id=? AND id=?",
+            (owner, str(job_id or "")),
+        ).fetchone()
+        return self._row_to_dict(row)
+
+    def list_jobs_for_owner(
+        self,
+        owner_id: str,
+        *,
+        statuses: Iterable[str] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
+        owner = self._required_owner(owner_id)
+        params: tuple[Any, ...] = (owner,)
+        sql = "SELECT * FROM jobs WHERE owner_id=?"
+        if statuses:
+            values = tuple(statuses)
+            placeholders = ",".join("?" for _ in values)
+            sql += f" AND status IN ({placeholders})"
+            params += values
+        sql += " ORDER BY created_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params += (int(limit),)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_dict(row) for row in rows]  # type: ignore[misc]
 
     def list_jobs(
         self,
@@ -466,6 +540,16 @@ class JobStore:
             f"SELECT * FROM jobs WHERE status IN ({placeholders}) "
             "ORDER BY claimed_at DESC LIMIT 1",
             tuple(JobStatus.IN_FLIGHT),
+        ).fetchone()
+        return self._row_to_dict(row)
+
+    def active_job_for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        owner = self._required_owner(owner_id)
+        placeholders = ",".join("?" for _ in JobStatus.IN_FLIGHT)
+        row = self._conn.execute(
+            f"SELECT * FROM jobs WHERE owner_id=? AND status IN ({placeholders}) "
+            "ORDER BY claimed_at DESC LIMIT 1",
+            (owner, *tuple(JobStatus.IN_FLIGHT)),
         ).fetchone()
         return self._row_to_dict(row)
 
@@ -615,12 +699,13 @@ class JobStore:
                 "owner_bound_by": str(bound_by),
             })
             self._conn.execute(
-                "UPDATE jobs SET configuration_json=?,updated_at=? WHERE id=?",
-                (json.dumps(config, ensure_ascii=False), now, str(job_id)),
+                "UPDATE jobs SET configuration_json=?,owner_id=?,updated_at=? WHERE id=?",
+                (json.dumps(config, ensure_ascii=False), str(target_user_id), now, str(job_id)),
             )
             self._conn.execute("COMMIT")
             record["configuration"] = config
             record["configuration_json"] = json.dumps(config, ensure_ascii=False)
+            record["owner_id"] = str(target_user_id)
             record["updated_at"] = now
             return "owner_bound", record
         except BaseException:

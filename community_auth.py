@@ -110,6 +110,30 @@ class RequestPrincipal:
     def has_role(self, role: str) -> bool:
         return str(role).lower() in self.roles
 
+    @property
+    def subject_id(self) -> str:
+        return self.user_id
+
+    @property
+    def owner_id(self) -> str:
+        return self.user_id
+
+    @property
+    def provider(self) -> str:
+        return self.auth_source
+
+    @property
+    def principal_hash(self) -> str:
+        if not self.authenticated:
+            return ""
+        canonical = "\0".join((
+            self.auth_source,
+            self.user_id,
+            self.session_id or "",
+            ",".join(sorted(self.roles)),
+        ))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 @runtime_checkable
 class AuthProvider(Protocol):
