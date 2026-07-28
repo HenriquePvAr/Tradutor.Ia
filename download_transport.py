@@ -712,7 +712,12 @@ def require_browser_navigation(result: SourcePreflightResult) -> str:
         "source_content_type_unsupported": "navigation_preflight_content_type",
         "source_unavailable": "navigation_preflight_http",
     }.get(result.status, "navigation_preflight")
-    raise SourceError(result.reason_code or SOURCE_NOT_READY, detail)
+    error = SourceError(result.reason_code or SOURCE_NOT_READY, detail)
+    # Public() deliberately excludes the navigation URL, headers and response body.
+    # Carry this sanitized diagnosis to the worker so a terminal job does not collapse
+    # an HTTP/preflight decision into an untraceable generic message.
+    error.preflight_result = result.public()
+    raise error
 
 
 def preflight_browser_navigation(adapter, url: str, *, limits: DownloadLimits | None = None,

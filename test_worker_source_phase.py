@@ -159,6 +159,37 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertEqual(row["status"], JobStatus.FAILED)
         self.assertEqual(row["reason_code"], "source_not_ready")
 
+    def test_preflight_failure_persists_sanitized_structured_diagnostics(self):
+        from chapter_source import SourceError
+
+        error = SourceError("source_unavailable", "navigation_preflight_http")
+        error.preflight_result = {
+            "schema_version": 1,
+            "normalized_url_hash": "a" * 64,
+            "adapter": "fixture",
+            "status": "source_unavailable",
+            "reason_code": "source_unavailable",
+            "http_method": "GET",
+            "http_status": 404,
+            "content_type": "text/html",
+            "redirect_count": 0,
+            "final_host": "reader.example.test",
+            "elapsed_ms": 12,
+            "policy_hash": "b" * 64,
+        }
+        job = self.queued_url_job()
+        worker = _Worker(self.store, error=error)
+
+        self.assertIsNone(worker._prepare_source(job))
+
+        row = self.store.get_job(job["id"])
+        self.assertEqual(row["status"], JobStatus.FAILED)
+        self.assertEqual(
+            row["source_analysis"]["preflight"]["http_status"], 404)
+        serialized = str(row["source_analysis"])
+        self.assertNotIn("cookie", serialized.casefold())
+        self.assertNotIn("authorization", serialized.casefold())
+
     def test_a_cancel_requested_job_never_reaches_analysis(self):
         job = self.queued_url_job()
         self.store.request_cancel(job["id"])

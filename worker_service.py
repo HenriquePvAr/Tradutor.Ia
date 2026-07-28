@@ -15,6 +15,7 @@ Commands::
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import subprocess
@@ -271,6 +272,29 @@ class Worker:
                     job_id, JobStatus.CANCELLED, reason_code="user_cancelled", stage="cancelled",
                     interrupted_reason="cancelled_source_analysis")
                 return
+            preflight = getattr(exc, "preflight_result", None)
+            if isinstance(preflight, dict):
+                allowed = {
+                    "schema_version", "normalized_url_hash", "adapter", "status",
+                    "reason_code", "http_method", "http_status", "content_type",
+                    "redirect_count", "final_host", "response_size_class",
+                    "html_shell_detected", "javascript_required_possible",
+                    "browser_inspection_allowed", "browser_inspection_reason",
+                    "authentication_required", "access_restricted",
+                    "captcha_detected", "security_blocked", "transport_error",
+                    "elapsed_ms", "policy_hash",
+                }
+                sanitized = {
+                    key: value for key, value in preflight.items() if key in allowed
+                }
+                current = self.store.get_job(job_id) or {}
+                analysis = dict(current.get("source_analysis") or {})
+                analysis["preflight"] = sanitized
+                self.store.update_fields(
+                    job_id,
+                    source_analysis_json=json.dumps(
+                        analysis, ensure_ascii=False, sort_keys=True),
+                )
             self.store.transition(
                 job_id, JobStatus.FAILED, reason_code=code, stage="source_analysis",
                 error_type="source_analysis", error_message=str(code))
