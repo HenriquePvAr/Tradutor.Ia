@@ -873,6 +873,13 @@ class ReviewModeNavigationContracts(unittest.TestCase):
         # Choosing Nova tradução from the rail must leave review_mode.
         self.assertIn("if (tab.dataset.tab === 'nova' && appState.reviewMode) exitReviewMode();", source)
 
+    def test_opening_review_mode_does_not_mark_the_selected_job_as_a_fresh_draft(self) -> None:
+        source = JS.read_text(encoding="utf-8")
+        self.assertIn(
+            "name === 'nova' && !inFlightStatuses.has(appState.status) && !appState.reviewMode",
+            source,
+        )
+
 
 class PipelineCanonicalUiContracts(unittest.TestCase):
     def test_pipeline_uses_canonical_stage_aliases_for_new_backend_stages(self) -> None:

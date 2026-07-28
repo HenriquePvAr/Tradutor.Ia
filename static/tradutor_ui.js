@@ -532,7 +532,7 @@
     ambientSweep();
     const rect = tab.getBoundingClientRect();
     burstAt(rect.right, rect.top + rect.height / 2, 10);
-    if (name === 'nova' && !inFlightStatuses.has(appState.status)) {
+    if (name === 'nova' && !inFlightStatuses.has(appState.status) && !appState.reviewMode) {
       appState.newTranslationDraft = true;
       clearNewTranslationDraftPanels();
     }
