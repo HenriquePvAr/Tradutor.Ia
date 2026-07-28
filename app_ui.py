@@ -1265,6 +1265,31 @@ def api_quality_review_action(
         }) from exc
 
 
+@app.post("/api/ui/quality-review/edit")
+def api_quality_review_edit(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    principal = _owned_ui_job(
+        request, str(payload.get("job_id") or ""), mutate=True)
+    try:
+        return BRIDGE.quality_review_edit(
+            str(payload.get("job_id") or ""),
+            str(payload.get("item_key") or ""),
+            expected_version=int(payload.get("expected_version") or 0),
+            action=str(payload.get("action") or ""),
+            translation=str(payload.get("translation") or ""),
+            reason=str(payload.get("reason") or ""),
+            actor_id=principal.user_id,
+        )
+    except ValueError as exc:
+        status_code = 409 if str(exc) == "review_version_conflict" else 422
+        raise HTTPException(status_code=status_code, detail={
+            "code": str(exc),
+            "message": "Não foi possível salvar esta revisão.",
+            "action": "Atualize os dados e tente novamente.",
+        }) from exc
+
+
 @app.post("/api/ui/quality-review/bulk-action")
 def api_quality_review_bulk_action(
     request: Request, payload: dict[str, Any] = Body(default={})

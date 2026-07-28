@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
@@ -172,6 +172,8 @@ class JobStore:
             self._migrate_v6()
         if version < 7:
             self._migrate_v7()
+        if version < 8:
+            self._migrate_v8()
         self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
@@ -195,6 +197,29 @@ class JobStore:
         self._migrate_v5()
         self._migrate_v6()
         self._migrate_v7()
+        self._migrate_v8()
+
+    def _migrate_v8(self) -> None:
+        """Append-only, optimistic review-item revisions."""
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS quality_review_item_revisions (
+                revision_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                translation TEXT NOT NULL DEFAULT '',
+                reason_code TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                actor_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                UNIQUE(job_id,item_key,version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_quality_review_item_latest
+                ON quality_review_item_revisions(job_id,item_key,version DESC);
+            """
+        )
 
     def _migrate_v7(self) -> None:
         """Materialize private ownership for fail-closed SQL-scoped reads."""
@@ -224,6 +249,11 @@ class JobStore:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_owner_status_created "
             "ON jobs(owner_id,status,created_at DESC)"
+        )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_retry_parent "
+            "ON jobs(previous_job_id) WHERE previous_job_id IS NOT NULL "
+            "AND previous_job_id != ''"
         )
 
     def _migrate_v2(self) -> None:
@@ -483,6 +513,13 @@ class JobStore:
         row = self._conn.execute(
             "SELECT * FROM jobs WHERE owner_id=? AND id=?",
             (owner, str(job_id or "")),
+        ).fetchone()
+        return self._row_to_dict(row)
+
+    def retry_for_job(self, job_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM jobs WHERE previous_job_id=? ORDER BY created_at ASC LIMIT 1",
+            (str(job_id or ""),),
         ).fetchone()
         return self._row_to_dict(row)
 
@@ -769,6 +806,53 @@ class JobStore:
         except (TypeError, ValueError):
             return {}
         return value if isinstance(value, dict) else {}
+
+    def review_item_revisions(self, job_id: str, item_key: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM quality_review_item_revisions "
+            "WHERE job_id=? AND item_key=? ORDER BY version",
+            (str(job_id), str(item_key)),
+        ).fetchall()
+        return [{key: row[key] for key in row.keys()} for row in rows]
+
+    def review_item_latest(self, job_id: str, item_key: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM quality_review_item_revisions "
+            "WHERE job_id=? AND item_key=? ORDER BY version DESC LIMIT 1",
+            (str(job_id), str(item_key)),
+        ).fetchone()
+        return {key: row[key] for key in row.keys()} if row else None
+
+    def record_review_item_revision(
+        self, job_id: str, item_key: str, *, expected_version: int,
+        action: str, translation: str, reason_code: str,
+        reason: str, actor_id: str,
+    ) -> dict[str, Any]:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", str(item_key or "")):
+            raise TransitionError("invalid_review_item")
+        allowed = {
+            "edited", "reviewed", "rejected", "preserved_original", "manual_review",
+        }
+        if action not in allowed:
+            raise TransitionError("invalid_review_action")
+        with self._conn:
+            latest = self.review_item_latest(job_id, item_key)
+            current = int((latest or {}).get("version") or 0)
+            if int(expected_version) != current:
+                raise TransitionError("review_version_conflict")
+            version = current + 1
+            revision_id = uuid.uuid4().hex
+            self._conn.execute(
+                "INSERT INTO quality_review_item_revisions("
+                "revision_id,job_id,item_key,version,action,translation,"
+                "reason_code,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    revision_id, str(job_id), str(item_key), version, action,
+                    str(translation), str(reason_code), str(reason)[:500],
+                    str(actor_id), time.time(),
+                ),
+            )
+        return self.review_item_latest(job_id, item_key) or {}
 
     def record_review_action(self, job_id: str, item_key: str, action: str) -> dict[str, str]:
         if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", str(item_key or "")):

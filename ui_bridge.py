@@ -17,6 +17,7 @@ import os
 import platform
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -675,7 +676,14 @@ class UiBridge:
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
-                action = actions.get(key, "pending")
+                revision = self.store.review_item_latest(job["id"], key) or {}
+                action = str(revision.get("action") or actions.get(key, "pending"))
+                current_translation = str(
+                    revision.get("translation")
+                    or raw.get("translation")
+                    or raw.get("translation_candidate")
+                    or ""
+                )
                 # The visual gate keys regions by region_id (REGION_001), while a
                 # review item's id is the balloon label (BALAO_1); join on the
                 # region_id so per-item states are not silently dropped.
@@ -707,7 +715,10 @@ class UiBridge:
                     "label": f"Balão {item_id}" if item_id else "Texto da página",
                     "classification": str(raw.get("classification") or "speech"),
                     "original": str(raw.get("text") or ""),
-                    "translation": str(raw.get("translation") or raw.get("translation_candidate") or ""),
+                    "translation": current_translation,
+                    "version": int(revision.get("version") or 0),
+                    "review_reason_code": str(revision.get("reason_code") or ""),
+                    "review_reason": str(revision.get("reason") or ""),
                     "reason": self._quality_review_reason(raw, page),
                     "risk": self._quality_review_risk(raw, page),
                     "state": action,
@@ -783,6 +794,59 @@ class UiBridge:
         self.store.record_review_action(job_id, item_key, action)
         self.history_revision += 1
         return self.quality_review(job_id) or payload
+
+    def quality_review_edit(
+        self, job_id: str, item_key: str, *, expected_version: int,
+        action: str, translation: str, reason: str, actor_id: str,
+    ) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        item = next(
+            (candidate for candidate in (payload or {}).get("items", [])
+             if candidate.get("key") == item_key),
+            None,
+        )
+        if item is None:
+            raise ValueError("quality_review_item_not_found")
+        if (payload or {}).get("confirmed"):
+            raise ValueError("quality_review_already_completed")
+        action = str(action or "").strip()
+        translation = str(translation or "").strip()
+        if action in {"edited", "reviewed"} and not translation:
+            raise ValueError("quality_review_translation_empty")
+        reason_codes = {
+            "edited": "human_translation_edited",
+            "reviewed": "human_translation_approved",
+            "rejected": "human_translation_rejected",
+            "preserved_original": "preserved_original",
+            "manual_review": "manual_review_requested",
+        }
+        if action not in reason_codes:
+            raise ValueError("quality_review_action_invalid")
+        original = str(item.get("original") or "")
+        if action == "reviewed" and (
+            len(translation) > 800
+            or (original and len(translation) > max(120, len(original) * 6))
+        ):
+            raise ValueError("quality_review_overflow")
+        try:
+            revision = self.store.record_review_item_revision(
+                str(job_id), str(item_key),
+                expected_version=int(expected_version),
+                action=action,
+                translation=translation,
+                reason_code=reason_codes[action],
+                reason=str(reason or ""),
+                actor_id=str(actor_id or ""),
+            )
+        except Exception as exc:
+            if str(exc) == "review_version_conflict":
+                raise ValueError("review_version_conflict") from None
+            raise
+        self.history_revision += 1
+        return {
+            "revision": revision,
+            "review": self.quality_review(job_id) or payload,
+        }
 
     def quality_review_bulk_action(
         self,
@@ -4426,6 +4490,9 @@ class UiBridge:
             raise ValueError("job_not_retryable")
         if not str(job.get("source_url") or "").strip():
             raise ValueError("local_retry_requires_new_submit")
+        existing = self.store.retry_for_job(str(job_id))
+        if existing is not None:
+            return self._job_record(existing) or {}
         config = dict(job.get("configuration") or {})
         attempt = int(job.get("attempt") or 1) + 1
         old_output = Path(str(job.get("output_dir") or "chapter"))
@@ -4445,8 +4512,56 @@ class UiBridge:
             "open_output": bool(config.get("open_output", False)),
             "create_source_profile": bool(config.get("create_source_profile", False)),
         }
-        return self._job_record(self._create_job(payload, require_environment=False,
-                                                 initial_status=JobStatus.QUEUED)) or {}
+        retry = self._create_job(
+            payload,
+            require_environment=False,
+            principal=RequestPrincipal(
+                user_id=str(job.get("owner_id") or config.get("community_owner_id") or ""),
+                authenticated=True,
+                roles=frozenset({"user"}),
+                auth_source="internal_retry",
+            ),
+            initial_status=JobStatus.QUEUED,
+        )
+        retry_config = dict(retry.get("configuration") or {})
+        retry_config.update({
+            "retry_of": str(job_id),
+            "retry_reason": "user_requested",
+        })
+        retry_command = list(retry.get("command") or [])
+        fixture_retry = bool(
+            os.getenv("APP_ENV") == "test"
+            and os.getenv("ALLOW_LOCAL_TEST_IDENTITIES") == "1"
+            and config.get("fixture") is True
+            and config.get("local_test_only") is True
+        )
+        if fixture_retry:
+            retry_config.update({
+                "fixture": True,
+                "synthetic": bool(config.get("synthetic")),
+                "local_test_only": True,
+            })
+            retry_command = list(job.get("command") or [])
+            if "--output-dir" in retry_command:
+                position = retry_command.index("--output-dir") + 1
+                if position < len(retry_command):
+                    retry_command[position] = str(retry.get("output_dir") or "")
+        try:
+            self.store.update_fields(
+                retry["id"],
+                previous_job_id=str(job_id),
+                attempt=attempt,
+                configuration_json=json.dumps(retry_config, ensure_ascii=False),
+                command_json=json.dumps(retry_command, ensure_ascii=False),
+            )
+        except sqlite3.IntegrityError:
+            existing = self.store.retry_for_job(str(job_id))
+            if existing is None:
+                raise
+            self.store.transition(retry["id"], JobStatus.CANCELLED)
+            return self._job_record(existing) or {}
+        self.history_revision += 1
+        return self._job_record(self.store.get_job(retry["id"])) or {}
 
     def retry_job_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
         if self.store.get_job_for_owner(owner_id, str(job_id or "")) is None:
