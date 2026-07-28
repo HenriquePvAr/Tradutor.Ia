@@ -916,7 +916,11 @@
   }
   function clearNewTranslationDraftPanels() {
     resetRunPreview();
+    appState.qualityReview = null;
+    appState.qualityReviewSelection = new Set();
     $('#qualityReviewPanel') && ($('#qualityReviewPanel').hidden = true);
+    const reviewedPdf = $('#reviewedPdfAction');
+    if (reviewedPdf) { reviewedPdf.hidden = true; reviewedPdf.innerHTML = ''; }
     $('#runStatusCard') && ($('#runStatusCard').hidden = true);
     $('#artifactActions') && ($('#artifactActions').innerHTML = '');
     $('#balloonText') && ($('#balloonText').textContent = window.TradutorI18n?.t('pipeline.idle') || 'Pronto para iniciar');
@@ -1400,7 +1404,13 @@
     // After the user leaves review_mode the form belongs to a new chapter, so an
     // idle runtime's leftover review must not reappear over it.
     const reviewDismissed = appState.reviewPanelDismissed && !inFlightStatuses.has(appState.status);
-    if (!runtime.source_ready && !draftOnly && !reviewDismissed && runtime.quality_review) renderQualityReview(runtime.quality_review);
+    const qualityReviewJobId = String(runtime.quality_review?.job_id || '');
+    const reviewOwnerJobId = String(
+      appState.reviewMode?.jobId || appState.currentJobId || incomingJobId || '');
+    const qualityReviewBelongsToOperation = Boolean(
+      qualityReviewJobId && reviewOwnerJobId && qualityReviewJobId === reviewOwnerJobId);
+    if (!runtime.source_ready && !draftOnly && !reviewDismissed
+        && qualityReviewBelongsToOperation) renderQualityReview(runtime.quality_review);
     // In explicit review_mode the panel is owned by the selected finished chapter,
     // so a background poll of the (idle) active runtime must not hide it.
     else if (!appState.reviewMode && $('#qualityReviewPanel')) $('#qualityReviewPanel').hidden = true;

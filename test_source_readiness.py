@@ -343,6 +343,19 @@ class UiContractTests(unittest.TestCase):
             "function persistPipelineIdentity", 1)[0]
         self.assertIn("clearNewTranslationDraftPanels();", reset)
         self.assertNotIn("resetRunPreview();", reset)
+        clear = script.split("function clearNewTranslationDraftPanels", 1)[1].split(
+            "function resetActivePipelineIdentity", 1)[0]
+        self.assertIn("appState.qualityReview = null;", clear)
+        self.assertIn("reviewedPdf.innerHTML = '';", clear)
+
+    def test_quality_review_must_belong_to_the_current_operation(self):
+        root = Path(__file__).resolve().parent
+        script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        render = script.split("const reviewDismissed =", 1)[1].split(
+            "const resultRecord =", 1)[0]
+        self.assertIn("qualityReviewJobId", render)
+        self.assertIn("reviewOwnerJobId", render)
+        self.assertIn("qualityReviewJobId === reviewOwnerJobId", render)
 
 
 if __name__ == "__main__":
