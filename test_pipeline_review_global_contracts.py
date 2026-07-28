@@ -880,6 +880,16 @@ class ReviewModeNavigationContracts(unittest.TestCase):
             source,
         )
 
+    def test_deep_review_actions_are_visible_in_the_review_panel(self) -> None:
+        source = JS.read_text(encoding="utf-8")
+        for action in (
+            "edited", "reviewed", "rejected", "preserved_original", "manual_review",
+        ):
+            self.assertIn(
+                f'class="btn-ghost show" data-review-deep-action="{action}"',
+                source,
+            )
+
 
 class PipelineCanonicalUiContracts(unittest.TestCase):
     def test_pipeline_uses_canonical_stage_aliases_for_new_backend_stages(self) -> None:
