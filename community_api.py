@@ -24,7 +24,12 @@ from community_service import (
     sha256_of_file,
     validate_local_pdf,
 )
-from community_storage import FilesystemStorageProvider, FakeStorageProvider, StorageError
+from community_storage import (
+    FilesystemStorageProvider,
+    LocalTestStorageProvider,
+    FakeStorageProvider,
+    StorageError,
+)
 from community_store import CommunityStore
 from job_store import JobStatus
 from ui_helpers import OUTPUT_ROOT, REPO_ROOT
@@ -52,12 +57,38 @@ class ArtifactBindingError(CommunityError):
 
 
 def storage_provider_name() -> str:
+    auth_provider = str(
+        os.getenv("AUTH_PROVIDER") or os.getenv("COMMUNITY_AUTH_PROVIDER") or ""
+    ).strip().lower()
+    if auth_provider == "local_test":
+        app_env = str(os.getenv("APP_ENV", "")).strip().lower()
+        host = str(
+            os.getenv("TRADUTOR_UI_HOST") or os.getenv("HOST") or "127.0.0.1"
+        ).strip().lower()
+        provider = str(os.getenv("STORAGE_PROVIDER", "")).strip().lower()
+        storage_root = str(os.getenv("LOCAL_TEST_STORAGE_ROOT", "")).strip()
+        if (
+            app_env not in {"test", "development"}
+            or os.getenv("ALLOW_LOCAL_TEST_IDENTITIES") != "1"
+            or host not in {"127.0.0.1", "localhost", "::1"}
+            or provider != "local_test"
+            or not storage_root
+            or not Path(storage_root).is_absolute()
+        ):
+            raise StorageError("local_test_external_storage_blocked")
+        return "local_test"
     return os.getenv("COMMUNITY_STORAGE_PROVIDER", "filesystem")
 
 
 def _storage_config() -> dict[str, Any]:
+    provider = storage_provider_name()
+    storage_root = (
+        os.getenv("LOCAL_TEST_STORAGE_ROOT", "")
+        if provider == "local_test"
+        else str(COMMUNITY_STORAGE_ROOT)
+    )
     return {"storage_provider": storage_provider_name(),
-            "storage_root": str(COMMUNITY_STORAGE_ROOT),
+            "storage_root": storage_root,
             "root_folder_id": os.getenv("COMMUNITY_DRIVE_ROOT_FOLDER_ID", "")}
 
 
@@ -67,6 +98,8 @@ def build_read_provider():
     name = storage_provider_name()
     if name == "filesystem":
         return FilesystemStorageProvider(COMMUNITY_STORAGE_ROOT)
+    if name == "local_test":
+        return LocalTestStorageProvider(os.environ["LOCAL_TEST_STORAGE_ROOT"])
     if name in {"fake", "memory"}:
         return FakeStorageProvider()
     if name == "google_drive":
@@ -85,7 +118,10 @@ class CommunityApi:
                  storage_root: Path = COMMUNITY_STORAGE_ROOT,
                  read_provider_factory: Callable[[], Any] | None = None,
                  profile_sync: Callable[[RequestPrincipal], Any] | None = None):
-        storage_root = Path(storage_root).resolve()
+        if storage_provider_name() == "local_test":
+            storage_root = Path(os.environ["LOCAL_TEST_STORAGE_ROOT"]).resolve()
+        else:
+            storage_root = Path(storage_root).resolve()
         self.store = CommunityStore(community_db_path)
         self.service = CommunityService(
             self.store, job_store, output_root=Path(output_root),

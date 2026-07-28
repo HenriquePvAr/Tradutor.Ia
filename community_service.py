@@ -254,7 +254,11 @@ class CommunityService:
             configuration={
                 "job_type": "community_publish",
                 "community_db": self.community_db_path,
-                "storage": {"storage_provider": self.provider_name, **self.storage_config},
+                "storage": {
+                    "storage_provider": self.provider_name,
+                    **self.storage_config,
+                    "owner_id": actor,
+                },
                 **payload,
             },
             series_title=post["series_title"] or "", series_slug=post["series_slug"] or "",

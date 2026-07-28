@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import abc
 import hashlib
+import json
+import os
 import threading
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
@@ -379,6 +382,226 @@ class FilesystemStorageProvider(StorageProvider):
         return bool(meta and not meta.get("trashed"))
 
 
+class LocalTestStorageProvider(StorageProvider):
+    """Fail-closed, owner-partitioned filesystem storage for local test runtimes."""
+
+    name = "local_test"
+    _MAX_BYTES = 128 * 1024 * 1024
+
+    def __init__(self, root: str | Path, *, owner_id: str = ""):
+        candidate = Path(root)
+        if not candidate.is_absolute() or str(candidate) == candidate.anchor:
+            raise StorageError("local_test_storage_root_invalid")
+        candidate.mkdir(parents=True, exist_ok=True)
+        if candidate.is_symlink():
+            raise StorageError("local_test_storage_root_invalid")
+        self.root = candidate.resolve()
+        self.owner_id = str(owner_id or "")
+        self.owner_key = self._owner_key(self.owner_id) if self.owner_id else ""
+
+    @staticmethod
+    def _owner_key(owner_id: str) -> str:
+        if not owner_id:
+            raise StorageError("local_test_storage_owner_required")
+        return hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:24]
+
+    def _owner_root(self, owner_key: str) -> Path:
+        path = self.root / "owners" / owner_key
+        path.mkdir(parents=True, exist_ok=True)
+        resolved = path.resolve()
+        if path.is_symlink() or self.root not in resolved.parents:
+            raise StorageError("local_test_storage_path_rejected")
+        return resolved
+
+    @staticmethod
+    def _parse_ref(value: str, prefix: str) -> tuple[str, str]:
+        parts = str(value or "").split(".")
+        if (
+            len(parts) != 3
+            or parts[0] != prefix
+            or len(parts[1]) != 24
+            or len(parts[2]) != 32
+            or any(ch not in "0123456789abcdef" for ch in parts[1] + parts[2])
+        ):
+            raise StorageError("local_test_storage_reference_invalid", status=404)
+        return parts[1], parts[2]
+
+    def _require_owner(self, owner_key: str) -> None:
+        if self.owner_key and not hmac_compare(self.owner_key, owner_key):
+            raise StorageError("local_test_storage_owner_mismatch", status=404)
+
+    def _paths(self, file_ref: str) -> tuple[Path, Path, Path]:
+        owner_key, opaque = self._parse_ref(file_ref, "ltf")
+        self._require_owner(owner_key)
+        base = self._owner_root(owner_key)
+        return base / f"{opaque}.json", base / f"{opaque}.bin", base / f"{opaque}.part"
+
+    def _session_path(self, session_ref: str) -> Path:
+        owner_key, opaque = self._parse_ref(session_ref, "lts")
+        self._require_owner(owner_key)
+        return self._owner_root(owner_key) / f"{opaque}.session.json"
+
+    @staticmethod
+    def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, path)
+
+    @staticmethod
+    def _load(path: Path) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def health_check(self) -> bool:
+        return self.root.is_dir() and not self.root.is_symlink()
+
+    def ensure_folder(self, name: str, parent_id: str) -> str:
+        if not self.owner_key:
+            raise StorageError("local_test_storage_owner_required")
+        self._owner_root(self.owner_key)
+        return f"ltd.{self.owner_key}.{uuid.uuid4().hex}"
+
+    def create_resumable_session(
+        self, *, filename: str, mime_type: str, size: int, parent_id: str, sha256: str = ""
+    ) -> ResumableSession:
+        if not self.owner_key:
+            raise StorageError("local_test_storage_owner_required")
+        if (
+            Path(str(filename)).name != str(filename)
+            or Path(str(filename)).suffix.lower() != ".pdf"
+            or str(mime_type).lower() != "application/pdf"
+        ):
+            raise StorageError("local_test_storage_file_type_rejected")
+        if int(size) < 0 or int(size) > self._MAX_BYTES:
+            raise StorageError("local_test_storage_size_rejected")
+        file_ref = f"ltf.{self.owner_key}.{uuid.uuid4().hex}"
+        session_ref = f"lts.{self.owner_key}.{uuid.uuid4().hex}"
+        meta, final, partial = self._paths(file_ref)
+        partial.write_bytes(b"")
+        self._atomic_json(meta, {
+            "file_ref": file_ref,
+            "owner_key": self.owner_key,
+            "name": Path(filename).name,
+            "mime_type": "application/pdf",
+            "parent_ref": str(parent_id),
+            "expected_size": int(size),
+            "completed": False,
+            "trashed": False,
+        })
+        self._atomic_json(self._session_path(session_ref), {
+            "file_ref": file_ref, "uploaded": 0, "total": int(size),
+        })
+        return ResumableSession(
+            session_id=session_ref, filename=Path(filename).name,
+            mime_type="application/pdf", total_size=int(size), uploaded=0,
+            file_id=file_ref, parent_id=str(parent_id),
+        )
+
+    def upload_chunk(self, session: ResumableSession, offset: int, data: bytes) -> ChunkResult:
+        session_path = self._session_path(session.session_id)
+        state = self._load(session_path)
+        if not state:
+            raise StorageError("local_test_storage_session_missing", status=404)
+        if int(offset) != int(state.get("uploaded", -1)):
+            raise StorageError("local_test_storage_offset_invalid", status=400)
+        meta, final, partial = self._paths(str(state.get("file_ref") or ""))
+        if final.exists() or partial.is_symlink():
+            raise StorageError("local_test_storage_path_rejected")
+        next_offset = int(offset) + len(data)
+        if next_offset > int(state["total"]):
+            raise StorageError("local_test_storage_size_rejected")
+        with partial.open("ab") as handle:
+            handle.write(data)
+        state["uploaded"] = next_offset
+        self._atomic_json(session_path, state)
+        completed = state["uploaded"] == int(state["total"])
+        if completed:
+            os.replace(partial, final)
+            metadata = self._load(meta)
+            metadata["completed"] = True
+            self._atomic_json(meta, metadata)
+        session.uploaded = state["uploaded"]
+        return ChunkResult(
+            uploaded=state["uploaded"], completed=completed,
+            file_id=str(state["file_ref"]) if completed else "",
+        )
+
+    def abandon_resumable_session(self, session_id: str) -> None:
+        path = self._session_path(session_id)
+        state = self._load(path)
+        if state:
+            _, _, partial = self._paths(str(state.get("file_ref") or ""))
+            partial.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+
+    def stat_file(self, file_id: str) -> RemoteFileMetadata:
+        meta_path, final, _ = self._paths(file_id)
+        meta = self._load(meta_path)
+        if not meta or not final.is_file() or final.is_symlink():
+            raise StorageError("file not found", status=404)
+        return RemoteFileMetadata(
+            file_id=file_id, name=str(meta["name"]), mime_type="application/pdf",
+            size=final.stat().st_size, parent_id=str(meta.get("parent_ref") or ""),
+            trashed=bool(meta.get("trashed")),
+            checksum=hashlib.md5(final.read_bytes()).hexdigest(),
+        )
+
+    def open_stream(self, file_id: str, *, start=None, end=None) -> StorageStream:
+        metadata = self.stat_file(file_id)
+        if metadata.trashed:
+            raise StorageError("file not found", status=404)
+        _, final, _ = self._paths(file_id)
+        total = metadata.size
+        lo = 0 if start is None else max(0, int(start))
+        hi = total - 1 if end is None else min(total - 1, int(end))
+        if lo > hi:
+            raise StorageError("invalid range", status=416)
+
+        def chunks():
+            with final.open("rb") as handle:
+                handle.seek(lo)
+                remaining = hi - lo + 1
+                while remaining:
+                    block = handle.read(min(64 * 1024, remaining))
+                    if not block:
+                        break
+                    remaining -= len(block)
+                    yield block
+
+        return StorageStream(
+            total_size=total, content_length=hi - lo + 1, mime_type="application/pdf",
+            _chunks=chunks(), start=lo, end=hi,
+        )
+
+    def move_to_trash(self, file_id: str) -> None:
+        meta_path, _, _ = self._paths(file_id)
+        meta = self._load(meta_path)
+        if meta:
+            meta["trashed"] = True
+            self._atomic_json(meta_path, meta)
+
+    def delete_file(self, file_id: str) -> None:
+        meta, final, partial = self._paths(file_id)
+        meta.unlink(missing_ok=True)
+        final.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
+
+    def exists(self, file_id: str) -> bool:
+        try:
+            metadata = self.stat_file(file_id)
+        except StorageError:
+            return False
+        return not metadata.trashed
+
+
+def hmac_compare(left: str, right: str) -> bool:
+    import hmac
+    return hmac.compare_digest(left, right)
+
+
 def build_storage_provider(config: dict) -> StorageProvider:
     """Build the configured provider. Only fakes are constructible without credentials;
     the Google provider is built by its own module when configured with real OAuth."""
@@ -387,6 +610,10 @@ def build_storage_provider(config: dict) -> StorageProvider:
         return FakeStorageProvider()
     if name == "filesystem":
         return FilesystemStorageProvider(config["storage_root"])
+    if name == "local_test":
+        return LocalTestStorageProvider(
+            config["storage_root"], owner_id=str(config.get("owner_id") or "")
+        )
     if name == "google_drive":
         # Secrets come from the environment/token file, never from the passed config
         # (which is persisted with the job in the database).
