@@ -81,6 +81,7 @@
     newTranslationDraft: false,
     terminalStatusByIdentity: new Map(),
     retryDialogContext: null,
+    authUserId: '',
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', source_analysis_ready: 'fonte analisada', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed', 'failed', 'cancelled']);
@@ -4111,6 +4112,28 @@
     } catch (_) { /* history is best-effort */ }
     return wasActive;
   }
+  function clearPrivateUiForAuthTransition(state, userId = '') {
+    const authenticated = String(state || '') === 'authenticated';
+    const nextUserId = authenticated ? String(userId || '') : '';
+    const previousUserId = String(appState.authUserId || '');
+    const identityChanged = Boolean(
+      previousUserId && nextUserId && previousUserId !== nextUserId);
+    if (!authenticated || identityChanged) {
+      exitReviewMode();
+      appState.history = [];
+      appState.logs = [];
+      appState.queue = [];
+      appState.qualityReview = null;
+      appState.qualityReviewSelection.clear();
+      appState.pendingHumanPreviews = {
+        items: [], item_count: 0, ready_count: 0, blocked_count: 0,
+      };
+      appState.communityCache = {
+        explore: [], favorites: [], reading: [], mine: [], notifications: [],
+      };
+    }
+    appState.authUserId = nextUserId;
+  }
   // Adopt exactly this chapter's job/run and open the existing review panel in
   // Nova tradução. Never creates a job, starts a run, or calls NVIDIA.
   async function openChapterReview(record, {restore = false} = {}) {
@@ -4325,6 +4348,9 @@
   }
   window.addEventListener('tradutor-auth-changed', event => {
     const state = String(event?.detail?.state || getGlobal('__tradutorAuthState') || '');
+    const userId = String(
+      event?.detail?.user_id || getGlobal('__tradutorCommunityUserId') || '');
+    clearPrivateUiForAuthTransition(state, userId);
     if (state !== 'authenticated') clearCommunityObjectUrls();
     applyCanonicalAuthSurface(state);
     renderHistory();

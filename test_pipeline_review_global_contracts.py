@@ -890,6 +890,20 @@ class ReviewModeNavigationContracts(unittest.TestCase):
                 source,
             )
 
+    def test_auth_identity_transition_clears_private_review_before_refresh(self) -> None:
+        source = JS.read_text(encoding="utf-8")
+        self.assertIn("function clearPrivateUiForAuthTransition", source)
+        self.assertIn("exitReviewMode();", source)
+        listener = source[
+            source.index("window.addEventListener('tradutor-auth-changed', event => {"):
+            source.index("applyCanonicalAuthSurface(getGlobal('__tradutorAuthState')")
+        ]
+        self.assertIn("clearPrivateUiForAuthTransition", listener)
+        self.assertLess(
+            listener.index("clearPrivateUiForAuthTransition"),
+            listener.index("void refreshBootstrap()"),
+        )
+
 
 class PipelineCanonicalUiContracts(unittest.TestCase):
     def test_pipeline_uses_canonical_stage_aliases_for_new_backend_stages(self) -> None:
