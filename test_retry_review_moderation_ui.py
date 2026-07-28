@@ -238,6 +238,8 @@ def test_persisted_history_retry_uses_selected_job_identity_after_refresh():
     assert "retryDialogContext" in js
     assert "button.dataset.action = 'retry'" in js
     assert "retryDialogContext?.jobId" in js
+    assert "document.body.appendChild(dialog)" in js
+    assert "$('#retryConfirmApply')?.addEventListener('click'" in js
     confirm_block = js[js.index("$('#retryConfirmApply')"):js.index(
         "function moderationRoles")]
     assert "latestJobId" not in confirm_block

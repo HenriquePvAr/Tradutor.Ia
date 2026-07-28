@@ -3428,6 +3428,7 @@
     }
     const dialog = $('#retryConfirmDialog');
     if (!dialog) return;
+    if (dialog.parentElement !== document.body) document.body.appendChild(dialog);
     appState.retryDialogContext = {
       jobId,
       operationId: String(context?.operationId || ''),
