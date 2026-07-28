@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterable
 SOURCE_ANALYSIS_SCHEMA_VERSION = 1
 DOWNLOAD_AUTHORIZATION_SCHEMA_VERSION = 1
 ASSET_MANIFEST_SCHEMA_VERSION = 1
+WORKSPACE_POLICY_SCHEMA_VERSION = 1
 
 SOURCE_ANALYSIS_STATES = frozenset({
     "source_analysis_pending", "source_analysis_active", "source_analysis_ready",
@@ -39,6 +40,11 @@ DOWNLOAD_OPERATIONS = frozenset({
     "generate_pdf", "publish",
 })
 DOWNLOAD_AUTHORIZATION_REQUIRED = "download_authorization_required"
+PIPELINE_OPERATIONS = (
+    "analyze_metadata", "download_assets", "run_ocr", "translate",
+    "reconstruct", "generate_pdf",
+)
+WORKSPACE_POLICY_REQUIRED = "workspace_source_authorization_required"
 
 
 def _canonical(payload: dict[str, Any]) -> str:
@@ -58,7 +64,9 @@ def _safe_id(value: Any, field: str) -> str:
 
 def _owner_for_job(job: dict[str, Any]) -> str:
     config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
-    owner = str(config.get("community_owner_id") or "").strip()
+    owner = str(
+        config.get("community_owner_id") or config.get("workspace_owner") or ""
+    ).strip()
     return _safe_id(owner or "local", "owner")
 
 
@@ -118,12 +126,48 @@ class DownloadAuthorizationDecision:
     created_at: float
     status: str
     authorization_hash: str
+    operation_id: str = ""
+    policy_id: str = ""
+    policy_hash: str = ""
 
     def public(self) -> dict[str, Any]:
         payload = dict(self.__dict__)
         payload["allowed_operations"] = list(self.allowed_operations)
         payload["denied_operations"] = list(self.denied_operations)
         return payload
+
+
+@dataclass(frozen=True)
+class WorkspaceSourceAuthorizationPolicy:
+    schema_version: int
+    policy_id: str
+    owner: str
+    workspace_id: str
+    all_submitted_sources_authorized: bool
+    default_rights_basis: str
+    allowed_operations: tuple[str, ...]
+    denied_operations: tuple[str, ...]
+    authorization_statement: str
+    created_by: str
+    created_at: float
+    updated_at: float
+    activated_at: float
+    revoked_at: float | None
+    status: str
+    policy_hash: str
+
+    def public(self) -> dict[str, Any]:
+        payload = dict(self.__dict__)
+        payload["allowed_operations"] = list(self.allowed_operations)
+        payload["denied_operations"] = list(self.denied_operations)
+        return payload
+
+
+def default_workspace_id(db_path: str | Path) -> str:
+    """Stable opaque identity for one local workspace, never its filesystem path."""
+    resolved = Path(db_path).resolve()
+    root = resolved.parents[2] if len(resolved.parents) > 2 else resolved.parent
+    return f"ws_{hashlib.sha256(str(root).casefold().encode('utf-8')).hexdigest()[:32]}"
 
 
 class SourceReadinessStore:
@@ -181,7 +225,111 @@ class SourceReadinessStore:
             payload_json TEXT NOT NULL,
             created_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS workspace_source_authorization_policies (
+            event_id TEXT PRIMARY KEY,
+            policy_id TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            policy_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_source_policy_scope
+            ON workspace_source_authorization_policies(
+                owner, workspace_id, created_at DESC);
         """)
+
+    @staticmethod
+    def _policy_from_json(raw: str) -> WorkspaceSourceAuthorizationPolicy:
+        data = json.loads(raw)
+        data["allowed_operations"] = tuple(data["allowed_operations"])
+        data["denied_operations"] = tuple(data["denied_operations"])
+        return WorkspaceSourceAuthorizationPolicy(**data)
+
+    def activate_workspace_policy(
+        self, *, owner: str, workspace_id: str, created_by: str,
+        authorization_statement: str,
+    ) -> WorkspaceSourceAuthorizationPolicy:
+        owner = _safe_id(owner, "owner")
+        workspace_id = _safe_id(workspace_id, "workspace_id")
+        created_by = _safe_id(created_by, "created_by")
+        statement = str(authorization_statement or "").strip()
+        if not statement or len(statement) > 1000:
+            raise ValueError("authorization_statement_required")
+        identity = {
+            "schema_version": WORKSPACE_POLICY_SCHEMA_VERSION,
+            "owner": owner,
+            "workspace_id": workspace_id,
+            "all_submitted_sources_authorized": True,
+            "default_rights_basis": "explicit_permission",
+            "allowed_operations": list(PIPELINE_OPERATIONS),
+            "denied_operations": ["publish"],
+            "authorization_statement": statement,
+            "created_by": created_by,
+        }
+        policy_hash = _hash(identity)
+        policy_id = f"wsp_{policy_hash[:32]}"
+        current = self.active_workspace_policy(owner=owner, workspace_id=workspace_id)
+        if current and current.policy_hash == policy_hash:
+            return current
+        now = time.time()
+        payload = {
+            **identity, "policy_id": policy_id, "created_at": now,
+            "updated_at": now, "activated_at": now, "revoked_at": None,
+            "status": "active", "policy_hash": policy_hash,
+        }
+        event_id = f"wpe_{uuid.uuid4().hex}"
+        self._conn.execute(
+            """INSERT INTO workspace_source_authorization_policies
+               (event_id,policy_id,owner,workspace_id,status,policy_hash,payload_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (event_id, policy_id, owner, workspace_id, "active", policy_hash,
+             _canonical(payload), now),
+        )
+        return self._policy_from_json(_canonical(payload))
+
+    def active_workspace_policy(
+        self, *, owner: str, workspace_id: str,
+    ) -> WorkspaceSourceAuthorizationPolicy | None:
+        row = self._conn.execute(
+            """SELECT payload_json FROM workspace_source_authorization_policies
+               WHERE owner=? AND workspace_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+            (_safe_id(owner, "owner"), _safe_id(workspace_id, "workspace_id")),
+        ).fetchone()
+        if not row:
+            return None
+        policy = self._policy_from_json(row["payload_json"])
+        return policy if policy.status == "active" else None
+
+    def workspace_policy_history(
+        self, *, owner: str, workspace_id: str,
+    ) -> list[WorkspaceSourceAuthorizationPolicy]:
+        rows = self._conn.execute(
+            """SELECT payload_json FROM workspace_source_authorization_policies
+               WHERE owner=? AND workspace_id=? ORDER BY created_at, rowid""",
+            (_safe_id(owner, "owner"), _safe_id(workspace_id, "workspace_id")),
+        ).fetchall()
+        return [self._policy_from_json(row["payload_json"]) for row in rows]
+
+    def revoke_workspace_policy(
+        self, *, owner: str, workspace_id: str, revoked_by: str,
+    ) -> WorkspaceSourceAuthorizationPolicy:
+        current = self.active_workspace_policy(owner=owner, workspace_id=workspace_id)
+        if current is None:
+            raise ValueError(WORKSPACE_POLICY_REQUIRED)
+        now = time.time()
+        payload = current.public()
+        payload.update(status="revoked", revoked_at=now, updated_at=now)
+        event_id = f"wpe_{uuid.uuid4().hex}"
+        self._conn.execute(
+            """INSERT INTO workspace_source_authorization_policies
+               (event_id,policy_id,owner,workspace_id,status,policy_hash,payload_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (event_id, current.policy_id, current.owner, current.workspace_id,
+             "revoked", current.policy_hash, _canonical(payload), now),
+        )
+        return self._policy_from_json(_canonical(payload))
 
     def persist_analysis(self, payload: dict[str, Any]) -> SourceAnalysisResult:
         body = dict(payload)
@@ -268,7 +416,9 @@ class SourceReadinessStore:
 
     def authorize(self, *, owner: str, analysis_result_id: str, rights_basis: str,
                   allowed_operations: Iterable[str], reviewer: str,
-                  authorization_source: str = "explicit_ui_review") -> DownloadAuthorizationDecision:
+                  authorization_source: str = "explicit_ui_review",
+                  operation_id: str = "", policy_id: str = "",
+                  policy_hash: str = "") -> DownloadAuthorizationDecision:
         owner = _safe_id(owner, "owner")
         result = self.get_analysis(owner, analysis_result_id)
         if result is None:
@@ -290,6 +440,9 @@ class SourceReadinessStore:
             "allowed_operations": allowed,
             "reviewer": _safe_id(reviewer, "reviewer"),
             "authorization_source": str(authorization_source or ""),
+            "operation_id": str(operation_id or ""),
+            "policy_id": str(policy_id or ""),
+            "policy_hash": str(policy_hash or ""),
         }
         identity_hash = _hash(identity_payload)
         existing = self._conn.execute(
@@ -324,6 +477,153 @@ class SourceReadinessStore:
              authorization_hash, "active", _canonical(serializable), now),
         )
         return DownloadAuthorizationDecision(**payload)
+
+    def authorization_count(self, *, owner: str, analysis_result_id: str) -> int:
+        return int(self._conn.execute(
+            """SELECT COUNT(*) FROM download_authorization_decisions
+               WHERE owner=? AND analysis_result_id=?""",
+            (_safe_id(owner, "owner"), str(analysis_result_id or "")),
+        ).fetchone()[0])
+
+    def resolve_ready_pipeline(self, job_id: str) -> dict[str, Any]:
+        """Atomically resolve policy, persist one authorization, and enqueue once."""
+        job_id = str(job_id or "")
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise ValueError("job_not_found")
+            config = json.loads(row["configuration_json"] or "{}")
+            existing = config.get("download_authorization") or {}
+            if row["status"] == "queued" and existing.get("authorization_id"):
+                self._conn.execute("COMMIT")
+                return {
+                    "ok": True, "job_id": job_id, "status": "queued",
+                    "authorization_id": existing["authorization_id"],
+                    "duplicate": True,
+                }
+            if row["status"] != "source_analysis_ready":
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id, "reason_code": "source_analysis_not_ready"}
+            if not config.get("user_requested_pipeline"):
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id, "reason_code": "pipeline_intent_required"}
+            requested_mode = str(config.get("requested_mode") or "")
+            if requested_mode not in {"fast", "quality", "download_only"}:
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id, "reason_code": "invalid_requested_mode"}
+            requested_scope = str(config.get("requested_scope") or "")
+            if requested_scope != "full":
+                try:
+                    scope_value = int(requested_scope)
+                except (TypeError, ValueError):
+                    scope_value = 0
+                if not 1 <= scope_value <= 999:
+                    self._conn.execute("ROLLBACK")
+                    return {"ok": False, "job_id": job_id,
+                            "reason_code": "invalid_requested_scope"}
+            if row["cancel_requested"]:
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id, "reason_code": "operation_cancelled"}
+            owner = _safe_id(config.get("workspace_owner") or "local", "owner")
+            workspace_id = _safe_id(
+                config.get("workspace_id") or default_workspace_id(self.db_path), "workspace_id")
+            policy_row = self._conn.execute(
+                """SELECT payload_json FROM workspace_source_authorization_policies
+                   WHERE owner=? AND workspace_id=?
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (owner, workspace_id),
+            ).fetchone()
+            if not policy_row:
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id, "reason_code": WORKSPACE_POLICY_REQUIRED}
+            policy = self._policy_from_json(policy_row["payload_json"])
+            if policy.status != "active":
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id, "reason_code": WORKSPACE_POLICY_REQUIRED}
+            expected_hash = str(config.get("workspace_authorization_policy_hash") or "")
+            if expected_hash and expected_hash != policy.policy_hash:
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id,
+                        "reason_code": "workspace_policy_hash_mismatch"}
+            result_id = str(config.get("source_analysis_result_id") or "")
+            analysis_row = self._conn.execute(
+                "SELECT payload_json FROM source_analysis_results WHERE analysis_id=?",
+                (result_id,),
+            ).fetchone()
+            if not analysis_row:
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id,
+                        "reason_code": "source_analysis_lineage_mismatch"}
+            analysis = json.loads(analysis_row["payload_json"])
+            if str(analysis.get("operation_id") or "") != str(row["run_id"] or ""):
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id,
+                        "reason_code": "source_analysis_lineage_mismatch"}
+            authorization_owner = _safe_id(analysis.get("owner"), "owner")
+            requested = tuple(sorted(set(map(str, config.get("requested_operations") or ()))))
+            mode_allowed = (
+                {"analyze_metadata", "download_assets"} if config.get("download_only")
+                else set(PIPELINE_OPERATIONS)
+            )
+            allowed = tuple(sorted(set(requested) & set(policy.allowed_operations) & mode_allowed))
+            if "download_assets" not in allowed or "publish" in allowed:
+                self._conn.execute("ROLLBACK")
+                return {"ok": False, "job_id": job_id,
+                        "reason_code": "workspace_policy_operation_denied"}
+            identity = {
+                "schema_version": DOWNLOAD_AUTHORIZATION_SCHEMA_VERSION,
+                "owner": authorization_owner, "analysis_result_id": result_id,
+                "normalized_url_hash": analysis["normalized_url_hash"],
+                "source_adapter": analysis["adapter"],
+                "rights_basis": policy.default_rights_basis,
+                "allowed_operations": allowed, "reviewer": policy.created_by,
+                "authorization_source": "workspace_policy",
+                "operation_id": str(row["run_id"] or ""),
+                "policy_id": policy.policy_id, "policy_hash": policy.policy_hash,
+            }
+            identity_hash = _hash(identity)
+            authorization_id = f"da_{identity_hash[:32]}"
+            denied = tuple(sorted(DOWNLOAD_OPERATIONS - set(allowed)))
+            authorization = {
+                **identity, "authorization_id": authorization_id,
+                "authorization_kind": "content_rights", "scope": "explicit_operations",
+                "denied_operations": denied, "created_at": time.time(),
+                "status": "active", "authorization_hash": _hash(identity),
+            }
+            serializable = dict(authorization)
+            serializable["allowed_operations"] = list(allowed)
+            serializable["denied_operations"] = list(denied)
+            self._conn.execute(
+                """INSERT OR IGNORE INTO download_authorization_decisions
+                   (authorization_id,owner,analysis_result_id,identity_hash,authorization_hash,
+                    status,payload_json,created_at) VALUES (?,?,?,?,?,?,?,?)""",
+                (authorization_id, authorization_owner, result_id, identity_hash, authorization["authorization_hash"],
+                 "active", _canonical(serializable), authorization["created_at"]),
+            )
+            config.update({
+                "workspace_authorization_policy_id": policy.policy_id,
+                "workspace_authorization_policy_hash": policy.policy_hash,
+                "download_authorization": serializable,
+                "authorization_resolution": "workspace_policy",
+            })
+            updated = self._conn.execute(
+                """UPDATE jobs SET status='queued',stage='preparing_download',
+                   reason_code='workspace_policy_authorized',configuration_json=?,
+                   queued_at=COALESCE(queued_at,?),updated_at=?
+                   WHERE id=? AND status='source_analysis_ready'""",
+                (_canonical(config), time.time(), time.time(), job_id),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("workspace_policy_concurrent_transition")
+            self._conn.execute("COMMIT")
+            return {"ok": True, "job_id": job_id, "status": "queued",
+                    "authorization_id": authorization_id, "duplicate": False}
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.execute("ROLLBACK")
+            raise
 
     def require_operation(self, *, owner: str, analysis_result_id: str,
                           operation: str) -> DownloadAuthorizationDecision:
@@ -448,7 +748,13 @@ def download_fixture_assets(*, store: SourceReadinessStore, owner: str,
     """Download synthetic assets through an explicit local-test seam only."""
     decision = store.require_operation(
         owner=owner, analysis_result_id=analysis_result_id, operation="download_assets")
-    if decision.rights_basis != "local_test_fixture":
+    analysis = store.get_analysis(owner, analysis_result_id)
+    policy_fixture = (
+        decision.authorization_source == "workspace_policy"
+        and analysis is not None
+        and analysis.source_kind == "local_test_fixture"
+    )
+    if decision.rights_basis != "local_test_fixture" and not policy_fixture:
         raise PermissionError("fixture_authorization_required")
     existing = store.manifest_for_operation(
         owner=owner, analysis_result_id=analysis_result_id,
@@ -507,7 +813,7 @@ def download_fixture_assets(*, store: SourceReadinessStore, owner: str,
             "status": "downloaded",
             "attempt_count": 1,
         })
-    result = store.get_analysis(owner, analysis_result_id)
+    result = analysis
     manifest = {
         "schema_version": ASSET_MANIFEST_SCHEMA_VERSION,
         "owner": owner,
