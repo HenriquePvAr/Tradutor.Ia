@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from community_auth import AuthenticationRequired, RequestPrincipal, ResourceNotFound, normalize_user_id
+from community_authorization import authorize_moderation
 from community_service import (
     CommunityService,
     CommunityError,
@@ -662,6 +663,47 @@ class CommunityApi:
         with self._community_lock:
             posts = self.store.list_user_posts(principal.user_id)
             return {"posts": self._cards_with_engagement(posts, principal=principal)}
+
+    def moderation_posts(
+        self, *, principal: RequestPrincipal, status: str = "", query: str = "",
+        limit: int = 50, offset: int = 0,
+    ) -> dict[str, Any]:
+        authorize_moderation(principal)
+        with self._community_lock:
+            posts = self.store.list_moderation_posts(
+                status=str(status or ""), query=str(query or ""),
+                limit=limit, offset=offset,
+            )
+        return {"posts": posts, "count": len(posts)}
+
+    def moderate_post(
+        self, post_id: str, action: str, payload: dict[str, Any],
+        *, principal: RequestPrincipal,
+    ) -> dict[str, Any]:
+        authorize_moderation(principal)
+        action = str(action or "").strip().casefold()
+        if action not in {"hide", "restore", "remove"}:
+            raise ValueError("moderation_action_invalid")
+        reason = str((payload or {}).get("reason") or "").strip()
+        if action in {"hide", "remove"} and not reason:
+            raise ValueError("moderation_reason_required")
+        role = "admin" if principal.has_role("admin") else "moderator"
+        with self._community_lock:
+            try:
+                post = self.store.moderate_post(
+                    str(post_id or ""), actor_id=principal.user_id,
+                    actor_role=role, action=action, reason=reason,
+                )
+            except ValueError as exc:
+                if str(exc) == "publication_not_found":
+                    raise ResourceNotFound("publication_not_found") from None
+                raise
+        return {
+            "post_id": str(post.get("id") or ""),
+            "status": str(post.get("status") or ""),
+            "moderation_status": str(post.get("moderation_status") or ""),
+            "action": action,
+        }
 
     def delete_own_post(self, post_id: str, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
         self._require_authenticated_principal(principal)

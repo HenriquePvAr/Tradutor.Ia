@@ -88,6 +88,8 @@ class Moderation:
     APPROVED = "approved"
     REJECTED = "rejected"
     BLOCKED = "blocked"
+    HIDDEN = "hidden"
+    REMOVED = "removed"
 
 
 class Visibility:
@@ -499,6 +501,58 @@ class CommunityStore:
             "SELECT * FROM community_posts WHERE user_id=? AND status != ? AND deleted_at IS NULL "
             "ORDER BY created_at DESC LIMIT ?",
             (user_id, PostStatus.DELETED, int(limit))))]
+
+    def list_moderation_posts(
+        self, *, status: str = "", query: str = "",
+        limit: int = 50, offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        where = ["deleted_at IS NULL"]
+        params: list[Any] = []
+        if status:
+            where.append("moderation_status=?")
+            params.append(str(status))
+        if query:
+            where.append("(title LIKE ? OR series_title LIKE ? OR user_id LIKE ?)")
+            term = f"%{str(query)[:120]}%"
+            params.extend((term, term, term))
+        params.extend((max(1, min(100, int(limit))), max(0, int(offset))))
+        rows = self._rows(self._conn.execute(
+            "SELECT * FROM community_posts WHERE " + " AND ".join(where)
+            + " ORDER BY updated_at DESC,id ASC LIMIT ? OFFSET ?",
+            tuple(params),
+        ))
+        return [self._with_decoded_tags(row) for row in rows]
+
+    def moderate_post(
+        self, post_id: str, *, actor_id: str, actor_role: str,
+        action: str, reason: str,
+    ) -> dict[str, Any]:
+        if not self.get_post(str(post_id or "")):
+            raise ValueError("publication_not_found")
+        transitions = {
+            "hide": (PostStatus.PUBLISHED, Moderation.HIDDEN),
+            "restore": (PostStatus.PUBLISHED, Moderation.APPROVED),
+            "remove": (PostStatus.BLOCKED, Moderation.REMOVED),
+        }
+        if action not in transitions:
+            raise ValueError("moderation_action_invalid")
+        status, moderation = transitions[action]
+        now = time.time()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE community_posts SET status=?,moderation_status=?,updated_at=? WHERE id=?",
+                (status, moderation, now, str(post_id)),
+            )
+            self._insert_event(
+                str(post_id), str(actor_id), f"moderation_{action}",
+                {
+                    "action": action, "result": "applied",
+                    "reason_code": f"moderation_{action}",
+                    "reason": str(reason)[:240], "actor_role": str(actor_role),
+                },
+                now,
+            )
+        return self.get_post(str(post_id)) or {}
 
     def soft_delete_own_post(self, post_id: str, *, user_id: str, reason: str = "") -> dict[str, Any]:
         post = self.get_post(post_id)

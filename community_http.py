@@ -305,6 +305,30 @@ def create_community_router(community, auth) -> APIRouter:
         content = _community_call(community.my_posts, principal=principal)
         return JSONResponse(content, headers=no_store_headers)
 
+    @router.get("/moderation/posts")
+    def moderation_posts(
+        request: Request,
+        status: str = Query(""),
+        q: str = Query(""),
+        limit: int = Query(50, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+    ) -> JSONResponse:
+        principal = _community_call(auth.require_authenticated, request)
+        content = _community_call(
+            community.moderation_posts, principal=principal, status=status,
+            query=q, limit=limit, offset=offset,
+        )
+        return JSONResponse(content, headers=no_store_headers)
+
+    @router.post("/moderation/posts/{post_id}/{action}")
+    def moderate_post(
+        post_id: str, action: str, request: Request,
+        payload: dict[str, Any] = Body(default={}),
+    ) -> dict[str, Any]:
+        principal = authenticated_mutation(request)
+        return _community_call(
+            community.moderate_post, post_id, action, payload, principal=principal)
+
     @router.post("/posts/{post_id}/unpublish")
     def unpublish(post_id: str, request: Request) -> dict[str, Any]:
         principal = authenticated_mutation(request)
