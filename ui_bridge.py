@@ -3208,7 +3208,11 @@ class UiBridge:
             if local_folder_allowed is not True:
                 raise ValueError("local_folder_requires_loopback_ui")
             return await self._start_local_folder(payload, principal=principal)
-        stale_resolution = self._resolve_stale_submit_for_ready_source(payload)
+        stale_resolution = (
+            None
+            if self._has_current_pipeline_intent(payload)
+            else self._resolve_stale_submit_for_ready_source(payload)
+        )
         if stale_resolution is not None:
             if stale_resolution.get("status") == JobStatus.QUEUED:
                 stale_resolution["worker"] = self.ensure_worker()
@@ -3243,6 +3247,37 @@ class UiBridge:
         worker = self.ensure_worker()
         return {"ok": True, "run_id": job["run_id"], "job_id": job["id"],
                 "status": JobStatus.QUEUED, "stage": "queued", "worker": worker}
+
+    @staticmethod
+    def _has_current_pipeline_intent(payload: dict[str, Any]) -> bool:
+        """Recognise the current UI's explicit, internally coherent start contract.
+
+        This marker does not grant content authority; workspace policy still does that.
+        It only distinguishes a fresh click from an old asset trying to reconcile an
+        append-only analysis result that has no owning job.
+        """
+        intent = payload.get("pipeline_intent")
+        if not isinstance(intent, dict) or intent.get("requested") is not True:
+            return False
+        requested_mode = (
+            "download_only"
+            if bool(payload.get("download_only"))
+            else str(payload.get("mode") or "")
+        )
+        if requested_mode not in {"fast", "quality", "download_only"}:
+            return False
+        requested_scope = "full" if bool(payload.get("full")) else str(
+            payload.get("max_images") or "")
+        if requested_scope != "full":
+            try:
+                if not 1 <= int(requested_scope) <= 999:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return (
+            str(intent.get("mode") or "") == requested_mode
+            and str(intent.get("scope") or "") == requested_scope
+        )
 
     def _resolve_stale_submit_for_ready_source(
         self, payload: dict[str, Any],

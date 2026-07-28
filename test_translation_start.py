@@ -652,6 +652,67 @@ class QueueVisibilityTests(unittest.TestCase):
         self.assertEqual(self.bridge.store.list_jobs(limit=None), [])
         self.assertEqual(self.bridge.worker_calls, 0)
 
+    def test_current_explicit_pipeline_intent_does_not_reuse_orphan_ready_analysis(self):
+        readiness = SourceReadinessStore(self.bridge.store.db_path)
+        try:
+            readiness.persist_analysis({
+                "owner": "local",
+                "operation_id": "orphan-ready",
+                "attempt": 1,
+                "normalized_url_hash": hashlib.sha256(WEBTOON_URL.encode()).hexdigest(),
+                "adapter": "fixture_adapter",
+                "source_kind": "public_url",
+                "preflight_result_id": "preflight-ready",
+                "preflight_status": "preflight_ready",
+                "status": "source_analysis_ready",
+                "reason_code": "source_structure_compatible",
+                "policy_hash": "b" * 64,
+            })
+        finally:
+            readiness.close()
+
+        result = drive(self.bridge.start({
+            "url": WEBTOON_URL, "slug": "fresh_submit", "mode": "fast",
+            "full": False, "max_images": 3, "use_cache": True, "force": False,
+            "pipeline_intent": {
+                "requested": True, "mode": "fast", "scope": "3",
+            },
+        }))
+
+        self.assertTrue(result["ok"])
+        jobs = self.bridge.store.list_jobs(limit=None)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["configuration"]["requested_scope"], "3")
+
+    def test_incoherent_pipeline_intent_remains_fail_closed(self):
+        readiness = SourceReadinessStore(self.bridge.store.db_path)
+        try:
+            readiness.persist_analysis({
+                "owner": "local",
+                "operation_id": "orphan-ready",
+                "attempt": 1,
+                "normalized_url_hash": hashlib.sha256(WEBTOON_URL.encode()).hexdigest(),
+                "adapter": "fixture_adapter",
+                "source_kind": "public_url",
+                "preflight_result_id": "preflight-ready",
+                "preflight_status": "preflight_ready",
+                "status": "source_analysis_ready",
+                "reason_code": "source_structure_compatible",
+                "policy_hash": "b" * 64,
+            })
+        finally:
+            readiness.close()
+
+        with self.assertRaisesRegex(ValueError, "pipeline_intent_required"):
+            drive(self.bridge.start({
+                "url": WEBTOON_URL, "slug": "bad_intent", "mode": "fast",
+                "full": False, "max_images": 3,
+                "pipeline_intent": {
+                    "requested": True, "mode": "fast", "scope": "20",
+                },
+            }))
+        self.assertEqual(self.bridge.store.list_jobs(limit=None), [])
+
     def test_per_source_authorization_cannot_replace_pipeline_intent(self):
         readiness = SourceReadinessStore(self.bridge.store.db_path)
         try:

@@ -899,6 +899,11 @@
       use_context: $('#ctxToggle').checked,
       open_output: $('#openToggle').checked,
       create_source_profile: !local && $('#sourceProfileToggle').checked,
+      pipeline_intent: {
+        requested: true,
+        mode: appState.selectedMode === 'download_only' ? 'download_only' : appState.selectedMode,
+        scope: full ? 'full' : String(maxImages),
+      },
     };
     if (local) payload.local_folder = $('#localFolderInput').value.trim();
     else payload.url = $('#urlInput').value.trim();

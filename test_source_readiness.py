@@ -357,6 +357,15 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("reviewOwnerJobId", render)
         self.assertIn("qualityReviewJobId === reviewOwnerJobId", render)
 
+    def test_current_ui_sends_explicit_pipeline_intent(self):
+        root = Path(__file__).resolve().parent
+        script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        form = script.split("function formPayload", 1)[1].split(
+            "function resetRunPreview", 1)[0]
+        self.assertIn("pipeline_intent", form)
+        self.assertIn("requested: true", form)
+        self.assertIn("scope:", form)
+
 
 if __name__ == "__main__":
     unittest.main()
