@@ -1580,7 +1580,7 @@
       // mark/preserve actions, so they can never enter a bulk operation.
       const isReportOnly = visualState === 'report_only';
       const selectBox = isReportOnly ? '' : `<input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> `;
-      const reviewActions = isReportOnly ? '' : `<button type="button" class="btn-ghost review-mark${actionClass}" data-review-action="reviewed">Marcar como revisado</button><button type="button" class="btn-ghost review-preserve${actionClass}" data-review-action="preserved_original">Manter original</button>`;
+      const reviewActions = isReportOnly ? '' : `<textarea class="quality-review-editor" data-review-translation data-review-version="${escapeAttr(item.version || 0)}" aria-label="Tradução revisada">${escapeHtml(item.translation || '')}</textarea><input class="quality-review-reason-input" data-review-reason placeholder="Motivo da decisão" aria-label="Motivo da revisão"><div class="cta-row"><button type="button" class="btn-ghost" data-review-deep-action="edited">Salvar edição</button><button type="button" class="btn-ghost" data-review-deep-action="reviewed">Aprovar</button><button type="button" class="btn-ghost" data-review-deep-action="rejected">Rejeitar</button><button type="button" class="btn-ghost" data-review-deep-action="preserved_original">Manter original</button><button type="button" class="btn-ghost" data-review-deep-action="manual_review">Revisar novamente</button></div>`;
       return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(item.reason)}</div>${visualNote}<div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Proposta</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="cta-row">${reviewActions}${compare}</div></article>`;
     }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
     const confirm = $('#confirmQualityReview');
@@ -1846,6 +1846,33 @@
     if (revise) { openPageRevision(Number(revise.dataset.revisePage)); return; }
     const compare = event.target.closest('[data-review-compare]');
     if (compare) { openVisualComparison(compare.dataset.reviewCompare); return; }
+    const deep = event.target.closest('[data-review-deep-action]');
+    if (deep) {
+      if (deep.dataset.busy === '1') return;
+      const item = deep.closest('[data-review-key]');
+      if (!item || !appState.qualityReview?.job_id) return;
+      deep.dataset.busy = '1'; deep.disabled = true;
+      try {
+        const editor = item.querySelector('[data-review-translation]');
+        const result = await api('/api/ui/quality-review/edit', {
+          method: 'POST',
+          body: JSON.stringify({
+            job_id: appState.qualityReview.job_id,
+            item_key: item.dataset.reviewKey,
+            expected_version: Number(editor?.dataset.reviewVersion || 0),
+            action: deep.dataset.reviewDeepAction,
+            translation: editor?.value || '',
+            reason: item.querySelector('[data-review-reason]')?.value || '',
+          }),
+        });
+        renderQualityReview(result.review);
+        showToast(`Revisão salva · versão ${result.revision?.version || '?'}.`, 'ok');
+      } catch (error) {
+        showToast(error.message || 'Não foi possível salvar a revisão.', 'error');
+        deep.disabled = false;
+      } finally { delete deep.dataset.busy; }
+      return;
+    }
     const button = event.target.closest('[data-review-action]');
     if (!button || button.dataset.busy === '1') return;
     const item = button.closest('[data-review-key]');
@@ -3388,7 +3415,139 @@
       updateQualityReviewSelectionUi();
     }
   });
-  $('#runRetryAction')?.addEventListener('click', async () => { const id = appState.latestJobId || ''; if (!id) return; try { await api('/api/ui/retry', {method: 'POST', body: JSON.stringify({job_id: id})}); showToast('Nova tentativa iniciada.', 'ok'); pollState(); } catch (error) { showToast(error.message || 'Nao foi possivel tentar novamente.', 'error'); } });
+  $('#runRetryAction')?.addEventListener('click', () => {
+    const dialog = $('#retryConfirmDialog');
+    if (!dialog) return;
+    dialog.hidden = false;
+    if (!dialog.open) dialog.showModal();
+  });
+  $('#retryConfirmCancel')?.addEventListener('click', () => {
+    const dialog = $('#retryConfirmDialog');
+    if (dialog?.open) dialog.close();
+    if (dialog) dialog.hidden = true;
+  });
+  $('#retryConfirmApply')?.addEventListener('click', async () => {
+    const id = appState.latestJobId || '';
+    if (!id) return;
+    const button = $('#retryConfirmApply');
+    if (button?.disabled) return;
+    if (button) { button.disabled = true; button.textContent = 'CRIANDO…'; }
+    try {
+      const retry = await api('/api/ui/retry', {
+        method: 'POST', body: JSON.stringify({job_id: id}),
+      });
+      const dialog = $('#retryConfirmDialog');
+      if (dialog?.open) dialog.close();
+      if (dialog) dialog.hidden = true;
+      showToast(`Nova tentativa vinculada: ${String(retry.id || retry.job_id || '').slice(0, 8)}.`, 'ok');
+      pollState();
+    } catch (error) {
+      showToast(error.message || 'Nao foi possivel tentar novamente.', 'error');
+    } finally {
+      if (button) { button.disabled = false; button.textContent = 'CRIAR RETRY'; }
+    }
+  });
+
+  function moderationRoles() {
+    const state = window.__tradutorAuthState || {};
+    const user = state.user || {};
+    return new Set([...(state.roles || []), ...(user.roles || [])].map(value => String(value)));
+  }
+
+  async function loadModeration() {
+    const moderationEventCodes = ['moderation_hide', 'moderation_restore', 'moderation_remove'];
+    const panel = $('#moderationPanel');
+    const roles = moderationRoles();
+    const allowed = roles.has('moderator') || roles.has('admin');
+    if (panel) panel.hidden = !allowed;
+    if (!allowed) return;
+    const params = new URLSearchParams({
+      status: $('#moderationStatus')?.value || '',
+      q: $('#moderationSearch')?.value || '',
+    });
+    const list = $('#moderationList');
+    if (list) list.innerHTML = '<div class="empty-real-state">carregando moderação…</div>';
+    try {
+      const result = await api(`/api/community/moderation/posts?${params}`);
+      void moderationEventCodes;
+      const posts = result.posts || [];
+      if (list) list.innerHTML = posts.length ? posts.map(post => `
+        <article class="hist-item" data-moderation-post="${escapeAttr(post.id)}">
+          <div class="hist-info"><strong>${escapeHtml(post.title || post.series_title || 'Publicação')}</strong>
+          <span>${escapeHtml(post.moderation_status || '')} · ${escapeHtml(String(post.user_id || '').slice(0, 8))}</span></div>
+          <div class="cta-row">
+            <button type="button" class="btn-ghost" data-moderation-action="hide">Ocultar</button>
+            <button type="button" class="btn-ghost" data-moderation-action="restore">Restaurar</button>
+            <button type="button" class="btn-ghost danger" data-moderation-action="remove">Remover</button>
+          </div>
+        </article>`).join('') : '<div class="empty-real-state">nenhuma publicação neste filtro</div>';
+    } catch (error) {
+      if (list) list.innerHTML = `<div class="empty-real-state">${escapeHtml(error.message || 'Falha ao carregar moderação.')}</div>`;
+    }
+  }
+
+  $('#moderationRefresh')?.addEventListener('click', loadModeration);
+  $('#moderationStatus')?.addEventListener('change', loadModeration);
+  $('#moderationSearch')?.addEventListener('search', loadModeration);
+  function requestModerationReason(action) {
+    const dialog = $('#moderationReasonDialog');
+    const input = $('#moderationReasonInput');
+    const error = $('#moderationReasonError');
+    if (!dialog || !input) return Promise.resolve(null);
+    $('#moderationReasonTitle').textContent = `Confirmar ${action}`;
+    input.value = '';
+    if (error) error.textContent = '';
+    dialog.hidden = false;
+    if (!dialog.open) dialog.showModal();
+    return new Promise(resolve => {
+      const finish = value => {
+        $('#moderationReasonApply')?.removeEventListener('click', apply);
+        $('#moderationReasonCancel')?.removeEventListener('click', cancel);
+        if (dialog.open) dialog.close();
+        dialog.hidden = true;
+        resolve(value);
+      };
+      const apply = () => {
+        const value = input.value.trim();
+        if (['hide', 'remove'].includes(action) && !value) {
+          if (error) error.textContent = 'Informe um motivo para esta ação.';
+          input.focus();
+          return;
+        }
+        finish(value);
+      };
+      const cancel = () => finish(null);
+      $('#moderationReasonApply')?.addEventListener('click', apply);
+      $('#moderationReasonCancel')?.addEventListener('click', cancel);
+    });
+  }
+  $('#moderationList')?.addEventListener('click', async event => {
+    const actionButton = event.target.closest('[data-moderation-action]');
+    const post = event.target.closest('[data-moderation-post]');
+    if (!actionButton || !post) return;
+    const action = actionButton.dataset.moderationAction;
+    const labels = {hide: 'ocultar', restore: 'restaurar', remove: 'remover'};
+    const reason = await requestModerationReason(action);
+    if (reason === null) return;
+    if (['hide', 'remove'].includes(action) && !reason.trim()) {
+      showToast('Informe um motivo para esta ação.', 'error');
+      return;
+    }
+    actionButton.disabled = true;
+    try {
+      await api(`/api/community/moderation/posts/${encodeURIComponent(post.dataset.moderationPost)}/${action}`, {
+        method: 'POST', body: JSON.stringify({reason}),
+      });
+      showToast(`Ação de moderação concluída: moderation_${action}.`, 'ok');
+      await loadModeration();
+      await loadCommunityFeed();
+    } catch (error) {
+      showToast(error.message || 'Falha na moderação.', 'error');
+    } finally {
+      actionButton.disabled = false;
+    }
+  });
+  window.addEventListener('tradutor:auth-changed', loadModeration);
 
   function renderProgress(progress, pipelineState = null) {
     const state = pipelineState || buildPipelineState({status: appState.status}, progress);

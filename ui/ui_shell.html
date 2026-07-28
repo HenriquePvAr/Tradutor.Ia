@@ -422,6 +422,14 @@
               <span id="runNextHuman"></span>
               <button class="btn-ghost" type="button" id="runCancelAction">Cancelar processamento</button>
               <button class="btn-ghost" type="button" id="runRetryAction" hidden>Tentar novamente</button>
+              <dialog class="audit-confirm" id="retryConfirmDialog" hidden aria-label="Confirmar nova tentativa">
+                <strong>Confirmar nova tentativa</strong>
+                <p>Uma tentativa vinculada será criada; a execução anterior e seus artefatos serão preservados.</p>
+                <div class="audit-confirm-actions">
+                  <button type="button" class="btn-primary" id="retryConfirmApply">CRIAR RETRY</button>
+                  <button type="button" class="btn-ghost" id="retryConfirmCancel">CANCELAR</button>
+                </div>
+              </dialog>
             </div>
             <div class="source-review" id="sourceReviewPanel" hidden>
               <div class="panel-label">Páginas encontradas</div>
@@ -701,6 +709,33 @@
           <label class="checkline"><input type="checkbox" name="notify_updates"> <span data-i18n="community.notify_updates">atualizações relevantes</span></label>
         </div>
       </div>
+      <section class="panel community-moderation" id="moderationPanel" hidden aria-label="Moderação da comunidade">
+        <div class="panel-label">Moderação comunitária</div>
+        <div class="community-toolbar">
+          <input type="search" id="moderationSearch" placeholder="Buscar publicação ou autor">
+          <select id="moderationStatus">
+            <option value="">todos os status</option>
+            <option value="pending">pendente</option>
+            <option value="approved">aprovada</option>
+            <option value="hidden">oculta</option>
+            <option value="removed">removida</option>
+          </select>
+          <button type="button" class="btn-ghost" id="moderationRefresh">Atualizar</button>
+        </div>
+        <div id="moderationList" class="hist-list" aria-live="polite"></div>
+        <div id="moderationMessage" role="status" aria-live="polite"></div>
+      </section>
+      <dialog class="audit-confirm" id="moderationReasonDialog" hidden aria-label="Confirmar moderação">
+        <strong id="moderationReasonTitle">Confirmar moderação</strong>
+        <label>Motivo
+          <textarea id="moderationReasonInput" maxlength="240"></textarea>
+        </label>
+        <div id="moderationReasonError" role="alert" aria-live="assertive"></div>
+        <div class="audit-confirm-actions">
+          <button type="button" class="btn-primary" id="moderationReasonApply">CONFIRMAR</button>
+          <button type="button" class="btn-ghost" id="moderationReasonCancel">CANCELAR</button>
+        </div>
+      </dialog>
       <div class="community-notice">publique um capítulo pelo histórico · só aparece aqui após o upload e a verificação · publique apenas conteúdo autorizado</div>
     </section>
 
