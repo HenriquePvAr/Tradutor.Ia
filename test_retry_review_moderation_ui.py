@@ -224,6 +224,31 @@ def test_review_revisions_are_append_only_and_optimistically_locked(tmp_path):
         store.close()
 
 
+def test_identical_review_revision_is_idempotent_after_client_state_refresh(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    try:
+        job_id = store.create_job(
+            source_url="", output_dir=str(tmp_path / "review"),
+            command=["offline"], configuration={"job_type": "translation"},
+        )
+        first = store.record_review_item_revision(
+            job_id, "p1:i1", expected_version=0, action="edited",
+            translation="Tradução revisada", reason_code="human_translation_edited",
+            reason="Ajuste controlado", actor_id="owner-a",
+        )
+        duplicate = store.record_review_item_revision(
+            job_id, "p1:i1", expected_version=1, action="edited",
+            translation="Tradução revisada", reason_code="human_translation_edited",
+            reason="Ajuste controlado", actor_id="owner-a",
+        )
+
+        assert duplicate["revision_id"] == first["revision_id"]
+        assert duplicate["version"] == 1
+        assert len(store.review_item_revisions(job_id, "p1:i1")) == 1
+    finally:
+        store.close()
+
+
 def test_deep_review_ui_uses_versioned_endpoint():
     js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
     assert "/api/ui/quality-review/edit" in js

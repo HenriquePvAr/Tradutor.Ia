@@ -840,6 +840,15 @@ class JobStore:
             current = int((latest or {}).get("version") or 0)
             if int(expected_version) != current:
                 raise TransitionError("review_version_conflict")
+            normalized_reason = str(reason)[:500]
+            if latest and all((
+                str(latest.get("action") or "") == str(action),
+                str(latest.get("translation") or "") == str(translation),
+                str(latest.get("reason_code") or "") == str(reason_code),
+                str(latest.get("reason") or "") == normalized_reason,
+                str(latest.get("actor_id") or "") == str(actor_id),
+            )):
+                return latest
             version = current + 1
             revision_id = uuid.uuid4().hex
             self._conn.execute(
@@ -848,7 +857,7 @@ class JobStore:
                 "reason_code,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     revision_id, str(job_id), str(item_key), version, action,
-                    str(translation), str(reason_code), str(reason)[:500],
+                    str(translation), str(reason_code), normalized_reason,
                     str(actor_id), time.time(),
                 ),
             )
