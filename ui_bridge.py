@@ -2827,12 +2827,15 @@ class UiBridge:
         }
 
     def latest_source_analysis(self, owner: str) -> dict[str, Any] | None:
-        from source_readiness import SourceReadinessStore
+        from source_readiness import SourceReadinessStore, default_workspace_id
 
         readiness = SourceReadinessStore(self.store.db_path)
         try:
             result = readiness.latest_analysis(owner)
             if result is None or result.status != "source_analysis_ready":
+                return None
+            if readiness.active_workspace_policy(
+                owner=owner, workspace_id=default_workspace_id(self.store.db_path)):
                 return None
             authorization = readiness.latest_authorization(
                 owner=owner, analysis_result_id=result.analysis_id)
@@ -3089,6 +3092,7 @@ class UiBridge:
     def settings(self) -> dict[str, Any]:
         from down import driver_resolution_diagnostics
         from browser_runtime import BrowserRuntimeResolver
+        from source_readiness import SourceReadinessStore, default_workspace_id
 
         values = _read_env_file()
         env = env_status()
@@ -3109,6 +3113,13 @@ class UiBridge:
                 "availability_status": str(exc),
                 "engine": "", "runtime_source": "", "headless_mode": "",
             }
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            workspace_id = default_workspace_id(self.store.db_path)
+            workspace_policy = readiness.active_workspace_policy(
+                owner="local", workspace_id=workspace_id)
+        finally:
+            readiness.close()
         return {
             "env_exists": env["env_exists"],
             "nvidia_configured": env["nvidia_configured"],
@@ -3142,7 +3153,37 @@ class UiBridge:
             "driver_resolution_source": driver["driver_resolution_source"],
             "source_browser_runtime": browser_runtime,
             "port": int(os.getenv("TRADUTOR_UI_PORT", "8080")),
+            "workspace_source_policy": (
+                workspace_policy.public() if workspace_policy else {
+                    "owner": "local", "workspace_id": workspace_id,
+                    "status": "inactive",
+                    "all_submitted_sources_authorized": False,
+                    "allowed_operations": [], "denied_operations": ["publish"],
+                }
+            ),
         }
+
+    def set_workspace_source_policy(self, *, active: bool) -> dict[str, Any]:
+        from source_readiness import SourceReadinessStore, default_workspace_id
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        workspace_id = default_workspace_id(self.store.db_path)
+        try:
+            if active:
+                policy = readiness.activate_workspace_policy(
+                    owner="local", workspace_id=workspace_id, created_by="local",
+                    authorization_statement=(
+                        "Este workspace processa somente conteúdo próprio, licenciado, "
+                        "autorizado, com permissão explícita ou de domínio público."
+                    ),
+                )
+            else:
+                policy = readiness.revoke_workspace_policy(
+                    owner="local", workspace_id=workspace_id, revoked_by="local")
+        finally:
+            readiness.close()
+        self.history_revision += 1
+        return {"ok": True, "policy": policy.public()}
 
     async def start(
         self,
@@ -3161,7 +3202,11 @@ class UiBridge:
             if local_folder_allowed is not True:
                 raise ValueError("local_folder_requires_loopback_ui")
             return await self._start_local_folder(payload, principal=principal)
-        self._reject_stale_submit_for_ready_source(payload)
+        stale_resolution = self._resolve_stale_submit_for_ready_source(payload)
+        if stale_resolution is not None:
+            if stale_resolution.get("status") == JobStatus.QUEUED:
+                stale_resolution["worker"] = self.ensure_worker()
+            return stale_resolution
         # A double click (or a retried request) must not queue the same chapter twice.
         duplicate = self._pending_duplicate(payload)
         if duplicate:
@@ -3193,18 +3238,19 @@ class UiBridge:
         return {"ok": True, "run_id": job["run_id"], "job_id": job["id"],
                 "status": JobStatus.QUEUED, "stage": "queued", "worker": worker}
 
-    def _reject_stale_submit_for_ready_source(self, payload: dict[str, Any]) -> None:
-        """Keep the legacy submit endpoint from bypassing the explicit download gate.
+    def _resolve_stale_submit_for_ready_source(
+        self, payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Resolve an old frontend through the same workspace-policy authority.
 
         A browser with an older asset can still POST ``/api/ui/run`` after a newer,
-        append-only source analysis reached ``source_analysis_ready``.  Matching is
-        content-addressed and owner-scoped; no URL, host, title, or concrete operation
-        is special-cased.  Even an active authorization does not turn this legacy submit
-        into the required second download action.
+        append-only source analysis reached ``source_analysis_ready``. Matching is
+        content-addressed and owner-scoped. The backend either resolves the original
+        operation atomically or fails closed; it never creates a second job.
         """
         source_url = str(payload.get("url") or "").strip()
         if not source_url:
-            return
+            return None
         from source_readiness import SourceReadinessStore
 
         readiness = SourceReadinessStore(self.store.db_path)
@@ -3216,14 +3262,27 @@ class UiBridge:
                 or result.normalized_url_hash
                 != hashlib.sha256(source_url.encode("utf-8")).hexdigest()
             ):
-                return
-            authorization = readiness.latest_authorization(
-                owner="local", analysis_result_id=result.analysis_id)
+                return None
+            ready_job = next((
+                job for job in self.store.list_jobs(
+                    statuses=[JobStatus.SOURCE_ANALYSIS_READY], limit=None)
+                if str((job.get("configuration") or {}).get(
+                    "source_analysis_result_id") or "") == result.analysis_id
+            ), None)
+            if ready_job is None:
+                raise ValueError("pipeline_intent_required")
+            resolution = readiness.resolve_ready_pipeline(ready_job["id"])
         finally:
             readiness.close()
-        if not authorization or "download_assets" not in authorization.allowed_operations:
-            raise ValueError("download_authorization_required")
-        raise ValueError("explicit_download_request_required")
+        if not resolution.get("ok"):
+            raise ValueError(str(
+                resolution.get("reason_code") or "workspace_source_authorization_required"))
+        return {
+            **resolution,
+            "ok": True,
+            "run_id": str(ready_job.get("run_id") or ""),
+            "workspace_policy_resolved": True,
+        }
 
 
     def _apply_source_analysis(self, job: dict[str, Any], analysis: Any) -> dict[str, Any]:
@@ -3843,6 +3902,51 @@ class UiBridge:
             "source_analysis": source_analysis or {},
             "source_selection": source_selection or {},
         }
+        if source_type := str(payload.get("source_type") or "url"):
+            if source_type == "url":
+                from source_readiness import (
+                    PIPELINE_OPERATIONS, SourceReadinessStore, default_workspace_id,
+                )
+
+                requested_operations = (
+                    ["analyze_metadata", "download_assets"]
+                    if normalized["download_only"] else list(PIPELINE_OPERATIONS)
+                )
+                requested_scope = (
+                    "full" if normalized["full"] else str(normalized["max_images"])
+                )
+                scope_identity = {
+                    "requested_scope": requested_scope,
+                    "full": normalized["full"],
+                    "max_images": normalized["max_images"],
+                }
+                configuration.update({
+                    "workspace_owner": "local",
+                    "workspace_id": default_workspace_id(self.store.db_path),
+                    "user_requested_pipeline": True,
+                    "requested_mode": (
+                        "download_only" if normalized["download_only"] else normalized["mode"]
+                    ),
+                    "requested_scope": requested_scope,
+                    "effective_scope": requested_scope,
+                    "scope_source": "user",
+                    "scope_hash": hashlib.sha256(json.dumps(
+                        scope_identity, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")).hexdigest(),
+                    "requested_operations": requested_operations,
+                    "requested_at": time.time(),
+                })
+                readiness = SourceReadinessStore(self.store.db_path)
+                try:
+                    policy = readiness.active_workspace_policy(
+                        owner="local", workspace_id=configuration["workspace_id"])
+                finally:
+                    readiness.close()
+                if policy is not None:
+                    configuration.update({
+                        "workspace_authorization_policy_id": policy.policy_id,
+                        "workspace_authorization_policy_hash": policy.policy_hash,
+                    })
         if principal is not None and principal.authenticated:
             configuration["community_owner_id"] = principal.user_id
         # Source analysis is an intentionally non-claimable STAGING job owned by this UI

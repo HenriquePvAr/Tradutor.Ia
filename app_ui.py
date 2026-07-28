@@ -392,17 +392,27 @@ async def api_run(
         if reason_code in {
             "download_authorization_required",
             "explicit_download_request_required",
+            "workspace_source_authorization_required",
+            "pipeline_intent_required",
+            "workspace_policy_hash_mismatch",
         }:
-            message = (
-                "É necessária uma autorização de conteúdo antes de iniciar o download."
-                if reason_code == "download_authorization_required"
-                else "Use a ação separada de download autorizado para continuar."
-            )
+            message = {
+                "download_authorization_required":
+                    "É necessária uma autorização de conteúdo antes de iniciar o download.",
+                "explicit_download_request_required":
+                    "Use a ação separada de download autorizado para continuar.",
+                "workspace_source_authorization_required":
+                    "A política de fontes autorizadas está desativada.",
+                "pipeline_intent_required":
+                    "A análise existente não possui uma solicitação de pipeline vinculada.",
+                "workspace_policy_hash_mismatch":
+                    "A política do workspace mudou; envie novamente a operação.",
+            }[reason_code]
             raise HTTPException(status_code=409, detail={
                 "code": reason_code,
                 "stage": "autorizacao_de_conteudo",
                 "message": message,
-                "action": "Revise a próxima etapa e confirme a ação de download separadamente.",
+                "action": "Abra Configurações para revisar a política das fontes.",
             }) from exc
         raise HTTPException(status_code=400, detail={
             "code": "invalid_request", "stage": "validacao",
@@ -1288,6 +1298,31 @@ def api_source_continue(
         raise HTTPException(status_code=422, detail={
             "code": str(exc),
             "message": "É necessária uma autorização de conteúdo antes de iniciar o download.",
+        }) from exc
+
+
+@app.get("/api/ui/source-policy")
+def api_source_policy() -> dict[str, Any]:
+    return {"ok": True, "policy": BRIDGE.settings()["workspace_source_policy"]}
+
+
+@app.post("/api/ui/source-policy")
+def api_source_policy_update(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
+    _ui_principal(request, mutate=True)
+    if payload.get("active") not in {True, False}:
+        raise HTTPException(status_code=422, detail={
+            "code": "invalid_workspace_policy_state",
+            "message": "Informe explicitamente se a política deve ficar ativa.",
+        })
+    try:
+        return BRIDGE.set_workspace_source_policy(active=payload["active"])
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": str(exc),
+            "message": "A política de fontes autorizadas já está desativada.",
         }) from exc
 
 

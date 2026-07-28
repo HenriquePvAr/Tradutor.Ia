@@ -233,6 +233,19 @@ class Worker:
             if row is None:
                 return None
             result = apply_source_analysis(self.store, row, analysis)
+            if result.outcome == "source_analysis_ready":
+                from source_readiness import SourceReadinessStore
+
+                readiness = SourceReadinessStore(self.store.db_path)
+                try:
+                    resolution = readiness.resolve_ready_pipeline(job_id)
+                finally:
+                    readiness.close()
+                # The current claim ends here. A successful atomic resolution requeues
+                # the same job, which the normal claim loop will acquire exactly once.
+                # A disabled/revoked policy leaves it visibly fail-closed at readiness.
+                if resolution.get("status") == JobStatus.QUEUED:
+                    return None
             if not result.should_spawn_runner:
                 return None
             return self.store.get_job(job_id)

@@ -537,6 +537,29 @@ class QueueVisibilityTests(unittest.TestCase):
         self.assertTrue(state["pending"])
         self.assertTrue(state["queue_running"])       # the UI must not fall back to "pronto"
 
+    def test_initial_click_persists_pipeline_intent_policy_mode_and_scope(self):
+        from source_readiness import default_workspace_id
+
+        readiness = SourceReadinessStore(self.bridge.store.db_path)
+        try:
+            policy = readiness.activate_workspace_policy(
+                owner="local",
+                workspace_id=default_workspace_id(self.bridge.store.db_path),
+                created_by="local",
+                authorization_statement="Fixture workspace uses authorized sources.",
+            )
+        finally:
+            readiness.close()
+        result = self.queue_one()
+        config = self.bridge.store.get_job(result["job_id"])["configuration"]
+        self.assertTrue(config["user_requested_pipeline"])
+        self.assertEqual(config["requested_mode"], "fast")
+        self.assertEqual(config["requested_scope"], "full")
+        self.assertEqual(config["effective_scope"], "full")
+        self.assertEqual(config["workspace_authorization_policy_id"], policy.policy_id)
+        self.assertEqual(config["workspace_authorization_policy_hash"], policy.policy_hash)
+        self.assertNotIn("publish", config["requested_operations"])
+
     def test_offline_worker_surfaces_a_blocked_reason(self):
         self.queue_one()
         state = self.bridge.runtime_state()
@@ -601,7 +624,7 @@ class QueueVisibilityTests(unittest.TestCase):
         self.assertEqual(state["status"], JobStatus.QUEUED)
         self.assertIsNone(state["source_ready"])
 
-    def test_stale_submit_cannot_create_job_before_download_authorization(self):
+    def test_stale_submit_cannot_create_job_without_pipeline_intent(self):
         readiness = SourceReadinessStore(self.bridge.store.db_path)
         try:
             readiness.persist_analysis({
@@ -620,7 +643,7 @@ class QueueVisibilityTests(unittest.TestCase):
         finally:
             readiness.close()
 
-        with self.assertRaisesRegex(ValueError, "download_authorization_required"):
+        with self.assertRaisesRegex(ValueError, "pipeline_intent_required"):
             drive(self.bridge.start({
                 "url": WEBTOON_URL, "slug": "stale_submit", "mode": "fast",
                 "full": True, "use_cache": False, "force": True,
@@ -629,7 +652,7 @@ class QueueVisibilityTests(unittest.TestCase):
         self.assertEqual(self.bridge.store.list_jobs(limit=None), [])
         self.assertEqual(self.bridge.worker_calls, 0)
 
-    def test_authorization_still_requires_separate_download_action(self):
+    def test_per_source_authorization_cannot_replace_pipeline_intent(self):
         readiness = SourceReadinessStore(self.bridge.store.db_path)
         try:
             result = readiness.persist_analysis({
@@ -654,7 +677,7 @@ class QueueVisibilityTests(unittest.TestCase):
         finally:
             readiness.close()
 
-        with self.assertRaisesRegex(ValueError, "explicit_download_request_required"):
+        with self.assertRaisesRegex(ValueError, "pipeline_intent_required"):
             drive(self.bridge.start({
                 "url": WEBTOON_URL, "slug": "stale_submit", "mode": "fast",
                 "full": True, "use_cache": False, "force": True,

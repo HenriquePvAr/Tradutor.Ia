@@ -307,11 +307,11 @@ def apply_source_analysis(
         source_selection_json=_dump(selection),
         configuration_json=_dump(configuration),
         command_json=json.dumps(command, ensure_ascii=False),
-        stage="source_analysis_ready", reason_code="download_authorization_required",
+        stage="source_analysis_ready", reason_code="workspace_policy_resolution_pending",
         **provenance)
     return SourceAnalysisPhaseResult(
         outcome=SOURCE_READY, job_id=job_id, status=JobStatus.SOURCE_ANALYSIS_READY,
-        stage="source_analysis_ready", reason_code="download_authorization_required",
+        stage="source_analysis_ready", reason_code="workspace_policy_resolution_pending",
         analysis=public_analysis, selection=selection,
         payload={"ok": True, "run_id": row["run_id"], "job_id": job_id,
                  "analysis": public_analysis,

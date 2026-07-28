@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from job_store import JobStatus, JobStore
+from source_readiness import PIPELINE_OPERATIONS, SourceReadinessStore, default_workspace_id
 from source_analysis_phase import (
     AWAITING_REVIEW, FAILED, READY_FOR_RUNNER, SourceAnalysisPhaseResult,
     has_usable_selection, should_spawn_runner,
@@ -221,6 +222,38 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertIn("c000", row["command"])
         self.assertIn("c001", row["command"])
         self.assertNotIn("c002", row["command"])
+
+    def test_workspace_policy_authorizes_and_requeues_without_spawning_runner(self):
+        workspace_id = default_workspace_id(self.store.db_path)
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            readiness.activate_workspace_policy(
+                owner="local", workspace_id=workspace_id, created_by="local",
+                authorization_statement="Fixture workspace uses authorized sources.")
+        finally:
+            readiness.close()
+        config = {
+            "job_type": "translation", "mode": "fast", "full": True,
+            "force": True, "use_cache": False, "use_context": True,
+            "workspace_owner": "local", "workspace_id": workspace_id,
+            "user_requested_pipeline": True, "requested_mode": "fast",
+            "requested_scope": "full", "effective_scope": "full",
+            "scope_source": "user", "scope_hash": "d" * 64,
+            "requested_operations": list(PIPELINE_OPERATIONS),
+        }
+        job = self.queued_url_job(
+            configuration_json=__import__("json").dumps(config),
+            command_json='["python","run_webtoon.py","url"]')
+        worker = _Worker(self.store, analysis=FakeAnalysis(specific_outcome(), accepted=3))
+
+        prepared = worker._prepare_source(job)
+
+        self.assertIsNone(prepared)
+        row = self.store.get_job(job["id"])
+        self.assertEqual(row["status"], JobStatus.QUEUED)
+        self.assertEqual(row["stage"], "preparing_download")
+        self.assertEqual(row["configuration"]["authorization_resolution"], "workspace_policy")
+        self.assertEqual(worker.spawns, 0)
 
     def test_an_existing_selection_skips_reanalysis(self):
         job = self.queued_url_job(
