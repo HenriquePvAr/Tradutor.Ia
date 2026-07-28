@@ -388,9 +388,25 @@ async def api_run(
             "action": action,
         }) from exc
     except ValueError as exc:
+        reason_code = str(exc)
+        if reason_code in {
+            "download_authorization_required",
+            "explicit_download_request_required",
+        }:
+            message = (
+                "É necessária uma autorização de conteúdo antes de iniciar o download."
+                if reason_code == "download_authorization_required"
+                else "Use a ação separada de download autorizado para continuar."
+            )
+            raise HTTPException(status_code=409, detail={
+                "code": reason_code,
+                "stage": "autorizacao_de_conteudo",
+                "message": message,
+                "action": "Revise a próxima etapa e confirme a ação de download separadamente.",
+            }) from exc
         raise HTTPException(status_code=400, detail={
             "code": "invalid_request", "stage": "validacao",
-            "message": str(exc), "action": "Corrija os campos e tente novamente.",
+            "message": reason_code, "action": "Corrija os campos e tente novamente.",
         }) from exc
 
 
@@ -1426,13 +1442,10 @@ def api_history_delete(payload: dict[str, Any] = Body(default={})) -> dict[str, 
 def index() -> None:
     shell = SHELL_PATH.read_text(encoding="utf-8")
     visual_test_enabled = os.getenv("TRADUTOR_UI_VISUAL_TEST", "").strip() == "1"
-    ui.add_head_html(
-        """
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-        """
-        + f'<link rel="stylesheet" href="{_asset_url(TRADUTOR_CSS_ASSET)}">'
-    )
+    # The local UI must remain offline-capable: system font fallbacks in the
+    # stylesheet are sufficient, and remote font hosts would make a localhost
+    # page perform an unexpected external request on every reload.
+    ui.add_head_html(f'<link rel="stylesheet" href="{_asset_url(TRADUTOR_CSS_ASSET)}">')
     ui.add_body_html(shell)
     ui.add_body_html(
         "<script>"

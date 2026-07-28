@@ -747,6 +747,11 @@ class UiIntegrationTests(unittest.TestCase):
         )
         self.assertFalse(any(ord(character) >= 0x1F000 for character in sources))
 
+    def test_local_ui_bootstrap_does_not_reference_external_font_hosts(self):
+        source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        self.assertNotIn("fonts.googleapis.com", source)
+        self.assertNotIn("fonts.gstatic.com", source)
+
 
 if __name__ == "__main__":
     unittest.main()

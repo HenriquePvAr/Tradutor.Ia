@@ -319,9 +319,20 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("Fonte analisada", html)
         self.assertIn("Nenhuma página foi baixada", html)
         self.assertIn("downloadAuthorizationDialog", html)
+        self.assertIn('class="btn-ghost show" type="button" id="cancelDownloadAuthorization"', html)
         self.assertNotIn("window.alert(", script)
         self.assertIn("source_analysis_ready", script)
         self.assertIn("O download ainda não foi iniciado", script)
+
+    def test_polling_preserves_ready_state_and_isolates_unrelated_terminal_results(self):
+        root = Path(__file__).resolve().parent
+        script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("applyStandaloneSourceReady(data)", script)
+        self.assertIn("&& !runtime.source_ready", script)
+        self.assertIn("if (!runtime.source_ready && !draftOnly", script)
+        self.assertIn("if (!runtime.source_ready && resultRecord", script)
+        self.assertNotIn("'awaiting_source_review', 'source_analysis_ready'", script)
+        self.assertIn("else if (runtime.source_ready)", script)
 
 
 if __name__ == "__main__":

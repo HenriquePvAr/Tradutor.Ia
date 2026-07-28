@@ -2968,6 +2968,17 @@ class UiBridge:
         if pending:
             status = JobStatus.QUEUED
         blocked = pending and not worker
+        # A standalone, persisted source analysis is a first-class runtime state.
+        # Bootstrap already restored it, but the polling endpoint previously omitted
+        # it and replaced the ready panel with an unrelated terminal job within one
+        # polling interval. Active/review/staging/queued work still wins.
+        standalone_source_ready = None
+        if not (active or waiting or source_ready or staging or pending):
+            standalone_source_ready = self.latest_source_analysis("local")
+            if standalone_source_ready:
+                status = JobStatus.SOURCE_ANALYSIS_READY
+                stage = JobStatus.SOURCE_ANALYSIS_READY
+                progress_message = "Fonte analisada"
         latest_result_job = self._latest_terminal_job()
         latest_operational_job = self._latest_operational_job()
         latest_record = record or self._job_record(latest_operational_job or latest_result_job)
@@ -3011,7 +3022,8 @@ class UiBridge:
             "queue_running": running or pending,   # a queued job is still "em andamento"
             "resumable": resumable,
             "source_review": self._job_record(waiting),
-            "source_ready": self._job_record(source_ready),
+            "source_ready": self._job_record(source_ready) or standalone_source_ready,
+            "standalone_source_ready": standalone_source_ready,
             "quality_review": quality_review,
             "worker": {
                 "online": bool(worker),
@@ -3149,6 +3161,7 @@ class UiBridge:
             if local_folder_allowed is not True:
                 raise ValueError("local_folder_requires_loopback_ui")
             return await self._start_local_folder(payload, principal=principal)
+        self._reject_stale_submit_for_ready_source(payload)
         # A double click (or a retried request) must not queue the same chapter twice.
         duplicate = self._pending_duplicate(payload)
         if duplicate:
@@ -3179,6 +3192,38 @@ class UiBridge:
         worker = self.ensure_worker()
         return {"ok": True, "run_id": job["run_id"], "job_id": job["id"],
                 "status": JobStatus.QUEUED, "stage": "queued", "worker": worker}
+
+    def _reject_stale_submit_for_ready_source(self, payload: dict[str, Any]) -> None:
+        """Keep the legacy submit endpoint from bypassing the explicit download gate.
+
+        A browser with an older asset can still POST ``/api/ui/run`` after a newer,
+        append-only source analysis reached ``source_analysis_ready``.  Matching is
+        content-addressed and owner-scoped; no URL, host, title, or concrete operation
+        is special-cased.  Even an active authorization does not turn this legacy submit
+        into the required second download action.
+        """
+        source_url = str(payload.get("url") or "").strip()
+        if not source_url:
+            return
+        from source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            result = readiness.latest_analysis("local")
+            if (
+                result is None
+                or result.status != JobStatus.SOURCE_ANALYSIS_READY
+                or result.normalized_url_hash
+                != hashlib.sha256(source_url.encode("utf-8")).hexdigest()
+            ):
+                return
+            authorization = readiness.latest_authorization(
+                owner="local", analysis_result_id=result.analysis_id)
+        finally:
+            readiness.close()
+        if not authorization or "download_assets" not in authorization.allowed_operations:
+            raise ValueError("download_authorization_required")
+        raise ValueError("explicit_download_request_required")
 
 
     def _apply_source_analysis(self, job: dict[str, Any], analysis: Any) -> dict[str, Any]:

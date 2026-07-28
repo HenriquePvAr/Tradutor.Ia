@@ -83,7 +83,7 @@
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', source_analysis_ready: 'fonte analisada', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed', 'failed', 'cancelled']);
-  const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review', 'source_analysis_ready']);
+  const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
   const MAX_VISIBLE_TOASTS = 3;
   const TOAST_DISMISS_MS = 3200;
   const TOAST_DEDUP_LIMIT = 80;
@@ -1346,7 +1346,7 @@
     const visibleProgress = {...(runtime.progress || {})};
     const terminalLatest = runtime.latest || null;
     let presentationStatus = appState.status;
-    if (!runtime.active && !runtime.source_review && terminalLatest
+    if (!runtime.active && !runtime.source_review && !runtime.source_ready && terminalLatest
         && ['failed', 'cancelled'].includes(String(terminalLatest.status || '').toLowerCase())) {
       presentationStatus = String(terminalLatest.status || appState.status);
       visibleProgress.stage_key = terminalLatest.stage || visibleProgress.stage_key || 'source_analysis';
@@ -1379,7 +1379,9 @@
     renderProgress(visibleProgress, pipelineState);
     const draftOnly = appState.newTranslationDraft && !runtime.active && !runtime.source_review;
     if (draftOnly) clearNewTranslationDraftPanels();
-    else renderRunStatus({...runtime, status: presentationStatus, progress: visibleProgress});
+    else if (runtime.source_ready) {
+      $('#runStatusCard') && ($('#runStatusCard').hidden = true);
+    } else renderRunStatus({...runtime, status: presentationStatus, progress: visibleProgress});
     renderQueue();
     appendLogs(runtime.logs || []);
     if (awaitingReview && runtime.source_review && shouldRenderSourceReview(runtime.source_review)) {
@@ -1394,12 +1396,12 @@
     // After the user leaves review_mode the form belongs to a new chapter, so an
     // idle runtime's leftover review must not reappear over it.
     const reviewDismissed = appState.reviewPanelDismissed && !inFlightStatuses.has(appState.status);
-    if (!draftOnly && !reviewDismissed && runtime.quality_review) renderQualityReview(runtime.quality_review);
+    if (!runtime.source_ready && !draftOnly && !reviewDismissed && runtime.quality_review) renderQualityReview(runtime.quality_review);
     // In explicit review_mode the panel is owned by the selected finished chapter,
     // so a background poll of the (idle) active runtime must not hide it.
     else if (!appState.reviewMode && $('#qualityReviewPanel')) $('#qualityReviewPanel').hidden = true;
     const resultRecord = runtime.latest_result || runtime.latest;
-    if (resultRecord && !awaitingReview && !draftOnly) {
+    if (!runtime.source_ready && resultRecord && !awaitingReview && !draftOnly) {
       const latestId = String(resultRecord.id || resultRecord.job_id || '');
       const operationLatest = runtime.latest || null;
       const operationLatestId = String(operationLatest?.id || operationLatest?.job_id || '');
@@ -5394,6 +5396,14 @@
   });
 
   /* ---------- data lifecycle ---------- */
+  function applyStandaloneSourceReady(data) {
+    if (!data?.source_ready && data?.standalone_source_ready && !data?.active
+        && !data?.source_review && !data?.pending) {
+      data.source_ready = data.standalone_source_ready;
+      data.status = 'source_analysis_ready';
+    }
+    return data;
+  }
   async function refreshBootstrap() {
     if (bootVisualTest) return;
     try {
@@ -5409,10 +5419,7 @@
       setBootStage(4);
       setGlobal('__tradutorDisplayName', authenticated ? String(appState.profile.display_name || '').trim() : '');
       appState.settings = data.settings || {};
-      if (!data.source_ready && data.standalone_source_ready) {
-        data.source_ready = data.standalone_source_ready;
-        if (!data.active && data.status === 'ready') data.status = 'source_analysis_ready';
-      }
+      applyStandaloneSourceReady(data);
       setBootStage(5);
       appState.historyRevision = data.history_revision || appState.historyRevision;
       renderSettings(appState.settings);
@@ -5445,6 +5452,7 @@
     appState.polling = true;
     try {
       const data = await api(`/api/ui/state?cursor=${appState.cursor}`);
+      applyStandaloneSourceReady(data);
       renderRuntime(data);
       handleTerminalRuntimeTransition(data);
       appState.cursor = Math.max(appState.cursor, Number(data.log_cursor || 0));

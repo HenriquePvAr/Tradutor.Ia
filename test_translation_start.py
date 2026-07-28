@@ -3,6 +3,7 @@
 import _test_bootstrap  # noqa: F401
 
 import asyncio
+import hashlib
 import os
 import tempfile
 import threading
@@ -19,6 +20,7 @@ from chapter_source import (
     SourceError, UniversalChapterAdapter, host_of, select_adapter, supported_hosts,
 )
 from job_store import JobStatus, JobStore
+from source_readiness import SourceReadinessStore
 from ui_helpers import build_run_command
 from worker_service import Worker
 
@@ -546,6 +548,120 @@ class QueueVisibilityTests(unittest.TestCase):
         self.assertEqual(state["status"], "ready")
         self.assertFalse(state["pending"])
         self.assertFalse(state["blocked"])
+
+    def test_poll_state_restores_standalone_ready_analysis(self):
+        readiness = SourceReadinessStore(self.bridge.store.db_path)
+        try:
+            result = readiness.persist_analysis({
+                "owner": "local",
+                "operation_id": "operation-ready",
+                "attempt": 1,
+                "normalized_url_hash": "a" * 64,
+                "adapter": "fixture_adapter",
+                "source_kind": "local_test_fixture",
+                "preflight_result_id": "preflight-ready",
+                "preflight_status": "preflight_ready",
+                "status": "source_analysis_ready",
+                "reason_code": "source_structure_compatible",
+                "policy_hash": "b" * 64,
+            })
+        finally:
+            readiness.close()
+
+        state = self.bridge.runtime_state()
+
+        self.assertEqual(state["status"], JobStatus.SOURCE_ANALYSIS_READY)
+        self.assertEqual(state["source_ready"]["analysis_result_id"], result.analysis_id)
+        self.assertEqual(state["source_ready"]["job_id"], "")
+        self.assertEqual(state["progress"]["stage_key"], JobStatus.SOURCE_ANALYSIS_READY)
+        self.assertIsNone(state["active"])
+
+    def test_queued_work_takes_precedence_over_standalone_ready_analysis(self):
+        readiness = SourceReadinessStore(self.bridge.store.db_path)
+        try:
+            readiness.persist_analysis({
+                "owner": "local",
+                "operation_id": "operation-ready",
+                "attempt": 1,
+                "normalized_url_hash": "a" * 64,
+                "adapter": "fixture_adapter",
+                "source_kind": "local_test_fixture",
+                "preflight_result_id": "preflight-ready",
+                "preflight_status": "preflight_ready",
+                "status": "source_analysis_ready",
+                "reason_code": "source_structure_compatible",
+                "policy_hash": "b" * 64,
+            })
+        finally:
+            readiness.close()
+        self.queue_one()
+
+        state = self.bridge.runtime_state()
+
+        self.assertEqual(state["status"], JobStatus.QUEUED)
+        self.assertIsNone(state["source_ready"])
+
+    def test_stale_submit_cannot_create_job_before_download_authorization(self):
+        readiness = SourceReadinessStore(self.bridge.store.db_path)
+        try:
+            readiness.persist_analysis({
+                "owner": "local",
+                "operation_id": "operation-ready",
+                "attempt": 1,
+                "normalized_url_hash": hashlib.sha256(WEBTOON_URL.encode()).hexdigest(),
+                "adapter": "fixture_adapter",
+                "source_kind": "public_url",
+                "preflight_result_id": "preflight-ready",
+                "preflight_status": "preflight_ready",
+                "status": "source_analysis_ready",
+                "reason_code": "source_structure_compatible",
+                "policy_hash": "b" * 64,
+            })
+        finally:
+            readiness.close()
+
+        with self.assertRaisesRegex(ValueError, "download_authorization_required"):
+            drive(self.bridge.start({
+                "url": WEBTOON_URL, "slug": "stale_submit", "mode": "fast",
+                "full": True, "use_cache": False, "force": True,
+            }))
+
+        self.assertEqual(self.bridge.store.list_jobs(limit=None), [])
+        self.assertEqual(self.bridge.worker_calls, 0)
+
+    def test_authorization_still_requires_separate_download_action(self):
+        readiness = SourceReadinessStore(self.bridge.store.db_path)
+        try:
+            result = readiness.persist_analysis({
+                "owner": "local",
+                "operation_id": "operation-ready",
+                "attempt": 1,
+                "normalized_url_hash": hashlib.sha256(WEBTOON_URL.encode()).hexdigest(),
+                "adapter": "fixture_adapter",
+                "source_kind": "public_url",
+                "preflight_result_id": "preflight-ready",
+                "preflight_status": "preflight_ready",
+                "status": "source_analysis_ready",
+                "reason_code": "source_structure_compatible",
+                "policy_hash": "b" * 64,
+            })
+            readiness.authorize(
+                owner="local", analysis_result_id=result.analysis_id,
+                rights_basis="local_test_fixture",
+                allowed_operations=["download_assets"], reviewer="fixture-runner",
+                authorization_source="hermetic_test",
+            )
+        finally:
+            readiness.close()
+
+        with self.assertRaisesRegex(ValueError, "explicit_download_request_required"):
+            drive(self.bridge.start({
+                "url": WEBTOON_URL, "slug": "stale_submit", "mode": "fast",
+                "full": True, "use_cache": False, "force": True,
+            }))
+
+        self.assertEqual(self.bridge.store.list_jobs(limit=None), [])
+        self.assertEqual(self.bridge.worker_calls, 0)
 
     def test_public_job_record_redacts_query_but_store_keeps_execution_url(self):
         job_id = self.bridge.store.create_job(
