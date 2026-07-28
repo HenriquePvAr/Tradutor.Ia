@@ -5,6 +5,7 @@ import _test_bootstrap  # noqa: F401
 import inspect
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,9 @@ import pytest
 import app_ui
 from community_auth import RequestPrincipal
 from job_store import JobStatus, JobStore
+from output_manifest import build_run_manifest
 from ui_bridge import UiBridge
+from ui_history import UIHistoryStore
 
 
 def _create_job(store: JobStore, owner: str, *, job_id: str) -> str:
@@ -204,6 +207,48 @@ def test_owner_history_never_discovers_global_filesystem_records(tmp_path):
         assert bridge._history_payload_for_owner("owner-b") == [
             {"id": "2" * 32, "owner_id": "owner-b"}]
         assert bridge._history_payload_for_owner("moderator") == []
+    finally:
+        store.close()
+
+
+def test_private_job_record_exposes_verified_manifest_state_without_manifest_path(tmp_path):
+    output_root = tmp_path / "output"
+    output = output_root / "synthetic"
+    output.mkdir(parents=True)
+    pdf = output / "synthetic.pdf"
+    pdf.write_bytes(b"%PDF-1.4\nsynthetic\n%%EOF\n")
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    try:
+        job_id = _create_job(store, "owner-a", job_id="3" * 32)
+        job = store.get_job(job_id)
+        manifest = build_run_manifest(
+            run_id=job["run_id"],
+            created_at="2026-07-28T00:00:00+00:00",
+            source_url="local-folder:0123456789abcdef01234567",
+            commit_hash="offline",
+            branch="test",
+            pipeline_version="synthetic",
+            model="none",
+            final_status="finished",
+            quality_passed=True,
+            manual_review_count=0,
+            rejected_count=0,
+            pdf_path=pdf.name,
+            slug=output.name,
+        )
+        (output / "run_manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8")
+        store.update_fields(job_id, output_dir=str(output), pdf_path=str(pdf))
+
+        bridge = UiBridge.__new__(UiBridge)
+        bridge.store = store
+        bridge.output_root = output_root
+        bridge.history_store = UIHistoryStore(tmp_path / "history.json")
+        record = bridge._job_record(store.get_job(job_id))
+
+        assert record["output_verification"] == "manifest_verified"
+        assert len(record["pdf_sha256"]) == 64
+        assert "manifest_path" not in record
     finally:
         store.close()
 

@@ -519,7 +519,7 @@ class UiBridge:
                     "errors": int(report.get("pages_with_error") or 0),
                     "quality_gate": quality.get("passed"),
                 }
-        return {
+        record = {
             "id": job["id"],
             "run_id": job.get("run_id"),
             "job_id": job["id"],
@@ -572,6 +572,25 @@ class UiBridge:
             "cancellation_completed_at": _epoch_to_iso(job.get("cancellation_completed_at")),
             **result_metrics,
         }
+        output_dir = Path(str(job.get("output_dir") or ""))
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+        try:
+            confined_output = output_dir.resolve()
+            confined_output.relative_to(output_root)
+        except (OSError, ValueError):
+            return record
+        history_store = getattr(self, "history_store", None)
+        if history_store is None:
+            return record
+        verification, manifest = history_store._output_verification(confined_output)
+        record["output_verification"] = verification
+        if manifest:
+            pdf_path = history_store._manifest_pdf_path(confined_output, manifest)
+            record["pdf_sha256"] = (
+                str(manifest.get("pdf_sha256") or "")
+                or history_store._sha256_file(pdf_path)
+            )
+        return record
 
     @staticmethod
     def _quality_review_reason(item: dict[str, Any], page: dict[str, Any]) -> str:
