@@ -199,7 +199,7 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertIsNotNone(prepared)
         self.assertEqual(prepared["id"], job["id"])
 
-    def test_automatic_selection_is_forwarded_to_limited_runner_command(self):
+    def test_automatic_selection_is_persisted_but_runner_waits_for_authorization(self):
         job = self.queued_url_job(
             configuration_json='{"job_type":"translation","mode":"fast","full":false,'
                                '"max_images":2,"force":true,"use_cache":false,'
@@ -210,8 +210,9 @@ class WorkerPhaseTests(unittest.TestCase):
 
         prepared = worker._prepare_source(job)
 
-        self.assertIsNotNone(prepared)
+        self.assertIsNone(prepared)
         row = self.store.get_job(job["id"])
+        self.assertEqual(row["status"], JobStatus.SOURCE_ANALYSIS_READY)
         self.assertEqual(row["configuration"]["max_images"], 2)
         self.assertEqual(len(row["source_selection"]["candidate_ids"]), 3)
         self.assertIn("--max-images", row["command"])
@@ -309,7 +310,8 @@ class SelectionReuseTests(unittest.TestCase):
 class SpawnGateTests(unittest.TestCase):
     def test_the_gate_refuses_every_state_that_must_not_run(self):
         for status in (JobStatus.FINISHED, JobStatus.FAILED, JobStatus.CANCELLED,
-                       JobStatus.REVIEW_REQUIRED, JobStatus.AWAITING_SOURCE_REVIEW):
+                       JobStatus.REVIEW_REQUIRED, JobStatus.AWAITING_SOURCE_REVIEW,
+                       JobStatus.SOURCE_ANALYSIS_READY):
             self.assertFalse(should_spawn_runner({"status": status}), status)
 
     def test_the_gate_refuses_a_cancel_request(self):

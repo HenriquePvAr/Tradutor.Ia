@@ -37,12 +37,13 @@ class JobStatus:
     FINISHED = "finished"
     REVIEW_REQUIRED = "review_required"
     AWAITING_SOURCE_REVIEW = "awaiting_source_review"
+    SOURCE_ANALYSIS_READY = "source_analysis_ready"
 
     ALL = frozenset(
         {
             STAGING, QUEUED, CLAIMING, STARTING, RUNNING, CANCELLING, CANCELLED,
             INTERRUPTED, RESUMABLE, FAILED, FINISHED, REVIEW_REQUIRED,
-            AWAITING_SOURCE_REVIEW,
+            AWAITING_SOURCE_REVIEW, SOURCE_ANALYSIS_READY,
         }
     )
     TERMINAL = frozenset({CANCELLED, FAILED, FINISHED, REVIEW_REQUIRED})
@@ -72,6 +73,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
         # removed, and a claimed job still cannot jump straight to a running state.
         {JobStatus.STARTING, JobStatus.QUEUED, JobStatus.FAILED, JobStatus.INTERRUPTED,
          JobStatus.AWAITING_SOURCE_REVIEW, JobStatus.CANCELLING}
+         | {JobStatus.SOURCE_ANALYSIS_READY}
     ),
     JobStatus.STARTING: frozenset(
         {JobStatus.RUNNING, JobStatus.INTERRUPTED, JobStatus.FAILED, JobStatus.CANCELLING}
@@ -83,6 +85,9 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
         }
     ),
     JobStatus.AWAITING_SOURCE_REVIEW: frozenset(
+        {JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED}
+    ),
+    JobStatus.SOURCE_ANALYSIS_READY: frozenset(
         {JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED}
     ),
     JobStatus.CANCELLING: frozenset({JobStatus.CANCELLED, JobStatus.INTERRUPTED, JobStatus.FAILED}),

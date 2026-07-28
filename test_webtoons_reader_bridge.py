@@ -284,7 +284,7 @@ class AdapterBoundaryTests(unittest.TestCase):
 
 
 class WorkerProgressTests(unittest.TestCase):
-    def test_worker_persists_lazy_resolution_progress_and_allows_runner_after_selection(self):
+    def test_worker_persists_lazy_resolution_progress_and_waits_for_authorization(self):
         from job_store import JobStatus, JobStore
         from worker_service import Worker
 
@@ -320,11 +320,11 @@ class WorkerProgressTests(unittest.TestCase):
                 store.transition(job_id, JobStatus.CLAIMING, worker_id="w-test")
                 worker = WorkerProbe(store)
                 prepared = worker._prepare_source(store.get_job(job_id))
-                self.assertIsNotNone(prepared)
+                self.assertIsNone(prepared)
                 row = store.get_job(job_id)
-                self.assertEqual(row["status"], JobStatus.QUEUED)
+                self.assertEqual(row["status"], JobStatus.SOURCE_ANALYSIS_READY)
                 self.assertTrue(row["source_selection"]["candidate_ids"])
-                self.assertEqual(row["stage"], "created")
+                self.assertEqual(row["stage"], "source_analysis_ready")
                 self.assertEqual(row["progress_counter_stage"], "source_lazy_resolution")
             finally:
                 store.close()
@@ -448,7 +448,12 @@ class SyntheticWebtoonsE2ETests(unittest.TestCase):
                     capture_output=True,
                     timeout=60,
                 )
-                for target in (JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING):
+                targets = (
+                    (JobStatus.STARTING, JobStatus.RUNNING)
+                    if job["status"] == JobStatus.CLAIMING
+                    else (JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING)
+                )
+                for target in targets:
                     self.store.transition(
                         job["id"],
                         target,
@@ -462,6 +467,10 @@ class SyntheticWebtoonsE2ETests(unittest.TestCase):
             db_path = Path(folder) / "jobs.sqlite3"
             bridge = BridgeProbe(db_path)
             try:
+                from community_auth import RequestPrincipal
+
+                principal = RequestPrincipal(
+                    user_id="fixture-user", authenticated=True, auth_source="local")
                 with (
                     mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns),
                     mock.patch.object(ui_bridge, "OUTPUT_ROOT", Path(folder) / "output"),
@@ -474,7 +483,7 @@ class SyntheticWebtoonsE2ETests(unittest.TestCase):
                         "use_cache": False,
                         "force": True,
                         "use_context": False,
-                    }))
+                    }, principal=principal))
                 self.assertEqual(submitted["status"], JobStatus.QUEUED)
                 self.assertEqual(bridge.worker_calls, 1)
                 self.assertEqual(bridge.browser_calls, 0)
@@ -483,6 +492,16 @@ class SyntheticWebtoonsE2ETests(unittest.TestCase):
                 bridge.store.transition(submitted["job_id"], JobStatus.CLAIMING,
                                         worker_id=worker.worker_id)
                 prepared = worker._prepare_source(bridge.store.get_job(submitted["job_id"]))
+                self.assertIsNone(prepared)
+                row = bridge.store.get_job(submitted["job_id"])
+                bridge.authorize_source_download(
+                    row["id"], principal=principal,
+                    rights_basis="local_test_fixture",
+                    allowed_operations=["download_assets"])
+                bridge.continue_authorized_download(row["id"], principal=principal)
+                bridge.store.transition(
+                    row["id"], JobStatus.CLAIMING, worker_id=worker.worker_id)
+                prepared = worker._prepare_source(bridge.store.get_job(row["id"]))
                 self.assertIsNotNone(prepared)
                 self.assertEqual(len(prepared["source_selection"]["candidate_ids"]), 20)
                 proc, output_dir = worker.run_fake_runner(prepared)

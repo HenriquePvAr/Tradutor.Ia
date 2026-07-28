@@ -20,6 +20,7 @@ from job_store import JobStatus
 
 # Phase outcomes. One decision, not a set of booleans that can disagree.
 READY_FOR_RUNNER = "ready_for_runner"
+SOURCE_READY = "source_analysis_ready"
 AWAITING_REVIEW = "awaiting_source_review"
 FAILED = "failed"
 CANCELLED = "cancelled"
@@ -292,17 +293,29 @@ def apply_source_analysis(
     configuration["source_analysis"] = public_analysis
     configuration["source_selection"] = selection
     command = command_with_source_selection(job, selection)
+    from source_readiness import SourceReadinessStore, source_result_from_analysis
+
+    readiness = SourceReadinessStore(store.db_path)
+    try:
+        persisted = readiness.persist_analysis(source_result_from_analysis(job, analysis))
+    finally:
+        readiness.close()
+    configuration["source_analysis_result_id"] = persisted.analysis_id
+    configuration["source_analysis_result_hash"] = persisted.result_hash
     row = store.transition(
-        job_id, JobStatus.QUEUED, source_analysis_json=_dump(public_analysis),
+        job_id, JobStatus.SOURCE_ANALYSIS_READY, source_analysis_json=_dump(public_analysis),
         source_selection_json=_dump(selection),
         configuration_json=_dump(configuration),
         command_json=json.dumps(command, ensure_ascii=False),
-        stage="created", **provenance)
+        stage="source_analysis_ready", reason_code="download_authorization_required",
+        **provenance)
     return SourceAnalysisPhaseResult(
-        outcome=READY_FOR_RUNNER, job_id=job_id, status=JobStatus.QUEUED, stage="created",
+        outcome=SOURCE_READY, job_id=job_id, status=JobStatus.SOURCE_ANALYSIS_READY,
+        stage="source_analysis_ready", reason_code="download_authorization_required",
         analysis=public_analysis, selection=selection,
         payload={"ok": True, "run_id": row["run_id"], "job_id": job_id,
-                 "analysis": public_analysis})
+                 "analysis": public_analysis,
+                 "source_analysis_result": persisted.public()})
 
 
 def has_usable_selection(job: dict[str, Any]) -> bool:
@@ -332,7 +345,9 @@ def should_spawn_runner(job: dict[str, Any],
     if result is not None and not result.should_spawn_runner:
         return False
     status = (job or {}).get("status")
-    if status in JobStatus.TERMINAL or status == JobStatus.AWAITING_SOURCE_REVIEW:
+    if status in JobStatus.TERMINAL or status in {
+        JobStatus.AWAITING_SOURCE_REVIEW, JobStatus.SOURCE_ANALYSIS_READY,
+    }:
         return False
     if (job or {}).get("cancel_requested"):
         return False

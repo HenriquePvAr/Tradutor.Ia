@@ -274,6 +274,12 @@ class SubmitTests(unittest.TestCase):
         result = self.start()
         run_source_phase(self.bridge, result["job_id"], self.bridge._analyze_source)
         original = self.bridge.store.get_job(result["job_id"])
+        # A successful analysis is now intentionally paused until an explicit content
+        # authorization queues the separate download operation.
+        self.bridge.store.transition(
+            original["id"], JobStatus.QUEUED,
+            stage="created", reason_code="download_authorized")
+        original = self.bridge.store.get_job(result["job_id"])
         self.bridge.store.transition(original["id"], JobStatus.CLAIMING,
                                      worker_id="remote-worker")
         self.bridge.store.transition(original["id"], JobStatus.STARTING, expected_worker="remote-worker")
