@@ -492,10 +492,14 @@ class BetterAuthProvider:
         raise CsrfRejected("origin_required")
 
 
-def build_auth_provider(env: Mapping[str, str] | None = None) -> AuthProvider:
+def build_auth_provider(
+    env: Mapping[str, str] | None = None,
+    *,
+    clock: Callable[[], float] = time.time,
+) -> AuthProvider:
     values = os.environ if env is None else env
     provider_name = str(
-        values.get("AUTH_PROVIDER") or values.get("COMMUNITY_AUTH_PROVIDER", "local") or "local"
+        values.get("AUTH_PROVIDER") or values.get("COMMUNITY_AUTH_PROVIDER") or "supabase"
     ).strip().lower()
     if provider_name == "local":
         return LocalSessionAuthProvider.from_env(values)
@@ -507,6 +511,10 @@ def build_auth_provider(env: Mapping[str, str] | None = None) -> AuthProvider:
         return SupabaseAuthProvider(SupabaseAuthConfig.from_env(values))
     if provider_name == "better_auth":
         return BetterAuthProvider.from_env(values)
+    if provider_name == "local_test":
+        from local_test_auth import LocalTestAuthProvider
+
+        return LocalTestAuthProvider.from_env(values, clock=clock)
     raise AuthConfigurationError(f"unsupported community auth provider: {provider_name}")
 
 

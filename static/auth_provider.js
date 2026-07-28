@@ -95,11 +95,72 @@ function betterAuthAdapter(config) {
   };
 }
 
+function csrfToken() {
+  const prefix = 'tradutor_community_csrf=';
+  const part = document.cookie.split(';').map((value) => value.trim())
+    .find((value) => value.startsWith(prefix));
+  return part ? decodeURIComponent(part.slice(prefix.length)) : '';
+}
+
+function localTestAdapter() {
+  return {
+    async getSupabaseClient() {
+      return {provider: 'local_test'};
+    },
+    async currentAccessToken() {
+      return '';
+    },
+    async getCanonicalAccessToken() {
+      return '';
+    },
+    async currentUserEmail() {
+      return '';
+    },
+    async signUp() {
+      const error = new Error('local_test_signup_disabled');
+      error.status = 403;
+      error.code = 'local_test_signup_disabled';
+      throw error;
+    },
+    async signIn(email, password, {signal} = {}) {
+      authTrace('sign_in_started', {source: 'local_test_password'});
+      const payload = await requestJson('/api/community/auth/local-test/login', {
+        method: 'POST',
+        body: JSON.stringify({email, password}),
+        signal,
+      });
+      authTrace('sign_in_response_received', {status: 200, source: 'local_test_password'});
+      return payload;
+    },
+    async signOut() {
+      const csrf = csrfToken();
+      await requestJson('/api/community/auth/logout', {
+        method: 'POST',
+        body: '{}',
+        headers: csrf ? {'X-Tradutor-CSRF': csrf} : {},
+      });
+    },
+    async onAuthChange(handler) {
+      try {
+        const session = await fetch('/api/community/auth/session', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        }).then((response) => response.ok ? response.json() : null);
+        handler(session?.authenticated ? {provider: 'local_test'} : null, 'INITIAL_SESSION');
+      } catch (_) {
+        handler(null, 'INITIAL_SESSION');
+      }
+      return () => {};
+    },
+  };
+}
+
 async function provider() {
   if (providerPromise) return providerPromise;
   providerPromise = (async () => {
     const cfg = await publicConfig();
     if (cfg.provider === 'better_auth') return betterAuthAdapter(cfg);
+    if (cfg.provider === 'local_test') return localTestAdapter(cfg);
     return import(`/static/supabase_auth.js?v=${Date.now()}`);
   })();
   return providerPromise;
@@ -135,4 +196,8 @@ export async function signOut() {
 
 export async function onAuthChange(handler) {
   return (await provider()).onAuthChange(handler);
+}
+
+export async function authEnvironment() {
+  return publicConfig();
 }

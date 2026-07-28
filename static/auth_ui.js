@@ -265,6 +265,19 @@ function setMode(next) {
   setError(''); setNote('');
 }
 
+function clearAuthCredentialFields() {
+  const email = $('#authEmail');
+  const password = $('#authPassword');
+  const toggle = $('#authTogglePassword');
+  if (email) email.value = '';
+  if (password) {
+    password.value = '';
+    password.type = 'password';
+  }
+  toggle?.classList.remove('shown');
+  toggle?.setAttribute('aria-label', 'Mostrar senha');
+}
+
 function renderSession(session, authEvent = '') {
   const area = $('#authArea');
   const status = $('#authStatus');
@@ -321,6 +334,26 @@ async function init() {
     // otherwise a restarted local UI can keep an older persistence implementation
     // even though auth_ui.js itself was versioned by the server.
     authApi = await withTimeout(import(`/static/auth_provider.js?v=${Date.now()}`));
+    const authEnvironment = typeof authApi.authEnvironment === 'function'
+      ? await withTimeout(authApi.authEnvironment())
+      : {};
+    if (authEnvironment?.local_test_environment === true) {
+      document.body.dataset.authEnvironment = 'local_test';
+      let notice = document.getElementById('authLocalTestNotice');
+      if (!notice) {
+        notice = document.createElement('div');
+        notice.id = 'authLocalTestNotice';
+        notice.className = 'auth-local-test-notice';
+        notice.textContent = 'Ambiente local de testes';
+        document.querySelector('.auth-login-card')?.prepend(notice);
+      }
+      document.querySelectorAll(
+        '.auth-tab[data-authmode="signup"], [data-authmode-link="signup"]'
+      ).forEach((control) => {
+        control.hidden = true;
+        control.dataset.authLocalSignupControl = 'disabled';
+      });
+    }
   } catch (_) {
     setAuthState('auth_error');
     window.__tradutorCommunityAuthenticated = false;
@@ -354,6 +387,7 @@ async function init() {
   });
   $('#authLogoutBtn')?.addEventListener('click', async () => {
     try { await withTimeout(authApi.signOut(), AUTH_BOOTSTRAP_TIMEOUT_MS); } catch (_) { /* local cleanup below is authoritative */ }
+    clearAuthCredentialFields();
     window.__tradutorAccessToken = '';
     window.__tradutorCommunityAuthenticated = false;
     setAuthState('unauthenticated');

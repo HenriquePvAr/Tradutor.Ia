@@ -190,6 +190,36 @@ def create_community_router(community, auth) -> APIRouter:
         set_session_cookies(response, issued, request=request)
         return response
 
+    @router.post("/auth/local-test/login")
+    def local_test_login(
+        request: Request,
+        payload: dict[str, Any] = Body(default={}),
+    ) -> JSONResponse:
+        from local_test_auth import LocalTestAuthProvider
+
+        if not isinstance(auth, LocalTestAuthProvider):
+            raise HTTPException(
+                status_code=404, detail="not_found", headers=_NO_STORE_HEADERS)
+        if set(payload) - {"email", "password"}:
+            raise HTTPException(
+                status_code=422, detail="invalid_auth_fields", headers=_NO_STORE_HEADERS)
+        issued = _community_call(
+            auth.authenticate_credentials,
+            email=str(payload.get("email") or ""),
+            password=str(payload.get("password") or ""),
+            client_host=str(getattr(request.client, "host", "") or ""),
+            user_agent=str(request.headers.get("user-agent", "") or ""),
+        )
+        response = JSONResponse({
+            "authenticated": True,
+            "user_id": issued.principal.user_id,
+            "roles": sorted(issued.principal.roles),
+            "auth_source": issued.principal.auth_source,
+            "expires_at": issued.expires_at,
+        }, headers=no_store_headers)
+        set_session_cookies(response, issued, request=request)
+        return response
+
     @router.get("/auth/config")
     def auth_config() -> JSONResponse:
         """Browser-safe provider configuration; never secrets or JWKS internals."""
@@ -224,7 +254,9 @@ def create_community_router(community, auth) -> APIRouter:
         principal = request_principal(request)
         if principal.authenticated:
             _community_call(auth.require_csrf, request, principal)
-            if isinstance(auth, LocalSessionAuthProvider):
+            from local_test_auth import LocalTestAuthProvider
+
+            if isinstance(auth, (LocalSessionAuthProvider, LocalTestAuthProvider)):
                 auth.revoke_session(principal.session_id)
         else:
             _community_call(stale_logout_mutation, request)

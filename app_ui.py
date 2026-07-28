@@ -142,7 +142,7 @@ def _sync_public_profile(principal: RequestPrincipal) -> dict[str, Any]:
     The principal is the only identity accepted here; browser payloads never select
     the profile row.  Media keys are opaque local markers, not filesystem paths.
     """
-    profile = BRIDGE.profile_for_user(principal.user_id)
+    profile = _profile_for_principal(principal)
     return COMMUNITY.store.upsert_profile(principal.user_id, {
         "display_name": profile.get("display_name") or "Usuário",
         "avatar_object_key": "local:avatar" if BRIDGE.profile_media_path("avatar", user_id=principal.user_id) else "",
@@ -157,6 +157,18 @@ def _sync_public_profile(principal: RequestPrincipal) -> dict[str, Any]:
 
 
 COMMUNITY._profile_sync = _sync_public_profile
+
+
+def _profile_for_principal(principal: RequestPrincipal) -> dict[str, Any]:
+    """Resolve profile presentation without weakening the authenticated principal."""
+    profile = dict(BRIDGE.profile_for_user(principal.user_id))
+    public_identity = getattr(AUTH, "public_identity", None)
+    if callable(public_identity):
+        identity = public_identity(principal.user_id)
+        if isinstance(identity, dict) and identity.get("display_name"):
+            profile["display_name"] = str(identity["display_name"])
+    profile["user_id"] = principal.user_id
+    return profile
 
 
 def _enrich_history_publications(history: list[dict[str, Any]]) -> None:
@@ -311,8 +323,14 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "user_id": principal.user_id if principal.authenticated else "",
             "available": True,
         }
-        payload["profile"] = BRIDGE.profile_for_user(principal.user_id)
-        _sync_public_profile(principal)
+        payload["profile"] = _profile_for_principal(principal)
+        try:
+            _sync_public_profile(principal)
+        except Exception:
+            # Profile projection is optional presentation data. A duplicate display
+            # name or unavailable community store must not invalidate a verified
+            # authentication session.
+            payload["community"]["profile_sync_failed"] = True
     except Exception:
         # Bootstrap is read-only; an expired or malformed credential must not prevent
         # the local library from loading. Publication itself remains fail-closed in
