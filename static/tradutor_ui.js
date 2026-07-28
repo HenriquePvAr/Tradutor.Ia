@@ -1465,7 +1465,13 @@
     $('#runEtaHuman').textContent = active ? (progress.eta_label || 'Tempo variavel nesta etapa') : '';
     const updated = progress.updated_at ? new Date(Number(progress.updated_at) * 1000) : null;
     $('#runUpdatedHuman').textContent = updated && !Number.isNaN(updated.getTime()) ? `Atualizado ha ${Math.max(0, Math.floor((Date.now() - updated.getTime()) / 1000))}s` : '';
-    $('#runNextHuman').textContent = progress.stale ? 'O processamento esta demorando mais que o esperado.' : (active ? 'Processamento em andamento' : failed ? 'Voce pode tentar novamente.' : '');
+    const canonicalIdentity = record?.source_analysis?.canonical_identity || {};
+    const canonicalNotice = canonicalIdentity.validation_status
+      ? 'Link oficial do episódio confirmado.' : '';
+    $('#runNextHuman').textContent = progress.stale
+      ? 'O processamento esta demorando mais que o esperado.'
+      : [canonicalNotice, active ? 'Processamento em andamento' : failed ? 'Voce pode tentar novamente.' : '']
+          .filter(Boolean).join(' ');
     const retry = $('#runRetryAction');
     if (retry) retry.hidden = !record || !['failed', 'cancelled'].includes(status);
     const cancel = $('#runCancelAction');

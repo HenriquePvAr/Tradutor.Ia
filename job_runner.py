@@ -137,6 +137,18 @@ def _fresh_source_provenance(
     return fields
 
 
+def _merge_terminal_source_analysis(
+    fresh_analysis: object, previous_analysis: object,
+) -> dict[str, object]:
+    """Keep operation-level evidence when the downloader refreshes page evidence."""
+    fresh = dict(fresh_analysis) if isinstance(fresh_analysis, dict) else {}
+    previous = previous_analysis if isinstance(previous_analysis, dict) else {}
+    for key in ("canonical_identity", "preflight"):
+        if previous.get(key) and not fresh.get(key):
+            fresh[key] = previous[key]
+    return fresh
+
+
 def _safe_job_provenance(job: object) -> dict[str, object]:
     """Return the output-safe scalar source record, never URLs/cookies/selectors."""
 
@@ -440,6 +452,9 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         "reason_code": reason_code,
     }
     fresh_analysis = download_report.get("source_analysis") if isinstance(download_report, dict) else None
+    if isinstance(fresh_analysis, dict):
+        fresh_analysis = _merge_terminal_source_analysis(
+            fresh_analysis, job.get("source_analysis"))
     fresh_selection = download_report.get("source_selection") if isinstance(download_report, dict) else None
     if isinstance(fresh_analysis, dict):
         fields["source_analysis_json"] = json.dumps(fresh_analysis, ensure_ascii=False)

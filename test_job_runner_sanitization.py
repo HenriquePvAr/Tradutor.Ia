@@ -146,6 +146,35 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         self.assertIs(manifest["configuration"]["create_source_profile"], True)
         self.assertEqual(manifest["source_provenance"]["transport_name"], "browser_session")
 
+    def test_terminal_download_analysis_preserves_canonical_identity_and_preflight(self):
+        job, output = self._running_job()
+        prior = {
+            "adapter": "webtoons",
+            "canonical_identity": {
+                "validation_status": "canonical_source_confirmed",
+                "identity_hash": "a" * 64,
+            },
+            "preflight": {
+                "http_method": "GET",
+                "http_status": 200,
+                "content_type": "text/html",
+            },
+        }
+        self.store.update_fields(
+            job["id"], source_analysis_json=json.dumps(prior))
+        job = self.store.get_job(job["id"])
+        self._write_successful_generic_download(
+            output, {"candidate_ids": ["fresh-page"], "automatic": True})
+
+        _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
+
+        terminal = self.store.get_job(job["id"])
+        self.assertEqual(
+            terminal["source_analysis"]["canonical_identity"],
+            prior["canonical_identity"])
+        self.assertEqual(
+            terminal["source_analysis"]["preflight"], prior["preflight"])
+
     def test_automatic_selection_never_records_profile_even_when_opted_in(self):
         job, output = self._running_job(
             configuration_updates={"create_source_profile": True},

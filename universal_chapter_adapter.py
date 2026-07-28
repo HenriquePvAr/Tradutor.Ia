@@ -316,6 +316,7 @@ class SourceAnalysis:
     # It is intentionally excluded from ``public()`` so diagnostics do not echo URLs.
     canonical_url: str = ""
     canonical_identity: dict[str, Any] = field(default_factory=dict)
+    preflight: dict[str, Any] = field(default_factory=dict)
 
     @property
     def requires_review(self) -> bool:
@@ -358,6 +359,7 @@ class SourceAnalysis:
             "reader_diagnostics": reader,
             "page_manifest": dict(self.page_manifest),
             "canonical_identity": dict(self.canonical_identity),
+            "preflight": dict(self.preflight),
         }
 
 

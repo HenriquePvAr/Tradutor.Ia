@@ -366,6 +366,12 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("requested: true", form)
         self.assertIn("scope:", form)
 
+    def test_ui_surfaces_confirmed_official_link_without_technical_parameters(self):
+        root = Path(__file__).resolve().parent
+        script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("Link oficial do episódio confirmado.", script)
+        self.assertNotIn("episode_no=", script)
+
 
 if __name__ == "__main__":
     unittest.main()

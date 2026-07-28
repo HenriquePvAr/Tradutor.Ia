@@ -29,7 +29,11 @@ from config import (
     SELENIUM_QUIT_TIMEOUT_SECONDS,
     TEMP_FOLDER,
 )
-from download_transport import preflight_browser_navigation
+from download_transport import (
+    inspect_source_preflight,
+    preflight_browser_navigation,
+    require_browser_navigation,
+)
 from pipeline_cache import atomic_write_json
 
 try:
@@ -344,8 +348,15 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
         normalized = adapter.normalize_url(canonical_identity.canonical_url)
         adapter.validate_url(normalized)
         adapter.validate_path(normalized)
-    navigation_url = preflight_browser_navigation(
+    preflight = inspect_source_preflight(
         adapter, normalized, cancel_check=cancel_check)
+    # Some offline tests replace this transport seam with an already-validated URL.
+    # Production always returns SourcePreflightResult and therefore persists the
+    # complete sanitized decision below.
+    navigation_url = (
+        preflight if isinstance(preflight, str)
+        else require_browser_navigation(preflight)
+    )
     if cancel_check and cancel_check():
         raise SourceError("cancelled", "before_source_analysis")
     driver = None
@@ -382,9 +393,6 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
             },
             profile=_load_source_profile(final_url, adapter),
             extra_warnings=source_warnings)
-        if canonical_identity is not None:
-            source_analysis.canonical_url = normalized
-            source_analysis.canonical_identity = canonical_identity.public()
         source_analysis, _ = _maybe_collect_paginated_reader(
             driver,
             adapter,
@@ -393,6 +401,13 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
             profile=_load_source_profile(final_url, adapter),
             cancel_check=cancel_check,
         )
+        # Aggregation may return a fresh SourceAnalysis instance, so attach operation-level
+        # identity and preflight only after all collection transforms are complete.
+        source_analysis.preflight = (
+            preflight.public() if hasattr(preflight, "public") else {})
+        if canonical_identity is not None:
+            source_analysis.canonical_url = normalized
+            source_analysis.canonical_identity = canonical_identity.public()
         # A source review may show only small data-URI previews derived from already-visible
         # DOM images. This performs no image request and failures leave the diagnosis intact.
         from universal_chapter_adapter import attach_review_thumbnails

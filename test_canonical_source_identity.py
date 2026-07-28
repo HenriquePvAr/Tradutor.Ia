@@ -65,11 +65,19 @@ class CanonicalWebtoonsIdentityTests(unittest.TestCase):
         self.assertEqual(result.episode_slug, "episode-105")
         self.assertTrue(result.changed)
         self.assertEqual(len(transport.calls), 1)
+        public = result.public()
+        self.assertEqual(public["validation_status"], "canonical_source_resolved")
+        self.assertEqual(public["episode_identifier"], "107")
+        self.assertEqual(public["episode_label"], "episode-105")
+        self.assertEqual(len(public["identity_hash"]), 64)
+        self.assertEqual(public["canonical_url"], CANONICAL_URL)
 
     def test_matching_canonical_url_is_idempotent(self):
         result, _ = self.resolve(CANONICAL_URL)
         self.assertEqual(result.canonical_url, CANONICAL_URL)
         self.assertFalse(result.changed)
+        self.assertEqual(
+            result.public()["validation_status"], "canonical_source_confirmed")
 
     def test_identity_uses_official_slug_not_arithmetic_offset(self):
         unrelated = CANONICAL_URL.replace("episode-105", "episode-185")
@@ -86,6 +94,13 @@ class CanonicalWebtoonsIdentityTests(unittest.TestCase):
             with self.subTest(slug=slug):
                 result, _ = self.resolve(submitted, listing(official))
                 self.assertEqual(result.canonical_url, official)
+
+    def test_season_label_is_preserved_without_numeric_inference(self):
+        submitted = SERIES_URL.replace("episode-105", "season-2-episode-1")
+        official = CANONICAL_URL.replace("episode-105", "season-2-episode-1")
+        result, _ = self.resolve(submitted, listing(official))
+        self.assertEqual(result.episode_slug, "season-2-episode-1")
+        self.assertEqual(result.episode_id, "107")
 
     def test_wrong_series_identifier_fails_closed(self):
         wrong_series = CANONICAL_URL.replace("title_no=6465", "title_no=9999")

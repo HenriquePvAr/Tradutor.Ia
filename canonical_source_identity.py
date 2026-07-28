@@ -9,7 +9,10 @@ It never derives an internal episode id from a visible number.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
 from html.parser import HTMLParser
+import json
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
@@ -28,6 +31,7 @@ class CanonicalSourceError(SourceError):
 
 @dataclass(frozen=True)
 class CanonicalSourceIdentity:
+    normalized_url: str
     canonical_url: str
     series_id: str
     episode_id: str
@@ -35,10 +39,34 @@ class CanonicalSourceIdentity:
     episode_slug: str
     changed: bool
     metadata_pages: int
+    created_at: str
 
     def public(self) -> dict[str, Any]:
+        status = (
+            "canonical_source_resolved" if self.changed
+            else "canonical_source_confirmed")
+        identity_payload = {
+            "source_type": "public_url",
+            "adapter_name": "webtoons",
+            "series_identifier": self.series_id,
+            "episode_identifier": self.episode_id,
+            "episode_label": self.episode_slug,
+            "canonical_url": self.canonical_url,
+            "identity_source": "official_public_metadata",
+            "validation_status": status,
+        }
+        identity_hash = hashlib.sha256(json.dumps(
+            identity_payload, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()
         return {
             "schema_version": 1,
+            "normalized_url": self.normalized_url,
+            **identity_payload,
+            "validation_reason": (
+                "submitted_identity_updated" if self.changed
+                else "official_identity_matched"),
+            "created_at": self.created_at,
+            "identity_hash": identity_hash,
             "series_id": self.series_id,
             "episode_id": self.episode_id,
             "series_slug": self.series_slug,
@@ -229,6 +257,7 @@ def canonicalize_webtoons_url(url: str, *, transport=None,
                     "",
                 ))
                 return CanonicalSourceIdentity(
+                    normalized_url=submitted_normalized,
                     canonical_url=canonical,
                     series_id=expected["series_id"],
                     episode_id=episode_id,
@@ -236,6 +265,7 @@ def canonicalize_webtoons_url(url: str, *, transport=None,
                     episode_slug=expected["episode_slug"],
                     changed=canonical != submitted_normalized,
                     metadata_pages=page,
+                    created_at=datetime.now(timezone.utc).isoformat(),
                 )
             if not parser.links:
                 break

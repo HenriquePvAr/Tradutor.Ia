@@ -466,7 +466,7 @@ class DownloaderRegressionTests(unittest.TestCase):
                 return None
 
         with (
-            mock.patch("down.preflight_browser_navigation", return_value="https://reader.example.test/chapter/1"),
+            mock.patch("down.inspect_source_preflight", return_value="https://reader.example.test/chapter/1"),
             mock.patch("down._create_driver", return_value=Driver()),
             mock.patch("down._capture_driver_ownership", return_value={}),
             mock.patch("down._refresh_driver_ownership"),
@@ -492,7 +492,7 @@ class DownloaderRegressionTests(unittest.TestCase):
         driver = _QuitDriver()
         with (
             mock.patch("chapter_source.select_adapter", return_value=adapter),
-            mock.patch("down.preflight_browser_navigation", return_value="https://known.example.test/chapter/1"),
+            mock.patch("down.inspect_source_preflight", return_value="https://known.example.test/chapter/1"),
             mock.patch("down._create_driver", return_value=driver),
             mock.patch("down._capture_driver_ownership", return_value={}),
             mock.patch("down._refresh_driver_ownership"),
@@ -523,7 +523,7 @@ class DownloaderRegressionTests(unittest.TestCase):
         driver = _QuitDriver()
         with (
             mock.patch("chapter_source.select_adapter", return_value=adapter),
-            mock.patch("down.preflight_browser_navigation", return_value="https://reader.example.test/chapter/1"),
+            mock.patch("down.inspect_source_preflight", return_value="https://reader.example.test/chapter/1"),
             mock.patch("down._create_driver", return_value=driver),
             mock.patch("down._capture_driver_ownership", return_value={}),
             mock.patch("down._refresh_driver_ownership"),
