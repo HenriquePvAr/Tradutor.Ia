@@ -436,39 +436,13 @@
             <div class="source-review" id="sourceReadyPanel" hidden aria-live="polite">
               <div class="panel-label">Fonte analisada</div>
               <div class="source-review-meta" id="sourceReadyMeta"></div>
-              <p>Nenhuma página foi baixada e nenhuma tradução foi iniciada.</p>
+              <p id="sourceReadyPolicyState">Preparando download conforme a política do workspace.</p>
               <div class="cta-row source-review-actions">
-                <button class="btn-primary" type="button" id="reviewDownloadAuthorization">
-                  Revisar próxima etapa
-                </button>
-                <button class="btn-primary" type="button" id="continueAuthorizedDownload" hidden>
-                  Iniciar download autorizado
+                <button class="btn-primary" type="button" id="openSourcePolicySettings" hidden>
+                  Abrir configurações
                 </button>
               </div>
             </div>
-            <dialog class="audit-confirm" id="downloadAuthorizationDialog" hidden
-                    aria-labelledby="downloadAuthorizationTitle">
-              <form method="dialog" id="downloadAuthorizationForm">
-                <h3 id="downloadAuthorizationTitle">Continuar com conteúdo autorizado</h3>
-                <p>A análise da fonte foi concluída. O download é uma operação separada e
-                  nenhuma operação será iniciada sem nova autorização.</p>
-                <p>Processe somente conteúdo próprio, licenciado, autorizado ou de domínio público.</p>
-                <label>Base de direitos
-                  <select id="downloadRightsBasis" required>
-                    <option value="">Selecione uma base verificável</option>
-                    <option value="owned_content">Conteúdo próprio</option>
-                    <option value="licensed_content">Conteúdo licenciado</option>
-                    <option value="explicit_permission">Permissão explícita</option>
-                    <option value="public_domain">Domínio público</option>
-                  </select>
-                </label>
-                <div class="field-error" id="downloadAuthorizationError" hidden></div>
-                <div class="cta-row">
-                  <button class="btn-primary" type="submit">Registrar autorização</button>
-                  <button class="btn-ghost show" type="button" id="cancelDownloadAuthorization">Cancelar</button>
-                </div>
-              </form>
-            </dialog>
             <div class="quality-review" id="qualityReviewPanel" hidden>
               <div class="panel-label">Revisão de qualidade</div>
               <div class="quality-review-meta" id="qualityReviewMeta"></div>
@@ -771,6 +745,27 @@
           <label class="checkline"><input type="checkbox" name="temporary_context"> <span data-i18n="settings.temporary_context">usar contexto temporário</span></label>
           <label><span data-i18n="settings.safe_concurrency">Concorrência segura</span><select name="safe_concurrency"><option value="automatic">Automática</option><option value="low">Baixa</option><option value="balanced">Balanceada</option></select></label>
         </div>
+        <div class="panel settings-section" id="workspaceSourcePolicyPanel">
+          <div class="panel-label">Política das fontes</div>
+          <label class="checkline">
+            <input type="checkbox" id="workspaceSourcePolicyToggle"
+                   aria-describedby="workspaceSourcePolicyDescription workspaceSourcePolicyStatus">
+            <span>Todas as fontes enviadas neste workspace são autorizadas</span>
+          </label>
+          <p id="workspaceSourcePolicyDescription">
+            Ative somente quando este workspace processar conteúdo próprio, licenciado,
+            autorizado ou de domínio público.
+          </p>
+          <div id="workspaceSourcePolicyStatus" aria-live="polite"></div>
+          <ul class="source-policy-operations">
+            <li>Base padrão: Permissão explícita</li>
+            <li>Download, OCR, tradução, reconstrução e PDF: permitidos</li>
+            <li>Publicação: não permitida automaticamente</li>
+          </ul>
+          <button type="button" class="btn-ghost danger" id="workspaceSourcePolicyAction">
+            Revogar política
+          </button>
+        </div>
         <div class="panel settings-section">
           <div class="panel-label" data-i18n="settings.files">Arquivos</div>
           <label><span data-i18n="settings.output_retention">Retenção de outputs</span><select name="output_retention_days"><option value="7">7 dias</option><option value="30">30 dias</option><option value="90">90 dias</option></select></label>
@@ -798,6 +793,17 @@
           <div class="publication-error" id="settingsError" hidden></div>
         </div>
       </form>
+      <dialog class="audit-confirm" id="workspaceSourcePolicyDialog" hidden
+              aria-labelledby="workspaceSourcePolicyDialogTitle">
+        <form method="dialog" id="workspaceSourcePolicyConfirmForm">
+          <h3 id="workspaceSourcePolicyDialogTitle">Alterar política das fontes</h3>
+          <p id="workspaceSourcePolicyDialogText"></p>
+          <div class="cta-row">
+            <button class="btn-primary" type="submit" id="workspaceSourcePolicyConfirm">Confirmar</button>
+            <button class="btn-ghost show" type="button" id="workspaceSourcePolicyCancel">Cancelar</button>
+          </div>
+        </form>
+      </dialog>
 
       <details class="advanced-details">
         <summary>Modo Desenvolvedor <span>diagnóstico técnico opcional</span></summary>

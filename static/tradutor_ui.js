@@ -532,7 +532,8 @@
     const rect = tab.getBoundingClientRect();
     burstAt(rect.right, rect.top + rect.height / 2, 10);
     if (name === 'nova' && !inFlightStatuses.has(appState.status)) {
-      appState.newTranslationDraft = false;
+      appState.newTranslationDraft = true;
+      clearNewTranslationDraftPanels();
     }
     if (name === 'hist') renderHistory();
     if (name === 'inicio') renderDashboard();
@@ -3722,13 +3723,13 @@
     if (!panel) return;
     const result = record?.source_analysis_result || {};
     appState.sourceReady = record || null;
-    const authorization = record?.download_authorization || {};
+    const policy = appState.settings?.workspace_source_policy || {};
     const safe = value => escapeHtml(String(value || '—'));
     const operation = String(result.operation_id || '').slice(0, 12);
     const completed = result.completed_at
       ? new Date(Number(result.completed_at) * 1000).toLocaleString('pt-BR') : '—';
     $('#sourceReadyMeta').innerHTML = [
-      '<strong>A página pública foi reconhecida e está pronta para uma próxima etapa autorizada.</strong>',
+      '<strong>A fonte foi reconhecida e a política do workspace está sendo resolvida.</strong>',
       `Fonte: ${safe(record?.source_type || result.source_kind)}`,
       `Adapter: ${safe(result.adapter)}`,
       `Inspeção: ${result.browser_inspection_performed ? 'navegador controlado' : 'preflight'}`,
@@ -3739,85 +3740,13 @@
       `Motivo: <code>${safe(result.reason_code)}</code>`,
     ].join('<br>');
     panel.hidden = false;
-    const authorized = authorization.status === 'active'
-      && Array.isArray(authorization.allowed_operations)
-      && authorization.allowed_operations.includes('download_assets');
-    $('#reviewDownloadAuthorization').hidden = authorized;
-    $('#continueAuthorizedDownload').hidden = !authorized || !record?.job_id;
+    const active = policy.status === 'active' && policy.all_submitted_sources_authorized === true;
+    $('#sourceReadyPolicyState').textContent = active
+      ? 'Autorização: política do workspace. Preparando download.'
+      : 'A política de fontes autorizadas está desativada.';
+    $('#openSourcePolicySettings').hidden = active;
   }
-  function openDownloadAuthorizationDialog() {
-    const dialog = $('#downloadAuthorizationDialog');
-    if (!dialog) return;
-    $('#downloadAuthorizationError').hidden = true;
-    dialog.hidden = false;
-    if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
-  }
-  function closeDownloadAuthorizationDialog() {
-    const dialog = $('#downloadAuthorizationDialog');
-    if (!dialog) return;
-    if (dialog.open) dialog.close();
-    dialog.hidden = true;
-  }
-  async function submitDownloadAuthorization(event) {
-    event.preventDefault();
-    const basis = $('#downloadRightsBasis')?.value || '';
-    const error = $('#downloadAuthorizationError');
-    if (!basis) {
-      error.textContent = 'Selecione uma base de direitos verificável.';
-      error.hidden = false;
-      return;
-    }
-    const readyRecord = appState.sourceReady || appState.bootstrap?.source_ready
-      || appState.bootstrap?.standalone_source_ready || {};
-    const jobId = String(readyRecord.job_id || appState.currentJobId || '');
-    const analysisResultId = String(
-      readyRecord.analysis_result_id || readyRecord.source_analysis_result?.analysis_id || '');
-    try {
-      const result = await api('/api/ui/source/authorization', {
-        method: 'POST',
-        body: JSON.stringify({
-          job_id: jobId,
-          analysis_result_id: analysisResultId,
-          rights_basis: basis,
-          allowed_operations: ['analyze_metadata', 'download_assets'],
-        }),
-      });
-      closeDownloadAuthorizationDialog();
-      $('#reviewDownloadAuthorization').hidden = true;
-      $('#continueAuthorizedDownload').hidden = !jobId;
-      showToast('Autorização registrada. O download ainda não foi iniciado.', 'ok');
-      return result;
-    } catch (requestError) {
-      error.textContent = requestError.message
-        || 'Não foi possível registrar a autorização.';
-      error.hidden = false;
-    }
-  }
-  async function continueAuthorizedDownload() {
-    const button = $('#continueAuthorizedDownload');
-    if (!button || button.dataset.busy === '1') return;
-    button.dataset.busy = '1';
-    button.disabled = true;
-    try {
-      const result = await api('/api/ui/source/continue', {
-        method: 'POST',
-        body: JSON.stringify({job_id: appState.currentJobId || appState.active?.id || ''}),
-      });
-      $('#sourceReadyPanel').hidden = true;
-      renderLocalPipelineState('queued', {status: 'queued', message: 'Download autorizado e enfileirado'});
-      showToast('Download autorizado e enfileirado.', 'ok');
-      return result;
-    } catch (error) {
-      showToast(error.message || 'Não foi possível iniciar o download autorizado.', 'error');
-    } finally {
-      button.disabled = false;
-      delete button.dataset.busy;
-    }
-  }
-  $('#reviewDownloadAuthorization')?.addEventListener('click', openDownloadAuthorizationDialog);
-  $('#cancelDownloadAuthorization')?.addEventListener('click', closeDownloadAuthorizationDialog);
-  $('#downloadAuthorizationForm')?.addEventListener('submit', submitDownloadAuthorization);
-  $('#continueAuthorizedDownload')?.addEventListener('click', continueAuthorizedDownload);
+  $('#openSourcePolicySettings')?.addEventListener('click', () => activateTab('settings'));
   function pendingPreviewItems() {
     return Array.isArray(appState.pendingHumanPreviews?.items) ? appState.pendingHumanPreviews.items : [];
   }
@@ -5029,7 +4958,80 @@
     $('#settingPython').textContent = settings.python_version || '—';
     $('#settingNicegui').textContent = settings.nicegui_version || '—';
     $('#settingBuild').textContent = 'local';
+    renderWorkspaceSourcePolicy(settings.workspace_source_policy || {});
   }
+  function renderWorkspaceSourcePolicy(policy = {}) {
+    const active = policy.status === 'active'
+      && policy.all_submitted_sources_authorized === true;
+    const toggle = $('#workspaceSourcePolicyToggle');
+    if (toggle) {
+      toggle.checked = active;
+      toggle.setAttribute('aria-checked', String(active));
+    }
+    const status = $('#workspaceSourcePolicyStatus');
+    if (status) {
+      const activated = policy.activated_at
+        ? new Date(Number(policy.activated_at) * 1000).toLocaleString('pt-BR') : '—';
+      status.textContent = active
+        ? `Ativado · responsável: workspace local · desde ${activated}`
+        : 'Desativado';
+    }
+    const action = $('#workspaceSourcePolicyAction');
+    if (action) {
+      action.textContent = active ? 'Revogar política' : 'Ativar política';
+      action.classList.toggle('danger', active);
+    }
+  }
+  let pendingWorkspacePolicyState = null;
+  function openWorkspacePolicyConfirmation(active) {
+    pendingWorkspacePolicyState = Boolean(active);
+    const dialog = $('#workspaceSourcePolicyDialog');
+    const text = $('#workspaceSourcePolicyDialogText');
+    if (!dialog || !text) return;
+    text.textContent = active
+      ? 'Confirme que este workspace processará somente conteúdo próprio, licenciado, autorizado ou de domínio público.'
+      : 'A revogação impedirá novas autorizações automáticas, sem cancelar jobs já iniciados nem apagar o histórico.';
+    dialog.hidden = false;
+    if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+    $('#workspaceSourcePolicyConfirm')?.focus();
+  }
+  function closeWorkspacePolicyConfirmation() {
+    const dialog = $('#workspaceSourcePolicyDialog');
+    if (dialog?.open) dialog.close();
+    if (dialog) dialog.hidden = true;
+    pendingWorkspacePolicyState = null;
+  }
+  $('#workspaceSourcePolicyAction')?.addEventListener('click', () => {
+    const current = appState.settings?.workspace_source_policy || {};
+    openWorkspacePolicyConfirmation(current.status !== 'active');
+  });
+  $('#workspaceSourcePolicyToggle')?.addEventListener('click', event => {
+    event.preventDefault();
+    const current = appState.settings?.workspace_source_policy || {};
+    openWorkspacePolicyConfirmation(current.status !== 'active');
+  });
+  $('#workspaceSourcePolicyCancel')?.addEventListener('click', closeWorkspacePolicyConfirmation);
+  $('#workspaceSourcePolicyConfirmForm')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (pendingWorkspacePolicyState === null) return;
+    const desired = pendingWorkspacePolicyState;
+    const button = $('#workspaceSourcePolicyConfirm');
+    if (button) button.disabled = true;
+    try {
+      const result = await api('/api/ui/source-policy', {
+        method: 'POST', body: JSON.stringify({active: desired}),
+      });
+      appState.settings.workspace_source_policy = result.policy || {};
+      renderWorkspaceSourcePolicy(result.policy || {});
+      closeWorkspacePolicyConfirmation();
+      showToast(desired ? 'Política das fontes ativada.' : 'Política das fontes revogada.', 'ok');
+    } catch (error) {
+      showToast(error.message || 'Não foi possível alterar a política das fontes.', 'error');
+      renderWorkspaceSourcePolicy(appState.settings?.workspace_source_policy || {});
+    } finally {
+      if (button) button.disabled = false;
+    }
+  });
   function applyProductSettings(settings = {}) {
     const form = $('#productSettingsForm');
     if (!form) return;

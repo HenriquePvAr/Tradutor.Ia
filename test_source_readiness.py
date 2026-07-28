@@ -312,17 +312,17 @@ class PhaseGateTests(unittest.TestCase):
 
 
 class UiContractTests(unittest.TestCase):
-    def test_ready_ui_states_and_accessible_authorization_are_present(self):
+    def test_ready_ui_uses_workspace_policy_without_per_source_modal(self):
         root = Path(__file__).resolve().parent
         html = (root / "ui" / "ui_shell.html").read_text(encoding="utf-8")
         script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn("Fonte analisada", html)
-        self.assertIn("Nenhuma página foi baixada", html)
-        self.assertIn("downloadAuthorizationDialog", html)
-        self.assertIn('class="btn-ghost show" type="button" id="cancelDownloadAuthorization"', html)
+        self.assertIn("Política das fontes", html)
+        self.assertIn("workspaceSourcePolicyDialog", html)
+        self.assertNotIn("downloadAuthorizationDialog", html)
         self.assertNotIn("window.alert(", script)
         self.assertIn("source_analysis_ready", script)
-        self.assertIn("O download ainda não foi iniciado", script)
+        self.assertIn("workspace_source_policy", script)
 
     def test_polling_preserves_ready_state_and_isolates_unrelated_terminal_results(self):
         root = Path(__file__).resolve().parent
@@ -333,6 +333,12 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("if (!runtime.source_ready && resultRecord", script)
         self.assertNotIn("'awaiting_source_review', 'source_analysis_ready'", script)
         self.assertIn("else if (runtime.source_ready)", script)
+
+    def test_opening_new_translation_hides_unrelated_terminal_artifacts(self):
+        root = Path(__file__).resolve().parent
+        script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("appState.newTranslationDraft = true;", script)
+        self.assertIn("clearNewTranslationDraftPanels();", script)
 
 
 if __name__ == "__main__":
