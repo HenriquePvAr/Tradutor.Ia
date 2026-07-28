@@ -80,6 +80,7 @@
     currentStageVersion: 0,
     newTranslationDraft: false,
     terminalStatusByIdentity: new Map(),
+    retryDialogContext: null,
   };
   const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', source_analysis_ready: 'fonte analisada', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed', 'failed', 'cancelled']);
@@ -1467,7 +1468,11 @@
       : [canonicalNotice, active ? 'Processamento em andamento' : failed ? 'Voce pode tentar novamente.' : '']
           .filter(Boolean).join(' ');
     const retry = $('#runRetryAction');
-    if (retry) retry.hidden = !record || !['failed', 'cancelled'].includes(status);
+    if (retry) {
+      retry.hidden = !record || !['failed', 'cancelled'].includes(status);
+      retry.dataset.jobId = record?.id || record?.job_id || '';
+      retry.dataset.status = status || '';
+    }
     const cancel = $('#runCancelAction');
     if (cancel && !appState.cancelBusy) cancel.hidden = !active;
   }
@@ -3415,19 +3420,47 @@
       updateQualityReviewSelectionUi();
     }
   });
-  $('#runRetryAction')?.addEventListener('click', () => {
+  function openRetryDialog(context, trigger = null) {
+    const jobId = String(context?.jobId || '').trim();
+    if (!/^[0-9a-f]{32}$/i.test(jobId)) {
+      showToast('Não foi possível identificar a execução selecionada.', 'error');
+      return;
+    }
     const dialog = $('#retryConfirmDialog');
     if (!dialog) return;
+    appState.retryDialogContext = {
+      jobId,
+      operationId: String(context?.operationId || ''),
+      status: String(context?.status || ''),
+      reasonCode: String(context?.reasonCode || ''),
+      sourceView: String(context?.sourceView || ''),
+      trigger,
+    };
     dialog.hidden = false;
     if (!dialog.open) dialog.showModal();
-  });
-  $('#retryConfirmCancel')?.addEventListener('click', () => {
+    $('#retryConfirmApply')?.focus();
+  }
+  function closeRetryDialog() {
     const dialog = $('#retryConfirmDialog');
+    const trigger = appState.retryDialogContext?.trigger;
     if (dialog?.open) dialog.close();
     if (dialog) dialog.hidden = true;
+    appState.retryDialogContext = null;
+    if (trigger?.focus) trigger.focus();
+  }
+  $('#runRetryAction')?.addEventListener('click', event => {
+    const button = event.currentTarget;
+    openRetryDialog({
+      jobId: button?.dataset?.jobId,
+      status: button?.dataset?.status,
+      sourceView: 'pipeline',
+    }, button);
+  });
+  $('#retryConfirmCancel')?.addEventListener('click', () => {
+    closeRetryDialog();
   });
   $('#retryConfirmApply')?.addEventListener('click', async () => {
-    const id = appState.latestJobId || '';
+    const id = appState.retryDialogContext?.jobId || '';
     if (!id) return;
     const button = $('#retryConfirmApply');
     if (button?.disabled) return;
@@ -3436,9 +3469,7 @@
       const retry = await api('/api/ui/retry', {
         method: 'POST', body: JSON.stringify({job_id: id}),
       });
-      const dialog = $('#retryConfirmDialog');
-      if (dialog?.open) dialog.close();
-      if (dialog) dialog.hidden = true;
+      closeRetryDialog();
       showToast(`Nova tentativa vinculada: ${String(retry.id || retry.job_id || '').slice(0, 8)}.`, 'ok');
       pollState();
     } catch (error) {
@@ -3818,7 +3849,7 @@
     return `${whole}s`;
   }
   function actionButton(label, action, path = '') {
-    if (!path && !['reprocess','delete'].includes(action)) return '';
+    if (!path && !['retry','reprocess','delete'].includes(action)) return '';
     const icons = {
       pdf: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4"/><path d="M8 16h1.2a1.2 1.2 0 0 0 0-2.4H8V18m5-4.4V18h1.1a2.2 2.2 0 0 0 0-4.4zm5 0h3M18 16h2"/></svg>',
       folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h5"/></svg>',
@@ -3826,6 +3857,7 @@
       compare: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 5h7v14H4zM13 5h7v14h-7z"/><path d="m9 9-2 2 2 2M15 15l2-2-2-2"/></svg>',
       context: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 5h16v10H8l-4 4z"/><path d="M8 9h8M8 12h5"/></svg>',
       reprocess: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8"/><path d="M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16"/><path d="M4 20v-4h4"/></svg>',
+      retry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8"/><path d="M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16"/><path d="M4 20v-4h4"/></svg>',
       delete: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M7 7l1 14h8l1-14"/><path d="M10 11v6M14 11v6"/></svg>',
     };
     const icon = icons[action] || '';
@@ -4192,6 +4224,10 @@
     const provenance = record.output_verification === 'legacy_unverified' ? 'origem não verificada' : record.output_verification === 'e2e_evidence' ? 'evidência E2E' : record.output_verification === 'manifest_verified' ? 'manifest verificado' : 'origem não informada';
     const meta = `${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)} · ${gate} · ${provenance}`;
     const previewActionHtml = historyPreviewAction(record);
+    const retryable = ['failed', 'cancelled'].includes(String(record.status || '').toLowerCase());
+    const retryActionHtml = retryable
+      ? actionButton('Retry', 'retry')
+      : actionButton('Reprocessar', 'reprocess');
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
@@ -4223,6 +4259,17 @@
       const panelId = `series-panel-${slugify(key) || 'series'}`;
       return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><button type="button" class="cf-header" data-folder="${escapeAttr(key)}" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${escapeAttr(panelId)}" aria-label="${escapeAttr(`Expandir ${group.series}`)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></button><div class="cf-body" id="${escapeAttr(panelId)}" role="region" aria-hidden="${open ? 'false' : 'true'}">${group.records.map(renderHistoryCard).join('')}</div></div>`;
     }).join('');
+    records.forEach(record => {
+      if (!['failed', 'cancelled'].includes(String(record.status || '').toLowerCase())) return;
+      const card = list.querySelector(`.hist-item[data-id="${CSS.escape(String(record.id || ''))}"]`);
+      const button = card?.querySelector('[data-action="reprocess"]');
+      if (!button) return;
+      button.dataset.action = 'retry';
+      button.setAttribute('aria-label', 'Retry');
+      button.setAttribute('title', 'Retry');
+      const label = button.querySelector('.sr-only');
+      if (label) label.textContent = 'Retry';
+    });
   }
   const statusLabels = {online: 'online', away: 'ausente', busy: 'ocupado', offline: 'offline'};
   function applyCanonicalAuthSurface(state) {
@@ -4300,6 +4347,16 @@
       return;
     }
     if (button.dataset.action === 'review') { void openChapterReview(record); return; }
+    if (button.dataset.action === 'retry') {
+      openRetryDialog({
+        jobId: record.job_id,
+        operationId: record.operation_id,
+        status: record.status,
+        reasonCode: record.reason_code || record.terminal_reason,
+        sourceView: 'history',
+      }, button);
+      return;
+    }
     if (button.dataset.action === 'reprocess') { loadRecordIntoForm(record); return; }
     if (button.dataset.action === 'claim') { openClaimModal(record); return; }
     if (button.dataset.action === 'delete') { openLocalDeleteModal(record); return; }

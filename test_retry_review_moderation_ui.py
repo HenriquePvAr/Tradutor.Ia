@@ -231,3 +231,17 @@ def test_deep_review_ui_uses_versioned_endpoint():
     assert "data-review-deep-action=\"rejected\"" in js
     assert "data-review-deep-action=\"preserved_original\"" in js
     assert "data-review-deep-action=\"manual_review\"" in js
+
+
+def test_persisted_history_retry_uses_selected_job_identity_after_refresh():
+    js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
+    assert "retryDialogContext" in js
+    assert "button.dataset.action = 'retry'" in js
+    assert "retryDialogContext?.jobId" in js
+    confirm_block = js[js.index("$('#retryConfirmApply')"):js.index(
+        "function moderationRoles")]
+    assert "latestJobId" not in confirm_block
+    history_block = js[js.index("function renderHistoryCard"):js.index(
+        "function renderHistory()")]
+    assert "Retry" in history_block
+    assert "retry_capability" in history_block or "retryable" in history_block
