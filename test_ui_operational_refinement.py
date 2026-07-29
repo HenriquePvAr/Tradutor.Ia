@@ -91,6 +91,21 @@ class QualityReviewTests(unittest.TestCase):
         self.assertTrue(confirmed["confirmed"])
         self.assertEqual(self.bridge.store.review_actions(self.job_id)["p1:iBALAO_1"], "preserved_original")
 
+    def test_rejection_requires_a_human_reason_before_recording_revision(self):
+        with self.assertRaisesRegex(ValueError, "quality_review_reason_required"):
+            self.bridge.quality_review_edit(
+                self.job_id,
+                "p1:iBALAO_1",
+                expected_version=0,
+                action="rejected",
+                translation="Ola",
+                reason="",
+                actor_id="reviewer-a",
+            )
+        item = self.bridge.quality_review(self.job_id)["items"][0]
+        self.assertEqual(item["state"], "pending")
+        self.assertEqual(item["version"], 0)
+
     def test_visual_state_joins_on_region_id_not_balloon_id(self):
         # The report item's id is the balloon label (BALAO_1); the visual gate
         # keys regions by region_id (REGION_001). The panel must join on the
@@ -388,6 +403,16 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         self.assertIn(terminal_pending, review)
         self.assertIn(visual_filter, review)
         self.assertLess(review.index(terminal_pending), review.index(visual_filter))
+
+    def test_rejection_without_reason_is_blocked_before_request(self):
+        action_start = self.js.index("async function qualityReviewAction(event)")
+        action_end = self.js.index("const button = event.target.closest('[data-review-action]')", action_start)
+        action = self.js[action_start:action_end]
+        validation = "if (action === 'rejected' && !reason)"
+        request = "await api('/api/ui/quality-review/edit'"
+        self.assertIn(validation, action)
+        self.assertIn("Informe um motivo para rejeitar esta tradução.", action)
+        self.assertLess(action.index(validation), action.index(request))
 
     def test_developer_mode_toggle_is_a_real_ui_option(self):
         self.assertIn('id="developerModeToggle"', self.shell)

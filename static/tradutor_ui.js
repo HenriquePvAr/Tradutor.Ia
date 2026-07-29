@@ -1860,18 +1860,26 @@
       if (deep.dataset.busy === '1') return;
       const item = deep.closest('[data-review-key]');
       if (!item || !appState.qualityReview?.job_id) return;
+      const editor = item.querySelector('[data-review-translation]');
+      const reasonInput = item.querySelector('[data-review-reason]');
+      const action = String(deep.dataset.reviewDeepAction || '');
+      const reason = String(reasonInput?.value || '').trim();
+      if (action === 'rejected' && !reason) {
+        showToast('Informe um motivo para rejeitar esta tradução.', 'warn');
+        reasonInput?.focus();
+        return;
+      }
       deep.dataset.busy = '1'; deep.disabled = true;
       try {
-        const editor = item.querySelector('[data-review-translation]');
         const result = await api('/api/ui/quality-review/edit', {
           method: 'POST',
           body: JSON.stringify({
             job_id: appState.qualityReview.job_id,
             item_key: item.dataset.reviewKey,
             expected_version: Number(editor?.dataset.reviewVersion || 0),
-            action: deep.dataset.reviewDeepAction,
+            action,
             translation: editor?.value || '',
-            reason: item.querySelector('[data-review-reason]')?.value || '',
+            reason,
           }),
         });
         renderQualityReview(result.review);

@@ -830,8 +830,11 @@ class UiBridge:
             raise ValueError("quality_review_already_completed")
         action = str(action or "").strip()
         translation = str(translation or "").strip()
+        reason = str(reason or "").strip()
         if action in {"edited", "reviewed"} and not translation:
             raise ValueError("quality_review_translation_empty")
+        if action == "rejected" and not reason:
+            raise ValueError("quality_review_reason_required")
         reason_codes = {
             "edited": "human_translation_edited",
             "reviewed": "human_translation_approved",
@@ -854,7 +857,7 @@ class UiBridge:
                 action=action,
                 translation=translation,
                 reason_code=reason_codes[action],
-                reason=str(reason or ""),
+                reason=reason,
                 actor_id=str(actor_id or ""),
             )
         except Exception as exc:
