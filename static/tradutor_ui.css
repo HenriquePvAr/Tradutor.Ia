@@ -1683,6 +1683,7 @@
   .quality-review-reason{font-size:11px; color:var(--muted); margin:7px 0;}
   .quality-review-text{display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11px;}
   .quality-review-text div{border:1px solid var(--line); border-radius:5px; padding:7px; min-height:32px; white-space:pre-wrap; overflow-wrap:anywhere;}
+  .quality-review-actions{min-width:0;width:100%;}
   .quality-review-editor,.quality-review-reason-input{width:100%;margin-top:7px;}
   .quality-review-editor{min-height:76px;resize:vertical;}
   .community-moderation{margin-top:16px;}

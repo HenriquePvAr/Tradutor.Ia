@@ -414,6 +414,14 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         self.assertIn("Informe um motivo para rejeitar esta tradução.", action)
         self.assertLess(action.index(validation), action.index(request))
 
+    def test_review_editor_fields_do_not_shrink_inside_button_flex_row(self):
+        css = (Path(__file__).resolve().parent / "static" / "tradutor_ui.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('<div class="quality-review-actions">${reviewActions}${compare}</div>', self.js)
+        self.assertNotIn('<div class="cta-row">${reviewActions}${compare}</div>', self.js)
+        self.assertIn(".quality-review-actions{min-width:0;width:100%;}", css)
+
     def test_developer_mode_toggle_is_a_real_ui_option(self):
         self.assertIn('id="developerModeToggle"', self.shell)
         self.assertIn("developerModeToggle", self.js)
