@@ -4402,7 +4402,7 @@
   // Authentication transitions may replace an authenticated surface. Delegate
   // history actions from the stable document so a freshly rendered #histList
   // never loses its controls.
-  document.addEventListener('click', handleHistoryAction);
+  document.addEventListener('click', handleHistoryAction, {capture: true});
   $('#histList')?.addEventListener('keydown', event => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     const folder = event.target.closest('.cf-header');

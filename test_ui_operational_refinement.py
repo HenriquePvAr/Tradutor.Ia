@@ -351,7 +351,7 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         # stable ancestor instead of the current #histList node.
         self.assertIn("async function handleHistoryAction", self.js)
         self.assertIn(
-            "document.addEventListener('click', handleHistoryAction)",
+            "document.addEventListener('click', handleHistoryAction, {capture: true})",
             self.js,
         )
         self.assertNotIn(
