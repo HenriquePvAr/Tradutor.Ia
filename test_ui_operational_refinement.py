@@ -345,18 +345,17 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         self.assertIn("['pdf','folder','report','compare','context'].includes", self.js)
         self.assertIn("if (button.dataset.action === 'review')", self.js)
 
-    def test_history_actions_are_bound_on_every_dynamic_render(self):
-        # Authentication and polling re-render the history controls. Bind the
-        # newly created buttons in renderHistory so no global propagation path
-        # can silently lose their actions.
+    def test_history_actions_use_stable_document_delegation(self):
+        # Authentication can replace authenticated surfaces after this script
+        # initially binds. History actions must therefore be delegated from a
+        # stable ancestor instead of the current #histList node.
         self.assertIn("async function handleHistoryAction", self.js)
         self.assertIn(
-            "list.querySelectorAll('[data-action]').forEach(button => "
-            "button.addEventListener('click', handleHistoryAction))",
+            "document.addEventListener('click', handleHistoryAction, {capture: true})",
             self.js,
         )
         self.assertNotIn(
-            "document.addEventListener('click', handleHistoryAction",
+            "$('#histList')?.addEventListener('click', async event =>",
             self.js,
         )
 
