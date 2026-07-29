@@ -4359,13 +4359,15 @@
     void refreshBootstrap();
   });
   applyCanonicalAuthSurface(getGlobal('__tradutorAuthState') || 'auth_loading');
-  $('#histList')?.addEventListener('click', async event => {
-    const folder = event.target.closest('.cf-header');
+  async function handleHistoryAction(event) {
+    const target = event.target?.closest ? event.target : null;
+    if (!target?.closest('#histList')) return;
+    const folder = target.closest('.cf-header');
     if (folder) {
       toggleHistoryFolder(folder);
       return;
     }
-    const button = event.target.closest('[data-action]');
+    const button = target.closest('[data-action]');
     if (!button) return;
     const record = appState.history.find(item => String(item.id) === String(button.closest('.hist-item')?.dataset.id));
     if (!record) return;
@@ -4396,7 +4398,11 @@
     if (['pdf','folder','report','compare','context'].includes(button.dataset.action || '')) {
       await openArtifact(record.job_id, button.dataset.action);
     }
-  });
+  }
+  // Authentication transitions may replace an authenticated surface. Delegate
+  // history actions from the stable document so a freshly rendered #histList
+  // never loses its controls.
+  document.addEventListener('click', handleHistoryAction);
   $('#histList')?.addEventListener('keydown', event => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     const folder = event.target.closest('.cf-header');

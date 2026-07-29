@@ -345,6 +345,20 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         self.assertIn("['pdf','folder','report','compare','context'].includes", self.js)
         self.assertIn("if (button.dataset.action === 'review')", self.js)
 
+    def test_history_actions_use_stable_document_delegation(self):
+        # Authentication can replace authenticated surfaces after this script
+        # initially binds. History actions must therefore be delegated from a
+        # stable ancestor instead of the current #histList node.
+        self.assertIn("async function handleHistoryAction", self.js)
+        self.assertIn(
+            "document.addEventListener('click', handleHistoryAction)",
+            self.js,
+        )
+        self.assertNotIn(
+            "$('#histList')?.addEventListener('click', async event =>",
+            self.js,
+        )
+
     def test_developer_mode_toggle_is_a_real_ui_option(self):
         self.assertIn('id="developerModeToggle"', self.shell)
         self.assertIn("developerModeToggle", self.js)
