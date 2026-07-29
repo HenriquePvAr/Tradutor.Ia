@@ -1534,8 +1534,11 @@
     const items = Array.isArray(review.items) ? review.items : [];
     const filter = appState.qualityReviewFilter || 'pending';
     const visible = items.filter(item => {
+      if (filter === 'pending') return item.state === 'pending';
+      if (filter === 'completed') return item.state !== 'pending';
+      if (filter === 'all') return true;
       if (VISUAL_STATE_LABELS[filter]) return String(item.visual_state || '') === filter;
-      return filter === 'all' || (filter === 'pending' ? item.state === 'pending' : item.state !== 'pending');
+      return false;
     });
     const counts = items.reduce((acc, item) => {
       const risk = String(item.risk || 'LOW').toUpperCase();

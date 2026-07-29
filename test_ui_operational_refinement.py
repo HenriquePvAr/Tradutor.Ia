@@ -379,6 +379,16 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         )
         self.assertIn("window.setTimeout(() => returnAction?.focus(), 0)", self.js)
 
+    def test_pending_review_filter_uses_terminal_state_not_visual_state(self):
+        review_start = self.js.index("function renderQualityReview(review)")
+        review_end = self.js.index("function visibleQualityReviewKeys", review_start)
+        review = self.js[review_start:review_end]
+        terminal_pending = "if (filter === 'pending') return item.state === 'pending'"
+        visual_filter = "if (VISUAL_STATE_LABELS[filter])"
+        self.assertIn(terminal_pending, review)
+        self.assertIn(visual_filter, review)
+        self.assertLess(review.index(terminal_pending), review.index(visual_filter))
+
     def test_developer_mode_toggle_is_a_real_ui_option(self):
         self.assertIn('id="developerModeToggle"', self.shell)
         self.assertIn("developerModeToggle", self.js)
