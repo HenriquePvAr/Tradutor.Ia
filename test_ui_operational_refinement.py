@@ -365,7 +365,10 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
             "`.cf-header[data-folder=\"${CSS.escape(key)}\"]`)",
             self.js,
         )
-        self.assertIn("replacement?.focus()", self.js)
+        self.assertIn(
+            "window.setTimeout(() => replacement?.focus(), 0)",
+            self.js,
+        )
 
     def test_developer_mode_toggle_is_a_real_ui_option(self):
         self.assertIn('id="developerModeToggle"', self.shell)

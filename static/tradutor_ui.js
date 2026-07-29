@@ -4319,7 +4319,7 @@
     renderHistory();
     const list = $('#histList');
     const replacement = list?.querySelector(`.cf-header[data-folder="${CSS.escape(key)}"]`);
-    replacement?.focus();
+      window.setTimeout(() => replacement?.focus(), 0);
   }
   $('#histSearch')?.addEventListener('input', renderHistory);
   $('#homePendingPreviews')?.addEventListener('click', event => {
