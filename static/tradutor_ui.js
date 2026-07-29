@@ -4283,6 +4283,7 @@
       const panelId = `series-panel-${slugify(key) || 'series'}`;
       return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><button type="button" class="cf-header" data-folder="${escapeAttr(key)}" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${escapeAttr(panelId)}" aria-label="${escapeAttr(`Expandir ${group.series}`)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></button><div class="cf-body" id="${escapeAttr(panelId)}" role="region" aria-hidden="${open ? 'false' : 'true'}">${group.records.map(renderHistoryCard).join('')}</div></div>`;
     }).join('');
+    list.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', handleHistoryAction));
     records.forEach(record => {
       if (!['failed', 'cancelled'].includes(String(record.status || '').toLowerCase())) return;
       const card = list.querySelector(`.hist-item[data-id="${CSS.escape(String(record.id || ''))}"]`);
@@ -4399,10 +4400,6 @@
       await openArtifact(record.job_id, button.dataset.action);
     }
   }
-  // Authentication transitions may replace an authenticated surface. Delegate
-  // history actions from the stable document so a freshly rendered #histList
-  // never loses its controls.
-  document.addEventListener('click', handleHistoryAction, {capture: true});
   $('#histList')?.addEventListener('keydown', event => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     const folder = event.target.closest('.cf-header');
