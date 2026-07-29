@@ -359,6 +359,14 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
             self.js,
         )
 
+    def test_history_folder_restores_focus_after_dynamic_render(self):
+        self.assertIn(
+            "const replacement = list?.querySelector("
+            "`.cf-header[data-folder=\"${CSS.escape(key)}\"]`)",
+            self.js,
+        )
+        self.assertIn("replacement?.focus()", self.js)
+
     def test_developer_mode_toggle_is_a_real_ui_option(self):
         self.assertIn('id="developerModeToggle"', self.shell)
         self.assertIn("developerModeToggle", self.js)

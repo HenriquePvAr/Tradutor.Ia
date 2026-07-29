@@ -4317,6 +4317,9 @@
     if (!key) return;
     appState.expandedFolders.has(key) ? appState.expandedFolders.delete(key) : appState.expandedFolders.add(key);
     renderHistory();
+    const list = $('#histList');
+    const replacement = list?.querySelector(`.cf-header[data-folder="${CSS.escape(key)}"]`);
+    replacement?.focus();
   }
   $('#histSearch')?.addEventListener('input', renderHistory);
   $('#homePendingPreviews')?.addEventListener('click', event => {
