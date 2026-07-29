@@ -370,6 +370,15 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
             self.js,
         )
 
+    def test_closing_review_restores_focus_to_its_history_action(self):
+        self.assertIn('data-review-job="${escapeAttr(identity.jobId)}"', self.js)
+        self.assertIn("const returnJobId = appState.reviewMode?.jobId || ''", self.js)
+        self.assertIn(
+            "`.hm-review-action[data-review-job=\"${CSS.escape(returnJobId)}\"]`",
+            self.js,
+        )
+        self.assertIn("window.setTimeout(() => returnAction?.focus(), 0)", self.js)
+
     def test_developer_mode_toggle_is_a_real_ui_option(self):
         self.assertIn('id="developerModeToggle"', self.shell)
         self.assertIn("developerModeToggle", self.js)

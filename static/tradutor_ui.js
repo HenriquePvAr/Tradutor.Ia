@@ -3926,9 +3926,10 @@
     return 'Revisar';
   }
   function reviewAction(record) {
-    if (!reviewIdentity(record)) return '';
+    const identity = reviewIdentity(record);
+    if (!identity) return '';
     const label = reviewActionLabel(record);
-    return `<button class="btn-ghost hm-review-action" data-action="review" title="Revisar OCR, tradução e qualidade deste capítulo" aria-label="${escapeAttr(`${label}: ${record.chapter_name || record.slug || 'capítulo'}`)}">${escapeHtml(label)}</button>`;
+    return `<button class="btn-ghost hm-review-action" data-action="review" data-review-job="${escapeAttr(identity.jobId)}" title="Revisar OCR, tradução e qualidade deste capítulo" aria-label="${escapeAttr(`${label}: ${record.chapter_name || record.slug || 'capítulo'}`)}">${escapeHtml(label)}</button>`;
   }
   function renderSourceAnalysisReady(record) {
     const panel = $('#sourceReadyPanel');
@@ -4337,7 +4338,14 @@
     if (!target) return;
     void openPendingPreview(pendingPreviewFromDataset(target));
   });
-  $('#reviewModeExit')?.addEventListener('click', () => { exitReviewMode(); activateTab('hist'); });
+  $('#reviewModeExit')?.addEventListener('click', () => {
+    const returnJobId = appState.reviewMode?.jobId || '';
+    exitReviewMode();
+    activateTab('hist');
+    const returnAction = $('#histList')?.querySelector(
+      `.hm-review-action[data-review-job="${CSS.escape(returnJobId)}"]`);
+    window.setTimeout(() => returnAction?.focus(), 0);
+  });
   const developerModeToggle = $('#developerModeToggle');
   if (developerModeToggle) {
     developerModeToggle.checked = qualityReviewDeveloperMode();
