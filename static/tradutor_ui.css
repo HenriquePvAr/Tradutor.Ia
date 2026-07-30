@@ -1695,8 +1695,18 @@
 .auth-translation-core svg{position:absolute;width:104px;height:28px;overflow:visible;fill:none;stroke:var(--auth-red-2);stroke-width:1.5}
 .auth-login-preservation{display:flex;align-items:center;gap:13px;margin-top:18px;padding:13px 16px;border:1px solid rgba(255,59,77,.28);border-radius:13px;background:rgba(9,17,29,.72);color:var(--auth-dim);font-size:11px;line-height:1.5}
 .auth-login-preservation svg{flex:0 0 22px;width:22px;height:22px;fill:none;stroke:var(--auth-red-2);stroke-width:1.5}
-.auth-login-product-benefits{display:grid;grid-template-columns:repeat(4,1fr);margin-top:16px;color:#8490a1;font:500 8.5px/1.35 'Inter',sans-serif;text-align:center}
-.auth-login-product-benefits span{min-height:28px;padding:4px 10px;border-right:1px solid rgba(30,38,54,.9)}.auth-login-product-benefits span:last-child{border:0}
+/* These are the four things the product does, but at 8.5px in #8490a1 with
+   ruled dividers they were set like the fine print at the bottom of a page.
+   Each item now carries the same marker as the section eyebrows, at a size
+   that can actually be read, so the row reads as capabilities rather than as
+   a footer. The dividers go: the markers already separate the items. */
+.auth-login-product-benefits{display:grid;grid-template-columns:repeat(4,1fr);
+  gap:10px;margin-top:18px;color:#c2ccdc;font:600 11px/1.4 'Inter',sans-serif}
+.auth-login-product-benefits span{display:flex;align-items:center;gap:8px;
+  min-height:28px;padding:4px 2px;text-align:left;text-wrap:balance}
+.auth-login-product-benefits span::before{content:"";flex:0 0 6px;width:6px;height:6px;
+  border:1px solid var(--auth-red-2);border-radius:2px;
+  box-shadow:0 0 8px rgba(255,59,77,.4)}
 .auth-login-side{flex:1;min-width:430px;padding:36px;background:linear-gradient(135deg,rgba(13,19,32,.56),rgba(6,11,20,.88))}
 .auth-login-card{position:relative;max-width:510px;padding:46px 48px;border-radius:26px;background:linear-gradient(145deg,rgba(18,26,43,.96),rgba(7,15,27,.96));border:1px solid rgba(255,107,122,.48);box-shadow:-14px 0 55px rgba(255,59,77,.12),20px 22px 70px rgba(0,0,0,.48),8px 8px 42px rgba(0,229,255,.035)}
 .auth-login-card::before{content:"";position:absolute;inset:-1px;border-radius:inherit;border-left:2px solid rgba(255,59,77,.9);border-top:1px solid rgba(255,107,122,.7);pointer-events:none}
