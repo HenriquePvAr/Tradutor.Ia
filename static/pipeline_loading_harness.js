@@ -62,19 +62,24 @@
   if (!Object.prototype.hasOwnProperty.call(fixtures, requested)) return;
 
   function renderHarness() {
-    var root = document.getElementById('loadingSurface');
+    var root = document.getElementById('pipelineVisualHarnessRoot');
     var mapper = window.TradutorLoadingView;
     var renderer = window.TradutorProcessingSurface;
-    if (!root || !mapper || !renderer) return;
+    if (!mapper || !renderer) return;
+    if (!root) {
+      root = document.createElement('section');
+      root.id = 'pipelineVisualHarnessRoot';
+      root.className = 'ls-surface';
+      root.setAttribute('aria-label', 'Estado visual do processamento');
+      document.body.appendChild(root);
+    }
     var state = Object.assign({
       mode: 'pipeline', local_test: true,
       reduced_motion: reducedMotion || window.matchMedia('(prefers-reduced-motion: reduce)').matches
     }, fixtures[requested]);
     if (reducedMotion) document.documentElement.dataset.pipelineReducedMotion = '1';
     document.documentElement.dataset.pipelineVisualHarness = requested;
-    root.hidden = false;
     root.dataset.pipelineVisualHarness = requested;
-    document.body.appendChild(root);
     renderer.renderProcessingSurface(root, mapper.mapJobStateToLoadingView(state));
   }
 

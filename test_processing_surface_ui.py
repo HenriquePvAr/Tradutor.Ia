@@ -416,6 +416,11 @@ class VisualHarnessIsFailClosed(unittest.TestCase):
         self.assertIn("renderAfterCanonicalUiSettles", harness)
         self.assertIn("1000", harness)
 
+    def test_harness_uses_a_dedicated_root_outside_pipeline_polling(self):
+        harness = code_of(self.HARNESS)
+        self.assertIn("pipelineVisualHarnessRoot", harness)
+        self.assertIn("document.createElement", harness)
+
 
 if __name__ == "__main__":
     unittest.main()
