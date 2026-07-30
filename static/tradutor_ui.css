@@ -1653,7 +1653,14 @@
 .auth-login-pnode:not(:last-child)::after{content:"";position:absolute;left:100%;top:17px;width:22px;border-top:1px dashed rgba(255,59,77,.55)}
 .auth-login-picon{width:34px;height:34px;border:1px solid rgba(255,59,77,.55);border-radius:8px;color:var(--auth-red-2);background:rgba(255,59,77,.055);box-shadow:none}
 .auth-login-picon svg{width:18px;height:18px}.auth-login-plabel{font:700 10px/1.25 'Inter',sans-serif;color:var(--auth-text);letter-spacing:.1px}
-.auth-login-pnode p{margin:4px 0 0;color:var(--auth-dim);font-size:8px;line-height:1.35}
+/* These descriptions were breaking a single word onto their last line
+   ("...falas e / diálogos"), which reads as a mistake rather than as a
+   sentence. text-wrap:balance evens the lines out from the browser's own
+   line breaker, so the copy does not have to be rewritten to fit a width.
+   8px was also below what this text needs to be read at all. */
+.auth-login-pnode p{margin:5px 0 0;color:var(--auth-dim);font-size:10px;line-height:1.4;
+  text-wrap:balance}
+.auth-login-plabel{text-wrap:balance}
 .auth-login-compare-wrap{margin-top:22px}
 .auth-login-compare.auth-login-illustration{display:grid;grid-template-columns:minmax(0,1fr) 88px minmax(0,1fr);align-items:center;gap:12px;max-width:none;aspect-ratio:auto;border:0;border-radius:0;background:transparent;overflow:visible;pointer-events:none}
 .auth-comic-page{position:relative;height:218px;border:1px solid rgba(255,59,77,.42);border-radius:15px;padding:8px;background:#080d17;box-shadow:0 16px 34px rgba(0,0,0,.32),0 0 24px rgba(255,59,77,.07);overflow:hidden}
