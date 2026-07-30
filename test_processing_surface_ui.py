@@ -187,12 +187,17 @@ class ProgressIsDrawnOnlyWhenReal(unittest.TestCase):
 class TerminalStatesRenderTheirOwnPanel(unittest.TestCase):
     def test_review_required_is_not_a_failure(self):
         out = render({"status": "review_required", "stage": "quality_review",
-                      "pending_review_count": 3})
+                      "pending_review_count": 3, "review_available": True})
         self.assertEqual(out["tone"], "review")
         self.assertIn("ls-terminal", out["tree"])
         self.assertIn("[role=status]", out["tree"])
         self.assertNotIn("[role=alert]", out["tree"])
         self.assertIn("3 item(ns) para revisar", out["text"])
+        self.assertIn("open-review", out["tree"])
+
+    def test_review_action_is_absent_without_explicit_permission(self):
+        out = render({"status": "review_required", "stage": "quality_review"})
+        self.assertNotIn("open-review", out["tree"])
 
     def test_finished_shows_success_and_no_result_button_without_one(self):
         out = render({"status": "finished", "stage": "pdf"})
@@ -253,6 +258,15 @@ class GroupsAndEventsFollowTheViewModel(unittest.TestCase):
 
     def test_no_events_means_no_log_section(self):
         self.assertNotIn("ls-events", render(RUNNING)["tree"])
+
+    def test_event_sequence_and_markup_are_rendered_as_text(self):
+        out = render({**RUNNING, "events": [
+            {"seq": 7, "time": "10:00:07", "kind": "stage",
+             "text": "<b>OCR</b> & pronto"},
+        ]})
+        self.assertIn("7", out["text"])
+        self.assertIn("<b>OCR</b> & pronto", out["text"])
+        self.assertNotIn("b.ls-event", out["tree"])
 
 
 @unittest.skipUnless(NODE, "node is required to execute the renderer")
@@ -365,6 +379,36 @@ class StylesheetCoversLayoutAndMotion(unittest.TestCase):
         text = CSS.read_text(encoding="utf-8")
         for token in ("--ls-success", "--ls-warning", "--ls-danger", "--ls-accent"):
             self.assertIn(token, text, token)
+
+    def test_visual_harness_can_take_over_the_viewport(self):
+        text = CSS.read_text(encoding="utf-8")
+        self.assertIn("data-pipeline-visual-harness", text)
+        self.assertIn("position: fixed", text)
+
+
+class VisualHarnessIsFailClosed(unittest.TestCase):
+    HARNESS = ROOT / "static" / "pipeline_loading_harness.js"
+
+    def test_harness_requires_visual_flag_loopback_and_query_state(self):
+        text = self.HARNESS.read_text(encoding="utf-8")
+        for guard in ("__tradutorVisualTestEnabled !== true", "127.0.0.1",
+                      "localhost", "visual_pipeline_state"):
+            self.assertIn(guard, text)
+        code = code_of(self.HARNESS)
+        self.assertNotIn("fetch(", code)
+        self.assertNotIn("XMLHttpRequest", code)
+
+    def test_harness_asset_is_only_loaded_in_visual_test_mode(self):
+        app = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        self.assertIn("PIPELINE_HARNESS_ASSET", app)
+        self.assertIn("if visual_test_enabled:", app)
+
+    def test_harness_supports_explicit_reduced_motion(self):
+        harness = code_of(self.HARNESS)
+        css = CSS.read_text(encoding="utf-8")
+        self.assertIn("visual_reduced_motion", harness)
+        self.assertIn("pipelineReducedMotion", harness)
+        self.assertIn("data-pipeline-reduced-motion", css)
 
 
 if __name__ == "__main__":

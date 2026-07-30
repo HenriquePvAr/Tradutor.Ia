@@ -123,6 +123,17 @@ class EventsAreSanitised(unittest.TestCase):
     def test_no_events_means_an_empty_list_not_a_placeholder(self):
         self.assertEqual(view({"status": "running", "stage": "ocr"})["events"], [])
 
+    def test_events_keep_real_sequence_and_are_visually_bounded(self):
+        events = [
+            {"seq": index, "time": f"10:00:{index:02d}",
+             "kind": "stage", "text": f"evento {index}"}
+            for index in range(45)
+        ]
+        result = run_js(f"return L.sanitiseEvents({json.dumps(events)});")
+        self.assertEqual(len(result), 30)
+        self.assertEqual(result[0]["seq"], 15)
+        self.assertEqual(result[-1]["seq"], 44)
+
 
 @unittest.skipUnless(NODE, "node is required to execute the loading view module")
 class TerminalStatesAreDistinct(unittest.TestCase):
@@ -161,6 +172,18 @@ class TerminalStatesAreDistinct(unittest.TestCase):
         self.assertFalse(view({"status": "failed", "stage": "ocr"})["canRetry"])
         self.assertTrue(view({"status": "failed", "stage": "ocr",
                               "retry_available": True})["canRetry"])
+
+    def test_review_action_needs_explicit_permission(self):
+        blocked = view({"status": "review_required", "stage": "quality_review"})
+        allowed = view({"status": "review_required", "stage": "quality_review",
+                        "review_available": True})
+        self.assertFalse(blocked["canOpenReview"])
+        self.assertTrue(allowed["canOpenReview"])
+
+    def test_unsafe_reason_code_is_not_exposed(self):
+        result = view({"status": "failed", "stage": "ocr",
+                       "reason_code": "token=C:\\Users\\private\\.env"})
+        self.assertEqual(result["reasonCode"], "")
 
     def test_cancelled_is_neutral(self):
         result = view({"status": "cancelled", "stage": "ocr"})
