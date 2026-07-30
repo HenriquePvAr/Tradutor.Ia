@@ -99,7 +99,12 @@ class SupabaseFrontendTests(unittest.TestCase):
         self.assertIn("new AbortController()", source)
         self.assertIn("controller.abort()", source)
         self.assertIn("finally", source)
-        self.assertIn("button.disabled = Boolean(loading)", source)
+        # The redesign moved the coercion onto its own line and set the ARIA
+        # state beside it. The guarantee is unchanged and still asserted here:
+        # the disabled flag is the loading flag and nothing else.
+        self.assertIn("const isLoading = Boolean(loading)", source)
+        self.assertIn("button.disabled = isLoading", source)
+        self.assertIn("aria-disabled", source)
         self.assertIn("setSubmitLoading(submit, false", source)
         self.assertIn("submit.dataset.busy", source)
 

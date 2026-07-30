@@ -13,6 +13,10 @@ import that exists is fetched, whatever the runtime later decides.
 """
 from __future__ import annotations
 
+from offline_test_guard import install_offline_network_guard
+
+install_offline_network_guard()
+
 import re
 import unittest
 from pathlib import Path
