@@ -414,6 +414,7 @@ class VisualHarnessIsFailClosed(unittest.TestCase):
         harness = code_of(self.HARNESS)
         self.assertIn("tradutor:auth-changed", harness)
         self.assertIn("renderAfterCanonicalUiSettles", harness)
+        self.assertIn("1000", harness)
 
 
 if __name__ == "__main__":

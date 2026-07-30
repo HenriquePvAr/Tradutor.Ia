@@ -80,6 +80,7 @@
 
   function renderAfterCanonicalUiSettles() {
     window.setTimeout(renderHarness, 50);
+    window.setTimeout(renderHarness, 1000);
   }
 
   if (document.readyState === 'loading') {
