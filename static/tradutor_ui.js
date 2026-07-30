@@ -4160,7 +4160,22 @@
     node.innerHTML = `<span>${ready.length} prévia${ready.length === 1 ? '' : 's'} pronta${ready.length === 1 ? '' : 's'} para inspeção · ${items.length - ready.length} bloqueada${items.length - ready.length === 1 ? '' : 's'}</span>`
       + `<button type="button" class="btn-primary" data-open-pending-preview="${escapeAttr(first.region_id || '')}" data-job-id="${escapeAttr(first.job_id || '')}" data-run-id="${escapeAttr(first.run_id || '')}">Abrir prévia</button>`;
   }
+  // Drops the cached list so one session's previews never survive into the next
+  // shell, authenticated or not.
+  function clearPendingHumanPreviews() {
+    appState.pendingHumanPreviews = {
+      items: [], item_count: 0, ready_count: 0, blocked_count: 0,
+    };
+    renderPendingPreviewSurfaces();
+    renderReviewPreviewAccess();
+    return appState.pendingHumanPreviews;
+  }
   async function loadPendingHumanPreviews() {
+    // The endpoint requires a session. The guard lives here, not at the call
+    // site, because every caller would otherwise be free to reintroduce the
+    // logged-out request - which is how a signed-out browser produced thousands
+    // of 401s against this one endpoint.
+    if (!isCanonicalCommunityAuthenticated()) return clearPendingHumanPreviews();
     try {
       const data = await api('/api/ui/human-previews/pending');
       appState.pendingHumanPreviews = {
@@ -5832,8 +5847,10 @@
       if (authenticated) {
         applyProfileToForm(appState.profile);
         void loadProductSettings();
+        await loadPendingHumanPreviews();
+      } else {
+        clearPendingHumanPreviews();
       }
-      await loadPendingHumanPreviews();
       renderHistory();
       renderDashboard();
       if (!appState.reviewRestoreAttempted) {
