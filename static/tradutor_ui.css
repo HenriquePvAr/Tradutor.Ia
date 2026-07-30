@@ -1796,6 +1796,98 @@
   .auth-login-page *{animation:none!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
 }
 html[data-visual-reduced-motion="1"] .auth-login-page *{animation:none!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+
+/* ---------- cohesive authentication composition ---------- */
+/* Hero and form share one bounded atmosphere. The page itself is only the
+   viewport backdrop; this shell owns the continuous light, grid and depth. */
+.auth-login-page{
+  display:flex;align-items:flex-start;justify-content:center;
+  padding:clamp(14px,2vw,32px);
+  overflow-x:hidden;overflow-y:auto;
+  background:
+    radial-gradient(circle at 18% 18%,rgba(255,59,77,.09),transparent 28%),
+    radial-gradient(circle at 84% 82%,rgba(0,229,255,.055),transparent 30%),
+    linear-gradient(145deg,#050a12 0%,#08101d 52%,#050a12 100%);
+}
+.auth-login-shell{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(360px,.85fr);flex:none;
+  width:100%;max-width:1560px;min-height:min(920px,calc(100dvh - 28px));margin:auto;
+  gap:clamp(28px,3vw,48px);padding:clamp(18px,2.3vw,36px);
+  border:1px solid rgba(128,151,187,.16);border-radius:30px;overflow:hidden;isolation:isolate;
+  background:
+    radial-gradient(80% 90% at 8% 5%,rgba(255,59,77,.105),transparent 54%),
+    radial-gradient(64% 84% at 94% 92%,rgba(0,229,255,.065),transparent 58%),
+    linear-gradient(112deg,rgba(11,19,33,.96) 0%,rgba(9,16,29,.94) 55%,rgba(8,15,27,.98) 100%);
+  box-shadow:0 30px 90px rgba(0,0,0,.48),inset 0 1px rgba(255,255,255,.025);
+}
+.auth-login-shell::before{content:"";position:absolute;z-index:0;inset:0;pointer-events:none;
+  background:
+    linear-gradient(105deg,transparent 0 43%,rgba(255,59,77,.06) 49%,rgba(0,229,255,.035) 55%,transparent 64%),
+    repeating-linear-gradient(0deg,rgba(148,170,204,.026) 0 1px,transparent 1px 46px),
+    repeating-linear-gradient(90deg,rgba(148,170,204,.026) 0 1px,transparent 1px 46px);
+  mask-image:linear-gradient(to bottom,rgba(0,0,0,.76),transparent 92%);
+}
+.auth-login-shell::after{content:"";position:absolute;z-index:0;left:35%;right:8%;top:23%;height:1px;
+  pointer-events:none;background:linear-gradient(90deg,transparent,rgba(255,59,77,.34),rgba(0,229,255,.16),transparent);
+  box-shadow:0 250px rgba(255,59,77,.045),0 500px rgba(0,229,255,.035);transform:rotate(-4deg);
+}
+.auth-login-stage{position:relative;z-index:1;display:flex;min-width:0;
+  padding:clamp(16px,2vw,32px);border-right:0;background:transparent;overflow:visible;
+}
+.auth-login-stage-inner{margin-inline:auto}
+.auth-login-side{position:relative;z-index:1;display:flex;min-width:0;
+  align-items:center;justify-content:center;padding:clamp(18px,2.2vw,36px);background:transparent;overflow:visible;
+}
+.auth-login-side::before{content:"";position:absolute;inset:8% -18% 4% -22%;pointer-events:none;
+  border-radius:50%;background:radial-gradient(circle,rgba(255,59,77,.095),transparent 58%);
+  filter:blur(12px);opacity:.82;transition:opacity .24s ease;
+}
+.auth-login-side:focus-within::before{opacity:1}
+.auth-login-card{width:100%;max-width:500px;padding:clamp(30px,3vw,48px);
+  background:
+    linear-gradient(145deg,rgba(19,29,48,.965),rgba(7,15,28,.975)),
+    radial-gradient(circle at 14% 8%,rgba(255,107,122,.12),transparent 34%);
+  box-shadow:-16px 0 54px rgba(255,59,77,.14),22px 26px 76px rgba(0,0,0,.5),10px 12px 44px rgba(0,229,255,.04);
+}
+.auth-login-card::after{content:"";position:absolute;inset:10px;border-radius:20px;pointer-events:none;
+  border:1px solid transparent;
+  background:
+    radial-gradient(circle at 10% 0,rgba(255,107,122,.12),transparent 25%),
+    radial-gradient(circle at 100% 100%,rgba(0,229,255,.07),transparent 28%);
+}
+.auth-login-card>*{position:relative;z-index:1}
+.auth-login-heading::after{content:"";display:block;width:56px;height:1px;margin:15px auto 0;
+  background:linear-gradient(90deg,transparent,var(--auth-red-2),var(--auth-cyan-soft),transparent);
+}
+.auth-login-lead{margin-top:10px}
+.auth-login-input-wrap::after{content:"";position:absolute;inset:0;border-radius:12px;pointer-events:none;
+  box-shadow:inset 0 1px rgba(255,255,255,.028);opacity:.75;
+}
+.auth-login-submit{border-top-color:rgba(255,255,255,.24)}
+
+@media(max-width:1420px){
+  .auth-login-shell{min-height:calc(100dvh - 28px);gap:clamp(28px,2.6vw,38px);padding:20px}
+  .auth-login-stage{padding:18px}.auth-login-side{padding:16px}
+  .auth-login-card{max-width:470px;padding:clamp(28px,2.6vw,38px)}
+}
+@media(max-width:900px){
+  .auth-login-page{display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;padding:clamp(10px,2.5vw,20px)}
+  .auth-login-shell{grid-template-columns:1fr;gap:clamp(18px,4vw,30px);
+    min-height:auto;margin:0 auto;padding:clamp(12px,3vw,24px);border-radius:24px}
+  .auth-login-side{order:1;min-width:0;padding:clamp(14px,3vw,24px);background:transparent}
+  .auth-login-stage{order:2;display:flex;min-width:0;padding:clamp(18px,3.5vw,30px);border:0;background:transparent}
+  .auth-login-stage-inner{width:100%;max-width:700px}
+  .auth-login-card{max-width:560px}
+}
+@media(max-width:520px){
+  .auth-login-page{padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))}
+  .auth-login-shell{gap:16px;padding:8px;border-radius:18px}
+  .auth-login-side{padding:6px}.auth-login-stage{padding:24px 10px 28px}
+  .auth-login-card{padding:24px 20px;border-radius:18px}
+  .auth-login-heading::after{margin-top:11px}
+}
+@media(prefers-reduced-motion:reduce){
+  .auth-login-side::before{transition:none}
+}
   .auth-tabs{display:flex; gap:6px; margin-bottom:20px; padding-right:0;}
   .auth-tab{
     flex:1; background:transparent; border:1px solid var(--line); color:var(--muted);
