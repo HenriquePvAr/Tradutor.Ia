@@ -2343,9 +2343,14 @@ html[data-visual-reduced-motion="1"] .auth-login-page *{animation:none!important
 .auth-login-plabel{font-size:9.5px}.auth-login-pnode p{font-size:9px;margin-top:3px}
 .auth-login-pnode:not(:last-child)::after{top:15px;width:16px}
 .auth-login-compare-wrap{grid-area:compare;margin-top:14px;position:relative;z-index:2}
+/* The page captions hang 23px below the pages by design, but nothing reserved
+   that space, so "LOCALIZED / PT-BR" landed on top of the preservation
+   sentence and both became unreadable. The overhang now has a gutter of its
+   own: margin, not padding, because the captions are positioned against this
+   box and padding would push them down with it. */
 .auth-login-compare.auth-login-illustration{
   position:relative;display:block;width:min(100%,780px);height:clamp(292px,37vh,390px);
-  max-width:none;aspect-ratio:auto;overflow:visible;
+  max-width:none;aspect-ratio:auto;overflow:visible;margin-bottom:36px;
 }
 .auth-comic-page{
   position:absolute;height:auto;padding:0;border:0;border-radius:20px;background:transparent;overflow:visible;
@@ -2390,9 +2395,13 @@ html[data-visual-reduced-motion="1"] .auth-login-page *{animation:none!important
   background:linear-gradient(145deg,rgba(255,74,94,.2),rgba(18,30,50,.18));
   border-color:rgba(255,75,95,.4);box-shadow:0 32px 72px rgba(0,0,0,.6),0 0 42px rgba(255,55,76,.16);
 }
-.auth-comic-translated::after{
-  content:"LOCALIZED / PT-BR";position:absolute;left:12px;bottom:-23px;color:var(--auth-red-2);
-  font:700 8px/1 'JetBrains Mono',monospace;letter-spacing:1.6px;
+/* Anchored to the comparison box, not to the page. The translated page is
+   offset inside that box and the offset grows with the viewport, so a caption
+   hanging off the page landed back on the preservation sentence at 1920 even
+   after the gutter existed. Both plates now share the same gutter. */
+.auth-login-compare.auth-login-illustration::after{
+  content:"LOCALIZED / PT-BR";position:absolute;right:1%;bottom:-24px;color:var(--auth-red-2);
+  font:700 8px/1 'JetBrains Mono',monospace;letter-spacing:1.6px;pointer-events:none;
 }
 .auth-translation-core{
   position:absolute;z-index:5;left:38.5%;top:44%;width:70px;height:70px;margin:0;
@@ -2578,7 +2587,7 @@ html[data-visual-reduced-motion="1"] .auth-login-page *{animation:none!important
   .auth-translation-core>i{inset:-8px}
   .auth-translation-core svg{width:54px}
   .auth-translation-core::before,.auth-translation-core::after{width:22px}
-  .auth-comic-original::after,.auth-comic-translated::after{font-size:6.5px;bottom:-17px}
+  .auth-comic-original::after,.auth-login-compare::after{font-size:6.5px;bottom:-17px}
   .auth-login-flow-intro{margin-top:19px}
   .auth-marketing-pipeline{grid-template-columns:1fr 1fr;gap:8px;padding:8px}
   .auth-login-pnode{grid-template-columns:27px 1fr}
@@ -2684,8 +2693,11 @@ html[data-visual-reduced-motion="1"] .auth-login-submit::after{transform:none}
 }
 .auth-editorial-corner-a{left:1%;top:5%;border-width:1px 0 0 1px}
 .auth-editorial-corner-b{right:9%;bottom:8%;border-width:0 1px 1px 0}
+/* Moved out of the artwork and into the caption gutter, opposite the localized
+   plate: it was sitting on a speech balloon and covering the very text the
+   product claims to read. */
 .auth-editorial-scan{
-  position:absolute;left:3%;bottom:3%;padding:4px 7px;border:1px solid rgba(0,229,255,.2);
+  position:absolute;left:1%;bottom:-24px;padding:3px 7px;border:1px solid rgba(0,229,255,.2);
   color:rgba(120,224,237,.68);background:rgba(3,12,22,.72);
   font:700 7px/1 'JetBrains Mono',monospace;letter-spacing:1.1px;text-transform:uppercase;
 }
@@ -2861,4 +2873,108 @@ html[data-visual-reduced-motion="1"] .auth-comic-page,
 html[data-visual-reduced-motion="1"] .auth-translation-core svg,
 html[data-visual-reduced-motion="1"] .auth-login-submit{
   transition:none!important;animation:none!important;
+}
+
+/* ============================================================
+   Cena cinematográfica do login — camadas controladas por JS
+   O JavaScript só escreve custom properties e data attributes;
+   toda decisão visual continua aqui, e a tela permanece completa
+   se nenhuma delas for escrita.
+   ============================================================ */
+
+/* Defaults: this is exactly what the screen looks like with no JS at all. */
+.auth-login-shell{--pointer-x:.5;--pointer-y:.5;--glow-x:0px;--glow-y:0px;--scene-recede:1;}
+
+/* One extra decorative layer, moved only by the pointer. The comics, the card,
+   the fields and the button never move: nothing that must be clicked shifts. */
+.auth-login-shell::after{
+  content:"";position:absolute;z-index:0;inset:-8%;pointer-events:none;
+  background:
+    radial-gradient(38% 44% at calc(var(--pointer-x) * 100%) calc(var(--pointer-y) * 100%),
+      rgba(255,86,104,.11),transparent 70%),
+    radial-gradient(30% 36% at calc(100% - var(--pointer-x) * 60%) calc(88% - var(--pointer-y) * 26%),
+      rgba(0,214,255,.055),transparent 72%);
+  transform:translate3d(var(--glow-x),var(--glow-y),0);
+  transition:transform .5s cubic-bezier(.22,.61,.36,1);
+  will-change:transform;
+}
+/* Vignette: separates the composition from the page edge so the shell reads as
+   a lit stage rather than a flat panel. */
+.auth-login-page::after{
+  content:"";position:fixed;z-index:1;inset:0;pointer-events:none;
+  background:radial-gradient(120% 96% at 50% 42%,transparent 52%,rgba(2,5,11,.62) 100%);
+}
+
+/* --- scene states ------------------------------------------------------- */
+/* Derived from real states. Nothing disappears, nothing moves: only emphasis. */
+.auth-login-shell[data-scene-state]{transition:background-color .45s ease;}
+.auth-login-shell[data-scene-state="exploring-original"] .auth-editorial-scan,
+.auth-login-shell[data-scene-state="exploring-translated"] .auth-login-compare::after{
+  opacity:1;filter:brightness(1.25);
+}
+.auth-login-shell[data-scene-state="exploring-original"] .auth-compare-choice[data-auth-compare="original"],
+.auth-login-shell[data-scene-state="exploring-translated"] .auth-compare-choice[data-auth-compare="translated"]{
+  color:var(--auth-text);
+}
+/* Filled says values exist. It must never look like an accepted credential, so
+   it is a quiet warm edge on the card and nothing on the button. */
+.auth-login-shell[data-scene-state="filled"] .auth-login-card{
+  border-color:rgba(255,110,126,.34);
+  box-shadow:0 30px 76px rgba(0,0,0,.5),0 0 0 1px rgba(255,110,126,.1);
+}
+
+/* --- transformation line ------------------------------------------------ */
+/* Origin, core and destination of the flow, reacting to the selected reading. */
+.auth-login-shell[data-compare-state="original"] .auth-editorial-scan{
+  border-color:rgba(0,229,255,.55);color:rgba(180,240,250,.95);
+}
+.auth-login-shell[data-compare-state="translated"] .auth-login-compare::after{
+  color:#ff8f9c;
+}
+
+/* --- entrance ----------------------------------------------------------- */
+/* Runs once, on a class, capped well under 500ms, and never blocks input. */
+.auth-login-shell[data-presentation-ready]:not([data-entered]) .auth-login-stage-inner,
+.auth-login-shell[data-presentation-ready]:not([data-entered]) .auth-login-card{
+  opacity:0;transform:translate3d(0,10px,0);
+}
+.auth-login-shell[data-entered] .auth-login-stage-inner,
+.auth-login-shell[data-entered] .auth-login-card{
+  opacity:1;transform:none;
+  transition:opacity .38s ease,transform .42s cubic-bezier(.22,.61,.36,1);
+}
+.auth-login-shell[data-entered] .auth-login-card{transition-delay:.08s;}
+
+/* --- responsive classification ------------------------------------------ */
+/* The JS only labels the shell; the sizes are decided here. */
+.auth-login-shell[data-viewport-height="compact"]{
+  --auth-shell-pad:clamp(14px,2vh,22px);
+  min-height:auto;
+}
+.auth-login-shell[data-viewport-height="compact"] .auth-login-compare.auth-login-illustration{
+  height:clamp(210px,30vh,300px);
+}
+.auth-login-shell[data-viewport-height="compact"] .auth-login-card{padding-block:clamp(20px,3.4vh,34px);}
+.auth-login-shell[data-viewport-height="compact"] .auth-login-preservation{margin-top:10px;padding:8px 12px;}
+.auth-login-shell[data-viewport-height="compact"] .auth-login-product-benefits{margin-top:8px;}
+.auth-login-shell[data-density="spacious"] .auth-login-compare.auth-login-illustration{
+  width:min(100%,880px);
+}
+
+/* --- reduced motion ------------------------------------------------------ */
+/* The pointer layer is not drawn at all: a parked glow reads as a position. */
+@media (prefers-reduced-motion: reduce){
+  .auth-login-shell::after{display:none;}
+  .auth-login-shell[data-entered] .auth-login-stage-inner,
+  .auth-login-shell[data-entered] .auth-login-card,
+  .auth-login-shell[data-scene-state]{transition:none;}
+  .auth-login-shell[data-presentation-ready]:not([data-entered]) .auth-login-stage-inner,
+  .auth-login-shell[data-presentation-ready]:not([data-entered]) .auth-login-card{
+    opacity:1;transform:none;
+  }
+}
+html[data-visual-reduced-motion="1"] .auth-login-shell::after{display:none;}
+html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login-stage-inner,
+html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login-card{
+  transition:none!important;
 }
