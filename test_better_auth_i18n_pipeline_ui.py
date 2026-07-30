@@ -192,6 +192,56 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertIn(".auth-login-stage{order:2;display:flex", responsive_v2)
         self.assertIn("min-height:100dvh", self.css)
 
+    def test_cohesive_login_shell_unifies_hero_and_form(self):
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        self.assertIn('class="auth-login-shell"', auth_fragment)
+        shell_pos = auth_fragment.index('class="auth-login-shell"')
+        stage_pos = auth_fragment.index('class="auth-login-stage"')
+        side_pos = auth_fragment.index('class="auth-login-side"')
+        self.assertLess(shell_pos, stage_pos)
+        self.assertLess(stage_pos, side_pos)
+
+        cohesive = self.css[self.css.index("cohesive authentication composition"):]
+        compact = re.sub(r"\s+", "", cohesive)
+        self.assertIn(
+            ".auth-login-shell{position:relative;z-index:1;display:grid;"
+            "grid-template-columns:minmax(0,1.35fr)minmax(360px,.85fr)",
+            compact,
+        )
+        self.assertIn("max-width:1560px", compact)
+        self.assertIn("gap:clamp(28px,3vw,48px)", compact)
+        self.assertIn(".auth-login-shell::before", cohesive)
+        self.assertIn(".auth-login-shell::after", cohesive)
+        self.assertRegex(compact, r"\.auth-login-stage\{[^}]*border-right:0")
+        self.assertRegex(compact, r"\.auth-login-side\{[^}]*background:transparent")
+
+    def test_cohesive_layout_keeps_the_hero_on_tablet_and_mobile(self):
+        cohesive = self.css[self.css.index("cohesive authentication composition"):]
+        compact = re.sub(r"\s+", "", cohesive)
+        self.assertIn("@media(max-width:900px)", compact)
+        self.assertIn(
+            ".auth-login-shell{grid-template-columns:1fr;gap:clamp(18px,4vw,30px)",
+            compact,
+        )
+        self.assertIn(".auth-login-side{order:1", compact)
+        self.assertIn(".auth-login-stage{order:2;display:flex", compact)
+        self.assertNotRegex(compact, r"\.auth-login-stage\{[^}]*display:none")
+
+    def test_cohesive_shell_uses_natural_vertical_overflow(self):
+        cohesive = self.css[self.css.index("cohesive authentication composition"):]
+        compact = re.sub(r"\s+", "", cohesive)
+        self.assertRegex(compact, r"\.auth-login-page\{[^}]*align-items:flex-start")
+        self.assertRegex(compact, r"\.auth-login-shell\{[^}]*flex:none")
+        self.assertRegex(compact, r"\.auth-login-shell\{[^}]*margin:auto")
+        self.assertRegex(compact, r"\.auth-login-side\{[^}]*overflow:visible")
+        tablet = compact[compact.index("@media(max-width:900px)"):]
+        self.assertRegex(tablet, r"\.auth-login-shell\{[^}]*min-height:auto")
+        self.assertRegex(tablet, r"\.auth-login-shell\{[^}]*margin:0auto")
+        self.assertRegex(
+            tablet,
+            r"\.auth-login-page\{[^}]*flex-direction:column[^}]*justify-content:flex-start",
+        )
+
     def test_login_uses_only_original_inline_decorative_art(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
         self.assertNotIn("/static/assets/reference-ui/", auth_fragment)
@@ -331,12 +381,30 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
             "Tradução com IA",
             "Reconstrução",
             "Preservamos a essência da obra original",
-            "Suporte a imagens HD",
+            "Imagens em alta resolução",
             "Webtoon, manhwa, mangá e quadrinhos",
             "Tradução contextual com IA",
-            "Privacidade e segurança",
+            "Projetos privados na conta",
         ):
             self.assertIn(expected, auth_fragment)
+
+    def test_product_flow_uses_compact_factual_copy(self):
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        for expected in (
+            "Reconhecimento preciso",
+            "Falas e diálogos identificados",
+            "Contexto natural e fluido",
+            "Página organizada para revisão",
+        ):
+            self.assertIn(expected, auth_fragment)
+        for replaced in (
+            "Reconhecimento preciso de texto",
+            "Identificação inteligente de falas e diálogos",
+            "Tradução contextual, natural e fluida",
+            "Diagramação preservada com alta qualidade",
+            "Privacidade e segurança",
+        ):
+            self.assertNotIn(replaced, auth_fragment)
 
     def test_approved_original_art_is_inline_decorative_and_has_no_external_assets(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
