@@ -360,6 +360,16 @@ async function init() {
         control.dataset.authLocalSignupControl = 'disabled';
       });
     }
+    // Hiding only the signup control left its question behind: "Ainda não tem
+    // conta?" stayed on screen with nothing to answer it. The provider reports
+    // whether signup exists, so the whole invitation follows that answer rather
+    // than being hidden control by control.
+    if (authEnvironment?.signup_enabled === false) {
+      document.querySelectorAll('.auth-login-footer').forEach((footer) => {
+        footer.hidden = true;
+        footer.dataset.authSignupInvitation = 'unavailable';
+      });
+    }
   } catch (_) {
     setAuthState('auth_error');
     window.__tradutorCommunityAuthenticated = false;
