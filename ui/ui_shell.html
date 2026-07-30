@@ -36,17 +36,29 @@
       <p data-i18n="loading.subtitle">Conectando os serviços e restaurando seu ambiente.</p>
     </div>
 
-    <div class="app-loading-stage-label">painel em análise</div>
+    <div class="app-loading-stage-label">ambiente em preparação</div>
 
-    <div class="app-loading-compare">
-      <span class="app-loading-tag app-loading-tag-left">original</span>
-      <span class="app-loading-tag app-loading-tag-right">pt-br</span>
+    <div class="app-loading-compare" aria-hidden="true">
+      <div class="app-loading-before app-loading-abstract-sheet">
+        <svg viewBox="0 0 120 160" aria-hidden="true">
+          <rect x="8" y="8" width="104" height="58" rx="4"></rect>
+          <rect x="8" y="74" width="46" height="78" rx="4"></rect>
+          <rect x="62" y="74" width="50" height="78" rx="4"></rect>
+          <ellipse cx="60" cy="34" rx="34" ry="15"></ellipse>
+          <path d="M44 47l-5 11 14-9"></path>
+        </svg>
+      </div>
+      <div class="app-loading-after app-loading-abstract-sheet app-loading-abstract-sheet-accent">
+        <svg viewBox="0 0 120 160" aria-hidden="true">
+          <rect x="8" y="8" width="104" height="58" rx="4"></rect>
+          <rect x="8" y="74" width="46" height="78" rx="4"></rect>
+          <rect x="62" y="74" width="50" height="78" rx="4"></rect>
+          <path d="M18 94h26M18 106h20M72 94h30M72 106h24M72 118h27"></path>
+        </svg>
+      </div>
       <div class="app-loading-corner-fold"></div>
-      <img class="app-loading-before" src="/static/assets/reference-ui/original.jpg" alt="Página original em inglês, detectada via OCR" decoding="async" />
-      <img class="app-loading-after" src="/static/assets/reference-ui/translated.jpg" alt="Página traduzida para português pelo pipeline" decoding="async" />
       <div class="app-loading-scanline"></div>
     </div>
-    <div class="app-loading-compare-caption">capítulo <b>12</b> · painel <b>4</b> — comparando texto original com a tradução revisada</div>
 
     <div class="app-loading-core">
       <div class="app-loading-ring-wrap">
@@ -60,7 +72,7 @@
           <circle class="app-loading-ring-track" cx="32" cy="32" r="28"></circle>
           <circle class="app-loading-ring-fill" id="ringFill" cx="32" cy="32" r="28"></circle>
         </svg>
-        <div class="app-loading-ring-pct" id="ringPct">0%</div>
+        <div class="app-loading-ring-mark" aria-hidden="true"></div>
       </div>
       <div class="app-loading-core-body">
         <div class="app-loading-status-line" id="bootStatusLine" data-i18n="loading.stage.init"><span>iniciando interface</span></div>
@@ -72,11 +84,6 @@
     <div class="app-loading-nodes" id="bootNodes" aria-hidden="true"></div>
     <div class="app-loading-node-labels" id="bootNodeLabels" aria-hidden="true"></div>
 
-    <div class="app-loading-ticker">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v4a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z"/><path d="M19 11v1a7 7 0 0 1-14 0v-1M12 19v3"/></svg>
-      <div class="app-loading-ticker-text" id="tickerText"><span>o pipeline nunca aprova uma etapa crítica em silêncio.</span></div>
-    </div>
-
     <div class="app-loading-actions" id="bootActions" hidden>
       <button type="button" class="app-loading-action" id="bootRetry">Tentar novamente</button>
       <button type="button" class="app-loading-action" id="bootDiagnostics">Abrir diagnóstico</button>
@@ -84,7 +91,7 @@
 
     <div class="app-loading-footer-row">
       <span><i class="app-loading-dotpulse"></i><span id="bootFooterLabel">preparando interface</span></span>
-      <span class="app-loading-count" id="pageCount">0/8 etapas</span>
+      <span class="app-loading-count" id="pageCount">preparando etapas</span>
     </div>
   </div>
 </div>

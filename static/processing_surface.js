@@ -88,7 +88,7 @@
    * An abstract comic page: frame, speech balloon, detection boxes, halftone.
    * Entirely geometric — no character, no external asset, no reference art.
    */
-  function pagePlate(label, lines, tone) {
+  function pagePlate(label, tone) {
     var plate = el('div', 'ls-plate');
     plate.dataset.tone = tone || 'neutral';
 
@@ -140,12 +140,6 @@
     frame.appendChild(tail);
     art.appendChild(frame);
 
-    // Fictional local sample text, escaped by textContent.
-    var caption = el('div', 'ls-plate-lines');
-    (lines || []).forEach(function (text) {
-      caption.appendChild(el('span', 'ls-plate-line', text));
-    });
-    art.appendChild(caption);
     plate.appendChild(art);
     return plate;
   }
@@ -155,12 +149,17 @@
     panel.appendChild(el('h3', 'ls-panel-title', 'Prévia da tradução'));
 
     var pair = el('div', 'ls-plate-pair');
-    // Decorative sample only; never real chapter content.
-    pair.appendChild(pagePlate('Original', ['Where are we going?'], 'neutral'));
+    // Generic labels are used only when the view model has no language.
+    // The geometric plates carry no sample dialogue or factual metadata.
+    var sourceLabel = view.languages && view.languages.source
+      ? view.languages.source : 'Original';
+    var targetLabel = view.languages && view.languages.target
+      ? view.languages.target : 'Tradução';
+    pair.appendChild(pagePlate(sourceLabel, 'neutral'));
     var arrow = decorative(el('div', 'ls-plate-arrow'));
     arrow.appendChild(svg('0 0 24 24', ['M4 12h14', 'M13 6l6 6-6 6']));
     pair.appendChild(arrow);
-    pair.appendChild(pagePlate('PT-BR', ['Para onde estamos indo?'], 'accent'));
+    pair.appendChild(pagePlate(targetLabel, 'accent'));
     panel.appendChild(pair);
 
     var chips = el('ul', 'ls-chips');
@@ -183,7 +182,8 @@
     panel.setAttribute('role', 'status');
     panel.setAttribute('aria-live', 'polite');
 
-    var determinate = view.showPercent === true;
+    var determinate = view.progress && view.progress.mode === 'determinate';
+    var showPercent = determinate && view.showPercent === true;
 
     var dial = el('div', 'ls-dial');
     dial.dataset.mode = determinate ? 'determinate' : 'indeterminate';
@@ -210,7 +210,7 @@
     glyph.appendChild(svg('0 0 24 24', ICONS[GROUP_ICONS[view.activeGroupKey] || 'spark'] || ICONS.spark));
     dial.appendChild(glyph);
 
-    if (determinate) {
+    if (showPercent) {
       var pct = el('div', 'ls-dial-pct');
       pct.appendChild(el('span', 'ls-dial-num', String(view.progress.percent)));
       pct.appendChild(el('span', 'ls-dial-sign', '%'));

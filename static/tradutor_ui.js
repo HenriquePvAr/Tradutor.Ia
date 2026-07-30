@@ -291,12 +291,6 @@
     {sub: 'sincronizando comunidade e histórico', icon: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'},
     {sub: 'interface pronta', icon: '<path d="M20 6 9 17l-5-5"/>'},
   ];
-  const bootTips = [
-    'dica: termos glossados ficam marcados em vermelho no PDF final.',
-    'o pipeline nunca aprova uma etapa crítica em silêncio.',
-    'webtoons de rolagem longa são fatiados automaticamente por painel.',
-    'toda tradução revisada é salva em cache para reaproveitar depois.',
-  ];
   document.documentElement.dataset.shellState = document.documentElement.dataset.shellState || 'booting';
   const bootNodes = $('#bootNodes');
   const bootLabels = $('#bootNodeLabels');
@@ -349,15 +343,12 @@
     }
     const label = message || window.TradutorI18n?.t(bootStages[bounded]) || bootStages[bounded];
     const pct = ((bounded + 1) / bootStages.length) * 100;
-    const pctLabel = `${pct.toLocaleString('pt-BR', {maximumFractionDigits: 1})}%`;
     setBootText($('#bootStatusLine'), label);
-    $('#bootStatusMini') && ($('#bootStatusMini').textContent = bootStageMeta[bounded]?.sub || `${bounded + 1}/${bootStages.length} etapas`);
-    $('#ringPct') && ($('#ringPct').textContent = pctLabel);
+    $('#bootStatusMini') && ($('#bootStatusMini').textContent = bootStageMeta[bounded]?.sub || `${bounded + 1} de ${bootStages.length} etapas`);
     $('#ringFill') && ($('#ringFill').style.strokeDashoffset = String(175.9 - (pct / 100) * 175.9));
     $('#bootProgressBar') && ($('#bootProgressBar').style.width = `${pct}%`);
-    $('#pageCount') && ($('#pageCount').textContent = `${bounded + 1}/${bootStages.length} etapas`);
+    $('#pageCount') && ($('#pageCount').textContent = `${bounded + 1} de ${bootStages.length} etapas`);
     $('#bootFooterLabel') && ($('#bootFooterLabel').textContent = pct < 100 ? 'preparando interface' : 'pronto');
-    setBootText($('#tickerText'), bootTips[bounded % bootTips.length]);
     $$('#bootNodes [data-boot-node]').forEach((node, nodeIndex) => {
       node.classList.toggle('done', nodeIndex < bounded);
       node.classList.toggle('active', nodeIndex === bounded);

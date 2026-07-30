@@ -189,7 +189,7 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertIn("@media (max-width:900px){.auth-login-stage{display:none}", self.css)
         self.assertIn("min-height:100dvh", self.css)
 
-    def test_loading_uses_real_reference_images_and_original_structure(self):
+    def test_loading_uses_abstract_bootstrap_art_and_original_structure(self):
         boot = self.shell[: self.shell.index('<div class="shell">')]
         for expected in (
             "app-loading-page", "app-loading-frame", "app-loading-compare",
@@ -199,8 +199,10 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         ):
             self.assertIn(expected, boot)
         self.assertIn("app-loading-connector", self.ui_js + self.css)
-        self.assertIn('/static/assets/reference-ui/original.jpg', boot)
-        self.assertIn('/static/assets/reference-ui/translated.jpg', boot)
+        self.assertIn("app-loading-abstract-sheet", boot)
+        self.assertIn('aria-hidden="true"', boot)
+        self.assertNotIn('/static/assets/reference-ui/original.jpg', boot)
+        self.assertNotIn('/static/assets/reference-ui/translated.jpg', boot)
         surface_css = self.css[self.css.index("full-page auth/loading surfaces"):self.css.index("/* ---------- auth ---------- */")]
         self.assertNotIn("filter:url(#inkRough)", surface_css)
         self.assertNotIn("rl-compare::before", surface_css)

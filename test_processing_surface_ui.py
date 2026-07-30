@@ -127,6 +127,29 @@ class TwoModesRenderDifferently(unittest.TestCase):
         for word in ("OCR", "Tradução", "PDF"):
             self.assertNotIn(word, out["text"], word)
 
+    def test_empty_bootstrap_has_no_factual_preview_or_language_code(self):
+        out = render({"mode": "bootstrap", "status": "running", "stage": "session"})
+        for value in ("capítulo 12", "painel 4", "PT-BR", "ORIGINAL",
+                      "Where are we going?", "Para onde estamos indo?"):
+            self.assertNotIn(value, out["text"], value)
+
+    def test_bootstrap_real_stage_progress_is_counted_without_isolated_percent(self):
+        out = render({
+            "mode": "bootstrap", "status": "running", "stage": "environment",
+            "progress": {"completed_stages": 2, "total_stages": 8},
+        })
+        self.assertIn("2 de 8 etapas", out["text"])
+        self.assertNotIn("25%", out["text"])
+        self.assertIn("[aria-valuenow=25]", out["tree"])
+
+    def test_bootstrap_without_total_is_indeterminate(self):
+        out = render({
+            "mode": "bootstrap", "status": "running", "stage": "environment",
+            "progress": {"completed_stages": 2},
+        })
+        self.assertIn("is-indeterminate", out["tree"])
+        self.assertNotIn("aria-valuenow", out["tree"])
+
 
 @unittest.skipUnless(NODE, "node is required to execute the renderer")
 class ProgressIsDrawnOnlyWhenReal(unittest.TestCase):
@@ -244,6 +267,11 @@ class AccessibilityStructure(unittest.TestCase):
         hidden = out["tree"].count("[aria-hidden=true]")
         self.assertGreater(hidden, 5, "illustration and markers must be hidden")
 
+    def test_bootstrap_decoration_is_hidden_and_contains_no_factual_numbers(self):
+        out = render({"mode": "bootstrap", "status": "running", "stage": "session"})
+        self.assertIn("[aria-hidden=true]", out["tree"])
+        self.assertNotRegex(out["text"], r"\b(?:capítulo|painel|página)\s+\d+\b")
+
     def test_svg_illustration_is_never_focusable(self):
         out = render(RUNNING)
         # No tabindex is introduced anywhere by the renderer.
@@ -297,6 +325,20 @@ class RendererDecidesNothing(unittest.TestCase):
                        "REAL COFFEE", "shadow_slave", "http://", "https://",
                        "C:\\Users", "job_id", "owner_id", "run_id"):
             self.assertNotIn(needle, text, needle)
+
+    def test_pipeline_preview_has_no_factual_fallbacks(self):
+        without_languages = render({"status": "running", "stage": "translate"})
+        for value in ("PT-BR", "Where are we going?", "Para onde estamos indo?"):
+            self.assertNotIn(value, without_languages["text"], value)
+        self.assertIn("Original", without_languages["text"])
+        self.assertIn("Tradução", without_languages["text"])
+
+        with_languages = render({
+            "status": "running", "stage": "translate",
+            "source_language": "ko", "target_language": "pt-br",
+        })
+        self.assertIn("KO", with_languages["text"])
+        self.assertIn("PT-BR", with_languages["text"])
 
 
 class StylesheetCoversLayoutAndMotion(unittest.TestCase):
@@ -411,6 +453,19 @@ class BootstrapIsWiredToTheSurface(unittest.TestCase):
         self.assertIn("completed_stages", self.body)
         self.assertIn("total_stages", self.body)
         self.assertIn("bootStages.length", self.body)
+
+    def test_legacy_boot_shell_contains_no_factual_placeholders(self):
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        for value in ("capítulo <b>12</b>", "painel <b>4</b>",
+                      'app-loading-tag-left">original',
+                      'app-loading-tag-right">pt-br', 'id="ringPct">0%'):
+            self.assertNotIn(value, shell, value)
+
+    def test_boot_stage_does_not_write_an_isolated_percentage(self):
+        stage = self.text[self.text.index("function setBootStage"):
+                          self.text.index("function renderBootstrapSurface")]
+        self.assertNotIn("ringPct", stage)
+        self.assertIn(" de ${bootStages.length} etapas", stage)
 
     def test_no_timer_drives_the_bootstrap_percentage(self):
         for forbidden in ("setInterval", "setTimeout", "Date.now", "performance.now"):

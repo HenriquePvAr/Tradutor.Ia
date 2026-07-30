@@ -254,8 +254,9 @@
       description: description,
       tone: tone,
       progress: progress,
-      // Explicit so a view never has to infer whether a number may be drawn.
-      showPercent: progress.mode === 'determinate',
+      // Bootstrap may expose real stage counts and a proportional bar, but a
+      // large isolated percentage looks like chapter-processing progress.
+      showPercent: mode !== MODE_BOOTSTRAP && progress.mode === 'determinate',
       isTerminal: Boolean(terminal),
       needsReview: status === STATUS_REVIEW,
       failed: status === STATUS_FAILED || status === 'error',
