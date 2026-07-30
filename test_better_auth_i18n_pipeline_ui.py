@@ -166,7 +166,7 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertNotIn("authModalOverlay", self.auth_js)
         self.assertNotIn("authModalClose", self.auth_js)
 
-    def test_login_has_single_full_page_form_and_prefixed_reference_classes(self):
+    def test_login_has_single_full_page_form_and_prefixed_visual_classes(self):
         self.assertEqual(self.shell.count("data-auth-login"), 1)
         self.assertEqual(self.shell.count('id="authForm"'), 1)
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
@@ -178,16 +178,48 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
             self.assertNotIn(generic, auth_fragment, generic)
         for expected in (
             "auth-login-stage", "auth-login-side", "auth-login-card",
-            "auth-login-compare", "auth-marketing-pipeline", "auth-login-submit",
+            "auth-login-illustration", "auth-marketing-pipeline", "auth-login-submit",
         ):
             self.assertIn(expected, auth_fragment)
 
-    def test_login_responsive_contract_matches_reference_breakpoint(self):
+    def test_login_responsive_contract_keeps_mobile_form_first(self):
         self.assertIn(".auth-login-page{position:fixed;inset:0", self.css)
         self.assertIn(".auth-login-stage{position:relative;flex:1.2", self.css)
         self.assertIn(".auth-login-side{flex:1", self.css)
-        self.assertIn("@media (max-width:900px){.auth-login-stage{display:none}", self.css)
+        self.assertIn("order:1", self.css)
+        self.assertIn("order:2", self.css)
+        responsive_v2 = self.css[self.css.index("authentication experience v2"):]
+        self.assertIn(".auth-login-stage{order:2;display:flex", responsive_v2)
         self.assertIn("min-height:100dvh", self.css)
+
+    def test_login_uses_only_original_inline_decorative_art(self):
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        self.assertNotIn("/static/assets/reference-ui/", auth_fragment)
+        self.assertNotIn("<img", auth_fragment)
+        self.assertIn("auth-login-illustration", auth_fragment)
+        self.assertIn('aria-hidden="true"', auth_fragment)
+        self.assertIn("auth-visual-page", auth_fragment)
+        self.assertIn("auth-visual-balloon", auth_fragment)
+        self.assertIn("auth-visual-ocr", auth_fragment)
+
+    def test_login_form_preserves_accessible_contract(self):
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        for protected_id in (
+            "authForm", "authEmail", "authPassword", "authTogglePassword",
+            "authRemember", "authError", "authNote", "authSubmit",
+        ):
+            self.assertEqual(auth_fragment.count(f'id="{protected_id}"'), 1)
+        self.assertIn('autocomplete="email"', auth_fragment)
+        self.assertIn('autocomplete="current-password"', auth_fragment)
+        self.assertIn('aria-live="assertive"', auth_fragment)
+        self.assertIn('aria-pressed="false"', auth_fragment)
+        self.assertIn("toggle.setAttribute('aria-pressed'", self.auth_js)
+
+    def test_reduced_motion_visual_hook_is_explicit_and_loopback_only(self):
+        self.assertIn("visual_auth_reduced_motion", self.auth_js)
+        self.assertIn("window.__tradutorVisualTestEnabled === true", self.auth_js)
+        self.assertIn("['127.0.0.1', 'localhost', '::1']", self.auth_js)
+        self.assertIn("dataset.visualReducedMotion = '1'", self.auth_js)
 
     def test_loading_uses_abstract_bootstrap_art_and_original_structure(self):
         boot = self.shell[: self.shell.index('<div class="shell">')]
@@ -251,7 +283,7 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertNotIn("bootEl?.addEventListener('click'", self.ui_js)
         self.assertIn("O carregamento demorou para responder.", self.ui_js)
 
-    def test_auth_compare_slider_is_bound_without_extra_submit_listener(self):
+    def test_auth_visual_animation_is_bound_without_extra_submit_listener(self):
         self.assertEqual(self.auth_js.count("$('#authForm')?.addEventListener('submit'"), 1)
         self.assertIn("authCompare", self.auth_js)
         self.assertIn("authCompareHandle", self.auth_js)
@@ -261,12 +293,12 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertNotIn("compare.addEventListener('mousedown'", self.auth_js)
         self.assertNotIn("touchstart", self.auth_js)
         self.assertIn("pointer-events:none", self.css)
-        self.assertIn("object-fit:contain;object-position:top center", self.css)
+        self.assertIn("auth-login-illustration", self.css)
 
     def test_auth_marketing_pipeline_ping_pongs_and_is_not_interactive(self):
         self.assertIn('id="authMarketingPipeline"', self.shell)
-        self.assertEqual(self.shell.count("data-auth-pipeline-step"), 6)
-        self.assertIn("sequence = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0]", self.auth_js)
+        self.assertEqual(self.shell.count("data-auth-pipeline-step"), 4)
+        self.assertIn("sequence = [0, 1, 2, 3, 2, 1, 0]", self.auth_js)
         self.assertIn("__tradutorAuthPipelineTimer", self.auth_js)
         self.assertIn("auth-marketing-pipeline{", self.css)
         self.assertIn("pointer-events:none", self.css)
