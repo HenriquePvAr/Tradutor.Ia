@@ -182,11 +182,11 @@ export function createAuthPresentationController({
   }
 
   function handlePointerMove(event) {
-    if (!pointerEnabled || !shell) return;
+    if (!pointerEnabled || !shell?.getBoundingClientRect) return;
     // Read here, write inside the frame: layout reads and style writes never
     // interleave on the same tick.
     const rect = shell.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
+    if (!rect?.width || !rect?.height) return;
     const x = clamp01((event.clientX - rect.left) / rect.width);
     const y = clamp01((event.clientY - rect.top) / rect.height);
     if (pointerFrame) windowRef.cancelAnimationFrame?.(pointerFrame);
@@ -207,9 +207,11 @@ export function createAuthPresentationController({
     const wide = mediaQuery(`(min-width: ${POINTER_MIN_WIDTH}px)`);
     // No media support at all means no evidence of a fine pointer: stay off.
     const next = Boolean(fine?.matches) && Boolean(wide?.matches) && !prefersReducedMotion();
+    // Always publish the attribute: the first evaluation is a change from
+    // "unknown", and CSS needs to know the pointer layer is off from the start.
+    if (shell) shell.dataset.pointer = next ? 'active' : 'disabled';
     if (next === pointerEnabled) return;
     pointerEnabled = next;
-    if (shell) shell.dataset.pointer = next ? 'active' : 'disabled';
     if (!next) resetPointer();
   }
 
