@@ -2991,3 +2991,28 @@ html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login
 .auth-login-shell[data-viewport-height="compact"] .auth-login-submit{margin-top:4px;}
 .auth-login-shell[data-viewport-height="compact"] .auth-login-privacy{margin-top:14px;}
 .auth-login-shell[data-viewport-height="compact"] .auth-local-test-notice{margin-bottom:10px;}
+
+/* A wide, low window is the one case where the card and the hero both fit
+   horizontally but not vertically. 1366x650 leaves 499px of viewport and the
+   primary action ended 54px past it. The height comes out of padding, gaps and
+   decoration only: fields stay at 52px, the submit at 51px and the password
+   toggle at 44px, all above the 44/48px floors, and nothing is hidden. */
+@media (min-width: 1100px) and (max-height: 700px){
+  .auth-login-shell[data-viewport-height="compact"],
+  .auth-login-shell{--auth-shell-pad:clamp(8px,1.2vh,14px);}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-card{padding-block:clamp(14px,2.2vh,22px);}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-card-topbar{margin-bottom:10px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-lead{margin-bottom:12px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-privacy{margin-top:10px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-local-test-notice{margin-bottom:8px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-status-dot{margin-top:6px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-compare.auth-login-illustration{
+    height:clamp(190px,26vh,260px);margin-bottom:30px;
+  }
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-preservation{margin-top:8px;padding:7px 11px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-product-benefits{margin-top:8px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-product-benefits span{min-height:20px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-flow-intro{margin-top:12px;}
+  /* Decoration gives up its height before any content does. */
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-watermark{opacity:.5;}
+}
