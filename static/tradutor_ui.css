@@ -1721,15 +1721,23 @@
     linear-gradient(135deg,rgba(16,24,40,.62),rgba(6,11,20,.9))}
 .auth-login-card{position:relative;max-width:510px;padding:46px 48px;border-radius:26px;background:linear-gradient(145deg,rgba(18,26,43,.96),rgba(7,15,27,.96));border:1px solid rgba(255,107,122,.48);box-shadow:-14px 0 55px rgba(255,59,77,.12),20px 22px 70px rgba(0,0,0,.48),8px 8px 42px rgba(0,229,255,.035)}
 .auth-login-card::before{content:"";position:absolute;inset:-1px;border-radius:inherit;border-left:2px solid rgba(255,59,77,.9);border-top:1px solid rgba(255,107,122,.7);pointer-events:none}
-.auth-login-card-topbar{display:flex;flex-direction:column;align-items:center;margin-bottom:32px}
+/* The card separated its blocks by 16, 32, 8, 31 and 25px. The 25/31/32 group
+   is three values the eye cannot tell apart as steps but does register as
+   sloppiness, and inside the form a gap of 18px was being corrected by a -2px
+   and a +6px margin. Everything now sits on one three-step scale, 8 / 18 / 28:
+   8 within a block, 18 between siblings, 28 between sections. */
+.auth-local-test-notice{margin-bottom:18px}
+.auth-login-card-topbar{display:flex;flex-direction:column;align-items:center;margin-bottom:28px}
 .auth-login-brand{display:flex;align-items:center;gap:11px}.auth-login-brand svg{width:40px;height:40px;fill:none;stroke:var(--auth-red);stroke-width:2}
 .auth-login-brand strong{font:800 27px 'Plus Jakarta Sans',sans-serif;letter-spacing:-.7px;color:#fff}.auth-login-brand strong span{color:var(--auth-red)}
-.auth-login-status-dot{margin-top:12px}.auth-login-heading{text-align:center;font-size:31px}.auth-login-lead{text-align:center;margin-bottom:31px;font-size:14px}
+.auth-login-status-dot{margin-top:12px}.auth-login-heading{text-align:center;font-size:31px}.auth-login-lead{text-align:center;margin-bottom:28px;font-size:14px}
 .auth-login-field input{min-height:54px;border-radius:12px;background:rgba(4,11,21,.72);border-color:rgba(154,164,178,.22)}
 .auth-login-leading{left:17px}.auth-login-field input{padding-left:48px}.auth-login-toggle-pw{min-width:44px;min-height:44px}
-.auth-login-row{margin-top:-2px}.auth-login-remember{min-height:44px}.auth-login-remember input{width:17px;height:17px}
-.auth-login-submit{min-height:56px;border-radius:12px;font-size:15px;background:linear-gradient(100deg,#ff3b4d,#f52337);box-shadow:0 8px 28px rgba(255,59,77,.3)}
-.auth-login-footer{margin-top:22px}.auth-login-privacy{display:flex;align-items:center;justify-content:center;gap:9px;margin-top:25px;color:#727e90;font-size:11px}
+.auth-login-row{margin-top:0}.auth-login-remember{min-height:44px}.auth-login-remember input{width:17px;height:17px}
+/* +10px on the form's own 18px gap: the primary action gets the full section
+   step, so it reads as the end of the form rather than as one more field. */
+.auth-login-submit{margin-top:10px;min-height:56px;border-radius:12px;font-size:15px;background:linear-gradient(100deg,#ff3b4d,#f52337);box-shadow:0 8px 28px rgba(255,59,77,.3)}
+.auth-login-footer{margin-top:28px}.auth-login-privacy{display:flex;align-items:center;justify-content:center;gap:9px;margin-top:28px;color:#727e90;font-size:11px}
 .auth-login-privacy svg{width:18px;height:18px;fill:none;stroke:#727e90;stroke-width:1.5}
 @media(max-width:1420px){
   .auth-login-stage{padding:28px 38px}.auth-login-title{font-size:38px}.auth-login-subtitle{font-size:13px}
