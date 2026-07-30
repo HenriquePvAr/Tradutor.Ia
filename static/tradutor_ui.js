@@ -3620,6 +3620,45 @@
   });
   window.addEventListener('tradutor:auth-changed', loadModeration);
 
+  // The single place where real state becomes a loading view. It only forwards
+  // fields; every decision about wording, progress, duration, status and
+  // available actions belongs to loading_view.js, and the renderer only draws
+  // what that returns.
+  function renderLoadingSurface(state, progress, options = {}) {
+    const view = window.TradutorLoadingView;
+    const surface = window.TradutorProcessingSurface;
+    const root = $('#loadingSurface');
+    if (!view || !surface || !root) return;
+    if (!state || state.status === 'ready') { root.hidden = true; return; }
+    root.hidden = false;
+
+    const record = state.record || {};
+    const reducedMotion = Boolean(window.matchMedia
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+    const model = view.mapJobStateToLoadingView({
+      mode: options.mode === 'bootstrap' ? 'bootstrap' : 'pipeline',
+      status: state.status,
+      stage: state.visualStage || state.stage,
+      reason_code: state.reasonCode,
+      message: state.message,
+      started_at: state.createdAt,
+      updated_at: state.updatedAt,
+      source_language: record.source_language,
+      target_language: record.target_language,
+      pending_review_count: state.pendingReview,
+      // Only what the backend reported; absent stays absent.
+      progress: progress || {},
+      events: Array.isArray(record.events) ? record.events : [],
+      result_available: Boolean(record.output_ready || record.result_available),
+      pdf_available: Boolean(record.pdf_path || record.pdf_available),
+      retry_available: Boolean(record.retry_available),
+      local_test: Boolean(window.__tradutorLocalTest),
+      reduced_motion: reducedMotion,
+    });
+    surface.renderProcessingSurface(root, model);
+  }
+
   function renderProgress(progress, pipelineState = null) {
     const state = pipelineState || buildPipelineState({status: appState.status}, progress);
     const runtimeKey = state.stage || progress.stage_key || 'idle';
@@ -3661,6 +3700,7 @@
       sfxPop(runtimeKey);
     }
     renderPipelinePreview(state);
+    renderLoadingSurface(state, progress);
     $('#scanline')?.classList.toggle('run', appState.status === 'running' && ['ocr', 'classification', 'render'].includes(runtimeKey));
     const summary = $('#runSummary');
     if (appState.status === 'running') {

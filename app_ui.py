@@ -54,6 +54,9 @@ AUTH_UI_ASSET = ROOT / "static" / "auth_ui.js"
 AUTH_PROVIDER_ASSET = ROOT / "static" / "auth_provider.js"
 TRADUTOR_UI_ASSET = ROOT / "static" / "tradutor_ui.js"
 TRADUTOR_CSS_ASSET = ROOT / "static" / "tradutor_ui.css"
+LOADING_SURFACE_CSS_ASSET = ROOT / "static" / "loading_surface.css"
+LOADING_VIEW_ASSET = ROOT / "static" / "loading_view.js"
+PROCESSING_SURFACE_ASSET = ROOT / "static" / "processing_surface.js"
 SOCIAL_COMMUNITY_ASSET = ROOT / "static" / "social_community.js"
 I18N_ASSETS = [
     ROOT / "static" / "i18n" / "pt-BR.js",
@@ -1652,6 +1655,7 @@ def index() -> None:
     # stylesheet are sufficient, and remote font hosts would make a localhost
     # page perform an unexpected external request on every reload.
     ui.add_head_html(f'<link rel="stylesheet" href="{_asset_url(TRADUTOR_CSS_ASSET)}">')
+    ui.add_head_html(f'<link rel="stylesheet" href="{_asset_url(LOADING_SURFACE_CSS_ASSET)}">')
     ui.add_body_html(shell)
     ui.add_body_html(
         "<script>"
@@ -1660,6 +1664,10 @@ def index() -> None:
     )
     for asset in I18N_ASSETS:
         ui.add_body_html(f'<script src="{_asset_url(asset)}" defer></script>')
+    # The view model must exist before the renderer, and both before the main
+    # bundle. All are deferred, so source order is execution order.
+    ui.add_body_html(f'<script src="{_asset_url(LOADING_VIEW_ASSET)}" defer></script>')
+    ui.add_body_html(f'<script src="{_asset_url(PROCESSING_SURFACE_ASSET)}" defer></script>')
     ui.add_body_html(f'<script src="{_asset_url(TRADUTOR_UI_ASSET)}" defer></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(SOCIAL_COMMUNITY_ASSET)}"></script>')
