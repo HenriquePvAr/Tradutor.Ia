@@ -56,6 +56,7 @@ TRADUTOR_UI_ASSET = ROOT / "static" / "tradutor_ui.js"
 TRADUTOR_CSS_ASSET = ROOT / "static" / "tradutor_ui.css"
 LOADING_SURFACE_CSS_ASSET = ROOT / "static" / "loading_surface.css"
 LOADING_VIEW_ASSET = ROOT / "static" / "loading_view.js"
+PIPELINE_HARNESS_ASSET = ROOT / "static" / "pipeline_loading_harness.js"
 PROCESSING_SURFACE_ASSET = ROOT / "static" / "processing_surface.js"
 SOCIAL_COMMUNITY_ASSET = ROOT / "static" / "social_community.js"
 I18N_ASSETS = [
@@ -1669,6 +1670,8 @@ def index() -> None:
     ui.add_body_html(f'<script src="{_asset_url(LOADING_VIEW_ASSET)}" defer></script>')
     ui.add_body_html(f'<script src="{_asset_url(PROCESSING_SURFACE_ASSET)}" defer></script>')
     ui.add_body_html(f'<script src="{_asset_url(TRADUTOR_UI_ASSET)}" defer></script>')
+    if visual_test_enabled:
+        ui.add_body_html(f'<script src="{_asset_url(PIPELINE_HARNESS_ASSET)}" defer></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(SOCIAL_COMMUNITY_ASSET)}"></script>')
 

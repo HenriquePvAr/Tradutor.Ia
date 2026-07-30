@@ -129,6 +129,7 @@
       return !UNSAFE.test(blob);
     }).map(function (event) {
       return {
+        seq: isNumber(event.seq) ? Number(event.seq) : null,
         at: String(event.time || event.at || ''),
         stage: String(event.stage || ''),
         status: String(event.kind || event.status || ''),
@@ -138,7 +139,7 @@
     }).filter(function (event) {
       // An entry with nothing to say is noise, not evidence.
       return event.message !== '' || event.reasonCode !== '';
-    });
+    }).slice(-30);
   }
 
   /** Where each visual group stands, derived from the active stage. */
@@ -182,9 +183,9 @@
   };
 
   var TERMINAL_COPY = {
-    finished: ['Concluído', 'A tradução foi processada.', 'success'],
+    finished: ['Tradução processada', 'Seu capítulo foi processado.', 'success'],
     review_completed: ['Revisão concluída', 'Os itens pendentes foram resolvidos.', 'success'],
-    review_required: ['Tradução processada', 'Alguns itens precisam da sua revisão.', 'review'],
+    review_required: ['Tradução processada', 'Alguns trechos precisam da sua revisão.', 'review'],
     failed: ['A operação não pôde continuar', '', 'failed'],
     error: ['A operação não pôde continuar', '', 'failed'],
     cancelled: ['Operação cancelada', 'Nada foi aplicado.', 'neutral']
@@ -261,7 +262,8 @@
       needsReview: status === STATUS_REVIEW,
       failed: status === STATUS_FAILED || status === 'error',
       cancelled: status === STATUS_CANCELLED,
-      reasonCode: String(state.reason_code || ''),
+      reasonCode: UNSAFE.test(String(state.reason_code || ''))
+        ? '' : String(state.reason_code || ''),
       duration: duration,
       groups: groups,
       events: sanitiseEvents(state.events),
@@ -284,6 +286,7 @@
       hasResult: Boolean(state.result_available),
       hasPdf: Boolean(state.pdf_available),
       canRetry: Boolean(state.retry_available),
+      canOpenReview: Boolean(state.review_available),
       ariaLabel: title + (description ? '. ' + description : '')
     };
   }

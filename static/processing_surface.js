@@ -263,6 +263,10 @@
     var panel = el('section', 'ls-panel-box ls-activity');
     panel.appendChild(el('h3', 'ls-panel-title', 'Atividade ao vivo'));
 
+    var disclosure = el('details', 'ls-activity-disclosure');
+    disclosure.setAttribute('open', '');
+    disclosure.appendChild(el('summary', null, 'Etapas e eventos'));
+    var body = el('div', 'ls-activity-body');
     var list = el('ul', 'ls-activity-list');
     (view.groups || []).forEach(function (group) {
       var item = el('li', 'ls-activity-item');
@@ -274,7 +278,7 @@
         STATE_WORDS[group.status] || group.status));
       list.appendChild(item);
     });
-    panel.appendChild(list);
+    body.appendChild(list);
 
     if ((view.events || []).length) {
       var details = el('details', 'ls-events');
@@ -282,6 +286,7 @@
       var log = el('ul', 'ls-events-list');
       view.events.forEach(function (event) {
         var row = el('li', 'ls-event');
+        if (event.seq != null) row.appendChild(el('span', 'ls-event-seq', String(event.seq)));
         if (event.at) row.appendChild(el('time', 'ls-event-at', event.at));
         if (event.stage) row.appendChild(el('span', 'ls-event-stage', event.stage));
         if (event.message) row.appendChild(el('span', 'ls-event-message', event.message));
@@ -289,8 +294,10 @@
         log.appendChild(row);
       });
       details.appendChild(log);
-      panel.appendChild(details);
+      body.appendChild(details);
     }
+    disclosure.appendChild(body);
+    panel.appendChild(disclosure);
     return panel;
   }
 
@@ -354,6 +361,8 @@
 
   function footer(view) {
     var facts = [];
+    facts.push(['progresso', view.progress && view.progress.mode === 'determinate'
+      ? 'determinado' : 'indeterminado']);
     if (view.localTest) facts.push(['ambiente', 'local de teste']);
     if (view.languages && view.languages.source) facts.push(['origem', view.languages.source]);
     if (view.languages && view.languages.target) facts.push(['destino', view.languages.target]);
@@ -398,7 +407,7 @@
       actions.appendChild(action('open-result', 'ABRIR RESULTADO', 'primary'));
     }
     if (view.hasPdf) actions.appendChild(action('open-pdf', 'ABRIR PDF', 'ghost'));
-    if (view.needsReview) actions.appendChild(action('open-review', 'ABRIR REVISÃO', 'primary'));
+    if (view.canOpenReview) actions.appendChild(action('open-review', 'ABRIR REVISÃO', 'primary'));
     if (view.canRetry) actions.appendChild(action('retry', 'TENTAR NOVAMENTE', 'primary'));
     if (view.failed && !view.canRetry) {
       panel.appendChild(el('p', 'ls-no-action',
@@ -440,9 +449,9 @@
     grid.appendChild(view.isTerminal ? terminalPanel(view) : progressPanel(view));
     if (!bootstrap) grid.appendChild(activityPanel(view));
     else grid.appendChild(activityPanel({groups: view.groups, events: []}));
+    grid.appendChild(stageBand(view));
     fragment.appendChild(grid);
 
-    fragment.appendChild(stageBand(view));
     if (!bootstrap) fragment.appendChild(banner());
     var foot = footer(view);
     if (foot) fragment.appendChild(foot);

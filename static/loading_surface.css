@@ -86,6 +86,7 @@
   align-items: start;
   margin-top: var(--ls-space-6);
 }
+.ls-band { grid-column: 1 / -1; }
 .ls-panel-box {
   background: var(--ls-panel);
   border: 1px solid var(--ls-line);
@@ -226,6 +227,7 @@
 .ls-events summary { cursor: pointer; font-size: 10.5px; text-transform: uppercase;
   letter-spacing: 0.12em; color: var(--ls-ink-faint); }
 .ls-events summary:focus-visible { outline: 2px solid var(--ls-accent); outline-offset: 2px; }
+.ls-activity-disclosure > summary { display: none; }
 .ls-events-list { list-style: none; margin: var(--ls-space-2) 0 0; padding: 0;
   display: grid; gap: var(--ls-space-1); max-height: 190px; overflow: auto; }
 .ls-event { display: flex; gap: var(--ls-space-2); flex-wrap: wrap; align-items: baseline;
@@ -298,6 +300,16 @@
 .ls-foot-key { color: var(--ls-ink-faint); text-transform: uppercase; letter-spacing: 0.1em; }
 .ls-foot-value { color: var(--ls-ink-dim); font-family: 'JetBrains Mono', ui-monospace, monospace; }
 
+/* The visual harness is server-gated and loopback-only. It takes over the
+   viewport without changing the production container hierarchy. */
+.ls-surface[data-pipeline-visual-harness] {
+  position: fixed;
+  inset: 0;
+  z-index: 10020;
+  min-height: 100dvh;
+  overflow-y: auto;
+}
+
 /* ---------- bootstrap mode is deliberately smaller ---------- */
 
 .ls-surface[data-ls-mode='bootstrap'] .ls-grid { grid-template-columns: minmax(0, 1fr); max-width: 560px; margin-inline: auto; }
@@ -342,6 +354,18 @@
   .ls-dial { width: min(150px, 52vw); }
   .ls-actions { width: 100%; }
   .ls-action { flex: 1 1 100%; }
+  .ls-activity-disclosure > summary {
+    display: block;
+    min-height: 44px;
+    padding: 12px 0;
+    cursor: pointer;
+    color: var(--ls-ink-dim);
+    font-weight: 650;
+  }
+  .ls-activity-disclosure > summary:focus-visible {
+    outline: 2px solid var(--ls-accent);
+    outline-offset: 3px;
+  }
 }
 
 /* ---------- reduced motion ---------- */
@@ -352,3 +376,9 @@
   [data-status='active'] .ls-marker::after { animation: none; }
   .ls-bar-fill, .ls-dial-fill { transition: none; }
 }
+
+html[data-pipeline-reduced-motion='1'] .ls-bar.is-indeterminate .ls-bar-band { animation: none; width: 0; }
+html[data-pipeline-reduced-motion='1'] .ls-dial[data-mode='indeterminate'] .ls-dial-svg { animation: none; }
+html[data-pipeline-reduced-motion='1'] [data-status='active'] .ls-marker::after { animation: none; }
+html[data-pipeline-reduced-motion='1'] .ls-bar-fill,
+html[data-pipeline-reduced-motion='1'] .ls-dial-fill { transition: none; }

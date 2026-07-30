@@ -3692,6 +3692,7 @@
       result_available: Boolean(record.output_folder),
       pdf_available: Boolean(record.pdf_path),
       retry_available: Boolean(record.recoverable),
+      review_available: Boolean(record.review_available),
       reduced_motion: reducedMotion,
       // Source and target language are not part of the job record today, so the
       // languages row stays absent rather than guessed.
