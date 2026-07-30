@@ -256,6 +256,18 @@
       languages: languages,
       pendingReviewCount: isNumber(state.pending_review_count)
         ? Number(state.pending_review_count) : null,
+      // Environment facts, passed through rather than sniffed: the renderer must
+      // never infer "local test" from a hostname or a port.
+      localTest: Boolean(state.local_test),
+      reducedMotion: Boolean(state.reduced_motion),
+      activeGroupKey: (function () {
+        var active = null;
+        (PIPELINE_GROUPS.concat(BOOTSTRAP_GROUPS)).forEach(function (group) {
+          if (Array.isArray(group.stages) && group.stages.indexOf(stage) >= 0) active = group.key;
+          else if (!group.stages && group.key === stage) active = group.key;
+        });
+        return active;
+      })(),
       // A result is offered only when the backend says one exists.
       hasResult: Boolean(state.result_available),
       hasPdf: Boolean(state.pdf_available),
