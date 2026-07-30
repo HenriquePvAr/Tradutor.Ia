@@ -154,6 +154,7 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.shell = read("ui/ui_shell.html")
         self.css = read("static/tradutor_ui.css")
         self.auth_js = read("static/auth_ui.js")
+        self.auth_presentation_js = read("static/auth_presentation.js")
         self.ui_js = read("static/tradutor_ui.js")
 
     def test_login_is_full_page_surface_not_modal(self):
@@ -371,6 +372,53 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertNotIn("touchstart", self.auth_js)
         self.assertIn("pointer-events:none", self.css)
         self.assertIn("auth-login-illustration", self.css)
+
+    def test_comparison_controls_are_accessible_and_balanced_without_javascript(self):
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        self.assertIn('data-interaction-state="idle"', auth_fragment)
+        self.assertIn('data-compare-state="both"', auth_fragment)
+        self.assertEqual(auth_fragment.count('data-auth-compare='), 3)
+        self.assertIn('role="group" aria-label="Destaque da comparação"', auth_fragment)
+        self.assertIn('data-auth-compare="both" aria-pressed="true"', auth_fragment)
+        self.assertIn('id="authCompareStatus" aria-live="polite"', auth_fragment)
+        self.assertEqual(auth_fragment.count('type="submit"'), 1)
+
+    def test_presentation_module_has_no_authentication_side_effects(self):
+        source = self.auth_presentation_js
+        self.assertIn("createAuthPresentationController", source)
+        self.assertIn("focusin", source)
+        self.assertIn("focusout", source)
+        self.assertIn("queueMicrotask", source)
+        self.assertIn("prefers-reduced-motion: reduce", source)
+        for forbidden in (
+            "fetch(", "signIn", "signUp", "Authorization", "accessToken",
+            "addEventListener('submit'", "setTimeout(", "MutationObserver",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_auth_controller_reflects_real_states_without_duplicate_submit(self):
+        self.assertIn("import('./auth_presentation.js')", self.auth_js)
+        self.assertIn("authPresentation?.reflectAuthState(state)", self.auth_js)
+        self.assertIn("optional_module_unavailable", self.auth_js)
+        self.assertIn("visual_auth_without_presentation", self.auth_js)
+        self.assertIn("window.__tradutorVisualTestEnabled === true", self.auth_js)
+        self.assertIn("['127.0.0.1', 'localhost', '::1']", self.auth_js)
+        self.assertEqual(self.auth_js.count("addEventListener('submit'"), 1)
+        self.assertIn("setAuthState('auth_submitting')", self.auth_js)
+        self.assertIn("setSubmitLoading(submit, true, 'Entrando…')", self.auth_js)
+        self.assertIn("button.setAttribute('aria-disabled', String(isLoading))", self.auth_js)
+        self.assertIn("form?.setAttribute('aria-busy', String(isLoading))", self.auth_js)
+        self.assertIn('form[aria-busy="true"]', self.css)
+
+    def test_interactive_login_has_low_height_and_mobile_contracts(self):
+        interactive = self.css[self.css.index("purposeful authentication interaction"):]
+        compact = re.sub(r"\s+", "", interactive)
+        self.assertIn("@media(min-width:901px)and(max-height:820px)", compact)
+        self.assertIn("@media(min-width:901px)and(max-height:680px)", compact)
+        self.assertIn("@media(max-width:520px)", compact)
+        self.assertIn("scroll-padding-bottom:max(24px,env(safe-area-inset-bottom))", compact)
+        self.assertIn("@media(prefers-reduced-motion:reduce)", compact)
+        self.assertIn(".auth-login-submit:focus-visible", self.css)
 
     def test_product_flow_is_static_and_not_presented_as_active_pipeline(self):
         self.assertIn('id="authMarketingPipeline"', self.shell)
