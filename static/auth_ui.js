@@ -56,8 +56,12 @@ function setSubmitLabel(button, label) {
 
 function setSubmitLoading(button, loading, label) {
   if (!button) return;
-  button.classList.toggle('loading', Boolean(loading));
-  button.disabled = Boolean(loading);
+  const isLoading = Boolean(loading);
+  const form = button.form || button.closest('form');
+  button.classList.toggle('loading', isLoading);
+  button.disabled = isLoading;
+  button.setAttribute('aria-disabled', String(isLoading));
+  form?.setAttribute('aria-busy', String(isLoading));
   setSubmitLabel(button, label);
 }
 
@@ -93,6 +97,24 @@ function authTrace(event, fields = {}) {
 }
 
 window.__tradutorAuthTraceEvent = authTrace;
+let authPresentation = null;
+const presentationVisualTestDisabled = (
+  window.__tradutorVisualTestEnabled === true
+  && ['127.0.0.1', 'localhost', '::1'].includes(window.location.hostname)
+  && new URLSearchParams(window.location.search).get('visual_auth_without_presentation') === '1'
+);
+if (presentationVisualTestDisabled) {
+  authTrace('auth_presentation_unavailable', {code: 'visual_test_disabled'});
+} else {
+  void import('./auth_presentation.js')
+    .then(({initAuthPresentation}) => {
+      authPresentation = initAuthPresentation({root: document, windowRef: window});
+      authPresentation.reflectAuthState(window.__tradutorAuthState);
+    })
+    .catch(() => {
+      authTrace('auth_presentation_unavailable', {code: 'optional_module_unavailable'});
+    });
+}
 
 function setAuthState(state, userId = '') {
   window.__tradutorAuthState = state;
@@ -103,6 +125,7 @@ function setAuthState(state, userId = '') {
     user_id: state === 'authenticated' ? String(userId || '') : '',
   };
   setShellState(authShellStateFor(state));
+  authPresentation?.reflectAuthState(state);
   authTrace('auth_state_changed', {status: state, authenticated: state === 'authenticated'});
 }
 
