@@ -44,8 +44,8 @@ def view(state: dict):
 @unittest.skipUnless(NODE, "node is required to execute the loading view module")
 class PercentageIsNeverInvented(unittest.TestCase):
     def test_no_countable_work_means_no_number(self):
-        for progress in ({}, {"total_pages": 0, "completed_pages": 0}, {"fraction": None},
-                         {"completed_pages": "x"}, {"fraction": 4}):
+        for progress in ({}, {"current": 0, "total": 0}, {"fraction": None},
+                         {"current": "x", "total": None}, {"fraction": 4}):
             result = view({"status": "running", "stage": "ocr", "progress": progress})
             self.assertEqual(result["progress"]["mode"], "indeterminate", progress)
             self.assertIsNone(result["progress"]["percent"], progress)
@@ -58,22 +58,25 @@ class PercentageIsNeverInvented(unittest.TestCase):
         self.assertEqual(result["progress"]["mode"], "indeterminate")
         self.assertIsNone(result["progress"]["percent"])
 
-    def test_real_page_counts_produce_a_real_number(self):
+    def test_real_counts_produce_a_real_number(self):
+        """current/total is the runtime's own countable-work contract."""
         result = view({"status": "running", "stage": "download",
-                       "progress": {"completed_pages": 8, "total_pages": 12}})
+                       "progress": {"current": 8, "total": 12}})
         self.assertEqual(result["progress"]["percent"], 67)
         self.assertEqual(result["progress"]["source"], "counts")
-        self.assertEqual(result["progress"]["unit"], "pages")
         self.assertTrue(result["showPercent"])
 
-    def test_real_block_counts_also_count(self):
-        result = view({"status": "running", "stage": "translate",
-                       "progress": {"completed_blocks": 2, "total_blocks": 5}})
-        self.assertEqual(result["progress"]["percent"], 40)
+    def test_fields_the_runtime_does_not_send_are_not_denominators(self):
+        """These names were assumed once and do not exist; they must not count."""
+        for progress in ({"completed_pages": 8, "total_pages": 12},
+                         {"completed_blocks": 2, "total_blocks": 5}):
+            result = view({"status": "running", "stage": "translate", "progress": progress})
+            self.assertEqual(result["progress"]["mode"], "indeterminate", progress)
+            self.assertIsNone(result["progress"]["percent"], progress)
 
     def test_the_backend_declaring_indeterminate_wins_over_counts(self):
         result = view({"status": "running", "stage": "ocr",
-                       "progress": {"indeterminate": True, "completed_pages": 5, "total_pages": 10}})
+                       "progress": {"indeterminate": True, "current": 5, "total": 10}})
         self.assertEqual(result["progress"]["mode"], "indeterminate")
         self.assertIsNone(result["progress"]["percent"])
 
@@ -241,3 +244,49 @@ class ModuleCarriesNoConcreteData(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(NODE, "node is required to execute the loading view module")
+class NormalisesTheRealRuntimePayload(unittest.TestCase):
+    """The field names here are the runtime's own, confirmed against ui_bridge."""
+
+    def test_progress_uses_current_and_total(self):
+        result = view({"status": "running", "stage": "ocr",
+                       "progress": {"current": 8, "total": 12, "indeterminate": False}})
+        self.assertEqual(result["progress"]["percent"], 67)
+        self.assertEqual(result["progress"]["source"], "counts")
+
+    def test_display_only_counters_are_not_denominators(self):
+        """`pages` and `groups` are display counters, not a denominator."""
+        result = view({"status": "running", "stage": "ocr",
+                       "progress": {"pages": 9, "groups": 4}})
+        self.assertEqual(result["progress"]["mode"], "indeterminate")
+        self.assertIsNone(result["progress"]["percent"])
+
+    def test_the_runtime_indeterminate_flag_is_honoured(self):
+        result = view({"status": "running", "stage": "ocr",
+                       "progress": {"current": 0, "total": 0, "indeterminate": True}})
+        self.assertEqual(result["progress"]["mode"], "indeterminate")
+
+    def test_log_entries_are_normalised_from_their_real_shape(self):
+        entries = [
+            {"seq": 1, "time": "10:00:01", "kind": "info", "text": "Ambiente preparado"},
+            {"seq": 2, "time": "10:00:02", "kind": "info", "text": "Authorization: Bearer x"},
+            {"seq": 3, "time": "10:00:03", "kind": "error", "text": ""},
+        ]
+        result = run_js(f"return L.sanitiseEvents({json.dumps(entries)});")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["message"], "Ambiente preparado")
+        self.assertEqual(result[0]["at"], "10:00:01")
+        self.assertEqual(result[0]["status"], "info")
+
+    def test_absent_optional_fields_fail_closed(self):
+        """No field, no action. Nothing is offered on a guess."""
+        result = view({"status": "finished", "stage": "pdf"})
+        self.assertFalse(result["hasResult"])
+        self.assertFalse(result["hasPdf"])
+        self.assertFalse(result["canRetry"])
+        self.assertIsNone(result["languages"])
+        self.assertIsNone(result["pendingReviewCount"])
+        self.assertFalse(result["localTest"])
+        self.assertEqual(result["events"], [])

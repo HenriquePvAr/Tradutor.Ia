@@ -139,7 +139,7 @@ class ProgressIsDrawnOnlyWhenReal(unittest.TestCase):
         self.assertIn("Preparando", out["text"])
 
     def test_determinate_exposes_the_real_value(self):
-        out = render({**RUNNING, "progress": {"completed_pages": 8, "total_pages": 12}})
+        out = render({**RUNNING, "progress": {"current": 8, "total": 12}})
         self.assertIn("[role=progressbar]", out["tree"])
         self.assertIn("[aria-valuenow=67]", out["tree"])
         self.assertIn("[aria-valuemin=0]", out["tree"])
@@ -147,7 +147,7 @@ class ProgressIsDrawnOnlyWhenReal(unittest.TestCase):
         self.assertIn("8 de 12", out["text"])
 
     def test_null_progress_never_renders_a_zero(self):
-        out = render({**RUNNING, "progress": {"fraction": None, "total_pages": 0}})
+        out = render({**RUNNING, "progress": {"fraction": None, "total": 0}})
         self.assertNotIn("aria-valuenow", out["tree"])
         self.assertNotIn("0%", out["text"])
 
@@ -336,12 +336,18 @@ class IntegrationIsWiredThroughTheViewModel(unittest.TestCase):
     SHELL = ROOT / "ui" / "ui_shell.html"
     APP = ROOT / "app_ui.py"
 
-    def test_the_bundle_maps_before_it_renders(self):
+    def test_every_render_call_receives_a_mapped_view_model(self):
+        """Textual order proves nothing once the mapper is an argument; what
+        matters is that no call site hands the renderer raw state."""
         text = code_of(self.BUNDLE)
-        self.assertIn("mapJobStateToLoadingView", text)
-        self.assertIn("renderProcessingSurface", text)
-        self.assertLess(text.index("mapJobStateToLoadingView"),
-                        text.index("surface.renderProcessingSurface"))
+        calls = re.findall(r"surface\.renderProcessingSurface\(([^;]*?)\);", text, re.S)
+        self.assertGreaterEqual(len(calls), 2, "bootstrap and pipeline must both render")
+        for call in calls:
+            mapped = ("mapJobStateToLoadingView" in call
+                      or call.strip().endswith("model"))
+            self.assertTrue(mapped, f"renderer called without a mapped model: {call[:80]}")
+            # Raw payload objects must never be forwarded straight through.
+            self.assertNotRegex(call.strip(), r",\s*(state|progress|record|runtime)$")
 
     def test_the_surface_has_a_container(self):
         self.assertIn('id="loadingSurface"', self.SHELL.read_text(encoding="utf-8"))
@@ -364,11 +370,70 @@ class IntegrationIsWiredThroughTheViewModel(unittest.TestCase):
                           "Date.now", "setTimeout", "setInterval"):
             self.assertNotIn(forbidden, body, f"integration must not compute {forbidden}")
 
-    def test_local_test_is_passed_through_not_sniffed(self):
+    def test_the_environment_is_never_sniffed(self):
+        """local_test has no UI field today, so it is not claimed at all."""
         text = code_of(self.BUNDLE)
         start = text.index("function renderLoadingSurface")
         body = text[start:text.index("function renderProgress", start)]
-        self.assertIn("local_test", body)
-        # Never inferred from where the page happens to be served.
         for sniff in ("location.hostname", "location.port", "127.0.0.1", "localhost"):
             self.assertNotIn(sniff, body, sniff)
+
+    def test_action_flags_use_the_runtime_field_names(self):
+        text = code_of(self.BUNDLE)
+        start = text.index("function renderLoadingSurface")
+        body = text[start:text.index("function renderProgress", start)]
+        for real in ("record.recoverable", "record.output_folder", "record.pdf_path"):
+            self.assertIn(real, body, real)
+        # Names that were assumed once and do not exist in the payload.
+        for invented in ("retry_available)", "output_ready", "record.events"):
+            self.assertNotIn(invented, body, invented)
+
+
+class BootstrapIsWiredToTheSurface(unittest.TestCase):
+    """The existing boot sequence feeds the shared surface, unchanged."""
+
+    BUNDLE = ROOT / "static" / "tradutor_ui.js"
+
+    def setUp(self):
+        self.text = code_of(self.BUNDLE)
+        start = self.text.index("function renderBootstrapSurface")
+        self.body = self.text[start:self.text.index("function clearLoadingSurface", start)]
+
+    def test_set_boot_stage_feeds_the_surface(self):
+        stage = self.text[self.text.index("function setBootStage"):
+                          self.text.index("function renderBootstrapSurface")]
+        self.assertIn("renderBootstrapSurface(", stage)
+
+    def test_bootstrap_uses_the_bootstrap_mode(self):
+        self.assertIn("mode: 'bootstrap'", self.body)
+
+    def test_bootstrap_progress_is_completed_over_known_steps(self):
+        self.assertIn("completed_stages", self.body)
+        self.assertIn("total_stages", self.body)
+        self.assertIn("bootStages.length", self.body)
+
+    def test_no_timer_drives_the_bootstrap_percentage(self):
+        for forbidden in ("setInterval", "setTimeout", "Date.now", "performance.now"):
+            self.assertNotIn(forbidden, self.body, forbidden)
+
+    def test_a_failed_boot_reports_its_message(self):
+        self.assertIn("failed", self.body)
+        self.assertIn("message:", self.body)
+
+    def test_closing_the_boot_clears_the_surface(self):
+        close = self.text[self.text.index("function closeBoot"):]
+        close = close[:close.index("\n  }") + 4]
+        self.assertIn("clearLoadingSurface()", close)
+
+    def test_an_auth_transition_clears_the_surface(self):
+        block = self.text[self.text.index("function clearPrivateUiForAuthTransition"):]
+        block = block[:block.index("appState.queue = []")]
+        self.assertIn("clearLoadingSurface()", block)
+
+    def test_clearing_removes_the_state_attributes(self):
+        clear = self.text[self.text.index("function clearLoadingSurface"):]
+        clear = clear[:clear.index("\n  }") + 4]
+        self.assertIn("replaceChildren()", clear)
+        self.assertIn("hidden = true", clear)
+        for attribute in ("lsMode", "lsStatus", "lsTone"):
+            self.assertIn(attribute, clear, attribute)
