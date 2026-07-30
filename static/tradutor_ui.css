@@ -1626,8 +1626,21 @@
     radial-gradient(circle at 28% 45%,rgba(255,59,77,.07),transparent 30%),
     radial-gradient(circle at 91% 54%,rgba(0,229,255,.035),transparent 34%),#060b14;
 }
-.auth-login-stage{flex:1.35;justify-content:center;gap:0;padding:40px 56px;border-color:rgba(30,38,54,.8)}
-.auth-login-stage-inner{width:min(100%,780px);max-width:780px}
+/* The hero container was already ~57% of the viewport, but its content stopped
+   at 780px and left ~160px of dead space before the divider. The inner column
+   now tracks the container it sits in, so the width is used instead of padded
+   away. Vertical padding grows with height rather than sitting at a fixed 40px,
+   which is what made the composition look centred in a void at 1080. */
+.auth-login-stage{flex:1.35;justify-content:center;gap:0;
+  padding:clamp(36px,5.5vh,72px) clamp(40px,4vw,72px);border-color:rgba(30,38,54,.8)}
+/* Centring a 654px composition inside a 929px column left it floating with
+   275px of nothing around it. The column now claims the height it is given and
+   spreads that slack between its own sections, so the hero reads as a composed
+   page rather than a block parked in the middle. */
+.auth-login-stage-inner{width:100%;max-width:min(100%,980px);
+  display:flex;flex-direction:column;justify-content:space-between;
+  min-height:min(100%,780px);row-gap:clamp(12px,2.2vh,28px)}
+.auth-login-stage-inner>*{flex:none}
 .auth-login-watermark{font-size:420px;color:transparent;-webkit-text-stroke:1px rgba(255,59,77,.045)}
 .auth-login-eyebrow{display:inline-flex;align-items:center;gap:8px;color:var(--auth-red-2);font:700 10px/1.2 'JetBrains Mono',monospace;letter-spacing:1.35px;text-transform:uppercase;margin-bottom:15px}
 .auth-login-eyebrow::before{content:"";width:7px;height:7px;border:1px solid currentColor;border-radius:2px;box-shadow:0 0 10px rgba(255,59,77,.45)}
