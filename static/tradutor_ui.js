@@ -1524,6 +1524,28 @@
     return VISUAL_REASON_LABELS[key] || key;
   }
 
+  function updateQualityReviewFilterControls(items, activeFilter) {
+    const counts = {
+      all: items.length,
+      pending: items.filter(item => item.state === 'pending').length,
+      completed: items.filter(item => item.state !== 'pending').length,
+      rejected: items.filter(item => item.state === 'rejected').length,
+    };
+    Object.keys(VISUAL_STATE_LABELS).forEach(state => {
+      if (!(state in counts)) {
+        counts[state] = items.filter(item => String(item.visual_state || '') === state).length;
+      }
+    });
+    $$('[data-review-filter]').forEach(button => {
+      const filter = String(button.dataset.reviewFilter || 'pending');
+      const selected = filter === activeFilter;
+      button.classList.toggle('selected', selected);
+      button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      const count = button.querySelector('[data-review-filter-count]');
+      if (count) count.textContent = String(counts[filter] || 0);
+    });
+  }
+
   function renderQualityReview(review) {
     const panel = $('#qualityReviewPanel');
     const list = $('#qualityReviewList');
@@ -1533,9 +1555,11 @@
     updateQualityReviewDeveloperActions();
     const items = Array.isArray(review.items) ? review.items : [];
     const filter = appState.qualityReviewFilter || 'pending';
+    updateQualityReviewFilterControls(items, filter);
     const visible = items.filter(item => {
       if (filter === 'pending') return item.state === 'pending';
       if (filter === 'completed') return item.state !== 'pending';
+      if (filter === 'rejected') return item.state === 'rejected';
       if (filter === 'all') return true;
       if (VISUAL_STATE_LABELS[filter]) return String(item.visual_state || '') === filter;
       return false;
@@ -1590,7 +1614,7 @@
       const isReportOnly = visualState === 'report_only';
       const selectBox = isReportOnly ? '' : `<input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> `;
       const reviewActions = isReportOnly ? '' : `<textarea class="quality-review-editor" data-review-translation data-review-version="${escapeAttr(item.version || 0)}" aria-label="Tradução revisada">${escapeHtml(item.translation || '')}</textarea><input class="quality-review-reason-input" data-review-reason placeholder="Motivo da decisão" aria-label="Motivo da revisão"><div class="cta-row"><button type="button" class="btn-ghost show" data-review-deep-action="edited">Salvar edição</button><button type="button" class="btn-ghost show" data-review-deep-action="reviewed">Aprovar</button><button type="button" class="btn-ghost show" data-review-deep-action="rejected">Rejeitar</button><button type="button" class="btn-ghost show" data-review-deep-action="preserved_original">Manter original</button><button type="button" class="btn-ghost show" data-review-deep-action="manual_review">Revisar novamente</button></div>`;
-      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(item.reason)}</div>${visualNote}<div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Proposta</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="quality-review-actions">${reviewActions}${compare}</div></article>`;
+      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'rejected' ? 'rejeitado' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(item.reason)}</div>${visualNote}<div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Proposta</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="quality-review-actions">${reviewActions}${compare}</div></article>`;
     }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
     const confirm = $('#confirmQualityReview');
     if (confirm) {
@@ -3330,7 +3354,10 @@
     else appState.qualityReviewSelection.delete(key);
     updateQualityReviewSelectionUi();
   });
-  $$('[data-review-filter]').forEach(button => button.addEventListener('click', () => { appState.qualityReviewFilter = button.dataset.reviewFilter || 'pending'; $$('[data-review-filter]').forEach(item => item.classList.toggle('selected', item === button)); if (appState.qualityReview) renderQualityReview(appState.qualityReview); }));
+  $$('[data-review-filter]').forEach(button => button.addEventListener('click', () => {
+    appState.qualityReviewFilter = button.dataset.reviewFilter || 'pending';
+    if (appState.qualityReview) renderQualityReview(appState.qualityReview);
+  }));
   $('#confirmQualityReview')?.addEventListener('click', confirmQualityReview);
   $('#qualityReviewSelectAll')?.addEventListener('change', event => {
     const keys = visibleQualityReviewKeys();

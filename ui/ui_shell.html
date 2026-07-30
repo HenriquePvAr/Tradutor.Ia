@@ -457,14 +457,15 @@
               <div class="review-preview-access" id="reviewPreviewAccess" hidden aria-live="polite"></div>
               <div class="quality-review-pdf" id="reviewedPdfAction" hidden></div>
               <div class="quality-review-filters" role="group" aria-label="Filtrar revisão">
-                <button type="button" class="btn-ghost selected" data-review-filter="pending">Pendentes</button>
-                <button type="button" class="btn-ghost" data-review-filter="all">Todos</button>
-                <button type="button" class="btn-ghost" data-review-filter="completed">Concluídos</button>
-                <button type="button" class="btn-ghost" data-review-filter="applied">Aplicados</button>
-                <button type="button" class="btn-ghost" data-review-filter="rejected_visual_regression">Recusados pelo gate visual</button>
-                <button type="button" class="btn-ghost" data-review-filter="manual_review">Revisão manual</button>
-                <button type="button" class="btn-ghost" data-review-filter="unchanged">Sem alteração</button>
-                <button type="button" class="btn-ghost" data-review-filter="report_only">Somente relatório</button>
+                <button type="button" class="btn-ghost selected" data-review-filter="pending" aria-pressed="true">Pendentes <span data-review-filter-count>0</span></button>
+                <button type="button" class="btn-ghost" data-review-filter="all" aria-pressed="false">Todos <span data-review-filter-count>0</span></button>
+                <button type="button" class="btn-ghost" data-review-filter="completed" aria-pressed="false">Concluídos <span data-review-filter-count>0</span></button>
+                <button type="button" class="btn-ghost" data-review-filter="rejected" aria-pressed="false">Rejeitados <span data-review-filter-count>0</span></button>
+                <button type="button" class="btn-ghost" data-review-filter="applied" aria-pressed="false">Aplicados <span data-review-filter-count>0</span></button>
+                <button type="button" class="btn-ghost" data-review-filter="rejected_visual_regression" aria-pressed="false">Recusados pelo gate visual <span data-review-filter-count>0</span></button>
+                <button type="button" class="btn-ghost" data-review-filter="manual_review" aria-pressed="false">Revisão manual <span data-review-filter-count>0</span></button>
+                <button type="button" class="btn-ghost" data-review-filter="unchanged" aria-pressed="false">Sem alteração <span data-review-filter-count>0</span></button>
+                <button type="button" class="btn-ghost" data-review-filter="report_only" aria-pressed="false">Somente relatório <span data-review-filter-count>0</span></button>
               </div>
               <div class="quality-review-bulk" id="qualityReviewBulk">
                 <label class="review-select-all"><input type="checkbox" id="qualityReviewSelectAll"> Selecionar todos do filtro atual</label>

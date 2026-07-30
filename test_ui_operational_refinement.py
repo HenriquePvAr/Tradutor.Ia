@@ -404,6 +404,28 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         self.assertIn(visual_filter, review)
         self.assertLess(review.index(terminal_pending), review.index(visual_filter))
 
+    def test_terminal_rejected_filter_is_distinct_from_visual_gate_rejection(self):
+        shell = (
+            Path(__file__).resolve().parent / "ui" / "ui_shell.html"
+        ).read_text(encoding="utf-8")
+        review_start = self.js.index("function renderQualityReview(review)")
+        review_end = self.js.index("function visibleQualityReviewKeys", review_start)
+        review = self.js[review_start:review_end]
+        self.assertIn('data-review-filter="rejected"', shell)
+        self.assertIn("Rejeitados <span data-review-filter-count", shell)
+        self.assertIn('data-review-filter="rejected_visual_regression"', shell)
+        self.assertIn("Recusados pelo gate visual", shell)
+        self.assertIn(
+            "if (filter === 'rejected') return item.state === 'rejected'",
+            review,
+        )
+        self.assertIn(
+            "String(item.visual_state || '') === filter",
+            review,
+        )
+        self.assertIn("updateQualityReviewFilterControls(items, filter)", review)
+        self.assertIn("if (!(state in counts))", self.js)
+
     def test_rejection_without_reason_is_blocked_before_request(self):
         action_start = self.js.index("async function qualityReviewAction(event)")
         action_end = self.js.index("const button = event.target.closest('[data-review-action]')", action_start)
