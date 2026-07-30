@@ -1165,7 +1165,7 @@
 
 <!-- AUTH FULL-PAGE SURFACE -->
 <div class="auth-login-page" id="authSurface" data-shell-surface="login" hidden>
-  <div class="auth-login-shell">
+  <div class="auth-login-shell" data-interaction-state="idle" data-compare-state="both">
     <div class="auth-login-stage">
     <div class="auth-login-grid"></div>
     <div class="auth-login-dots"></div>
@@ -1185,6 +1185,21 @@
       </div>
 
       <div class="auth-login-compare-wrap">
+        <div class="auth-compare-toolbar" role="group" aria-label="Destaque da comparação">
+          <button type="button" class="auth-compare-choice" data-auth-compare="original" aria-pressed="false">
+            <span class="auth-compare-choice-index">01</span>
+            <span>Original</span>
+          </button>
+          <button type="button" class="auth-compare-choice auth-compare-choice-both" data-auth-compare="both" aria-pressed="true">
+            <svg viewBox="0 0 28 16" aria-hidden="true"><path d="M1 8h9M7 4l4 4-4 4M27 8h-9M21 4l-4 4 4 4"/></svg>
+            <span>Ambos</span>
+          </button>
+          <button type="button" class="auth-compare-choice" data-auth-compare="translated" aria-pressed="false">
+            <span class="auth-compare-choice-index">02</span>
+            <span>Traduzido</span>
+          </button>
+        </div>
+        <p class="auth-compare-status" id="authCompareStatus" aria-live="polite">Original e traduzido em equilíbrio.</p>
         <div class="auth-login-compare auth-login-illustration" id="authCompare">
           <article class="auth-comic-page auth-comic-original">
             <div class="auth-comic-frame">
@@ -1198,6 +1213,13 @@
               />
             </div>
           </article>
+          <div class="auth-editorial-layer" aria-hidden="true">
+            <span class="auth-editorial-corner auth-editorial-corner-a"></span>
+            <span class="auth-editorial-corner auth-editorial-corner-b"></span>
+            <span class="auth-editorial-scan">OCR · fala detectada</span>
+            <span class="auth-editorial-box"></span>
+            <span class="auth-editorial-grid"></span>
+          </div>
           <div class="auth-translation-core" aria-hidden="true">
             <i></i>
             <span>A<span>文</span></span>
@@ -1233,7 +1255,10 @@
     <div class="auth-login-side">
       <div class="auth-login-card">
       <div class="auth-login-card-topbar">
-        <div class="auth-login-brand"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M8 7h24a4 4 0 0 1 4 4v15a4 4 0 0 1-4 4h-8l-7 6v-6H8a4 4 0 0 1-4-4V11a4 4 0 0 1 4-4z"/><path d="M12 16h16M12 22h11"/></svg><strong>Tradutor.<span>IA</span></strong></div>
+        <div class="auth-login-brand">
+          <span class="auth-brand-mark"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M8 7h24a4 4 0 0 1 4 4v15a4 4 0 0 1-4 4h-8l-7 6v-6H8a4 4 0 0 1-4-4V11a4 4 0 0 1 4-4z"/><path d="M12 16h16M12 22h11"/></svg></span>
+          <span class="auth-brand-copy"><strong>Tradutor.<span>IA</span></strong><small>Seu espaço de tradução</small></span>
+        </div>
         <span class="auth-login-status-dot"><i></i><span data-i18n="auth.service_connected">serviço conectado</span></span>
       </div>
 
