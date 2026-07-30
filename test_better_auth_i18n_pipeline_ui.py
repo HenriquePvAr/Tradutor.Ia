@@ -242,15 +242,43 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
             r"\.auth-login-page\{[^}]*flex-direction:column[^}]*justify-content:flex-start",
         )
 
-    def test_login_uses_only_original_inline_decorative_art(self):
+    def test_login_uses_authorized_local_comic_assets(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
-        self.assertNotIn("/static/assets/reference-ui/", auth_fragment)
-        self.assertNotIn("<img", auth_fragment)
+        self.assertIn('/static/assets/auth/comic-original.png', auth_fragment)
+        self.assertIn('/static/assets/auth/comic-translated.png', auth_fragment)
+        self.assertEqual(auth_fragment.count('class="auth-comic-image"'), 2)
+        self.assertIn('alt="Página original em inglês"', auth_fragment)
+        self.assertIn('alt="Página traduzida para português"', auth_fragment)
         self.assertIn("auth-login-illustration", auth_fragment)
-        self.assertIn('aria-hidden="true"', auth_fragment)
         self.assertIn("auth-comic-page", auth_fragment)
-        self.assertIn("auth-bubble", auth_fragment)
-        self.assertIn("auth-comic-figure", auth_fragment)
+        self.assertNotIn("auth-visual-art", auth_fragment)
+        self.assertNotIn('src="http://', auth_fragment)
+        self.assertNotIn('src="https://', auth_fragment)
+
+    def test_authorized_comic_assets_are_lossless_local_pngs(self):
+        expected = {
+            "comic-original.png": (384, 384),
+            "comic-translated.png": (333, 391),
+        }
+        for name, dimensions in expected.items():
+            with self.subTest(asset=name):
+                asset = ROOT / "static" / "assets" / "auth" / name
+                self.assertTrue(asset.exists())
+                self.assertGreater(asset.stat().st_size, 200_000)
+                self.assertEqual(asset.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+                with Image.open(asset) as image:
+                    self.assertEqual(image.size, dimensions)
+                    self.assertEqual(image.format, "PNG")
+
+    def test_premium_comic_composition_overlaps_form_and_visual_story(self):
+        premium = self.css[self.css.index("premium comic authentication composition"):]
+        compact = re.sub(r"\s+", "", premium)
+        self.assertRegex(compact, r"\.auth-login-shell\{[^}]*grid-template-areas:")
+        self.assertRegex(compact, r"\.auth-login-side\{[^}]*margin-left:")
+        self.assertIn(".auth-comic-original", premium)
+        self.assertIn(".auth-comic-translated", premium)
+        self.assertIn("object-fit:contain", compact)
+        self.assertIn("aspect-ratio", premium)
 
     def test_login_form_preserves_accessible_contract(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
@@ -406,20 +434,19 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         ):
             self.assertNotIn(replaced, auth_fragment)
 
-    def test_approved_original_art_is_inline_decorative_and_has_no_external_assets(self):
+    def test_approved_comic_comparison_is_informative_and_has_no_external_assets(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
         illustration = auth_fragment[
             auth_fragment.index('class="auth-login-compare-wrap"'):
             auth_fragment.index('class="auth-login-preservation"')
         ]
-        self.assertIn('aria-hidden="true"', illustration)
-        self.assertIn('focusable="false"', illustration)
-        self.assertIn("I never thought I’d become this strong.", illustration)
-        self.assertIn("Eu nunca imaginei que ficaria tão forte.", illustration)
+        self.assertNotIn('id="authCompare" aria-hidden="true"', illustration)
+        self.assertIn('alt="Página original em inglês"', illustration)
+        self.assertIn('alt="Página traduzida para português"', illustration)
         self.assertIn("auth-translation-core", illustration)
-        self.assertNotIn("<img", illustration)
-        self.assertNotIn('href="http://', illustration)
-        self.assertNotIn('href="https://', illustration)
+        self.assertEqual(illustration.count("<img"), 2)
+        self.assertNotIn('src="http://', illustration)
+        self.assertNotIn('src="https://', illustration)
 
     def test_form_uses_approved_premium_copy_without_unimplemented_links_or_claims(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
