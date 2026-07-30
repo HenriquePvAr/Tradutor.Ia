@@ -131,6 +131,12 @@
   function bootstrapCommunityAuthenticated(data = appState.bootstrap) {
     return data?.community?.authenticated === true;
   }
+  // A revision is a number the backend actually sent. Absent is not zero, and
+  // zero is not absent - conflating them is what kept the comparison below
+  // permanently unequal.
+  function isReportedRevision(value) {
+    return typeof value === 'number' && Number.isFinite(value);
+  }
   function currentCanonicalAuthState() {
     if (String(getGlobal('__tradutorAuthState') || '') === 'authenticated') return 'authenticated';
     if (bootstrapCommunityAuthenticated()) return 'authenticated';
@@ -1467,7 +1473,15 @@
         uiTrace('old_pipeline_event_discarded', {request_id: appState.currentRequestId});
       }
     }
-    if (runtime.history_revision !== appState.historyRevision) refreshBootstrap();
+    // Only when both sides actually report a revision and the values differ.
+    // Treating "not reported" as "changed" made every render ask for another
+    // bootstrap, and refreshBootstrap renders again on the way out: a
+    // signed-out shell issued ~164 bootstrap requests a second.
+    if (isReportedRevision(runtime.history_revision)
+        && isReportedRevision(appState.historyRevision)
+        && runtime.history_revision !== appState.historyRevision) {
+      refreshBootstrap();
+    }
   }
   function renderRunStatus(runtime) {
     const card = $('#runStatusCard');
@@ -5824,8 +5838,18 @@
     }
     return data;
   }
+  // Single flight. refreshBootstrap renders on its way out and rendering can
+  // ask for a refresh, so without this any such trigger becomes a loop rather
+  // than one extra request. Callers that need the settled result await the
+  // in-flight run instead of starting a second one.
+  let bootstrapInFlight = null;
   async function refreshBootstrap() {
     if (bootVisualTest) return;
+    if (bootstrapInFlight) return bootstrapInFlight;
+    bootstrapInFlight = runBootstrapRefresh().finally(() => { bootstrapInFlight = null; });
+    return bootstrapInFlight;
+  }
+  async function runBootstrapRefresh() {
     try {
       setBootStage(1);
       const data = await api(`/api/ui/bootstrap?cursor=${appState.cursor}`);
@@ -5841,7 +5865,11 @@
       appState.settings = data.settings || {};
       applyStandaloneSourceReady(data);
       setBootStage(5);
-      appState.historyRevision = data.history_revision || appState.historyRevision;
+      // A reported 0 is a revision, not an absence: `||` discarded it and kept
+      // the stale value, so the comparison downstream never converged.
+      if (isReportedRevision(data.history_revision)) {
+        appState.historyRevision = data.history_revision;
+      }
       renderSettings(appState.settings);
       applyCanonicalAuthSurface(authState);
       if (authenticated) {
@@ -5871,6 +5899,11 @@
   }
   async function pollState() {
     if (appState.polling || document.hidden) return;
+    // /api/ui/state describes the authenticated panel and answers 401 without a
+    // session, so polling it on the login screen only produced errors at the
+    // interval's cadence. The session is announced by tradutor-auth-changed;
+    // this never has to poll to discover that it may start polling.
+    if (!isCanonicalCommunityAuthenticated()) return;
     appState.polling = true;
     try {
       const data = await api(`/api/ui/state?cursor=${appState.cursor}`);
