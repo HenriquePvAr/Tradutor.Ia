@@ -366,6 +366,48 @@
     $$('#bootNodes .app-loading-connector').forEach((connector, connectorIndex) => {
       connector.classList.toggle('done', connectorIndex < bounded);
     });
+    renderBootstrapSurface(bounded, label);
+  }
+
+  // Feeds the existing bootstrap sequence into the shared loading surface. The
+  // stage index is the real one setBootStage already advanced on a completed
+  // step, so the count is completed/known — never a timer.
+  function renderBootstrapSurface(index, label) {
+    const view = window.TradutorLoadingView;
+    const surface = window.TradutorProcessingSurface;
+    const root = $('#loadingSurface');
+    if (!view || !surface || !root) return;
+    const failed = bootEl?.dataset.bootState === 'failed';
+    // Bootstrap groups are session, environment and interface. The boot sequence
+    // has more steps than that, so the index is mapped by proportion rather than
+    // inventing a fourth group.
+    const groupKeys = view.BOOTSTRAP_GROUPS.map(group => group.key);
+    const share = Math.min(groupKeys.length - 1,
+      Math.floor((index / Math.max(1, bootStages.length - 1)) * groupKeys.length));
+
+    root.hidden = false;
+    surface.renderProcessingSurface(root, view.mapJobStateToLoadingView({
+      mode: 'bootstrap',
+      status: failed ? 'failed' : (index >= bootStages.length - 1 ? 'finished' : 'running'),
+      stage: groupKeys[Math.max(0, share)],
+      message: failed ? String(label || '') : '',
+      // Completed steps over known steps: a legitimate denominator.
+      progress: {completed_stages: index + 1, total_stages: bootStages.length},
+      reduced_motion: Boolean(window.matchMedia
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+    }));
+  }
+
+  // The surface must not outlive the operation it described, or a later session
+  // would open onto the previous one's state.
+  function clearLoadingSurface() {
+    const root = $('#loadingSurface');
+    if (!root) return;
+    root.replaceChildren();
+    root.hidden = true;
+    delete root.dataset.lsMode;
+    delete root.dataset.lsStatus;
+    delete root.dataset.lsTone;
   }
   function setBootFailed(message) {
     if (!bootEl) return;
@@ -377,6 +419,9 @@
   }
   function closeBoot() {
     if (bootEl) bootEl.classList.add('hide');
+    // The bootstrap surface described the boot, which is over. Leaving it up
+    // would show a finished bootstrap behind the panel.
+    clearLoadingSurface();
   }
   setBootStage(0);
   if (bootVisualTest?.kind === 'stage') {
@@ -3644,17 +3689,21 @@
       message: state.message,
       started_at: state.createdAt,
       updated_at: state.updatedAt,
-      source_language: record.source_language,
-      target_language: record.target_language,
       pending_review_count: state.pendingReview,
-      // Only what the backend reported; absent stays absent.
+      // Only what the backend reported; absent stays absent. Field names are the
+      // runtime's own: `recoverable` gates retry, `output_folder` and `pdf_path`
+      // gate the result actions, and the log entries live at the top level of
+      // the state payload rather than on the job record.
       progress: progress || {},
-      events: Array.isArray(record.events) ? record.events : [],
-      result_available: Boolean(record.output_ready || record.result_available),
-      pdf_available: Boolean(record.pdf_path || record.pdf_available),
-      retry_available: Boolean(record.retry_available),
-      local_test: Boolean(window.__tradutorLocalTest),
+      // appState.logs already holds the runtime's sanitised entries; reading it
+      // avoids a second store that could drift from the panel's own history.
+      events: Array.isArray(appState.logs) ? appState.logs.slice(-40) : [],
+      result_available: Boolean(record.output_folder),
+      pdf_available: Boolean(record.pdf_path),
+      retry_available: Boolean(record.recoverable),
       reduced_motion: reducedMotion,
+      // Source and target language are not part of the job record today, so the
+      // languages row stays absent rather than guessed.
     });
     surface.renderProcessingSurface(root, model);
   }
@@ -4199,6 +4248,9 @@
       previousUserId && nextUserId && previousUserId !== nextUserId);
     if (!authenticated || identityChanged) {
       exitReviewMode();
+      // The surface describes one owner's operation. Logging out or switching
+      // identity must not leave the previous one's state on screen.
+      clearLoadingSurface();
       appState.history = [];
       appState.logs = [];
       appState.queue = [];
