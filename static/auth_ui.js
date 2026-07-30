@@ -276,6 +276,7 @@ function clearAuthCredentialFields() {
   }
   toggle?.classList.remove('shown');
   toggle?.setAttribute('aria-label', 'Mostrar senha');
+  toggle?.setAttribute('aria-pressed', 'false');
 }
 
 function renderSession(session, authEvent = '') {
@@ -324,6 +325,11 @@ function renderSession(session, authEvent = '') {
 }
 
 async function init() {
+  const visualParams = new URLSearchParams(window.location.search || '');
+  const visualReducedMotion = window.__tradutorVisualTestEnabled === true
+    && ['127.0.0.1', 'localhost', '::1'].includes(window.location.hostname)
+    && visualParams.get('visual_auth_reduced_motion') === '1';
+  if (visualReducedMotion) document.documentElement.dataset.visualReducedMotion = '1';
   // Dynamic import keeps the canonical state available even when a CDN/module
   // dependency is unavailable. A failed import is an explicit auth_error, never
   // an implicit visitor with stale identity from a previous document.
@@ -506,6 +512,7 @@ async function init() {
     input.type = shown ? 'password' : 'text';
     toggle.classList.toggle('shown', !shown);
     toggle.setAttribute('aria-label', shown ? 'Mostrar senha' : 'Ocultar senha');
+    toggle.setAttribute('aria-pressed', String(!shown));
   });
   const compare = $('#authCompare');
   const after = compare?.querySelector('.auth-login-after');
@@ -551,7 +558,7 @@ async function init() {
   const pipeline = $('#authMarketingPipeline');
   const pipelineFill = $('#authMarketingPipelineFill');
   const pipelineSteps = Array.from(pipeline?.querySelectorAll('[data-auth-pipeline-step]') || []);
-  if (pipeline && pipelineSteps.length === 6) {
+  if (pipeline && pipelineSteps.length >= 2) {
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
     const applyPipelineStep = (activeIndex) => {
       const bounded = Math.max(0, Math.min(pipelineSteps.length - 1, activeIndex));
@@ -571,13 +578,13 @@ async function init() {
       if (pipelineFill) pipelineFill.style.width = '100%';
       pipeline.dataset.activeStep = 'all';
     } else {
-      const sequence = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0];
+      const sequence = [0, 1, 2, 3, 2, 1, 0];
       let position = 0;
       const tick = () => {
         if (window.__tradutorAuthState === 'authenticated') return;
         applyPipelineStep(sequence[position]);
-        const atEnd = position === 5;
-        const atStart = position === 10;
+        const atEnd = position === 3;
+        const atStart = position === 6;
         position = (position + 1) % sequence.length;
         window.__tradutorAuthPipelineTimer = setTimeout(tick, atEnd ? 900 : atStart ? 700 : 900);
       };

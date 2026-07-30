@@ -1173,33 +1173,59 @@
     <div class="auth-login-stage-inner">
       <div class="auth-login-logo"><span class="auth-login-kanji">翻訳</span><span class="auth-login-dot">.</span><span class="auth-login-ia">IA</span></div>
 
-      <div class="auth-login-title" data-i18n="auth.hero.title">Traduza mangás, manhwas e webtoons com contexto, qualidade e poucos cliques.</div>
-      <div class="auth-login-subtitle" data-i18n="auth.hero.description">O Tradutor.Ia detecta os balões, reconhece o texto, traduz para português e reconstrói cada página preservando a arte original.</div>
+      <div class="auth-login-title" data-i18n="auth.hero.title">Transforme capítulos em <em>experiências traduzidas.</em></div>
+      <div class="auth-login-subtitle" data-i18n="auth.hero.description">O Tradutor.Ia identifica textos, traduz diálogos e organiza seu capítulo para revisão.</div>
 
       <div class="auth-login-compare-wrap">
-        <div class="auth-login-compare" id="authCompare" role="img" aria-label="Comparação automática entre uma página original e a versão traduzida reconstruída pelo Tradutor.Ia.">
-          <img class="auth-login-before" src="/static/assets/reference-ui/original.jpg" alt="" decoding="async" aria-hidden="true" />
-          <img class="auth-login-after" src="/static/assets/reference-ui/translated.jpg" alt="" decoding="async" aria-hidden="true" />
-          <span class="auth-login-tag auth-login-tag-orig"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3"/><path d="M20 8V5a1 1 0 0 0-1-1h-3"/><path d="M4 16v3a1 1 0 0 0 1 1h3"/><path d="M20 16v3a1 1 0 0 1-1 1h-3"/></svg>original</span>
-          <span class="auth-login-tag auth-login-tag-trans"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8h9"/><path d="M9.5 5v2c0 3-2 5.5-5 6.5"/><path d="M7 8c0 2 2 4.5 6 6"/><path d="M13 21l4-9 4 9"/><path d="M14.5 18h5"/></svg>pt-br</span>
+        <div class="auth-login-compare auth-login-illustration" id="authCompare">
+          <svg class="auth-visual-art" viewBox="0 0 620 390" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+            <defs>
+              <linearGradient id="authPageGlow" x1="0" y1="0" x2="1" y2="1">
+                <stop stop-color="#172334"/>
+                <stop offset="1" stop-color="#0D141F"/>
+              </linearGradient>
+              <filter id="authCoralGlow"><feGaussianBlur stdDeviation="7"/></filter>
+            </defs>
+            <path class="auth-visual-speed" d="M32 64H190M18 94H154M420 322H596M464 350H608"/>
+            <g class="auth-visual-page auth-visual-page-left">
+              <rect x="82" y="44" width="196" height="286" rx="12" fill="url(#authPageGlow)"/>
+              <rect x="97" y="60" width="166" height="86" rx="7"/>
+              <rect x="97" y="160" width="76" height="150" rx="7"/>
+              <rect x="187" y="160" width="76" height="150" rx="7"/>
+              <path class="auth-visual-balloon" d="M127 84C127 69 148 61 174 61C201 61 221 70 221 85C221 99 202 109 176 109H163L145 121L150 106C136 102 127 95 127 84Z"/>
+              <path class="auth-visual-line" d="M139 82H204M139 91H188"/>
+              <g class="auth-visual-ocr">
+                <path d="M119 76V69H126M229 76V69H222M119 98V105H126M229 98V105H222"/>
+              </g>
+            </g>
+            <g class="auth-visual-transfer">
+              <circle cx="310" cy="187" r="42" fill="#E95E61" opacity=".08" filter="url(#authCoralGlow)"/>
+              <path d="M291 187H329M317 175L329 187L317 199"/>
+              <circle cx="310" cy="187" r="31"/>
+            </g>
+            <g class="auth-login-after">
+              <g class="auth-visual-page auth-visual-page-right">
+                <rect x="342" y="60" width="196" height="286" rx="12" fill="url(#authPageGlow)"/>
+                <rect x="357" y="76" width="166" height="86" rx="7"/>
+                <rect x="357" y="176" width="76" height="150" rx="7"/>
+                <rect x="447" y="176" width="76" height="150" rx="7"/>
+                <path class="auth-visual-balloon auth-visual-balloon-ready" d="M387 100C387 85 408 77 434 77C461 77 481 86 481 101C481 115 462 125 436 125H423L405 137L410 122C396 118 387 111 387 100Z"/>
+                <path class="auth-visual-line auth-visual-line-ready" d="M399 98H464M399 107H448"/>
+                <path class="auth-visual-check" d="M478 292L488 302L507 279"/>
+              </g>
+            </g>
+          </svg>
           <div class="auth-login-handle" id="authCompareHandle"><div class="auth-login-grip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7l-4 5 4 5"/><path d="M16 7l4 5-4 5"/></svg></div></div>
         </div>
-        <div class="auth-login-compare-hint">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 12h8"/><path d="M12 8l4 4-4 4"/></svg>
-          <span data-i18n="auth.compare.automatic">comparação automática entre original e tradução</span>
-        </div>
-        <div class="auth-login-compare-caption" data-i18n="auth.compare.caption">Como o Tradutor.Ia transforma cada capítulo.</div>
       </div>
 
-      <div class="auth-login-flow-intro" data-i18n="auth.hero.complement">Um fluxo completo, do download ao PDF.</div>
+      <div class="auth-login-flow-intro" data-i18n="auth.hero.complement">Do texto original à revisão, cada etapa permanece visível.</div>
       <div class="auth-marketing-pipeline" id="authMarketingPipeline" aria-hidden="true">
         <div class="auth-marketing-pipeline-track"><span id="authMarketingPipelineFill"></span></div>
-        <div class="auth-login-pnode" data-auth-pipeline-step="1"><div class="auth-login-picon"><span class="auth-login-pnum">1</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.4"/><path d="M21 15l-5-5-4 4-3-3-6 6"/></svg></div><div class="auth-login-plabel" data-i18n="auth.pipeline.download">download</div></div>
-        <div class="auth-login-pnode" data-auth-pipeline-step="2"><div class="auth-login-picon"><span class="auth-login-pnum">2</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3"/><path d="M20 8V5a1 1 0 0 0-1-1h-3"/><path d="M4 16v3a1 1 0 0 0 1 1h3"/><path d="M20 16v3a1 1 0 0 1-1 1h-3"/></svg></div><div class="auth-login-plabel" data-i18n="auth.pipeline.ocr">OCR</div></div>
-        <div class="auth-login-pnode" data-auth-pipeline-step="3"><div class="auth-login-picon"><span class="auth-login-pnum">3</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg></div><div class="auth-login-plabel" data-i18n="auth.pipeline.organize">organização</div></div>
-        <div class="auth-login-pnode" data-auth-pipeline-step="4"><div class="auth-login-picon"><span class="auth-login-pnum">4</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8h9"/><path d="M9.5 5v2c0 3-2 5.5-5 6.5"/><path d="M7 8c0 2 2 4.5 6 6"/><path d="M13 21l4-9 4 9"/><path d="M14.5 18h5"/></svg></div><div class="auth-login-plabel" data-i18n="auth.pipeline.translate">tradução</div></div>
-        <div class="auth-login-pnode" data-auth-pipeline-step="5"><div class="auth-login-picon"><span class="auth-login-pnum">5</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="8" ry="2.8"/><path d="M4 5.5v6.2c0 1.5 3.6 2.8 8 2.8s8-1.3 8-2.8V5.5"/><path d="M4 11.7v6.2c0 1.5 3.6 2.8 8 2.8s8-1.3 8-2.8v-6.2"/></svg></div><div class="auth-login-plabel" data-i18n="auth.pipeline.cache">cache</div></div>
-        <div class="auth-login-pnode" data-auth-pipeline-step="6"><div class="auth-login-picon"><span class="auth-login-pnum">6</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div><div class="auth-login-plabel" data-i18n="auth.pipeline.pdf">PDF</div></div>
+        <div class="auth-login-pnode" data-auth-pipeline-step="1"><div class="auth-login-picon"><span class="auth-login-pnum">1</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M5 3h10l4 4v14H5z"/><path d="M15 3v5h4"/></svg></div><div class="auth-login-plabel">Original</div></div>
+        <div class="auth-login-pnode" data-auth-pipeline-step="2"><div class="auth-login-picon"><span class="auth-login-pnum">2</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M7 12h10"/></svg></div><div class="auth-login-plabel" data-i18n="auth.pipeline.ocr">OCR</div></div>
+        <div class="auth-login-pnode" data-auth-pipeline-step="3"><div class="auth-login-picon"><span class="auth-login-pnum">3</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 7h10M9 4v3c0 4-2 7-5 9"/><path d="M7 9c1 3 3 5 6 6M15 20l3-8 3 8M16 17h4"/></svg></div><div class="auth-login-plabel" data-i18n="auth.pipeline.translate">Tradução</div></div>
+        <div class="auth-login-pnode" data-auth-pipeline-step="4"><div class="auth-login-picon"><span class="auth-login-pnum">4</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 12l5 5L20 6"/></svg></div><div class="auth-login-plabel">Revisão</div></div>
       </div>
 
       <div class="auth-login-format-row">
@@ -1233,7 +1259,7 @@
           <div class="auth-login-input-wrap">
             <svg class="auth-login-leading" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
             <input type="password" id="authPassword" name="password" required minlength="8" autocomplete="current-password" placeholder="••••••••" />
-            <button type="button" class="auth-login-toggle-pw" id="authTogglePassword" aria-label="Mostrar senha">
+            <button type="button" class="auth-login-toggle-pw" id="authTogglePassword" aria-label="Mostrar senha" aria-pressed="false">
               <svg class="auth-login-eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
               <svg class="auth-login-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.9 17.9A10.9 10.9 0 0 1 12 19c-7 0-11-7-11-7a19.7 19.7 0 0 1 5-5.6M9.9 4.2A9.6 9.6 0 0 1 12 4c7 0 11 7 11 7a19.6 19.6 0 0 1-3.2 4.1M14.1 14.1a3 3 0 1 1-4.2-4.2"/><path d="M1 1l22 22"/></svg>
             </button>
@@ -1245,8 +1271,8 @@
           <a class="auth-login-recovery" id="authRecoveryLink" href="#" data-i18n="auth.recovery" hidden>Recuperar acesso</a>
         </div>
 
-        <div class="auth-error" id="authError" hidden></div>
-        <div class="auth-note" id="authNote" hidden></div>
+        <div class="auth-error" id="authError" role="alert" aria-live="assertive" tabindex="-1" hidden></div>
+        <div class="auth-note" id="authNote" aria-live="polite" hidden></div>
 
         <button type="submit" class="auth-login-submit" id="authSubmit">
           <span class="btn-text" data-i18n="auth.submit">Entrar no painel</span>
