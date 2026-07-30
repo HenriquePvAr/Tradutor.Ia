@@ -198,9 +198,9 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertNotIn("<img", auth_fragment)
         self.assertIn("auth-login-illustration", auth_fragment)
         self.assertIn('aria-hidden="true"', auth_fragment)
-        self.assertIn("auth-visual-page", auth_fragment)
-        self.assertIn("auth-visual-balloon", auth_fragment)
-        self.assertIn("auth-visual-ocr", auth_fragment)
+        self.assertIn("auth-comic-page", auth_fragment)
+        self.assertIn("auth-bubble", auth_fragment)
+        self.assertIn("auth-comic-figure", auth_fragment)
 
     def test_login_form_preserves_accessible_contract(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
@@ -283,51 +283,85 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertNotIn("bootEl?.addEventListener('click'", self.ui_js)
         self.assertIn("O carregamento demorou para responder.", self.ui_js)
 
-    def test_auth_visual_animation_is_bound_without_extra_submit_listener(self):
+    def test_approved_comparison_is_static_decorative_and_does_not_add_submit_listener(self):
         self.assertEqual(self.auth_js.count("$('#authForm')?.addEventListener('submit'"), 1)
-        self.assertIn("authCompare", self.auth_js)
-        self.assertIn("authCompareHandle", self.auth_js)
-        self.assertIn("setComparePosition", self.auth_js)
-        self.assertIn("forwardMs = 5200", self.auth_js)
-        self.assertIn("pauseStartMs = 750", self.auth_js)
+        self.assertNotIn("authCompare", self.auth_js)
+        self.assertNotIn("authCompareHandle", self.auth_js)
+        self.assertNotIn("setComparePosition", self.auth_js)
+        self.assertNotIn("forwardMs = 5200", self.auth_js)
         self.assertNotIn("compare.addEventListener('mousedown'", self.auth_js)
         self.assertNotIn("touchstart", self.auth_js)
         self.assertIn("pointer-events:none", self.css)
         self.assertIn("auth-login-illustration", self.css)
 
-    def test_auth_marketing_pipeline_ping_pongs_and_is_not_interactive(self):
+    def test_product_flow_is_static_and_not_presented_as_active_pipeline(self):
         self.assertIn('id="authMarketingPipeline"', self.shell)
         self.assertEqual(self.shell.count("data-auth-pipeline-step"), 4)
-        self.assertIn("sequence = [0, 1, 2, 3, 2, 1, 0]", self.auth_js)
-        self.assertIn("__tradutorAuthPipelineTimer", self.auth_js)
+        self.assertNotIn("sequence = [0, 1, 2, 3, 2, 1, 0]", self.auth_js)
+        self.assertNotIn("__tradutorAuthPipelineTimer", self.auth_js)
         self.assertIn("auth-marketing-pipeline{", self.css)
         self.assertIn("pointer-events:none", self.css)
-        pipeline_fragment = self.shell[self.shell.index('id="authMarketingPipeline"'):]
-        self.assertNotIn("<button", pipeline_fragment.split("</div>\n\n      <div class=\"auth-login-format-row\">")[0])
-        self.assertNotIn("tabindex", pipeline_fragment.split("</div>\n\n      <div class=\"auth-login-format-row\">")[0])
+        pipeline_fragment = self.shell[
+            self.shell.index('id="authMarketingPipeline"'):
+            self.shell.index('class="auth-login-compare-wrap"')
+        ]
+        self.assertNotIn("<button", pipeline_fragment)
+        self.assertNotIn("tabindex", pipeline_fragment)
 
     def test_auth_form_removes_top_tabs_and_adds_required_copy_and_benefits(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
         self.assertNotIn('class="auth-tabs"', auth_fragment)
         self.assertEqual(auth_fragment.count("data-authmode-link"), 1)
-        for key in (
-            "auth.hero.title",
-            "auth.hero.description",
-            "auth.hero.complement",
-            "auth.benefit.session",
-            "auth.benefit.pdfs",
-            "auth.benefit.progress",
-        ):
-            self.assertIn(key, auth_fragment)
         self.assertIn("auth-login-recovery", auth_fragment)
         self.assertIn("hidden>Recuperar acesso", auth_fragment)
         self.assertIn("auth-login-flow-intro", auth_fragment)
         self.assertNotIn("Do link ao PDF, acompanhe cada etapa pelo painel.", auth_fragment)
+        flow_pos = auth_fragment.index('id="authMarketingPipeline"')
         compare_pos = auth_fragment.index('class="auth-login-compare-wrap"')
-        flow_pos = auth_fragment.index("auth-login-flow-intro")
-        pipeline_pos = auth_fragment.index('id="authMarketingPipeline"')
-        self.assertLess(compare_pos, flow_pos)
-        self.assertLess(flow_pos, pipeline_pos)
+        self.assertLess(flow_pos, compare_pos)
+
+    def test_approved_login_copy_and_product_context_are_present(self):
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        for expected in (
+            "Tradução que dá voz às suas",
+            "histórias.",
+            "webtoons, manhwas, mangás e quadrinhos",
+            "OCR avançado",
+            "Detecção de balões",
+            "Tradução com IA",
+            "Reconstrução",
+            "Preservamos a essência da obra original",
+            "Suporte a imagens HD",
+            "Webtoon, manhwa, mangá e quadrinhos",
+            "Tradução contextual com IA",
+            "Privacidade e segurança",
+        ):
+            self.assertIn(expected, auth_fragment)
+
+    def test_approved_original_art_is_inline_decorative_and_has_no_external_assets(self):
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        illustration = auth_fragment[
+            auth_fragment.index('class="auth-login-compare-wrap"'):
+            auth_fragment.index('class="auth-login-preservation"')
+        ]
+        self.assertIn('aria-hidden="true"', illustration)
+        self.assertIn('focusable="false"', illustration)
+        self.assertIn("I never thought I’d become this strong.", illustration)
+        self.assertIn("Eu nunca imaginei que ficaria tão forte.", illustration)
+        self.assertIn("auth-translation-core", illustration)
+        self.assertNotIn("<img", illustration)
+        self.assertNotIn('href="http://', illustration)
+        self.assertNotIn('href="https://', illustration)
+
+    def test_form_uses_approved_premium_copy_without_unimplemented_links_or_claims(self):
+        auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
+        self.assertIn("Tradutor.<span>IA</span>", auth_fragment)
+        self.assertIn("Faça login para continuar traduzindo suas histórias.", auth_fragment)
+        self.assertIn("Seus projetos permanecem privados na sua conta.", auth_fragment)
+        self.assertIn('id="authRecoveryLink"', auth_fragment)
+        self.assertIn('data-i18n="auth.recovery" hidden', auth_fragment)
+        for forbidden in ("Google", "Discord", "Apple", "criptografia de ponta a ponta", "Fale com o suporte"):
+            self.assertNotIn(forbidden, auth_fragment)
 
     def test_loading_visual_test_mode_is_local_and_fail_closed(self):
         self.assertIn("visual_boot_stage", self.ui_js)
