@@ -78,9 +78,15 @@
     renderer.renderProcessingSurface(root, mapper.mapJobStateToLoadingView(state));
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', renderHarness, {once: true});
-  } else {
-    renderHarness();
+  function renderAfterCanonicalUiSettles() {
+    window.setTimeout(renderHarness, 50);
   }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', renderAfterCanonicalUiSettles, {once: true});
+  } else {
+    renderAfterCanonicalUiSettles();
+  }
+  window.addEventListener('load', renderAfterCanonicalUiSettles, {once: true});
+  window.addEventListener('tradutor:auth-changed', renderAfterCanonicalUiSettles);
 })();

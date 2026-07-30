@@ -410,6 +410,11 @@ class VisualHarnessIsFailClosed(unittest.TestCase):
         self.assertIn("pipelineReducedMotion", harness)
         self.assertIn("data-pipeline-reduced-motion", css)
 
+    def test_harness_reapplies_after_canonical_auth_transition(self):
+        harness = code_of(self.HARNESS)
+        self.assertIn("tradutor:auth-changed", harness)
+        self.assertIn("renderAfterCanonicalUiSettles", harness)
+
 
 if __name__ == "__main__":
     unittest.main()
