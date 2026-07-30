@@ -148,8 +148,10 @@ class PendingPreviewPollingTest(unittest.TestCase):
 
     def test_pending_preview_call_site_is_inside_the_authenticated_branch(self):
         code = strip_comments(self.source)
-        refresh = re.search(r"async function refreshBootstrap\(\)([\s\S]*?)\n  \}", code)
-        self.assertIsNotNone(refresh)
+        # refreshBootstrap is a single-flight wrapper; the work lives in
+        # runBootstrapRefresh.
+        refresh = re.search(r"async function runBootstrapRefresh\(\)([\s\S]*?)\n  \}", code)
+        self.assertIsNotNone(refresh, "runBootstrapRefresh not found")
         block = re.search(r"if \(authenticated\) \{([\s\S]*?)\n      \}", refresh.group(1))
         self.assertIsNotNone(block, "the authenticated branch was not found")
         self.assertIn("loadPendingHumanPreviews", block.group(1))
@@ -160,6 +162,52 @@ class PendingPreviewPollingTest(unittest.TestCase):
         self.assertRegex(
             code, r"clearPendingHumanPreviews|pendingHumanPreviews\s*=\s*\{\s*items:\s*\[\]",
             "signing out must reset the cached preview list")
+
+
+class BootstrapRefreshLifecycleTest(unittest.TestCase):
+    """A signed-out shell issued ~164 bootstrap requests a second.
+
+    refreshBootstrap renders on its way out, rendering compares the history
+    revision, and the comparison treated "not reported" as "changed" - so every
+    render asked for another bootstrap, forever.
+    """
+
+    source = (STATIC / "tradutor_ui.js").read_text(encoding="utf-8")
+
+    def test_refresh_bootstrap_is_single_flight(self):
+        code = strip_comments(self.source)
+        body = re.search(r"async function refreshBootstrap\(\)\s*\{([\s\S]*?)\n  \}", code)
+        self.assertIsNotNone(body, "refreshBootstrap not found")
+        self.assertRegex(
+            body.group(1), r"(?i)inflight|pending|singleflight",
+            "refreshBootstrap must reuse an in-flight run instead of starting "
+            "a second one, or any trigger during its own render becomes a loop")
+
+    def test_history_revision_absence_is_not_treated_as_change(self):
+        code = strip_comments(self.source)
+        trigger = re.search(
+            r"if \([^\n]*history_revision[\s\S]{0,220}?refreshBootstrap\(\)", code)
+        self.assertIsNotNone(trigger, "the revision trigger was not found")
+        self.assertIn("isReportedRevision", trigger.group(0),
+                      "only compare revisions both sides actually reported")
+
+    def test_reported_zero_revision_is_stored(self):
+        """`x || fallback` silently discards a reported 0 and keeps a stale value."""
+        code = strip_comments(self.source)
+        self.assertNotRegex(
+            code, r"appState\.historyRevision\s*=\s*data\.history_revision\s*\|\|",
+            "a reported 0 is a revision, not an absence")
+
+    def test_state_polling_requires_authentication(self):
+        code = strip_comments(self.source)
+        body = re.search(r"async function pollState\(\)\s*\{([\s\S]*?)\n  \}", code)
+        self.assertIsNotNone(body, "pollState not found")
+        guard = body.group(1).split("api(", 1)[0]
+        self.assertRegex(
+            guard, r"(?i)authenticated",
+            "/api/ui/state answers 401 without a session; it must not be polled "
+            "from the login screen")
+        self.assertIn("return", guard, "the guard must return, not merely branch")
 
 
 if __name__ == "__main__":
