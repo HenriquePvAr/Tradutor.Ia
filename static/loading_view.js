@@ -69,11 +69,12 @@
       return { mode: 'indeterminate', percent: null, current: null, total: null,
                unit: '', source: 'backend_indeterminate' };
     }
+    // The runtime payload reports countable work as current/total, with an
+    // optional fraction. Nothing else is a denominator: pages and groups are
+    // display counters that the backend already folds into current.
     var pairs = [
-      ['pages', data.completed_pages, data.total_pages],
-      ['blocos', data.completed_blocks, data.total_blocks],
-      ['etapas', data.completed_stages, data.total_stages],
-      ['', data.current, data.total]
+      ['', data.current, data.total],
+      ['etapas', data.completed_stages, data.total_stages]
     ];
     for (var i = 0; i < pairs.length; i += 1) {
       var unit = pairs[i][0], done = pairs[i][1], total = pairs[i][2];
@@ -113,20 +114,30 @@
    */
   var UNSAFE = /(authorization|bearer|cookie|csrf|token|senha|password|api[_-]?key|secret|owner_id|traceback|[A-Za-z]:\\|\/home\/|\.env)/i;
 
+  /**
+   * Normalises the runtime's log entries, whose real shape is
+   * `{seq, time, kind, text}`, already sanitised server-side. This is a second
+   * pass, not the only one: a line that still carries anything
+   * credential-shaped is dropped rather than displayed.
+   */
   function sanitiseEvents(events) {
     if (!Array.isArray(events)) return [];
     return events.filter(function (event) {
       if (!event || typeof event !== 'object') return false;
-      var blob = [event.message, event.stage, event.status, event.reason_code].join(' ');
+      var blob = [event.text, event.message, event.stage, event.status,
+                  event.kind, event.reason_code].join(' ');
       return !UNSAFE.test(blob);
     }).map(function (event) {
       return {
-        at: event.at || '',
+        at: String(event.time || event.at || ''),
         stage: String(event.stage || ''),
-        status: String(event.status || ''),
-        message: String(event.message || ''),
+        status: String(event.kind || event.status || ''),
+        message: String(event.text || event.message || ''),
         reasonCode: String(event.reason_code || event.reasonCode || '')
       };
+    }).filter(function (event) {
+      // An entry with nothing to say is noise, not evidence.
+      return event.message !== '' || event.reasonCode !== '';
     });
   }
 
