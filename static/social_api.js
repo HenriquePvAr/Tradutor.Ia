@@ -7,7 +7,12 @@
 // token is never logged and the publishable key is never sent from here. Ownership and
 // identity fields (owner_id/author_id/user_id/reporter_id/recipient_id/role/admin) are
 // never sent; the backend derives them from the validated principal.
-import { getCanonicalAccessToken } from '/static/supabase_auth.js';
+// Through the provider layer, never the Supabase module directly: that module
+// statically imports the SDK from a CDN, so importing it here fetched a third
+// party on every page load, including under the local_test provider. The
+// provider layer selects its adapter from the provider the backend reports and
+// only then imports the Supabase module.
+import { getCanonicalAccessToken } from '/static/auth_provider.js';
 
 const BASE = '/api/community/social';
 

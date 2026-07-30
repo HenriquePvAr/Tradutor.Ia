@@ -4,7 +4,13 @@
 // inject markup. Owner-only controls are hidden for non-owners, but the backend + RLS
 // remain the authority (hiding a button is never the security boundary).
 import * as api from '/static/social_api.js';
-import { getSupabaseClient, onAuthChange, signOut } from '/static/supabase_auth.js';
+// Through the provider layer, never the Supabase module directly. This module is
+// injected into every shell, so its static import decided what the browser
+// fetched before anyone authenticated; the Supabase module pulls its SDK from a
+// CDN, which reached a third party even under the local_test provider. The
+// provider layer resolves the same helpers from whichever provider the backend
+// reports, and imports the Supabase module only when that is the answer.
+import { getSupabaseClient, onAuthChange, signOut } from '/static/auth_provider.js';
 
 const TABS = [
   { id: 'explore', label: 'Explorar' },

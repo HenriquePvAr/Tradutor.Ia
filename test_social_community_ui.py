@@ -81,9 +81,14 @@ class SocialCommunityUiTests(unittest.TestCase):
         self.assertNotIn("createClient", self.src)
 
     def test_sdk_used_only_for_auth(self):
-        # Only auth/session helpers are imported from the SDK module.
-        m = re.search(r"from '/static/supabase_auth\.js'", self.src)
+        # Only auth/session helpers are imported, and they come from the provider
+        # layer rather than the Supabase module: importing that module here
+        # fetched its CDN-hosted SDK on every page load, whatever provider was
+        # actually active. The rule this test protects is unchanged - the Data
+        # API is never touched from the browser.
+        m = re.search(r"from '/static/auth_provider\.js'", self.src)
         self.assertIsNotNone(m)
+        self.assertNotIn("from '/static/supabase_auth.js'", self.src)
         self.assertNotIn("supabase.from(", self.src)
 
     def test_no_innerhtml_with_user_content(self):
