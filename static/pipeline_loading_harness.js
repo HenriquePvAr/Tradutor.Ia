@@ -83,16 +83,23 @@
     renderer.renderProcessingSurface(root, mapper.mapJobStateToLoadingView(state));
   }
 
-  function renderAfterCanonicalUiSettles() {
-    window.setTimeout(renderHarness, 50);
-    window.setTimeout(renderHarness, 1000);
-  }
-
+  // Three real signals, no timers. The two timers that used to stand in here
+  // (50ms and 1000ms) existed to catch the moment the canonical UI settled,
+  // because the auth listener below was subscribed to 'tradutor:auth-changed'
+  // while the application has only ever dispatched 'tradutor-auth-changed'.
+  // That subscription never fired, so the guesswork was the only thing keeping
+  // the harness working. With the right event name the signal is exact and
+  // guessing an interval is unnecessary.
+  //
+  // renderHarness returns early while the mapper or the renderer is missing, so
+  // an early call is never a failure: a later signal renders it. It is also
+  // idempotent - it reuses its own root and replaces its contents - so the
+  // three signals cannot stack up duplicates.
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', renderAfterCanonicalUiSettles, {once: true});
+    document.addEventListener('DOMContentLoaded', renderHarness, {once: true});
   } else {
-    renderAfterCanonicalUiSettles();
+    renderHarness();
   }
-  window.addEventListener('load', renderAfterCanonicalUiSettles, {once: true});
-  window.addEventListener('tradutor:auth-changed', renderAfterCanonicalUiSettles);
+  window.addEventListener('load', renderHarness, {once: true});
+  window.addEventListener('tradutor-auth-changed', renderHarness);
 })();

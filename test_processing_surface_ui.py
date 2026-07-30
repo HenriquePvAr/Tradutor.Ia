@@ -411,10 +411,16 @@ class VisualHarnessIsFailClosed(unittest.TestCase):
         self.assertIn("data-pipeline-reduced-motion", css)
 
     def test_harness_reapplies_after_canonical_auth_transition(self):
+        # This used to assert the name 'tradutor:auth-changed', a helper called
+        # renderAfterCanonicalUiSettles and a literal 1000ms timer, which pinned
+        # the defect instead of the intent: the application dispatches
+        # 'tradutor-auth-changed', so that subscription never fired and the two
+        # timers were the only thing reapplying the harness. The transition is
+        # now the signal, so no interval has to be guessed.
         harness = code_of(self.HARNESS)
-        self.assertIn("tradutor:auth-changed", harness)
-        self.assertIn("renderAfterCanonicalUiSettles", harness)
-        self.assertIn("1000", harness)
+        self.assertIn("addEventListener('tradutor-auth-changed', renderHarness)", harness)
+        self.assertNotIn("tradutor:auth-changed", harness)
+        self.assertNotIn("setTimeout", harness)
 
     def test_harness_uses_a_dedicated_root_outside_pipeline_polling(self):
         harness = code_of(self.HARNESS)
