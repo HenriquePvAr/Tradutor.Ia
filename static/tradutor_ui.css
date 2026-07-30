@@ -1568,8 +1568,15 @@
     .auth-login-card{max-width:520px;margin-inline:auto;}
     .auth-login-stage{order:2;display:flex;flex:none;min-height:auto;border-right:0;border-top:1px solid var(--auth-border);padding:34px max(28px,env(safe-area-inset-right)) 42px max(28px,env(safe-area-inset-left));}
     .auth-login-stage-inner{max-width:620px;}
-    .auth-login-logo,.auth-login-title,.auth-login-subtitle,.auth-login-format-row{display:none;}
-    .auth-login-compare-wrap{margin-top:0;}
+    /* The headline and its support text carry the product proposition. Hiding
+       them left only two stacked eyebrow labels with nothing between them, so
+       the phone lost what the product is. They stay, compacted. */
+    .auth-login-logo,.auth-login-format-row{display:none;}
+    .auth-login-title{display:block;font-size:clamp(26px,7.4vw,34px);line-height:1.1;
+      letter-spacing:-.6px;max-width:22ch;margin-inline:auto;text-align:center;}
+    .auth-login-subtitle{display:block;font-size:13.5px;line-height:1.55;
+      max-width:44ch;margin:10px auto 0;text-align:center;}
+    .auth-login-compare-wrap{margin-top:18px;}
     .auth-login-compare.auth-login-illustration{max-width:440px;margin-inline:auto;}
     .auth-login-flow-intro{justify-content:center;text-align:center;margin-top:18px;}
     .auth-marketing-pipeline{max-width:440px;margin:12px auto 0;}
