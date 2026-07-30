@@ -2978,3 +2978,16 @@ html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login
 html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login-card{
   transition:none!important;
 }
+
+/* At 1366x650 the card still pushed "Entrar no painel" below the fold: the
+   primary action is the one thing that must never need scrolling to find. The
+   header block and the field rhythm give up the height, not the controls -
+   inputs keep their touch target. */
+.auth-login-shell[data-viewport-height="compact"] .auth-login-card-topbar{margin-bottom:14px;}
+.auth-login-shell[data-viewport-height="compact"] .auth-login-heading{font-size:23px;}
+.auth-login-shell[data-viewport-height="compact"] .auth-login-lead{margin-bottom:16px;font-size:13px;}
+.auth-login-shell[data-viewport-height="compact"] .auth-login-page form,
+.auth-login-shell[data-viewport-height="compact"] form{row-gap:12px;}
+.auth-login-shell[data-viewport-height="compact"] .auth-login-submit{margin-top:4px;}
+.auth-login-shell[data-viewport-height="compact"] .auth-login-privacy{margin-top:14px;}
+.auth-login-shell[data-viewport-height="compact"] .auth-local-test-notice{margin-bottom:10px;}
