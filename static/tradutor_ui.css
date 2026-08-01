@@ -2176,6 +2176,15 @@ html[data-visual-reduced-motion="1"] .auth-login-page *{animation:none!important
 .review-mode-banner .rmb-main{display:flex;flex-direction:column;gap:3px;min-width:0}
 .review-mode-banner strong{font-size:15px;letter-spacing:.2px}
 .review-mode-banner .rmb-meta{font-size:12px;opacity:.72;font-variant-numeric:tabular-nums}
+html[data-review-mode="1"] #newTranslationFormPanel,
+html[data-review-mode="1"] #translationPreviewPanel,
+html[data-review-mode="1"] #loadingSurface,
+html[data-review-mode="1"] #stageList,
+html[data-review-mode="1"] #runSummary,
+html[data-review-mode="1"] #runStatusCard,
+html[data-review-mode="1"] #sourceReviewPanel,
+html[data-review-mode="1"] #sourceReadyPanel{display:none!important}
+html[data-review-mode="1"] .nt-grid{grid-template-columns:minmax(0,1fr)}
 .hm-review-action{border-color:rgba(var(--tab-rgb,201,162,39),.55)!important;color:var(--tab-accent,#c9a227)!important;font-weight:600}
 .hm-review-action:focus-visible{outline:2px solid var(--tab-accent,#c9a227);outline-offset:2px}
   .linguistic-audit-modes{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;}

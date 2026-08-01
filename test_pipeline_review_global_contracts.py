@@ -876,8 +876,32 @@ class ReviewModeNavigationContracts(unittest.TestCase):
     def test_opening_review_mode_does_not_mark_the_selected_job_as_a_fresh_draft(self) -> None:
         source = JS.read_text(encoding="utf-8")
         self.assertIn(
-            "name === 'nova' && !inFlightStatuses.has(appState.status) && !appState.reviewMode",
+            "name === 'nova' && !appState.reviewMode",
             source,
+        )
+
+    def test_review_mode_hides_unrelated_source_and_live_pipeline_surfaces(self) -> None:
+        source = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        styles = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
+        self.assertIn(
+            '<!-- form -->\n        <div class="panel" id="newTranslationFormPanel">',
+            source,
+        )
+        self.assertIn('id="translationPreviewPanel"', source)
+        for selector in (
+            "#newTranslationFormPanel",
+            "#translationPreviewPanel",
+            "#loadingSurface",
+            "#stageList",
+            "#runSummary",
+            "#runStatusCard",
+            "#sourceReviewPanel",
+            "#sourceReadyPanel",
+        ):
+            self.assertIn(f'html[data-review-mode="1"] {selector}', styles)
+        self.assertIn(
+            'html[data-review-mode="1"] .nt-grid{grid-template-columns:minmax(0,1fr)}',
+            styles,
         )
 
     def test_deep_review_actions_are_visible_in_the_review_panel(self) -> None:
