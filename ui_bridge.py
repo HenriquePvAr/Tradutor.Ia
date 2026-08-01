@@ -2972,7 +2972,7 @@ class UiBridge:
         if not principal.authenticated:
             raise ValueError("authentication_required")
         owner_id = principal.owner_id
-        source_ready = self.latest_source_analysis(owner_id)
+        source_ready = self.latest_source_analysis("local")
         return {
             **self.runtime_state_for_owner(owner_id, cursor),
             "history": self._history_payload_for_owner(owner_id),
@@ -2983,15 +2983,21 @@ class UiBridge:
         }
 
     def latest_source_analysis(self, owner: str) -> dict[str, Any] | None:
-        from source_readiness import SourceReadinessStore, default_workspace_id
+        from source_readiness import SourceReadinessStore
 
         readiness = SourceReadinessStore(self.store.db_path)
         try:
             result = readiness.latest_analysis(owner)
             if result is None or result.status != "source_analysis_ready":
                 return None
-            if readiness.active_workspace_policy(
-                owner=owner, workspace_id=default_workspace_id(self.store.db_path)):
+            if any(
+                str(job.get("run_id") or "") == result.operation_id
+                or result.analysis_id in {
+                    str((job.get("configuration") or {}).get("source_analysis_result_id") or ""),
+                    str((job.get("configuration") or {}).get("preflight_source_analysis_result_id") or ""),
+                }
+                for job in self.store.list_jobs(limit=None)
+            ):
                 return None
             authorization = readiness.latest_authorization(
                 owner=owner, analysis_result_id=result.analysis_id)
@@ -3168,7 +3174,7 @@ class UiBridge:
         # polling interval. Active/review/staging/queued work still wins.
         standalone_source_ready = None
         if not (active or waiting or source_ready or staging or pending):
-            standalone_source_ready = self.latest_source_analysis(owner_id or "local")
+            standalone_source_ready = self.latest_source_analysis("local")
             if standalone_source_ready:
                 status = JobStatus.SOURCE_ANALYSIS_READY
                 stage = JobStatus.SOURCE_ANALYSIS_READY
@@ -3316,10 +3322,32 @@ class UiBridge:
         ]
         return {"entries": entries, "cursor": len(lines[-MAX_LOG_LINES:])}
 
+    def workspace_source_policy(self) -> dict[str, Any]:
+        """Return the one machine-workspace policy used by pipeline authorization.
+
+        The policy is intentionally workspace-scoped, not account-scoped.  Writers and
+        readers must therefore use the same stable ``local`` owner.  Reading it with the
+        authenticated account id made a persisted activation look inactive after bootstrap.
+        """
+        from source_readiness import SourceReadinessStore, default_workspace_id
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            workspace_id = default_workspace_id(self.store.db_path)
+            policy = readiness.active_workspace_policy(
+                owner="local", workspace_id=workspace_id)
+            return policy.public() if policy else {
+                "owner": "local", "workspace_id": workspace_id,
+                "status": "inactive",
+                "all_submitted_sources_authorized": False,
+                "allowed_operations": [], "denied_operations": ["publish"],
+            }
+        finally:
+            readiness.close()
+
     def settings(self, *, owner_id: str = "") -> dict[str, Any]:
         from down import driver_resolution_diagnostics
         from browser_runtime import BrowserRuntimeResolver
-        from source_readiness import SourceReadinessStore, default_workspace_id
 
         values = _read_env_file()
         env = env_status()
@@ -3340,13 +3368,7 @@ class UiBridge:
                 "availability_status": str(exc),
                 "engine": "", "runtime_source": "", "headless_mode": "",
             }
-        readiness = SourceReadinessStore(self.store.db_path)
-        try:
-            workspace_id = default_workspace_id(self.store.db_path)
-            workspace_policy = readiness.active_workspace_policy(
-                owner=str(owner_id or "").strip(), workspace_id=workspace_id)
-        finally:
-            readiness.close()
+        workspace_policy = self.workspace_source_policy()
         return {
             "env_exists": env["env_exists"],
             "nvidia_configured": env["nvidia_configured"],
@@ -3380,14 +3402,7 @@ class UiBridge:
             "driver_resolution_source": driver["driver_resolution_source"],
             "source_browser_runtime": browser_runtime,
             "port": int(os.getenv("TRADUTOR_UI_PORT", "8080")),
-            "workspace_source_policy": (
-                workspace_policy.public() if workspace_policy else {
-                    "owner": "local", "workspace_id": workspace_id,
-                    "status": "inactive",
-                    "all_submitted_sources_authorized": False,
-                    "allowed_operations": [], "denied_operations": ["publish"],
-                }
-            ),
+            "workspace_source_policy": workspace_policy,
         }
 
     def set_workspace_source_policy(self, *, active: bool) -> dict[str, Any]:
@@ -3412,6 +3427,128 @@ class UiBridge:
         self.history_revision += 1
         return {"ok": True, "policy": policy.public()}
 
+    @staticmethod
+    def _public_source_validation_summary(analysis: Any) -> dict[str, Any]:
+        """Keep the validation response useful without returning page URLs or DOM data."""
+        public = analysis.public() if hasattr(analysis, "public") else {}
+        warnings = public.get("warnings") or []
+        if isinstance(warnings, (str, bytes)):
+            warnings = [warnings]
+        return {
+            "adapter": str(public.get("adapter") or ""),
+            "adapter_version": str(public.get("adapter_version") or ""),
+            "source_kind": "public_url",
+            "outcome": str(public.get("outcome") or getattr(analysis, "outcome", "")),
+            "confidence": float(public.get("confidence") or 0.0),
+            "candidate_count": max(0, int(public.get("candidate_count") or 0)),
+            "accepted_count": max(0, int(public.get("accepted_count") or 0)),
+            "discarded_count": max(0, int(public.get("discarded_count") or 0)),
+            "warnings": [str(value) for value in warnings if str(value or "")][:20],
+        }
+
+    async def analyze_source_candidate(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None = None,
+    ) -> dict[str, Any]:
+        """Inspect one URL without creating a pipeline job or queue entry."""
+        if self._requested_source_type(payload) != "url":
+            raise ValueError("source_validation_url_required")
+        normalized = self._normalize_payload(payload, require_environment=False)
+        analysis = await self._run_source_analysis(normalized["url"])
+
+        from chapter_source import (
+            REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
+            SUPPORTED_GENERIC_HIGH_CONFIDENCE,
+            SUPPORTED_SPECIFIC_ADAPTER,
+        )
+
+        summary = self._public_source_validation_summary(analysis)
+        compatible = {
+            SUPPORTED_SPECIFIC_ADAPTER,
+            SUPPORTED_GENERIC_HIGH_CONFIDENCE,
+            REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
+        }
+        if analysis.outcome not in compatible or self._source_analysis_is_incomplete(summary):
+            return {
+                "ok": True,
+                "status": "source_analysis_blocked",
+                "ready": False,
+                "blocked": True,
+                "reason_code": str(analysis.outcome or "source_not_ready"),
+                "analysis": summary,
+                "policy": self.workspace_source_policy(),
+                "job_created": False,
+                "queue_created": False,
+            }
+
+        from source_readiness import (
+            SourceReadinessStore,
+            source_result_from_analysis,
+        )
+
+        operation_id = uuid.uuid4().hex
+        synthetic_operation = {
+            "id": operation_id,
+            "run_id": operation_id,
+            "source_url": normalized["url"],
+            "attempt": 1,
+            "configuration": {"workspace_owner": "local"},
+        }
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            persisted = readiness.persist_analysis(
+                source_result_from_analysis(synthetic_operation, analysis))
+        finally:
+            readiness.close()
+        policy = self.workspace_source_policy()
+        allowed = (
+            policy.get("status") == "active"
+            and policy.get("all_submitted_sources_authorized") is True
+        )
+        return {
+            "ok": True,
+            "status": "source_analysis_ready",
+            "ready": True,
+            "blocked": not allowed,
+            "reason_code": (
+                "workspace_policy_authorized"
+                if allowed else "workspace_source_authorization_required"
+            ),
+            "analysis_result_id": persisted.analysis_id,
+            "source_analysis_result": persisted.public(),
+            "analysis": summary,
+            "policy": policy,
+            "job_created": False,
+            "queue_created": False,
+        }
+
+    def _require_validated_source(self, payload: dict[str, Any]) -> None:
+        """Fail before job creation unless the submitted URL matches a ready analysis."""
+        if payload.get("source_validation_required") is not True:
+            return
+        analysis_id = str(payload.get("source_analysis_result_id") or "")
+        normalized = self._normalize_payload(payload, require_environment=False)
+        from source_readiness import SourceReadinessStore, default_workspace_id
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            analysis = readiness.get_analysis("local", analysis_id) if analysis_id else None
+            expected_hash = hashlib.sha256(normalized["url"].encode("utf-8")).hexdigest()
+            if (
+                analysis is None
+                or analysis.status != JobStatus.SOURCE_ANALYSIS_READY
+                or analysis.normalized_url_hash != expected_hash
+            ):
+                raise ValueError("source_validation_required")
+            policy = readiness.active_workspace_policy(
+                owner="local", workspace_id=default_workspace_id(self.store.db_path))
+            if policy is None or not policy.all_submitted_sources_authorized:
+                raise ValueError("workspace_source_authorization_required")
+        finally:
+            readiness.close()
+
     async def start(
         self,
         payload: dict[str, Any],
@@ -3429,6 +3566,7 @@ class UiBridge:
             if local_folder_allowed is not True:
                 raise ValueError("local_folder_requires_loopback_ui")
             return await self._start_local_folder(payload, principal=principal)
+        self._require_validated_source(payload)
         stale_resolution = (
             None
             if self._has_current_pipeline_intent(payload)
@@ -4168,6 +4306,9 @@ class UiBridge:
             "source_analysis": source_analysis or {},
             "source_selection": source_selection or {},
         }
+        validated_analysis_id = str(payload.get("source_analysis_result_id") or "")
+        if validated_analysis_id:
+            configuration["preflight_source_analysis_result_id"] = validated_analysis_id
         if source_type := str(payload.get("source_type") or "url"):
             if source_type == "url":
                 from source_readiness import (

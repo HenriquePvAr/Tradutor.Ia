@@ -200,7 +200,9 @@
     var status = String(state.status || '').toLowerCase();
     var stage = String(state.stage || '');
     var progress = resolveProgress(state.progress);
-    var terminal = TERMINAL_COPY[status] || null;
+    // A completed bootstrap means only that session/environment/interface are ready.
+    // Terminal translation wording belongs exclusively to a real pipeline job.
+    var terminal = mode === MODE_PIPELINE ? TERMINAL_COPY[status] : null;
 
     var title, description, tone;
     if (terminal) {
@@ -209,9 +211,11 @@
       description = terminal[1] || String(state.message || '');
       tone = terminal[2];
     } else if (mode === MODE_BOOTSTRAP) {
-      title = 'Preparando o Tradutor.IA';
-      description = 'Restaurando sua sessão e preparando o ambiente.';
-      tone = 'progress';
+      title = status === 'finished' ? 'Tradutor.IA pronto' : 'Preparando o Tradutor.IA';
+      description = status === 'finished'
+        ? 'Sessão, ambiente e interface preparados.'
+        : 'Restaurando sua sessão e preparando o ambiente.';
+      tone = status === 'finished' ? 'success' : 'progress';
     } else if (STAGE_COPY[stage]) {
       title = STAGE_COPY[stage][0];
       description = STAGE_COPY[stage][1];

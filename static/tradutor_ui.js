@@ -45,6 +45,7 @@
     visualLogClearedAt: 0,
     lastFinishedId: '',
     sourceReview: null,
+    sourceValidation: {status: 'idle', analysisResultId: '', sourceUrl: '', reasonCode: ''},
     qualityReview: null,
     qualityReviewFilter: 'pending',
     qualityReviewSelection: new Set(),
@@ -855,18 +856,23 @@
       card.classList.toggle('disabled', unavailable);
       card.setAttribute('aria-disabled', String(unavailable));
     });
+    invalidateSourceValidation();
   }
   $$('.source-type-card').forEach(card => card.addEventListener('click', () => setSourceType(card.dataset.sourceType)));
   setSourceType(appState.selectedSourceType);
   $('#urlInput')?.addEventListener('input', event => {
     const value = event.target.value.trim();
+    invalidateSourceValidation();
     if (!/^https?:\/\//i.test(value)) return;
     const guess = guessFromUrl(value);
     if (!appState.nameDirty) programField($('#nameInput'), guess.title);
     if (!appState.outputDirty) programField($('#outputInput'), guess.slug);
     $('#urlError')?.classList.remove('show');
   });
-  $('#localFolderInput')?.addEventListener('input', () => $('#localFolderError')?.classList.remove('show'));
+  $('#localFolderInput')?.addEventListener('input', () => {
+    $('#localFolderError')?.classList.remove('show');
+    updateTranslationStartControls();
+  });
   $('#nameInput')?.addEventListener('input', () => { if (!appState.programmingFields) appState.nameDirty = true; });
   $('#outputInput')?.addEventListener('input', event => {
     if (!appState.programmingFields) appState.outputDirty = true;
@@ -953,6 +959,53 @@
     else payload.url = $('#urlInput').value.trim();
     return payload;
   }
+  function workspacePolicyAllowsProcessing() {
+    const policy = appState.settings?.workspace_source_policy || {};
+    return policy.status === 'active' && policy.all_submitted_sources_authorized === true;
+  }
+  function minimumSourceInputIsValid() {
+    if (appState.selectedSourceType === 'local_folder') {
+      return Boolean($('#localFolderInput')?.value?.trim());
+    }
+    const value = $('#urlInput')?.value?.trim() || '';
+    try { return /^https?:\/\//i.test(value) && Boolean(new URL(value)); }
+    catch (_) { return false; }
+  }
+  function sourceValidationMatchesForm() {
+    return appState.sourceValidation.status === 'ready'
+      && appState.sourceValidation.sourceUrl === ($('#urlInput')?.value?.trim() || '')
+      && Boolean(appState.sourceValidation.analysisResultId);
+  }
+  function updateTranslationStartControls() {
+    const validating = appState.sourceValidation.status === 'validating';
+    const pipelineBusy = inFlightStatuses.has(appState.status);
+    const local = appState.selectedSourceType === 'local_folder';
+    const minimumValid = minimumSourceInputIsValid();
+    const canStart = local
+      ? minimumValid && !pipelineBusy
+      : minimumValid && sourceValidationMatchesForm()
+        && workspacePolicyAllowsProcessing() && !pipelineBusy;
+    const validate = $('#validateSourceBtn');
+    const start = $('#startBtn');
+    if (validate) {
+      validate.hidden = local;
+      validate.disabled = local || !minimumValid || validating || pipelineBusy;
+      validate.textContent = validating ? 'Validando origem…' : 'Validar origem';
+    }
+    if (start) {
+      start.disabled = !canStart;
+      if (!pipelineBusy) start.textContent = 'Iniciar tradução';
+    }
+    return {canStart, validating, pipelineBusy};
+  }
+  function invalidateSourceValidation() {
+    appState.sourceValidation = {
+      status: 'idle', analysisResultId: '', sourceUrl: '', reasonCode: '', analysis: null,
+    };
+    appState.sourceReady = null;
+    $('#sourceReadyPanel') && ($('#sourceReadyPanel').hidden = true);
+    updateTranslationStartControls();
+  }
   function resetRunPreview() {
     const summary = $('#runSummary');
     if (summary) { summary.hidden = true; summary.innerHTML = ''; }
@@ -965,6 +1018,7 @@
   }
   function clearNewTranslationDraftPanels() {
     resetRunPreview();
+    clearLoadingSurface();
     appState.qualityReview = null;
     appState.qualityReviewSelection = new Set();
     $('#qualityReviewPanel') && ($('#qualityReviewPanel').hidden = true);
@@ -1081,19 +1135,110 @@
     box.hidden = false;
     $('#startRetryBtn')?.addEventListener('click', () => { box.hidden = true; startTranslation(); });
   }
+  function showSourceValidationError(error) {
+    const box = $('#startError');
+    const message = error.message || 'Não foi possível validar esta origem.';
+    $('#balloonText') && ($('#balloonText').textContent = 'A origem não pôde ser validada');
+    clearLoadingSurface();
+    if (!box) { showToast(message, 'error'); return; }
+    box.innerHTML = [
+      '<strong>Origem não validada</strong>',
+      escapeHtml(reasonText(error.code) || message),
+      error.action ? escapeHtml(error.action) : '',
+      '<button class="btn-ghost" id="sourceValidationRetryBtn">Validar novamente</button>',
+    ].filter(Boolean).join('<br>');
+    box.hidden = false;
+    $('#sourceValidationRetryBtn')?.addEventListener('click', () => {
+      box.hidden = true;
+      validateSource();
+    });
+  }
+
+  async function validateSource() {
+    if (appState.selectedSourceType !== 'url' || !validateForm()) return;
+    if (appState.sourceValidation.status === 'validating') return;
+    const payload = formPayload();
+    const sourceUrl = String(payload.url || '');
+    appState.sourceValidation = {
+      status: 'validating', analysisResultId: '', sourceUrl, reasonCode: '', analysis: null,
+    };
+    clearNewTranslationDraftPanels();
+    $('#startError') && ($('#startError').hidden = true);
+    $('#balloonText') && ($('#balloonText').textContent = 'Validando origem…');
+    updateTranslationStartControls();
+    uiTrace('source_validation_started', {request_id: correlationId(), stage: 'source_validation'});
+    try {
+      const result = await api('/api/ui/source/analyze', {
+        method: 'POST', body: JSON.stringify(payload), timeoutMs: 190000,
+      });
+      const ready = result?.status === 'source_analysis_ready' && result?.ready === true;
+      appState.sourceValidation = {
+        status: ready ? 'ready' : 'blocked',
+        analysisResultId: ready ? String(result.analysis_result_id || '') : '',
+        sourceUrl,
+        reasonCode: String(result?.reason_code || ''),
+        analysis: result?.analysis || null,
+      };
+      appState.sourceReady = {
+        id: String(result?.analysis_result_id || ''),
+        job_id: '',
+        status: result?.status || 'source_analysis_blocked',
+        stage: result?.status || 'source_analysis_blocked',
+        source_type: 'url',
+        source_analysis_result: result?.source_analysis_result || {},
+        analysis: result?.analysis || {},
+        reason_code: result?.reason_code || '',
+      };
+      renderSourceAnalysisReady(appState.sourceReady);
+      $('#balloonText') && ($('#balloonText').textContent = ready
+        ? (workspacePolicyAllowsProcessing()
+          ? 'Fonte pronta para processamento' : 'Fonte bloqueada pela política')
+        : 'A origem não está pronta para processamento');
+      showToast(ready
+        ? (workspacePolicyAllowsProcessing() ? 'Fonte autorizada.' : 'Fonte analisada; autorização necessária.')
+        : 'A origem foi analisada, mas permanece bloqueada.', ready && workspacePolicyAllowsProcessing() ? 'ok' : 'warn');
+      uiTrace('source_validation_completed', {
+        status: appState.sourceValidation.status,
+        reason_code: appState.sourceValidation.reasonCode,
+        stage: 'source_validation',
+      });
+    } catch (error) {
+      appState.sourceValidation = {
+        status: 'blocked', analysisResultId: '', sourceUrl,
+        reasonCode: String(error.code || 'source_validation_failed'), analysis: null,
+      };
+      showSourceValidationError(error);
+      uiTrace('source_validation_failed', {
+        reason_code: appState.sourceValidation.reasonCode, stage: 'source_validation',
+      });
+    } finally {
+      updateTranslationStartControls();
+    }
+  }
 
   async function startTranslation() {
     if (!validateForm()) return;
+    if (appState.selectedSourceType === 'url'
+        && (!sourceValidationMatchesForm() || !workspacePolicyAllowsProcessing())) {
+      updateTranslationStartControls();
+      showToast(!workspacePolicyAllowsProcessing()
+        ? 'Ative a política de fontes autorizadas em Configurações.'
+        : 'Valide novamente esta origem antes de iniciar.', 'warn');
+      return;
+    }
     const button = $('#startBtn');
     if (button?.dataset.busy === '1') return;      // guards a double click in-flight
     const previousLabel = button ? button.textContent : '';
     if (button) { button.dataset.busy = '1'; button.disabled = true; button.textContent = 'Iniciando processamento…'; }
     $('#startError') && ($('#startError').hidden = true);
     const payload = formPayload();
+    if (appState.selectedSourceType === 'url') {
+      payload.source_analysis_result_id = appState.sourceValidation.analysisResultId;
+    }
     resetActivePipelineIdentity(payload.url || payload.local_folder || '');
-    renderLocalPipelineState('validating_source', {
+    renderLocalPipelineState('queued', {
       status: 'staging',
-      message: 'Validando fonte',
+      message: 'Criando job de processamento',
     });
 
     try {
@@ -1139,10 +1284,11 @@
       return result;
     } catch (error) {
       // The backend rejected it: return control to the user with a readable reason.
-      if (button) { button.disabled = false; button.textContent = previousLabel || 'Iniciar tradução'; }
+      if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
       showStartError(error);
     } finally {
       if (button) delete button.dataset.busy;
+      updateTranslationStartControls();
     }
   }
   async function cancelTranslation(queue = false, jobId = '') {
@@ -1173,13 +1319,15 @@
     const action = $('#runCancelAction');
     if (action && !appState.cancelBusy) { action.hidden = !active; action.disabled = !active; action.textContent = 'Cancelar processamento'; }
     if (!active) appState.cancelBusy = false;
+    updateTranslationStartControls();
   }
+  $('#validateSourceBtn')?.addEventListener('click', validateSource);
   $('#startBtn')?.addEventListener('click', startTranslation);
   $('#cancelBtn')?.addEventListener('click', () => cancelTranslation(
     false, appState.sourceReview?.job_id || ''));
   $('#runCancelAction')?.addEventListener('click', () => cancelTranslation(false, appState.activeJobId || ''));
   $('#urlInput')?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') { event.preventDefault(); startTranslation(); }
+    if (event.key === 'Enter') { event.preventDefault(); validateSource(); }
   });
   $('#urlInput')?.addEventListener('input', () => {
     if (!appState.currentSourceUrl || $('#urlInput').value.trim() !== appState.currentSourceUrl) {
@@ -1272,7 +1420,7 @@
     const startButton = $('#startBtn');
     if (startButton && !inFlightStatuses.has(appState.status)) {
       startButton.dataset.busy = '0';
-      startButton.disabled = false;
+      updateTranslationStartControls();
     }
     const boot = $('#boot');
     if (boot && !document.documentElement.dataset.visualBootTest) boot.classList.add('hide');
@@ -1392,7 +1540,11 @@
     appState.status = runtime.status || 'ready';
     appState.queue = runtime.queue || [];
     const awaitingReview = appState.status === 'awaiting_source_review';
-    const running = inFlightStatuses.has(appState.status);
+    const latestStatus = String(runtime.latest?.status || '').toLowerCase();
+    const queuedRecord = appState.queue.find(record =>
+      inFlightStatuses.has(String(record?.status || '').toLowerCase())) || null;
+    const running = inFlightStatuses.has(appState.status)
+      || inFlightStatuses.has(latestStatus) || Boolean(queuedRecord);
     const analyzing = appState.status === 'staging';
     const visibleProgress = {...(runtime.progress || {})};
     const terminalLatest = runtime.latest || null;
@@ -1405,9 +1557,11 @@
     }
     const pipelineState = buildPipelineState(runtime, visibleProgress);
     appState.currentPipelineState = pipelineState;
-    appState.activeJobId = runtime.active?.id || runtime.source_review?.id || runtime.source_ready?.id || '';
-    appState.latestJobId = runtime.latest?.id || '';
-    const incoming = runtime.active || runtime.source_review || runtime.source_ready || runtime.latest || null;
+    const activeRecord = runtime.active || runtime.source_review || runtime.source_ready
+      || (inFlightStatuses.has(latestStatus) ? runtime.latest : null) || queuedRecord;
+    appState.activeJobId = String(activeRecord?.id || activeRecord?.job_id || '');
+    appState.latestJobId = String(runtime.latest?.id || runtime.latest?.job_id || '');
+    const incoming = activeRecord || runtime.latest || null;
     const incomingJobId = String(incoming?.id || incoming?.job_id || '');
     const incomingRunId = String(incoming?.run_id || '');
     if (incomingJobId && (!appState.currentJobId || incomingJobId === appState.currentJobId)) {
@@ -1427,7 +1581,10 @@
     const status = $('#appStatus');
     status.textContent = runStatusLabels[appState.status] || appState.status;
     status.dataset.state = appState.status;
-    renderProgress(visibleProgress, pipelineState);
+    const standaloneReady = Boolean(runtime.source_ready)
+      && !String(runtime.source_ready?.job_id || runtime.source_ready?.id || '').match(/^[0-9a-f]{32}$/i);
+    if (standaloneReady) clearLoadingSurface();
+    else renderProgress(visibleProgress, pipelineState);
     const draftOnly = appState.newTranslationDraft && !runtime.active && !runtime.source_review;
     if (draftOnly) clearNewTranslationDraftPanels();
     else if (runtime.source_ready) {
@@ -3679,7 +3836,11 @@
     const surface = window.TradutorProcessingSurface;
     const root = $('#loadingSurface');
     if (!view || !surface || !root) return;
-    if (!state || state.status === 'ready') { root.hidden = true; return; }
+    if (!state || state.status === 'ready'
+        || (options.mode !== 'bootstrap' && terminalRunStatuses.has(state.status) && !state.jobId)) {
+      clearLoadingSurface();
+      return;
+    }
     root.hidden = false;
 
     const record = state.record || {};
@@ -4068,6 +4229,7 @@
     const panel = $('#sourceReadyPanel');
     if (!panel) return;
     const result = record?.source_analysis_result || {};
+    const analysis = record?.analysis || {};
     appState.sourceReady = record || null;
     const policy = appState.settings?.workspace_source_policy || {};
     const safe = value => escapeHtml(String(value || '—'));
@@ -4075,9 +4237,10 @@
     const completed = result.completed_at
       ? new Date(Number(result.completed_at) * 1000).toLocaleString('pt-BR') : '—';
     $('#sourceReadyMeta').innerHTML = [
-      '<strong>A fonte foi reconhecida e a política do workspace está sendo resolvida.</strong>',
+      '<strong>A fonte foi reconhecida. Nenhum job de tradução foi criado.</strong>',
       `Fonte: ${safe(record?.source_type || result.source_kind)}`,
-      `Adapter: ${safe(result.adapter)}`,
+      `Adapter: ${safe(result.adapter || analysis.adapter)}`,
+      `Páginas estimadas: ${safe(analysis.accepted_count ?? result.estimated_asset_count)}`,
       `Inspeção: ${result.browser_inspection_performed ? 'navegador controlado' : 'preflight'}`,
       `Navegador: ${safe(result.browser_engine)}`,
       `Estrutura: ${result.public_structure_indicators_present ? 'compatível' : 'não confirmada'}`,
@@ -4087,12 +4250,16 @@
     ].join('<br>');
     panel.hidden = false;
     const active = policy.status === 'active' && policy.all_submitted_sources_authorized === true;
-    $('#sourceReadyPolicyState').textContent = active
-      ? 'Autorização: política do workspace. Preparando download.'
-      : 'A política de fontes autorizadas está desativada.';
-    $('#openSourcePolicySettings').hidden = active;
+    const compatible = String(record?.status || '') === 'source_analysis_ready';
+    $('#sourceReadyPolicyState').textContent = !compatible
+      ? 'A estrutura da fonte não pôde ser validada com segurança.'
+      : active
+        ? 'Fonte autorizada. Pronta para processamento.'
+        : 'Fontes externas estão bloqueadas até ativar a política.';
+    $('#openSourcePolicySettings').hidden = active || !compatible;
+    updateTranslationStartControls();
   }
-  $('#openSourcePolicySettings')?.addEventListener('click', () => activateTab('settings'));
+  $('#openSourcePolicySettings')?.addEventListener('click', () => activateTab('cfg'));
   function pendingPreviewItems() {
     return Array.isArray(appState.pendingHumanPreviews?.items) ? appState.pendingHumanPreviews.items : [];
   }
@@ -5405,14 +5572,15 @@
       const activated = policy.activated_at
         ? new Date(Number(policy.activated_at) * 1000).toLocaleString('pt-BR') : '—';
       status.textContent = active
-        ? `Ativado · responsável: workspace local · desde ${activated}`
-        : 'Desativado';
+        ? `Ativada · workspace local · desde ${activated}. A autorização vale para processamento; publicação continua sujeita à revisão.`
+        : 'Desativada · Fontes externas estão bloqueadas até ativar a política.';
     }
     const action = $('#workspaceSourcePolicyAction');
     if (action) {
-      action.textContent = active ? 'Revogar política' : 'Ativar política';
+      action.textContent = active ? 'Desativar política' : 'Ativar política';
       action.classList.toggle('danger', active);
     }
+    updateTranslationStartControls();
   }
   let pendingWorkspacePolicyState = null;
   function openWorkspacePolicyConfirmation(active) {
@@ -5455,6 +5623,8 @@
       });
       appState.settings.workspace_source_policy = result.policy || {};
       renderWorkspaceSourcePolicy(result.policy || {});
+      if (appState.sourceReady) renderSourceAnalysisReady(appState.sourceReady);
+      updateTranslationStartControls();
       closeWorkspacePolicyConfirmation();
       showToast(desired ? 'Política das fontes ativada.' : 'Política das fontes revogada.', 'ok');
     } catch (error) {

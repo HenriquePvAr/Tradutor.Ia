@@ -394,6 +394,34 @@ def api_state(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, Any]:
     return BRIDGE.runtime_state_for_owner(principal.owner_id, cursor)
 
 
+@app.post("/api/ui/source/analyze")
+async def api_source_analyze(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
+    """Validate a URL without creating a translation job or queue item."""
+    from chapter_source import SourceError, supported_hosts
+
+    try:
+        return await BRIDGE.analyze_source_candidate(
+            payload, principal=_ui_principal(request, mutate=True))
+    except SourceError as exc:
+        raise HTTPException(status_code=422, detail={
+            "code": exc.code,
+            "stage": "validacao_da_fonte",
+            "message": "Não foi possível validar esta fonte com segurança.",
+            "hosts": supported_hosts(),
+            "action": "Revise a URL e tente novamente.",
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={
+            "code": str(exc),
+            "stage": "validacao_da_fonte",
+            "message": "Não foi possível validar esta fonte.",
+            "action": "Revise os campos e tente novamente.",
+        }) from exc
+
+
 @app.post("/api/ui/run")
 async def api_run(
     request: Request,
@@ -414,8 +442,13 @@ async def api_run(
                 "message": "A pasta local só pode ser enviada pelo painel em loopback.",
                 "action": "Abra o painel local em 127.0.0.1 ou localhost.",
             })
+        guarded_payload = dict(payload)
+        if not requests_local_folder:
+            # Browser submissions may create a pipeline job only after the separate,
+            # jobless source-validation endpoint produced a matching result.
+            guarded_payload["source_validation_required"] = True
         return await BRIDGE.start(
-            payload,
+            guarded_payload,
             principal=_ui_principal(request, mutate=True),
             local_folder_allowed=requests_local_folder,
         )
@@ -454,6 +487,7 @@ async def api_run(
             "download_authorization_required",
             "explicit_download_request_required",
             "workspace_source_authorization_required",
+            "source_validation_required",
             "pipeline_intent_required",
             "workspace_policy_hash_mismatch",
         }:
@@ -464,6 +498,8 @@ async def api_run(
                     "Use a ação separada de download autorizado para continuar.",
                 "workspace_source_authorization_required":
                     "A política de fontes autorizadas está desativada.",
+                "source_validation_required":
+                    "Valide novamente esta origem antes de iniciar a tradução.",
                 "pipeline_intent_required":
                     "A análise existente não possui uma solicitação de pipeline vinculada.",
                 "workspace_policy_hash_mismatch":
