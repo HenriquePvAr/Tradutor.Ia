@@ -576,7 +576,7 @@
     ambientSweep();
     const rect = tab.getBoundingClientRect();
     burstAt(rect.right, rect.top + rect.height / 2, 10);
-    if (name === 'nova' && !inFlightStatuses.has(appState.status) && !appState.reviewMode) {
+    if (name === 'nova' && !appState.reviewMode) {
       appState.newTranslationDraft = true;
       clearNewTranslationDraftPanels();
     }
@@ -979,22 +979,26 @@
   function updateTranslationStartControls() {
     const validating = appState.sourceValidation.status === 'validating';
     const pipelineBusy = inFlightStatuses.has(appState.status);
+    // The worker queue may already contain another chapter. A fresh form remains an
+    // independent draft: it may be validated and enqueued while that job continues.
+    const editingFreshDraft = appState.newTranslationDraft;
+    const busyBlocksDraft = pipelineBusy && !editingFreshDraft;
     const local = appState.selectedSourceType === 'local_folder';
     const minimumValid = minimumSourceInputIsValid();
     const canStart = local
-      ? minimumValid && !pipelineBusy
+      ? minimumValid && !busyBlocksDraft
       : minimumValid && sourceValidationMatchesForm()
-        && workspacePolicyAllowsProcessing() && !pipelineBusy;
+        && workspacePolicyAllowsProcessing() && !busyBlocksDraft;
     const validate = $('#validateSourceBtn');
     const start = $('#startBtn');
     if (validate) {
       validate.hidden = local;
-      validate.disabled = local || !minimumValid || validating || pipelineBusy;
+      validate.disabled = local || !minimumValid || validating || busyBlocksDraft;
       validate.textContent = validating ? 'Validando origem…' : 'Validar origem';
     }
     if (start) {
       start.disabled = !canStart;
-      if (!pipelineBusy) start.textContent = 'Iniciar tradução';
+      if (!busyBlocksDraft) start.textContent = 'Iniciar tradução';
     }
     return {canStart, validating, pipelineBusy};
   }
@@ -1585,7 +1589,7 @@
       && !String(runtime.source_ready?.job_id || runtime.source_ready?.id || '').match(/^[0-9a-f]{32}$/i);
     if (standaloneReady) clearLoadingSurface();
     else renderProgress(visibleProgress, pipelineState);
-    const draftOnly = appState.newTranslationDraft && !runtime.active && !runtime.source_review;
+    const draftOnly = appState.newTranslationDraft && !appState.reviewMode;
     if (draftOnly) clearNewTranslationDraftPanels();
     else if (runtime.source_ready) {
       $('#runStatusCard') && ($('#runStatusCard').hidden = true);

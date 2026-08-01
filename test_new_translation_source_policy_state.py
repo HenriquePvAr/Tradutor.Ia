@@ -216,6 +216,22 @@ class FrontendSourceStateContracts(unittest.TestCase):
             render,
         )
 
+    def test_new_draft_can_be_validated_and_queued_while_another_job_runs(self):
+        controls = UI[UI.index("function updateTranslationStartControls"):]
+        controls = controls[:controls.index("\n  function", 20)]
+        self.assertIn("const editingFreshDraft = appState.newTranslationDraft", controls)
+        self.assertIn("const busyBlocksDraft = pipelineBusy && !editingFreshDraft", controls)
+        self.assertIn("!busyBlocksDraft", controls)
+
+        activation = UI[UI.index("function activateTab"):]
+        activation = activation[:activation.index("\n  $$('.rail-tab')")]
+        self.assertIn("if (name === 'nova' && !appState.reviewMode)", activation)
+        self.assertNotIn("name === 'nova' && !inFlightStatuses.has(appState.status)", activation)
+
+        runtime = UI[UI.index("function renderRuntime(runtime)"):]
+        runtime = runtime[:runtime.index("\n  function renderRunStatus")]
+        self.assertIn("const draftOnly = appState.newTranslationDraft && !appState.reviewMode", runtime)
+
 
 if __name__ == "__main__":
     unittest.main()
