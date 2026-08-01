@@ -45,10 +45,16 @@ class SubmitFlowTests(unittest.TestCase):
         body = body[:body.index("\n  async function cancelTranslation")]
         self.assertLess(body.index("renderLocalPipelineState("), body.index("await api('/api/ui/run'"))
 
-    def test_the_page_announces_source_validation_not_worker_analysis(self):
+    def test_source_validation_is_separate_from_real_pipeline_start(self):
         body = JS[JS.index("async function startTranslation"):]
         body = body[:body.index("\n  async function cancelTranslation")]
-        self.assertIn("validating_source", body)
+        validation = JS[JS.index("async function validateSource"):]
+        validation = validation[:validation.index("\n  async function startTranslation")]
+        self.assertIn("source_validation_started", validation)
+        self.assertIn("/api/ui/source/analyze", validation)
+        self.assertNotIn("/api/ui/run", validation)
+        self.assertIn("source_analysis_result_id", body)
+        self.assertNotIn("validating_source", body)
         self.assertNotIn("Analisando fonte", body)
 
     def test_a_double_click_is_still_guarded(self):
