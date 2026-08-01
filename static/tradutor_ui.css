@@ -2820,7 +2820,7 @@ html[data-visual-reduced-motion="1"] .auth-login-submit::after{transform:none}
   .auth-login-card-topbar{margin-bottom:10px}.auth-login-card-topbar::after{margin-top:10px}
   .auth-login-heading{font-size:24px}.auth-login-lead{margin-bottom:13px}
   .auth-login-page form{gap:9px}.auth-login-field{gap:5px}
-  .auth-login-field input,.auth-login-submit{min-height:47px}
+  .auth-login-field input{min-height:52px}.auth-login-submit{min-height:51px}
   .auth-login-footer{margin-top:13px}.auth-login-privacy{margin-top:12px}
 }
 @media (min-width:901px) and (max-height:680px){
@@ -2837,7 +2837,7 @@ html[data-visual-reduced-motion="1"] .auth-login-submit::after{transform:none}
   .auth-login-card{padding:18px 24px}
   .auth-login-card-topbar::after{display:none}
   .auth-login-heading{font-size:22px}.auth-login-lead{margin-bottom:9px}
-  .auth-login-field input,.auth-login-submit{min-height:44px}
+  .auth-login-field input{min-height:52px}.auth-login-submit{min-height:51px}
   .auth-login-footer{margin-top:9px}.auth-login-privacy{margin-top:8px}
 }
 @media(max-width:900px){
@@ -3000,12 +3000,15 @@ html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login
 @media (min-width: 1100px) and (max-height: 700px){
   .auth-login-shell[data-viewport-height="compact"],
   .auth-login-shell{--auth-shell-pad:clamp(8px,1.2vh,14px);}
-  .auth-login-shell[data-viewport-height="compact"] .auth-login-card{padding-block:clamp(14px,2.2vh,22px);}
-  .auth-login-shell[data-viewport-height="compact"] .auth-login-card-topbar{margin-bottom:10px;}
-  .auth-login-shell[data-viewport-height="compact"] .auth-login-lead{margin-bottom:12px;}
-  .auth-login-shell[data-viewport-height="compact"] .auth-login-privacy{margin-top:10px;}
-  .auth-login-shell[data-viewport-height="compact"] .auth-local-test-notice{margin-bottom:8px;}
-  .auth-login-shell[data-viewport-height="compact"] .auth-login-status-dot{margin-top:6px;}
+  .auth-login-shell{padding:8px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-card{padding-block:clamp(12px,1.8vh,18px);}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-card-topbar{margin-bottom:8px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-lead{margin-bottom:10px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-privacy{margin-top:8px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-local-test-notice{margin-bottom:6px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-status-dot{margin-top:4px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-field input{min-height:52px;}
+  .auth-login-shell[data-viewport-height="compact"] .auth-login-submit{min-height:51px;}
   .auth-login-shell[data-viewport-height="compact"] .auth-login-compare.auth-login-illustration{
     height:clamp(190px,26vh,260px);margin-bottom:30px;
   }
