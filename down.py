@@ -2045,6 +2045,12 @@ def _download_candidates(
 ):
     saved = []
     content_hashes: set[str] = set()
+    content_candidate_ids: dict[str, str] = {}
+    expected_candidate_ids = {
+        str(value or "")
+        for value in (report.get("expected_chapter_candidate_ids") or [])
+        if str(value or "")
+    }
     # The adapter-owned accepted manifest is authoritative, including a completed bounded
     # pagination pass; the raw DOM count only describes the first reader surface.
     viewer_total = len(report.get("expected_chapter_candidate_ids") or []) or int(
@@ -2067,6 +2073,9 @@ def _download_candidates(
         existing_item = _existing_download_item(existing_path, candidate, url)
         if existing_item:
             content_hashes.add(existing_item["sha256"])
+            content_candidate_ids.setdefault(
+                existing_item["sha256"], str(existing_item.get("candidate_id") or "")
+            )
             report["downloaded"].append(existing_item)
             report["total_downloaded"] = len(report["downloaded"])
             report["reused_existing_count"] = int(report.get("reused_existing_count") or 0) + 1
@@ -2111,11 +2120,22 @@ def _download_candidates(
             continue
 
         digest = hashlib.sha256(data).hexdigest()
+        candidate_id = str(candidate.get("candidate_id") or "")
+        duplicate_of_candidate_id = content_candidate_ids.get(digest, "")
         if digest in content_hashes:
-            image.close()
-            _report_ignored(report, candidate, "duplicate_image_bytes")
-            continue
-        content_hashes.add(digest)
+            distinct_manifest_slot = bool(
+                candidate_id
+                and candidate_id in expected_candidate_ids
+                and duplicate_of_candidate_id
+                and candidate_id != duplicate_of_candidate_id
+            )
+            if not distinct_manifest_slot:
+                image.close()
+                _report_ignored(report, candidate, "duplicate_image_bytes")
+                continue
+        else:
+            content_hashes.add(digest)
+            content_candidate_ids[digest] = candidate_id
 
         file_path = os.path.join(target_folder, f"{len(saved) + 1:03}.png")
         save_started = time.perf_counter()
@@ -2124,7 +2144,7 @@ def _download_candidates(
         report["timings"]["image_save_seconds"] += time.perf_counter() - save_started
 
         item = {
-            "candidate_id": str(candidate.get("candidate_id") or ""),
+            "candidate_id": candidate_id,
             "url": _sanitized_url(url),
             "path": file_path,
             "transport_name": _safe_report_metadata(used_transport, "unknown"),
@@ -2135,6 +2155,8 @@ def _download_candidates(
             "sha256": digest,
             "is_chapter_candidate": bool(candidate.get("isChapterCandidate")),
         }
+        if duplicate_of_candidate_id:
+            item["duplicate_content_of_candidate_id"] = duplicate_of_candidate_id
         report["downloaded"].append(item)
         _record_successful_transport(report, item["transport_name"])
         report["total_downloaded"] = len(report["downloaded"])

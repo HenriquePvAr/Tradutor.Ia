@@ -973,6 +973,38 @@ class DownloaderRegressionTests(unittest.TestCase):
             self.assertEqual(len(paths), 1)
             self.assertIn("duplicate_image_bytes", [item["reason"] for item in report["ignored"]])
 
+    def test_distinct_accepted_manifest_slots_preserve_identical_image_bytes(self):
+        image = Image.new("RGB", (800, 1200), "navy")
+        buffer = io.BytesIO()
+        image.save(buffer, "PNG")
+        with tempfile.TemporaryDirectory() as folder:
+            report = {
+                "viewer_image_count": 2,
+                "expected_chapter_candidate_ids": ["page-a", "page-b"],
+                "ignored": [],
+                "downloaded": [],
+                "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                            "image_save_seconds": 0.0},
+            }
+            paths = _download_candidates(
+                None,
+                [
+                    {"candidate_id": "page-a", "url": "canvas://one", "canvas_data": buffer.getvalue(),
+                     "source": "canvas_capture", "order": 1, "width": 800, "height": 1200,
+                     "isChapterCandidate": True},
+                    {"candidate_id": "page-b", "url": "canvas://two", "canvas_data": buffer.getvalue(),
+                     "source": "canvas_capture", "order": 2, "width": 800, "height": 1200,
+                     "isChapterCandidate": True},
+                ],
+                None, 1, None, None, report, "https://reader.example.test/chapter/1", folder, transports=[],
+            )
+
+            self.assertEqual(len(paths), 2)
+            self.assertEqual([item["candidate_id"] for item in report["downloaded"]], ["page-a", "page-b"])
+            self.assertTrue(report["download_gate"]["passed"])
+            self.assertEqual(report["download_gate"]["missing_viewer_images"], 0)
+            self.assertNotIn("duplicate_image_bytes", [item["reason"] for item in report["ignored"]])
+
     def test_lazy_placeholder_uses_declared_chapter_dimensions(self):
         candidate = {
             "url": "https://example.test/chapter-page.jpg",
