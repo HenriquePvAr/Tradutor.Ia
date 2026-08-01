@@ -273,6 +273,16 @@ PORTUGUESE_MARKERS = {
     "VOU",
 }
 
+# The OCR repair lexicon is broader than the compact high-confidence residual
+# list above.  It is too permissive for rejecting a single token (many short
+# words are shared by languages), but three source-preserved lexicon words in
+# one candidate form an objective English-clause signal.  Portuguese markers
+# and allowed proper names remain excluded below.
+SOURCE_PRESERVED_ENGLISH_PHRASE_WORDS = frozenset(
+    re.sub(r"[^A-Z']", "", str(word).upper())
+    for word in OCR_REPAIR_ENGLISH_WORDS
+) - PORTUGUESE_MARKERS - {"I"}
+
 
 @dataclass
 class TextCandidate:
@@ -4583,6 +4593,25 @@ def validate_translation_text(
         or longest_english_run >= 2
     ):
         return False, "mixed_language_tokens:" + ",".join(sorted(set(forbidden))[:6])
+
+    preserved_english_phrase_tokens = [
+        token
+        for index, token in enumerate(translated_tokens)
+        if token in source_tokens
+        and token in SOURCE_PRESERVED_ENGLISH_PHRASE_WORDS
+        and token not in allowed_names
+        and not _is_portuguese_folded_token(translated_infos, index)
+    ]
+    if (
+        translatable_context
+        and target_language_signal
+        and len(preserved_english_phrase_tokens) >= 3
+    ):
+        return (
+            False,
+            "mixed_language_tokens:"
+            + ",".join(sorted(set(preserved_english_phrase_tokens))[:6]),
+        )
 
     partial_source_fragment = _residual_source_hyphen_fragment(
         source_text,

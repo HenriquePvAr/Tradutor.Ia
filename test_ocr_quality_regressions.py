@@ -1146,6 +1146,28 @@ class OCRQualityRegressionTests(unittest.TestCase):
         )
         self.assertTrue(valid, reason)
 
+    def test_mixed_english_clause_is_rejected_without_a_small_runtime_wordlist(self):
+        valid, reason = validate_translation_text(
+            'DID YOU JUST REFER TO US AS "JUST" THAT?',
+            'ISSO PARECE CERTO REFER TO US AS "JUST" THAT?',
+            "speech",
+        )
+        self.assertFalse(valid)
+        self.assertIn("mixed_language_tokens", reason)
+
+        for translation in (
+            "ISSO PARECE CERTO PARA NÓS.",
+            "ISSO É JUSTO PARA NÓS.",
+            "AS PESSOAS NOS DISSERAM ISSO.",
+        ):
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    'DID YOU JUST REFER TO US AS "JUST" THAT?',
+                    translation,
+                    "speech",
+                )
+                self.assertTrue(valid, reason)
+
     def test_portuguese_for_and_accented_so_are_not_residual_english(self):
         cases = [
             "SEJA O QUE FOR. VAMOS SÓ SAIR.",
