@@ -39,6 +39,10 @@ from translator_nvidia import TranslatorNvidiaBatch
 from chapter_quality_revision import REVIEW_SCHEMA_VERSION
 from local_environment import load_local_environment_for_entrypoint
 from process_options import hidden_console_options
+from request_observability import (
+    StructuredRequestAuditMiddleware,
+    configured_request_audit_destination,
+)
 from ui_bridge import UiBridge, local_folder_ui_allowed
 
 
@@ -204,6 +208,10 @@ def _enrich_history_publications(history: list[dict[str, Any]]) -> None:
         })
 
 app.add_middleware(CommunityNetworkBoundaryMiddleware, auth=AUTH)
+app.add_middleware(
+    StructuredRequestAuditMiddleware,
+    destination=configured_request_audit_destination(ROOT, os.environ),
+)
 app.add_static_files("/static", STATIC_DIR)
 app.include_router(create_community_router(COMMUNITY, AUTH))
 app.include_router(create_admin_community_router(COMMUNITY, AUTH))
