@@ -116,8 +116,13 @@ class InpaintingContract(unittest.TestCase):
         candidates = ati.generate_inpainting_candidates(region, masks)
         self.assertTrue(candidates)
         methods = {item["method"] for item in candidates}
+        self.assertIn("local_color", methods)
+        self.assertIn("local_gradient", methods)
         self.assertIn("telea", methods)
         self.assertIn("navier_stokes", methods)
+        self.assertTrue(
+            {"local_patch", "verified_nearest_donor", "deterministic_multiscale_patch"} & methods
+        )
         selected = ati.select_best_candidate(candidates)
         self.assertIn(selected["status"], {"passed", "needs_review"})
         self.assertIn("edge_continuity_score", selected)

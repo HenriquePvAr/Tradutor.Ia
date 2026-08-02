@@ -3028,20 +3028,47 @@ class ChapterQualityRevision:
             polarity, evidence = self._detect_text_polarity(region)
             override = (mask_overrides_by_box or {}).get((left, top, right, bottom)) or {}
             automatic_masks: dict[str, Any] | None = None
-            if polarity == "ambiguous" and not override:
-                # Histogram polarity alone is inconclusive on gradients, outlines
-                # and textured balloons. Try the independent, geometry-limited text
-                # segmentation before asking for review. It remains fail-closed:
-                # unsafe masks never reach inpainting or the page composite.
-                automatic_masks = art_text_inpainting.build_text_masks(region)
-                if not automatic_masks.get("valid"):
+            if not override:
+                # Every rejected text region gets the same bounded, geometry-limited
+                # neighbor-pixel reconstruction attempts.  A clear histogram is useful
+                # evidence, but it is not a reason to skip the scored color, gradient,
+                # Telea, Navier-Stokes and patch proposals.
+                proposed_masks = art_text_inpainting.build_text_masks(region)
+                if proposed_masks.get("valid"):
+                    automatic_masks = dict(proposed_masks)
+                    if polarity != "ambiguous":
+                        # Histogram polarity is reliable on uniform light/dark
+                        # balloons. Union it with the structural segmentation so
+                        # anti-aliased glyph fragments are not left behind while
+                        # the candidate scorer still compares every reconstruction.
+                        polarity_mask = self._previous_text_mask(region, polarity)
+                        combined = cv2.bitwise_or(
+                            np.asarray(proposed_masks["combined_inpainting_mask"], dtype=np.uint8),
+                            np.asarray(polarity_mask, dtype=np.uint8),
+                        )
+                        automatic_masks["combined_inpainting_mask"] = combined
+                        automatic_masks["validation_halo"] = cv2.dilate(
+                            combined, np.ones((5, 5), np.uint8), iterations=1
+                        )
+                        protected = np.asarray(
+                            proposed_masks.get("protected_edge_mask"), dtype=np.uint8
+                        )
+                        automatic_masks["protected_edge_mask"] = cv2.bitwise_and(
+                            protected,
+                            cv2.bitwise_not(cv2.dilate(
+                                combined, np.ones((3, 3), np.uint8), iterations=1
+                            )),
+                        )
+                        automatic_masks["mask_hash"] = art_text_inpainting.mask_hash(combined)
+                        automatic_masks.pop("source_residual_mask", None)
+                elif polarity == "ambiguous":
                     metrics.append({
                         "box": [left, top, right, bottom],
                         "polarity": polarity,
                         "polarity_evidence": evidence,
                         "reason_code": "ambiguous_text_polarity",
                         "automatic_mask_reason_codes": list(
-                            automatic_masks.get("reason_codes") or []),
+                            proposed_masks.get("reason_codes") or []),
                     })
                     return None, metrics, "ambiguous_text_polarity"
             if override:

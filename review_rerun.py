@@ -185,4 +185,3 @@ def build_pending_region_plan(output_dir: str | Path) -> dict[str, Any]:
         "estimated_provider_requests": provider_count,
         "targets": targets,
     }
-

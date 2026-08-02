@@ -567,6 +567,53 @@ class LocalizedCleanupContracts(unittest.TestCase):
             self.assertEqual(metrics[0]["mask_source"], "automatic_text_segmentation")
             self.assertEqual(len(metrics[0]["inpainting_candidates"]), 2)
 
+    def test_clear_polarity_also_tries_scored_neighbor_pixel_strategies(self) -> None:
+        import cv2
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            page = np.full((80, 180, 3), 235, dtype=np.uint8)
+            mask = np.zeros((60, 160), dtype=np.uint8)
+            mask[20:35, 35:55] = 255
+            halo = cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1)
+            candidate = page[10:70, 10:170].copy()
+            masks = {
+                "valid": True,
+                "combined_inpainting_mask": mask,
+                "source_residual_mask": mask,
+                "validation_halo": halo,
+                "protected_edge_mask": np.zeros(mask.shape, dtype=np.uint8),
+                "mask_hash": "clear-mask",
+                "reason_codes": [],
+            }
+            proposals = [
+                {"method": "local_color", "radius": None, "image": candidate,
+                 "overall_score": 0.92},
+                {"method": "local_gradient", "radius": None, "image": candidate,
+                 "overall_score": 0.91},
+                {"method": "navier_stokes", "radius": 2, "image": candidate,
+                 "overall_score": 0.90},
+            ]
+            with patch.object(
+                    revision, "_detect_text_polarity",
+                    return_value=("dark_text_on_light_background", {})), \
+                    patch("chapter_quality_revision.art_text_inpainting.build_text_masks",
+                          return_value=masks) as build_masks, \
+                    patch("chapter_quality_revision.art_text_inpainting.generate_inpainting_candidates",
+                          return_value=proposals) as generate, \
+                    patch("chapter_quality_revision.art_text_inpainting.select_best_candidate",
+                          return_value={"status": "passed", "method": "local_color",
+                                        "radius": None}):
+                cleaned, metrics, reason = revision._clean_previous_translation(
+                    page, [(10, 10, 170, 70)])
+            self.assertEqual(reason, "")
+            self.assertIsNotNone(cleaned)
+            build_masks.assert_called_once()
+            generate.assert_called_once()
+            self.assertEqual(metrics[0]["selected_inpainting"]["method"], "local_color")
+            self.assertEqual(len(metrics[0]["inpainting_candidates"]), 3)
+
     def test_a_mask_covering_most_of_a_light_region_is_rejected(self) -> None:
         import numpy as np
 

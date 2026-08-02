@@ -677,6 +677,94 @@ def score_inpaint_candidate(original_bgr: np.ndarray, candidate_bgr: np.ndarray,
     }
 
 
+def _local_neighbor_mask(target_mask: np.ndarray, donor_mask: np.ndarray) -> np.ndarray:
+    target = (np.asarray(target_mask) > 0).astype(np.uint8) * 255
+    donors = np.asarray(donor_mask) > 0
+    radius = max(5, min(21, int(round(max(target.shape) * 0.08))))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
+    ring = (cv2.dilate(target, kernel, iterations=1) > 0) & ~(target > 0) & donors
+    return ring if np.any(ring) else donors
+
+
+def _local_color_candidate(
+    source_bgr: np.ndarray, target_mask: np.ndarray, donor_mask: np.ndarray
+) -> np.ndarray:
+    """Fill only glyph pixels from the median and bounded noise of nearby donors."""
+    source = np.asarray(source_bgr)
+    target = np.asarray(target_mask) > 0
+    neighbors = _local_neighbor_mask(target_mask, donor_mask)
+    values = source[neighbors].astype(np.int16)
+    if not values.size:
+        return source.copy()
+    median = np.median(values, axis=0)
+    residuals = np.clip(values - median, -10, 10)
+    result = source.copy()
+    coords = np.argwhere(target)
+    for index, (y, x) in enumerate(coords):
+        noise = residuals[(int(y) * source.shape[1] + int(x) + index) % len(residuals)]
+        result[y, x] = np.clip(median + noise, 0, 255).astype(np.uint8)
+    return result
+
+
+def _local_gradient_candidate(
+    source_bgr: np.ndarray, target_mask: np.ndarray, donor_mask: np.ndarray
+) -> np.ndarray:
+    """Interpolate a per-channel local plane from verified neighboring pixels."""
+    source = np.asarray(source_bgr)
+    target = np.asarray(target_mask) > 0
+    neighbors = _local_neighbor_mask(target_mask, donor_mask)
+    points = np.argwhere(neighbors)
+    if len(points) < 6:
+        return _local_color_candidate(source, target_mask, donor_mask)
+    if len(points) > 6000:
+        points = points[np.linspace(0, len(points) - 1, 6000, dtype=int)]
+    height, width = source.shape[:2]
+    design = np.column_stack((
+        points[:, 1] / max(1, width - 1),
+        points[:, 0] / max(1, height - 1),
+        np.ones(len(points)),
+    ))
+    target_points = np.argwhere(target)
+    target_design = np.column_stack((
+        target_points[:, 1] / max(1, width - 1),
+        target_points[:, 0] / max(1, height - 1),
+        np.ones(len(target_points)),
+    ))
+    result = source.copy()
+    for channel in range(source.shape[2]):
+        coefficients, *_ = np.linalg.lstsq(
+            design, source[points[:, 0], points[:, 1], channel].astype(np.float64),
+            rcond=None,
+        )
+        fitted = np.clip(target_design @ coefficients, 0, 255).astype(np.uint8)
+        result[target_points[:, 0], target_points[:, 1], channel] = fitted
+    return result
+
+
+def _local_patch_candidate(
+    source_bgr: np.ndarray, target_mask: np.ndarray, donor_mask: np.ndarray
+) -> np.ndarray:
+    """Copy the nearest verified neighboring patch pixel without global search."""
+    source = np.asarray(source_bgr)
+    target = np.asarray(target_mask) > 0
+    donors = np.asarray(donor_mask) > 0
+    if not np.any(target) or not np.any(donors):
+        return source.copy()
+    distance_input = (~donors).astype(np.uint8)
+    _distance, labels = cv2.distanceTransformWithLabels(
+        distance_input, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL
+    )
+    label_to_coord: dict[int, tuple[int, int]] = {}
+    for y, x in np.argwhere(donors):
+        label_to_coord.setdefault(int(labels[y, x]), (int(y), int(x)))
+    result = source.copy()
+    for y, x in np.argwhere(target):
+        origin = label_to_coord.get(int(labels[y, x]))
+        if origin is not None:
+            result[y, x] = source[origin]
+    return result
+
+
 def generate_inpainting_candidates(region_bgr: np.ndarray, masks: dict[str, Any]) -> list[dict[str, Any]]:
     if not masks.get("valid"):
         return []
@@ -694,6 +782,38 @@ def generate_inpainting_candidates(region_bgr: np.ndarray, masks: dict[str, Any]
                 **metrics,
             })
     source_mask = masks.get("source_residual_mask")
+    if source_mask is None:
+        # Generic glyph segmentation has no richer OCR contamination contract. Keep
+        # this common path bounded: use a small exclusion halo and generate local
+        # color, gradient and nearest-patch proposals without sanitizing the entire
+        # context moat pixel by pixel.
+        halo = cv2.dilate(
+            np.asarray(mask, dtype=np.uint8),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+            iterations=1,
+        )
+        donor_mask = cv2.bitwise_not(halo)
+        for method_name, repaired in (
+            ("local_color", _local_color_candidate(region_bgr, mask, donor_mask)),
+            ("local_gradient", _local_gradient_candidate(region_bgr, mask, donor_mask)),
+        ):
+            metrics = score_inpaint_candidate(region_bgr, repaired, masks)
+            candidates.append({
+                "method": method_name, "radius": None,
+                "mask_hash": masks["mask_hash"], "image": repaired, **metrics,
+            })
+        patch = _local_patch_candidate(region_bgr, mask, donor_mask)
+        metrics = score_inpaint_candidate(region_bgr, patch, masks)
+        candidates.append({
+            "method": "local_patch", "radius": None,
+            "mask_hash": masks["mask_hash"],
+            "donor_pool_hash": mask_hash(donor_mask),
+            "image": patch, **metrics,
+        })
+        candidates.sort(
+            key=lambda item: float(item.get("overall_score") or 0.0), reverse=True
+        )
+        return candidates
     if source_mask is not None:
         zero = np.zeros_like(mask)
         contract = build_contamination_contract(
@@ -709,6 +829,31 @@ def generate_inpainting_candidates(region_bgr: np.ndarray, masks: dict[str, Any]
         )
         donor_pool = build_verified_donor_pool(
             contamination_contract=contract, target_mask=mask)
+        if donor_pool.get("status") == "valid":
+            for method_name, repaired in (
+                ("local_color", _local_color_candidate(
+                    region_bgr, mask, donor_pool["donor_eligibility_mask"])),
+                ("local_gradient", _local_gradient_candidate(
+                    region_bgr, mask, donor_pool["donor_eligibility_mask"])),
+            ):
+                clean_masks = {
+                    **masks,
+                    "source_residual_mask": source_mask,
+                    "texture_reference_mask": donor_pool["donor_eligibility_mask"],
+                }
+                metrics = score_inpaint_candidate(region_bgr, repaired, clean_masks)
+                candidates.append({
+                    "method": method_name,
+                    "radius": None,
+                    "mask_hash": masks["mask_hash"],
+                    "contamination_contract_id": contract["contamination_contract_id"],
+                    "donor_pool_hash": donor_pool["donor_pool_hash"],
+                    "source_contaminated_samples_used": 0,
+                    "source_text_similar_samples_used": 0,
+                    "target_pixels_used_as_donors": 0,
+                    "image": repaired,
+                    **metrics,
+                })
         reconstructed = reconstruct_from_verified_donors(
             region_bgr, target_mask=mask, donor_pool=donor_pool)
         if reconstructed.get("status") == "valid":
@@ -777,6 +922,15 @@ def generate_inpainting_candidates(region_bgr: np.ndarray, masks: dict[str, Any]
                     "image": clean["image"],
                     **metrics,
                 })
+        # Multiscale synthesis is intentionally reserved for the richer OCR residual
+        # contract.  A generic glyph mask still gets local color, local gradient,
+        # Telea, Navier-Stokes and verified nearest-donor proposals without turning a
+        # routine page rerun into an unbounded texture search.
+        if masks.get("source_residual_mask") is None:
+            candidates.sort(
+                key=lambda item: float(item.get("overall_score") or 0.0), reverse=True
+            )
+            return candidates
         profile = mps.analyze_texture_profile(
             region_bgr, donor_pool["donor_eligibility_mask"])
         schedule = mps.derive_patch_schedule(
