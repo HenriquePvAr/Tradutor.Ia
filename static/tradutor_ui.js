@@ -51,6 +51,10 @@
     qualityReviewSelection: new Set(),
     qualityReviewUndo: [],
     qualityReviewBulkBusy: false,
+    reviewRerunPlan: null,
+    reviewRerunBusy: false,
+    reviewRerunChildId: '',
+    reviewRerunPoll: null,
     qualityRevisionPoll: null,
     currentPipelineState: null,
     cancelBusy: false,
@@ -673,6 +677,7 @@
     pdf: 'Gerando o PDF...',
     reports: 'Gerando o PDF...',
     quality_review: 'Revisando a tradução...',
+    review_rerun: 'Reprocessando pendências...',
     quality_gate: 'Revisando a tradução...',
     review_required: 'Revisão necessária',
     finished: 'Capítulo concluído',
@@ -1430,6 +1435,7 @@
     pdf: 'pdf',
     reports: 'pdf',
     quality_review: 'quality_review',
+    review_rerun: 'quality_review',
     quality_gate: 'quality_review',
     review_required: 'quality_review',
     review_completed: 'quality_review',
@@ -1453,6 +1459,10 @@
   }
   function terminalNotificationMessage(record) {
     const status = String(record?.status || '').toLowerCase();
+    if (record?.operation_kind === 'review_rerun') {
+      if (status === 'review_required') return {message: 'Rerun concluído com propostas que ainda exigem revisão.', type: 'warn'};
+      if (status === 'finished') return {message: 'Rerun seletivo concluído.', type: 'ok'};
+    }
     if (status === 'review_required') {
       return {message: 'PDF gerado, mas requer revisão de qualidade.', type: 'warn'};
     }
@@ -1536,7 +1546,7 @@
     const total = Number(progress.total || 0);
     const fraction = Number.isFinite(Number(progress.fraction)) ? Number(progress.fraction) : (total ? current / total : null);
     const isTerminal = terminalRunStatuses.has(status) || ['failed', 'cancelled'].includes(status);
-    const totalPages = Number(record?.page_count || record?.pages || progress.pages || progress.total_pages || 0);
+    const totalPages = Number(record?.target_page_count || record?.page_count || record?.pages || progress.pages || progress.total_pages || 0);
     const pendingReview = Number(runtime.quality_review?.pending_count || record?.manual_review_count || record?.rejected_count || 0);
     return {
       requestId: appState.currentRequestId,
@@ -1790,6 +1800,13 @@
     });
     $$('[data-review-filter]').forEach(button => {
       const filter = String(button.dataset.reviewFilter || 'pending');
+      const filterLabels = {
+        pending: 'Aguardando decisão',
+        completed: 'Decisões registradas',
+      };
+      if (filterLabels[filter] && button.firstChild?.nodeType === Node.TEXT_NODE) {
+        button.firstChild.nodeValue = `${filterLabels[filter]} `;
+      }
       const selected = filter === activeFilter;
       button.classList.toggle('selected', selected);
       button.setAttribute('aria-pressed', selected ? 'true' : 'false');
@@ -1830,6 +1847,9 @@
     const reportOnly = Number(review.report_only_count || 0);
     if (reportOnly > 0) visualParts.push(`somente relatório ${reportOnly}`);
     $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · LOW ${counts.LOW || 0} · MEDIUM ${counts.MEDIUM || 0} · HIGH ${counts.HIGH || 0}${visualParts.length ? ` · gate visual: ${visualParts.join(' · ')}` : ''} · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
+    const chapter = review.chapter_counts || {};
+    const decisions = review.decision_counts || {};
+    $('#qualityReviewMeta').textContent = `Capítulo: ${Number(chapter.total || 0)} regiões · aprovadas ${Number(chapter.approved || 0)} · pendentes ${Number(chapter.pending || 0)} · rejeitadas ${Number(chapter.rejected || 0)} · sem alteração ${Number(chapter.unchanged || 0)} · manuais ${Number(chapter.manual || 0)} · Painel de decisões: aguardando ${Number(decisions.pending || 0)} · registradas ${Number(decisions.completed || 0)} · Filtro atual: ${visible.length} exibidos · LOW ${counts.LOW || 0} · MEDIUM ${counts.MEDIUM || 0} · HIGH ${counts.HIGH || 0}${visualParts.length ? ` · gate visual: ${visualParts.join(' · ')}` : ''} · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
     renderReviewPreviewAccess();
     // Separate, clearly labelled action for the reviewed PDF; shown only when the
     // revision manifest points to a real reviewed file (never a glob).
@@ -1893,9 +1913,9 @@
   function updateQualityReviewSelectionUi() {
     const count = appState.qualityReviewSelection.size;
     const label = $('#qualityReviewSelectedCount');
-    if (label) label.textContent = `${count} selecionado${count === 1 ? '' : 's'}`;
-    const all = $('#qualityReviewSelectAll');
     const visible = visibleQualityReviewKeys();
+    if (label) label.textContent = `${visible.length} exibido${visible.length === 1 ? '' : 's'} · ${count} selecionado${count === 1 ? '' : 's'}`;
+    const all = $('#qualityReviewSelectAll');
     if (all) {
       all.checked = visible.length > 0 && visible.every(key => appState.qualityReviewSelection.has(key));
       all.indeterminate = !all.checked && visible.some(key => appState.qualityReviewSelection.has(key));
@@ -1909,6 +1929,214 @@
     if (!node) return;
     node.textContent = message || '';
     node.dataset.state = type || '';
+  }
+
+  function closeReviewRerunDialog() {
+    const overlay = $('#reviewRerunConfirm');
+    if (overlay) {
+      overlay.classList.remove('show');
+      overlay.setAttribute('aria-hidden', 'true');
+    }
+    appState.reviewRerunPlan = null;
+    appState.reviewRerunBusy = false;
+    const apply = $('#reviewRerunApply');
+    if (apply) { apply.disabled = false; apply.textContent = 'Iniciar rerun'; }
+  }
+
+  function renderReviewRerunPlan(plan) {
+    const summary = $('#reviewRerunSummary');
+    if (!summary) return;
+    const reasons = new Map();
+    (plan.targets || []).forEach(item => {
+      const reason = String(item.reason_code || 'review_required');
+      reasons.set(reason, (reasons.get(reason) || 0) + 1);
+    });
+    summary.innerHTML = [
+      ['Regiões', Number(plan.region_count || 0)],
+      ['Páginas', Number(plan.page_count || 0)],
+      ['Somente reconstrução', Number(plan.reconstruction_only || 0)],
+      ['Precisam de NVIDIA', Number(plan.provider_required || 0)],
+      ['Reutilizam tradução', Number(plan.reconstruction_only || 0)],
+      ['Requests estimadas', Number(plan.estimated_provider_requests || 0)],
+    ].map(([label, value]) => `<div class="pub-meta"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('')
+      + `<div class="review-rerun-reasons"><small>Motivos</small><span>${escapeHtml([...reasons.entries()].map(([reason, count]) => `${reason} (${count})`).join(' · ') || '—')}</span></div>`;
+    const providerRow = $('#reviewRerunProviderRow');
+    if (providerRow) providerRow.hidden = Number(plan.provider_required || 0) <= 0;
+    if ($('#reviewRerunAllowProvider')) $('#reviewRerunAllowProvider').checked = false;
+    if ($('#reviewRerunError')) $('#reviewRerunError').hidden = true;
+  }
+
+  const REVIEW_RERUN_TERMINAL = new Set(['finished', 'review_required', 'failed', 'cancelled', 'interrupted']);
+  const REVIEW_RERUN_STATE_LABELS = {
+    queued: 'Aguardando worker', claimed: 'Worker iniciou o reprocessamento',
+    running: 'Reprocessamento em andamento', cancel_requested: 'Cancelamento solicitado',
+    cancelling: 'Aguardando o worker interromper a região atual',
+    cancelled: 'Rerun cancelado', review_required: 'Rerun concluído com revisão necessária',
+    completed: 'Rerun concluído', failed: 'Rerun falhou',
+  };
+  const REVIEW_RERUN_STEP_LABELS = {
+    creating_mask_and_analyzing_neighbors: 'Criando máscara e analisando cores',
+    validating_residual: 'Validando texto residual', completed: 'Validação concluída',
+    cancelled: 'Cancelado',
+  };
+
+  function renderReviewRerunActivity(record = null) {
+    const panel = $('#reviewRerunActivity');
+    if (!panel) return;
+    if (!record) { panel.hidden = true; return; }
+    panel.hidden = false;
+    const current = Number(record.progress_current || 0);
+    const total = Number(record.progress_total || 0);
+    const state = String(record.status || 'queued');
+    const lifecycle = String(record.lifecycle_state || state);
+    const meta = $('#reviewRerunActivityMeta');
+    if (meta) meta.textContent = `${state} · ${current}/${total || '?'} · ${String(record.progress_message || 'aguardando worker')}`;
+    const stateNode = $('#reviewRerunActivityState');
+    if (stateNode) {
+      stateNode.textContent = record.cancellation_timed_out
+        ? 'Worker sem resposta' : (REVIEW_RERUN_STATE_LABELS[lifecycle] || lifecycle);
+      stateNode.dataset.state = record.cancellation_timed_out ? 'failed' : lifecycle;
+    }
+    const title = $('#reviewRerunActivityTitle');
+    if (title) title.textContent = record.chapter_name
+      ? `Rerun de pendências · ${String(record.chapter_name)}` : 'Rerun de pendências';
+    const counts = record.rerun_counts || {};
+    const heartbeat = record.worker_heartbeat_age_seconds == null
+      ? (record.worker_lease === 'unclaimed' ? 'Worker ainda não assumiu' : 'Heartbeat indisponível')
+      : `Worker ativo há ${Math.max(0, Math.round(Number(record.worker_heartbeat_age_seconds)))} s`;
+    const location = [
+      Number(record.current_page || 0) ? `Página ${Number(record.current_page)}` : '',
+      record.current_region_id ? `Região ${String(record.current_region_id)}` : '',
+      REVIEW_RERUN_STEP_LABELS[String(record.current_step || '')] || String(record.current_step || ''),
+    ].filter(Boolean).join(' · ');
+    if (meta) meta.innerHTML = [
+      lifecycle === 'queued' && record.queue_position ? `Posição na fila: ${Number(record.queue_position)}` : '',
+      location,
+      `Progresso: ${Number(counts.processed || 0)} de ${Number(counts.targets || total || 0)} regiões`,
+      `Aprovadas ${Number(counts.approved || 0)} · rejeitadas ${Number(counts.rejected || 0)} · restantes ${Number(counts.remaining || 0)} · canceladas ${Number(counts.cancelled || 0)}`,
+      heartbeat,
+      record.updated_at ? `Última atualização: ${String(record.updated_at)}` : '',
+      record.cancellation_elapsed_seconds != null
+        ? `Cancelamento solicitado há ${Math.round(Number(record.cancellation_elapsed_seconds))} s (limite ${Number(record.cancellation_timeout_seconds || 15)} s)` : '',
+    ].filter(Boolean).map(value => `<span>${escapeHtml(value)}</span>`).join('');
+    const cancel = $('#cancelReviewRerunAction');
+    if (cancel) {
+      const active = ['queued', 'claimed', 'running', 'cancel_requested', 'cancelling'].includes(lifecycle);
+      cancel.hidden = !active;
+      cancel.disabled = ['cancel_requested', 'cancelling'].includes(lifecycle) || appState.reviewRerunBusy;
+    }
+    const retry = $('#retryReviewRerunStatus');
+    if (retry) retry.hidden = !record.cancellation_timed_out;
+  }
+
+  async function pollReviewRerunStatus(jobId) {
+    if (!jobId || appState.reviewRerunChildId !== jobId) return;
+    if (appState.reviewRerunPoll) { clearTimeout(appState.reviewRerunPoll); appState.reviewRerunPoll = null; }
+    try {
+      const record = await api('/api/ui/review-rerun/status', {
+        method: 'POST', body: JSON.stringify({job_id: jobId}),
+      });
+      renderReviewRerunActivity(record);
+      if (REVIEW_RERUN_TERMINAL.has(String(record.status || ''))) {
+        const message = record.status === 'review_required'
+          ? 'Rerun concluído; a revisão humana continua necessária.'
+          : record.status === 'finished' ? 'Rerun concluído.'
+          : record.status === 'cancelled' ? 'Rerun cancelado.'
+          : `Rerun encerrado: ${String(record.status || 'erro')}.`;
+        setQualityReviewBulkMessage(message, record.status === 'finished' ? 'ok' : 'warn');
+        return;
+      }
+      appState.reviewRerunPoll = setTimeout(() => pollReviewRerunStatus(jobId), 750);
+    } catch (error) {
+      setQualityReviewBulkMessage(error.message || 'Não foi possível atualizar o rerun.', 'error');
+    }
+  }
+
+  async function cancelReviewRerun() {
+    const jobId = appState.reviewRerunChildId;
+    if (!jobId || appState.reviewRerunBusy) return;
+    appState.reviewRerunBusy = true;
+    renderReviewRerunActivity({status: 'cancelling', progress_message: 'solicitação enviada'});
+    try {
+      const record = await api('/api/ui/review-rerun/cancel', {
+        method: 'POST', body: JSON.stringify({job_id: jobId}),
+      });
+      renderReviewRerunActivity(record);
+      setQualityReviewBulkMessage('Cancelamento solicitado ao child run.', 'warn');
+      await pollReviewRerunStatus(jobId);
+    } catch (error) {
+      setQualityReviewBulkMessage(error.message || 'Não foi possível cancelar o rerun.', 'error');
+    } finally {
+      appState.reviewRerunBusy = false;
+    }
+  }
+
+  async function openReviewRerunDialog() {
+    const jobId = String(appState.qualityReview?.job_id || '');
+    if (!jobId || appState.reviewRerunBusy) return;
+    const trigger = $('#rerunPendingReview');
+    appState.reviewRerunBusy = true;
+    if (trigger) { trigger.disabled = true; trigger.textContent = 'Preparando...'; }
+    setQualityReviewBulkMessage('Localizando somente as regiões pendentes...', 'busy');
+    try {
+      const plan = await api('/api/ui/review-rerun/plan', {
+        method: 'POST', body: JSON.stringify({job_id: jobId}),
+      });
+      if (!Number(plan.region_count || 0)) {
+        setQualityReviewBulkMessage('Nenhuma região pendente foi encontrada.', 'ok');
+        return;
+      }
+      appState.reviewRerunPlan = plan;
+      renderReviewRerunPlan(plan);
+      const overlay = $('#reviewRerunConfirm');
+      if (overlay) { overlay.classList.add('show'); overlay.setAttribute('aria-hidden', 'false'); }
+      $('#reviewRerunApply')?.focus();
+      setQualityReviewBulkMessage('Confira o escopo antes de iniciar o rerun.', '');
+    } catch (error) {
+      setQualityReviewBulkMessage(error.message || 'Não foi possível preparar o rerun.', 'error');
+      showToast(error.message || 'Não foi possível preparar o rerun.', 'error');
+    } finally {
+      appState.reviewRerunBusy = false;
+      if (trigger) { trigger.disabled = false; trigger.textContent = 'Reprocessar pendências'; }
+    }
+  }
+
+  async function startReviewRerun() {
+    const plan = appState.reviewRerunPlan;
+    const apply = $('#reviewRerunApply');
+    const errorNode = $('#reviewRerunError');
+    if (!plan || appState.reviewRerunBusy) return;
+    const mode = $('input[name="reviewRerunMode"]:checked')?.value || 'all_pending';
+    const providerRequired = mode !== 'reconstruction' && Number(plan.provider_required || 0) > 0;
+    const allowProvider = $('#reviewRerunAllowProvider')?.checked === true;
+    if (providerRequired && !allowProvider) {
+      if (errorNode) {
+        errorNode.textContent = 'Autorize a NVIDIA para os trechos sem tradução válida ou escolha somente reconstruções.';
+        errorNode.hidden = false;
+      }
+      return;
+    }
+    appState.reviewRerunBusy = true;
+    if (apply) { apply.disabled = true; apply.textContent = 'Enfileirando...'; }
+    if (errorNode) errorNode.hidden = true;
+    try {
+      const child = await api('/api/ui/review-rerun/start', {
+        method: 'POST',
+        body: JSON.stringify({job_id: plan.job_id, modes: [mode], allow_provider: allowProvider}),
+      });
+      closeReviewRerunDialog();
+      appState.reviewRerunChildId = String(child.id || '');
+      renderReviewRerunActivity(child);
+      showToast(`Rerun enfileirado para ${Number(child.target_region_count || 0)} região(ões).`, 'ok');
+      setQualityReviewBulkMessage('Rerun de pendências adicionado à fila.', 'ok');
+      await pollState();
+      pollReviewRerunStatus(appState.reviewRerunChildId);
+    } catch (error) {
+      if (errorNode) { errorNode.textContent = error.message || 'Não foi possível iniciar o rerun.'; errorNode.hidden = false; }
+      if (apply) { apply.disabled = false; apply.textContent = 'Iniciar rerun'; }
+    } finally {
+      appState.reviewRerunBusy = false;
+    }
   }
 
   function qualityReviewDeveloperMode() {
@@ -3589,6 +3817,18 @@
     if (appState.qualityReview) renderQualityReview(appState.qualityReview);
   }));
   $('#confirmQualityReview')?.addEventListener('click', confirmQualityReview);
+  $('#rerunPendingReview')?.addEventListener('click', openReviewRerunDialog);
+  $('#reviewRerunApply')?.addEventListener('click', startReviewRerun);
+  $('#reviewRerunCancel')?.addEventListener('click', closeReviewRerunDialog);
+  $('#reviewRerunClose')?.addEventListener('click', closeReviewRerunDialog);
+  $('#cancelReviewRerunAction')?.addEventListener('click', cancelReviewRerun);
+  $('#retryReviewRerunStatus')?.addEventListener('click', () => {
+    const jobId = appState.reviewRerunChildId;
+    if (jobId) void pollReviewRerunStatus(jobId);
+  });
+  $('#reviewRerunConfirm')?.addEventListener('click', event => {
+    if (event.target === $('#reviewRerunConfirm')) closeReviewRerunDialog();
+  });
   $('#qualityReviewSelectAll')?.addEventListener('change', event => {
     const keys = visibleQualityReviewKeys();
     if (event.target.checked) keys.forEach(key => appState.qualityReviewSelection.add(key));
@@ -4724,7 +4964,11 @@
     }
     const button = target.closest('[data-action]');
     if (!button) return;
-    const record = appState.history.find(item => String(item.id) === String(button.closest('.hist-item')?.dataset.id));
+    const rowId = String(button.closest('.hist-item')?.dataset.id || '');
+    const reviewJobId = String(button.dataset.reviewJob || '').toLowerCase();
+    const record = appState.history.find(item =>
+      String(item.id) === rowId ||
+      (reviewJobId && String(item.job_id || '').toLowerCase() === reviewJobId));
     if (!record) return;
     if (button.dataset.action === 'open-preview') {
       void openPendingPreview(firstReadyPreviewForRecord(record) || pendingPreviewsForRecord(record)[0]);
@@ -5513,7 +5757,12 @@
     const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 12 4 4 8-9"/></svg>';
     const closeIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m6 6 12 12M18 6 6 18"/></svg>';
     const queueClass = status => status === 'finished' ? 'done' : status === 'review_required' ? 'review_required' : escapeAttr(status);
-    list.innerHTML = items.length ? items.map((item, index) => `<div class="queue-item status-${queueClass(item.status)}" data-id="${escapeAttr(item.id)}"><span class="qi-num">${terminalRunStatuses.has(item.status) ? checkIcon : index + 1}</span><span class="qi-url">${escapeHtml(item.chapter_name || item.url)}</span><span class="qi-status">${runStatusLabels[item.status] || item.status}</span>${['waiting','queued'].includes(item.status) ? `<button class="qi-remove" data-id="${escapeAttr(item.id)}" aria-label="Remover da fila">${closeIcon}</button>` : ''}</div>`).join('') : '<div class="empty-real-state">fila vazia · adicione uma URL acima</div>';
+    list.innerHTML = items.length ? items.map((item, index) => {
+      const operation = item.operation_kind === 'review_rerun'
+        ? `${item.operation_label || 'Rerun de pendências'} · ${Number(item.target_region_count || 0)} região(ões)`
+        : (item.chapter_name || item.url);
+      return `<div class="queue-item status-${queueClass(item.status)}" data-id="${escapeAttr(item.id)}"><span class="qi-num">${terminalRunStatuses.has(item.status) ? checkIcon : index + 1}</span><span class="qi-url">${escapeHtml(operation)}</span><span class="qi-status">${runStatusLabels[item.status] || item.status}</span>${['waiting','queued'].includes(item.status) ? `<button class="qi-remove" data-id="${escapeAttr(item.id)}" aria-label="Remover da fila">${closeIcon}</button>` : ''}</div>`;
+    }).join('') : '<div class="empty-real-state">fila vazia · adicione uma URL acima</div>';
   }
   $('#queueAddBtn')?.addEventListener('click', addQueueItem);
   $('#queueUrlInput')?.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); addQueueItem(); } });

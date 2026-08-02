@@ -45,6 +45,7 @@ from ui_helpers import (
 from ui_history import UIHistoryStore, utc_now
 from chapter_quality_revision import (REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision,
                                       read_json, write_json)
+from review_rerun import build_pending_region_plan
 import audit_registry
 import human_translation_decisions
 import human_mask_decisions
@@ -76,6 +77,7 @@ WORKER_ENV_COMPATIBILITY_KEYS = ("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "CHROMEDRIVER
 JOB_LOG_DIR = REPO_ROOT / ".cache" / "runtime" / "logs"
 MAX_LOG_LINES = 3000
 SOURCE_ANALYSIS_TIMEOUT_SECONDS = 180
+REVIEW_RERUN_CANCEL_TIMEOUT_SECONDS = 15.0
 _WINDOWS_LOCAL_PATH = re.compile(r"(?i)\b[A-Z]:\\[^\r\n]+")
 _UI_STAGE_LABELS = {
     "created": "Preparando",
@@ -101,6 +103,7 @@ _UI_STAGE_LABELS = {
     "translate": "Traduzindo os textos",
     "render": "Redesenhando as páginas",
     "pdf": "Gerando o PDF",
+    "review_rerun": "Rerun de pendências",
     "final": "Finalizado",
 }
 MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
@@ -258,10 +261,16 @@ def _runner_still_alive(job: dict[str, Any]) -> bool:
         import process_tree
     except Exception:  # noqa: BLE001 - process checks are best-effort in the UI
         return False
+    operation_kind = str(job.get("operation_kind") or "translation")
+    runner_script = {
+        "translation": "job_runner.py",
+        "community_publish": "community_publish_runner.py",
+        "review_rerun": "review_rerun_runner.py",
+    }.get(operation_kind, "job_runner.py")
     return process_tree.is_alive(
         job.get("runner_pid"),
         create_time=job.get("runner_create_time"),
-        substrings=["job_runner.py", job["id"]],
+        substrings=[runner_script, job["id"]],
     )
 
 
@@ -475,6 +484,150 @@ class UiBridge:
             reconciled.append({"job_id": job_id, "status": target, "reason": reason})
         return reconciled
 
+    def _reconcile_timed_out_review_rerun(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Settle a cancelled rerun whose bounded grace period has expired.
+
+        The runner tree is stopped only when its PID, creation time, script and job id
+        still match.  The worker itself is never terminated and unrelated worktrees are
+        therefore outside this recovery path.
+        """
+        if (
+            str(job.get("operation_kind") or "") != "review_rerun"
+            or str(job.get("status") or "") not in JobStatus.IN_FLIGHT
+            or not job.get("cancel_requested")
+        ):
+            return job
+        requested_at = _normalize_epoch(job.get("cancellation_requested_at"))
+        if requested_at is None or time.time() - requested_at < REVIEW_RERUN_CANCEL_TIMEOUT_SECONDS:
+            return job
+        runner_alive = _runner_still_alive(job)
+        if runner_alive:
+            try:
+                import process_tree
+
+                report = process_tree.terminate_tree(
+                    job.get("runner_pid"),
+                    create_time=job.get("runner_create_time"),
+                    substrings=["review_rerun_runner.py", str(job.get("id") or "")],
+                    timeout=8.0,
+                )
+            except Exception:  # noqa: BLE001 - fail closed while the runner may be alive
+                return self.store.get_job(str(job.get("id") or "")) or job
+            if report.get("reason") not in {"stopped", "not_running"}:
+                return self.store.get_job(str(job.get("id") or "")) or job
+        current = self.store.get_job(str(job.get("id") or "")) or job
+        if current.get("status") in JobStatus.TERMINAL:
+            return current
+        try:
+            if current.get("status") != JobStatus.CANCELLING:
+                current = self.store.transition(
+                    current["id"], JobStatus.CANCELLING,
+                    interrupted_reason="cancellation_timeout_recovered",
+                    reason_code="user_cancelled", stage="cancelling",
+                )
+            current = self.store.transition(
+                current["id"], JobStatus.CANCELLED,
+                interrupted_reason="cancellation_timeout_recovered",
+                reason_code="user_cancelled", stage="cancelled", recoverable=0,
+            )
+        except Exception:  # noqa: BLE001 - worker/runner terminalization wins the race
+            current = self.store.get_job(str(job.get("id") or "")) or current
+        return current
+
+    def _review_rerun_public_state(
+        self, job: dict[str, Any], config: dict[str, Any]
+    ) -> dict[str, Any]:
+        status = str(job.get("status") or JobStatus.QUEUED)
+        cancel_requested = bool(job.get("cancel_requested"))
+        lifecycle = {
+            JobStatus.QUEUED: "queued",
+            JobStatus.CLAIMING: "claimed",
+            JobStatus.STARTING: "claimed",
+            JobStatus.RUNNING: "running",
+            JobStatus.CANCELLING: "cancelling",
+            JobStatus.CANCELLED: "cancelled",
+            JobStatus.REVIEW_REQUIRED: "review_required",
+            JobStatus.FINISHED: "completed",
+            JobStatus.FAILED: "failed",
+            JobStatus.INTERRUPTED: "failed",
+        }.get(status, status)
+        if cancel_requested and status in {
+            JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING
+        }:
+            lifecycle = "cancel_requested"
+
+        result = self.store.review_actions(str(job.get("id") or ""))
+        targets = [item for item in (config.get("targets") or []) if isinstance(item, dict)]
+        total = len(targets)
+        counter_stage = str(job.get("progress_counter_stage") or "")
+        persisted_processed = result.get("processed_regions")
+        if persisted_processed is None and (
+            counter_stage == "review_rerun_regions"
+            or int(job.get("progress_total") or 0) == total
+        ):
+            persisted_processed = job.get("progress_current")
+        try:
+            processed = max(0, min(total, int(persisted_processed or 0)))
+        except (TypeError, ValueError):
+            processed = 0
+        try:
+            approved = max(0, min(processed, int(result.get("approved_regions") or 0)))
+            rejected = max(0, min(processed, int(result.get("rejected_regions") or 0)))
+            cancelled = max(0, int(result.get("cancelled_regions") or 0))
+        except (TypeError, ValueError):
+            approved = rejected = cancelled = 0
+        if status == JobStatus.CANCELLED:
+            cancelled = max(cancelled, total - processed)
+            remaining = 0
+        else:
+            cancelled = min(cancelled, max(0, total - processed))
+            remaining = max(0, total - processed - cancelled)
+        counts = {
+            "targets": total,
+            "processed": processed,
+            "approved": approved,
+            "rejected": rejected,
+            "remaining": remaining,
+            "cancelled": cancelled,
+        }
+
+        now = time.time()
+        job_heartbeat = _normalize_epoch(job.get("heartbeat_at"))
+        worker = self.store.get_worker(str(job.get("worker_id") or ""))
+        worker_heartbeat = _normalize_epoch((worker or {}).get("heartbeat_at"))
+        worker_age = max(0.0, now - worker_heartbeat) if worker_heartbeat else None
+        if not job.get("worker_id"):
+            worker_lease = "unclaimed"
+        else:
+            worker_lease = "active" if worker_age is not None and worker_age <= 15 else "expired"
+        cancel_at = _normalize_epoch(job.get("cancellation_requested_at"))
+        cancel_elapsed = max(0.0, now - cancel_at) if cancel_at else None
+        return {
+            "lifecycle_state": lifecycle,
+            "queue_position": self.store.queue_position(str(job.get("id") or "")),
+            "worker_lease": worker_lease,
+            "worker_heartbeat_at": _epoch_to_iso(worker_heartbeat),
+            "worker_heartbeat_age_seconds": round(worker_age, 1) if worker_age is not None else None,
+            "job_heartbeat_at": _epoch_to_iso(job_heartbeat),
+            "job_heartbeat_age_seconds": (
+                round(max(0.0, now - job_heartbeat), 1) if job_heartbeat else None
+            ),
+            "cancellation_elapsed_seconds": (
+                round(cancel_elapsed, 1) if cancel_elapsed is not None else None
+            ),
+            "cancellation_timeout_seconds": REVIEW_RERUN_CANCEL_TIMEOUT_SECONDS,
+            "cancellation_timed_out": bool(
+                cancel_elapsed is not None
+                and cancel_elapsed >= REVIEW_RERUN_CANCEL_TIMEOUT_SECONDS
+                and status not in JobStatus.TERMINAL
+            ),
+            "current_page": int(result.get("current_page") or 0),
+            "current_region_id": str(result.get("current_region_id") or "")[:160],
+            "current_step": str(result.get("current_step") or "")[:80],
+            "rerun_counts": counts,
+            "rerun_accounting_closed": total == processed + remaining + cancelled,
+        }
+
     # ---- job <-> UI record mapping -----------------------------------------
     def _job_record(self, job: dict[str, Any] | None) -> dict[str, Any] | None:
         if not job:
@@ -523,6 +676,23 @@ class UiBridge:
             "id": job["id"],
             "run_id": job.get("run_id"),
             "job_id": job["id"],
+            "operation_kind": str(job.get("operation_kind") or "chapter"),
+            "parent_job_id": str(job.get("parent_job_id") or ""),
+            "operation_label": (
+                "Rerun de pendências"
+                if str(job.get("operation_kind") or "") == "review_rerun"
+                else "Tradução de capítulo"
+            ),
+            "target_region_count": len(config.get("targets") or []),
+            "target_page_count": len({
+                int(item.get("page") or 0)
+                for item in (config.get("targets") or [])
+                if isinstance(item, dict) and int(item.get("page") or 0) > 0
+            }),
+            "provider_requests_planned": sum(
+                1 for item in (config.get("targets") or [])
+                if isinstance(item, dict) and item.get("requires_provider") is True
+            ),
             "community_ownership": ownership,
             "chapter_name": config.get("chapter_name") or job.get("series_title") or job.get("series_slug") or "",
             "slug": Path(job.get("output_dir") or "").name,
@@ -550,6 +720,10 @@ class UiBridge:
             "interrupted_reason": job.get("interrupted_reason") or "",
             "reason_code": job.get("reason_code") or "",
             "stage": str(job.get("stage") or "created"),
+            "progress_current": int(job.get("progress_current") or 0),
+            "progress_total": int(job.get("progress_total") or 0),
+            "progress_message": sanitize_diagnostic_text(job.get("progress_message") or "")[:300],
+            "progress_counter_stage": str(job.get("progress_counter_stage") or ""),
             "error_message": sanitize_diagnostic_text(job.get("error_message") or ""),
             "source_analysis": job.get("source_analysis") or {},
             "source_selection": job.get("source_selection") or {},
@@ -560,6 +734,8 @@ class UiBridge:
             ),
             "source_provenance": self._public_job_source_provenance(job),
             "started_at": _epoch_to_iso(job.get("started_at")),
+            "updated_at": _epoch_to_iso(job.get("updated_at")),
+            "heartbeat_at": _epoch_to_iso(job.get("heartbeat_at")),
             "finished_at": _epoch_to_iso(job.get("finished_at")),
             "total_seconds": _duration(job),
             "review_confirmed": bool(job.get("review_confirmed_at")),
@@ -572,6 +748,8 @@ class UiBridge:
             "cancellation_completed_at": _epoch_to_iso(job.get("cancellation_completed_at")),
             **result_metrics,
         }
+        if str(job.get("operation_kind") or "") == "review_rerun":
+            record.update(self._review_rerun_public_state(job, config))
         output_dir = Path(str(job.get("output_dir") or ""))
         output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
         try:
@@ -664,8 +842,15 @@ class UiBridge:
             return None
         report = self._quality_report_data(job)
         if not report:
-            return {"job_id": job["id"], "items": [], "pending_count": 0,
-                    "confirmed": bool(job.get("review_confirmed_at"))}
+            return {
+                "job_id": job["id"], "items": [], "pending_count": 0,
+                "confirmed": bool(job.get("review_confirmed_at")),
+                "chapter_counts": {
+                    "total": 0, "approved": 0, "pending": 0, "rejected": 0,
+                    "unchanged": 0, "manual": 0, "accounting_closed": True,
+                },
+                "decision_counts": {"total": 0, "pending": 0, "completed": 0},
+            }
         actions = self.store.review_actions(job["id"])
         visual_states = self._region_visual_states(job)
         items: list[dict[str, Any]] = []
@@ -745,16 +930,36 @@ class UiBridge:
                     "page_url": f"/api/ui/quality-review/{job['id']}/page/{page_number}",
                 })
         report_only = sum(1 for item in items if item["visual_state"] == "report_only")
+        visual_summary = ChapterQualityRevision._visual_state_summary(visual_states)
+        chapter_counts = {
+            "approved": int(visual_summary.get("applied") or 0),
+            "pending": int(visual_summary.get("pending") or 0),
+            "rejected": int(visual_summary.get("rejected_visual_regression") or 0),
+            "unchanged": int(visual_summary.get("unchanged") or 0),
+            "manual": int(visual_summary.get("manual_review") or 0),
+        }
+        chapter_counts["total"] = len(visual_states)
+        chapter_counts["accounting_closed"] = chapter_counts["total"] == sum(
+            chapter_counts[key]
+            for key in ("approved", "pending", "rejected", "unchanged", "manual")
+        )
+        pending_decisions = sum(1 for item in items if item["state"] == "pending")
         return {
             "job_id": job["id"],
             "items": items,
-            "pending_count": sum(1 for item in items if item["state"] == "pending"),
+            "pending_count": pending_decisions,
             "confirmed": bool(job.get("review_confirmed_at")),
             "review_status": "completed" if job.get("review_confirmed_at") else "required",
             "status": job.get("status"),
             # Chapter-wide gate summary stays the 108 reviewed regions; report-only
             # items are a panel-only bucket and are counted separately.
-            "visual_state_summary": ChapterQualityRevision._visual_state_summary(visual_states),
+            "visual_state_summary": visual_summary,
+            "chapter_counts": chapter_counts,
+            "decision_counts": {
+                "total": len(items),
+                "pending": pending_decisions,
+                "completed": len(items) - pending_decisions,
+            },
             "report_only_count": report_only,
             "reviewed_pdf": self._latest_reviewed_pdf(job),
         }
@@ -941,6 +1146,97 @@ class UiBridge:
         self.store.confirm_review(job_id)
         self.history_revision += 1
         return self.quality_review(job_id) or payload
+
+    @staticmethod
+    def _public_review_rerun_plan(plan: dict[str, Any]) -> dict[str, Any]:
+        """Strip filesystem details while retaining the explicit region contract."""
+        public_targets = []
+        for raw in plan.get("targets") or []:
+            if not isinstance(raw, dict):
+                continue
+            public_targets.append({
+                key: raw.get(key)
+                for key in (
+                    "region_id", "page", "classification", "review_action",
+                    "visual_state", "reason_code", "inside_balloon",
+                    "background_type", "requires_provider", "work_kind",
+                    "previous_strategies", "previous_score",
+                )
+            })
+        return {
+            key: plan.get(key)
+            for key in (
+                "schema_version", "region_count", "page_count", "pages",
+                "reconstruction_only", "provider_required",
+                "estimated_provider_requests",
+            )
+        } | {"targets": public_targets}
+
+    def review_rerun_plan_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_found")
+        if not str(job.get("output_dir") or "").strip():
+            raise ValueError("quality_review_not_available")
+        plan = build_pending_region_plan(str(job["output_dir"]))
+        public = self._public_review_rerun_plan(plan)
+        public.update({
+            "job_id": str(job["id"]),
+            "run_id": str(job.get("run_id") or ""),
+            "chapter_name": str(
+                (job.get("configuration") or {}).get("chapter_name")
+                or job.get("series_title") or ""
+            )[:160],
+            "approved_pages_preserved": True,
+        })
+        return public
+
+    def start_review_rerun_for_owner(
+        self,
+        owner_id: str,
+        job_id: str,
+        *,
+        allow_provider: bool,
+        modes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_found")
+        plan = build_pending_region_plan(str(job.get("output_dir") or ""))
+        allowed_modes = {
+            "all_pending", "untranslated", "reconstruction", "improve_translation"
+        }
+        requested_modes = [str(value or "").strip() for value in (modes or ["all_pending"])]
+        if not requested_modes or any(value not in allowed_modes for value in requested_modes):
+            raise ValueError("invalid_rerun_mode")
+        targets = list(plan.get("targets") or [])
+        if "all_pending" not in requested_modes:
+            filtered = []
+            for target in targets:
+                provider = target.get("requires_provider") is True
+                reconstruction = str(target.get("work_kind") or "") == "reconstruction_only"
+                if provider and ("untranslated" in requested_modes or "improve_translation" in requested_modes):
+                    filtered.append(target)
+                elif reconstruction and "reconstruction" in requested_modes:
+                    filtered.append(target)
+            targets = filtered
+        child = self.store.create_review_rerun(
+            str(job["id"]),
+            targets=targets,
+            allow_provider=allow_provider is True,
+            modes=requested_modes,
+            commit_hash=_current_commit(),
+            branch=_current_branch(),
+        )
+        self.history_revision += 1
+        return self._job_record(child) or {}
+
+    def review_rerun_status_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not self._is_queue_operation(job) or str(job.get("operation_kind") or "") != "review_rerun":
+            raise ValueError("job_not_found")
+        job = self._reconcile_timed_out_review_rerun(job)
+        return self._job_record(job) or {}
 
     @staticmethod
     def _looks_english(text: str) -> bool:
@@ -3004,6 +3300,13 @@ class UiBridge:
         job_type = str((job.get("configuration") or {}).get("job_type") or "translation")
         return job_type == "translation"
 
+    @staticmethod
+    def _is_queue_operation(job: dict[str, Any] | None) -> bool:
+        if not job:
+            return False
+        job_type = str((job.get("configuration") or {}).get("job_type") or "translation")
+        return job_type in {"translation", "review_rerun"}
+
     def _displayed_source_review(self) -> dict[str, Any] | None:
         """The one pending review currently shown by the single-review UI surface."""
         return max(
@@ -3166,7 +3469,7 @@ class UiBridge:
         self.reconcile_orphans()
         active_jobs = list_jobs(statuses=JobStatus.IN_FLIGHT, limit=None)
         active = max(
-            (job for job in active_jobs if self._is_translation_job(job)),
+            (job for job in active_jobs if self._is_queue_operation(job)),
             key=lambda job: float(job.get("claimed_at") or 0),
             default=None,
         )
@@ -3221,11 +3524,11 @@ class UiBridge:
         queued = [
             self._job_record(job)
             for job in list_jobs(statuses=[JobStatus.QUEUED])
-            if self._is_translation_job(job)
+            if self._is_queue_operation(job)
         ]
         resumable = [self._job_record(job) for job in list_jobs(
             statuses=[JobStatus.INTERRUPTED, JobStatus.RESUMABLE])
-            if self._is_translation_job(job)]
+            if self._is_queue_operation(job)]
         worker = self.store.healthy_worker(stale_seconds=15)
         logs = self._tail_job_logs(active, cursor)
         # A queued job is pending work, not "pronto". Reporting it as ready is what made a
@@ -4528,7 +4831,7 @@ class UiBridge:
         requested_review_id = str(job_id or "").strip()
         if requested_review_id:
             requested = self.store.get_job(requested_review_id)
-            if not requested or not self._is_translation_job(requested):
+            if not requested or not self._is_queue_operation(requested):
                 raise ValueError("job_not_found")
             if requested.get("status") in JobStatus.TERMINAL:
                 return {
@@ -4574,11 +4877,11 @@ class UiBridge:
             if (
                 not active_requested
                 or active_requested.get("id") != requested_review_id
-                or not self._is_translation_job(active_requested)
+                or not self._is_queue_operation(active_requested)
             ):
                 raise ValueError("job_not_active")
         active = self.store.active_job()
-        if self._is_translation_job(active):
+        if self._is_queue_operation(active):
             previous_status = str(active.get("status") or "")
             self.store.request_cancel(active["id"])
             # The runner honours the flag and tears down only its own process tree. When the
@@ -4636,7 +4939,7 @@ class UiBridge:
                 pass
         if queue:
             for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
-                if not self._is_translation_job(job):
+                if not self._is_queue_operation(job):
                     continue
                 try:
                     self.store.transition(job["id"], JobStatus.CANCELLED,
@@ -4657,13 +4960,13 @@ class UiBridge:
                 raise ValueError("job_not_found")
             return await self.cancel(job_id=requested_id)
         active = self.store.active_job_for_owner(owner_id)
-        if active and self._is_translation_job(active):
+        if active and self._is_queue_operation(active):
             return await self.cancel(job_id=str(active["id"]))
         if queue:
             for job in self.store.list_jobs_for_owner(
                 owner_id, statuses=[JobStatus.QUEUED], limit=None
             ):
-                if self._is_translation_job(job):
+                if self._is_queue_operation(job):
                     try:
                         self.store.transition(
                             job["id"], JobStatus.CANCELLED,
@@ -4878,20 +5181,20 @@ class UiBridge:
 
     def remove_queue_item_for_owner(self, owner_id: str, item_id: str) -> None:
         job = self.store.get_job_for_owner(owner_id, item_id)
-        if self._is_translation_job(job) and job["status"] == JobStatus.QUEUED:
+        if self._is_queue_operation(job) and job["status"] == JobStatus.QUEUED:
             self.store.transition(item_id, JobStatus.CANCELLED, interrupted_reason="removed")
 
     def remove_queue_item(self, item_id: str) -> None:
         """Operator-local compatibility surface; never expose through HTTP."""
         job = self.store.get_job(item_id)
-        if self._is_translation_job(job) and job["status"] == JobStatus.QUEUED:
+        if self._is_queue_operation(job) and job["status"] == JobStatus.QUEUED:
             self.store.transition(item_id, JobStatus.CANCELLED, interrupted_reason="removed")
 
     def clear_queue_for_owner(self, owner_id: str) -> None:
         for job in self.store.list_jobs_for_owner(
             owner_id, statuses=[JobStatus.QUEUED], limit=None
         ):
-            if not self._is_translation_job(job):
+            if not self._is_queue_operation(job):
                 continue
             try:
                 self.store.transition(job["id"], JobStatus.CANCELLED, interrupted_reason="queue_cleared")
@@ -4901,7 +5204,7 @@ class UiBridge:
     def clear_queue(self) -> None:
         """Operator-local compatibility surface; never expose through HTTP."""
         for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
-            if self._is_translation_job(job):
+            if self._is_queue_operation(job):
                 try:
                     self.store.transition(
                         job["id"], JobStatus.CANCELLED,
@@ -5196,13 +5499,25 @@ class UiBridge:
             "publication_preserved": bool(record.get("publication_id")),
         }
 
+    def close(self) -> None:
+        """Release every SQLite handle owned by this bridge instance."""
+        for name in (
+            "visual_reviews", "residual_component_reviews", "residual_analyses",
+            "mask_revisions", "human_masks", "human_typography",
+            "human_translations", "audit_decisions", "store",
+        ):
+            resource = getattr(self, name, None)
+            close = getattr(resource, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - shutdown is best effort
+                    pass
+
     async def shutdown(self) -> None:
         # Closing the UI must never cancel a running job: the worker owns it and keeps
         # processing. Only release this process's database handle.
-        try:
-            self.store.close()
-        except Exception:  # noqa: BLE001
-            pass
+        self.close()
 
     def _normalize_payload(
         self,

@@ -110,6 +110,7 @@ class Worker:
     _RUNNERS = {
         "translation": "job_runner.py",
         "community_publish": "community_publish_runner.py",
+        "review_rerun": "review_rerun_runner.py",
     }
 
     def _runner_fingerprint(self, job_id: str, job: dict | None = None) -> list[str]:
@@ -185,6 +186,12 @@ class Worker:
         )
 
         current = self.store.get_job(job["id"]) or job
+        job_type = str((current.get("configuration") or {}).get("job_type") or "translation")
+        if job_type != "translation":
+            # Child operations consume already-persisted artifacts. Sending them through
+            # URL source readiness would either reopen a source or fail them for not
+            # carrying a chapter selection, both of which violate their contract.
+            return current
         if not should_spawn_runner(current):
             return None
         if str(current.get("source_type") or "") != "url":

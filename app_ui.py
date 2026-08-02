@@ -629,6 +629,74 @@ def api_quality_revision_canary_start(
         }) from exc
 
 
+@app.post("/api/ui/review-rerun/plan")
+def api_review_rerun_plan(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    try:
+        job_id = str(payload.get("job_id") or "")
+        principal = _owned_ui_job(request, job_id)
+        return BRIDGE.review_rerun_plan_for_owner(principal.owner_id, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if str(exc) == "job_not_found" else 422, detail={
+            "code": str(exc),
+            "message": "Não foi possível preparar o rerun das pendências.",
+            "action": "Atualize a revisão e confira os itens pendentes.",
+        }) from exc
+
+
+@app.post("/api/ui/review-rerun/start")
+def api_review_rerun_start(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    try:
+        job_id = str(payload.get("job_id") or "")
+        principal = _owned_ui_job(request, job_id, mutate=True)
+        raw_modes = payload.get("modes") or ["all_pending"]
+        modes = [str(item) for item in raw_modes] if isinstance(raw_modes, list) else []
+        return BRIDGE.start_review_rerun_for_owner(
+            principal.owner_id,
+            job_id,
+            allow_provider=payload.get("allow_provider") is True,
+            modes=modes,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        raise HTTPException(status_code=409 if code == "provider_authorization_required" else 422, detail={
+            "code": code,
+            "message": (
+                "Autorize explicitamente o uso da NVIDIA para os trechos sem tradução."
+                if code == "provider_authorization_required"
+                else "Não foi possível iniciar o rerun das pendências."
+            ),
+            "action": "Confira o resumo, as opções e tente novamente.",
+        }) from exc
+
+
+@app.post("/api/ui/review-rerun/status")
+def api_review_rerun_status(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    job_id = str(payload.get("job_id") or "")
+    principal = _owned_ui_job(request, job_id)
+    try:
+        return BRIDGE.review_rerun_status_for_owner(principal.owner_id, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"code": str(exc)}) from exc
+
+
+@app.post("/api/ui/review-rerun/cancel")
+async def api_review_rerun_cancel(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    job_id = str(payload.get("job_id") or "")
+    principal = _owned_ui_job(request, job_id, mutate=True)
+    try:
+        return await BRIDGE.cancel_for_owner(principal.owner_id, job_id=job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
+
+
 def _page_revision_error(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=400, detail={
         "code": str(exc),

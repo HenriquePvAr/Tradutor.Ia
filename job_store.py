@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
@@ -112,7 +112,8 @@ class TransitionError(RuntimeError):
 # Columns that make up a job row. Kept explicit so the schema and the row->dict mapping
 # never drift. Timestamps are epoch seconds (REAL); NULL means "not yet".
 _JOB_COLUMNS = (
-    "id", "owner_id", "run_id", "source_url", "series_title", "series_slug", "episode_number",
+    "id", "owner_id", "run_id", "operation_kind", "parent_job_id", "source_url",
+    "series_title", "series_slug", "episode_number",
     "output_dir", "configuration_json", "command_json", "status", "stage",
     "progress_current", "progress_total", "progress_message", "progress_counter_stage",
     "source_type", "adapter_name", "adapter_version", "transport_name", "source_score",
@@ -174,6 +175,8 @@ class JobStore:
             self._migrate_v7()
         if version < 8:
             self._migrate_v8()
+        if version < 9:
+            self._migrate_v9()
         self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
@@ -198,6 +201,28 @@ class JobStore:
         self._migrate_v6()
         self._migrate_v7()
         self._migrate_v8()
+        self._migrate_v9()
+
+    def _migrate_v9(self) -> None:
+        """Persist child operations without turning them into chapter attempts."""
+        job_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        if "operation_kind" not in job_cols:
+            self._conn.execute(
+                "ALTER TABLE jobs ADD COLUMN operation_kind TEXT NOT NULL DEFAULT 'chapter'"
+            )
+        if "parent_job_id" not in job_cols:
+            self._conn.execute(
+                "ALTER TABLE jobs ADD COLUMN parent_job_id TEXT NOT NULL DEFAULT ''"
+            )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_parent_operation_created "
+            "ON jobs(parent_job_id,operation_kind,created_at DESC)"
+        )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_active_review_rerun_parent "
+            "ON jobs(parent_job_id) WHERE operation_kind='review_rerun' "
+            "AND status IN ('queued','claiming','starting','running','cancelling')"
+        )
 
     def _migrate_v8(self) -> None:
         """Append-only, optimistic review-item revisions."""
@@ -338,6 +363,8 @@ class JobStore:
                 id TEXT PRIMARY KEY,
                 owner_id TEXT NOT NULL DEFAULT '',
                 run_id TEXT,
+                operation_kind TEXT NOT NULL DEFAULT 'chapter',
+                parent_job_id TEXT NOT NULL DEFAULT '',
                 source_url TEXT,
                 series_title TEXT,
                 series_slug TEXT,
@@ -449,6 +476,8 @@ class JobStore:
         initial_status: str = JobStatus.QUEUED,
         staging_owner_pid: int | None = None,
         staging_owner_create_time: float | None = None,
+        operation_kind: str = "chapter",
+        parent_job_id: str = "",
     ) -> str:
         job_id = str(job_id or uuid.uuid4().hex)
         if len(job_id) != 32 or any(char not in "0123456789abcdef" for char in job_id):
@@ -459,21 +488,30 @@ class JobStore:
         now = time.time()
         configuration = dict(configuration or {})
         owner_id = str(configuration.get("community_owner_id") or "").strip()
+        operation_kind = str(operation_kind or "chapter").strip().casefold()
+        if operation_kind not in {"chapter", "review_rerun", "community_publish"}:
+            raise ValueError("invalid_operation_kind")
+        parent_job_id = str(parent_job_id or "").strip()
+        if operation_kind == "review_rerun" and not parent_job_id:
+            raise ValueError("parent_job_required")
         self._conn.execute(
             """
             INSERT INTO jobs (
-                id, owner_id, run_id, source_url, series_title, series_slug, episode_number,
+                id, owner_id, run_id, operation_kind, parent_job_id, source_url,
+                series_title, series_slug, episode_number,
                 output_dir, configuration_json, command_json, status, stage,
                 progress_current, progress_total, created_at, queued_at, updated_at,
                 worker_pid, worker_create_time,
                 cancel_requested, recoverable, attempt, previous_job_id,
                 resume_from_stage, commit_hash, branch
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,0,0,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,0,0,?,?,?,?,?)
             """,
             (
                 job_id,
                 owner_id,
                 run_id or uuid.uuid4().hex,
+                operation_kind,
+                parent_job_id,
                 source_url,
                 series_title,
                 series_slug,
@@ -496,6 +534,110 @@ class JobStore:
             ),
         )
         return job_id
+
+    def active_review_rerun(self, parent_job_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM jobs WHERE parent_job_id=? AND operation_kind='review_rerun' "
+            "AND status IN ('queued','claiming','starting','running','cancelling') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (str(parent_job_id or ""),),
+        ).fetchone()
+        return self._row_to_dict(row)
+
+    def queue_position(self, job_id: str) -> int | None:
+        """One-based position for a queued job, or ``None`` once it leaves the queue."""
+        row = self._conn.execute(
+            "SELECT created_at FROM jobs WHERE id=? AND status=?",
+            (str(job_id or ""), JobStatus.QUEUED),
+        ).fetchone()
+        if row is None:
+            return None
+        earlier = self._conn.execute(
+            "SELECT COUNT(*) AS count FROM jobs WHERE status=? "
+            "AND (created_at < ? OR (created_at = ? AND id <= ?))",
+            (JobStatus.QUEUED, row["created_at"], row["created_at"], str(job_id)),
+        ).fetchone()
+        return int(earlier["count"] or 0) if earlier else 1
+
+    def create_review_rerun(
+        self,
+        parent_job_id: str,
+        *,
+        targets: list[dict[str, Any]],
+        allow_provider: bool,
+        modes: list[str] | None = None,
+        commit_hash: str = "",
+        branch: str = "",
+    ) -> dict[str, Any]:
+        """Queue one idempotent child run for a chapter's explicit region targets."""
+        parent = self.get_job(str(parent_job_id or ""))
+        if not parent or not str(parent.get("output_dir") or ""):
+            raise ValueError("parent_job_not_found")
+        owner_id = str(parent.get("owner_id") or "").strip()
+        if not owner_id:
+            raise ValueError("parent_job_owner_required")
+        normalized_targets: list[dict[str, Any]] = []
+        for target in targets or []:
+            region_id = str((target or {}).get("region_id") or "").strip()
+            try:
+                page = int((target or {}).get("page") or 0)
+            except (TypeError, ValueError):
+                page = 0
+            if not region_id or page <= 0:
+                raise ValueError("invalid_rerun_target")
+            requires_provider = (target or {}).get("requires_provider") is True
+            if requires_provider and allow_provider is not True:
+                raise ValueError("provider_authorization_required")
+            normalized_targets.append({
+                "region_id": region_id,
+                "page": page,
+                "requires_provider": requires_provider,
+                "work_kind": str((target or {}).get("work_kind") or "reconstruction_only")[:64],
+                "reason_code": str((target or {}).get("reason_code") or "review_required")[:80],
+                "translation_to_reuse": str(
+                    (target or {}).get("translation_to_reuse") or ""
+                )[:2000],
+            })
+        if not normalized_targets:
+            raise ValueError("rerun_targets_required")
+        existing = self.active_review_rerun(str(parent_job_id))
+        if existing:
+            return existing
+        config = {
+            "job_type": "review_rerun",
+            "community_owner_id": owner_id,
+            "parent_job_id": str(parent_job_id),
+            "parent_run_id": str(parent.get("run_id") or ""),
+            "targets": normalized_targets,
+            "allow_provider": allow_provider is True,
+            "modes": [str(value)[:48] for value in (modes or ["all_pending"])],
+            "chapter_name": str(
+                (parent.get("configuration") or {}).get("chapter_name")
+                or parent.get("series_title") or ""
+            )[:160],
+            "full": False,
+            "use_cache": True,
+        }
+        try:
+            child_id = self.create_job(
+                source_url="",
+                output_dir=str(parent["output_dir"]),
+                command=[],
+                configuration=config,
+                series_title=str(parent.get("series_title") or ""),
+                series_slug=str(parent.get("series_slug") or ""),
+                episode_number=str(parent.get("episode_number") or ""),
+                commit_hash=commit_hash,
+                branch=branch,
+                operation_kind="review_rerun",
+                parent_job_id=str(parent_job_id),
+            )
+        except sqlite3.IntegrityError:
+            existing = self.active_review_rerun(str(parent_job_id))
+            if existing:
+                return existing
+            raise
+        return self.get_job(child_id) or {}
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -1114,3 +1256,13 @@ class JobStore:
         if row is None:
             return None
         return {key: row[key] for key in row.keys()}
+
+    def get_worker(self, worker_id: str) -> dict[str, Any] | None:
+        """Return one worker lease without exposing it outside the trusted bridge."""
+        normalized = str(worker_id or "").strip()
+        if not normalized:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM workers WHERE worker_id=?", (normalized,)
+        ).fetchone()
+        return {key: row[key] for key in row.keys()} if row is not None else None

@@ -485,6 +485,7 @@
                 <button class="btn-ghost" type="button" id="acceptLowRiskReview">Aceitar baixo risco</button>
                 <button class="btn-ghost" type="button" id="acceptAllReview">ACEITAR TODOS</button>
                 <button class="btn-ghost" type="button" id="undoBulkReview" disabled>Desfazer última ação em massa</button>
+                <button class="btn-primary" type="button" id="rerunPendingReview">Reprocessar pendências</button>
                 <button class="btn-ghost quality-review-dev-action" type="button" id="nvidiaContractCanary" hidden>TESTAR CONTRATO NVIDIA</button>
                 <span class="quality-review-dev-action muted" id="runtimeDiagnostics" hidden></span>
                 <button class="btn-primary" type="button" id="globalAiReview">REVISAR CAPÍTULO INTEIRO</button>
@@ -495,6 +496,15 @@
                 <div class="quality-revision-actions">
                   <button class="btn-ghost danger" type="button" id="cancelRevisionAction" hidden>CANCELAR REVISÃO</button>
                   <button class="btn-ghost" type="button" id="resumeRevisionAction" hidden>RETOMAR REVISÃO</button>
+                </div>
+              </div>
+              <div class="quality-revision-status review-rerun-activity" id="reviewRerunActivity" hidden>
+                <strong id="reviewRerunActivityTitle">Rerun de pendências</strong>
+                <span class="review-rerun-state" id="reviewRerunActivityState">Aguardando worker</span>
+                <div class="review-rerun-meta" id="reviewRerunActivityMeta" aria-live="polite"></div>
+                <div class="quality-revision-actions">
+                  <button class="btn-ghost danger" type="button" id="cancelReviewRerunAction">Cancelar rerun</button>
+                  <button class="btn-ghost" type="button" id="retryReviewRerunStatus" hidden>Tentar novamente</button>
                 </div>
               </div>
               <div class="quality-review-message" id="qualityReviewBulkMessage" role="status" aria-live="polite"></div>
@@ -1094,6 +1104,33 @@
     </section>
 
   </main>
+  </div>
+</div>
+
+<!-- TARGETED REVIEW RERUN -->
+<div class="modal-overlay" id="reviewRerunConfirm" aria-hidden="true">
+  <div class="modal-card review-rerun-card" role="dialog" aria-modal="true" aria-labelledby="reviewRerunTitle">
+    <button type="button" class="modal-close" id="reviewRerunClose" aria-label="fechar">×</button>
+    <div class="panel-label">rerun seletivo</div>
+    <h2 id="reviewRerunTitle">Reprocessar pendências</h2>
+    <p class="muted">Somente as regiões pendentes serão reprocessadas. Páginas aprovadas serão preservadas.</p>
+    <div class="review-rerun-summary" id="reviewRerunSummary" aria-live="polite"></div>
+    <fieldset class="review-rerun-options">
+      <legend>Escopo</legend>
+      <label><input type="radio" name="reviewRerunMode" value="all_pending" checked> Todas as pendências deste capítulo</label>
+      <label><input type="radio" name="reviewRerunMode" value="untranslated"> Texto não traduzido</label>
+      <label><input type="radio" name="reviewRerunMode" value="reconstruction"> Reconstruções rejeitadas</label>
+      <label><input type="radio" name="reviewRerunMode" value="improve_translation"> Melhorar traduções</label>
+    </fieldset>
+    <label class="publication-confirm" id="reviewRerunProviderRow" hidden>
+      <input type="checkbox" id="reviewRerunAllowProvider">
+      <span>Autorizo a NVIDIA somente para as regiões indicadas como sem tradução válida.</span>
+    </label>
+    <div class="publication-error" id="reviewRerunError" hidden></div>
+    <div class="sc-modal-actions">
+      <button type="button" class="btn-ghost" id="reviewRerunCancel">Cancelar</button>
+      <button type="button" class="btn-primary" id="reviewRerunApply">Iniciar rerun</button>
+    </div>
   </div>
 </div>
 

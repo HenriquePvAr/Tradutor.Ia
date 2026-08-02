@@ -2069,6 +2069,20 @@ html[data-visual-reduced-motion="1"] .auth-login-page *{animation:none!important
   .quality-review-message[data-state="error"]{color:#ffb0a8;}
   .quality-review-message[data-state="warn"]{color:#ffd18a;}
   .quality-review-message[data-state="ok"]{color:#8fe3c2;}
+  .review-rerun-card{max-width:660px;}
+  .review-rerun-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0;}
+  .review-rerun-summary .pub-meta,.review-rerun-reasons{border:1px solid var(--line);border-radius:7px;padding:9px;background:var(--ink-soft);}
+  .review-rerun-reasons{grid-column:1/-1;display:flex;flex-direction:column;gap:5px;overflow-wrap:anywhere;}
+  .review-rerun-options{display:grid;gap:8px;border:1px solid var(--line);border-radius:7px;padding:12px;margin:12px 0;}
+  .review-rerun-options legend{padding:0 6px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em;}
+  .review-rerun-activity{margin-top:10px;gap:8px;}
+  .review-rerun-state{font-weight:700;color:var(--paper);}
+  .review-rerun-state[data-state="running"],
+  .review-rerun-state[data-state="claimed"]{color:var(--rose);}
+  .review-rerun-state[data-state="failed"]{color:var(--vermillion);}
+  .review-rerun-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:6px 14px;}
+  .review-rerun-meta span{font-size:12px;color:var(--muted);line-height:1.45;}
+  @media (max-width:620px){.review-rerun-summary{grid-template-columns:1fr 1fr;}}
   .quality-review-list{display:flex; flex-direction:column; gap:10px; max-height:480px; overflow-y:auto;}
   .quality-review-item{border:1px solid var(--line); border-radius:7px; padding:11px; background:var(--ink-soft);}
   .quality-review-item[data-state="pending"]{border-color:rgba(201,162,39,.65);}
