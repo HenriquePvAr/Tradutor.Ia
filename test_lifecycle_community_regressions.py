@@ -237,6 +237,38 @@ class CommunityResolutionTests(unittest.TestCase):
             api.close()
             store.close()
 
+    def test_unconfirmed_review_required_job_cannot_be_published(self):
+        tmp = Path(tempfile.mkdtemp())
+        output = tmp / "output" / "chapter"
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nminimal offline fixture\n")
+        store = _new_store(tmp)
+        api = CommunityApi(
+            store,
+            community_db_path=tmp / "community.sqlite3",
+            output_root=tmp / "output",
+        )
+        try:
+            job_id = _make_review_required(store)
+            store.update_fields(
+                job_id, output_dir=str(output), pdf_path=str(pdf), exit_code=0)
+            job = store.get_job(job_id)
+            (output / "job_manifest.json").write_text(json.dumps({
+                "job_id": job_id,
+                "run_id": job["run_id"],
+                "status": JobStatus.REVIEW_REQUIRED,
+                "exit_code": 0,
+                "pdf_path": str(pdf),
+            }), encoding="utf-8")
+            principal = RequestPrincipal(
+                "local-user", True, auth_source="local_session")
+            with self.assertRaises(ResourceNotFound):
+                api._resolve_translation_job(job_id, principal)
+        finally:
+            api.close()
+            store.close()
+
     def test_not_found_is_structured_for_the_ui(self):
         with self.assertRaises(Exception) as caught:
             _community_call(lambda: (_ for _ in ()).throw(ResourceNotFound("pdf_not_found")))

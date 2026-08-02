@@ -366,7 +366,7 @@ class CommunityApi:
                 pass
             if job.get("run_id") != expected_run:
                 raise ArtifactBindingError("run_mismatch", status_code=409)
-            if job.get("status") not in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED}:
+            if job.get("status") != JobStatus.FINISHED:
                 raise ArtifactBindingError("artifact_not_publishable", status_code=422)
             if int(job.get("exit_code")) != 0 or not job.get("review_confirmed_at"):
                 raise ArtifactBindingError("artifact_not_publishable", status_code=422)
@@ -574,7 +574,7 @@ class CommunityApi:
                     raise ArtifactBindingError("artifact_has_no_owner", status_code=422)
                 if owner_id != principal.user_id:
                     raise ArtifactBindingError("artifact_not_owned", status_code=403)
-            if job.get("status") not in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED}:
+            if job.get("status") != JobStatus.FINISHED:
                 raise ValueError
             if int(job.get("exit_code")) != 0:
                 raise ValueError

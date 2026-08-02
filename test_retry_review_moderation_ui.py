@@ -261,7 +261,8 @@ def test_deep_review_ui_uses_versioned_endpoint():
 def test_persisted_history_retry_uses_selected_job_identity_after_refresh():
     js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
     assert "retryDialogContext" in js
-    assert "button.dataset.action = 'retry'" in js
+    assert "retryAction(record)" in js
+    assert 'data-action="retry"' in js
     assert "retryDialogContext?.jobId" in js
     assert "document.body.appendChild(dialog)" in js
     assert "$('#retryConfirmApply')?.addEventListener('click'" in js
@@ -270,5 +271,68 @@ def test_persisted_history_retry_uses_selected_job_identity_after_refresh():
     assert "latestJobId" not in confirm_block
     history_block = js[js.index("function renderHistoryCard"):js.index(
         "function renderHistory()")]
-    assert "Retry" in history_block
-    assert "retry_capability" in history_block or "retryable" in history_block
+    assert "retryAction(record)" in history_block
+    assert "record?.recoverable === true" in js
+
+
+def test_history_retry_renders_only_with_concrete_job_and_run_identity():
+    js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
+    history_block = js[js.index("function renderHistoryCard"):js.index(
+        "function renderHistory()")]
+    assert "retryAction(record)" in history_block
+    assert "actionButton('Retry', 'retry')" not in history_block
+    assert "data-job-id" in js
+    assert "data-run-id" in js
+    assert "data-path=\"\"" not in history_block
+    assert "button.dataset.action = 'retry'" not in js
+
+
+def test_pipeline_retry_requires_recoverable_job_and_concrete_run_identity():
+    js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
+    run_status = js[js.index("function renderRunStatus"):js.index(
+        "const VISUAL_STATE_LABELS")]
+    assert "record?.recoverable === true" in run_status
+    assert "recordRunId" in run_status
+    assert "retry.dataset.runId = retryable ? recordRunId : ''" in run_status
+    listener = js[js.index("$('#runRetryAction')"):js.index(
+        "$('#retryConfirmCancel')")]
+    assert "runId: button?.dataset?.runId" in listener
+
+
+def test_moderation_refresh_uses_only_canonical_auth_event():
+    js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
+    assert "window.addEventListener('tradutor-auth-changed', loadModeration)" in js
+    assert "window.addEventListener('tradutor:auth-changed', loadModeration)" not in js
+
+
+def test_publication_ui_requires_technical_gate_or_completed_human_review():
+    js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
+    eligibility = js[js.index("function publicationEligibility"):js.index(
+        "function publicationAction")]
+    assert "qualityApproved" in eligibility
+    assert "technicalGatePassed || reviewCompleted" in eligibility
+    assert "publishableTerminal" in eligibility
+    assert "eligible: baseEligible && ownerReady && qualityApproved && publishableTerminal" in eligibility
+    claim = js[js.index("function claimEligibility"):js.index("function claimAction")]
+    assert "eligibility.qualityApproved" in claim
+    assert "eligibility.publishableTerminal" in claim
+
+
+def test_page_revision_primary_flow_is_automatic_not_manual_geometry():
+    shell = Path("ui/ui_shell.html").read_text(encoding="utf-8")
+    assert "Reprocessar pendências" in shell
+    assert "Detectar texto original restante" in shell
+    assert "Tentar reconstrução novamente" in shell
+    assert 'id="pageRevisionManual"' not in shell
+
+
+def test_publication_waits_for_authoritative_backend_status():
+    js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
+    publish = js[js.index("async function publishToCommunity"):js.index(
+        "$('#publicationCancel')")]
+    assert "record.publication_status = 'published'" not in publish
+    assert "record.publication_status = 'publishing'" in publish
+    assert "reconcileCommunityPublication" in publish
+    assert "async function reconcileCommunityPublication" in js
+    assert "/api/community/my-posts" in js
+    assert "attempts" in js

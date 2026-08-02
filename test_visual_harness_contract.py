@@ -58,23 +58,17 @@ class HarnessAuthEventTest(unittest.TestCase):
             self.assertLessEqual(dispatched, {CANONICAL_EVENT},
                                  f"{module} dispatches an unexpected auth event name")
 
-    def test_no_new_listener_adopts_the_divergent_name(self):
-        """One dead subscription for this name already exists and predates this work.
-
-        static/tradutor_ui.js binds loadModeration to the colon spelling, and
-        that line is present unchanged in the functional base a909f30 - the
-        moderation panel has never reloaded on an auth change. Fixing it would
-        start issuing moderation requests on every auth transition, which is a
-        production behaviour change this round is not authorised to make. It is
-        pinned here so the count cannot grow silently.
-        """
+    def test_no_listener_uses_the_divergent_name(self):
+        """Every auth-dependent surface follows the one canonical event."""
         occurrences = []
         for path in sorted(STATIC.glob("*.js")):
             code = strip_comments(path.read_text(encoding="utf-8"))
             occurrences.extend([path.name] * code.count(DIVERGENT_EVENT))
-        self.assertEqual(
-            occurrences, ["tradutor_ui.js"],
-            "only the known pre-existing moderation listener may use this name")
+        self.assertEqual(occurrences, [])
+        application = strip_comments(
+            (STATIC / "tradutor_ui.js").read_text(encoding="utf-8"))
+        self.assertIn(
+            f"addEventListener('{CANONICAL_EVENT}', loadModeration)", application)
 
     def test_remaining_timers_are_documented(self):
         """Any timer left must say why, so a fallback is never silent again."""

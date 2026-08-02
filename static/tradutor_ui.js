@@ -1075,6 +1075,31 @@
     } catch (_) { /* session storage is a convenience only */ }
   }
 
+  function adoptPipelineIdentity(record, {authoritative = false, stage = ''} = {}) {
+    const incomingJobId = String(record?.id || record?.job_id || '');
+    const incomingRunId = String(record?.run_id || '');
+    if (!incomingJobId) return false;
+    if (!authoritative && appState.currentJobId && appState.currentJobId !== incomingJobId) {
+      return false;
+    }
+    const changed = appState.currentJobId !== incomingJobId
+      || (incomingRunId && appState.currentRunId !== incomingRunId);
+    if (appState.currentJobId !== incomingJobId) appState.currentRunId = '';
+    appState.currentJobId = incomingJobId;
+    if (incomingRunId) appState.currentRunId = incomingRunId;
+    persistPipelineIdentity(stage || record?.stage || appState.status);
+    if (changed) {
+      uiTrace('pipeline_identity_changed', {
+        request_id: appState.currentRequestId,
+        job_id: incomingJobId,
+        run_id: incomingRunId,
+        stage: stage || record?.stage || '',
+        authoritative,
+      });
+    }
+    return true;
+  }
+
   function pipelineRecord(status = 'staging', stage = 'source_validation', extra = {}) {
     return {
       id: appState.currentJobId,
@@ -1317,13 +1342,36 @@
     }
   }
   function setRunControls(active, awaitingReview = false) {
-    $('#startBtn').disabled = active;
-    $('#startBtn').textContent = awaitingReview ? 'Aguardando revisão…' : active ? 'Processando…' : 'Iniciar tradução';
+    updateTranslationStartControls();
+    setTranslationFormLocked(active);
+    const start = $('#startBtn');
+    if (start && active) start.disabled = true;
+    if (start && active) start.textContent = awaitingReview ? 'Aguardando revisão…' : 'Processando…';
     $('#cancelBtn').disabled = !active;
     const action = $('#runCancelAction');
     if (action && !appState.cancelBusy) { action.hidden = !active; action.disabled = !active; action.textContent = 'Cancelar processamento'; }
     if (!active) appState.cancelBusy = false;
-    updateTranslationStartControls();
+  }
+  function setTranslationFormLocked(active) {
+    const panel = $('#newTranslationFormPanel');
+    if (!panel) return;
+    panel.classList.toggle('translation-form-locked', active);
+    panel.setAttribute('aria-busy', active ? 'true' : 'false');
+    panel.querySelectorAll('input, select, button').forEach(control => {
+      if (['startBtn', 'cancelBtn'].includes(control.id)) return;
+      if (active) {
+        if (control.dataset.runLockDisabled === undefined) {
+          control.dataset.runLockDisabled = control.disabled ? '1' : '0';
+        }
+        control.disabled = true;
+      } else if (control.dataset.runLockDisabled !== undefined) {
+        control.disabled = control.dataset.runLockDisabled === '1';
+        delete control.dataset.runLockDisabled;
+      }
+    });
+    panel.querySelectorAll('.choice-card, .scope-card').forEach(control => {
+      control.setAttribute('aria-disabled', active ? 'true' : 'false');
+    });
   }
   $('#validateSourceBtn')?.addEventListener('click', validateSource);
   $('#startBtn')?.addEventListener('click', startTranslation);
@@ -1567,20 +1615,10 @@
     appState.latestJobId = String(runtime.latest?.id || runtime.latest?.job_id || '');
     const incoming = activeRecord || runtime.latest || null;
     const incomingJobId = String(incoming?.id || incoming?.job_id || '');
-    const incomingRunId = String(incoming?.run_id || '');
-    if (incomingJobId && (!appState.currentJobId || incomingJobId === appState.currentJobId)) {
-      if (!appState.currentJobId) appState.currentJobId = incomingJobId;
-      if (!appState.currentRunId && incomingRunId) {
-        appState.currentRunId = incomingRunId;
-        uiTrace('PIPELINE_RUN_ADOPTED', {
-          request_id: appState.currentRequestId,
-          job_id: incomingJobId,
-          run_id: incomingRunId,
-          stage: visibleProgress.stage_key || incoming.stage || '',
-        });
-      }
-      persistPipelineIdentity(visibleProgress.stage_key || incoming.stage || appState.status);
-    }
+    adoptPipelineIdentity(incoming, {
+      authoritative: Boolean(activeRecord),
+      stage: visibleProgress.stage_key || incoming?.stage || appState.status,
+    });
     setRunControls(running || analyzing, awaitingReview);
     const status = $('#appStatus');
     status.textContent = runStatusLabels[appState.status] || appState.status;
@@ -1656,11 +1694,10 @@
     if (card.hidden) return;
     const recordJobId = String(record?.id || record?.job_id || '');
     const recordRunId = String(record?.run_id || '');
-    if (recordJobId && (!appState.currentJobId || appState.currentJobId === recordJobId)) {
-      if (!appState.currentJobId) appState.currentJobId = recordJobId;
-      if (!appState.currentRunId && recordRunId) appState.currentRunId = recordRunId;
-      persistPipelineIdentity(progress.stage_key || record.stage || status);
-    }
+    adoptPipelineIdentity(record, {
+      authoritative: active,
+      stage: progress.stage_key || record?.stage || status,
+    });
     card.dataset.currentJobId = appState.currentJobId || recordJobId;
     card.dataset.currentRunId = appState.currentRunId || recordRunId;
     card.dataset.currentStage = pipelineState.stage || progress.stage_key || record.stage || status;
@@ -1681,8 +1718,12 @@
           .filter(Boolean).join(' ');
     const retry = $('#runRetryAction');
     if (retry) {
-      retry.hidden = !record || !['failed', 'cancelled'].includes(status);
-      retry.dataset.jobId = record?.id || record?.job_id || '';
+      const retryable = Boolean(record) && ['failed', 'cancelled'].includes(status)
+        && record?.recoverable === true && /^[0-9a-f]{32}$/i.test(recordJobId)
+        && Boolean(recordRunId);
+      retry.hidden = !retryable;
+      retry.dataset.jobId = retryable ? recordJobId : '';
+      retry.dataset.runId = retryable ? recordRunId : '';
       retry.dataset.status = status || '';
     }
     const cancel = $('#runCancelAction');
@@ -2309,26 +2350,6 @@
     } catch (error) { pageRevisionMessage(error.message || 'Falha na busca.', 'error'); }
   }
 
-  function pageRevisionManual() {
-    if (!pageRevisionState.pageRevisionId) { pageRevisionMessage('Crie uma prévia antes de adicionar região manual.', 'warn'); return; }
-    const form = $('#pageRevisionManualForm');
-    if (form) form.hidden = !form.hidden;
-  }
-
-  async function pageRevisionManualSubmit(event) {
-    event.preventDefault();
-    const box = ['prManualX', 'prManualY', 'prManualW', 'prManualH'].map(id => parseInt($('#' + id)?.value, 10));
-    if (box.some(n => Number.isNaN(n))) { pageRevisionMessage('Caixa inválida. Preencha x, y, largura e altura.', 'error'); return; }
-    const source = String($('#prManualSource')?.value || '');
-    const id = pageRevisionIdentity();
-    try {
-      const entry = await api('/api/ui/page-revision/manual-region', {method: 'POST',
-        body: JSON.stringify({...id, page_revision_id: pageRevisionState.pageRevisionId, box, source_text: source, region_type: 'speech'})});
-      pageRevisionMessage(`Região manual ${entry.region_id} registrada (imagem não alterada).`, 'ok');
-      const form = $('#pageRevisionManualForm'); if (form) form.hidden = true;
-    } catch (error) { pageRevisionMessage(error.message || 'Falha ao adicionar região.', 'error'); }
-  }
-
   async function pageRevisionLifecycle(kind) {
     if (!pageRevisionState.pageRevisionId) return;
     const id = pageRevisionIdentity();
@@ -2345,15 +2366,13 @@
     pageRevisionState.pageRevisionId = null; pageRevisionSyncUrl();
   });
   $('#pageRevisionStart')?.addEventListener('click', () => startPageRevisionDraft(selectedPageRegions().length ? selectedPageRegions() : null));
+  $('#pageRevisionReconstruct')?.addEventListener('click', () => startPageRevisionDraft(selectedPageRegions().length ? selectedPageRegions() : null));
   $('#pageRevisionBalloon')?.addEventListener('click', () => {
     const sel = selectedPageRegions();
     if (sel.length !== 1) { pageRevisionMessage('Selecione exatamente um balão para revisar.', 'warn'); return; }
     startPageRevisionDraft(sel);
   });
   $('#pageRevisionForgotten')?.addEventListener('click', pageRevisionForgotten);
-  $('#pageRevisionManual')?.addEventListener('click', pageRevisionManual);
-  $('#pageRevisionManualForm')?.addEventListener('submit', pageRevisionManualSubmit);
-  $('#pageRevisionManualCancel')?.addEventListener('click', () => { const f = $('#pageRevisionManualForm'); if (f) f.hidden = true; });
   $('#pageRevisionCancel')?.addEventListener('click', () => pageRevisionLifecycle('cancel'));
   $('#pageRevisionResume')?.addEventListener('click', () => pageRevisionLifecycle('resume'));
   $('#pageRevisionDecision')?.addEventListener('click', event => {
@@ -3681,6 +3700,7 @@
     if (dialog.parentElement !== document.body) document.body.appendChild(dialog);
     appState.retryDialogContext = {
       jobId,
+      runId: String(context?.runId || ''),
       operationId: String(context?.operationId || ''),
       status: String(context?.status || ''),
       reasonCode: String(context?.reasonCode || ''),
@@ -3703,6 +3723,7 @@
     const button = event.currentTarget;
     openRetryDialog({
       jobId: button?.dataset?.jobId,
+      runId: button?.dataset?.runId,
       status: button?.dataset?.status,
       sourceView: 'pipeline',
     }, button);
@@ -3829,7 +3850,7 @@
       actionButton.disabled = false;
     }
   });
-  window.addEventListener('tradutor:auth-changed', loadModeration);
+  window.addEventListener('tradutor-auth-changed', loadModeration);
 
   // The single place where real state becomes a loading view. It only forwards
   // fields; every decision about wording, progress, duration, status and
@@ -4149,7 +4170,7 @@
     return `${whole}s`;
   }
   function actionButton(label, action, path = '') {
-    if (!path && !['retry','reprocess','delete'].includes(action)) return '';
+    if (!path && !['reprocess','delete'].includes(action)) return '';
     const icons = {
       pdf: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4"/><path d="M8 16h1.2a1.2 1.2 0 0 0 0-2.4H8V18m5-4.4V18h1.1a2.2 2.2 0 0 0 0-4.4zm5 0h3M18 16h2"/></svg>',
       folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h5"/></svg>',
@@ -4163,14 +4184,26 @@
     const icon = icons[action] || '';
     return `<button class="btn-ghost icon-action" data-action="${action}" data-path="${encodeURIComponent(path || '')}" aria-label="${escapeAttr(label)}" title="${escapeAttr(label)}">${icon}<span class="sr-only">${escapeHtml(label)}</span></button>`;
   }
+  function retryAction(record) {
+    const status = String(record?.status || '').toLowerCase();
+    const jobId = String(record?.job_id || '').toLowerCase();
+    const runId = String(record?.run_id || '').trim();
+    const retryable = ['failed', 'cancelled'].includes(status) && record?.recoverable === true;
+    if (!retryable || !/^[0-9a-f]{32}$/.test(jobId) || !runId) return '';
+    const icon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8"/><path d="M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16"/><path d="M4 20v-4h4"/></svg>';
+    return `<button class="btn-ghost icon-action" data-action="retry" data-job-id="${escapeAttr(jobId)}" data-run-id="${escapeAttr(runId)}" aria-label="Retry" title="Retry">${icon}<span class="sr-only">Retry</span></button>`;
+  }
   function publicationEligibility(record) {
-    const terminal = terminalRunStatuses.has(String(record.status || '').toLowerCase());
+    const status = String(record.status || '').toLowerCase();
+    const terminal = terminalRunStatuses.has(status);
+    const publishableTerminal = ['finished', 'review_completed'].includes(status);
     const hasPdf = Boolean(record.pdf_path);
     const manifest = record.output_verification === 'manifest_verified' || Boolean(record.manifest_path);
     const authenticated = isCanonicalCommunityAuthenticated();
     const technicalGatePassed = boolish(record.quality_gate) === true;
     const reviewCompleted = record.review_status === 'completed' || record.review_confirmed === true;
     const review = !technicalGatePassed;
+    const qualityApproved = technicalGatePassed || reviewCompleted;
     const published = String(record.publication_status || '').toLowerCase() === 'published';
     const changed = published && record.publication_pdf_sha256 && record.pdf_sha256 && record.publication_pdf_sha256 !== record.pdf_sha256;
     const ownership = String(record.community_ownership || '');
@@ -4178,8 +4211,8 @@
     const baseEligible = hasPdf && manifest && terminal && authenticated;
     return {terminal, hasPdf, manifest, authenticated, review, reviewCompleted,
       technicalGatePassed, published, changed,
-      ownership, ownerReady, baseEligible,
-      eligible: baseEligible && ownerReady};
+      ownership, ownerReady, baseEligible, qualityApproved, publishableTerminal,
+      eligible: baseEligible && ownerReady && qualityApproved && publishableTerminal};
   }
   function publicationAction(record) {
     const eligibility = publicationEligibility(record);
@@ -4191,6 +4224,7 @@
     if (!eligibility.authenticated) return '<button class="btn-ghost" data-action="publish" disabled title="Entre para publicar">Publicação indisponível</button>';
     if (!eligibility.manifest || !eligibility.terminal) return '<button class="btn-ghost" data-action="publish" disabled>Publicação indisponível</button>';
     if (!eligibility.ownerReady) return '<button class="btn-ghost" data-action="publish" disabled>Vincule antes de publicar</button>';
+    if (!eligibility.qualityApproved) return '<button class="btn-ghost" data-action="publish" disabled title="Conclua a revis\u00e3o antes de publicar">Revis\u00e3o necess\u00e1ria</button>';
     if (eligibility.published && !eligibility.changed) return '<button class="btn-ghost" data-action="publish">Publicado</button>';
     return `<button class="btn-ghost" data-action="publish">${eligibility.changed ? 'Atualizar publicação' : 'Publicar na comunidade'}</button>`;
   }
@@ -4200,7 +4234,9 @@
     const hasIdentity = /^[0-9a-f]{32}$/.test(String(record.job_id || '')) &&
       Boolean(String(record.run_id || '').trim()) && /^[0-9a-f]{64}$/.test(String(record.pdf_sha256 || '').toLowerCase());
     return { ...eligibility,
-      eligible: ownerState === 'legacy' && hasIdentity && eligibility.baseEligible && !eligibility.published };
+      eligible: ownerState === 'legacy' && hasIdentity && eligibility.baseEligible
+        && eligibility.qualityApproved && eligibility.publishableTerminal
+        && !eligibility.published };
   }
   function claimAction(record) {
     if (!claimEligibility(record).eligible) return '';
@@ -4571,15 +4607,12 @@
     const provenance = record.output_verification === 'legacy_unverified' ? 'origem não verificada' : record.output_verification === 'e2e_evidence' ? 'evidência E2E' : record.output_verification === 'manifest_verified' ? 'manifest verificado' : 'origem não informada';
     const meta = `${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)} · ${gate} · ${provenance}`;
     const previewActionHtml = historyPreviewAction(record);
-    const retryable = ['failed', 'cancelled'].includes(String(record.status || '').toLowerCase());
-    const retryActionHtml = retryable
-      ? actionButton('Retry', 'retry')
-      : actionButton('Reprocessar', 'reprocess');
+    const retryActionHtml = retryAction(record) || actionButton('Reprocessar', 'reprocess');
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span>${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
-      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${reviewAction(record)}${actionButton('Abrir PDF', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${actionButton('Reprocessar', 'reprocess')}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
+      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${reviewAction(record)}${actionButton('Abrir PDF', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
     </div>`;
   }
   function renderHistory() {
@@ -4606,17 +4639,6 @@
       const panelId = `series-panel-${slugify(key) || 'series'}`;
       return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><button type="button" class="cf-header" data-folder="${escapeAttr(key)}" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${escapeAttr(panelId)}" aria-label="${escapeAttr(`Expandir ${group.series}`)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></button><div class="cf-body" id="${escapeAttr(panelId)}" role="region" aria-hidden="${open ? 'false' : 'true'}">${group.records.map(renderHistoryCard).join('')}</div></div>`;
     }).join('');
-    records.forEach(record => {
-      if (!['failed', 'cancelled'].includes(String(record.status || '').toLowerCase())) return;
-      const card = list.querySelector(`.hist-item[data-id="${CSS.escape(String(record.id || ''))}"]`);
-      const button = card?.querySelector('[data-action="reprocess"]');
-      if (!button) return;
-      button.dataset.action = 'retry';
-      button.setAttribute('aria-label', 'Retry');
-      button.setAttribute('title', 'Retry');
-      const label = button.querySelector('.sr-only');
-      if (label) label.textContent = 'Retry';
-    });
   }
   const statusLabels = {online: 'online', away: 'ausente', busy: 'ocupado', offline: 'offline'};
   function applyCanonicalAuthSurface(state) {
@@ -4710,8 +4732,15 @@
     }
     if (button.dataset.action === 'review') { void openChapterReview(record); return; }
     if (button.dataset.action === 'retry') {
+      const jobId = String(button.dataset.jobId || '').toLowerCase();
+      const runId = String(button.dataset.runId || '');
+      if (jobId !== String(record.job_id || '').toLowerCase() || runId !== String(record.run_id || '')) {
+        showToast('A tentativa selecionada não corresponde mais a este capítulo.', 'error');
+        return;
+      }
       openRetryDialog({
-        jobId: record.job_id,
+        jobId,
+        runId,
         operationId: record.operation_id,
         status: record.status,
         reasonCode: record.reason_code || record.terminal_reason,
@@ -4965,6 +4994,29 @@
     uiTrace('validation_result', {valid: true, correlation_id: appState.publicationCorrelation});
     return true;
   }
+  async function reconcileCommunityPublication(record, postId, {attempts = 12, delayMs = 1000} = {}) {
+    const target = String(postId || '');
+    if (!target) return {status: 'failed', reason: 'missing_publication_id'};
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const data = await api('/api/community/my-posts', {timeoutMs: 5000});
+        const post = (data.posts || []).find(item => String(item.post_id || item.publication_id || '') === target);
+        const status = String(post?.status || '').toLowerCase();
+        if (post) {
+          record.publication_id = target;
+          record.publication_status = status || 'publishing';
+        }
+        if (status === 'published') return {status, post};
+        if (['failed', 'blocked', 'deleted', 'unpublished'].includes(status)) {
+          return {status, post, reason: `publication_${status}`};
+        }
+      } catch (error) {
+        if (attempt === attempts) return {status: 'publishing', reason: error?.code || 'reconciliation_timeout'};
+      }
+      if (attempt < attempts) await new Promise(resolve => window.setTimeout(resolve, delayMs));
+    }
+    return {status: 'publishing', reason: 'reconciliation_timeout'};
+  }
   async function publishToCommunity(record) {
     if (appState.publicationBusy) return;
     uiTrace('publish_click_received', {correlation_id: appState.publicationCorrelation});
@@ -5001,7 +5053,7 @@
         body: JSON.stringify(payload),
       });
       uiTrace('publication_response_received', {status: 200, correlation_id: correlation});
-      record.publication_status = 'published';
+      record.publication_status = 'publishing';
       record.publication_id = result.post_id || result.publication_id || '';
       record.publication_tags = payload.tags;
       const key = String(record.id || record.slug || '');
@@ -5009,8 +5061,20 @@
       closePublicationModal();
       showToast('Publicação enviada à fila. O worker fará o upload.', 'ok');
       renderHistory();
-      await loadCommunityFeed();
-      uiTrace('publication_completed', {status: 200, correlation_id: correlation});
+      const reconciliation = await reconcileCommunityPublication(record, record.publication_id);
+      if (reconciliation.status === 'published') {
+        showToast('Publicação concluída e disponível na Comunidade.', 'ok');
+        await refreshBootstrap();
+        await loadCommunityFeed();
+        uiTrace('publication_completed', {status: 200, correlation_id: correlation});
+      } else if (['failed', 'blocked', 'deleted', 'unpublished'].includes(reconciliation.status)) {
+        showToast('A publicação não foi concluída. Abra os detalhes para tentar novamente.', 'error');
+        uiTrace('publication_failed', {code: reconciliation.reason, correlation_id: correlation});
+      } else {
+        showToast('A publicação continua em processamento. O histórico será atualizado automaticamente.', 'warn');
+        uiTrace('publication_reconciliation_pending', {correlation_id: correlation});
+      }
+      renderHistory();
     } catch (errorValue) {
       const error = $('#publicationError');
       if (error) { error.textContent = errorValue.message || 'Não foi possível publicar.'; error.hidden = false; }

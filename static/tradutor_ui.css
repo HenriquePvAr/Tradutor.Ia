@@ -2176,6 +2176,12 @@ html[data-visual-reduced-motion="1"] .auth-login-page *{animation:none!important
 .review-mode-banner .rmb-main{display:flex;flex-direction:column;gap:3px;min-width:0}
 .review-mode-banner strong{font-size:15px;letter-spacing:.2px}
 .review-mode-banner .rmb-meta{font-size:12px;opacity:.72;font-variant-numeric:tabular-nums}
+.translation-form-locked{position:relative}
+.translation-form-locked .choice-card,
+.translation-form-locked .scope-card{pointer-events:none;opacity:.58}
+.translation-form-locked input:disabled,
+.translation-form-locked select:disabled,
+.translation-form-locked button:disabled:not(#cancelBtn){cursor:not-allowed}
 html[data-review-mode="1"] #newTranslationFormPanel,
 html[data-review-mode="1"] #translationPreviewPanel,
 html[data-review-mode="1"] #loadingSurface,

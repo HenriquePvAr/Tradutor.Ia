@@ -313,3 +313,24 @@ class NormalisesTheRealRuntimePayload(unittest.TestCase):
         self.assertIsNone(result["pendingReviewCount"])
         self.assertFalse(result["localTest"])
         self.assertEqual(result["events"], [])
+
+
+class PipelineIdentityUiContract(unittest.TestCase):
+    def test_authoritative_runtime_replaces_stale_job_and_run_identity(self):
+        text = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("function adoptPipelineIdentity", text)
+        self.assertIn("authoritative", text)
+        self.assertIn("appState.currentRunId = incomingRunId", text)
+        self.assertIn("pipeline_identity_changed", text)
+
+    def test_real_processing_locks_the_translation_form(self):
+        text = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn("setTranslationFormLocked(active)", text)
+        self.assertIn("#newTranslationFormPanel", text)
+        controls = text[text.index("function setRunControls"):text.index(
+            "function setTranslationFormLocked")]
+        self.assertLess(
+            controls.index("updateTranslationStartControls()"),
+            controls.index("setTranslationFormLocked(active)"),
+        )
+        self.assertIn("if (start && active) start.disabled = true", controls)
