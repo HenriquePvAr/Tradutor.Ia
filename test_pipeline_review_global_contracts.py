@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from chapter_quality_revision import (
     ChapterQualityRevision,
@@ -526,6 +527,45 @@ class LocalizedCleanupContracts(unittest.TestCase):
             # One big blob is a panel or the page around a balloon, not glyphs.
             self.assertIn(reason, {"ambiguous_text_polarity", "light_text_components_not_isolated"})
             self.assertEqual(metrics[-1]["reason_code"], reason)
+
+    def test_ambiguous_polarity_tries_automatic_segmentation_before_review(self) -> None:
+        import cv2
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            revision = self._revision(Path(folder))
+            page = np.full((80, 180, 3), 235, dtype=np.uint8)
+            mask = np.zeros((60, 160), dtype=np.uint8)
+            mask[20:35, 35:55] = 255
+            mask[20:35, 75:95] = 255
+            halo = cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1)
+            candidate = page[10:70, 10:170].copy()
+            candidate[mask > 0] = 235
+            masks = {
+                "valid": True,
+                "combined_inpainting_mask": mask,
+                "source_residual_mask": mask,
+                "validation_halo": halo,
+                "protected_edge_mask": np.zeros(mask.shape, dtype=np.uint8),
+                "mask_hash": "auto-mask",
+                "reason_codes": [],
+            }
+            proposals = [
+                {"method": "telea", "radius": 2, "image": candidate, "overall_score": 0.91},
+                {"method": "navier_stokes", "radius": 3, "image": candidate, "overall_score": 0.89},
+            ]
+            with patch.object(revision, "_detect_text_polarity", return_value=("ambiguous", {})), \
+                    patch("chapter_quality_revision.art_text_inpainting.build_text_masks", return_value=masks), \
+                    patch("chapter_quality_revision.art_text_inpainting.generate_inpainting_candidates", return_value=proposals), \
+                    patch("chapter_quality_revision.art_text_inpainting.select_best_candidate", return_value={
+                        "status": "passed", "method": "telea", "radius": 2,
+                    }):
+                cleaned, metrics, reason = revision._clean_previous_translation(
+                    page, [(10, 10, 170, 70)])
+            self.assertEqual(reason, "")
+            self.assertIsNotNone(cleaned)
+            self.assertEqual(metrics[0]["mask_source"], "automatic_text_segmentation")
+            self.assertEqual(len(metrics[0]["inpainting_candidates"]), 2)
 
     def test_a_mask_covering_most_of_a_light_region_is_rejected(self) -> None:
         import numpy as np
@@ -1717,14 +1757,15 @@ class TargetedPageRevisionContracts(unittest.TestCase):
     def test_frontend_exposes_page_revision_controls(self) -> None:
         shell = SHELL.read_text(encoding="utf-8")
         js = JS.read_text(encoding="utf-8")
-        for label in ("REVISAR ESTA PÁGINA", "REVISAR ESTE BALÃO", "PROCURAR TEXTO ESQUECIDO",
-                      "ADICIONAR REGIÃO MANUALMENTE", "CANCELAR REVISÃO DA PÁGINA",
+        for label in ("REVISAR ESTA PÁGINA", "Reprocessar pendências", "Reprocessar região",
+                      "Detectar texto original restante", "Tentar reconstrução novamente", "CANCELAR REVISÃO DA PÁGINA",
                       "RETOMAR REVISÃO DA PÁGINA", "APROVAR PRÉVIA", "REJEITAR PRÉVIA", "DESCARTAR RASCUNHO"):
             self.assertIn(label, shell, label)
         for endpoint in ("/api/ui/page-revision/regions", "/api/ui/page-revision/start",
                          "/api/ui/page-revision/status", "/api/ui/page-revision/decision",
-                         "/api/ui/page-revision/manual-region", "/api/ui/page-revision/forgotten-text"):
+                         "/api/ui/page-revision/forgotten-text"):
             self.assertIn(endpoint, js, endpoint)
+        self.assertNotIn('id="pageRevisionManual"', shell)
         # cancel/resume share one templated call.
         self.assertIn("/api/ui/page-revision/${kind}", js)
         self.assertIn("pageRevisionLifecycle('cancel')", js)

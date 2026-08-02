@@ -3027,16 +3027,23 @@ class ChapterQualityRevision:
             region = cleaned[top:bottom, left:right]
             polarity, evidence = self._detect_text_polarity(region)
             override = (mask_overrides_by_box or {}).get((left, top, right, bottom)) or {}
+            automatic_masks: dict[str, Any] | None = None
             if polarity == "ambiguous" and not override:
-                # Neither side of the histogram looks like glyphs: refuse rather
-                # than erase artwork or draw the new text over the old one.
-                metrics.append({
-                    "box": [left, top, right, bottom],
-                    "polarity": polarity,
-                    "polarity_evidence": evidence,
-                    "reason_code": "ambiguous_text_polarity",
-                })
-                return None, metrics, "ambiguous_text_polarity"
+                # Histogram polarity alone is inconclusive on gradients, outlines
+                # and textured balloons. Try the independent, geometry-limited text
+                # segmentation before asking for review. It remains fail-closed:
+                # unsafe masks never reach inpainting or the page composite.
+                automatic_masks = art_text_inpainting.build_text_masks(region)
+                if not automatic_masks.get("valid"):
+                    metrics.append({
+                        "box": [left, top, right, bottom],
+                        "polarity": polarity,
+                        "polarity_evidence": evidence,
+                        "reason_code": "ambiguous_text_polarity",
+                        "automatic_mask_reason_codes": list(
+                            automatic_masks.get("reason_codes") or []),
+                    })
+                    return None, metrics, "ambiguous_text_polarity"
             if override:
                 mask = np.asarray(override.get("combined_inpainting_mask"), dtype=np.uint8)
                 if mask.shape[:2] != region.shape[:2] or not mask.any():
@@ -3048,6 +3055,9 @@ class ChapterQualityRevision:
                         "human_mask_decision_id": str(override.get("human_mask_decision_id") or ""),
                     })
                     return None, metrics, "human_mask_shape_mismatch"
+            elif automatic_masks is not None:
+                mask = np.asarray(
+                    automatic_masks.get("combined_inpainting_mask"), dtype=np.uint8)
             else:
                 mask = self._previous_text_mask(region, polarity)
             area = int((mask > 0).sum())
@@ -3070,6 +3080,14 @@ class ChapterQualityRevision:
                     "mask_source": "confirmed_human_mask",
                     "skip_whole_region_overlap_check": True,
                 })
+            elif automatic_masks is not None:
+                entry.update({
+                    "reason_code": "",
+                    "mask_hash": str(automatic_masks.get("mask_hash") or ""),
+                    "mask_source": "automatic_text_segmentation",
+                    "automatic_mask_reason_codes": list(
+                        automatic_masks.get("reason_codes") or []),
+                })
             if area == 0:
                 # Nothing to erase: the region is already blank background.
                 entry["reason_code"] = "empty_previous_text_mask"
@@ -3091,8 +3109,8 @@ class ChapterQualityRevision:
                 metrics.append(entry)
                 return None, metrics, "light_text_components_not_isolated"
             # Reconstruct the background from the surrounding balloon pixels.
-            if override:
-                masks = {
+            if override or automatic_masks is not None:
+                masks = automatic_masks or {
                     "valid": True,
                     "combined_inpainting_mask": mask,
                     "source_residual_mask": np.asarray(
