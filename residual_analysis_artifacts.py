@@ -11,6 +11,7 @@ import json
 import platform
 import sqlite3
 import struct
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -295,7 +296,9 @@ def write_analysis_bundle(bundle: dict[str, Any], root: str | Path,
 
 class ResidualAnalysisStore:
     def __init__(self, db_path: str | Path):
-        self._conn = sqlite3.connect(str(db_path), timeout=5.0)
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(
+            str(db_path), timeout=5.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS residual_analyses (
@@ -320,49 +323,53 @@ class ResidualAnalysisStore:
 
     def persist(self, bundle: dict[str, Any], *,
                 residual_bitmap_asset: str) -> dict[str, Any]:
-        validate_analysis_bundle(bundle)
-        artifact = bundle["artifact"]
-        existing = self.get(artifact["residual_analysis_id"])
-        if existing:
-            return existing
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute("""
-            INSERT INTO residual_analyses VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            artifact["residual_analysis_id"], artifact["owner"],
-            artifact["job_id"], artifact["run_id"], artifact["revision_id"],
-            artifact["page_id"], artifact["region_id"],
-            artifact["residual_bitmap_hash"],
-            artifact["component_manifest_hash"], residual_bitmap_asset,
-            json.dumps(artifact, ensure_ascii=False, sort_keys=True),
-            json.dumps(bundle["component_manifest"], ensure_ascii=False, sort_keys=True),
-            artifact["status"], now, SCHEMA_VERSION,
-        ))
-        self._conn.commit()
-        return self.get(artifact["residual_analysis_id"])
+        with self._lock:
+            validate_analysis_bundle(bundle)
+            artifact = bundle["artifact"]
+            existing = self.get(artifact["residual_analysis_id"])
+            if existing:
+                return existing
+            now = datetime.now(timezone.utc).isoformat()
+            self._conn.execute("""
+                INSERT INTO residual_analyses VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                artifact["residual_analysis_id"], artifact["owner"],
+                artifact["job_id"], artifact["run_id"], artifact["revision_id"],
+                artifact["page_id"], artifact["region_id"],
+                artifact["residual_bitmap_hash"],
+                artifact["component_manifest_hash"], residual_bitmap_asset,
+                json.dumps(artifact, ensure_ascii=False, sort_keys=True),
+                json.dumps(bundle["component_manifest"], ensure_ascii=False, sort_keys=True),
+                artifact["status"], now, SCHEMA_VERSION,
+            ))
+            self._conn.commit()
+            return self.get(artifact["residual_analysis_id"])
 
     def get(self, analysis_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM residual_analyses WHERE residual_analysis_id=?",
-            (str(analysis_id),)).fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        result["analysis"] = json.loads(result.pop("analysis_json"))
-        result["component_manifest"] = json.loads(
-            result.pop("component_manifest_json"))
-        return result
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM residual_analyses WHERE residual_analysis_id=?",
+                (str(analysis_id),)).fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            result["analysis"] = json.loads(result.pop("analysis_json"))
+            result["component_manifest"] = json.loads(
+                result.pop("component_manifest_json"))
+            return result
 
     def latest_for_region(self, *, owner: str, job_id: str, run_id: str,
                           revision_id: str, region_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("""
-            SELECT residual_analysis_id FROM residual_analyses
-            WHERE owner=? AND job_id=? AND run_id=? AND revision_id=? AND region_id=?
-            ORDER BY created_at DESC, residual_analysis_id DESC LIMIT 1
-        """, (
-            str(owner), str(job_id), str(run_id), str(revision_id),
-            str(region_id))).fetchone()
-        return self.get(row[0]) if row else None
+        with self._lock:
+            row = self._conn.execute("""
+                SELECT residual_analysis_id FROM residual_analyses
+                WHERE owner=? AND job_id=? AND run_id=? AND revision_id=? AND region_id=?
+                ORDER BY created_at DESC, residual_analysis_id DESC LIMIT 1
+            """, (
+                str(owner), str(job_id), str(run_id), str(revision_id),
+                str(region_id))).fetchone()
+            return self.get(row[0]) if row else None
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()

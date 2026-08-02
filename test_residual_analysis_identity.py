@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -147,6 +148,31 @@ class ResidualComponentIdentityTests(unittest.TestCase):
                 restored["residual_bitmap_hash"],
                 bundle["artifact"]["residual_bitmap_hash"])
             reopened.close()
+
+    def test_store_can_read_from_request_worker_thread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "threaded.sqlite3"
+            store = raa.ResidualAnalysisStore(db)
+            try:
+                bundle = make_bundle()
+                store.persist(bundle, residual_bitmap_asset="asset.bin")
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    restored = executor.submit(
+                        store.latest_for_region,
+                        owner="owner",
+                        job_id="job",
+                        run_id="run",
+                        revision_id="revision",
+                        region_id="region",
+                    ).result()
+
+                self.assertEqual(
+                    restored["residual_analysis_id"],
+                    bundle["artifact"]["residual_analysis_id"],
+                )
+            finally:
+                store.close()
 
 
 class ResidualDeterminismTests(unittest.TestCase):
