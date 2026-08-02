@@ -1348,7 +1348,6 @@ def render_analyzed_image(
             if (
                 visual_summary.get("visual_validation_passed")
                 and config.POST_RENDER_OCR_VALIDATION
-                and config.OCR_ENGINE == "rapidocr"
             ):
                 residual_summary = _post_render_source_text_check(
                     rendered,
@@ -1358,7 +1357,10 @@ def render_analyzed_image(
                 visual_summary["post_render_ocr"] = residual_summary
                 if not residual_summary.get("passed", True):
                     visual_summary["visual_validation_passed"] = False
-                    visual_summary["reason"] = "residual_source_english_after_render"
+                    visual_summary["reason"] = str(
+                        residual_summary.get("reason")
+                        or "post_render_ocr_validation_failed"
+                    )
             visual_summary["strategy"] = strategy
             group.visual_attempts.append(visual_summary)
             if (
@@ -6922,7 +6924,12 @@ def _box_overflow_ratio(inner, outer):
 
 
 def _post_render_source_text_check(rendered_bgr, group, page_index=None):
-    """Use lightweight OCR to catch source English still visible after cleanup."""
+    """Use lightweight OCR to catch source-language text still visible after cleanup.
+
+    The post-render check must not depend exclusively on tokens found by the
+    primary OCR pass.  A missed source fragment is precisely one of the cases
+    this independent pass is expected to catch.
+    """
 
     preserved_names = {
         token
@@ -6943,13 +6950,6 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
         and token not in SFX_WORDS
         and token not in intended_translation_tokens
     }
-    if not source_tokens:
-        return {
-            "checked": False,
-            "passed": True,
-            "reason": "no_source_english_tokens_to_check",
-        }
-
     x, y, w, h = group.safe_area or group.draw_box or group.box
     pad = min(8, config.MAX_MASK_EXPANSION + 2)
     x1 = max(0, int(x) - pad)
@@ -6960,7 +6960,7 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
     if crop.size == 0:
         return {
             "checked": False,
-            "passed": True,
+            "passed": False,
             "reason": "empty_post_render_crop",
         }
 
@@ -6970,7 +6970,7 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
     except Exception as exc:
         return {
             "checked": False,
-            "passed": True,
+            "passed": False,
             "reason": f"post_render_ocr_unavailable:{type(exc).__name__}",
         }
 
@@ -6978,12 +6978,48 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
     final_tokens = set(
         re.findall(r"[A-Z']+", _ascii_fold(final_text).upper())
     )
-    residual = sorted(source_tokens & final_tokens)
-    passed = not residual
+    residual = set(source_tokens & final_tokens)
+    language_valid, language_reason = validate_translation_text(
+        "",
+        final_text,
+        classification=group.classification,
+        allowed_proper_names=group.detected_proper_names,
+    )
+    source_language_detected = not language_valid and language_reason.startswith(
+        (
+            "mixed_language_tokens:",
+            "residual_english_token:",
+            "residual_inflected_english:",
+            "untranslated_english_text",
+            "untranslated_single_english_token",
+        )
+    )
+    if source_language_detected:
+        for info in _translation_token_infos(final_text):
+            token = info["token"]
+            if (
+                len(token) >= 2
+                and token not in preserved_names
+                and token not in intended_translation_tokens
+                and token not in PORTUGUESE_MARKERS
+                and token not in SFX_WORDS
+            ):
+                residual.add(token)
+    residual = sorted(residual)
+    passed = not residual and not source_language_detected
     return {
         "checked": True,
         "passed": passed,
-        "reason": "ok" if passed else "source_tokens_detected_after_render",
+        "reason": (
+            "ok"
+            if passed
+            else (
+                "source_language_detected_after_render"
+                if source_language_detected
+                else "source_tokens_detected_after_render"
+            )
+        ),
+        "validator_reason": language_reason,
         "source_tokens_checked": sorted(source_tokens),
         "detected_text": final_text,
         "residual_source_tokens": residual,

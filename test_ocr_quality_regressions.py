@@ -3798,6 +3798,40 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertNotIn("STARGRAM", result.get("residual_source_tokens", []))
 
+    def test_post_render_ocr_rejects_unexpected_english_not_present_in_group_source(self):
+        group = _scored_group("I FEEL BAD")
+        group.translation = "SINTO PENA DELE"
+        group.safe_area = (0, 0, 220, 80)
+        image = np.full((100, 240, 3), 255, dtype=np.uint8)
+        with patch(
+            "ocr_balloon.OCREngine._detect_with_rapidocr",
+            return_value=[_line("SORRY FOR HIM")],
+        ):
+            result = _post_render_source_text_check(image, group, page_index=8)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "source_language_detected_after_render")
+        self.assertIn("SORRY", result["residual_source_tokens"])
+
+    def test_post_render_ocr_allows_valid_portuguese_without_source_echo(self):
+        group = _scored_group("I FEEL BAD")
+        group.translation = "SINTO PENA DELE"
+        group.safe_area = (0, 0, 220, 80)
+        image = np.full((100, 240, 3), 255, dtype=np.uint8)
+        with patch(
+            "ocr_balloon.OCREngine._detect_with_rapidocr",
+            return_value=[_line("SINTO PENA DELE")],
+        ):
+            result = _post_render_source_text_check(image, group, page_index=8)
+        self.assertTrue(result["passed"])
+
+    def test_post_render_ocr_fails_closed_for_invalid_crop(self):
+        group = _scored_group("SOURCE TEXT")
+        group.safe_area = (500, 500, 20, 20)
+        image = np.full((100, 240, 3), 255, dtype=np.uint8)
+        result = _post_render_source_text_check(image, group, page_index=9)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "empty_post_render_crop")
+
     def test_translation_fragment_duplication_is_rejected_for_retry(self):
         valid, reason = validate_translation_text(
             "A COLLEGE IN THE PROVINCE",
