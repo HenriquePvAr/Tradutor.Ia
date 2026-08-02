@@ -1533,7 +1533,76 @@ class UiBridge:
             executed = [r for r in executed
                         if str(r.get("authorization_request_id")) == str(request_id)]
         if not executed:
-            raise ValueError("provider_execution_not_found")
+            # A chapter-wide quality revision may already have obtained a valid
+            # provider correction and then (correctly) kept the original pixels
+            # because the region needs a human visual decision. Requiring a
+            # second provider execution here would both bill twice and hide the
+            # persisted candidate from the human-preview workflow. Expose only
+            # terminal, explicitly usable cached corrections, with deterministic
+            # lineage and zero additional requests. In-flight or malformed
+            # revisions remain fail-closed.
+            revision_root = Path(output_dir) / "quality_revision" / str(revision_id)
+            manifest_path = revision_root / "revision_manifest.json"
+            manifest = read_json(manifest_path, {})
+            audit_path = root / "linguistic_page_audit.json"
+            audit = read_json(audit_path, {})
+            if str(manifest.get("revision_id") or "") != str(revision_id) \
+                    or str(audit.get("revision_id") or "") != str(revision_id) \
+                    or str(manifest.get("status") or "") not in {"finished", "completed", "review_required"}:
+                raise ValueError("provider_execution_not_found")
+            results = []
+            for record in audit.get("records") or []:
+                if not isinstance(record, dict):
+                    continue
+                proposal = record.get("cache_proposal")
+                if not isinstance(proposal, dict):
+                    continue
+                source = str(record.get("source_text") or "").strip()
+                candidate = str((proposal or {}).get("proposal") or "").strip()
+                region = str(record.get("region_id") or "").strip()
+                if not region or not source or not candidate:
+                    continue
+                if (record.get("cache_status") != "answered"
+                        or record.get("cache_correction_available") is not True
+                        or proposal.get("usable") is not True):
+                    continue
+                results.append({
+                    "region_id": region,
+                    "page_id": record.get("page_id"),
+                    "page_number": record.get("page_number"),
+                    "ocr_source_text": source,
+                    "text": source,
+                    "text_origin": "persisted_quality_revision",
+                    "translation": candidate,
+                })
+            if not results:
+                raise ValueError("provider_execution_not_found")
+            identity_material = json.dumps({
+                "revision_id": str(revision_id),
+                "semantic_revision_hash": str(manifest.get("semantic_revision_hash") or ""),
+                "results": results,
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            execution_id = "quality_revision:" + str(revision_id) + ":" \
+                + hashlib.sha256(identity_material.encode("utf-8")).hexdigest()[:16]
+            if request_id and str(request_id) != execution_id:
+                raise ValueError("provider_execution_not_found")
+            execution = {
+                "authorization_request_id": execution_id,
+                "provider_model": manifest.get("model"),
+                "provider_origin": "quality_revision_cache",
+                "executed_at": manifest.get("updated_at") or manifest.get("created_at"),
+                "api_requests": int(manifest.get("requests") or 0),
+                "additional_api_requests": 0,
+                "results": results,
+            }
+            request = {
+                "authorization_request_id": execution_id,
+                "provider_executed": False,
+                "provider_result_reused": True,
+                "status": "reused_quality_revision_result",
+            }
+            return {"request": request, "execution": execution,
+                    "artifact_path": str(manifest_path)}
         if len(executed) > 1:
             raise ValueError("ambiguous_provider_execution")
         request = executed[0]

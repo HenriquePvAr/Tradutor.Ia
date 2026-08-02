@@ -26,6 +26,7 @@ import linguistic_triage as lt
 import preview_gates as pg
 import provider_execution as pe
 from chapter_quality_revision import ChapterQualityRevision, read_json
+from ui_bridge import UiBridge
 
 
 def _rid(n=8):
@@ -165,6 +166,103 @@ class DecisionAgainstExecution(unittest.TestCase):
     def test_a_missing_execution_is_refused(self):
         with self.assertRaisesRegex(ValueError, "provider_execution_not_found"):
             htd.validate_against_execution(self.decision, {})
+
+
+class PersistedQualityRevisionPreviewSource(unittest.TestCase):
+    """A completed quality review must not require a duplicate provider call.
+
+    The quality revision already owns a validated provider answer.  Regions kept
+    out of the final page by the preservation gate still need a human preview,
+    but that preview must reuse the persisted answer with stable lineage.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.output = Path(self.dir.name)
+        self.revision_id = _rid()
+        self.region_id = f"p003:R{_rid()}"
+        self.source = "THE DOOR WAS OPEN WHEN HE ARRIVED."
+        self.candidate = "A PORTA ESTAVA ABERTA QUANDO ELE CHEGOU."
+        revision = self.output / "quality_revision" / self.revision_id
+        audit = self.output / "quality_revision" / "linguistic_audit" / self.revision_id
+        revision.mkdir(parents=True)
+        audit.mkdir(parents=True)
+        (revision / "revision_manifest.json").write_text(json.dumps({
+            "revision_id": self.revision_id,
+            "status": "review_required",
+            "model": "fake-offline-model",
+            "requests": 1,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "semantic_revision_hash": "a" * 64,
+        }), encoding="utf-8")
+        (audit / "linguistic_page_audit.json").write_text(json.dumps({
+            "job_id": "job-1",
+            "run_id": "run-1",
+            "revision_id": self.revision_id,
+            "records": [{
+                "region_id": self.region_id,
+                "page_id": "p003",
+                "page_number": 3,
+                "source_text": self.source,
+                "current_translation": self.source,
+                "classification_normalized": "dialogue_translate",
+                "bounding_box": [10, 20, 120, 50],
+                "needs_human_review": True,
+                "cache_status": "answered",
+                "cache_correction_available": True,
+                "cache_proposal": {
+                    "state": "usable_correction",
+                    "usable": True,
+                    "proposal": self.candidate,
+                },
+            }],
+        }), encoding="utf-8")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_persisted_answer_becomes_a_local_preview_source(self):
+        bridge = UiBridge.__new__(UiBridge)
+        resolved = bridge._provider_execution(str(self.output), self.revision_id)
+
+        execution = resolved["execution"]
+        self.assertEqual(execution["provider_origin"], "quality_revision_cache")
+        self.assertEqual(execution["additional_api_requests"], 0)
+        self.assertEqual(execution["api_requests"], 1)
+        self.assertEqual(len(execution["results"]), 1)
+        result = execution["results"][0]
+        self.assertEqual(result["region_id"], self.region_id)
+        self.assertEqual(result["text"], self.source)
+        self.assertEqual(result["translation"], self.candidate)
+        self.assertFalse(resolved["request"].get("provider_executed", False))
+
+    def test_unknown_lineage_does_not_fall_back_to_cached_revision(self):
+        bridge = UiBridge.__new__(UiBridge)
+        with self.assertRaisesRegex(ValueError, "provider_execution_not_found"):
+            bridge._provider_execution(
+                str(self.output), self.revision_id, request_id="different-execution")
+
+    def test_in_flight_revision_is_not_exposed_as_a_preview_source(self):
+        manifest = self.output / "quality_revision" / self.revision_id / "revision_manifest.json"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data["status"] = "running"
+        manifest.write_text(json.dumps(data), encoding="utf-8")
+
+        bridge = UiBridge.__new__(UiBridge)
+        with self.assertRaisesRegex(ValueError, "provider_execution_not_found"):
+            bridge._provider_execution(str(self.output), self.revision_id)
+
+    def test_malformed_cached_records_are_ignored(self):
+        audit_path = (self.output / "quality_revision" / "linguistic_audit"
+                      / self.revision_id / "linguistic_page_audit.json")
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        audit["records"].extend([None, {"cache_proposal": "not-an-object"}])
+        audit_path.write_text(json.dumps(audit), encoding="utf-8")
+
+        bridge = UiBridge.__new__(UiBridge)
+        resolved = bridge._provider_execution(str(self.output), self.revision_id)
+
+        self.assertEqual(len(resolved["execution"]["results"]), 1)
 
 
 class NoProviderGuard(unittest.TestCase):
