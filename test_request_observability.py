@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import _test_bootstrap  # noqa: F401
+
 import json
 import tempfile
 import unittest
