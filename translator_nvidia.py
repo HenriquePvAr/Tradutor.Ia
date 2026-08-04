@@ -222,9 +222,11 @@ class TranslatorNvidiaBatch:
                 f"A tentativa anterior misturou {self.source_language} com {target}; "
                 f"a saida deve ficar inteiramente em {target}, sem palavras residuais.",
             "suspicious_truncation":
-                "A tentativa anterior ficou incompleta ou truncada; traduza a frase "
-                "inteira preservando todo o sentido original, de forma concisa para "
-                "caber no balao.",
+                "A tentativa anterior ficou incompleta ou truncada; traduza novamente "
+                "todo o conteudo da regiao, sem omitir nenhuma informacao, ideia, "
+                "negacao, relacao, nome ou intencao. Use uma formulacao natural e "
+                "economica apenas na escolha das palavras, nunca reduzindo ou "
+                "resumindo o conteudo.",
             "possible_semantic_inversion":
                 "A tentativa anterior pode ter invertido o sentido; preserve sujeito, "
                 "objeto, negacao, tempo verbal e intencao do original.",

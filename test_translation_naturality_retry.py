@@ -35,6 +35,7 @@ from pathlib import Path
 import linguistic_triage as lt
 import provider_execution as pe
 import region_taxonomy as tax
+import translator_nvidia as tn
 
 
 def _rid():
@@ -605,6 +606,63 @@ class DownloaderAndNetworkIsolation(NaturalityRetryHarness):
         self.assertFalse(hasattr(translator, "translate_strict"))
         result = self._execute(request, plan, translator)
         self.assertEqual(result["results"][0]["translation"], GRAMMAR_FIRST_PASS)
+
+
+# 22. _quality_retry_instruction, called directly, no pipeline/network involved -
+class QualityRetryInstructionDirect(unittest.TestCase):
+    """Exercises translator_nvidia.py::_quality_retry_instruction in isolation.
+
+    No FakeQualityTranslator, no plan/execute, no translate_many/translate_strict
+    call - just the pure string-building method - so nothing here can ever touch
+    the network regardless of the offline guard.
+    """
+
+    def setUp(self):
+        self.translator = tn.TranslatorNvidiaBatch(
+            api_key="unused", base_url="https://example.invalid/v1", model="fake/model",
+            source_language="ingles", target_language="pt-BR")
+
+    def test_suspicious_truncation_demands_full_content_not_a_summary(self):
+        instruction = self.translator._quality_retry_instruction("suspicious_truncation")
+        lowered = instruction.lower()
+        # full content, no omission, no summarizing
+        self.assertIn("todo o conteudo", lowered)
+        self.assertIn("sem omitir", lowered)
+        self.assertIn("resumindo", lowered)
+        # conciseness is scoped to word choice only, never to content
+        self.assertIn("economica", lowered)
+        self.assertIn("escolha das palavras", lowered)
+        # the old ambiguous phrasing ("de forma concisa para caber no balao",
+        # with no qualifier) must be gone
+        self.assertNotIn("para caber no balao", lowered)
+
+    def test_unknown_reason_code_falls_back_without_echoing_it(self):
+        unknown = "nonexistent_reason_xyz"
+        instruction = self.translator._quality_retry_instruction(unknown)
+        # no exception, and the raw unknown code never leaks into the prompt
+        self.assertNotIn(unknown, instruction)
+        lowered = instruction.lower()
+        # generic fallback still points at "redo it, avoid the same problem"
+        self.assertIn("refaca", lowered)
+        # never invites summarizing/inventing content
+        self.assertNotIn("resuma", lowered)
+        self.assertNotIn("resumo", lowered)
+        self.assertNotIn("invente", lowered)
+        # never leaks internals
+        for forbidden in ("api_key", "token", "prompt", "\\", "c:\\", "traceback"):
+            self.assertNotIn(forbidden, lowered)
+
+    def test_unknown_reason_code_does_not_alter_retry_budget(self):
+        # A pure string-building call - confirms it neither calls the network
+        # nor touches any per-region attempt counter (there isn't one on the
+        # translator itself; the at-most-one-retry budget lives in
+        # provider_execution.py and is covered by SecondAttemptOutcomes above).
+        before = dict(vars(self.translator))
+        self.translator._quality_retry_instruction("nonexistent_reason_xyz")
+        after = dict(vars(self.translator))
+        self.assertEqual(before.keys(), after.keys())
+        for key in before:
+            self.assertEqual(repr(before[key]), repr(after[key]), key)
 
 
 if __name__ == "__main__":
