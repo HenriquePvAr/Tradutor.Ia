@@ -196,6 +196,45 @@ class TranslatorNvidiaBatch:
             "Preserve a pontuacao e qualquer censura (***). "
         )
 
+    def _quality_retry_instruction(self, validation_reason):
+        """One targeted sentence per rejection reason, never a generic re-ask.
+
+        The reason code is our own closed vocabulary (produced by
+        linguistic_triage.py), never raw OCR/user text, so building this
+        sentence with an f-string carries no injection risk; the untrusted
+        text (the balloon itself) still only ever reaches the model through
+        the JSON-encoded payload below.
+        """
+        target = self._target_language_name()
+        table = {
+            "empty_translation":
+                "A tentativa anterior veio vazia; produza uma traducao completa.",
+            "source_language_residual":
+                f"A tentativa anterior manteve o texto em {self.source_language} "
+                f"quase sem traduzir; traduza tudo para {target}.",
+            "candidate_equals_source":
+                f"A tentativa anterior repetiu o texto original sem traduzir; "
+                f"traduza de fato para {target}.",
+            "no_target_language_orthography":
+                f"A tentativa anterior nao soou como {target} natural; escreva "
+                f"como um falante nativo de {target} escreveria, com gramatica correta.",
+            "mixed_language_candidate":
+                f"A tentativa anterior misturou {self.source_language} com {target}; "
+                f"a saida deve ficar inteiramente em {target}, sem palavras residuais.",
+            "suspicious_truncation":
+                "A tentativa anterior ficou incompleta ou truncada; traduza a frase "
+                "inteira preservando todo o sentido original, de forma concisa para "
+                "caber no balao.",
+            "possible_semantic_inversion":
+                "A tentativa anterior pode ter invertido o sentido; preserve sujeito, "
+                "objeto, negacao, tempo verbal e intencao do original.",
+            "terminology_conflict":
+                "A tentativa anterior usou termo inconsistente com o glossario/contexto "
+                "ja estabelecidos neste capitulo; use a terminologia ja adotada.",
+        }
+        return table.get(str(validation_reason or "").strip(),
+                          "Refaca a traducao evitando o mesmo problema da tentativa anterior.")
+
     def translate_strict(
         self,
         text,
@@ -226,6 +265,7 @@ class TranslatorNvidiaBatch:
                             self._system_prompt()
                             + "\nRevisao estrita: traduza TODO texto de "
                             f"{self.source_language} para {self._target_language_name()}. "
+                            + self._quality_retry_instruction(validation_reason) + " "
                             + self._proper_name_instruction(
                                 proper_names,
                                 allow_proper_names,

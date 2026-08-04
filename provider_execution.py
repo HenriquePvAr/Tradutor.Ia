@@ -23,16 +23,25 @@ _REQUESTS_NAME = "provider_authorization_requests.json"
 READY = "ready_for_human_authorization"
 EXECUTED = "executed"
 
-# The only reasons a first-pass rejection is worth retrying once: an empty
-# result, source-language residue, or the candidate echoing the source
-# verbatim (the only real "literal" signal the gate has - see
-# .runtime/claude-translation-quality-retry/triage_contract.md). Anything
-# else (encoding damage, needs_review-only signals) is terminal: retrying
-# would not fix it, so it goes straight to review instead of spending a
-# second call.
+# The reasons a first-pass rejection is worth retrying once, whether the gate
+# landed on FAILED or NEEDS_REVIEW - see
+# .runtime/claude-translation-naturality-retry/retry_policy.md for why each one
+# is here and why the rest (encoding damage, dropped punctuation, an
+# unreadable source, a preservable region) are not. `possible_semantic_inversion`
+# and `terminology_conflict` are real checks in linguistic_triage.py but no
+# code today populates the `evidence` that would make them fire in
+# production; they stay in the table because the contract is real, not
+# invented, and dormant until an evidence source exists.
 _RECOVERABLE_GATE_REASONS = frozenset({
     "empty_translation", "source_language_residual", "candidate_equals_source",
+    "no_target_language_orthography", "mixed_language_candidate",
+    "suspicious_truncation", "possible_semantic_inversion", "terminology_conflict",
 })
+
+# A rejection is only ever retried once, whether the gate's overall verdict
+# was a hard FAILED or a softer NEEDS_REVIEW - both share the single quality
+# retry budget enforced in _retry_once_if_recoverable.
+_RETRY_TRIGGERING_STATUSES = (linguistic_triage.FAILED, linguistic_triage.NEEDS_REVIEW)
 
 
 class ProviderCallNotAuthorized(RuntimeError):
@@ -158,6 +167,11 @@ def plan_execution(request: dict[str, Any], records: list[dict[str, Any]], *,
             "current_translation": record.get("current_translation"),
             "classification_normalized": record.get("classification_normalized"),
             "human_decision": str(decision.get("decision") or ""),
+            # Passed through only: nothing here computes semantic-inversion or
+            # terminology evidence. If some future upstream stage starts
+            # populating record["quality_evidence"], the quality gate and
+            # retry already know how to use it (see linguistic_triage.py).
+            "quality_evidence": dict(record.get("quality_evidence") or {}),
         })
     if drifted:
         # Partially sending an approved set would spend money on a scope the
@@ -171,7 +185,8 @@ def plan_execution(request: dict[str, Any], records: list[dict[str, Any]], *,
 def _gate_for(item: dict[str, Any], translation: str) -> dict[str, Any]:
     return linguistic_triage.evaluate_linguistic_gate(
         source_text=item["text"], current_translation=translation,
-        policy={"normalized_classification": item.get("classification_normalized") or ""})
+        policy={"normalized_classification": item.get("classification_normalized") or ""},
+        evidence=item.get("quality_evidence") or {})
 
 
 def _retry_once_if_recoverable(entry: dict[str, Any], *, translator,
@@ -185,8 +200,8 @@ def _retry_once_if_recoverable(entry: dict[str, Any], *, translator,
     entry["linguistic_gate"] = {"status": gate["status"], "reason_codes": gate["reason_codes"]}
     entry["review_required"] = gate["status"] == linguistic_triage.FAILED
     entry["quality_retry_attempted"] = False
-    if gate["status"] != linguistic_triage.FAILED:
-        return
+    if gate["status"] not in _RETRY_TRIGGERING_STATUSES:
+        return  # PASSED, or not applicable to this category
 
     recoverable_reasons = sorted(set(gate["reason_codes"]) & _RECOVERABLE_GATE_REASONS)
     if not recoverable_reasons or not hasattr(translator, "translate_strict"):
@@ -211,7 +226,11 @@ def _retry_once_if_recoverable(entry: dict[str, Any], *, translator,
     entry["quality_retry_gate"] = {"status": retry_gate["status"],
                                     "reason_codes": retry_gate["reason_codes"]}
     if retry_gate["status"] == linguistic_triage.FAILED:
-        return  # still rejected: no third attempt, stays review_required
+        # Still rejected after the one allowed quality attempt: no third
+        # call, and the original (not the still-bad candidate) is kept -
+        # never pick a "slightly better" but still-failing result.
+        entry["review_required"] = True
+        return
 
     entry["translation"] = candidate
     entry["translated"] = bool(candidate)
