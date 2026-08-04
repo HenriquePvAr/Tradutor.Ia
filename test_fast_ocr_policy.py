@@ -26,20 +26,17 @@ def _sleep_child(connection):
 
 class FastOCRPolicyTests(unittest.TestCase):
     def setUp(self):
-        self._mode_config = {
-            name: getattr(config, name)
-            for name in (
-                "FAST_OCR_HEAVY_FALLBACK",
-                "FAST_OCR_MODE",
-                "OCR_HYBRID_FALLBACK",
-                "RAPIDOCR_PAGE_FALLBACK",
-                "OCR_REGION_SELECTIVE_FALLBACK",
-            )
-        }
+        # run_webtoon._configure_mode() mutates arbitrary config attributes
+        # as a side effect (OCR_ENGINE, RAPIDOCR_ENABLED,
+        # POST_RENDER_OCR_VALIDATION, ...), not just the fallback-policy
+        # names below. Snapshot the whole module namespace so nothing it
+        # touches can leak into later tests, regardless of which attributes
+        # _configure_mode is extended to set in the future.
+        self._config_snapshot = vars(config).copy()
 
     def tearDown(self):
-        for name, value in self._mode_config.items():
-            setattr(config, name, value)
+        vars(config).clear()
+        vars(config).update(self._config_snapshot)
 
     def test_default_fast_budget_is_fail_closed_for_heavy_fallback(self):
         budget = FastOCRBudget.from_config(fast=True)
