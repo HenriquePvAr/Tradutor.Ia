@@ -219,6 +219,20 @@ app.include_router(create_admin_community_router(COMMUNITY, AUTH))
 # Supabase social API (works/chapters/comments/…). Mounted only when the social provider
 # is configured; the browser never reaches the tables directly — every call forwards the
 # user's JWT to the Data API under RLS. Fails closed (skips mounting) if unconfigured.
+#
+# `_SOCIAL_STATUS` is the sanitized, frontend-facing record of what happened: it never
+# carries the SUPABASE_URL, keys or a raw exception, only a closed set of reason codes.
+# api_bootstrap() merges it into the "community" payload so the browser can pick the
+# matching UI (Supabase social vs. the legacy SQLite one) instead of guessing from DOM
+# elements that are always present regardless of which provider is active.
+_configured_social_provider = str(
+    os.environ.get("COMMUNITY_SOCIAL_PROVIDER", "supabase") or "supabase"
+).strip().lower()
+_SOCIAL_STATUS: dict[str, Any] = {
+    "provider": _configured_social_provider,
+    "available": False,
+    "reason_code": "social_provider_initialization_failed",
+}
 try:
     from social_http import create_social_router
     from social_repository import build_social_repository
@@ -249,10 +263,29 @@ try:
                                                  retention=_RETENTION)
         app.include_router(create_social_pdf_router(_PUBLISHING, _CONTENT, AUTH,
                                                     retention=_RETENTION))
+        _SOCIAL_STATUS = {"provider": "supabase", "available": True, "reason_code": None}
     except SocialConfigError as exc:
         print(f"social API not mounted: {exc}")
+        if _configured_social_provider == "local":
+            # Expected, not an error: the legacy SQLite community UI is the intended
+            # experience for this installation and stays fully functional on its own.
+            _SOCIAL_STATUS = {"provider": "local", "available": True, "reason_code": None}
+        elif _configured_social_provider == "supabase":
+            _SOCIAL_STATUS = {
+                "provider": "supabase", "available": False,
+                "reason_code": "social_provider_not_configured",
+            }
+        else:
+            _SOCIAL_STATUS = {
+                "provider": "unknown", "available": False,
+                "reason_code": "social_provider_unknown",
+            }
 except Exception as exc:  # never let an optional feature break app startup
     print(f"social API not mounted: {type(exc).__name__}")
+    _SOCIAL_STATUS = {
+        "provider": _configured_social_provider, "available": False,
+        "reason_code": "social_provider_initialization_failed",
+    }
 
 
 def _api_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -358,6 +391,7 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "auth_state": "unauthenticated",
             "user_id": "",
             "available": True,
+            "social": _SOCIAL_STATUS,
         },
     }
     try:
@@ -372,6 +406,7 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "auth_state": "authenticated" if principal.authenticated else "unauthenticated",
             "user_id": principal.user_id if principal.authenticated else "",
             "available": True,
+            "social": _SOCIAL_STATUS,
         }
         payload["profile"] = _profile_for_principal(principal)
         try:
@@ -391,6 +426,7 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "auth_state": "auth_error",
             "user_id": "",
             "available": True,
+            "social": _SOCIAL_STATUS,
         }
         payload["profile"] = {}
     return payload

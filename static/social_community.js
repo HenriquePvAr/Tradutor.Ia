@@ -804,31 +804,76 @@ function readerModal(chapter) {
   });
 }
 
-// ---- boot: only when the Supabase auth provider is active ----
-async function boot() {
-  if (!root()) return;
-  // The classic local UI owns this panel when it exposes the verified-PDF feed.
-  // Do not mount the optional social experience over it: doing so hides local
-  // publications and duplicates the global profile/logout controls.
-  if (document.getElementById('communityFeed')) {
-    window.__socialCommunitySkipped = 'local_verified_feed_present';
+// ---- provider selection: backend state decides, never a DOM element ----
+// The legacy SQLite community panel markup (#communityFeed and siblings) is always
+// present in ui_shell.html, whatever COMMUNITY_SOCIAL_PROVIDER is configured to — its
+// presence cannot tell us which provider is active. The backend is the only source of
+// truth: /api/ui/bootstrap carries a sanitized `community.social` record (provider,
+// available, reason_code — never a URL, key, path or raw exception). Single-flight
+// cached, same pattern as tradutor_ui.js's own bootstrap refresh, so a retry after
+// failure re-fetches but normal re-entry never re-requests.
+let communityProviderStatePromise = null;
+async function fetchCommunityProviderState() {
+  if (!communityProviderStatePromise) {
+    communityProviderStatePromise = fetch('/api/ui/bootstrap', { credentials: 'same-origin', cache: 'no-store' })
+      .then((response) => response.json())
+      .then((data) => (data && data.community && data.community.social) || null)
+      .catch(() => null);
+  }
+  return communityProviderStatePromise;
+}
+
+function communityUnavailablePanel(onRetry) {
+  return el('div', { class: 'sc-gate' }, [
+    el('div', { class: 'sc-gate-mark', text: '共' }),
+    el('h2', { text: 'Comunidade' }),
+    el('p', { class: 'sc-gate-sub', text: 'A Comunidade remota está indisponível no momento. Tente novamente em instantes.' }),
+    el('div', { class: 'sc-gate-actions' }, [
+      el('button', { class: 'btn-primary', text: 'Tentar de novo', on: { click: onRetry } }),
+    ]),
+  ]);
+}
+
+// Mounts at most one of: the Supabase social UI (this module), or nothing (leaving the
+// legacy SQLite UI in full control of #view-community). Never both, and never silently:
+// an unknown/unconfigured/unreachable Supabase provider replaces the panel with a
+// sanitized error instead of letting the legacy markup show as if it were the real thing.
+async function mountCommunityProvider(host, social) {
+  if (social && social.provider === 'local') {
+    // Explicit local/SQLite mode: the legacy CommunityApi UI already owns this panel.
+    window.__socialCommunitySkipped = 'local_provider_active';
     return;
   }
-  // In local-session mode there is no Supabase client; leave the existing (SQLite)
-  // community UI untouched and do not mount the social experience.
-  const client = await getSupabaseClient();
-  if (!client) return;
-  window.__socialCommunityMounted = true;
-  let ready = false;
-  await onAuthChange(async (session) => {
-    state.session = session;
-    if (session && !state.profile) {
-      try { state.profile = await api.getMyProfile(); } catch (_) { /* onboarding handles it */ }
-    }
-    if (!session) state.profile = null;
-    if (ready || session !== undefined) render();
-    ready = true;
-  });
+  if (social && social.provider === 'supabase' && social.available) {
+    // In local-session auth mode there is no Supabase client; leave the legacy UI be.
+    const client = await getSupabaseClient();
+    if (!client) return;
+    window.__socialCommunityMounted = true;
+    let ready = false;
+    await onAuthChange(async (session) => {
+      state.session = session;
+      if (session && !state.profile) {
+        try { state.profile = await api.getMyProfile(); } catch (_) { /* onboarding handles it */ }
+      }
+      if (!session) state.profile = null;
+      if (ready || session !== undefined) render();
+      ready = true;
+    });
+    return;
+  }
+  // Fail closed: missing bootstrap state, an unrecognized provider, or Supabase selected
+  // but not currently available. Neither UI mounts silently as the other.
+  window.__socialCommunitySkipped = (social && social.reason_code) || 'social_provider_unknown';
+  host.replaceChildren(communityUnavailablePanel(async () => {
+    communityProviderStatePromise = null;
+    await mountCommunityProvider(host, await fetchCommunityProviderState());
+  }));
+}
+
+async function boot() {
+  const host = root();
+  if (!host) return;
+  await mountCommunityProvider(host, await fetchCommunityProviderState());
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
