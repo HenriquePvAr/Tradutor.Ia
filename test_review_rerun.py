@@ -276,6 +276,127 @@ class ReviewRerunBridgeAndUiTests(unittest.TestCase):
         self.assertTrue(all(item.get("requires_provider") is False for item in targets))
         self.assertEqual(started["provider_requests_planned"], 0)
 
+    def test_explicit_region_selection_limits_child_and_rejects_unknown_targets(self):
+        plan = self.bridge.review_rerun_plan_for_owner("owner-a", self.parent_id)
+        selected = next(
+            item["region_id"] for item in plan["targets"]
+            if item.get("requires_provider") is False
+        )
+        started = self.bridge.start_review_rerun_for_owner(
+            "owner-a", self.parent_id, allow_provider=False,
+            modes=["reconstruction"], target_region_ids=[selected],
+        )
+        child = self.bridge.store.get_job(started["id"])
+        targets = (child.get("configuration") or {}).get("targets") or []
+        self.assertEqual([item["region_id"] for item in targets], [selected])
+        self.assertEqual(started["target_region_count"], 1)
+        self.bridge.store.update_fields(started["id"], status=JobStatus.CANCELLED)
+        with self.assertRaisesRegex(ValueError, "invalid_rerun_target_selection"):
+            self.bridge.start_review_rerun_for_owner(
+                "owner-a", self.parent_id, allow_provider=False,
+                modes=["reconstruction"], target_region_ids=["p999:UNKNOWN"],
+            )
+
+    def test_duplicate_and_empty_target_selection_are_rejected(self):
+        plan = self.bridge.review_rerun_plan_for_owner("owner-a", self.parent_id)
+        selected = next(
+            item["region_id"] for item in plan["targets"]
+            if item.get("requires_provider") is False
+        )
+        with self.assertRaisesRegex(ValueError, "invalid_rerun_target_selection"):
+            self.bridge.start_review_rerun_for_owner(
+                "owner-a", self.parent_id, allow_provider=False,
+                modes=["reconstruction"], target_region_ids=[selected, selected],
+            )
+        with self.assertRaisesRegex(ValueError, "invalid_rerun_target_selection"):
+            self.bridge.start_review_rerun_for_owner(
+                "owner-a", self.parent_id, allow_provider=False,
+                modes=["reconstruction"], target_region_ids=[],
+            )
+
+    def test_region_from_another_owners_job_is_rejected(self):
+        other_parent = self.bridge.store.create_job(
+            source_url="",
+            output_dir=str(self.fixture.output),
+            command=[],
+            configuration={
+                "job_type": "translation",
+                "community_owner_id": "owner-b",
+                "chapter_name": "Fixture chapter (owner-b)",
+            },
+        )
+        self.bridge.store.transition(other_parent, JobStatus.CANCELLED)
+        plan = self.bridge.review_rerun_plan_for_owner("owner-a", self.parent_id)
+        selected = next(
+            item["region_id"] for item in plan["targets"]
+            if item.get("requires_provider") is False
+        )
+        # owner-a must never be able to start a rerun against owner-b's job, even
+        # while supplying a region id that is valid for owner-a's own parent job.
+        with self.assertRaisesRegex(ValueError, "job_not_found"):
+            self.bridge.start_review_rerun_for_owner(
+                "owner-a", other_parent, allow_provider=False,
+                modes=["reconstruction"], target_region_ids=[selected],
+            )
+
+    def test_selection_accepts_exactly_twenty_and_rejects_twenty_one(self):
+        synthetic_targets = [
+            {
+                "region_id": f"p001:REGION_{index:03d}", "page": 1,
+                "requires_provider": False, "work_kind": "reconstruction_only",
+                "translation_to_reuse": "Texto",
+            }
+            for index in range(21)
+        ]
+        synthetic_plan = {
+            "targets": synthetic_targets, "region_count": 21, "page_count": 1,
+            "reconstruction_only": 21, "provider_required": 0,
+            "estimated_provider_requests": 0, "schema_version": 1, "pages": [1],
+        }
+        with patch("ui_bridge.build_pending_region_plan", return_value=synthetic_plan):
+            twenty_ids = [item["region_id"] for item in synthetic_targets[:20]]
+            started = self.bridge.start_review_rerun_for_owner(
+                "owner-a", self.parent_id, allow_provider=False,
+                modes=["reconstruction"], target_region_ids=twenty_ids,
+            )
+            self.assertEqual(started["target_region_count"], 20)
+            self.bridge.store.update_fields(started["id"], status=JobStatus.CANCELLED)
+            all_ids = [item["region_id"] for item in synthetic_targets]
+            with self.assertRaisesRegex(ValueError, "invalid_rerun_target_selection"):
+                self.bridge.start_review_rerun_for_owner(
+                    "owner-a", self.parent_id, allow_provider=False,
+                    modes=["reconstruction"], target_region_ids=all_ids,
+                )
+
+    def test_stale_parent_run_id_is_rejected(self):
+        plan = self.bridge.review_rerun_plan_for_owner("owner-a", self.parent_id)
+        with self.assertRaisesRegex(ValueError, "invalid_rerun_parent_run"):
+            self.bridge.start_review_rerun_for_owner(
+                "owner-a", self.parent_id, allow_provider=False,
+                modes=["reconstruction"], parent_run_id="stale-run-id",
+            )
+        started = self.bridge.start_review_rerun_for_owner(
+            "owner-a", self.parent_id, allow_provider=False,
+            modes=["reconstruction"], parent_run_id=plan["run_id"],
+        )
+        self.assertEqual(started["operation_kind"], "review_rerun")
+
+    def test_quality_review_rehydrates_latest_terminal_child(self):
+        self.bridge.store.update_fields(
+            self.parent_id, status=JobStatus.REVIEW_REQUIRED,
+            quality_report_path=str(self.fixture.output / "quality_report.json"),
+        )
+        started = self.bridge.start_review_rerun_for_owner(
+            "owner-a", self.parent_id, allow_provider=False, modes=["reconstruction"]
+        )
+        self.bridge.store.update_fields(
+            started["id"], status=JobStatus.CANCELLED, stage="cancelled",
+            reason_code="cancelled", cancellation_completed_at=time.time(),
+        )
+        payload = self.bridge.quality_review(self.parent_id)
+        self.assertEqual(payload["latest_rerun"]["id"], started["id"])
+        self.assertEqual(payload["latest_rerun"]["lifecycle_state"], "cancelled")
+
     def test_public_plan_does_not_expose_revision_filesystem_path(self):
         plan = self.bridge.review_rerun_plan_for_owner("owner-a", self.parent_id)
         self.assertNotIn("revision_root", plan)
@@ -315,6 +436,8 @@ class ReviewRerunBridgeAndUiTests(unittest.TestCase):
         self.assertNotIn("pollReviewRerunStatus(jobId, {once: true})", js)
         self.assertIn("String(button.dataset.reviewJob || '').toLowerCase()", js)
         self.assertIn("String(item.job_id || '').toLowerCase() === reviewJobId", js)
+        self.assertIn("review.latest_rerun?.id", js)
+        self.assertIn("target_region_ids", js)
         self.assertIn("Aguardando decisão", js)
         self.assertIn("Decisões registradas", js)
 
