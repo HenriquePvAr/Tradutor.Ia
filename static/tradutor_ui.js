@@ -1820,6 +1820,16 @@
     const list = $('#qualityReviewList');
     if (!panel || !list) return;
     appState.qualityReview = review;
+    if (review.latest_rerun?.id) {
+      appState.reviewRerunChildId = String(review.latest_rerun.id);
+      renderReviewRerunActivity(review.latest_rerun);
+      if (!REVIEW_RERUN_TERMINAL.has(String(review.latest_rerun.status || ''))) {
+        void pollReviewRerunStatus(appState.reviewRerunChildId);
+      }
+    } else {
+      appState.reviewRerunChildId = '';
+      renderReviewRerunActivity(null);
+    }
     panel.hidden = false;
     updateQualityReviewDeveloperActions();
     const items = Array.isArray(review.items) ? review.items : [];
@@ -2086,8 +2096,33 @@
         setQualityReviewBulkMessage('Nenhuma região pendente foi encontrada.', 'ok');
         return;
       }
-      appState.reviewRerunPlan = plan;
-      renderReviewRerunPlan(plan);
+      const selectedRegions = new Set((appState.qualityReview?.items || [])
+        .filter(item => appState.qualityReviewSelection.has(String(item.key || '')))
+        .map(item => String(item.region_id || ''))
+        .filter(Boolean));
+      if (selectedRegions.size > 20) {
+        throw new Error('Selecione no máximo 20 regiões para um rerun controlado.');
+      }
+      const selectedTargets = selectedRegions.size
+        ? (plan.targets || []).filter(item => selectedRegions.has(String(item.region_id || '')))
+        : (plan.targets || []);
+      if (selectedRegions.size && selectedTargets.length !== selectedRegions.size) {
+        throw new Error('A seleção contém itens que não são elegíveis para rerun.');
+      }
+      const pages = [...new Set(selectedTargets.map(item => Number(item.page || 0)).filter(Boolean))];
+      const scopedPlan = selectedRegions.size ? {
+        ...plan,
+        targets: selectedTargets,
+        pages,
+        region_count: selectedTargets.length,
+        page_count: pages.length,
+        reconstruction_only: selectedTargets.filter(item => item.requires_provider !== true).length,
+        provider_required: selectedTargets.filter(item => item.requires_provider === true).length,
+        estimated_provider_requests: selectedTargets.filter(item => item.requires_provider === true).length,
+        selection_applied: true,
+      } : plan;
+      appState.reviewRerunPlan = scopedPlan;
+      renderReviewRerunPlan(scopedPlan);
       const overlay = $('#reviewRerunConfirm');
       if (overlay) { overlay.classList.add('show'); overlay.setAttribute('aria-hidden', 'false'); }
       $('#reviewRerunApply')?.focus();
@@ -2122,7 +2157,14 @@
     try {
       const child = await api('/api/ui/review-rerun/start', {
         method: 'POST',
-        body: JSON.stringify({job_id: plan.job_id, modes: [mode], allow_provider: allowProvider}),
+        body: JSON.stringify({
+          job_id: plan.job_id,
+          modes: [mode],
+          allow_provider: allowProvider,
+          parent_run_id: plan.run_id || undefined,
+          target_region_ids: plan.selection_applied
+            ? (plan.targets || []).map(item => String(item.region_id || '')) : undefined,
+        }),
       });
       closeReviewRerunDialog();
       appState.reviewRerunChildId = String(child.id || '');
@@ -4659,7 +4701,7 @@
       const title = $('#reviewModeTitle');
       const metaEl = $('#reviewModeMeta');
       if (title) title.textContent = `Revisando ${info.chapterName}`;
-      if (metaEl) metaEl.textContent = `job ${String(info.jobId).slice(0, 8)}… · run ${String(info.runId).slice(0, 8)}…`;
+      if (metaEl) metaEl.textContent = `${info.validationSnapshot ? 'Snapshot isolado de validação · ' : ''}job ${String(info.jobId).slice(0, 8)}… · run ${String(info.runId).slice(0, 8)}…`;
     }
     const start = $('#startBtn');
     if (start) start.hidden = true;
@@ -4739,7 +4781,7 @@
     const identity = reviewIdentity(record);
     if (!identity) { showToast('Revisão indisponível para este capítulo.', 'warn'); return; }
     const {jobId, runId} = identity;
-    appState.reviewMode = {jobId, runId, chapterName: record.chapter_name || record.slug || 'Capítulo'};
+    appState.reviewMode = {jobId, runId, chapterName: record.chapter_name || record.slug || 'Capítulo', validationSnapshot: record.validation_snapshot === true};
     appState.currentJobId = jobId;
     appState.reviewPanelDismissed = false;
     if (!restore) {
@@ -4848,10 +4890,12 @@
     const meta = `${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)} · ${gate} · ${provenance}`;
     const previewActionHtml = historyPreviewAction(record);
     const retryActionHtml = retryAction(record) || actionButton('Reprocessar', 'reprocess');
+    const snapshotBadge = record.validation_snapshot === true
+      ? '<span class="badge snapshot">Snapshot isolado de validação</span>' : '';
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
-      <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span>${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
+      <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span>${snapshotBadge}${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
       <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${reviewAction(record)}${actionButton('Abrir PDF', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
     </div>`;
   }

@@ -640,6 +640,13 @@ class UiBridge:
             else "legacy"
         )
         source_type = str(job.get("source_type") or config.get("source_type") or "url")
+        snapshot_metadata = config.get("local_test_snapshot")
+        validation_snapshot = bool(
+            os.getenv("APP_ENV") == "test"
+            and os.getenv("AUTH_PROVIDER") == "local_test"
+            and isinstance(snapshot_metadata, dict)
+            and snapshot_metadata.get("purpose") == "authenticated_ui_validation"
+        )
         local_summary = config.get("local_source_summary")
         if not isinstance(local_summary, dict):
             local_summary = {}
@@ -704,6 +711,10 @@ class UiBridge:
                 if source_type != "local_folder" else ""
             ),
             "source_type": source_type,
+            "validation_snapshot": validation_snapshot,
+            "validation_snapshot_label": (
+                "Snapshot isolado de validação" if validation_snapshot else ""
+            ),
             "source_label": (
                 str(local_summary.get("folder_name") or "Pasta local")[:120]
                 if source_type == "local_folder" else ""
@@ -944,6 +955,7 @@ class UiBridge:
             for key in ("approved", "pending", "rejected", "unchanged", "manual")
         )
         pending_decisions = sum(1 for item in items if item["state"] == "pending")
+        latest_rerun = self.store.latest_review_rerun(str(job["id"]))
         return {
             "job_id": job["id"],
             "items": items,
@@ -962,6 +974,7 @@ class UiBridge:
             },
             "report_only_count": report_only,
             "reviewed_pdf": self._latest_reviewed_pdf(job),
+            "latest_rerun": self._job_record(latest_rerun) if latest_rerun else None,
         }
 
     def _latest_reviewed_pdf(self, job: dict[str, Any]) -> dict[str, Any] | None:
@@ -1198,10 +1211,14 @@ class UiBridge:
         *,
         allow_provider: bool,
         modes: list[str] | None = None,
+        target_region_ids: list[str] | None = None,
+        parent_run_id: str | None = None,
     ) -> dict[str, Any]:
         job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
         if not job or not self._is_translation_job(job):
             raise ValueError("job_not_found")
+        if parent_run_id is not None and str(parent_run_id).strip() != str(job.get("run_id") or ""):
+            raise ValueError("invalid_rerun_parent_run")
         plan = build_pending_region_plan(str(job.get("output_dir") or ""))
         allowed_modes = {
             "all_pending", "untranslated", "reconstruction", "improve_translation"
@@ -1210,6 +1227,22 @@ class UiBridge:
         if not requested_modes or any(value not in allowed_modes for value in requested_modes):
             raise ValueError("invalid_rerun_mode")
         targets = list(plan.get("targets") or [])
+        if target_region_ids is not None:
+            requested_regions = [str(value or "").strip() for value in target_region_ids]
+            if any(not region for region in requested_regions):
+                raise ValueError("invalid_rerun_target_selection")
+            if len(requested_regions) != len(set(requested_regions)):
+                raise ValueError("invalid_rerun_target_selection")
+            if not requested_regions or len(requested_regions) > 20:
+                raise ValueError("invalid_rerun_target_selection")
+            known_regions = {str(target.get("region_id") or "") for target in targets}
+            if any(region not in known_regions for region in requested_regions):
+                raise ValueError("invalid_rerun_target_selection")
+            selected = set(requested_regions)
+            targets = [
+                target for target in targets
+                if str(target.get("region_id") or "") in selected
+            ]
         if "all_pending" not in requested_modes:
             filtered = []
             for target in targets:
@@ -1220,6 +1253,8 @@ class UiBridge:
                 elif reconstruction and "reconstruction" in requested_modes:
                     filtered.append(target)
             targets = filtered
+        if not targets:
+            raise ValueError("rerun_targets_required")
         child = self.store.create_review_rerun(
             str(job["id"]),
             targets=targets,

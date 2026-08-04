@@ -654,11 +654,20 @@ def api_review_rerun_start(
         principal = _owned_ui_job(request, job_id, mutate=True)
         raw_modes = payload.get("modes") or ["all_pending"]
         modes = [str(item) for item in raw_modes] if isinstance(raw_modes, list) else []
+        raw_targets = payload.get("target_region_ids")
+        target_region_ids = (
+            [str(item) for item in raw_targets]
+            if isinstance(raw_targets, list) else None
+        )
+        raw_parent_run = payload.get("parent_run_id")
+        parent_run_id = str(raw_parent_run) if isinstance(raw_parent_run, str) and raw_parent_run else None
         return BRIDGE.start_review_rerun_for_owner(
             principal.owner_id,
             job_id,
             allow_provider=payload.get("allow_provider") is True,
             modes=modes,
+            target_region_ids=target_region_ids,
+            parent_run_id=parent_run_id,
         )
     except ValueError as exc:
         code = str(exc)

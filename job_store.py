@@ -544,6 +544,15 @@ class JobStore:
         ).fetchone()
         return self._row_to_dict(row)
 
+    def latest_review_rerun(self, parent_job_id: str) -> dict[str, Any] | None:
+        """Return the newest child lifecycle, including a terminal child."""
+        row = self._conn.execute(
+            "SELECT * FROM jobs WHERE parent_job_id=? AND operation_kind='review_rerun' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (str(parent_job_id or ""),),
+        ).fetchone()
+        return self._row_to_dict(row)
+
     def queue_position(self, job_id: str) -> int | None:
         """One-based position for a queued job, or ``None`` once it leaves the queue."""
         row = self._conn.execute(
