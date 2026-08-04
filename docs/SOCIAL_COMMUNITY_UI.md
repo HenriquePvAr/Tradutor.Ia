@@ -22,9 +22,16 @@ Frontend (social_community.js + social_api.js)
   amigáveis (401/403/404/409/422/429/503) sem jargão técnico. Nunca envia a publishable
   key nem loga o token.
 - **`static/social_community.js`** — a UI (ESM). Renderiza todo conteúdo de usuário com
-  `textContent`/DOM seguro (nunca `innerHTML` com dados de usuário). Só monta quando o
-  provider de auth é o Supabase (em modo local-session, a comunidade SQLite antiga é
-  preservada). Estado leve em memória; `AbortController` no logout/expiração.
+  `textContent`/DOM seguro (nunca `innerHTML` com dados de usuário). Qual UI monta é
+  decidido **pelo backend**, nunca pela presença de um elemento DOM nem apenas pelo
+  provider de autenticação (auth Supabase não implica social Supabase): o boot busca
+  `community.social` em `/api/ui/bootstrap` (`{provider, available, reason_code}`,
+  espelhando `COMMUNITY_SOCIAL_PROVIDER`) e só então decide — `provider="supabase" &&
+  available` monta esta UI; `provider="local"` deixa a comunidade SQLite antiga
+  intocada; qualquer outro caso (indisponível/desconhecido) falha fechado com um erro
+  saneado, sem cair silenciosamente para a UI local. Ver `docs/COMMUNITY_STORAGE.md` ("Two
+  community systems") para o contrato completo. Estado leve em memória;
+  `AbortController` no logout/expiração.
 - Sem framework novo (o projeto usa JS puro + módulos ESM); reutiliza o toast e o modal de
   auth existentes.
 

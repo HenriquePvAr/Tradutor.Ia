@@ -4,6 +4,44 @@ O modelo de identidade, sessões, CSRF, políticas de visibilidade e bind seguro
 [`COMMUNITY_AUTHORIZATION.md`](COMMUNITY_AUTHORIZATION.md). Autorização sempre ocorre
 antes da construção do provider descrito neste documento.
 
+## Duas comunidades — qual é a canônica
+
+O projeto tem **dois** sistemas de comunidade, e este documento (até aqui) descreve o
+mais antigo. Não confundir os dois:
+
+1. **Legado (SQLite + Drive)** — é o que este documento descreve: `/api/community/*`,
+   `community_posts`/`community_files` em `.cache/runtime/community.sqlite3`, PDFs no
+   Google Drive privado. Continua funcional e é o provider `local` na seleção abaixo.
+2. **Social (Supabase)** — `social_repository.py`/`social_http.py`/`supabase_social.py`,
+   tabelas `public.works`/`public.chapters`/`private.chapter_assets` no Postgres do
+   Supabase via Data API + RLS. É a arquitetura canônica alvo: **Supabase** é a fonte de
+   verdade para autenticação, usuários, ownership, metadados de obra/capítulo,
+   comentários, favoritos, notificações, denúncias/moderação e as *referências* dos
+   assets; **Drive** continua guardando só os *bytes* do PDF (via
+   `chapter_asset_repository.py`/`social_pdf_publishing.py`, reaproveitando o
+   `StorageProvider` descrito abaixo). SQLite só é apropriado como modo local explícito,
+   fallback offline explícito, ambiente de testes, ou este legado temporário — **nunca**
+   como fallback silencioso quando o provider social selecionado é `supabase`.
+
+Qual dos dois a interface do usuário mostra é decidido por `COMMUNITY_SOCIAL_PROVIDER`
+(`supabase` ou `local`) no backend — **nunca inferido pelo frontend** a partir de um
+elemento DOM (o painel `#communityFeed` em `ui/ui_shell.html` existe sempre, seja qual for
+o provider configurado) nem apenas pelo provider de autenticação (autenticação Supabase
+não implica provider social Supabase). `app_ui.py` calcula esse estado uma vez na
+inicialização e o expõe, saneado, em `community.social` no `/api/ui/bootstrap`
+(`{provider, available, reason_code}` — nunca URL, chave, caminho ou exceção crua); o
+`reason_code` é um de `social_provider_not_configured`, `social_provider_unknown` ou
+`social_provider_initialization_failed`. `static/social_community.js` lê esse estado e
+monta a UI Supabase só quando `provider="supabase" && available`; quando `provider="local"`
+não toca no painel (a UI legada continua dona dele); em qualquer outro caso (indisponível
+ou desconhecido) falha fechado com um erro visível — nunca mostra o feed local
+silenciosamente como se fosse o remoto. Ver `docs/SOCIAL_COMMUNITY_UI.md`.
+
+**Publicações do sistema legado não migram sozinhas.** `community_posts`/`community_files`
+não têm equivalente em `public.works`/`public.chapters`/`private.chapter_assets` — corrigir
+o mount da UI não faz publicações antigas aparecerem no provider Supabase; migrar dados é
+um trabalho separado, ainda não implementado.
+
 Usuários podem publicar PDFs traduzidos em uma comunidade. **Apenas PDFs escolhidos
 explicitamente** para publicação são enviados ao Google Drive privado do administrador.
 
