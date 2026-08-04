@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import audit_decisions
 import linguistic_triage
@@ -22,6 +22,17 @@ _REQUESTS_NAME = "provider_authorization_requests.json"
 
 READY = "ready_for_human_authorization"
 EXECUTED = "executed"
+
+# The only reasons a first-pass rejection is worth retrying once: an empty
+# result, source-language residue, or the candidate echoing the source
+# verbatim (the only real "literal" signal the gate has - see
+# .runtime/claude-translation-quality-retry/triage_contract.md). Anything
+# else (encoding damage, needs_review-only signals) is terminal: retrying
+# would not fix it, so it goes straight to review instead of spending a
+# second call.
+_RECOVERABLE_GATE_REASONS = frozenset({
+    "empty_translation", "source_language_residual", "candidate_equals_source",
+})
 
 
 class ProviderCallNotAuthorized(RuntimeError):
@@ -112,6 +123,10 @@ def plan_execution(request: dict[str, Any], records: list[dict[str, Any]], *,
     authorized = [str(r) for r in (request.get("region_ids") or [])]
     if not authorized:
         raise ValueError("authorization_request_has_no_regions")
+    if len(set(authorized)) != len(authorized):
+        # A duplicate would either bill the same region twice or let a second
+        # retry silently overwrite the first result under the same key.
+        raise ValueError("duplicate_region_id_in_authorization")
 
     decisions = decisions or {}
     by_region = {str(r.get("region_id")): r for r in records}
@@ -153,8 +168,61 @@ def plan_execution(request: dict[str, Any], records: list[dict[str, Any]], *,
             "estimated_requests": len(items)}
 
 
+def _gate_for(item: dict[str, Any], translation: str) -> dict[str, Any]:
+    return linguistic_triage.evaluate_linguistic_gate(
+        source_text=item["text"], current_translation=translation,
+        policy={"normalized_classification": item.get("classification_normalized") or ""})
+
+
+def _retry_once_if_recoverable(entry: dict[str, Any], *, translator,
+                                should_cancel: Callable[[], bool]) -> None:
+    """At most one extra provider call for this region. Mutates ``entry``.
+
+    Fails closed: any exception from the retry call, or a second rejection,
+    leaves the region flagged for review rather than guessing a result.
+    """
+    gate = _gate_for(entry, entry["translation"])
+    entry["linguistic_gate"] = {"status": gate["status"], "reason_codes": gate["reason_codes"]}
+    entry["review_required"] = gate["status"] == linguistic_triage.FAILED
+    entry["quality_retry_attempted"] = False
+    if gate["status"] != linguistic_triage.FAILED:
+        return
+
+    recoverable_reasons = sorted(set(gate["reason_codes"]) & _RECOVERABLE_GATE_REASONS)
+    if not recoverable_reasons or not hasattr(translator, "translate_strict"):
+        return  # terminal reason (or a translator that never learned the retry call)
+
+    if should_cancel():
+        entry["quality_retry_skipped_reason"] = "cancellation_requested"
+        return
+
+    entry["quality_retry_attempted"] = True
+    reason_code = recoverable_reasons[0]
+    try:
+        candidate = translator.translate_strict(
+            entry["text"], previous_translation=entry["translation"],
+            validation_reason=reason_code)
+    except Exception as exc:  # noqa: BLE001 - one region's failure must not sink the run
+        entry["quality_retry_error"] = type(exc).__name__
+        return
+
+    candidate = str(candidate or "").strip()
+    retry_gate = _gate_for(entry, candidate)
+    entry["quality_retry_gate"] = {"status": retry_gate["status"],
+                                    "reason_codes": retry_gate["reason_codes"]}
+    if retry_gate["status"] == linguistic_triage.FAILED:
+        return  # still rejected: no third attempt, stays review_required
+
+    entry["translation"] = candidate
+    entry["translated"] = bool(candidate)
+    entry["linguistic_gate"] = {"status": retry_gate["status"],
+                                 "reason_codes": retry_gate["reason_codes"]}
+    entry["review_required"] = False
+
+
 def execute(output_dir: str, request: dict[str, Any], plan: dict[str, Any], *,
-            translator, revision_id: str, confirm: bool = False) -> dict[str, Any]:
+            translator, revision_id: str, confirm: bool = False,
+            should_cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Send the planned texts and record the outcome. Additive writes only."""
     if not confirm:
         raise ValueError("explicit_confirmation_required")
@@ -163,6 +231,7 @@ def execute(output_dir: str, request: dict[str, Any], plan: dict[str, Any], *,
     items = plan["items"]
     if not items:
         raise ValueError("nothing_to_send")
+    should_cancel = should_cancel or (lambda: False)
 
     before = int((getattr(translator, "stats", {}) or {}).get("api_requests", 0))
     texts = [item["text"] for item in items]
@@ -176,6 +245,11 @@ def execute(output_dir: str, request: dict[str, Any], plan: dict[str, Any], *,
     for item, translation in zip(items, translations):
         results.append({**item, "translation": str(translation or ""),
                         "translated": bool(str(translation or "").strip())})
+
+    # Quality gate, region by region: a bad result from one region is never
+    # allowed to touch another's text, so each retry is fully self-contained.
+    for entry in results:
+        _retry_once_if_recoverable(entry, translator=translator, should_cancel=should_cancel)
 
     record = {
         "execution_version": EXECUTION_VERSION,
