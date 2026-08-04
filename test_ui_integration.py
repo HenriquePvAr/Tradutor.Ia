@@ -703,12 +703,17 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertNotIn("perspective(700px)", source)
 
     def test_social_module_does_not_replace_local_verified_feed(self):
+        # The provider decision must come from backend state, never from the DOM: the
+        # legacy panel markup (#communityFeed) is always present in ui_shell.html
+        # regardless of which provider is configured, so its presence cannot be used to
+        # infer which one is active (see test_provider_selection.py for the full matrix).
         source = (ROOT / "static" / "social_community.js").read_text(encoding="utf-8")
-        boot_block = source[source.index("async function boot"):]
-        self.assertIn("document.getElementById('communityFeed')", boot_block)
+        self.assertNotIn("document.getElementById('communityFeed')", source)
+        boot_block = source[source.index("async function mountCommunityProvider"):]
+        self.assertIn("social.provider === 'local'", boot_block)
         self.assertIn("__socialCommunitySkipped", boot_block)
         self.assertLess(
-            boot_block.index("document.getElementById('communityFeed')"),
+            boot_block.index("social.provider === 'local'"),
             boot_block.index("getSupabaseClient()"),
         )
 
