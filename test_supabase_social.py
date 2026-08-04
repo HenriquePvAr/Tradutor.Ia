@@ -330,5 +330,82 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(r.headers["cache-control"], "private, no-store")
 
 
+class MyProfileContractTests(unittest.TestCase):
+    """GET /profile/me must answer an authenticated account, configured or not.
+
+    The reproduced bug was a permanent 422 on every authenticated mount, which left the
+    "Meu perfil" tab on an error box with no way to create a profile at all.
+    """
+
+    def test_existing_profile_is_returned_with_the_documented_shape(self):
+        t = FakeTransport()
+        t.push(200, [{"id": USER, "username": "me", "display_name": "Me"}])
+        profile = _repo(t).get_my_profile(TOKEN, USER)
+        self.assertEqual(profile["id"], USER)
+        self.assertEqual(profile["username"], "me")
+        self.assertTrue(profile["profile_configured"])
+
+    def test_owner_comes_from_the_session_only(self):
+        t = FakeTransport()
+        t.push(200, [{"id": USER}])
+        _repo(t).get_my_profile(TOKEN, USER)
+        self.assertIn(f"id=eq.{USER}", t.calls[0]["url"])
+        self.assertNotIn(UUID2, t.calls[0]["url"])
+        self.assertIsNone(t.calls[0]["data"], "a GET must carry no body")
+
+    def test_missing_profile_is_an_empty_configurable_state_never_422(self):
+        t = FakeTransport()
+        t.push(200, [])
+        profile = _repo(t).get_my_profile(TOKEN, USER)
+        self.assertEqual(profile["id"], USER)
+        self.assertFalse(profile["profile_configured"])
+        self.assertIsNone(profile["username"])
+        self.assertIsNone(profile["display_name"])
+        # One request only: the empty state is neither a second lookup nor an
+        # implicit row creation.
+        self.assertEqual(len(t.calls), 1)
+        self.assertEqual(t.calls[0]["method"], "GET")
+
+    def test_empty_state_exposes_no_private_identity(self):
+        t = FakeTransport()
+        t.push(200, [])
+        blob = json.dumps(_repo(t).get_my_profile(TOKEN, USER))
+        for private in ("email", "access_token", "apikey", TOKEN):
+            self.assertNotIn(private, blob)
+
+    def test_first_save_creates_the_profile_for_the_session_owner(self):
+        t = FakeTransport()
+        t.push(200, [])                                    # PATCH matched no row
+        t.push(200, [{"id": USER, "display_name": "Me"}])   # INSERT ... returning
+        profile = _repo(t).update_my_profile(TOKEN, USER, {"display_name": "Me"})
+        self.assertEqual(profile["id"], USER)
+        self.assertTrue(profile["profile_configured"])
+        self.assertEqual(t.calls[1]["method"], "POST")
+        self.assertEqual(t.calls[1]["data"]["id"], USER)
+
+    def test_real_backend_failures_are_not_flattened_into_an_empty_state(self):
+        for status, expected in ((401, SocialAuthRequired), (429, SocialRateLimited),
+                                 (500, SocialUnavailable), (400, SocialValidationError)):
+            t = FakeTransport()
+            t.push(status, {"code": "x"})
+            with self.assertRaises(expected):
+                _repo(t).get_my_profile(TOKEN, USER)
+
+
+class MyProfileRouteTests(RouterTests):
+    """The HTTP surface: no body, no query parameter, no path parameter, never 422."""
+
+    def test_get_takes_no_body_and_no_parameters(self):
+        r = self.client.get("/api/community/social/profile/me",
+                            headers={"Authorization": f"Bearer {TOKEN}"})
+        self.assertEqual(r.status_code, 200)
+
+    def test_client_cannot_choose_another_owner(self):
+        r = self.client.get(f"/api/community/social/profile/me?user_id={UUID2}",
+                            headers={"Authorization": f"Bearer {TOKEN}"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.repo.last["user_id"], USER)
+
+
 if __name__ == "__main__":
     unittest.main()
