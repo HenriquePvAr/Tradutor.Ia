@@ -161,7 +161,13 @@ async function provider() {
     const cfg = await publicConfig();
     if (cfg.provider === 'better_auth') return betterAuthAdapter(cfg);
     if (cfg.provider === 'local_test') return localTestAdapter(cfg);
-    return import(`/static/supabase_auth.js?v=${Date.now()}`);
+    // A per-call cache key would mint a *new module instance* on every import,
+    // and each instance builds its own Supabase client — that is what produced
+    // "Multiple GoTrueClient instances detected in the same browser context".
+    // The URL must stay byte-identical so the browser module map returns the
+    // one instance that owns the session; app_ui.py already versions the
+    // entry-point assets by mtime, so a restarted UI still gets fresh code.
+    return import('/static/supabase_auth.js');
   })();
   return providerPromise;
 }

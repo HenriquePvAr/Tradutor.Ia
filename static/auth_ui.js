@@ -359,10 +359,14 @@ async function init() {
   setAuthState('auth_loading');
   renderAuthShell('auth_loading');
   try {
-    // The module is loaded dynamically, so include a per-document cache key;
-    // otherwise a restarted local UI can keep an older persistence implementation
-    // even though auth_ui.js itself was versioned by the server.
-    authApi = await withTimeout(import(`/static/auth_provider.js?v=${Date.now()}`));
+    // Bare specifier on purpose. social_api.js and social_community.js import the
+    // same module statically as '/static/auth_provider.js'; a per-call cache key
+    // here resolved to a *different* URL, so the browser kept two module instances
+    // alive, each with its own provider promise and its own Supabase client. That
+    // second client is what logged "Multiple GoTrueClient instances detected in the
+    // same browser context". app_ui.py versions auth_ui.js itself by mtime, so a
+    // restarted UI still picks up new code without splitting the module graph.
+    authApi = await withTimeout(import('/static/auth_provider.js'));
     const authEnvironment = typeof authApi.authEnvironment === 'function'
       ? await withTimeout(authApi.authEnvironment())
       : {};

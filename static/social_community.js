@@ -128,8 +128,12 @@ function header() {
 
 async function doLogout() {
   await signOut();
-  state.profile = null; state.openWorkId = null;
+  // Drop the subscription and every cached fragment of the session, then re-arm the
+  // mount so a later login builds one clean context (never a second, stacked one).
+  unmountCommunity();
+  render();
   toast('Você saiu da comunidade.', 'ok');
+  await boot();
 }
 
 function sectionShell(title) {
@@ -451,14 +455,20 @@ async function renderProfile(body) {
   wrap.appendChild(skeleton(2));
   body.appendChild(wrap);
   try {
-    const p = await api.getMyProfile();
-    state.profile = p;
+    // Reuses the load the mount already performed for this session; only an explicit
+    // retry re-requests. Opening this tab therefore adds no second profile/me GET.
+    const p = await loadMyProfile();
     wrap.replaceChildren();
     wrap.removeAttribute('aria-busy');
+    // An authenticated account with no social profile yet is a valid, configurable
+    // state — not an error. The backend answers it with an empty profile document.
     const needsOnboarding = !p.username || !p.display_name;
     if (needsOnboarding) wrap.appendChild(el('div', { class: 'sc-onboard', text: 'Complete seu perfil para participar melhor da comunidade.' }));
     wrap.appendChild(profileForm(p));
-  } catch (err) { wrap.replaceChildren(errorBox(() => render())); if (err.status === 401) handleExpired(); }
+  } catch (err) {
+    wrap.replaceChildren(errorBox(() => { loadMyProfile({ refresh: true }).catch(() => {}); render(); }));
+    if (err.status === 401) handleExpired();
+  }
 }
 
 function field(label, input, hint) {
@@ -499,6 +509,7 @@ function profileForm(p) {
       };
       const updated = await api.updateMyProfile(fields);
       state.profile = updated;
+      if (mount) mount.profileRequest = Promise.resolve(updated); // keep the cache truthful
       toast('Perfil salvo.', 'ok');
     } catch (err) { fail(err); }
     finally { save.disabled = false; save.textContent = 'Salvar perfil'; }
@@ -838,6 +849,77 @@ function communityUnavailablePanel(onRetry) {
 // legacy SQLite UI in full control of #view-community). Never both, and never silently:
 // an unknown/unconfigured/unreachable Supabase provider replaces the panel with a
 // sanitized error instead of letting the legacy markup show as if it were the real thing.
+// ---- mount lifecycle ------------------------------------------------------
+// Exactly one mount per browser context, holding exactly one auth subscription.
+//
+// The auth layer calls its handler several times for a single sign-in: the SDK emits
+// INITIAL_SESSION on subscribe, onAuthChange replays an explicit INITIAL_SESSION once the
+// bounded session restore settles, a slow restore replays INITIAL_SESSION_RESTORED in the
+// background, and SIGNED_IN/TOKEN_REFRESHED follow. Every one of those used to re-enter
+// render() (one feed request each) and re-request the profile (because a failed profile
+// left state.profile null), which is what produced the burst of identical GETs.
+//
+// So the handler is keyed by session identity: an event that does not change *who* is
+// signed in changes no state and issues no request. No debounce, no timer, no counter.
+let mount = null;
+let mountRequest = null;
+
+function sessionKey(session) {
+  if (!session) return 'anonymous';
+  return String(session.user?.id || session.access_token || session.provider || 'session');
+}
+
+// Single-flight per session: concurrent equivalent callers share one request, and a
+// failure clears the cache so an explicit retry really retries.
+function loadMyProfile({ refresh = false } = {}) {
+  const active = mount;
+  if (!active) return api.getMyProfile();
+  if (refresh || !active.profileRequest) {
+    const key = active.sessionKey;
+    active.profileRequest = api.getMyProfile().then(
+      (profile) => {
+        // A late answer must never overwrite the state of a newer session.
+        if (mount === active && active.sessionKey === key) state.profile = profile;
+        return profile;
+      },
+      (err) => { if (mount === active && active.sessionKey === key) active.profileRequest = null; throw err; },
+    );
+  }
+  return active.profileRequest;
+}
+
+async function applySession(session, active) {
+  if (mount !== active) return; // unmounted while the event was in flight
+  const key = sessionKey(session);
+  if (active.sessionKey === key) return; // repeated event, same identity: nothing to do
+  active.sessionKey = key;
+  active.profileRequest = null;
+  state.session = session;
+  state.profile = null;
+  state.openWorkId = null;
+  if (state.abort) { state.abort.abort(); state.abort = null; }
+  if (session) {
+    try { await loadMyProfile(); } catch (_) { /* the profile tab surfaces it */ }
+    if (mount !== active || active.sessionKey !== key) return;
+  }
+  render();
+}
+
+// Releases the subscription and every cached fragment of the signed-in session, so a
+// later login mounts a clean context instead of resuming a stale one.
+export function unmountCommunity() {
+  const active = mount;
+  if (!active) return;
+  mount = null;
+  mountRequest = null;
+  state.session = null;
+  state.profile = null;
+  state.openWorkId = null;
+  if (state.abort) { state.abort.abort(); state.abort = null; }
+  window.__socialCommunityMounted = false;
+  try { active.unsubscribe?.(); } catch (_) { /* already released */ }
+}
+
 async function mountCommunityProvider(host, social) {
   if (social && social.provider === 'local') {
     // Explicit local/SQLite mode: the legacy CommunityApi UI already owns this panel.
@@ -845,21 +927,10 @@ async function mountCommunityProvider(host, social) {
     return;
   }
   if (social && social.provider === 'supabase' && social.available) {
-    // In local-session auth mode there is no Supabase client; leave the legacy UI be.
-    const client = await getSupabaseClient();
-    if (!client) return;
-    window.__socialCommunityMounted = true;
-    let ready = false;
-    await onAuthChange(async (session) => {
-      state.session = session;
-      if (session && !state.profile) {
-        try { state.profile = await api.getMyProfile(); } catch (_) { /* onboarding handles it */ }
-      }
-      if (!session) state.profile = null;
-      if (ready || session !== undefined) render();
-      ready = true;
-    });
-    return;
+    // Idempotent: a repeated bootstrap, a re-entered boot() or a second module consumer
+    // all await the same mount instead of building a second one.
+    if (!mountRequest) mountRequest = mountSupabaseCommunity();
+    return mountRequest;
   }
   // Fail closed: missing bootstrap state, an unrecognized provider, or Supabase selected
   // but not currently available. Neither UI mounts silently as the other.
@@ -868,6 +939,20 @@ async function mountCommunityProvider(host, social) {
     communityProviderStatePromise = null;
     await mountCommunityProvider(host, await fetchCommunityProviderState());
   }));
+}
+
+// Declared after the provider gate on purpose: no Supabase client is ever built before
+// the backend has said "supabase". Function declarations hoist, so the gate can call it.
+async function mountSupabaseCommunity() {
+  // In local-session auth mode there is no Supabase client; leave the legacy UI be.
+  const client = await getSupabaseClient();
+  if (!client) { mountRequest = null; return; }
+  const active = { unsubscribe: null, sessionKey: null, profileRequest: null };
+  mount = active;
+  window.__socialCommunityMounted = true;
+  const unsubscribe = await onAuthChange((session) => { void applySession(session, active); });
+  if (mount === active) active.unsubscribe = unsubscribe;
+  else { try { unsubscribe?.(); } catch (_) { /* already released */ } }
 }
 
 async function boot() {

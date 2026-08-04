@@ -73,8 +73,16 @@ class SupabaseFrontendTests(unittest.TestCase):
     def test_auth_bootstrap_defines_state_before_dynamic_dependency_import(self):
         source = _read("static/auth_ui.js")
         self.assertIn("window.__tradutorAuthState = 'auth_loading'", source)
-        self.assertIn("import(`/static/auth_provider.js?v=${Date.now()}`)", source)
-        self.assertIn("supabase_auth.js", _read("static/auth_provider.js"))
+        # Dynamic, but with a stable specifier. A per-call cache key resolved to a new
+        # URL on every import, so the browser kept a *second* module instance of
+        # auth_provider.js (social_api.js/social_community.js import the bare URL) and
+        # that instance built a second Supabase client — the source of "Multiple
+        # GoTrueClient instances detected in the same browser context".
+        self.assertIn("import('/static/auth_provider.js')", source)
+        self.assertNotIn("auth_provider.js?v=", source)
+        provider_source = _read("static/auth_provider.js")
+        self.assertIn("supabase_auth.js", provider_source)
+        self.assertNotIn("supabase_auth.js?v=", provider_source)
         self.assertIn("AUTH_BOOTSTRAP_TIMEOUT_MS", source)
         self.assertIn("withTimeout", source)
         self.assertIn("renderAuthShell('auth_error')", source)

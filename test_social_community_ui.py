@@ -128,7 +128,9 @@ class SocialCommunityUiTests(unittest.TestCase):
 
     def test_only_mounts_under_supabase_provider(self):
         self.assertIn("getSupabaseClient", self.src)
-        self.assertIn("if (!client) return", self.src)
+        # No Supabase client (local-session auth) means no mount at all: the legacy
+        # SQLite UI keeps the panel and no subscription is registered.
+        self.assertIn("if (!client) { mountRequest = null; return; }", self.src)
 
     def test_pdf_reader_deferred(self):
         # No fake read button; owner sees a discreet unlinked-file note.
