@@ -6115,7 +6115,13 @@
       bio: $('#profileBio').value.trim(),
       avatar_mode: $('#profileAvatarMode .chip.selected')?.dataset.mode || 'letter',
       avatar_color: $('#profileColorRow .color-swatch.selected')?.dataset.color || '#c5372c',
-      banner: $('#profileBannerRow .banner-swatch.selected')?.dataset.banner || 'ink',
+      // #profileBannerRow only renders swatches for the preset banners (see
+      // ui/ui_shell.html); there is no swatch for "custom", so once a custom
+      // banner image is uploaded no swatch carries .selected and this used to
+      // fall straight to 'ink', silently discarding the uploaded banner the
+      // next time "Salvar perfil" was clicked. Fall back to the last known
+      // profile banner (which correctly holds 'custom') before defaulting.
+      banner: $('#profileBannerRow .banner-swatch.selected')?.dataset.banner || appState.profile.banner || 'ink',
     };
   }
   function setMedia(element, source, mediaType, fallback) {

@@ -337,6 +337,74 @@ class UiIntegrationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     bridge.remove_profile_media("banner", user_id="other-user")
 
+    def test_saving_preset_banner_persists_and_reloads(self):
+        """Choosing a preset banner and saving must survive a reload."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.profile = _profile_default()
+            with (
+                patch("ui_bridge.PROFILE_PATH", root / "ui_profile.json"),
+                patch("ui_bridge.PROFILE_MEDIA_DIR", root / "ui_profile"),
+            ):
+                bridge.save_profile({"display_name": "Alice", "banner": "gold"}, user_id="user-preset")
+                reloaded = bridge.profile_for_user("user-preset")
+                self.assertEqual(reloaded["banner"], "gold")
+                self.assertEqual(reloaded["banner_media_url"], "")
+
+    def test_profile_form_save_after_banner_upload_keeps_the_custom_banner(self):
+        """Regression: static/tradutor_ui.js's #profileBannerRow only renders
+        swatches for the preset banners (see ui/ui_shell.html), never one for
+        "custom". So once a user uploads a custom banner image, no swatch
+        carries the `.selected` CSS class, and `profileFromForm()` used to
+        fall straight to a hardcoded 'ink' default when reading the banner
+        for the "Salvar perfil" click. That silently overwrote the
+        just-uploaded custom banner on the very next profile save, even
+        though the save itself reported success -- matching the reported bug
+        (banner "disappears" after reload despite no visible error).
+
+        The fix falls back to the last known `appState.profile.banner`
+        (which correctly holds 'custom') before defaulting to 'ink'.
+        """
+        js_source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.assertIn(
+            "dataset.banner || appState.profile.banner || 'ink'",
+            js_source,
+            "profileFromForm() must preserve a custom banner selection "
+            "(no DOM swatch represents 'custom') instead of defaulting to "
+            "'ink' whenever no preset swatch is selected.",
+        )
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.profile = _profile_default()
+            with (
+                patch("ui_bridge.PROFILE_PATH", root / "ui_profile.json"),
+                patch("ui_bridge.PROFILE_MEDIA_DIR", root / "ui_profile"),
+            ):
+                uploaded = bridge.save_profile_media(
+                    "banner", filename="banner.png", content_type="image/png",
+                    content=b"\x89PNG\r\n\x1a\nbanner-pixels", user_id="user-banner",
+                )
+                self.assertEqual(uploaded["banner"], "custom")
+                self.assertTrue(uploaded["banner_media_url"])
+
+                # profileFromForm(), fixed, resolves `banner` to the last
+                # known profile value ("custom") when no swatch is selected --
+                # this is exactly what the "Salvar perfil" click now submits.
+                saved = bridge.save_profile(
+                    {"display_name": "Alice", "banner": uploaded["banner"]},
+                    user_id="user-banner",
+                )
+                reloaded = bridge.profile_for_user("user-banner")
+
+                self.assertEqual(saved["banner"], "custom")
+                self.assertEqual(reloaded["banner"], "custom")
+                self.assertTrue(reloaded["banner_media_url"])
+                media_path = bridge.profile_media_path("banner", user_id="user-banner")
+                self.assertTrue(media_path and media_path.is_file())
+
     def test_profile_media_rejects_video_and_bad_signature(self):
         bridge = UiBridge.__new__(UiBridge)
         bridge.profile = _profile_default()
