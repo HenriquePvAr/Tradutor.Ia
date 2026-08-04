@@ -6125,6 +6125,24 @@
     };
   }
   function setMedia(element, source, mediaType, fallback) {
+    // The bootstrap/state poll re-applies the profile to the form on every
+    // cycle (as often as every 850ms) even when nothing changed. Without this
+    // guard, an unchanged /api/ source was refetched and re-blobbed each time,
+    // spamming the network and piling up blob: URLs (each only revoked 300s
+    // after load). `source` already carries `?v=<updated_at>` as a real
+    // cache-buster, so an identical source with a still-live blob on screen
+    // means nothing changed and the reload is skipped.
+    // The objectUrl must still be registered in appState.communityObjectUrls
+    // (not just present in the element's dataset): logout revokes every
+    // tracked URL in bulk (clearCommunityObjectUrls) without walking each
+    // element, so a stale dataset.objectUrl would otherwise pass this guard
+    // and leave a broken image after logging back in with the same avatar.
+    if (source && String(mediaType).startsWith('image/') && String(source).startsWith('/api/')
+        && element.dataset.loadedSource === source
+        && element.dataset.objectUrl && appState.communityObjectUrls.has(element.dataset.objectUrl)
+        && element.querySelector('img')) {
+      return;
+    }
     revokeElementMedia(element);
     element.innerHTML = '';
     element.style.backgroundImage = '';
@@ -6161,9 +6179,10 @@
       }, {once: true});
       element.innerHTML = '';
       element.appendChild(image);
+      element.dataset.loadedSource = source;
       uiTrace('profile_media_loaded', {status: 200});
     } catch (errorValue) {
-      if (element.dataset.mediaRequest === requestKey) element.textContent = fallback || '';
+      if (element.dataset.mediaRequest === requestKey) { element.textContent = fallback || ''; delete element.dataset.loadedSource; }
       uiTrace('profile_media_load_failed', {
         status: errorValue?.status || 0,
         code: errorValue?.code || errorValue?.message || 'media_load_failed',
