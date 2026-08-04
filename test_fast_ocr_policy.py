@@ -130,6 +130,31 @@ class FastOCRPolicyTests(unittest.TestCase):
         self.assertTrue(config.RAPIDOCR_PAGE_FALLBACK)
         self.assertTrue(config.OCR_REGION_SELECTIVE_FALLBACK)
 
+    def test_configure_mode_fast_engine_side_effects_do_not_leak_past_teardown(self):
+        # _configure_mode("fast") resolves to the rapidocr engine (no
+        # TRADUTOR_OCR_ENGINE_OVERRIDE set) and flips
+        # config.POST_RENDER_OCR_VALIDATION to True as a side effect
+        # (run_webtoon.py). That attribute must not survive this test's own
+        # tearDown: any later test that renders through ocr_balloon's
+        # render_analyzed_image would otherwise silently take the post-render
+        # OCR validation branch and fail closed, purely because of test
+        # order. Run the real test through unittest so its actual
+        # setUp/tearDown executes, then assert the module-level attribute is
+        # back to its pre-test value.
+        baseline = config.POST_RENDER_OCR_VALIDATION
+        suite = unittest.TestSuite()
+        suite.addTest(
+            FastOCRPolicyTests("test_fast_mode_disables_unbounded_native_fallback")
+        )
+        result = unittest.TestResult()
+        suite.run(result)
+        self.assertTrue(result.wasSuccessful(), (result.failures, result.errors))
+        self.assertEqual(
+            config.POST_RENDER_OCR_VALIDATION,
+            baseline,
+            "config.POST_RENDER_OCR_VALIDATION leaked past FastOCRPolicyTests teardown",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
