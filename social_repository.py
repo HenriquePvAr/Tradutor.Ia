@@ -105,6 +105,37 @@ def _clean_patch(fields: Mapping[str, Any], allowed: set[str]) -> dict[str, Any]
     return {k: v for k, v in fields.items() if k in allowed}
 
 
+def empty_profile(user_id: str) -> dict[str, Any]:
+    """The documented empty state of ``GET /profile/me``.
+
+    Same field set as a stored profile (so the client needs no second shape), carrying the
+    column defaults of ``public.profiles`` and ``profile_configured: False``. Only the
+    session-derived id is echoed: no email, no token, no claim from the JWT.
+    """
+
+    return {
+        "id": user_id,
+        "username": None,
+        "display_name": None,
+        "display_name_normalized": None,
+        "bio": None,
+        "theme_color": None,
+        "avatar_object_key": "",
+        "banner_object_key": "",
+        "public_role": "",
+        "pronouns": "",
+        "status": "online",
+        "status_message": "",
+        "accent_color": "#c5372c",
+        "show_favorites": False,
+        "show_history": False,
+        "allow_profile_comments": True,
+        "created_at": None,
+        "updated_at": None,
+        "profile_configured": False,
+    }
+
+
 def _shape_comment(row: dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
     if out.get("deleted_at") is not None:
@@ -132,8 +163,13 @@ class SupabaseSocialRepository:
         rows = self._c(token).select(
             "profiles", query=f"select={PROFILE_FIELDS}&id=eq.{user_id}&deleted_at=is.null&limit=1")
         if not rows:
-            raise SocialNotFound()
-        return rows[0]
+            # An authenticated account that has not configured a social profile yet is a
+            # valid state, not a failure: answer with the empty profile document so the UI
+            # can render the configuration form. Nothing is created here — the row is
+            # written only when the user saves (PATCH /profile/me). Real transport, auth
+            # and RLS failures still propagate as themselves.
+            return empty_profile(user_id)
+        return {**rows[0], "profile_configured": True}
 
     def update_my_profile(self, token, user_id, fields):
         allowed = {"username", "display_name", "bio", "theme_color", "public_role", "pronouns",
@@ -165,9 +201,13 @@ class SupabaseSocialRepository:
             return self.get_my_profile(token, user_id)
         rows = self._c(token).update(
             "profiles", match=f"id=eq.{user_id}&deleted_at=is.null", row=patch, returning=PROFILE_FIELDS)
-        if not rows:
-            raise SocialNotFound()
-        return rows[0]
+        if rows:
+            return {**rows[0], "profile_configured": True}
+        # No row to update: the account has never configured a social profile. Creating it
+        # from the user's own save is the counterpart of the empty state returned by GET —
+        # id comes from the session and RLS (profiles_insert_self) re-checks it.
+        created = self._c(token).insert("profiles", {**patch, "id": user_id}, returning=PROFILE_FIELDS)
+        return {**created, "profile_configured": True}
 
     def get_profile_by_username(self, token, username):
         _require(bool(_USERNAME_RE.fullmatch(str(username or ""))), "invalid_username")
