@@ -244,16 +244,21 @@ await test('a genuinely anonymous tab (no session anywhere, first event is not S
   assert.equal(counters.profile, 0);
 });
 
-await test('a real SIGNED_OUT still clears the mount and a later SIGNED_IN loads again (not collapsed)', async () => {
+await test('a SIGNED_OUT followed by a SIGNED_IN for the SAME account reuses the cache (not doubled)', async () => {
   const { counters } = await loadRealModules({
     communitySource: CURRENT,
     nativeEvents: [[SESSION, 'INITIAL_SESSION'], [null, 'SIGNED_OUT'], [SESSION, 'SIGNED_IN']],
     sessionForGetSession: SESSION,
   });
-  // This is intentionally 2, not 1: an explicit SIGNED_OUT is a real generation boundary
-  // (logout invalidates the lifecycle; a later sign-in is a new generation that must load).
-  assert.equal(counters.feed, 2, `feed requests: ${counters.feed}`);
-  assert.equal(counters.profile, 2, `profile/me requests: ${counters.profile}`);
+  // Was intentionally 2 ("an explicit SIGNED_OUT is always a real generation boundary").
+  // Production evidence (the same-tab-login smoke) disproved that assumption: the SDK's two
+  // independent restore races can surface a real SIGNED_OUT event for an account that is
+  // signing IN, not out, and the SIGNED_IN that follows moments later carries the exact same
+  // account - doubling the feed + profile/me load for a single login. The account (session.
+  // user.id) is what actually decides whether the cache is still valid, not the event name;
+  // see accountId()/sameAccount in applySession() in static/social_community.js.
+  assert.equal(counters.feed, 1, `feed requests: ${counters.feed}`);
+  assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
 });
 
 await test('a SIGNED_OUT-only tail (real sign-out, no further sign-in) issues no extra request', async () => {
