@@ -999,10 +999,20 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   });
 }
 
-async function applySession(session, active) {
+async function applySession(session, active, event) {
   if (mount !== active) return; // unmounted while the event was in flight
   const authenticated = Boolean(session);
   const key = sessionKey(session);
+  // supabase_auth.js races two independent signals for the SAME restored session: its own
+  // explicit getSession()/getUser() restore, and the SDK's native onAuthStateChange replay.
+  // Either can resolve first. When the native replay loses that race and arrives afterwards
+  // still carrying no session (its own internal recovery had not caught up yet), it looks
+  // identical to a sign-out unless the event name says otherwise - and treating it as one
+  // wipes the profile/feed cache this mount already populated, so the SIGNED_IN that follows
+  // moments later re-fires both requests. A real sign-out is always reported as SIGNED_OUT
+  // by the SDK; nothing else legitimately regresses an already-authenticated mount, so only
+  // that explicit event (or the very first event this mount ever sees) may do so.
+  if (!authenticated && event !== 'SIGNED_OUT' && active.authenticated === true) return;
   if (authenticated === active.authenticated) {
     // Same side of the sign-in/sign-out edge as the last processed event: an SDK replay,
     // a background restore finishing late, or a proactive token refresh. Keep the latest
@@ -1091,7 +1101,7 @@ async function mountSupabaseCommunity() {
   const active = { unsubscribe: null, sessionKey: null, profileRequest: null, authenticated: undefined, sections: {} };
   mount = active;
   window.__socialCommunityMounted = true;
-  const unsubscribe = await onAuthChange((session) => { void applySession(session, active); });
+  const unsubscribe = await onAuthChange((session, event) => { void applySession(session, active, event); });
   if (mount === active) active.unsubscribe = unsubscribe;
   else { try { unsubscribe?.(); } catch (_) { /* already released */ } }
 }
