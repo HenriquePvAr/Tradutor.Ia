@@ -176,30 +176,57 @@ function renderTab(body) {
   }
 }
 
-// A generic paginated list renderer with loading/empty/error/more.
-async function paginated(body, title, fetchPage, renderItem, emptyMsg) {
+// A generic paginated list renderer with loading/empty/error/more, backed by a per-section
+// cache on the current mount (see sectionState/invalidateSection below): opening a tab
+// whose section is already 'loaded' or 'error' renders from that cache with zero requests;
+// only 'idle' (first visit, or after an explicit invalidation) fetches. Two concurrent
+// callers for the same section share the same in-flight promise instead of duplicating it.
+async function paginated(body, title, fetchPage, renderItem, emptyMsg, sectionKey) {
   const { wrap, list } = sectionShell(title);
   body.appendChild(wrap);
-  list.appendChild(skeleton());
-  let cursor = '';
-  let first = true;
-  async function loadPage() {
-    try {
-      const page = await fetchPage(cursor);
-      if (first) { list.replaceChildren(); list.removeAttribute('aria-busy'); first = false; }
-      const items = (page && page.items) || [];
-      if (!items.length && !list.children.length) { list.appendChild(empty(emptyMsg)); return; }
-      for (const it of items) list.appendChild(renderItem(it));
-      const old = wrap.querySelector('.sc-more'); if (old) old.remove();
-      if (page && page.next_cursor) {
-        cursor = page.next_cursor;
-        wrap.appendChild(loadMore(loadPage));
-      }
-    } catch (err) {
-      list.replaceChildren(errorBox(() => { first = true; list.replaceChildren(skeleton()); loadPage(); }));
-      if (err instanceof api.SocialApiError && err.status === 401) handleExpired();
-    }
+  const sec = sectionState(sectionKey);
+
+  function renderItems() {
+    list.replaceChildren();
+    list.removeAttribute('aria-busy');
+    if (!sec.items.length) { list.appendChild(empty(emptyMsg)); }
+    else for (const it of sec.items) list.appendChild(renderItem(it));
+    const old = wrap.querySelector('.sc-more'); if (old) old.remove();
+    if (sec.cursor) wrap.appendChild(loadMore(loadPage));
   }
+
+  function renderError() {
+    list.replaceChildren(errorBox(() => { sec.status = 'idle'; sec.error = null; list.replaceChildren(skeleton()); loadPage(); }));
+  }
+
+  async function loadPage() {
+    if (sec.promise) return sec.promise; // an equivalent load is already in flight — reuse it
+    const active = mount, key = active && active.sessionKey;
+    sec.status = 'loading';
+    sec.promise = fetchPage(sec.cursor).then(
+      (page) => {
+        sec.promise = null;
+        if (active && (mount !== active || active.sessionKey !== key)) return; // stale session
+        const items = (page && page.items) || [];
+        sec.items = sec.items.concat(items);
+        sec.cursor = (page && page.next_cursor) || '';
+        sec.status = 'loaded'; sec.error = null;
+        renderItems();
+      },
+      (err) => {
+        sec.promise = null;
+        if (active && (mount !== active || active.sessionKey !== key)) return; // stale session
+        sec.status = 'error'; sec.error = err;
+        renderError();
+        if (err instanceof api.SocialApiError && err.status === 401) handleExpired();
+      },
+    );
+    return sec.promise;
+  }
+
+  if (sec.status === 'loaded') { renderItems(); return; }
+  if (sec.status === 'error') { renderError(); return; }
+  list.appendChild(skeleton());
   loadPage();
 }
 
@@ -229,7 +256,7 @@ function renderFeed(body) {
   paginated(body, 'Explorar',
     (cursor) => api.getFeed({ cursor, limit: 20 }),
     (w) => workCard(w),
-    'Nenhuma obra publicada ainda.');
+    'Nenhuma obra publicada ainda.', 'feed');
 }
 
 async function toggleFavorite(workId, btn) {
@@ -240,6 +267,7 @@ async function toggleFavorite(workId, btn) {
   btn.dataset.fav = wasFav ? '' : '1';
   try {
     if (wasFav) await api.unfavoriteWork(workId); else await api.favoriteWork(workId);
+    invalidateSection('favorites');
   } catch (err) {
     btn.textContent = wasFav ? '★' : '☆'; // rollback
     btn.dataset.fav = wasFav ? '1' : '';
@@ -276,7 +304,7 @@ async function renderWork(body, workId) {
     // actions
     const actions = el('div', { class: 'sc-actions' });
     const fav = el('button', { class: 'btn-ghost', text: '☆ Favoritar',
-      on: { click: () => api.favoriteWork(w.id).then(() => toast('Adicionado aos favoritos.')).catch(fail) } });
+      on: { click: () => api.favoriteWork(w.id).then(() => { invalidateSection('favorites'); toast('Adicionado aos favoritos.'); }).catch(fail) } });
     actions.appendChild(fav);
     actions.appendChild(el('button', { class: 'btn-ghost', text: 'Denunciar',
       on: { click: () => reportModal('work', w.id) } }));
@@ -286,7 +314,7 @@ async function renderWork(body, workId) {
         class: 'btn-ghost', text: w.status === 'community' ? 'Despublicar' : 'Publicar',
         on: { click: () => togglePublish(w) } }));
       actions.appendChild(el('button', { class: 'btn-ghost sc-danger', text: 'Excluir',
-        on: { click: () => confirmDelete('obra', () => api.deleteWork(w.id).then(() => { toast('Obra excluída.'); state.openWorkId = null; render(); }).catch(fail)) } }));
+        on: { click: () => confirmDelete('obra', () => api.deleteWork(w.id).then(() => { invalidateSection('mine'); invalidateSection('feed'); toast('Obra excluída.'); state.openWorkId = null; render(); }).catch(fail)) } }));
       actions.appendChild(el('button', { class: 'btn-primary', text: 'Novo capítulo', on: { click: () => chapterForm(w.id) } }));
     }
     container.appendChild(actions);
@@ -393,8 +421,11 @@ function renderAssetControls(host, note, c, work, owner, asset) {
 
 async function togglePublish(w) {
   const next = w.status === 'community' ? 'private' : 'community';
-  try { await api.updateWork(w.id, { status: next }); toast(next === 'community' ? 'Obra publicada.' : 'Obra despublicada.'); render(); }
-  catch (err) { fail(err); }
+  try {
+    await api.updateWork(w.id, { status: next });
+    invalidateSection('mine'); invalidateSection('feed');
+    toast(next === 'community' ? 'Obra publicada.' : 'Obra despublicada.'); render();
+  } catch (err) { fail(err); }
 }
 
 async function toggleLike(kind, id, btn) {
@@ -417,7 +448,7 @@ function renderMine(body) {
   paginated(body, 'Minhas obras',
     (cursor) => api.getMyWorks({ cursor, limit: 20 }),
     (w) => workCard(w, { showFav: false }),
-    'Você ainda não criou obras.');
+    'Você ainda não criou obras.', 'mine');
 }
 
 // ---- favorites ----
@@ -431,9 +462,9 @@ function renderFavorites(body) {
       el('span', { class: 'sc-fav-id', text: 'Obra favoritada' }),
       el('button', { class: 'btn-ghost btn-sm', text: 'Abrir', on: { click: () => openWork(f.work_id) } }),
       el('button', { class: 'btn-ghost btn-sm sc-danger', text: 'Remover',
-        on: { click: (e) => { const row = e.target.closest('.sc-fav-row'); api.unfavoriteWork(f.work_id).then(() => { row.remove(); toast('Removido dos favoritos.'); }).catch(fail); } } }),
+        on: { click: (e) => { const row = e.target.closest('.sc-fav-row'); api.unfavoriteWork(f.work_id).then(() => { invalidateSection('favorites'); row.remove(); toast('Removido dos favoritos.'); }).catch(fail); } } }),
     ]),
-    'Nenhum favorito ainda.');
+    'Nenhum favorito ainda.', 'favorites');
 }
 
 // ---- history ----
@@ -446,7 +477,7 @@ function renderHistory(body) {
       h.completed_at ? el('span', { class: 'sc-badge sc-badge-sm', text: 'concluído' }) : null,
       el('span', { class: 'sc-date', text: fmtDate(h.last_read_at) }),
     ]),
-    'Você ainda não tem leituras registradas.');
+    'Você ainda não tem leituras registradas.', 'history');
 }
 
 // ---- profile ----
@@ -539,10 +570,10 @@ function renderNotifications(body) {
         el('span', { class: 'sc-date', text: fmtDate(n.created_at) }),
       ]);
       if (!n.read_at) row.appendChild(el('button', { class: 'btn-ghost btn-sm', text: 'Marcar como lida',
-        on: { click: (e) => { api.markNotificationRead(n.id).then(() => { row.classList.remove('unread'); e.target.remove(); }).catch(fail); } } }));
+        on: { click: (e) => { api.markNotificationRead(n.id).then(() => { invalidateSection('notifications'); row.classList.remove('unread'); e.target.remove(); }).catch(fail); } } }));
       return row;
     },
-    'Nenhuma notificação.');
+    'Nenhuma notificação.', 'notifications');
 }
 
 // ---- modals (accessible: focus trap, Escape, focus return) ----
@@ -600,6 +631,7 @@ function workForm(existing) {
     try {
       const fields = { title: title.value.trim(), slug: slug.value.trim(), synopsis: syn.value.trim() || null };
       if (existing) await api.updateWork(existing.id, fields); else await api.createWork(fields);
+      invalidateSection('mine');
       m.destroy(); toast(existing ? 'Obra salva.' : 'Obra criada.'); render();
     } catch (err) { submit.disabled = false; fail(err); }
   });
@@ -879,23 +911,41 @@ function sessionKey(session) {
   return String(session.user?.id || session.access_token || session.provider || 'session');
 }
 
-// Single-flight per session: concurrent equivalent callers share one request, and a
-// failure clears the cache so an explicit retry really retries.
+// Single-flight per session: concurrent equivalent callers share one request. A failure
+// stays cached (the rejected promise) so merely reopening the profile tab reuses the known
+// error instead of refetching — only an explicit refresh (the retry button) clears it.
 function loadMyProfile({ refresh = false } = {}) {
   const active = mount;
   if (!active) return api.getMyProfile();
   if (refresh || !active.profileRequest) {
     const key = active.sessionKey;
-    active.profileRequest = api.getMyProfile().then(
-      (profile) => {
-        // A late answer must never overwrite the state of a newer session.
-        if (mount === active && active.sessionKey === key) state.profile = profile;
-        return profile;
-      },
-      (err) => { if (mount === active && active.sessionKey === key) active.profileRequest = null; throw err; },
-    );
+    active.profileRequest = api.getMyProfile().then((profile) => {
+      // A late answer must never overwrite the state of a newer session.
+      if (mount === active && active.sessionKey === key) state.profile = profile;
+      return profile;
+    });
   }
   return active.profileRequest;
+}
+
+// ---- per-section lifecycle (favorites/history/mine/notifications/feed) ----
+// Each section is idle/loading/loaded/error with at most one in-flight promise, scoped to
+// the current mount so logout/re-login (a brand new `active` object) starts every section
+// clean. Opening a tab whose section already loaded (or errored) renders from that state
+// with zero requests; only 'idle' fetches. See paginated() for the renderer that consumes
+// this, and invalidateSection() for how a mutating action (favorite, publish, delete...)
+// marks its own section dirty without ever touching an unrelated one.
+function sectionState(key) {
+  const active = mount;
+  if (!active) return { status: 'idle', items: [], cursor: '', error: null, promise: null };
+  if (!active.sections) active.sections = {};
+  if (!active.sections[key]) active.sections[key] = { status: 'idle', items: [], cursor: '', error: null, promise: null };
+  return active.sections[key];
+}
+
+function invalidateSection(key) {
+  const active = mount;
+  if (active && active.sections) delete active.sections[key];
 }
 
 async function applySession(session, active) {
@@ -914,6 +964,7 @@ async function applySession(session, active) {
   active.authenticated = authenticated;
   active.sessionKey = key;
   active.profileRequest = null;
+  active.sections = {};
   state.session = session;
   state.profile = null;
   state.openWorkId = null;
@@ -967,7 +1018,7 @@ async function mountSupabaseCommunity() {
   // In local-session auth mode there is no Supabase client; leave the legacy UI be.
   const client = await getSupabaseClient();
   if (!client) { mountRequest = null; return; }
-  const active = { unsubscribe: null, sessionKey: null, profileRequest: null, authenticated: undefined };
+  const active = { unsubscribe: null, sessionKey: null, profileRequest: null, authenticated: undefined, sections: {} };
   mount = active;
   window.__socialCommunityMounted = true;
   const unsubscribe = await onAuthChange((session) => { void applySession(session, active); });
