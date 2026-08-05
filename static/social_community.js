@@ -1006,19 +1006,28 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   });
 }
 
+// The account this mount's cached feed/profile actually belong to (session.user.id),
+// independent of the noisier sessionKey() (token/provider) used only for staleness checks
+// below. Kept across a SIGNED_OUT so a same-account replay can be recognized as one.
+function accountId(session) {
+  return (session && session.user && session.user.id) ? String(session.user.id) : null;
+}
+
 async function applySession(session, active, event) {
   if (mount !== active) return; // unmounted while the event was in flight
   const authenticated = Boolean(session);
   const key = sessionKey(session);
   // supabase_auth.js races two independent signals for the SAME restored session: its own
   // explicit getSession()/getUser() restore, and the SDK's native onAuthStateChange replay.
-  // Either can resolve first. When the native replay loses that race and arrives afterwards
-  // still carrying no session (its own internal recovery had not caught up yet), it looks
-  // identical to a sign-out unless the event name says otherwise - and treating it as one
-  // wipes the profile/feed cache this mount already populated, so the SIGNED_IN that follows
-  // moments later re-fires both requests. A real sign-out is always reported as SIGNED_OUT
-  // by the SDK; nothing else legitimately regresses an already-authenticated mount, so only
-  // that explicit event (or the very first event this mount ever sees) may do so.
+  // Either can resolve first. When the native replay loses that race, it can surface as an
+  // explicit SIGNED_OUT for the very same account moments before the SIGNED_IN that actually
+  // reflects the finished restore - a real cross-tab/cross-device sign-out is reported the
+  // same way, so the event alone cannot be trusted to tell the two apart. Wiping the
+  // profile/feed cache on every SIGNED_OUT and rebuilding it on the SIGNED_IN that follows is
+  // what turned that artifact into a doubled feed + profile/me load for the same login. The
+  // account id survives that flip (it is not reset here), so a SIGNED_IN whose account matches
+  // the one this mount already has cached can reuse it instead of reloading - a genuine
+  // account change (a different id, or none cached yet) still starts clean.
   if (!authenticated && event !== 'SIGNED_OUT' && active.authenticated === true) return;
   if (authenticated === active.authenticated) {
     // Same side of the sign-in/sign-out edge as the last processed event: an SDK replay,
@@ -1029,11 +1038,21 @@ async function applySession(session, active, event) {
     if (canonicalAuthReady() || !authenticated) state.session = session;
     return;
   }
+  // Computed against the account this mount had BEFORE this event, and only ever acted on
+  // while becoming authenticated: an unauthenticated edge never touches the cache or
+  // accountId below, so a same-account SIGNED_IN that follows a spurious SIGNED_OUT still
+  // finds it. A genuine account change (a different id, or no cached id yet) still resets.
+  const sameAccount = authenticated && active.accountId && accountId(session) === active.accountId;
   active.authenticated = authenticated;
   active.sessionKey = key;
-  active.profileRequest = null;
-  active.sections = {};
-  state.profile = null;
+  if (authenticated) {
+    active.accountId = accountId(session);
+    if (!sameAccount) {
+      active.profileRequest = null;
+      active.sections = {};
+      state.profile = null;
+    }
+  }
   state.openWorkId = null;
   if (state.abort) { state.abort.abort(); state.abort = null; }
   if (!authenticated) {
@@ -1105,7 +1124,7 @@ async function mountSupabaseCommunity() {
   // In local-session auth mode there is no Supabase client; leave the legacy UI be.
   const client = await getSupabaseClient();
   if (!client) { mountRequest = null; return; }
-  const active = { unsubscribe: null, sessionKey: null, profileRequest: null, authenticated: undefined, sections: {} };
+  const active = { unsubscribe: null, sessionKey: null, accountId: null, profileRequest: null, authenticated: undefined, sections: {} };
   mount = active;
   window.__socialCommunityMounted = true;
   const unsubscribe = await onAuthChange((session, event) => { void applySession(session, active, event); });
