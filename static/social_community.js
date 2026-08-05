@@ -531,6 +531,13 @@ function profileForm(p) {
   const save = el('button', { class: 'btn-primary', text: 'Salvar perfil' });
   const form = el('form', { class: 'sc-profile-form', on: { submit: async (e) => {
     e.preventDefault();
+    // The disabled button already blocks a second physical click, but that guard is
+    // native-DOM-only: it does nothing against a second 'submit' reaching this same
+    // handler by another path (Enter-key implicit submission racing the click, a
+    // programmatic requestSubmit()). Checking the in-flight flag here, inside the one
+    // handler every write goes through, is the actual guard — not a debounce, not a
+    // counter, just "a save is already running, ignore this one".
+    if (save.disabled) return;
     save.disabled = true; save.textContent = 'Salvando…';
     try {
       const fields = {
