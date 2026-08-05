@@ -70,6 +70,12 @@ let authApi = null;
 let authHeartbeatTimer = 0;
 let authHeartbeatBusy = false;
 let loginAttemptCounter = 0;
+// Non-zero only while THIS tab's own signIn() call is in flight. Distinguishes the
+// narrow "late SDK event from our own setSession() persistence race" (see
+// renderSession below) from a genuine SIGNED_OUT - same-tab logout button click or
+// another tab signing out - which must clear the header immediately instead of
+// being deferred behind a stale bearer re-check.
+let ownLoginAttemptId = 0;
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 10000;
 const AUTH_LOGIN_TIMEOUT_MS = 20000;
 const AUTH_HANDLER_ID = 'auth_ui:canonical-submit-v3';
@@ -320,9 +326,13 @@ function renderSession(session, authEvent = '') {
     });
     return;
   }
-  if (!session && authEvent === 'SIGNED_OUT' && window.__tradutorAccessToken) {
-    // A late SDK event can report sign-out when setSession persistence timed out;
-    // retain the verified in-memory bearer until the canonical session rejects it.
+  if (!session && authEvent === 'SIGNED_OUT' && window.__tradutorAccessToken && ownLoginAttemptId) {
+    // A late SDK event can report sign-out when setSession persistence timed out
+    // during OUR OWN in-flight signIn() call; retain the verified in-memory bearer
+    // until the canonical session rejects it. Scoped to an active login attempt so
+    // a genuine SIGNED_OUT - same-tab logout or another tab signing out while this
+    // tab sits idle authenticated - falls through to the immediate clear below
+    // instead of being deferred behind a stale bearer re-check.
     authTrace('sdk_signout_deferred', {authenticated: true, source: 'memory_session'});
     void syncBackendSession(window.__tradutorAccessToken);
     return;
@@ -479,6 +489,7 @@ async function init() {
           hideLoginSurface();
         }
       } else {
+        ownLoginAttemptId = attemptId;
         try {
           await withTimeout(completeLoginFlow(email, password, controller.signal), AUTH_LOGIN_TIMEOUT_MS);
         } catch (signInError) {
@@ -533,6 +544,7 @@ async function init() {
     } finally {
       clearTimeout(timeoutId);
       clearTimeout(watchdogId);
+      if (ownLoginAttemptId === attemptId) ownLoginAttemptId = 0;
       if (window.__tradutorActiveLoginController === controller) window.__tradutorActiveLoginController = null;
       if (attemptId === loginAttemptCounter) {
         submit.dataset.busy = '';
