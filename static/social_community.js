@@ -859,8 +859,18 @@ function communityUnavailablePanel(onRetry) {
 // render() (one feed request each) and re-request the profile (because a failed profile
 // left state.profile null), which is what produced the burst of identical GETs.
 //
-// So the handler is keyed by session identity: an event that does not change *who* is
-// signed in changes no state and issues no request. No debounce, no timer, no counter.
+// A first sign-in replays that burst through TWO independent onAuthChange subscriptions
+// (this module's own, and auth_ui.js's), each running its own bounded session-restore race
+// against the same shared SDK client. That is enough for a session object to reach this
+// handler in more than one shape across the burst (e.g. a snapshot taken mid-restore before
+// the SDK has finished attaching everything it eventually attaches) - so keying the reload
+// on a string derived from the session's own fields (user id / token) does not fully
+// collapse the burst: two shapes of the *same* sign-in can compute two different keys and
+// each looks like a new identity. What is genuinely single-valued across the whole burst is
+// simpler: whether the browser is authenticated at all. That flips exactly once per real
+// sign-in and once per real sign-out, never more - so it is the load's single-flight key,
+// with the identity string kept only to detect an actual account switch and to guard a
+// late response against a newer session. No debounce, no timer, no counter.
 let mount = null;
 let mountRequest = null;
 
@@ -890,8 +900,18 @@ function loadMyProfile({ refresh = false } = {}) {
 
 async function applySession(session, active) {
   if (mount !== active) return; // unmounted while the event was in flight
+  const authenticated = Boolean(session);
   const key = sessionKey(session);
-  if (active.sessionKey === key) return; // repeated event, same identity: nothing to do
+  if (authenticated === active.authenticated) {
+    // Same side of the sign-in/sign-out edge as the last processed event: an SDK replay,
+    // a background restore finishing late, or a proactive token refresh. Keep the latest
+    // session snapshot for callers that read it, but the load for this edge already ran
+    // (or is running) - issuing it again is exactly the duplicate this guard exists for.
+    active.sessionKey = key;
+    state.session = session;
+    return;
+  }
+  active.authenticated = authenticated;
   active.sessionKey = key;
   active.profileRequest = null;
   state.session = session;
@@ -947,7 +967,7 @@ async function mountSupabaseCommunity() {
   // In local-session auth mode there is no Supabase client; leave the legacy UI be.
   const client = await getSupabaseClient();
   if (!client) { mountRequest = null; return; }
-  const active = { unsubscribe: null, sessionKey: null, profileRequest: null };
+  const active = { unsubscribe: null, sessionKey: null, profileRequest: null, authenticated: undefined };
   mount = active;
   window.__socialCommunityMounted = true;
   const unsubscribe = await onAuthChange((session) => { void applySession(session, active); });
