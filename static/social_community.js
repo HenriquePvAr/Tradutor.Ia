@@ -28,6 +28,9 @@ const state = {
   openWorkId: null,
   loading: false,
   abort: null,
+  // True while a real SDK session arrived but the canonical (backend-confirmed)
+  // auth state has not caught up yet. See waitForCanonicalAuthReady() below.
+  pendingAuth: false,
 };
 
 // ---- safe DOM helpers (no innerHTML with user content) ----
@@ -81,6 +84,7 @@ function render() {
   const host = root();
   if (!host) return;
   host.replaceChildren();
+  if (state.pendingAuth) { host.appendChild(sectionShell(null).wrap); return; }
   if (!state.session) { host.appendChild(loginGate()); return; }
   host.appendChild(header());
   const body = el('div', { class: 'sc-body', attrs: { id: 'scBody' } });
@@ -948,6 +952,53 @@ function invalidateSection(key) {
   if (active && active.sections) delete active.sections[key];
 }
 
+// ---- canonical auth-ready gate ---------------------------------------------
+// The Supabase SDK session (above) and the canonical, backend-confirmed auth
+// state (window.__tradutorAuthState, driven by auth_ui.js's own independent
+// onAuthStateChange subscription + its /api/community/auth/session round trip)
+// are two separate listeners racing the same underlying client. auth_ui.js
+// explicitly regresses to 'auth_loading' on every SDK event and only flips to
+// 'authenticated' once the backend agrees — proof that the raw SDK session
+// alone is not sufficient evidence of readiness. Firing a private request the
+// instant the SDK hands back a session (previous behaviour) could beat that
+// confirmation and go out while the canonical state was still
+// anonymous/authenticating, which is what produced a 401 on an otherwise
+// normal first login.
+//
+// No timers: this resolves the instant the condition is already true (covers
+// bootstrap/canonical state arriving first, e.g. after F5), or the next time
+// tradutor-auth-changed announces authenticated:true (covers the SDK session
+// arriving first, e.g. right after a fresh sign-in).
+let canonicalAuthReadyWaiters = [];
+
+function getGlobal(name) {
+  try { return window[name]; } catch (_) { return undefined; }
+}
+
+// Undefined means no canonical arbiter is running in this context at all (e.g. this
+// module loaded standalone, without auth_ui.js) - nothing to wait for, so treat that as
+// ready rather than deadlocking. In the real shell auth_ui.js sets this synchronously to
+// 'auth_loading' before any async gap, so production always has a defined, meaningful
+// value here; only the *absence* of a value is permissive.
+function canonicalAuthReady() {
+  const raw = getGlobal('__tradutorAuthState');
+  return raw === undefined || String(raw) === 'authenticated';
+}
+
+function waitForCanonicalAuthReady() {
+  if (canonicalAuthReady()) return Promise.resolve();
+  return new Promise((resolve) => { canonicalAuthReadyWaiters.push(resolve); });
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('tradutor-auth-changed', (event) => {
+    if (String(event?.detail?.state || '') !== 'authenticated' && event?.detail?.authenticated !== true) return;
+    const waiters = canonicalAuthReadyWaiters;
+    canonicalAuthReadyWaiters = [];
+    waiters.forEach((resolve) => resolve());
+  });
+}
+
 async function applySession(session, active) {
   if (mount !== active) return; // unmounted while the event was in flight
   const authenticated = Boolean(session);
@@ -958,21 +1009,39 @@ async function applySession(session, active) {
     // session snapshot for callers that read it, but the load for this edge already ran
     // (or is running) - issuing it again is exactly the duplicate this guard exists for.
     active.sessionKey = key;
-    state.session = session;
+    if (canonicalAuthReady() || !authenticated) state.session = session;
     return;
   }
   active.authenticated = authenticated;
   active.sessionKey = key;
   active.profileRequest = null;
   active.sections = {};
-  state.session = session;
   state.profile = null;
   state.openWorkId = null;
   if (state.abort) { state.abort.abort(); state.abort = null; }
-  if (session) {
-    try { await loadMyProfile(); } catch (_) { /* the profile tab surfaces it */ }
-    if (mount !== active || active.sessionKey !== key) return;
+  if (!authenticated) {
+    state.session = null;
+    state.pendingAuth = false;
+    render();
+    return;
   }
+  // A session arrived but no private request may leave until the canonical,
+  // backend-confirmed generation agrees. Show a neutral loading shell instead
+  // of the login gate while this settles (mount was requested; the load is
+  // merely pending).
+  state.session = null;
+  state.pendingAuth = true;
+  render();
+  await waitForCanonicalAuthReady();
+  // Re-check after the await: a logout, a brand new sign-in, or an unmount
+  // that happened while waiting must invalidate this generation instead of
+  // resuming it. This is the only guard against an old generation acting on
+  // a stale wakeup.
+  if (mount !== active || active.sessionKey !== key || active.authenticated !== true) return;
+  state.pendingAuth = false;
+  state.session = session;
+  try { await loadMyProfile(); } catch (_) { /* the profile tab surfaces it */ }
+  if (mount !== active || active.sessionKey !== key) return;
   render();
 }
 
@@ -986,6 +1055,7 @@ export function unmountCommunity() {
   state.session = null;
   state.profile = null;
   state.openWorkId = null;
+  state.pendingAuth = false;
   if (state.abort) { state.abort.abort(); state.abort = null; }
   window.__socialCommunityMounted = false;
   try { active.unsubscribe?.(); } catch (_) { /* already released */ }
