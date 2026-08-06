@@ -334,20 +334,28 @@ await test('a late SIGNED_OUT during this tab\'s own in-flight login attempt is 
 });
 
 // --- negative control: the pre-this-fix auth_ui.js (66a0681) must keep the header
-// stuck on the previous authenticated identity after a cross-tab SIGNED_OUT. ---
-const PREVIOUS_PATH = process.env.AUTH_UI_PREVIOUS
-  || path.join(ROOT, '.runtime', 'claude-header-logout-cross-tab', 'auth_ui_before.js');
-const PREVIOUS = fs.existsSync(PREVIOUS_PATH) ? fs.readFileSync(PREVIOUS_PATH, 'utf8') : '';
+// stuck on the previous authenticated identity after a cross-tab SIGNED_OUT.
+//
+// Reconstructed in-memory from the REAL, currently-versioned static/auth_ui.js by
+// reverting exactly the one-line guard this fix (commit c54a29e) changed, rather than
+// depending on an external "before" file: any such file would live outside static/
+// and therefore outside this fix's actual review/version history (fs.existsSync guard
+// previously fell back to a gitignored .runtime/ path that nothing ever committed,
+// so the negative control silently vanished in a clean checkout). Patching CURRENT's
+// known post-fix text back to its known pre-fix text keeps the control both
+// self-contained and byte-accurate to the real regression, and fails loudly (instead
+// of silently) if static/auth_ui.js's guard is ever refactored out from under it. ---
+const POST_FIX_GUARD = "if (!session && authEvent === 'SIGNED_OUT' && window.__tradutorAccessToken && ownLoginAttemptId) {";
+const PRE_FIX_GUARD = "if (!session && authEvent === 'SIGNED_OUT' && window.__tradutorAccessToken) {";
+assert.ok(CURRENT.includes(POST_FIX_GUARD),
+  'auth_ui.js renderSession() guard text changed - update POST_FIX_GUARD/PRE_FIX_GUARD to match before trusting the negative control');
+const PREVIOUS = CURRENT.replace(POST_FIX_GUARD, PRE_FIX_GUARD);
 
-if (PREVIOUS) {
-  await test('NEGATIVE CONTROL: the pre-fix auth_ui.js leaves the Sair button visible after cross-tab logout', async () => {
-    const { byId } = await loadAuthUi({ authUiSource: PREVIOUS, nativeEvents: CROSS_TAB_LOGOUT_EVENTS, sessionForGetSession: SESSION, sessionEndpointAuthenticated: true });
-    assert.equal(byId.get('authLogoutBtn').hidden, false, 'pre-fix: Sair should incorrectly remain visible (the bug)');
-    assert.equal(byId.get('authOpenBtn').hidden, true, 'pre-fix: Entrar should incorrectly remain hidden (the bug)');
-  });
-} else {
-  failures.push({ name: 'negative control setup', message: `missing baseline file at ${PREVIOUS_PATH}` });
-}
+await test('NEGATIVE CONTROL: the pre-fix auth_ui.js leaves the Sair button visible after cross-tab logout', async () => {
+  const { byId } = await loadAuthUi({ authUiSource: PREVIOUS, nativeEvents: CROSS_TAB_LOGOUT_EVENTS, sessionForGetSession: SESSION, sessionEndpointAuthenticated: true });
+  assert.equal(byId.get('authLogoutBtn').hidden, false, 'pre-fix: Sair should incorrectly remain visible (the bug)');
+  assert.equal(byId.get('authOpenBtn').hidden, true, 'pre-fix: Entrar should incorrectly remain hidden (the bug)');
+});
 
 console.log(JSON.stringify({ passed, failed: failures.length, failures }, null, 2));
 if (failures.length) process.exit(1);
