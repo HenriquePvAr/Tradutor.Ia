@@ -17,11 +17,12 @@ from community_auth import (
     AuthConfigurationError,
     AuthenticationRequired,
     AuthorizationDenied,
+    AuthProvider,
     CsrfRejected,
     RequestPrincipal,
     SESSION_COOKIE_NAME,
-    build_auth_provider,
     configured_bind_host,
+    get_auth_provider,
     validate_bind_security,
 )
 from community_api import CommunityApi
@@ -95,7 +96,22 @@ COMMUNITY = CommunityApi(
     output_root=BRIDGE.output_root,
     storage_root=BRIDGE.runtime_root / "community_storage",
 )
-AUTH = build_auth_provider()
+class _LazyAuthProvider:
+    """Stands in for the real auth provider between import and application startup.
+
+    Module import must never require Supabase (or any) configuration: routers and
+    middleware below only need a stable object to hold onto at import time, and they
+    all read auth attributes lazily, per request. The first attribute access after
+    startup builds (and caches, via get_auth_provider) the real provider, so a
+    misconfigured deployment still fails closed -- just at the correct lifecycle
+    point (startup / first use) instead of at import.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_auth_provider(), name)
+
+
+AUTH: AuthProvider = _LazyAuthProvider()  # type: ignore[assignment]
 
 
 def _better_auth_internal_base() -> str:
@@ -1831,6 +1847,24 @@ def index() -> None:
         ui.add_body_html(f'<script src="{_asset_url(PIPELINE_HARNESS_ASSET)}" defer></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(SOCIAL_COMMUNITY_ASSET)}"></script>')
+
+
+async def _build_auth_provider_at_startup() -> None:
+    """Build (and validate) the real auth provider before the app serves traffic.
+
+    Runs whenever the ASGI server actually starts -- not at import, and not only
+    under the `__main__` bind-security check below (which can return early for a
+    loopback bind without touching the provider). A misconfigured deployment must
+    fail closed here, before any request is served, never silently on first use.
+
+    Registered via a plain call (not `@app.on_startup` sugar): that decorator
+    returns None, which would otherwise clobber this module-level name and make
+    it impossible for tests to invoke the handler directly.
+    """
+    get_auth_provider()
+
+
+app.on_startup(_build_auth_provider_at_startup)
 
 
 @app.on_shutdown

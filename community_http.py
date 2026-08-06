@@ -173,7 +173,10 @@ def create_community_router(community, auth) -> APIRouter:
         request: Request,
         bootstrap_secret: str = Header("", alias="X-Tradutor-Bootstrap-Secret"),
     ) -> JSONResponse:
-        if not isinstance(auth, LocalSessionAuthProvider):
+        # `auth` may be `app_ui`'s lazy startup proxy, so an isinstance() check against
+        # the concrete class would always be False; auth_source is the same identity
+        # the class defines, resolved through the proxy at call time instead.
+        if getattr(auth, "auth_source", "") != LocalSessionAuthProvider.auth_source:
             raise HTTPException(
                 status_code=404,
                 detail="not_found",
@@ -197,7 +200,9 @@ def create_community_router(community, auth) -> APIRouter:
     ) -> JSONResponse:
         from local_test_auth import LocalTestAuthProvider
 
-        if not isinstance(auth, LocalTestAuthProvider):
+        # See the local-session bootstrap above: compare auth_source, not the class,
+        # so this still works when `auth` is the lazy startup proxy.
+        if getattr(auth, "auth_source", "") != LocalTestAuthProvider.auth_source:
             raise HTTPException(
                 status_code=404, detail="not_found", headers=_NO_STORE_HEADERS)
         if set(payload) - {"email", "password"}:
@@ -256,7 +261,11 @@ def create_community_router(community, auth) -> APIRouter:
             _community_call(auth.require_csrf, request, principal)
             from local_test_auth import LocalTestAuthProvider
 
-            if isinstance(auth, (LocalSessionAuthProvider, LocalTestAuthProvider)):
+            # See the local-session bootstrap above: compare auth_source, not the
+            # class, so this still works when `auth` is the lazy startup proxy.
+            if getattr(auth, "auth_source", "") in (
+                LocalSessionAuthProvider.auth_source, LocalTestAuthProvider.auth_source,
+            ):
                 auth.revoke_session(principal.session_id)
         else:
             _community_call(stale_logout_mutation, request)

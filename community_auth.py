@@ -542,6 +542,34 @@ def build_auth_provider(
     raise AuthConfigurationError(f"unsupported community auth provider: {provider_name}")
 
 
+_AUTH_PROVIDER_CACHE: AuthProvider | None = None
+
+
+def get_auth_provider(
+    env: Mapping[str, str] | None = None,
+    *,
+    clock: Callable[[], float] = time.time,
+) -> AuthProvider:
+    """Build the runtime auth provider once and cache it for the process lifetime.
+
+    This is the only place `build_auth_provider()` should be called from application
+    code: it is meant to run from the app's startup lifecycle (or lazily, on first
+    real use), never at module import time. Import time must never require Supabase
+    or any other credential; a misconfigured deployment still fails closed, just at
+    the correct lifecycle point instead of at import.
+    """
+    global _AUTH_PROVIDER_CACHE
+    if _AUTH_PROVIDER_CACHE is None:
+        _AUTH_PROVIDER_CACHE = build_auth_provider(env, clock=clock)
+    return _AUTH_PROVIDER_CACHE
+
+
+def reset_auth_provider_cache() -> None:
+    """Test-only hook: forces the next get_auth_provider() call to rebuild."""
+    global _AUTH_PROVIDER_CACHE
+    _AUTH_PROVIDER_CACHE = None
+
+
 def require_admin(principal: RequestPrincipal) -> None:
     if not principal.authenticated:
         raise AuthenticationRequired("authentication_required")
