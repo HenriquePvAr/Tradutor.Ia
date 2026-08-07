@@ -29,16 +29,21 @@ from legacy_publication_drive_adapter import (
     APP_PROP_IDEMPOTENCY,
     APP_PROP_SCHEMA,
     APP_PROP_SHA256,
+    MAX_CREATE_DEADLINE_SECONDS,
+    MIN_CREATE_DEADLINE_SECONDS,
     DriveClientError,
     GoogleDriveLegacyArtifactStorage,
     build_idempotency_query,
     derive_idempotency_key,
     escape_drive_query_literal,
     map_drive_error,
+    minimum_safe_create_lease_ttl,
+    validate_create_deadline_seconds,
 )
 
 
 FOLDER_ID = "TEST-DRIVE-FOLDER-001"
+TEST_CREATE_DEADLINE_SECONDS = 60.0
 PDF_A = b"%PDF-1.4\n% synthetic fixture\nTEST DRIVE PUBLICATION A\n%%EOF\n"
 PDF_B = b"%PDF-1.4\n% synthetic fixture\nTEST DRIVE PUBLICATION B\n%%EOF\n"
 
@@ -98,6 +103,7 @@ class FakeDriveClient:
         self.bytes_uploaded = 0
         self._next_id = 1
         self._faults: dict[str, list[Exception]] = {}
+        self.received_create_deadlines: list[float] = []
 
     # -- fault injection ---------------------------------------------------
     def inject_fault(self, point: str, exc: Exception, *, times: int = 1) -> None:
@@ -145,8 +151,24 @@ class FakeDriveClient:
         ]
         return [self._project(obj, fields) for obj in matches[:page_size]]
 
-    def create_pdf(self, *, folder_id: str, filename: str, data: bytes, app_properties: dict[str, str]) -> dict[str, Any]:
-        fault = self._pop_fault("before_create")
+    def create_pdf(
+        self,
+        *,
+        folder_id: str,
+        filename: str,
+        data: bytes,
+        app_properties: dict[str, str],
+        create_deadline_seconds: float,
+    ) -> dict[str, Any]:
+        # Real client contract requirement (documented, not enforced by this
+        # hermetic fake): create_deadline_seconds must be the exact,
+        # already-validated value the adapter received at construction --
+        # never recomputed, widened, or defaulted here.
+        self.received_create_deadlines.append(create_deadline_seconds)
+        # "before_create" / "timeout_before_side_effect" are the same point:
+        # the provider never accepted/persisted anything -- clean, zero-object
+        # failure (deadline contract case A).
+        fault = self._pop_fault("before_create") or self._pop_fault("timeout_before_side_effect")
         if fault:
             raise fault
         self.create_count += 1
@@ -168,7 +190,16 @@ class FakeDriveClient:
             app_properties=dict(app_properties),
         )
         self.objects[file_id] = obj
-        after = self._pop_fault("after_create_before_response")
+        # "after_create_before_response" / "timeout_after_side_effect" /
+        # "late_completion_simulation" are all the same point: the object was
+        # already durably persisted by the provider before the caller's
+        # deadline/response outcome resolved (deadline contract case B --
+        # outcome unknown, never assumed to be a clean no-op).
+        after = (
+            self._pop_fault("after_create_before_response")
+            or self._pop_fault("timeout_after_side_effect")
+            or self._pop_fault("late_completion_simulation")
+        )
         if after:
             raise after
         return self._project(obj, ("id", "name", "mimeType", "size", "parents", "trashed", "md5Checksum", "appProperties"))
@@ -303,18 +334,18 @@ def _seed_verified_remote(client: FakeDriveClient, *, file_id: str, sha256: str,
 
 def test_constructor_requires_drive_client():
     with pytest.raises(ValueError):
-        GoogleDriveLegacyArtifactStorage(drive_client=None, folder_id=FOLDER_ID)  # type: ignore[arg-type]
+        GoogleDriveLegacyArtifactStorage(drive_client=None, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)  # type: ignore[arg-type]
 
 
 def test_constructor_requires_explicit_folder_id():
     with pytest.raises(ValueError):
-        GoogleDriveLegacyArtifactStorage(drive_client=FakeDriveClient(), folder_id="")
+        GoogleDriveLegacyArtifactStorage(drive_client=FakeDriveClient(), folder_id="", create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
 
 
 def test_constructor_has_no_env_or_default_fallback(monkeypatch):
     monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "should-never-be-read")
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/should/never/be/read")
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=FakeDriveClient(), folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=FakeDriveClient(), folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     assert storage._folder_id == FOLDER_ID  # explicit value only, never env
 
 
@@ -325,7 +356,7 @@ def test_constructor_has_no_env_or_default_fallback(monkeypatch):
 
 def test_no_real_socket_connect_during_adapter_unit_tests(tmp_path: Path):
     client = FakeDriveClient()
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     with pytest.raises(AssertionError):
         # offline_test_guard patches socket.socket.connect to fail closed;
@@ -342,7 +373,7 @@ def test_no_real_socket_connect_during_adapter_unit_tests(tmp_path: Path):
 def test_upload_validates_pdf_signature(tmp_path: Path):
     migration_input, plan = _draft_input_and_plan(tmp_path)
     migration_input.publication.artifact.local_artifact_path.write_bytes(b"NOT-A-PDF")
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=FakeDriveClient(), folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=FakeDriveClient(), folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     with pytest.raises(ValidationError):
         storage.upload(migration_input, plan)
 
@@ -350,14 +381,14 @@ def test_upload_validates_pdf_signature(tmp_path: Path):
 def test_upload_rehashes_and_rejects_content_changed_after_plan(tmp_path: Path):
     migration_input, plan = _draft_input_and_plan(tmp_path)
     migration_input.publication.artifact.local_artifact_path.write_bytes(PDF_A)  # swapped after planning
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=FakeDriveClient(), folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=FakeDriveClient(), folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     with pytest.raises(ValidationError):
         storage.upload(migration_input, plan)
 
 
 def test_new_upload_persists_sha256_in_app_properties_and_verifies_metadata(tmp_path: Path):
     client = FakeDriveClient()
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     result = storage.upload(migration_input, plan)
     assert storage.upload_count == 1
@@ -374,7 +405,7 @@ def test_new_upload_persists_sha256_in_app_properties_and_verifies_metadata(tmp_
 def test_new_upload_rejects_drive_reported_size_mismatch(tmp_path: Path):
     client = FakeDriveClient()
     client.inject_fault("metadata_mismatch", True)  # sentinel truthy "value", see FakeDriveClient._pop_fault
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     with pytest.raises(TerminalBackendError):
         storage.upload(migration_input, plan)
@@ -388,7 +419,7 @@ def test_missing_sha256_app_property_does_not_promote_to_strong(tmp_path: Path):
         size=migration_input.publication.artifact.pdf_size, parent_id=FOLDER_ID, trashed=False,
         md5_checksum="whatever", app_properties={},
     )
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     with pytest.raises(ValidationError):
         storage.use_verified_remote_asset(migration_input, plan)
 
@@ -406,7 +437,7 @@ def test_use_verified_remote_asset_does_exact_id_lookup_only(tmp_path: Path):
         sha256=migration_input.publication.artifact.pdf_sha256,
         size=migration_input.publication.artifact.pdf_size,
     )
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     result = storage.use_verified_remote_asset(migration_input, plan)
     assert result["action"] == "reuse_verified_remote_asset"
     assert client.get_count == 1
@@ -422,7 +453,7 @@ def test_published_copy_strong_asset_never_calls_upload(tmp_path: Path):
         sha256=migration_input.publication.artifact.pdf_sha256,
         size=migration_input.publication.artifact.pdf_size,
     )
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     executor = LegacyMigrationExecutor(
         provenance_backend=FakeLegacyProvenanceBackend(),
         target_backend=FakeLegacyTargetBackend(),
@@ -455,7 +486,7 @@ def test_idempotency_key_is_deterministic_and_opaque(tmp_path: Path):
 
 def test_new_upload_zero_matches_allows_create(tmp_path: Path):
     client = FakeDriveClient()
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     storage.upload(migration_input, plan)
     assert client.list_count == 1
@@ -464,10 +495,10 @@ def test_new_upload_zero_matches_allows_create(tmp_path: Path):
 
 def test_existing_same_content_is_reused_without_new_upload(tmp_path: Path):
     client = FakeDriveClient()
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     storage.upload(migration_input, plan)
-    second = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID).upload(migration_input, plan)
+    second = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS).upload(migration_input, plan)
     assert second["action"] == "already_exists_same_content"
     assert client.create_count == 1
     assert storage.upload_count == 1
@@ -476,7 +507,7 @@ def test_existing_same_content_is_reused_without_new_upload(tmp_path: Path):
 @pytest.mark.parametrize("mutate", ["size", "sha256", "md5", "parent", "mime"])
 def test_existing_conflicting_object_fails_closed(tmp_path: Path, mutate: str):
     client = FakeDriveClient()
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     idem_key = derive_idempotency_key(migration_input, plan)
     obj = _DriveObject(
@@ -512,7 +543,7 @@ def test_existing_conflicting_object_fails_closed(tmp_path: Path, mutate: str):
 
 def test_multiple_lookup_matches_is_ambiguous_conflict(tmp_path: Path):
     client = FakeDriveClient()
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     idem_key = derive_idempotency_key(migration_input, plan)
     for i in range(2):
@@ -533,7 +564,7 @@ def test_multiple_lookup_matches_is_ambiguous_conflict(tmp_path: Path):
 def test_response_lost_after_create_maps_to_response_lost_error(tmp_path: Path):
     client = FakeDriveClient()
     client.inject_fault("after_create_before_response", DriveClientError("lost", category="response_lost"))
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     with pytest.raises(ResponseLostError):
         storage.upload(migration_input, plan)
@@ -544,7 +575,7 @@ def test_response_lost_after_create_maps_to_response_lost_error(tmp_path: Path):
 def test_retry_after_response_lost_reuses_the_persisted_object(tmp_path: Path):
     client = FakeDriveClient()
     client.inject_fault("after_create_before_response", DriveClientError("lost", category="response_lost"))
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     with pytest.raises(ResponseLostError):
         storage.upload(migration_input, plan)
@@ -558,11 +589,11 @@ def test_process_restart_after_response_lost_reuses_single_object(tmp_path: Path
     client = FakeDriveClient()
     client.inject_fault("after_create_before_response", DriveClientError("lost", category="response_lost"))
     migration_input, plan = _draft_input_and_plan(tmp_path)
-    first_storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    first_storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     with pytest.raises(ResponseLostError):
         first_storage.upload(migration_input, plan)
     del first_storage  # simulate process restart: no adapter-local cache survives
-    restarted_storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    restarted_storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     result = restarted_storage.upload(migration_input, plan)
     assert result["action"] == "already_exists_same_content"
     assert client.create_count == 1
@@ -572,7 +603,7 @@ def test_process_restart_after_response_lost_reuses_single_object(tmp_path: Path
 def test_executor_resume_after_response_lost_completes_recovery(tmp_path: Path):
     client = FakeDriveClient()
     client.inject_fault("after_create_before_response", DriveClientError("lost", category="response_lost"))
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     provenance = FakeLegacyProvenanceBackend()
     targets = FakeLegacyTargetBackend()
@@ -597,7 +628,7 @@ def test_executor_resume_after_response_lost_completes_recovery(tmp_path: Path):
 
 def test_draft_recovery_hybrid_e2e_uploads_once_and_stays_draft(tmp_path: Path):
     client = FakeDriveClient()
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     executor = LegacyMigrationExecutor(
         provenance_backend=FakeLegacyProvenanceBackend(),
@@ -678,7 +709,7 @@ def test_map_drive_error_categories(category: str, expected_type: type):
 def test_transient_error_during_lookup_is_retryable_by_executor(tmp_path: Path):
     client = FakeDriveClient()
     client.inject_fault("list", DriveClientError("429", category="transient"), times=1)
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _draft_input_and_plan(tmp_path)
     executor = LegacyMigrationExecutor(
         provenance_backend=FakeLegacyProvenanceBackend(),
@@ -694,7 +725,7 @@ def test_transient_error_during_lookup_is_retryable_by_executor(tmp_path: Path):
 def test_unknown_error_fails_closed_not_retried_forever(tmp_path: Path):
     client = FakeDriveClient()
     client.inject_fault("get", DriveClientError("weird", category="unknown"))
-    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID)
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
     migration_input, plan = _published_input_and_plan(tmp_path)
     with pytest.raises(TerminalBackendError):
         storage.use_verified_remote_asset(migration_input, plan)
@@ -736,8 +767,134 @@ def test_concurrent_narrow_lookup_race_can_duplicate_without_external_lock(tmp_p
     assert client.find_by_idempotency(query=query, fields=(), page_size=3) == []
     assert client.find_by_idempotency(query=query, fields=(), page_size=3) == []
 
-    client.create_pdf(folder_id=FOLDER_ID, filename="worker-a.pdf", data=data, app_properties=app_properties)
-    client.create_pdf(folder_id=FOLDER_ID, filename="worker-b.pdf", data=data, app_properties=app_properties)
+    client.create_pdf(
+        folder_id=FOLDER_ID, filename="worker-a.pdf", data=data, app_properties=app_properties,
+        create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS,
+    )
+    client.create_pdf(
+        folder_id=FOLDER_ID, filename="worker-b.pdf", data=data, app_properties=app_properties,
+        create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS,
+    )
 
     assert client.create_count == 2  # the gap: two distinct objects, same idempotency key
     assert len({obj.file_id for obj in client.objects.values()}) == 2
+
+
+# ---------------------------------------------------------------------------
+# Hard create deadline contract (storage create deadline, NOT reservation
+# lease TTL -- see legacy_publication_drive_adapter.py module docstring and
+# .runtime/legacy-storage-reservation-design/ttl_and_timeout.md)
+# ---------------------------------------------------------------------------
+
+
+def test_min_max_bounds_are_finite_positive_and_ordered():
+    assert 0 < MIN_CREATE_DEADLINE_SECONDS < MAX_CREATE_DEADLINE_SECONDS
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [None, 0, 0.0, -1, float("nan"), float("inf"), float("-inf"), "30", True, MAX_CREATE_DEADLINE_SECONDS + 1, MIN_CREATE_DEADLINE_SECONDS - 0.01],
+)
+def test_construction_rejects_invalid_create_deadline(invalid: object):
+    client = FakeDriveClient()
+    with pytest.raises(ValueError):
+        GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=invalid)  # type: ignore[arg-type]
+    assert client.create_count == 0  # rejected before any create is ever attempted
+
+
+def test_construction_requires_create_deadline_argument():
+    with pytest.raises(TypeError):
+        GoogleDriveLegacyArtifactStorage(drive_client=FakeDriveClient(), folder_id=FOLDER_ID)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("valid", [MIN_CREATE_DEADLINE_SECONDS, MAX_CREATE_DEADLINE_SECONDS, (MIN_CREATE_DEADLINE_SECONDS + MAX_CREATE_DEADLINE_SECONDS) / 2])
+def test_construction_accepts_boundary_and_mid_range_deadlines(tmp_path: Path, valid: float):
+    client = FakeDriveClient()
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=valid)
+    migration_input, plan = _draft_input_and_plan(tmp_path)
+    storage.upload(migration_input, plan)
+    assert client.received_create_deadlines == [valid]
+
+
+def test_create_pdf_receives_exact_validated_deadline(tmp_path: Path):
+    client = FakeDriveClient()
+    chosen = 77.0
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=chosen)
+    migration_input, plan = _draft_input_and_plan(tmp_path)
+    storage.upload(migration_input, plan)
+    assert client.received_create_deadlines == [chosen]
+
+
+def test_publication_input_cannot_override_create_deadline(tmp_path: Path):
+    client = FakeDriveClient()
+    configured = 90.0
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=configured)
+    # An attacker-controlled or merely careless legacy manifest cannot smuggle
+    # its own timeout in through publication metadata: this is infra policy,
+    # never publication/manifest input.
+    migration_input, plan = _draft_input_and_plan(tmp_path, metadata={"title": "x", "timeout": 1, "create_deadline_seconds": 1})
+    storage.upload(migration_input, plan)
+    assert client.received_create_deadlines == [configured]
+
+
+def test_validate_create_deadline_seconds_helper_matches_constructor_contract():
+    assert validate_create_deadline_seconds(MIN_CREATE_DEADLINE_SECONDS) == MIN_CREATE_DEADLINE_SECONDS
+    for invalid in (None, 0, -5, float("nan"), float("inf"), MAX_CREATE_DEADLINE_SECONDS + 1):
+        with pytest.raises(ValueError):
+            validate_create_deadline_seconds(invalid)
+
+
+def test_timeout_before_side_effect_is_transient_and_creates_nothing(tmp_path: Path):
+    client = FakeDriveClient()
+    client.inject_fault("timeout_before_side_effect", DriveClientError("deadline_exceeded_before_accept", category="transient"))
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
+    migration_input, plan = _draft_input_and_plan(tmp_path)
+    with pytest.raises(TransientBackendError):
+        storage.upload(migration_input, plan)
+    assert client.create_count == 0
+    assert len(client.objects) == 0
+
+
+def test_timeout_after_side_effect_is_response_lost_and_object_persists(tmp_path: Path):
+    client = FakeDriveClient()
+    client.inject_fault("timeout_after_side_effect", DriveClientError("deadline_exceeded_outcome_unknown", category="response_lost"))
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
+    migration_input, plan = _draft_input_and_plan(tmp_path)
+    with pytest.raises(ResponseLostError):
+        storage.upload(migration_input, plan)
+    assert client.create_count == 1
+    assert len(client.objects) == 1
+    recovered = storage.upload(migration_input, plan)  # narrow recovery, no duplicate
+    assert recovered["action"] == "already_exists_same_content"
+    assert client.create_count == 1
+    assert len(client.objects) == 1
+
+
+def test_late_completion_after_caller_deadline_is_not_treated_as_safe_create(tmp_path: Path):
+    """A caller-side deadline elapsing does NOT mean the provider stopped.
+
+    This models 'late completion': the fake provider still durably persists
+    the object -- exactly like a real resumable/multipart Drive upload that
+    keeps running server-side after the HTTP client gives up -- and this
+    adapter must surface that as an unknown/response-lost outcome (recovery
+    required), never as a plain retryable no-op that would risk a duplicate
+    create on blind retry.
+    """
+    client = FakeDriveClient()
+    client.inject_fault("late_completion_simulation", DriveClientError("late_completion", category="response_lost"))
+    storage = GoogleDriveLegacyArtifactStorage(drive_client=client, folder_id=FOLDER_ID, create_deadline_seconds=TEST_CREATE_DEADLINE_SECONDS)
+    migration_input, plan = _draft_input_and_plan(tmp_path)
+    with pytest.raises(ResponseLostError):
+        storage.upload(migration_input, plan)
+    # The object exists despite the caller having already received an error --
+    # proof that "caller gave up" != "provider cancelled the side effect".
+    assert client.create_count == 1
+    assert len(client.objects) == 1
+
+
+def test_minimum_safe_create_lease_ttl_exceeds_deadline_plus_margin():
+    ttl = minimum_safe_create_lease_ttl(TEST_CREATE_DEADLINE_SECONDS, safety_margin_seconds=15.0)
+    assert ttl > TEST_CREATE_DEADLINE_SECONDS + 15.0 - 1e-9
+    assert ttl == TEST_CREATE_DEADLINE_SECONDS + 15.0
+    with pytest.raises(ValueError):
+        minimum_safe_create_lease_ttl(TEST_CREATE_DEADLINE_SECONDS, safety_margin_seconds=0)

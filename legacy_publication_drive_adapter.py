@@ -29,6 +29,7 @@ vocabulary instead of looping internally.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from pathlib import Path
 from typing import Any, Protocol
@@ -50,6 +51,79 @@ APP_PROP_SHA256 = "tradutor_legacy_sha256"
 APP_PROP_IDEMPOTENCY = "tradutor_legacy_idempotency"
 DRIVE_METADATA_FIELDS = ("id", "name", "mimeType", "size", "parents", "trashed", "md5Checksum", "appProperties")
 PDF_MIME_TYPE = "application/pdf"
+
+# --- Hard create deadline contract ------------------------------------------
+#
+# STORAGE CREATE DEADLINE (this contract) vs RESERVATION LEASE TTL (a future,
+# NOT-yet-implemented concern) are two different numbers answering two
+# different questions:
+#   - create deadline:  how long is ONE external create/upload attempt
+#                        allowed to run before this adapter must treat its
+#                        outcome as unknown/failed?
+#   - lease TTL:         how long can another worker be blocked from
+#                         attempting the same logical create while this one
+#                         is in flight? (see minimum_safe_create_lease_ttl)
+#
+# A future lease TTL is only defensible once it is proven to exceed this
+# deadline plus a safety margin (see minimum_safe_create_lease_ttl below).
+# Reservation/leasing itself is out of scope here.
+#
+# Bounds are sized for a PDF upload (not an instant metadata call): a few
+# seconds is too tight for a real multipart/resumable Drive upload under
+# normal network conditions, and an unbounded value defeats the point of a
+# hard deadline entirely. These are conservative placeholders for this
+# hermetic phase -- the real DriveFilesClient implementation must validate
+# its own operational numbers against actual Drive upload behavior during
+# the integration phase; this contract only guarantees "bounded and
+# explicit", not "final".
+MIN_CREATE_DEADLINE_SECONDS = 5.0
+MAX_CREATE_DEADLINE_SECONDS = 300.0
+
+
+def validate_create_deadline_seconds(value: Any) -> float:
+    """Fail-closed validation for the hard Drive create deadline.
+
+    Rejects everything that would make the deadline effectively unbounded or
+    meaningless: missing (``None``), non-numeric, ``bool`` (a ``bool`` is an
+    ``int`` subclass but is never a legitimate deadline value), ``NaN``,
+    ``Infinity``, non-positive, or outside ``[MIN_CREATE_DEADLINE_SECONDS,
+    MAX_CREATE_DEADLINE_SECONDS]``. Raises before any Drive call is made.
+    """
+    if value is None:
+        raise ValueError("create_deadline_seconds_required")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("create_deadline_seconds_must_be_numeric")
+    numeric = float(value)
+    if math.isnan(numeric) or math.isinf(numeric):
+        raise ValueError("create_deadline_seconds_must_be_finite")
+    if numeric <= 0:
+        raise ValueError("create_deadline_seconds_must_be_positive")
+    if not (MIN_CREATE_DEADLINE_SECONDS <= numeric <= MAX_CREATE_DEADLINE_SECONDS):
+        raise ValueError("create_deadline_seconds_out_of_bounds")
+    return numeric
+
+
+def minimum_safe_create_lease_ttl(create_deadline_seconds: float, safety_margin_seconds: float) -> float:
+    """Formal relationship a future reservation lease TTL must satisfy.
+
+    Conceptual only -- no reservation/lease is implemented by this module.
+    A future lease generation must pick ``lease_create_ttl`` such that::
+
+        lease_create_ttl > create_deadline_seconds + safety_margin_seconds
+
+    ``safety_margin_seconds`` must cover at least: scheduler dispatch delay
+    before the create attempt actually starts, the HTTP response returning
+    after the provider-side operation finishes, this adapter's own
+    post-create metadata verification (``_is_compatible``), and the
+    provenance DB round trip that durably records completion. It must NOT
+    be inflated to also cover ``LegacyMigrationExecutor``'s overall retry
+    budget (``max_attempts``): each retry attempt gets its own
+    ``create_deadline_seconds`` window and, in a future design, its own
+    lease generation -- the lease does not need to span every retry combined.
+    """
+    if safety_margin_seconds <= 0:
+        raise ValueError("safety_margin_seconds_must_be_positive")
+    return create_deadline_seconds + safety_margin_seconds
 
 
 class DriveClientError(Exception):
@@ -74,13 +148,46 @@ class DriveFilesClient(Protocol):
     and ``create_pdf`` into a single-shot multipart upload with
     ``appProperties`` attached; wiring that real implementation (auth, HTTP
     transport) is out of scope for this hermetic phase.
+
+    ``create_pdf`` requires an explicit, already-validated
+    ``create_deadline_seconds`` (see ``validate_create_deadline_seconds``).
+    Requirements a real implementation must satisfy that this hermetic
+    protocol cannot enforce by itself:
+      - The deadline must bound the entire create/upload end-to-end, not
+        just a single socket read per chunk. Drive PDF uploads may use
+        multipart or resumable upload semantics; a real client must apply
+        an end-to-end deadline across the whole resumable session, not a
+        per-chunk timeout that lets the overall upload run unbounded.
+        Resumable upload session semantics (chunking, restart tokens) need
+        their own separate audit before that client is trusted.
+      - connect/read/write/request timeouts must all be explicit; no
+        operation may be left eternally active on the default SDK/transport
+        timeout.
+      - When the deadline is reached, the client must actively cancel or
+        close the underlying request/connection where the transport
+        supports it -- a caller-side ``timeout`` that merely stops waiting
+        while the HTTP request keeps running in the background does NOT
+        satisfy this contract.
+      - An outcome that is unknown when the deadline is reached (the file
+        may or may not have been created) must never be reported as a
+        clean/safe failure. It must be surfaced as ``category="response_lost"``
+        (recovery_required) so the caller performs the adapter's narrow
+        idempotency lookup instead of blindly retrying a create.
     """
 
     def get_metadata(self, file_id: str, *, fields: tuple[str, ...]) -> dict[str, Any] | None: ...
 
     def find_by_idempotency(self, *, query: str, fields: tuple[str, ...], page_size: int) -> list[dict[str, Any]]: ...
 
-    def create_pdf(self, *, folder_id: str, filename: str, data: bytes, app_properties: dict[str, str]) -> dict[str, Any]: ...
+    def create_pdf(
+        self,
+        *,
+        folder_id: str,
+        filename: str,
+        data: bytes,
+        app_properties: dict[str, str],
+        create_deadline_seconds: float,
+    ) -> dict[str, Any]: ...
 
 
 def escape_drive_query_literal(value: str) -> str:
@@ -145,11 +252,15 @@ def _safe_filename(name: str) -> str:
 class GoogleDriveLegacyArtifactStorage:
     """``LegacyArtifactStorage`` backed by an injected hermetic Drive client."""
 
-    def __init__(self, *, drive_client: DriveFilesClient, folder_id: str) -> None:
+    def __init__(self, *, drive_client: DriveFilesClient, folder_id: str, create_deadline_seconds: Any) -> None:
         if drive_client is None:
             raise ValueError("drive_client_required")
         if not folder_id:
             raise ValueError("folder_id_required")
+        # Infrastructure policy, set once at construction by whoever wires
+        # this backend -- never sourced from the environment, the legacy
+        # manifest, or publication input. See validate_create_deadline_seconds.
+        self._create_deadline_seconds = validate_create_deadline_seconds(create_deadline_seconds)
         self._client = drive_client
         self._folder_id = folder_id
         self.upload_count = 0
@@ -232,6 +343,7 @@ class GoogleDriveLegacyArtifactStorage:
                 filename=_safe_filename(path.name),
                 data=data,
                 app_properties=app_properties,
+                create_deadline_seconds=self._create_deadline_seconds,
             )
         except DriveClientError as exc:
             raise map_drive_error(exc) from exc
