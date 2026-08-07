@@ -8,7 +8,6 @@ functions used by :class:`LegacyMigrationExecutor`.
 from __future__ import annotations
 
 import dataclasses
-import ipaddress
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +27,7 @@ from legacy_publication_migrator import DryRunResult, LegacyMigrationInput
 
 
 OPERATOR_ROLE = "migration_operator"
+ALLOWED_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 FORBIDDEN_OPERATIONAL_FUNCTIONS = frozenset({"authorize_draft_recovery_publication"})
 ALLOWED_RUNTIME_FUNCTIONS: dict[str, str] = {
     "register_legacy_source": "select private.register_legacy_source(%s::jsonb) as source_instance_id",
@@ -51,12 +51,9 @@ class RefuseRemotePostgresHostError(ValueError):
 
 def _is_local_host(host: str) -> bool:
     normalized = (host or "").strip().lower()
-    if normalized in {"localhost", "::1"}:
-        return True
-    try:
-        return ipaddress.ip_address(normalized).is_loopback
-    except ValueError:
-        return False
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    return normalized in ALLOWED_LOCAL_HOSTS
 
 
 @dataclass(frozen=True)
@@ -131,6 +128,9 @@ class PostgresLegacyProvenanceBackend:
         self.call_count = 0
         self._response_lost_after_commit = set(response_lost_after_commit or set())
         self._lost_once: set[str] = set()
+        self._sources: dict[str, dict[str, Any]] = {}
+        self._migrations: dict[str, dict[str, Any]] = {}
+        self._events: list[dict[str, Any]] = []
 
     def _connect(self, *, row_factory: Any | None = None):
         kwargs: dict[str, Any] = {"autocommit": True}
@@ -160,13 +160,6 @@ class PostgresLegacyProvenanceBackend:
         except psycopg.Error as exc:
             raise map_postgres_error(exc) from exc
 
-    def _admin_read(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        try:
-            with self._connect(row_factory=dict_row) as conn:
-                return list(conn.execute(sql, params).fetchall())
-        except psycopg.Error as exc:
-            raise map_postgres_error(exc) from exc
-
     def register_legacy_source(self, migration_input: LegacyMigrationInput, plan: DryRunResult) -> dict[str, Any]:
         source = migration_input.source
         publication = migration_input.publication
@@ -184,7 +177,15 @@ class PostgresLegacyProvenanceBackend:
             "approved_by": source.metadata.get("approved_by", "local-postgres-adapter-test"),
         }
         row = self._operator_call("register_legacy_source", (Jsonb(manifest),))
-        return {"source_instance_id": str(row["source_instance_id"]), "source_system": source.source_system, "source_state": "registered"}
+        result = {
+            "source_instance_id": str(row["source_instance_id"]),
+            "source_system": source.source_system,
+            "initial_snapshot_sha256": source.initial_snapshot_sha256,
+            "manifest_id": source.manifest_id,
+            "source_state": "registered",
+        }
+        self._sources[result["source_instance_id"]] = result
+        return result
 
     def claim_legacy_publication(self, migration_input: LegacyMigrationInput, plan: DryRunResult) -> dict[str, Any]:
         publication = migration_input.publication
@@ -214,25 +215,45 @@ class PostgresLegacyProvenanceBackend:
             ),
         )
         migration_id = str(row["migration_id"])
-        snapshot = self._migration_by_id(migration_id)
-        return {**snapshot, "migration_id": migration_id, "result": row["result"], "plan_digest": plan.plan_digest}
+        result = str(row["result"])
+        if result in {"conflicting_identity", "partial_target_conflicting"}:
+            raise ConflictError(result)
+        migration = self._remember_migration(
+            migration_id,
+            migration_input,
+            plan,
+            migration_state=_claim_result_state(result),
+        )
+        return {**migration, "result": result}
 
     def attach_migration_work(self, migration_id: str, work_id: str, plan: DryRunResult) -> dict[str, Any]:
+        row = self._cached_migration(migration_id)
+        if row.get("migration_state") in {"completed", "recovery_completed"}:
+            row["target_work_id"] = row.get("target_work_id") or work_id
+            return dict(row)
         self._operator_call("attach_migration_work", (migration_id, work_id), fetch="none")
-        return self._migration_by_id(migration_id)
+        row["target_work_id"] = work_id
+        if row.get("migration_state") not in {"chapter_created", "asset_linked", "completed", "recovery_completed"}:
+            row["migration_state"] = "work_created"
+        return dict(row)
 
     def attach_migration_chapter(self, migration_id: str, chapter_id: str, plan: DryRunResult) -> dict[str, Any]:
+        row = self._cached_migration(migration_id)
+        if row.get("migration_state") in {"completed", "recovery_completed"}:
+            row["target_chapter_id"] = row.get("target_chapter_id") or chapter_id
+            return dict(row)
         self._operator_call("attach_migration_chapter", (migration_id, chapter_id), fetch="none")
-        return self._migration_by_id(migration_id)
+        row["target_chapter_id"] = chapter_id
+        if row.get("migration_state") not in {"asset_linked", "completed", "recovery_completed"}:
+            row["migration_state"] = "chapter_created"
+        return dict(row)
 
     def attach_migration_asset(self, migration_id: str, chapter_id: str, asset: dict[str, Any], plan: DryRunResult) -> dict[str, Any]:
-        current = self._migration_by_id(migration_id)
-        if (
-            current["migration_state"] == "completed"
-            and current["target_chapter_id"] == chapter_id
-            and current["target_chapter_asset_id"] == chapter_id
-        ):
-            return current
+        row = self._cached_migration(migration_id)
+        if row.get("migration_state") in {"completed", "recovery_completed"}:
+            row["target_chapter_id"] = row.get("target_chapter_id") or chapter_id
+            row["target_chapter_asset_id"] = row.get("target_chapter_asset_id") or chapter_id
+            return dict(row)
         self._operator_call(
             "attach_migration_asset",
             (
@@ -245,15 +266,26 @@ class PostgresLegacyProvenanceBackend:
             ),
             fetch="none",
         )
-        return self._migration_by_id(migration_id)
+        row["target_chapter_id"] = chapter_id
+        row["target_chapter_asset_id"] = chapter_id
+        if row.get("migration_state") not in {"completed", "recovery_completed"}:
+            row["migration_state"] = "asset_linked"
+        return dict(row)
 
     def complete_legacy_migration(self, migration_id: str, completed_by: str, plan: DryRunResult) -> dict[str, Any]:
         row = self._operator_call("complete_legacy_migration", (migration_id, completed_by))
-        snapshot = self._migration_by_id(migration_id)
-        return {**snapshot, "result": row["migration_state"]}
+        result = str(row["migration_state"])
+        migration_state = "completed" if result == "already_completed" else result
+        migration = self._cached_migration(migration_id)
+        migration["migration_state"] = migration_state
+        migration["completed_by"] = completed_by
+        return {**migration, "result": result}
 
     def mark_migration_failure(self, migration_id: str, error_code: str, retryable: bool) -> None:
         self._operator_call("mark_migration_failure", (migration_id, error_code, retryable), fetch="none")
+        if migration_id in self._migrations:
+            self._migrations[migration_id]["migration_state"] = "failed_retryable" if retryable else "failed_terminal"
+            self._migrations[migration_id]["last_error_code"] = error_code
 
     def append_legacy_migration_event(
         self,
@@ -263,53 +295,83 @@ class PostgresLegacyProvenanceBackend:
         error_code: str | None = None,
     ) -> str:
         row = self._operator_call("append_legacy_migration_event", (migration_id, event_type, Jsonb(metadata or {}), error_code))
-        return str(row["event_id"])
-
-    def _migration_by_id(self, migration_id: str) -> dict[str, Any]:
-        rows = self._admin_read(
-            """
-            select id::text as migration_id, migration_mode, migration_state,
-                   target_work_id::text, target_chapter_id::text, target_chapter_asset_id::text,
-                   source_record_digest, source_snapshot_digest, completed_by
-            from private.legacy_publication_migrations
-            where id = %s::uuid
-            """,
-            (migration_id,),
+        event_id = str(row["event_id"])
+        self._events.append(
+            {
+                "id": event_id,
+                "migration_id": migration_id,
+                "event_type": event_type,
+                "metadata": dict(metadata or {}),
+                "error_code": error_code,
+            }
         )
-        if not rows:
-            raise ValidationError("migration_not_found")
-        return dict(rows[0])
+        return event_id
+
+    def _cached_migration(self, migration_id: str) -> dict[str, Any]:
+        if migration_id not in self._migrations:
+            self._migrations[migration_id] = {
+                "migration_id": migration_id,
+                "migration_mode": None,
+                "migration_state": "claimed",
+                "target_work_id": None,
+                "target_chapter_id": None,
+                "target_chapter_asset_id": None,
+                "source_record_digest": None,
+                "source_snapshot_digest": None,
+                "completed_by": None,
+                "plan_digest": None,
+            }
+        return self._migrations[migration_id]
+
+    def _remember_migration(
+        self,
+        migration_id: str,
+        migration_input: LegacyMigrationInput,
+        plan: DryRunResult,
+        *,
+        migration_state: str,
+    ) -> dict[str, Any]:
+        publication = migration_input.publication
+        row = self._cached_migration(migration_id)
+        row.update(
+            {
+                "migration_id": migration_id,
+                "publication_key": f"{publication.source_instance_id}:{publication.legacy_publication_id}",
+                "plan_digest": plan.plan_digest,
+                "migration_mode": publication.migration_mode,
+                "migration_state": migration_state,
+                "source_record_digest": publication.source_record_digest,
+                "source_snapshot_digest": migration_input.source.initial_snapshot_sha256,
+            }
+        )
+        return dict(row)
 
     def snapshot(self) -> dict[str, Any]:
-        sources = self._admin_read(
-            "select source_instance_id::text, source_system, initial_snapshot_sha256, manifest_id::text, source_state from private.legacy_migration_sources"
-        )
-        migrations = self._admin_read(
-            "select id::text as migration_id, source_system, source_instance_id::text, legacy_publication_id, migration_mode, migration_state, target_work_id::text, target_chapter_id::text, target_chapter_asset_id::text, completed_by from private.legacy_publication_migrations"
-        )
-        events = self._admin_read(
-            "select id::text, migration_id::text, event_type, error_code, metadata from private.legacy_publication_migration_events order by created_at, id"
-        )
         return {
-            "sources": {row["source_instance_id"]: dict(row) for row in sources},
-            "migrations": {row["migration_id"]: dict(row) for row in migrations},
-            "events": [dict(row) for row in events],
+            "sources": {key: dict(row) for key, row in self._sources.items()},
+            "migrations": {key: dict(row) for key, row in self._migrations.items()},
+            "events": [dict(row) for row in self._events],
             "operation_effect_counts": {},
         }
 
     def locality_proof(self) -> dict[str, Any]:
-        rows = self._admin_read(
-            """
-            select current_database() as current_database,
-                   inet_server_addr()::text as inet_server_addr,
-                   inet_server_port() as inet_server_port,
-                   version() as server_version,
-                   pg_is_in_recovery() as pg_is_in_recovery,
-                   current_user as current_user,
-                   session_user as session_user
-            """
-        )
-        row = dict(rows[0])
+        try:
+            with self._connect(row_factory=dict_row) as conn:
+                row = dict(
+                    conn.execute(
+                        """
+                        select current_database() as current_database,
+                               inet_server_addr()::text as inet_server_addr,
+                               inet_server_port() as inet_server_port,
+                               version() as server_version,
+                               pg_is_in_recovery() as pg_is_in_recovery,
+                               current_user as current_user,
+                               session_user as session_user
+                        """
+                    ).fetchone()
+                )
+        except psycopg.Error as exc:
+            raise map_postgres_error(exc) from exc
         return {
             "host": self.settings.host,
             "port": self.settings.port,
@@ -318,43 +380,53 @@ class PostgresLegacyProvenanceBackend:
         }
 
     def runtime_contract(self) -> dict[str, Any]:
-        roles = self._admin_read("select rolname from pg_roles where rolname in ('migration_operator','migration_publication_admin') order by rolname")
-        functions = self._admin_read(
-            """
-            select p.proname, p.prosecdef, p.proconfig::text as proconfig
-            from pg_proc p
-            join pg_namespace n on n.oid = p.pronamespace
-            where n.nspname = 'private'
-              and p.proname in (
-                'register_legacy_source','claim_legacy_publication','attach_migration_work',
-                'attach_migration_chapter','attach_migration_asset','mark_migration_failure',
-                'complete_legacy_migration','append_legacy_migration_event',
-                'authorize_draft_recovery_publication'
-              )
-            order by p.proname
-            """
-        )
-        executable = self._admin_read(
-            """
-            select routine_name
-            from information_schema.routine_privileges
-            where specific_schema = 'private'
-              and grantee = 'migration_operator'
-              and privilege_type = 'EXECUTE'
-            order by routine_name
-            """
-        )
-        rls = self._admin_read(
-            """
-            select schemaname, tablename, rowsecurity
-            from pg_tables
-            where schemaname in ('private','public')
-              and tablename in ('legacy_migration_sources','legacy_publication_migrations',
-                                'legacy_publication_migration_events','chapter_assets',
-                                'works','chapters')
-            order by schemaname, tablename
-            """
-        )
+        try:
+            with self._connect(row_factory=dict_row) as conn:
+                roles = list(conn.execute("select rolname from pg_roles where rolname in ('migration_operator','migration_publication_admin') order by rolname"))
+                functions = list(
+                    conn.execute(
+                        """
+                        select p.proname, p.prosecdef, p.proconfig::text as proconfig
+                        from pg_proc p
+                        join pg_namespace n on n.oid = p.pronamespace
+                        where n.nspname = 'private'
+                          and p.proname in (
+                            'register_legacy_source','claim_legacy_publication','attach_migration_work',
+                            'attach_migration_chapter','attach_migration_asset','mark_migration_failure',
+                            'complete_legacy_migration','append_legacy_migration_event',
+                            'authorize_draft_recovery_publication'
+                          )
+                        order by p.proname
+                        """
+                    )
+                )
+                executable = list(
+                    conn.execute(
+                        """
+                        select routine_name
+                        from information_schema.routine_privileges
+                        where specific_schema = 'private'
+                          and grantee = 'migration_operator'
+                          and privilege_type = 'EXECUTE'
+                        order by routine_name
+                        """
+                    )
+                )
+                rls = list(
+                    conn.execute(
+                        """
+                        select schemaname, tablename, rowsecurity
+                        from pg_tables
+                        where schemaname in ('private','public')
+                          and tablename in ('legacy_migration_sources','legacy_publication_migrations',
+                                            'legacy_publication_migration_events','chapter_assets',
+                                            'works','chapters')
+                        order by schemaname, tablename
+                        """
+                    )
+                )
+        except psycopg.Error as exc:
+            raise map_postgres_error(exc) from exc
         return {
             "roles": [row["rolname"] for row in roles],
             "runtime_functions": [row["proname"] for row in functions],
@@ -363,3 +435,11 @@ class PostgresLegacyProvenanceBackend:
             "search_path": {row["proname"]: row["proconfig"] for row in functions},
             "rls": [dict(row) for row in rls],
         }
+
+
+def _claim_result_state(result: str) -> str:
+    if result == "already_completed":
+        return "completed"
+    if result == "recovery_completed":
+        return "recovery_completed"
+    return "claimed"

@@ -17,6 +17,7 @@ from typing import Any
 
 import psycopg
 import pytest
+from psycopg import sql
 
 from legacy_publication_migration_executor import (
     ConflictError,
@@ -200,6 +201,20 @@ def _adapter(settings: LocalPostgresConnectionSettings, *, response_lost: set[st
     return PostgresLegacyProvenanceBackend(settings, response_lost_after_commit=response_lost or set())
 
 
+def _operational_session_settings(settings: LocalPostgresConnectionSettings) -> LocalPostgresConnectionSettings:
+    password = f"audit-{uuid.uuid4().hex}"
+    with admin(settings) as conn:
+        conn.execute("drop role if exists migration_adapter_session")
+        conn.execute(
+            sql.SQL(
+                "create role migration_adapter_session login password {} "
+                "nosuperuser nocreatedb nocreaterole nobypassrls noinherit"
+            ).format(sql.Literal(password))
+        )
+        conn.execute("grant migration_operator to migration_adapter_session")
+    return dataclasses.replace(settings, user="migration_adapter_session", password=password)
+
+
 def _seed_targets(settings: LocalPostgresConnectionSettings, migration_input, plan, *, include_asset: bool = True) -> tuple[str, str]:
     work_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{plan.plan_digest}:work"))
     chapter_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{plan.plan_digest}:chapter"))
@@ -285,9 +300,28 @@ def test_sql_allowlist_and_no_admin_authorization_surface():
 
 
 def test_local_host_guard_rejects_remote_hosts():
-    for host in ("db.example.supabase.co", "aws-0-us-east-1.pooler.supabase.com", "8.8.8.8", "example.com"):
+    for host in (
+        "db.example.supabase.co",
+        "aws-0-us-east-1.pooler.supabase.com",
+        "8.8.8.8",
+        "example.com",
+        "127.0.0.2",
+        "127.1.2.3",
+        "0.0.0.0",
+        "::ffff:127.0.0.1",
+        "localhost.evil.com",
+        "foo.localhost.evil.com",
+        "evil-localhost",
+        "2606:4700:4700::1111",
+    ):
         with pytest.raises(RefuseRemotePostgresHostError):
             LocalPostgresConnectionSettings(host=host, port=5432, dbname="postgres", user="postgres", password=None)
+
+
+def test_local_host_guard_accepts_only_phase_allowlist():
+    for host in ("localhost", "127.0.0.1", "::1"):
+        settings = LocalPostgresConnectionSettings(host=host, port=5432, dbname="postgres", user="postgres", password=None)
+        assert settings.host == host
 
 
 def test_parameter_binding_and_zero_direct_dml_are_static():
@@ -306,8 +340,49 @@ def test_parameter_binding_and_zero_direct_dml_are_static():
     ]
     lowered = production.lower()
     assert not any(fragment in lowered for fragment in forbidden)
+    assert "_admin_read" not in production
+    assert "_migration_by_id" not in production
     assert "getattr(" not in production
     assert ".format(" not in production
+
+
+def test_non_superuser_session_executes_full_flow_without_private_table_reads(db, tmp_path: Path):
+    migration_input, plan = _published_input_and_plan(tmp_path)
+    work_id, chapter_id = _seed_targets(db, migration_input, plan, include_asset=True)
+    op_settings = _operational_session_settings(db)
+    adapter = _adapter(op_settings)
+
+    with psycopg.connect(op_settings.dsn, autocommit=True) as conn:
+        before = conn.execute("select session_user, current_user").fetchone()
+        conn.execute("set role migration_operator")
+        after = conn.execute("select session_user, current_user").fetchone()
+    assert before == ("migration_adapter_session", "migration_adapter_session")
+    assert after == ("migration_adapter_session", "migration_operator")
+
+    source = adapter.register_legacy_source(migration_input, plan)
+    assert source["source_instance_id"] == migration_input.source.source_instance_id
+    migration = adapter.claim_legacy_publication(migration_input, plan)
+    assert migration["migration_id"]
+    assert migration["result"] == "created"
+    adapter.attach_migration_work(migration["migration_id"], work_id, plan)
+    adapter.attach_migration_chapter(migration["migration_id"], chapter_id, plan)
+    asset = {
+        "storage_provider": "google_drive",
+        "storage_file_id": migration_input.publication.remote_asset["storage_file_id"],
+        "size": migration_input.publication.artifact.pdf_size,
+        "sha256": migration_input.publication.artifact.pdf_sha256,
+    }
+    adapter.attach_migration_asset(migration["migration_id"], chapter_id, asset, plan)
+    event_id = adapter.append_legacy_migration_event(migration["migration_id"], "migration_planned", {"safe": True})
+    assert uuid.UUID(event_id)
+    completed = adapter.complete_legacy_migration(migration["migration_id"], "local-test", plan)
+    assert completed["migration_state"] == "completed"
+
+    with psycopg.connect(op_settings.dsn, autocommit=True) as conn:
+        conn.execute("set role migration_operator")
+        with pytest.raises(psycopg.Error) as denied:
+            conn.execute("select count(*) from private.legacy_publication_migrations")
+        assert denied.value.sqlstate == "42501"
 
 
 @pytest.mark.parametrize(
@@ -537,8 +612,9 @@ class SeededArtifactStorage(FakeLegacyArtifactStorage):
 def test_executor_with_postgres_adapter_published_and_restart_resume(db, tmp_path: Path):
     migration_input, plan = _published_input_and_plan(tmp_path)
     _seed_owner(db, migration_input)
+    op_settings = _operational_session_settings(db)
     result = LegacyMigrationExecutor(
-        provenance_backend=_adapter(db),
+        provenance_backend=_adapter(op_settings),
         target_backend=SeededTargetBackend(db),
         artifact_storage=SeededArtifactStorage(),
     ).execute(migration_input, plan)
@@ -547,7 +623,7 @@ def test_executor_with_postgres_adapter_published_and_restart_resume(db, tmp_pat
     assert _counts(db)["migrations"] == 1
 
     restarted = LegacyMigrationExecutor(
-        provenance_backend=_adapter(db),
+        provenance_backend=_adapter(op_settings),
         target_backend=SeededTargetBackend(db),
         artifact_storage=SeededArtifactStorage(),
     ).execute(migration_input, plan)
@@ -558,8 +634,9 @@ def test_executor_with_postgres_adapter_published_and_restart_resume(db, tmp_pat
 def test_executor_with_postgres_adapter_draft_recovery_and_no_authorization(db, tmp_path: Path):
     migration_input, plan = _draft_input_and_plan(tmp_path)
     _seed_owner(db, migration_input)
+    op_settings = _operational_session_settings(db)
     result = LegacyMigrationExecutor(
-        provenance_backend=_adapter(db),
+        provenance_backend=_adapter(op_settings),
         target_backend=SeededTargetBackend(db),
         artifact_storage=SeededArtifactStorage(),
     ).execute(migration_input, plan)
@@ -571,7 +648,8 @@ def test_executor_with_postgres_adapter_draft_recovery_and_no_authorization(db, 
 def test_concurrent_register_and_claim_are_categorized(db, tmp_path: Path):
     migration_input, plan = _published_input_and_plan(tmp_path)
     _seed_owner(db, migration_input)
-    adapters = [_adapter(db), _adapter(db)]
+    op_settings = _operational_session_settings(db)
+    adapters = [_adapter(op_settings), _adapter(op_settings)]
     for adapter in adapters:
         adapter.register_legacy_source(migration_input, plan)
     assert _counts(db)["sources"] == 1
