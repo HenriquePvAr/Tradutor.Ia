@@ -166,12 +166,77 @@ def test_published_copy_strong_verification_is_ready(tmp_path: Path):
     assert plan.would_write is False
 
 
-def test_published_copy_partial_verification_is_blocked(tmp_path: Path):
-    fixture = _published_fixture(tmp_path, remote_asset_verification="partial")
+def test_source_instance_id_must_be_valid_uuid(tmp_path: Path):
+    fixture = _published_fixture(tmp_path)
+    fixture["source"]["source_instance_id"] = "not-a-uuid"
+    fixture["publications"][0]["source_instance_id"] = "not-a-uuid"
     plan = _plan_from_dict(tmp_path, fixture)
-    assert plan.readiness == "blocked_remote_asset_verification"
-    assert "remote_asset_verification_insufficient" in plan.errors
-    assert not any(op["operation_type"] == "complete_legacy_migration" for op in plan.planned_operations)
+    assert plan.readiness == "invalid_input"
+    assert "invalid_source_instance_id" in plan.errors
+    assert plan.would_write is False
+    assert all(op["executed"] is False for op in plan.planned_operations)
+
+
+@pytest.mark.parametrize(
+    "bad_source_instance_id",
+    ["", "123", "00000000", "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"],
+)
+def test_malformed_source_instance_ids_are_invalid(tmp_path: Path, bad_source_instance_id: str):
+    fixture = _published_fixture(tmp_path)
+    fixture["source"]["source_instance_id"] = bad_source_instance_id
+    fixture["publications"][0]["source_instance_id"] = bad_source_instance_id
+    plan = _plan_from_dict(tmp_path, fixture)
+    assert plan.readiness == "invalid_input"
+    assert "invalid_source_instance_id" in plan.errors
+    assert plan.would_write is False
+    assert all(op["executed"] is False for op in plan.planned_operations)
+
+
+def test_valid_source_instance_id_uuid_is_accepted(tmp_path: Path):
+    plan = _plan_from_dict(tmp_path, _published_fixture(tmp_path))
+    assert plan.readiness == "ready_for_execution"
+    assert "invalid_source_instance_id" not in plan.errors
+
+
+@pytest.mark.parametrize(
+    ("remote_asset_verification", "expected_readiness", "expected_error"),
+    [
+        ("strong", "ready_for_execution", None),
+        ("partial", "blocked_remote_asset_verification", "remote_asset_verification_insufficient"),
+        ("unverified", "blocked_remote_asset_verification", "remote_asset_verification_insufficient"),
+    ],
+)
+def test_published_copy_canonical_remote_asset_verification_values(
+    tmp_path: Path,
+    remote_asset_verification: str,
+    expected_readiness: str,
+    expected_error: str | None,
+):
+    fixture = _published_fixture(tmp_path, remote_asset_verification=remote_asset_verification)
+    plan = _plan_from_dict(tmp_path, fixture)
+    assert plan.readiness == expected_readiness
+    assert "invalid_remote_asset_verification" not in plan.errors
+    if expected_error:
+        assert expected_error in plan.errors
+        assert not any(op["operation_type"] == "complete_legacy_migration" for op in plan.planned_operations)
+
+
+def test_published_copy_invalid_remote_asset_verification_is_invalid(tmp_path: Path):
+    fixture = _published_fixture(tmp_path, remote_asset_verification="nonsense")
+    plan = _plan_from_dict(tmp_path, fixture)
+    assert plan.readiness == "invalid_input"
+    assert "invalid_remote_asset_verification" in plan.errors
+    assert "remote_asset_verification_insufficient" not in plan.errors
+    assert plan.planned_operations == []
+
+
+@pytest.mark.parametrize("bad_value", ["STRONG", " strong ", "Partial"])
+def test_remote_asset_verification_enum_is_strict(tmp_path: Path, bad_value: str):
+    fixture = _published_fixture(tmp_path, remote_asset_verification=bad_value)
+    plan = _plan_from_dict(tmp_path, fixture)
+    assert plan.readiness == "invalid_input"
+    assert "invalid_remote_asset_verification" in plan.errors
+    assert plan.planned_operations == []
 
 
 def test_published_copy_missing_asset_is_blocked(tmp_path: Path):
@@ -186,6 +251,25 @@ def test_draft_recovery_allows_missing_remote_asset(tmp_path: Path):
     assert plan.readiness == "recovery_draft_ready"
     assert plan.artifact_verification["asset_action"] == "local_upload_required"
     assert "attach_migration_asset" not in [op["operation_type"] for op in plan.planned_operations]
+
+
+@pytest.mark.parametrize("remote_asset_verification", ["unverified", "partial", "strong"])
+def test_draft_recovery_accepts_canonical_remote_asset_verification_values(
+    tmp_path: Path, remote_asset_verification: str
+):
+    fixture = _draft_fixture(tmp_path, remote_asset_verification=remote_asset_verification)
+    plan = _plan_from_dict(tmp_path, fixture)
+    assert plan.readiness == "recovery_draft_ready"
+    assert "invalid_remote_asset_verification" not in plan.errors
+    assert plan.artifact_verification["asset_action"] == "local_upload_required"
+
+
+def test_draft_recovery_invalid_remote_asset_verification_is_invalid(tmp_path: Path):
+    fixture = _draft_fixture(tmp_path, remote_asset_verification="nonsense")
+    plan = _plan_from_dict(tmp_path, fixture)
+    assert plan.readiness == "invalid_input"
+    assert "invalid_remote_asset_verification" in plan.errors
+    assert plan.planned_operations == []
 
 
 def test_draft_recovery_never_plans_community_or_publish(tmp_path: Path):
@@ -352,4 +436,23 @@ def test_cli_dry_run_success(tmp_path: Path):
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["readiness"] == "ready_for_execution"
+    assert payload["would_write"] is False
+
+
+def test_cli_dry_run_invalid_input_returns_json_without_traceback(tmp_path: Path):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps(_draft_fixture(tmp_path, remote_asset_verification="nonsense")), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path), "--dry-run"],
+        cwd=Path(__file__).parent,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "Traceback" not in result.stdout
+    assert "Traceback" not in result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["readiness"] == "invalid_input"
+    assert "invalid_remote_asset_verification" in payload["errors"]
     assert payload["would_write"] is False

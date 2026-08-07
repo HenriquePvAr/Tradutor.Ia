@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 VALID_MODES = {"published_copy", "draft_recovery"}
+VALID_REMOTE_ASSET_VERIFICATIONS = {"unverified", "partial", "strong"}
 VALID_TARGET_STATES = {
     "target_absent",
     "target_existing_compatible",
@@ -199,6 +201,15 @@ def _require_hex(value: str, length: int, error: str, errors: list[str]) -> None
         errors.append(error)
 
 
+def _is_canonical_uuid(value: str | None) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
 def load_migration_input(fixture: str | Path, *, artifact_root: str | Path | None = None) -> LegacyMigrationInput:
     fixture_path = Path(fixture)
     if fixture_path.name in PRIVATE_INVENTORY_FILENAMES:
@@ -371,21 +382,36 @@ def plan_migration(migration_input: LegacyMigrationInput) -> DryRunResult:
     _require_hex(source.initial_snapshot_sha256, 64, "invalid_source_hash_evidence", errors)
     if not source.source_system or not source.source_instance_id:
         errors.append("invalid_source_identity")
+    if not _is_canonical_uuid(source.source_instance_id):
+        errors.append("invalid_source_instance_id")
+    if not _is_canonical_uuid(source.manifest_id):
+        errors.append("invalid_manifest_id")
     if publication.source_instance_id != source.source_instance_id or publication.source_system != source.source_system:
         errors.append("source_identity_mismatch")
+    if not _is_canonical_uuid(publication.source_instance_id):
+        errors.append("invalid_publication_source_instance_id")
     if not publication.legacy_publication_id or not publication.source_record_digest:
         errors.append("invalid_publication_identity")
     if publication.migration_mode not in VALID_MODES:
         errors.append("invalid_migration_mode")
+    remote_asset_verification_valid = publication.remote_asset_verification in VALID_REMOTE_ASSET_VERIFICATIONS
+    if not remote_asset_verification_valid:
+        errors.append("invalid_remote_asset_verification")
     if publication.owner_resolution_state != "resolved" or not publication.owner_id:
         errors.append("owner_unresolved")
+    elif not _is_canonical_uuid(publication.owner_id):
+        errors.append("invalid_owner_id")
     artifact_verification, artifact_errors = _verify_artifact(publication.artifact)
     errors.extend(artifact_errors)
     errors.extend(_target_errors(publication.target))
+    for target_name, target_spec in (("work", publication.target.work), ("chapter", publication.target.chapter)):
+        target_id = target_spec.get("target_id")
+        if target_id is not None and not _is_canonical_uuid(str(target_id)):
+            errors.append(f"invalid_target_{target_name}_id")
     if publication.migration_mode == "published_copy":
         if publication.remote_asset is None:
             errors.append("remote_asset_missing")
-        elif publication.remote_asset_verification != "strong":
+        elif remote_asset_verification_valid and publication.remote_asset_verification != "strong":
             errors.append("remote_asset_verification_insufficient")
     elif publication.migration_mode == "draft_recovery":
         artifact_verification["asset_action"] = "local_upload_required"
