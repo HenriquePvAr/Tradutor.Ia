@@ -67,6 +67,7 @@ def _postgres_container():
         pytest.skip("Docker daemon is not available for local PostgreSQL adapter integration tests")
     port = _free_local_port()
     name = f"tradutor-legacy-adapter-{uuid.uuid4().hex[:12]}"
+    local_password = f"local-{uuid.uuid4().hex}"
     run = subprocess.run(
         [
             "docker",
@@ -76,7 +77,7 @@ def _postgres_container():
             "--name",
             name,
             "-e",
-            "POSTGRES_PASSWORD=local_test_password",
+            f"POSTGRES_PASSWORD={local_password}",
             "-e",
             "POSTGRES_DB=tradutor_local_adapter",
             "-p",
@@ -94,7 +95,7 @@ def _postgres_container():
             port=port,
             dbname="tradutor_local_adapter",
             user="postgres",
-            password="local_test_password",
+            password=local_password,
         )
         deadline = time.time() + 45
         while True:
@@ -133,6 +134,17 @@ def _bootstrap_database(settings: LocalPostgresConnectionSettings) -> None:
     with admin(settings) as conn:
         conn.execute("create extension if not exists pgcrypto")
         conn.execute("create schema if not exists auth")
+        conn.execute(
+            """
+            create or replace function auth.uid()
+            returns uuid
+            language sql
+            stable
+            as $$
+                select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+            $$
+            """
+        )
         conn.execute(
             """
             create table if not exists auth.users (
@@ -175,11 +187,13 @@ def _input_and_plan(root: Path, fixture: dict[str, object]):
 
 
 def _published_input_and_plan(root: Path, **overrides: object):
-    return _input_and_plan(root, _published_fixture(root, legacy_publication_id="TEST-PUB-PG-001", **overrides))
+    overrides.setdefault("legacy_publication_id", "TEST-PUB-PG-001")
+    return _input_and_plan(root, _published_fixture(root, **overrides))
 
 
 def _draft_input_and_plan(root: Path, **overrides: object):
-    return _input_and_plan(root, _draft_fixture(root, legacy_publication_id="TEST-PUB-PG-002", **overrides))
+    overrides.setdefault("legacy_publication_id", "TEST-PUB-PG-002")
+    return _input_and_plan(root, _draft_fixture(root, **overrides))
 
 
 def _adapter(settings: LocalPostgresConnectionSettings, *, response_lost: set[str] | None = None):
@@ -204,8 +218,9 @@ def _seed_targets(settings: LocalPostgresConnectionSettings, migration_input, pl
         )
         if include_asset:
             artifact = migration_input.publication.artifact
-            storage_provider = "google_drive"
-            storage_file_id = f"TEST-STORAGE-{plan.plan_digest[:16]}"
+            remote_asset = migration_input.publication.remote_asset or {}
+            storage_provider = str(remote_asset.get("storage_provider") or "google_drive")
+            storage_file_id = str(remote_asset.get("storage_file_id") or f"TEST-STORAGE-{plan.plan_digest[:16]}")
             conn.execute(
                 """
                 insert into private.chapter_assets (chapter_id, storage_provider, storage_file_id, byte_size, checksum_sha256)
@@ -215,6 +230,12 @@ def _seed_targets(settings: LocalPostgresConnectionSettings, migration_input, pl
                 (chapter_id, storage_provider, storage_file_id, artifact.pdf_size, artifact.pdf_sha256),
             )
     return work_id, chapter_id
+
+
+def _seed_owner(settings: LocalPostgresConnectionSettings, migration_input) -> None:
+    owner_id = migration_input.publication.owner_id
+    with admin(settings) as conn:
+        conn.execute("insert into auth.users (id, email) values (%s, %s) on conflict do nothing", (owner_id, "local-adapter@example.test"))
 
 
 def _counts(settings: LocalPostgresConnectionSettings) -> dict[str, int]:
@@ -329,7 +350,7 @@ def test_role_contract_operator_has_only_operational_execute_and_no_direct_dml(d
     with admin(db) as conn:
         with pytest.raises(psycopg.Error) as denied:
             conn.execute("set role migration_operator")
-            conn.execute("insert into private.legacy_migration_sources (source_instance_id, source_system, source_schema_version, initial_snapshot_sha256, initial_logical_fingerprint, manifest_id, manifest_version, approval_state) values (gen_random_uuid(), 'x', 1, repeat('a',64), repeat('b',64), gen_random_uuid(), 1, 'approved')")
+            conn.execute("insert into private.legacy_migration_sources (source_instance_id, source_system, source_schema_version, initial_snapshot_sha256, initial_logical_fingerprint, registered_by, manifest_id) values (gen_random_uuid(), 'x', 1, repeat('a',64), repeat('b',64), 'operator-direct-dml-test', gen_random_uuid())")
     assert denied.value.sqlstate == "42501"
 
 
@@ -375,6 +396,7 @@ def test_claim_publication_idempotent_response_lost_and_sql_injection_input(db, 
     payload = "TEST-PUB-PG-001'; select pg_sleep(1); --\n/* unicode ☃ */"
     migration_input, plan = _published_input_and_plan(tmp_path, legacy_publication_id=payload)
     adapter = _adapter(db)
+    _seed_owner(db, migration_input)
     adapter.register_legacy_source(migration_input, plan)
     first = adapter.claim_legacy_publication(migration_input, plan)
     second = adapter.claim_legacy_publication(migration_input, plan)
@@ -382,6 +404,7 @@ def test_claim_publication_idempotent_response_lost_and_sql_injection_input(db, 
     assert _counts(db)["migrations"] == 1
 
     _truncate_runtime_tables(db)
+    _seed_owner(db, migration_input)
     adapter.register_legacy_source(migration_input, plan)
     lost = _adapter(db, response_lost={"claim_legacy_publication"})
     with pytest.raises(ResponseLostError):
@@ -413,7 +436,7 @@ def test_attach_work_chapter_asset_append_event_and_response_lost(db, tmp_path: 
 
     asset = {
         "storage_provider": "google_drive",
-        "storage_file_id": f"TEST-STORAGE-{plan.plan_digest[:16]}",
+        "storage_file_id": migration_input.publication.remote_asset["storage_file_id"],
         "size": migration_input.publication.artifact.pdf_size,
         "sha256": migration_input.publication.artifact.pdf_sha256,
     }
@@ -434,14 +457,19 @@ def test_mark_failure_and_complete_response_lost(db, tmp_path: Path):
     migration = adapter.claim_legacy_publication(migration_input, plan)
     adapter.mark_migration_failure(migration["migration_id"], "synthetic_retry", True)
     assert _migration_row(db)["migration_state"] == "failed_retryable"
+
+    _truncate_runtime_tables(db)
+    work_id, chapter_id = _seed_targets(db, migration_input, plan, include_asset=True)
+    adapter.register_legacy_source(migration_input, plan)
+    migration = adapter.claim_legacy_publication(migration_input, plan)
     adapter.attach_migration_work(migration["migration_id"], work_id, plan)
     adapter.attach_migration_chapter(migration["migration_id"], chapter_id, plan)
     adapter.attach_migration_asset(
         migration["migration_id"],
         chapter_id,
-        {
-            "storage_provider": "google_drive",
-            "storage_file_id": f"TEST-STORAGE-{plan.plan_digest[:16]}",
+            {
+                "storage_provider": "google_drive",
+                "storage_file_id": migration_input.publication.remote_asset["storage_file_id"],
             "size": migration_input.publication.artifact.pdf_size,
             "sha256": migration_input.publication.artifact.pdf_sha256,
         },
@@ -484,12 +512,35 @@ class SeededTargetBackend(FakeLegacyTargetBackend):
         return {"chapter_id": chapter_id, "work_id": work_id}
 
 
+class SeededArtifactStorage(FakeLegacyArtifactStorage):
+    def use_verified_remote_asset(self, migration_input, plan):
+        asset = migration_input.publication.remote_asset or {}
+        return {
+            "storage_provider": asset.get("storage_provider", "google_drive"),
+            "storage_file_id": asset.get("storage_file_id", f"TEST-STORAGE-{plan.plan_digest[:16]}"),
+            "size": migration_input.publication.artifact.pdf_size,
+            "sha256": migration_input.publication.artifact.pdf_sha256,
+            "action": "reuse_verified_remote_asset",
+        }
+
+    def upload(self, migration_input, plan):
+        self.upload_count += 1
+        return {
+            "storage_provider": "google_drive",
+            "storage_file_id": f"TEST-STORAGE-{plan.plan_digest[:16]}",
+            "size": migration_input.publication.artifact.pdf_size,
+            "sha256": migration_input.publication.artifact.pdf_sha256,
+            "action": "fake_upload",
+        }
+
+
 def test_executor_with_postgres_adapter_published_and_restart_resume(db, tmp_path: Path):
     migration_input, plan = _published_input_and_plan(tmp_path)
+    _seed_owner(db, migration_input)
     result = LegacyMigrationExecutor(
         provenance_backend=_adapter(db),
         target_backend=SeededTargetBackend(db),
-        artifact_storage=FakeLegacyArtifactStorage(),
+        artifact_storage=SeededArtifactStorage(),
     ).execute(migration_input, plan)
     assert result.execution_status == "completed"
     assert result.final_migration_state == "completed"
@@ -498,7 +549,7 @@ def test_executor_with_postgres_adapter_published_and_restart_resume(db, tmp_pat
     restarted = LegacyMigrationExecutor(
         provenance_backend=_adapter(db),
         target_backend=SeededTargetBackend(db),
-        artifact_storage=FakeLegacyArtifactStorage(),
+        artifact_storage=SeededArtifactStorage(),
     ).execute(migration_input, plan)
     assert restarted.execution_status == "completed"
     assert _counts(db)["migrations"] == 1
@@ -506,10 +557,11 @@ def test_executor_with_postgres_adapter_published_and_restart_resume(db, tmp_pat
 
 def test_executor_with_postgres_adapter_draft_recovery_and_no_authorization(db, tmp_path: Path):
     migration_input, plan = _draft_input_and_plan(tmp_path)
+    _seed_owner(db, migration_input)
     result = LegacyMigrationExecutor(
         provenance_backend=_adapter(db),
         target_backend=SeededTargetBackend(db),
-        artifact_storage=FakeLegacyArtifactStorage(),
+        artifact_storage=SeededArtifactStorage(),
     ).execute(migration_input, plan)
     assert result.execution_status == "completed"
     assert result.final_migration_state == "recovery_completed"
@@ -518,6 +570,7 @@ def test_executor_with_postgres_adapter_draft_recovery_and_no_authorization(db, 
 
 def test_concurrent_register_and_claim_are_categorized(db, tmp_path: Path):
     migration_input, plan = _published_input_and_plan(tmp_path)
+    _seed_owner(db, migration_input)
     adapters = [_adapter(db), _adapter(db)]
     for adapter in adapters:
         adapter.register_legacy_source(migration_input, plan)
