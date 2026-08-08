@@ -68,6 +68,76 @@ def save_tokens(path: Path, tokens: OAuthTokens) -> None:
     os.replace(tmp, path)
 
 
+# ---- Refresh error categorization -------------------------------------------
+# The OAuth token endpoint's error body can carry `error_description`, which sometimes
+# echoes request details. Only the bare `error` code (a fixed short enum defined by the
+# OAuth spec / Google, e.g. "invalid_grant") is ever extracted and kept - never the
+# description, never the raw body, never the token/secret values used to make the request.
+
+CATEGORY_RECONNECT_REQUIRED = "reconnect_required"
+CATEGORY_CONFIGURATION_ERROR = "configuration_error"
+CATEGORY_TRANSIENT_ERROR = "transient_error"
+CATEGORY_PROTOCOL_ERROR = "protocol_error"
+CATEGORY_UNKNOWN_ERROR = "unknown_error"
+
+_OAUTH_ERROR_CATEGORIES: dict[str, str] = {
+    "invalid_grant": CATEGORY_RECONNECT_REQUIRED,
+    "invalid_client": CATEGORY_CONFIGURATION_ERROR,
+    "invalid_request": CATEGORY_CONFIGURATION_ERROR,
+    "unauthorized_client": CATEGORY_CONFIGURATION_ERROR,
+    "unsupported_grant_type": CATEGORY_CONFIGURATION_ERROR,
+}
+
+_SAFE_MESSAGES: dict[str, str] = {
+    CATEGORY_RECONNECT_REQUIRED:
+        "Google Drive authorization requires reconnection. "
+        "Run the explicit authorize command interactively.",
+    CATEGORY_CONFIGURATION_ERROR:
+        "Google OAuth client configuration error. Check configured client credentials.",
+    CATEGORY_TRANSIENT_ERROR:
+        "Temporary authentication transport error. No authorization state was changed.",
+    CATEGORY_PROTOCOL_ERROR:
+        "Google OAuth token endpoint returned a response that could not be safely interpreted.",
+    CATEGORY_UNKNOWN_ERROR:
+        "Google OAuth token refresh failed with an unrecognized error.",
+}
+
+
+class DriveAuthRefreshError(StorageError):
+    """A categorized, secret-free ``refresh()`` failure.
+
+    ``category`` is always safe to log. ``oauth_error`` (when known) is the bare OAuth
+    error code only - never ``error_description`` or the raw response body, which the
+    caller must never persist to logs or reports.
+    """
+
+    def __init__(self, category: str, *, oauth_error: str = "", status: int | None = None):
+        super().__init__(_SAFE_MESSAGES[category], transient=category == CATEGORY_TRANSIENT_ERROR,
+                         status=status)
+        self.category = category
+        self.oauth_error = oauth_error
+
+
+def _safe_json_object(content: bytes) -> dict[str, Any] | None:
+    """Parse a response body; returns None if it is not a JSON object (never raises)."""
+    if not content:
+        return None
+    try:
+        data = json.loads(content.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _categorize_oauth_error(content: bytes) -> tuple[str, str]:
+    """Return (category, oauth_error_code) for a non-2xx/non-transient token response."""
+    data = _safe_json_object(content)
+    error = data.get("error") if data else None
+    if not isinstance(error, str) or not error:
+        return CATEGORY_PROTOCOL_ERROR, ""
+    return _OAUTH_ERROR_CATEGORIES.get(error, CATEGORY_UNKNOWN_ERROR), error
+
+
 class FileTokenSource:
     """A TokenSource backed by a token file, refreshing the access token when expired.
 
@@ -98,13 +168,22 @@ class FileTokenSource:
         body = _form({
             "client_id": self.client_id, "client_secret": self.client_secret,
             "refresh_token": self._tokens.refresh_token, "grant_type": "refresh_token"})
-        resp = self._t.request("POST", self.token_url,
-                               headers={"Content-Type": "application/x-www-form-urlencoded"},
-                               data=body)
+        try:
+            resp = self._t.request("POST", self.token_url,
+                                   headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                   data=body)
+        except StorageError as exc:
+            if exc.transient:
+                raise DriveAuthRefreshError(CATEGORY_TRANSIENT_ERROR, status=exc.status) from exc
+            raise
+        if resp.status == 429 or resp.status >= 500:
+            raise DriveAuthRefreshError(CATEGORY_TRANSIENT_ERROR, status=resp.status)
         if resp.status != 200:
-            raise StorageError(f"token refresh failed: {resp.status}",
-                               transient=resp.status >= 500, status=resp.status)
-        data = resp.json()
+            category, oauth_error = _categorize_oauth_error(resp.content)
+            raise DriveAuthRefreshError(category, oauth_error=oauth_error, status=resp.status)
+        data = _safe_json_object(resp.content)
+        if data is None or not isinstance(data.get("access_token"), str):
+            raise DriveAuthRefreshError(CATEGORY_PROTOCOL_ERROR, status=resp.status)
         self._tokens.access_token = data.get("access_token", "")
         self._tokens.expiry = time.time() + float(data.get("expires_in", 3600) or 3600)
         if data.get("refresh_token"):
