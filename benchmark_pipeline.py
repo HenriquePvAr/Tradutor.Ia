@@ -1154,7 +1154,25 @@ def run_benchmark(args):
         force=args.force,
     )
     stage_seconds["translation"] = time.perf_counter() - translation_started
+    translator_stats = getattr(translator, "stats", {})
+    translator_stats["translation_candidates"] = len(translation_targets)
+    translator_stats["translation_results_received"] = len(translations or [])
+    translator_stats["translation_results_nonempty"] = sum(
+        1 for item in (translations or []) if str(item or "").strip()
+    )
     apply_group_translations(translation_targets, translations)
+    translator_stats["translated_groups_after_apply"] = sum(
+        1
+        for group in translation_targets
+        if getattr(group, "translation_final_state", "") == "translated"
+    )
+    translator_stats["renderable_translated_groups"] = sum(
+        1
+        for group in translation_targets
+        if getattr(group, "translation_final_state", "") == "translated"
+        and bool(getattr(group, "translation", ""))
+        and bool(getattr(group, "translation_valid", False))
+    )
     retry_started = time.perf_counter()
     translation_retry_records = validate_and_retry_translations(
         translation_targets,
@@ -1509,6 +1527,34 @@ def run_benchmark(args):
         "translation_api_texts": translator_stats.get("api_texts", 0),
         "translation_cache_hits": translator_stats.get("cache_hits", 0),
         "translation_api_requests": translator_stats.get("api_requests", 0),
+        "translation_candidates": translator_stats.get("translation_candidates", 0),
+        "translation_batches": translator_stats.get("translation_batches", 0),
+        "translation_requests_succeeded": translator_stats.get("successful_batches", 0),
+        "translation_requests_failed": translator_stats.get("failed_batches", 0),
+        "translation_responses_received": translator_stats.get(
+            "translation_responses_received", 0
+        ),
+        "translation_responses_nonempty": translator_stats.get(
+            "translation_responses_nonempty", 0
+        ),
+        "translation_results_parsed": translator_stats.get(
+            "translation_results_parsed", 0
+        ),
+        "translation_results_associated": translator_stats.get(
+            "translation_results_associated", 0
+        ),
+        "translated_groups_after_apply": translator_stats.get(
+            "translated_groups_after_apply", 0
+        ),
+        "renderable_translated_groups": translator_stats.get(
+            "renderable_translated_groups", 0
+        ),
+        "translation_configuration_missing": translator_stats.get(
+            "translation_configuration_missing", 0
+        ),
+        "translation_last_failure_reason": translator_stats.get(
+            "last_transport_reason", ""
+        ),
         "translation_failed_batches": translator_stats.get("failed_batches", 0),
         "translation_invalid_json_retries": translator_stats.get(
             "invalid_json_retries", 0

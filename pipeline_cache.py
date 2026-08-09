@@ -1,4 +1,5 @@
 import hashlib
+import importlib.metadata
 import json
 import os
 import shutil
@@ -40,6 +41,69 @@ def stable_hash(payload):
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _package_version(name):
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return ""
+
+
+def ocr_runtime_fingerprint():
+    engine = str(config.OCR_ENGINE or "").lower()
+    fallback = str(config.OCR_FALLBACK_ENGINE or "").lower()
+    packages = {}
+    if engine == "rapidocr" or fallback == "rapidocr":
+        packages["rapidocr-onnxruntime"] = _package_version("rapidocr-onnxruntime")
+        packages["onnxruntime"] = _package_version("onnxruntime")
+    if engine.startswith("paddle") or fallback.startswith("paddle"):
+        packages["paddleocr"] = _package_version("paddleocr")
+        packages["paddlepaddle"] = _package_version("paddlepaddle")
+    if engine == "tesseract" or fallback == "tesseract":
+        packages["pytesseract"] = _package_version("pytesseract")
+    return {
+        "ocr_engine": engine,
+        "ocr_fallback": fallback,
+        "ocr_hybrid_fallback": bool(config.OCR_HYBRID_FALLBACK),
+        "rapidocr_enabled": bool(config.RAPIDOCR_ENABLED),
+        "rapidocr_min_confidence": config.RAPIDOCR_MIN_CONFIDENCE,
+        "rapidocr_suspicious_text_fallback": (
+            config.RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK
+        ),
+        "rapidocr_page_fallback": bool(config.RAPIDOCR_PAGE_FALLBACK),
+        "ocr_text_repair": bool(config.OCR_TEXT_REPAIR),
+        "ocr_text_repair_mode": config.OCR_TEXT_REPAIR_MODE,
+        "packages": packages,
+    }
+
+
+def _ocr_cache_status(lines, metadata):
+    metadata = metadata if isinstance(metadata, dict) else {}
+    reason = str(metadata.get("fallback_reason") or "")
+    if metadata.get("engine_unavailable") or "ModuleNotFoundError" in reason:
+        return "engine_unavailable"
+    if metadata.get("runtime_failure"):
+        return "runtime_failure"
+    return "success" if lines else "empty_success"
+
+
+def ocr_cache_payload_is_reusable(payload):
+    if not isinstance(payload, dict):
+        return False
+    status = str(payload.get("status") or "")
+    metadata = payload.get("ocr_metadata") if isinstance(payload.get("ocr_metadata"), dict) else {}
+    if status in {"engine_unavailable", "runtime_failure"}:
+        return False
+    if _ocr_cache_status(payload.get("lines", []), metadata) in {
+        "engine_unavailable",
+        "runtime_failure",
+    }:
+        return False
+    fingerprint = payload.get("runtime_fingerprint")
+    if fingerprint is not None and fingerprint != ocr_runtime_fingerprint():
+        return False
+    return True
 
 
 def file_sha256(path, chunk_size=1024 * 1024):
@@ -142,17 +206,7 @@ def ocr_cache_key(image_hash, ocr_lang):
             "cache_format": CACHE_FORMAT_VERSION,
             "version": OCR_CACHE_VERSION,
             "image_sha256": image_hash,
-            "ocr_engine": config.OCR_ENGINE,
-            "ocr_fallback": config.OCR_FALLBACK_ENGINE,
-            "ocr_hybrid_fallback": config.OCR_HYBRID_FALLBACK,
-            "rapidocr_enabled": config.RAPIDOCR_ENABLED,
-            "rapidocr_min_confidence": config.RAPIDOCR_MIN_CONFIDENCE,
-            "rapidocr_suspicious_text_fallback": (
-                config.RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK
-            ),
-            "rapidocr_page_fallback": config.RAPIDOCR_PAGE_FALLBACK,
-            "ocr_text_repair": config.OCR_TEXT_REPAIR,
-            "ocr_text_repair_mode": config.OCR_TEXT_REPAIR_MODE,
+            "runtime_fingerprint": ocr_runtime_fingerprint(),
             "ocr_lang": ocr_lang,
         }
     )
@@ -207,6 +261,8 @@ def load_ocr_cache(key):
     payload = load_json(ocr_cache_path(key))
     if payload.get("key") != key:
         return None
+    if not ocr_cache_payload_is_reusable(payload):
+        return None
     return deserialize_ocr_lines(payload.get("lines", [])), payload
 
 
@@ -219,12 +275,15 @@ def save_ocr_cache(
     precheck,
     ocr_metadata=None,
 ):
+    status = _ocr_cache_status(lines, ocr_metadata or {})
     atomic_write_json(
         ocr_cache_path(key),
         {
             "key": key,
             "image_sha256": image_hash,
             "ocr_lang": ocr_lang,
+            "status": status,
+            "runtime_fingerprint": ocr_runtime_fingerprint(),
             "elapsed_seconds": round(float(elapsed_seconds), 6),
             "precheck": precheck,
             "ocr_metadata": ocr_metadata or {},

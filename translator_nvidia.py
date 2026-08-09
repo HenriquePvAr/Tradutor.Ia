@@ -123,6 +123,13 @@ class TranslatorNvidiaBatch:
             "api_texts": 0,
             "api_requests": 0,
             "failed_batches": 0,
+            "successful_batches": 0,
+            "translation_configuration_missing": 0,
+            "translation_batches": 0,
+            "translation_responses_received": 0,
+            "translation_responses_nonempty": 0,
+            "translation_results_parsed": 0,
+            "translation_results_associated": 0,
             "parallel_requested": self.parallel,
             "parallel_used": False,
             "workers": self.workers,
@@ -306,6 +313,9 @@ class TranslatorNvidiaBatch:
 
         if not self.is_configured:
             print("NVIDIA_API_KEY nao configurada. Mantendo textos originais.")
+            self._increment_stat("failed_batches")
+            self._increment_stat("translation_configuration_missing")
+            self.stats["last_transport_reason"] = "provider_not_configured"
             return translations
 
         misses = []
@@ -318,6 +328,7 @@ class TranslatorNvidiaBatch:
             self._increment_stat("cache_hits")
 
         batches = list(self._chunks(misses, self.batch_size))
+        self._increment_stat("translation_batches", len(batches))
         if not batches:
             return translations
 
@@ -337,10 +348,10 @@ class TranslatorNvidiaBatch:
                 batch_indexes, batch_texts, batch_translations
             ):
                 translated = self._postprocess_translation(original_text, translated)
-                if translated and str(translated).strip():
+                if succeeded and translated and str(translated).strip():
                     translations[original_idx] = str(translated).strip()
-                    if succeeded:
-                        self._save_translation_cache(original_text, translations[original_idx])
+                    self._increment_stat("translation_results_associated")
+                    self._save_translation_cache(original_text, translations[original_idx])
 
         return translations
 
@@ -350,6 +361,15 @@ class TranslatorNvidiaBatch:
         started = time.perf_counter()
         try:
             translated = self._translate_batch(batch_texts)
+            response_count = len(translated)
+            nonempty_count = sum(1 for item in translated if str(item or "").strip())
+            self._increment_stat("translation_responses_received", response_count)
+            self._increment_stat("translation_responses_nonempty", nonempty_count)
+            if response_count < len(batch_texts) or nonempty_count == 0:
+                self._increment_stat("failed_batches")
+                self.stats["last_transport_reason"] = "empty_translation_response"
+                return batch_texts, False
+            self._increment_stat("successful_batches")
             return translated, True
         except Exception as exc:
             self._increment_stat("failed_batches")
@@ -409,6 +429,7 @@ class TranslatorNvidiaBatch:
                     raise ValueError(
                         "Resposta JSON sem IDs obrigatorios: " + ", ".join(missing)
                     )
+                self._increment_stat("translation_results_parsed", len(parsed))
                 return parsed
             except (TypeError, ValueError) as exc:
                 last_error = exc
