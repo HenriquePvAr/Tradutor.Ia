@@ -104,6 +104,24 @@ class UiPersistentQueueTests(unittest.TestCase):
         self.assertEqual(len(state["queue"]), 1)
         self.assertFalse(state["worker"]["online"])
 
+    def test_active_translation_is_active_not_queued_in_runtime_contract(self):
+        store = JobStore(self.db)
+        jid = store.create_job(
+            source_url="https://example/x",
+            output_dir=str(self.tmp / "out"),
+            command=["python", "fake.py"],
+            configuration={"job_type": "translation"},
+        )
+        store.claim_next_job("w1", 1)
+        store.transition(jid, JobStatus.STARTING, expected_worker="w1")
+        store.transition(jid, JobStatus.RUNNING, expected_worker="w1")
+        store.close()
+        with patch.object(ui_bridge, "_runner_still_alive", return_value=True):
+            state = self.bridge.runtime_state()
+        self.assertEqual(state["active"]["job_id"], jid)
+        self.assertEqual(state["queue"], [])
+        self.assertTrue(state["queue_running"])
+
     def test_worker_online_reflected(self):
         self.bridge.store.register_worker("w1", 1234)
         state = self.bridge.runtime_state()

@@ -549,6 +549,11 @@
     railIndicator.style.transform = `translateY(${tab.offsetTop - 18}px)`;
     railIndicator.style.height = `${tab.offsetHeight}px`;
   }
+  function clearBootstrapSurfaceForFreshTranslation() {
+    const status = String(appState.currentPipelineState?.status || appState.status || '').toLowerCase();
+    if (inFlightStatuses.has(status)) return;
+    clearLoadingSurface();
+  }
   function staggerReveal(view) {
     $$('.panel, .hist-item', view).forEach((item, index) => {
       item.style.animation = 'none';
@@ -583,6 +588,7 @@
     if (name === 'nova' && !appState.reviewMode) {
       appState.newTranslationDraft = true;
       clearNewTranslationDraftPanels();
+      clearBootstrapSurfaceForFreshTranslation();
     }
     if (name === 'hist') renderHistory();
     if (name === 'inicio') renderDashboard();
@@ -1325,11 +1331,15 @@
       updateTranslationStartControls();
     }
   }
+  function visibleCancelControl() {
+    return [$('#runCancelAction'), $('#cancelBtn')]
+      .find(button => button && !button.hidden && button.offsetParent !== null) || null;
+  }
   async function cancelTranslation(queue = false, jobId = '') {
     if (appState.cancelBusy) return;
     if (!window.confirm('Deseja cancelar este processamento? Os arquivos ja produzidos serao preservados.')) return;
     appState.cancelBusy = true;
-    const button = $('#runCancelAction') || $('#cancelBtn') || $('#cancelSourceReview');
+    const button = visibleCancelControl() || $('#cancelSourceReview');
     if (button) { button.disabled = true; button.textContent = 'Cancelando...'; }
     try {
       const payload = {queue};
@@ -1352,7 +1362,13 @@
     const start = $('#startBtn');
     if (start && active) start.disabled = true;
     if (start && active) start.textContent = awaitingReview ? 'Aguardando revisão…' : 'Processando…';
-    $('#cancelBtn').disabled = !active;
+    const cancelBtn = $('#cancelBtn');
+    if (cancelBtn) {
+      cancelBtn.hidden = !active;
+      cancelBtn.disabled = !active;
+      cancelBtn.classList.toggle('show', active);
+      cancelBtn.textContent = 'Cancelar';
+    }
     const action = $('#runCancelAction');
     if (action && !appState.cancelBusy) { action.hidden = !active; action.disabled = !active; action.textContent = 'Cancelar processamento'; }
     if (!active) appState.cancelBusy = false;
@@ -4189,6 +4205,7 @@
     const activeIndex = stageOrder.indexOf(key);
     const terminalOk = ['finished', 'review_required', 'review_completed'].includes(state.status);
     const sourceReady = appState.status === 'source_analysis_ready';
+    const stageActiveStatus = String(state.status || appState.status || '').toLowerCase();
     $$('.stage-item').forEach(item => {
       const index = stageOrder.indexOf(item.dataset.stage);
       const pct = $('.stage-pct', item);
@@ -4197,7 +4214,7 @@
       item.classList.toggle('done', terminalOk || key === 'final'
         || (sourceReady && item.dataset.stage === 'source_analysis')
         || (activeIndex >= 0 && index < activeIndex));
-      item.classList.toggle('active', item.dataset.stage === key && !terminalOk && (appState.status === 'running' || appState.status === 'staging' || appState.status === 'awaiting_source_review' || state.status === 'queued' || state.status === 'starting'));
+      item.classList.toggle('active', item.dataset.stage === key && !terminalOk && inFlightStatuses.has(stageActiveStatus));
       item.classList.toggle('failed', failedHere && state.status === 'failed');
       item.classList.toggle('cancelled', failedHere && state.status === 'cancelled');
       item.classList.toggle('indeterminate', item.classList.contains('active') && progress.indeterminate);
@@ -5791,10 +5808,26 @@
       showToast('Capítulo adicionado à fila real.', 'ok');
     } catch (error) { showToast(error.message, 'error'); }
   }
+  function queueItemsForDisplay() {
+    const items = [...(appState.queue || [])];
+    const state = appState.currentPipelineState || null;
+    const status = String(state?.status || '').toLowerCase();
+    const id = String(state?.jobId || '');
+    if (id && inFlightStatuses.has(status)) {
+      const projected = {
+        id,
+        status,
+        chapter_name: state.title || '',
+        url: state.sourceUrl || '',
+      };
+      if (!items.some(item => item.id === projected.id)) items.unshift(projected);
+    }
+    return items;
+  }
   function renderQueue() {
     const list = $('#queueList');
     if (!list) return;
-    const items = appState.queue || [];
+    const items = queueItemsForDisplay();
     const completed = items.filter(item => terminalRunStatuses.has(item.status)).length;
     $('#queueCount').textContent = items.length ? `${completed} de ${items.length} concluídos` : 'fila vazia';
     $('#queueProgressFill').style.width = items.length ? `${Math.round((completed / items.length) * 100)}%` : '0%';

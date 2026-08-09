@@ -228,6 +228,20 @@ class TransitionTests(unittest.TestCase):
         with self.assertRaises(TransitionError):
             self.store.transition(jid, JobStatus.RUNNING)
 
+    def test_cancelled_terminal_cannot_be_overwritten_by_late_completion(self):
+        jid = _new_job(self.store)
+        self.store.claim_next_job("w1", 1)
+        self.store.transition(jid, JobStatus.STARTING, expected_worker="w1")
+        self.store.transition(jid, JobStatus.RUNNING, expected_worker="w1")
+        self.store.transition(jid, JobStatus.CANCELLING, expected_worker="w1")
+        self.store.transition(jid, JobStatus.CANCELLED, expected_worker="w1",
+                              reason_code="user_cancelled")
+
+        with self.assertRaises(TransitionError):
+            self.store.transition(jid, JobStatus.FINISHED, expected_worker="w1",
+                                  reason_code="completed")
+        self.assertEqual(self.store.get_job(jid)["status"], JobStatus.CANCELLED)
+
     def test_transition_rejects_unknown_column(self):
         jid = _new_job(self.store)
         with self.assertRaises(TransitionError):
