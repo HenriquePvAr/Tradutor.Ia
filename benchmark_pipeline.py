@@ -257,12 +257,31 @@ def _download_cache_is_complete(manifest, cached_paths):
 def _page_count_trace(download_report, *, all_image_paths, source_image_paths,
                       image_paths, completed_states, smart_split_report):
     split = smart_split_report if isinstance(smart_split_report, dict) else {}
+    logical_count = len(image_paths or [])
+    processed_indices = sorted(
+        {
+            int(state.get("index"))
+            for state in (completed_states or [])
+            if isinstance(state, dict) and state.get("index") is not None
+        }
+    )
+    processed_index_set = set(processed_indices)
+    excluded_logical_pages = [
+        index
+        for index in range(1, logical_count + 1)
+        if index not in processed_index_set
+    ]
     return {
         "source_expected": _expected_download_count(download_report),
         "downloaded": len(all_image_paths or []),
         "source_images": len(source_image_paths or []),
-        "logical_pages": len(image_paths or []),
+        "logical_pages": logical_count,
         "processed_pages": len(completed_states or []),
+        "processed_logical_pages": processed_indices,
+        "excluded_logical_pages": excluded_logical_pages,
+        "logical_page_exclusion_reason": (
+            "invalid_or_blank_logical_page" if excluded_logical_pages else ""
+        ),
         "smart_split_enabled": bool(split.get("enabled")),
         "smart_split_source_images": _safe_count(split.get("source_images")),
         "smart_split_pdf_pages": _safe_count(split.get("pdf_pages")),

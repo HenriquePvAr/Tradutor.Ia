@@ -63,6 +63,7 @@ class OCREngine:
         self.paddle_lang = PADDLE_LANG_BY_CHOICE.get(self.lang_choice, "en")
         self.tesseract_lang = TESSERACT_LANG_BY_CHOICE.get(self.lang_choice, "eng")
         self.last_run_metadata = {}
+        self._last_tesseract_error = ""
 
     def read_text(self, img_crop):
         lines = self.detect_lines(img_crop)
@@ -89,6 +90,13 @@ class OCREngine:
 
         if self.engine not in {"paddle", "paddle_mobile", "paddle_no_upscale"}:
             text = self._read_with_tesseract(img_bgr)
+            self.last_run_metadata = self._run_metadata(
+                page,
+                original_engine=self.engine,
+                final_engine="tesseract",
+                fallback_reason=self._last_tesseract_error,
+                engine_unavailable=bool(self._last_tesseract_error),
+            )
             return [self._line_from_whole_image(text, img_bgr)] if text else []
 
         try:
@@ -101,6 +109,7 @@ class OCREngine:
             return self._annotate_lines(lines, page, self.engine)
         except Exception as exc:
             print(f"PaddleOCR falhou nesta imagem/regiao: {exc}")
+            unavailable = isinstance(exc, ModuleNotFoundError)
             if self.fallback_engine == "tesseract":
                 text = self._read_with_tesseract(img_bgr)
                 lines = [self._line_from_whole_image(text, img_bgr)] if text else []
@@ -109,8 +118,16 @@ class OCREngine:
                     original_engine=self.engine,
                     final_engine="tesseract",
                     fallback_reason=f"paddle_error:{type(exc).__name__}",
+                    engine_unavailable=unavailable and not lines,
                 )
                 return self._annotate_lines(lines, page, "tesseract")
+            self.last_run_metadata = self._run_metadata(
+                page,
+                original_engine=self.engine,
+                final_engine=self.engine,
+                fallback_reason=f"paddle_error:{type(exc).__name__}",
+                engine_unavailable=unavailable,
+            )
             return []
 
     def _detect_rapidocr_hybrid(self, img_bgr, page=None):
@@ -175,6 +192,7 @@ class OCREngine:
                 fallback_reason=reason,
                 rapid_metrics=rapid_metrics,
                 repairs=repairs,
+                engine_unavailable="ModuleNotFoundError" in reason,
             )
             return []
 
@@ -208,14 +226,21 @@ class OCREngine:
                 return []
         else:
             lines = paddle.detect_lines(img_bgr, page=page)
+        paddle_metadata = dict(paddle.last_run_metadata or {})
+        paddle_unavailable = bool(paddle_metadata.get("engine_unavailable"))
+        fallback_reason = reason
+        if paddle_unavailable:
+            paddle_reason = str(paddle_metadata.get("fallback_reason") or "").strip()
+            fallback_reason = ";".join(part for part in (reason, paddle_reason) if part)
         self.last_run_metadata = self._run_metadata(
             page,
             original_engine="rapidocr",
             final_engine="paddle",
             fallback_used=True,
-            fallback_reason=reason,
+            fallback_reason=fallback_reason,
             rapid_metrics=rapid_metrics,
             repairs=repairs,
+            engine_unavailable=paddle_unavailable,
         )
         self.last_run_metadata["fallback_variant"] = "paddle_mobile"
         return self._annotate_lines(lines, page, "paddle")
@@ -275,10 +300,12 @@ class OCREngine:
         return sorted(lines, key=lambda line: (line.box[1], line.box[0]))
 
     def _read_with_tesseract(self, img_crop):
+        self._last_tesseract_error = ""
         try:
             import pytesseract
         except ImportError:
             print("pytesseract nao instalado. Fallback Tesseract ignorado.")
+            self._last_tesseract_error = "tesseract_error:ModuleNotFoundError"
             return ""
 
         try:
@@ -296,6 +323,7 @@ class OCREngine:
             return clean_ocr_text(text)
         except Exception as exc:
             print(f"Tesseract falhou neste balao: {exc}")
+            self._last_tesseract_error = f"tesseract_error:{type(exc).__name__}"
             return ""
 
     def _get_paddle(self):
@@ -367,6 +395,7 @@ class OCREngine:
         fallback_reason="",
         rapid_metrics=None,
         repairs=None,
+        engine_unavailable=False,
     ):
         return {
             "page": page,
@@ -374,6 +403,7 @@ class OCREngine:
             "final_engine": final_engine,
             "fallback_used": bool(fallback_used),
             "fallback_reason": fallback_reason or "",
+            "engine_unavailable": bool(engine_unavailable),
             "rapidocr_metrics": rapid_metrics or {},
             "text_repairs": repairs or [],
         }

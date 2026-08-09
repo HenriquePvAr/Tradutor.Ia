@@ -230,6 +230,21 @@ class DownloadCountConservationTests(unittest.TestCase):
         self.assertEqual(101, trace["processed_pages"])
         self.assertTrue(trace["smart_split_enabled"])
 
+    def test_page_count_trace_names_excluded_logical_pages(self):
+        import benchmark_pipeline as bp
+
+        trace = bp._page_count_trace(
+            {"download_gate": {"passed": True, "expected_viewer_images": 171}},
+            all_image_paths=[f"raw-{i}" for i in range(171)],
+            source_image_paths=[f"raw-{i}" for i in range(171)],
+            image_paths=[f"logical-{i}" for i in range(1, 103)],
+            completed_states=[{"index": i} for i in range(1, 102)],
+            smart_split_report={"enabled": True, "source_images": 171, "pdf_pages": 102},
+        )
+
+        self.assertEqual([102], trace["excluded_logical_pages"])
+        self.assertEqual("invalid_or_blank_logical_page", trace["logical_page_exclusion_reason"])
+
     def test_cache_completeness_compares_source_slices_not_logical_pages(self):
         import benchmark_pipeline as bp
 

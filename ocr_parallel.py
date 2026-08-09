@@ -20,6 +20,13 @@ from pipeline_cache import deserialize_ocr_lines, serialize_ocr_lines
 _WORKER_ENGINE = None
 
 
+def _ocr_error_from_metadata(metadata):
+    if not isinstance(metadata, dict) or not metadata.get("engine_unavailable"):
+        return None
+    reason = str(metadata.get("fallback_reason") or "unknown").strip() or "unknown"
+    return f"ocr_engine_unavailable:{reason}"
+
+
 class _MemoryStatus(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_ulong),
@@ -77,9 +84,10 @@ def _detect_in_worker(job):
         lines = _WORKER_ENGINE.detect_lines(image, page=job["index"])
         serialized = serialize_ocr_lines(lines)
         metadata = dict(_WORKER_ENGINE.last_run_metadata or {})
+        metadata_error = _ocr_error_from_metadata(metadata)
         return {
             "index": job["index"],
-            "error": None,
+            "error": metadata_error,
             "elapsed_seconds": time.perf_counter() - started,
             "lines": serialized,
             "ocr_metadata": metadata,
@@ -128,12 +136,13 @@ def _detect_sequential(jobs, ocr_lang, result_callback=None, progress_callback=N
 
         try:
             lines = engine.detect_lines(image, page=job["index"])
+            metadata = dict(engine.last_run_metadata or {})
             results[job["index"]] = {
                 "index": job["index"],
-                "error": None,
+                "error": _ocr_error_from_metadata(metadata),
                 "elapsed_seconds": time.perf_counter() - started,
                 "lines": lines,
-                "ocr_metadata": engine.last_run_metadata,
+                "ocr_metadata": metadata,
                 "pid": os.getpid(),
             }
             if result_callback:

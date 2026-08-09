@@ -13,6 +13,7 @@ from unittest.mock import patch
 import numpy as np
 
 import config
+from ocr_engine import OCREngine
 import ocr_parallel
 import run_webtoon
 import process_options
@@ -111,6 +112,64 @@ class FastOCRPolicyTests(unittest.TestCase):
             self.assertEqual(sorted(results), [1, 2])
             self.assertEqual(result_events, [1, 2])
             self.assertEqual(progress_events, [(1, "started"), (1, "completed"), (2, "started"), (2, "completed")])
+
+    def test_sequential_marks_unavailable_primary_ocr_as_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "1.png"
+            path.write_bytes(b"placeholder")
+
+            class FakeEngine:
+                last_run_metadata = {
+                    "final_engine": "rapidocr",
+                    "fallback_reason": "rapidocr_error:ModuleNotFoundError",
+                    "engine_unavailable": True,
+                }
+
+                def detect_lines(self, image, page=None):
+                    return []
+
+            with patch.object(ocr_parallel, "OCREngine", return_value=FakeEngine()), patch.object(
+                ocr_parallel.cv2, "imread", return_value=np.zeros((2, 2, 3), dtype=np.uint8)
+            ):
+                results = ocr_parallel._detect_sequential(
+                    [{"index": 1, "image_path": str(path)}],
+                    "en",
+                )
+
+            self.assertEqual(
+                results[1]["error"],
+                "ocr_engine_unavailable:rapidocr_error:ModuleNotFoundError",
+            )
+
+    def test_rapidocr_fallback_reports_unavailable_fallback_engine(self):
+        with patch.object(config, "RAPIDOCR_ENABLED", False), \
+                patch.object(config, "OCR_HYBRID_FALLBACK", True), \
+                patch.object(config, "FAST_OCR_MODE", False):
+            engine = OCREngine("en", engine="rapidocr", fallback_engine="paddle")
+            with patch.object(OCREngine, "_detect_with_paddle", side_effect=ModuleNotFoundError("paddleocr")):
+                lines = engine.detect_lines(np.zeros((20, 80, 3), dtype=np.uint8), page=1)
+
+        self.assertEqual(lines, [])
+        self.assertTrue(engine.last_run_metadata["engine_unavailable"])
+        self.assertIn("rapidocr_disabled", engine.last_run_metadata["fallback_reason"])
+        self.assertIn("paddle_error:ModuleNotFoundError", engine.last_run_metadata["fallback_reason"])
+
+    def test_direct_tesseract_runtime_failure_is_not_empty_ocr_success(self):
+        engine = OCREngine("en", engine="tesseract", fallback_engine="")
+        with patch("pytesseract.image_to_string", side_effect=RuntimeError("missing binary")):
+            lines = engine.detect_lines(np.full((40, 120, 3), 255, dtype=np.uint8), page=1)
+
+        self.assertEqual(lines, [])
+        self.assertTrue(engine.last_run_metadata["engine_unavailable"])
+        self.assertEqual(engine.last_run_metadata["fallback_reason"], "tesseract_error:RuntimeError")
+
+    def test_blank_image_remains_legitimate_zero_lines_without_unavailable_error(self):
+        engine = OCREngine("en", engine="paddle", fallback_engine="")
+        lines = engine.detect_lines(np.zeros((0, 0, 3), dtype=np.uint8), page=1)
+
+        self.assertEqual(lines, [])
+        self.assertFalse(engine.last_run_metadata.get("engine_unavailable", False))
+        self.assertEqual(engine.last_run_metadata["fallback_reason"], "empty_image")
 
     def test_page_progress_stays_ocr_not_rendering(self):
         snapshot = parse_progress_line("OCR: pagina 1/68 - engine=rapidocr - iniciando", ProgressSnapshot())
