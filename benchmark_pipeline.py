@@ -193,6 +193,83 @@ def _source_manifest_provenance(download_report):
     return sanitize_source_provenance(raw_provenance)
 
 
+def _safe_count(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return count if count >= 0 else None
+
+
+def _first_positive_count(*values):
+    for value in values:
+        count = _safe_count(value)
+        if count and count > 0:
+            return count
+    return 0
+
+
+def _expected_download_count(manifest):
+    """Return the source/download count declared by a downloader manifest."""
+
+    report = manifest if isinstance(manifest, dict) else {}
+    gate = report.get("download_gate")
+    gate = gate if isinstance(gate, dict) else {}
+    analysis = report.get("source_analysis")
+    analysis = analysis if isinstance(analysis, dict) else {}
+    selection = report.get("source_selection")
+    selection = selection if isinstance(selection, dict) else {}
+    expected_ids = report.get("expected_chapter_candidate_ids")
+    selected_ids = selection.get("candidate_ids")
+    return _first_positive_count(
+        gate.get("expected_viewer_images"),
+        report.get("expected_viewer_images"),
+        report.get("viewer_image_count"),
+        report.get("accepted_count"),
+        analysis.get("accepted_count"),
+        len(expected_ids) if isinstance(expected_ids, (list, tuple)) else None,
+        len(selected_ids) if isinstance(selected_ids, (list, tuple)) else None,
+        selection.get("fresh_candidate_count"),
+        selection.get("selected_candidate_count"),
+        selection.get("confirmed_candidate_count"),
+    )
+
+
+def _download_cache_is_complete(manifest, cached_paths):
+    """A cache hit is valid only if it is explicitly complete for its source."""
+
+    report = manifest if isinstance(manifest, dict) else {}
+    gate = report.get("download_gate")
+    if isinstance(gate, dict) and gate and not gate.get("passed", False):
+        return False
+    expected = _expected_download_count(report)
+    actual = len(cached_paths or [])
+    if expected and actual < expected:
+        return False
+    total = _safe_count(report.get("total_downloaded"))
+    if total is not None and actual < total:
+        return False
+    return bool(actual)
+
+
+def _page_count_trace(download_report, *, all_image_paths, source_image_paths,
+                      image_paths, completed_states, smart_split_report):
+    split = smart_split_report if isinstance(smart_split_report, dict) else {}
+    return {
+        "source_expected": _expected_download_count(download_report),
+        "downloaded": len(all_image_paths or []),
+        "source_images": len(source_image_paths or []),
+        "logical_pages": len(image_paths or []),
+        "processed_pages": len(completed_states or []),
+        "smart_split_enabled": bool(split.get("enabled")),
+        "smart_split_source_images": _safe_count(split.get("source_images")),
+        "smart_split_pdf_pages": _safe_count(split.get("pdf_pages")),
+        "smart_split_unsafe_count": _safe_count(split.get("unsafe_split_count")),
+    }
+
+
 def _output_run_manifest(output_folder, report, translator):
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     git = _git_metadata()
@@ -1237,6 +1314,14 @@ def run_benchmark(args):
         else {"enabled": False}
     )
     structural_fingerprint = _structural_fingerprint(completed_states)
+    page_count_trace = _page_count_trace(
+        download_report,
+        all_image_paths=all_image_paths,
+        source_image_paths=source_image_paths,
+        image_paths=image_paths,
+        completed_states=completed_states,
+        smart_split_report=smart_split_report,
+    )
     set_active_profiler(None)
     final_status = derive_final_run_status(
         technical_success=True,
@@ -1268,6 +1353,10 @@ def run_benchmark(args):
         "selected_source_images": len(source_image_paths),
         "status": final_status,
         "smart_pdf_split": smart_split_report,
+        "page_count_trace": page_count_trace,
+        "source_expected_pages": page_count_trace["source_expected"],
+        "downloaded_pages": page_count_trace["downloaded"],
+        "logical_pages": page_count_trace["logical_pages"],
         "smart_split_contact_sheet": (
             str(smart_split_contact_sheet) if smart_split_report.get("enabled") else ""
         ),
@@ -1594,7 +1683,7 @@ def _download_with_cache(url, max_images, output_folder, force, source_candidate
     if _download_cache_reuse_allowed(url, force=force, approved_ids=approved_ids):
         manifest = load_json(manifest_path)
         cached_paths = _valid_download_paths(manifest)
-        if cached_paths:
+        if _download_cache_is_complete(manifest, cached_paths):
             if input_folder.exists():
                 force_remove(str(input_folder))
             input_folder.mkdir(parents=True, exist_ok=True)
@@ -1614,6 +1703,13 @@ def _download_with_cache(url, max_images, output_folder, force, source_candidate
             atomic_write_json(output_report_path, active_manifest)
             print(f"Download: cache ({len(active_paths)} imagens)", flush=True)
             return active_paths, active_manifest, True
+        if cached_paths:
+            expected = _expected_download_count(manifest)
+            print(
+                "Download: cache parcial ignorado "
+                f"({len(cached_paths)}/{expected or 'desconhecido'} imagens)",
+                flush=True,
+            )
 
     paths = download_images(
         url,

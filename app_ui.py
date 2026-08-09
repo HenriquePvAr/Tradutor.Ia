@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from pathlib import Path
 from typing import Any, Callable
 from urllib import error as urllib_error
@@ -31,6 +32,7 @@ from community_http import (
     create_admin_community_router,
     create_community_router,
 )
+from json_utils import dumps_json
 import audit_decisions
 import linguistic_triage
 import region_taxonomy
@@ -87,6 +89,75 @@ def _asset_url(path: Path) -> str:
     except ValueError:
         rel = path.name
     return f"/static/{rel}?v={version}"
+
+
+def _runtime_asset_identity() -> dict[str, Any]:
+    """Safe local provenance for proving which source tree serves the UI.
+
+    The values are deliberately small hashes/mtimes.  They contain no credentials,
+    session data, source URLs or local absolute paths.
+    """
+
+    import hashlib
+    import subprocess as _sp
+
+    def sha(path: Path) -> str:
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return ""
+
+    def mtime(path: Path) -> int:
+        try:
+            return int(path.stat().st_mtime_ns)
+        except OSError:
+            return 0
+
+    head = ""
+    try:
+        head = _sp.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            **hidden_console_options(),
+        ).stdout.strip()
+    except Exception:  # noqa: BLE001 - diagnostics must never block startup
+        head = ""
+    return {
+        "git_head": head,
+        "pid": os.getpid(),
+        "shell_sha256": sha(SHELL_PATH),
+        "shell_mtime_ns": mtime(SHELL_PATH),
+        "tradutor_ui_js_sha256": sha(TRADUTOR_UI_ASSET),
+        "tradutor_ui_js_mtime_ns": mtime(TRADUTOR_UI_ASSET),
+        "tradutor_ui_css_sha256": sha(TRADUTOR_CSS_ASSET),
+        "tradutor_ui_css_mtime_ns": mtime(TRADUTOR_CSS_ASSET),
+    }
+
+
+def _assert_startup_port_available(host: str, port: int) -> None:
+    """Fail clearly before NiceGUI starts if the chosen port is already owned.
+
+    This prevents a hidden startup attempt from appearing successful while the
+    browser keeps talking to an older process on the same loopback port.
+    """
+
+    bind_host = str(host or "127.0.0.1")
+    bind_port = int(port)
+    probe_host = "127.0.0.1" if bind_host in {"0.0.0.0", "::"} else bind_host
+    family = socket.AF_INET6 if ":" in probe_host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            probe.bind((probe_host, bind_port))
+        except OSError as exc:
+            raise SystemExit(
+                f"port_in_use: {bind_host}:{bind_port}; stop the existing "
+                "Tradutor.Ia UI process or set TRADUTOR_UI_PORT explicitly."
+            ) from exc
 APP_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
 APP_HOST = configured_bind_host()
 BRIDGE = UiBridge()
@@ -1824,6 +1895,7 @@ def api_history_delete(
 @ui.page("/")
 def index() -> None:
     shell = SHELL_PATH.read_text(encoding="utf-8")
+    runtime_identity = dumps_json(_runtime_asset_identity(), ensure_ascii=False)
     visual_test_enabled = os.getenv("TRADUTOR_UI_VISUAL_TEST", "").strip() == "1"
     # The local UI must remain offline-capable: system font fallbacks in the
     # stylesheet are sufficient, and remote font hosts would make a localhost
@@ -1833,6 +1905,7 @@ def index() -> None:
     ui.add_body_html(shell)
     ui.add_body_html(
         "<script>"
+        f"window.__tradutorRuntimeIdentity = {runtime_identity};"
         f"window.__tradutorVisualTestEnabled = {'true' if visual_test_enabled else 'false'};"
         "</script>"
     )
@@ -1877,6 +1950,7 @@ if __name__ in {"__main__", "__mp_main__"}:
         bind_host = validate_bind_security(APP_HOST, AUTH)
     except AuthConfigurationError as exc:
         raise SystemExit(f"configuration_error: {exc}") from exc
+    _assert_startup_port_available(bind_host, APP_PORT)
     ui.run(
         host=bind_host,
         port=APP_PORT,
