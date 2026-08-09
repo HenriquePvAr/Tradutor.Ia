@@ -4,6 +4,7 @@ from __future__ import annotations
 import _test_bootstrap  # noqa: F401
 
 import hashlib
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -160,6 +161,21 @@ class WorkspacePolicyScopeTests(unittest.TestCase):
 
 
 class FrontendSourceStateContracts(unittest.TestCase):
+    def _function_body(self, name: str) -> str:
+        match = re.search(rf"function {re.escape(name)}\([^)]*\) \{{", UI)
+        self.assertIsNotNone(match, f"{name} function not found")
+        start = match.start()
+        depth = 0
+        for index in range(match.end() - 1, len(UI)):
+            char = UI[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return UI[start:index + 1]
+        self.fail(f"{name} function body was not closed")
+
     def test_bootstrap_completion_never_uses_translation_terminal_copy(self):
         self.assertIn("mode === MODE_PIPELINE ? TERMINAL_COPY[status] : null", LOADING_VIEW)
 
@@ -189,6 +205,65 @@ class FrontendSourceStateContracts(unittest.TestCase):
         matching = UI[UI.index("function sourceValidationMatchesForm"):]
         matching = matching[:matching.index("\n  function", 20)]
         self.assertIn("sourceValidation.status === 'ready'", matching)
+
+    def test_source_url_form_state_is_canonicalized_before_validation_and_payload(self):
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        self.assertEqual(shell.count('id="urlInput"'), 1)
+        self.assertIn("sourceForm: {url: '', localFolder: '', chapterName: '', outputSlug: ''}", UI)
+
+        sync = self._function_body("syncSourceFormState")
+        self.assertIn("url: $('#urlInput')?.value?.trim() || ''", sync)
+        self.assertIn("appState.sourceForm = next", sync)
+
+        validate = self._function_body("validateForm")
+        self.assertIn("const form = syncSourceFormState();", validate)
+        self.assertIn("const url = form.url;", validate)
+        self.assertIn("const folder = form.localFolder;", validate)
+        self.assertNotIn("$('#urlInput').value.trim()", validate)
+        self.assertNotIn("$('#localFolderInput').value.trim()", validate)
+
+        payload = self._function_body("formPayload")
+        self.assertIn("const form = syncSourceFormState();", payload)
+        self.assertIn("guessFromUrl(form.url)", payload)
+        self.assertIn("chapter_name: form.chapterName || guess.title", payload)
+        self.assertIn("slug: form.outputSlug || slugify(guess.slug)", payload)
+        self.assertIn("payload.url = form.url", payload)
+        self.assertIn("payload.local_folder = form.localFolder", payload)
+
+    def test_source_form_state_survives_non_input_browser_writes_and_navigation_lifecycle(self):
+        self.assertIn("bindSourceFormInput('#urlInput', handleSourceUrlInput)", UI)
+        binder = self._function_body("bindSourceFormInput")
+        for event_name in ("input", "change", "keyup", "paste", "compositionend"):
+            self.assertIn(f"'{event_name}'", binder)
+
+        minimum = self._function_body("minimumSourceInputIsValid")
+        self.assertIn("const form = syncSourceFormState();", minimum)
+        self.assertIn("const value = form.url;", minimum)
+        self.assertIn("return Boolean(form.localFolder);", minimum)
+
+        matching = self._function_body("sourceValidationMatchesForm")
+        self.assertIn("const form = syncSourceFormState();", matching)
+        self.assertIn("appState.sourceValidation.sourceUrl === form.url", matching)
+
+        programmatic = self._function_body("programField")
+        self.assertIn("syncSourceFormState", programmatic)
+        source_type = self._function_body("setSourceType")
+        self.assertIn("syncSourceFormState();", source_type)
+        exit_review = self._function_body("exitReviewMode")
+        self.assertIn("syncSourceFormState();", exit_review)
+        load_history = self._function_body("loadRecordIntoForm")
+        self.assertIn("syncSourceFormState();", load_history)
+
+    def test_validate_source_click_submits_one_payload_after_form_sync(self):
+        validate_source = self._function_body("validateSource")
+        validate_index = validate_source.index("validateForm()")
+        payload_index = validate_source.index("const payload = formPayload();")
+        api_index = validate_source.index("api('/api/ui/source/analyze'")
+        self.assertLess(validate_index, payload_index)
+        self.assertLess(payload_index, api_index)
+        self.assertEqual(validate_source.count("api('/api/ui/source/analyze'"), 1)
+        self.assertIn("const sourceUrl = String(payload.url || '')", validate_source)
+        self.assertIn("sourceUrl", validate_source)
 
     def test_policy_copy_is_explicit_and_settings_action_is_immediate(self):
         for text in (

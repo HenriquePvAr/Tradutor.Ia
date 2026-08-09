@@ -46,6 +46,7 @@
     lastFinishedId: '',
     sourceReview: null,
     sourceValidation: {status: 'idle', analysisResultId: '', sourceUrl: '', reasonCode: ''},
+    sourceForm: {url: '', localFolder: '', chapterName: '', outputSlug: ''},
     qualityReview: null,
     qualityReviewFilter: 'pending',
     qualityReviewSelection: new Set(),
@@ -834,6 +835,7 @@
     appState.programmingFields = true;
     input.value = value;
     appState.programmingFields = false;
+    if (typeof syncSourceFormState === 'function') syncSourceFormState();
   }
   function setSourceType(value) {
     const sourceType = value === 'local_folder' ? 'local_folder' : 'url';
@@ -867,29 +869,67 @@
       card.classList.toggle('disabled', unavailable);
       card.setAttribute('aria-disabled', String(unavailable));
     });
+    syncSourceFormState();
     invalidateSourceValidation();
   }
   $$('.source-type-card').forEach(card => card.addEventListener('click', () => setSourceType(card.dataset.sourceType)));
   setSourceType(appState.selectedSourceType);
-  $('#urlInput')?.addEventListener('input', event => {
-    const value = event.target.value.trim();
-    invalidateSourceValidation();
+  function syncSourceFormState() {
+    const previous = {...appState.sourceForm};
+    const next = {
+      url: $('#urlInput')?.value?.trim() || '',
+      localFolder: $('#localFolderInput')?.value?.trim() || '',
+      chapterName: $('#nameInput')?.value?.trim() || '',
+      outputSlug: slugify($('#outputInput')?.value || ''),
+    };
+    appState.sourceForm = next;
+    return {
+      ...next,
+      changed: previous.url !== next.url
+        || previous.localFolder !== next.localFolder
+        || previous.chapterName !== next.chapterName
+        || previous.outputSlug !== next.outputSlug,
+      sourceChanged: previous.url !== next.url || previous.localFolder !== next.localFolder,
+    };
+  }
+  function bindSourceFormInput(selector, handler) {
+    const input = $(selector);
+    if (!input) return;
+    ['input', 'change', 'keyup', 'paste', 'compositionend'].forEach(eventName => {
+      input.addEventListener(eventName, handler);
+    });
+  }
+  function handleSourceUrlInput() {
+    const state = syncSourceFormState();
+    if (state.sourceChanged) invalidateSourceValidation();
+    const value = state.url;
     if (!/^https?:\/\//i.test(value)) return;
     const guess = guessFromUrl(value);
     if (!appState.nameDirty) programField($('#nameInput'), guess.title);
     if (!appState.outputDirty) programField($('#outputInput'), guess.slug);
+    syncSourceFormState();
     $('#urlError')?.classList.remove('show');
-  });
-  $('#localFolderInput')?.addEventListener('input', () => {
+    updateTranslationStartControls();
+  }
+  bindSourceFormInput('#urlInput', handleSourceUrlInput);
+  bindSourceFormInput('#localFolderInput', () => {
+    const state = syncSourceFormState();
+    if (state.sourceChanged) invalidateSourceValidation();
     $('#localFolderError')?.classList.remove('show');
     updateTranslationStartControls();
   });
-  $('#nameInput')?.addEventListener('input', () => { if (!appState.programmingFields) appState.nameDirty = true; });
-  $('#outputInput')?.addEventListener('input', event => {
+  bindSourceFormInput('#nameInput', () => {
+    syncSourceFormState();
+    if (!appState.programmingFields) appState.nameDirty = true;
+    updateTranslationStartControls();
+  });
+  bindSourceFormInput('#outputInput', event => {
     if (!appState.programmingFields) appState.outputDirty = true;
     const start = event.target.selectionStart;
     event.target.value = slugify(event.target.value);
+    syncSourceFormState();
     try { event.target.setSelectionRange(start, start); } catch (_) { /* unsupported */ }
+    updateTranslationStartControls();
   });
 
   /* ---------- form ---------- */
@@ -914,9 +954,10 @@
     if (event.target.checked) $('#cacheToggle').checked = false;
   });
   function validateForm() {
+    const form = syncSourceFormState();
     const local = appState.selectedSourceType === 'local_folder';
-    const url = $('#urlInput').value.trim();
-    const folder = $('#localFolderInput').value.trim();
+    const url = form.url;
+    const folder = form.localFolder;
     let message = '';
     if (local) {
       if (!folder) message = 'informe a pasta local antes de iniciar';
@@ -943,14 +984,15 @@
     return true;
   }
   function formPayload() {
+    const form = syncSourceFormState();
     const local = appState.selectedSourceType === 'local_folder';
     const full = appState.selectedScope === 'full';
     const maxImages = full ? null : Number(appState.selectedScope === 'custom' ? $('#scopeCustomInput').value : appState.selectedScope);
-    const guess = local ? {title: 'Capítulo local', slug: 'capitulo_local'} : guessFromUrl($('#urlInput').value.trim());
+    const guess = local ? {title: 'Capítulo local', slug: 'capitulo_local'} : guessFromUrl(form.url);
     const payload = {
       source_type: appState.selectedSourceType,
-      chapter_name: $('#nameInput').value.trim() || guess.title,
-      slug: slugify($('#outputInput').value || guess.slug),
+      chapter_name: form.chapterName || guess.title,
+      slug: form.outputSlug || slugify(guess.slug),
       mode: appState.selectedMode === 'download_only' ? 'fast' : appState.selectedMode,
       download_only: appState.selectedMode === 'download_only',
       full,
@@ -966,8 +1008,8 @@
         scope: full ? 'full' : String(maxImages),
       },
     };
-    if (local) payload.local_folder = $('#localFolderInput').value.trim();
-    else payload.url = $('#urlInput').value.trim();
+    if (local) payload.local_folder = form.localFolder;
+    else payload.url = form.url;
     return payload;
   }
   function workspacePolicyAllowsProcessing() {
@@ -975,16 +1017,18 @@
     return policy.status === 'active' && policy.all_submitted_sources_authorized === true;
   }
   function minimumSourceInputIsValid() {
+    const form = syncSourceFormState();
     if (appState.selectedSourceType === 'local_folder') {
-      return Boolean($('#localFolderInput')?.value?.trim());
+      return Boolean(form.localFolder);
     }
-    const value = $('#urlInput')?.value?.trim() || '';
+    const value = form.url;
     try { return /^https?:\/\//i.test(value) && Boolean(new URL(value)); }
     catch (_) { return false; }
   }
   function sourceValidationMatchesForm() {
+    const form = syncSourceFormState();
     return appState.sourceValidation.status === 'ready'
-      && appState.sourceValidation.sourceUrl === ($('#urlInput')?.value?.trim() || '')
+      && appState.sourceValidation.sourceUrl === form.url
       && Boolean(appState.sourceValidation.analysisResultId);
   }
   function updateTranslationStartControls() {
@@ -4755,6 +4799,8 @@
       appState.outputDirty = false;
       appState.qualityReview = null;
     }
+    syncSourceFormState();
+    invalidateSourceValidation();
     appState.reviewPanelDismissed = true;
     const panel = $('#qualityReviewPanel');
     if (panel) panel.hidden = true;
@@ -5764,6 +5810,8 @@
     $('#scopeCustom').classList.toggle('open', appState.selectedScope === 'custom');
     $('#cacheToggle').checked = true;
     $('#forceToggle').checked = false;
+    syncSourceFormState();
+    invalidateSourceValidation();
     activateTab('nova');
     showToast('Execução carregada para revisão.', 'ok');
   }
