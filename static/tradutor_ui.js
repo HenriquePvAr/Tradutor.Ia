@@ -1478,21 +1478,29 @@
     source_selection: 'awaiting_source_review',
     awaiting_source_review: 'awaiting_source_review',
     reviewing_pages: 'awaiting_source_review',
+    'baixando imagens': 'download',
     downloading: 'download',
     downloading_pages: 'download',
     validating_pages: 'download',
     download: 'download',
+    'validando imagens': 'validation',
     detecting_balloons: 'validation',
     validation: 'validation',
+    'ocr': 'ocr',
+    'classificação': 'ocr',
     reading_text: 'ocr',
-    ocr: 'ocr',
     classification: 'ocr',
+    'tradução nvidia': 'translate',
     translating: 'translate',
     translate: 'translate',
+    'renderização': 'render',
     redrawing: 'render',
     render: 'render',
+    'geração de pdf': 'pdf',
     generating_pdf: 'pdf',
     pdf: 'pdf',
+    'relatórios': 'quality_review',
+    'finalizado': 'quality_review',
     reports: 'pdf',
     quality_review: 'quality_review',
     review_rerun: 'quality_review',
@@ -1999,6 +2007,26 @@
     if (!node) return;
     node.textContent = message || '';
     node.dataset.state = type || '';
+  }
+
+  function renderQualityReviewLoading(identity) {
+    const panel = $('#qualityReviewPanel');
+    const list = $('#qualityReviewList');
+    if (!panel || !list) return;
+    panel.hidden = false;
+    appState.qualityReview = {
+      job_id: identity?.jobId || '',
+      run_id: identity?.runId || '',
+      items: [],
+      pending_count: 0,
+      confirmed: false,
+    };
+    const meta = $('#qualityReviewMeta');
+    if (meta) meta.textContent = 'Carregando revisão deste capítulo…';
+    updateQualityReviewFilterControls([], appState.qualityReviewFilter || 'pending');
+    list.innerHTML = '<div class="muted">Abrindo revisão local existente…</div>';
+    setQualityReviewBulkMessage('', '');
+    updateQualityReviewSelectionUi();
   }
 
   function closeReviewRerunDialog() {
@@ -4858,6 +4886,12 @@
     }
     activateTab('nova');
     applyReviewMode(appState.reviewMode);
+    renderQualityReviewLoading(identity);
+    const panel = $('#qualityReviewPanel');
+    if (panel) {
+      panel.hidden = false;
+      panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
     // The user may leave review_mode while these run; a late response must not
     // resurrect the panel over a fresh Nova tradução form.
     const stillReviewing = () => appState.reviewMode?.jobId === jobId;
@@ -4876,10 +4910,10 @@
     } catch (_) { /* revision status is optional context */ }
     if (!stillReviewing()) return;
     updateQualityReviewDeveloperActions();
-    const panel = $('#qualityReviewPanel');
-    if (panel) {
-      panel.hidden = false;
-      panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+    const loadedPanel = $('#qualityReviewPanel');
+    if (loadedPanel) {
+      loadedPanel.hidden = false;
+      loadedPanel.scrollIntoView({behavior: 'smooth', block: 'start'});
     }
     if (restore) { restorePageRevisionFromUrl(); restoreAuditFromUrl(); }
   }

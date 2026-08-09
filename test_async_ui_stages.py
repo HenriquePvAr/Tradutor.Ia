@@ -19,6 +19,17 @@ JS = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
 WORKER_STAGES = ("queued", "worker_starting", "source_validation", "browser_loading",
                  "source_analysis", "source_lazy_resolution", "source_selection",
                  "downloading_pages", "validating_pages")
+RUNNER_STAGE_LABELS = {
+    "Baixando imagens": "download",
+    "Validando imagens": "validation",
+    "OCR": "ocr",
+    "Classificação": "ocr",
+    "Tradução NVIDIA": "translate",
+    "Renderização": "render",
+    "Geração de PDF": "pdf",
+    "Relatórios": "quality_review",
+    "Finalizado": "quality_review",
+}
 
 
 class StageLabelTests(unittest.TestCase):
@@ -37,6 +48,12 @@ class StageLabelTests(unittest.TestCase):
 
         for stage in WORKER_STAGES:
             self.assertIn(stage, _UI_STAGE_LABELS, stage)
+
+    def test_real_runner_log_labels_are_visual_stage_aliases(self):
+        block = JS[JS.index("const stageAliases = {"):]
+        block = block[:block.index("};")]
+        for label, canonical in RUNNER_STAGE_LABELS.items():
+            self.assertIn(f"'{label.casefold()}': '{canonical}'", block, label)
 
 
 class SubmitFlowTests(unittest.TestCase):

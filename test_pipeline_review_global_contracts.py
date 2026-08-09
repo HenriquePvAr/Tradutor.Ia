@@ -67,6 +67,18 @@ class RevisionLifecycleContracts(unittest.TestCase):
         self.assertNotIn("stdout", options)
         self.assertNotIn("stderr", options)
 
+    def test_history_review_click_opens_a_visible_review_surface_before_fetch(self) -> None:
+        js = JS.read_text(encoding="utf-8")
+        body = js[js.index("async function openChapterReview"):]
+        body = body[:body.index("\n  async function openPendingPreview")]
+        first_fetch = body.index("await api(`/api/ui/quality-review/")
+        eager = body[:first_fetch]
+        self.assertIn("activateTab('nova')", eager)
+        self.assertIn("applyReviewMode(appState.reviewMode)", eager)
+        self.assertIn("renderQualityReviewLoading", eager)
+        self.assertIn("panel.hidden = false", eager)
+        self.assertIn("scrollIntoView", eager)
+
 
 class RevisionCancelAndResumeContracts(unittest.TestCase):
     def _revision(self, root: Path, status: str, reviews: list | None = None) -> ChapterQualityRevision:
