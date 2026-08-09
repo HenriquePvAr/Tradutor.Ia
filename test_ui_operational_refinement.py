@@ -82,6 +82,73 @@ class QualityReviewTests(unittest.TestCase):
         self.assertIn("confirma", item["reason"].lower())
         self.assertIn(f"/api/ui/quality-review/{self.job_id}/page/1", item["page_url"])
 
+    def test_smart_split_details_are_visible_review_items_and_fail_closed(self):
+        report_path = self.output / "quality_report.json"
+        report_path.write_text(json.dumps({
+            "summary": {
+                "quality_validation": {
+                    "passed": False,
+                    "smart_split_details": [{
+                        "type": "smart_split",
+                        "page": 57,
+                        "boundary": "56/57",
+                        "requires_review": True,
+                        "safe_band": False,
+                        "reason": "no_safe_gutter",
+                        "band_score": 1.2,
+                        "previous_page": 56,
+                        "next_page": 57,
+                    }],
+                },
+            },
+            "pages": [{"index": 56}, {"index": 57}],
+        }), encoding="utf-8")
+
+        review = self.bridge.quality_review(self.job_id)
+
+        self.assertEqual(review["pending_count"], 1)
+        item = review["items"][0]
+        self.assertEqual(item["type"], "smart_split")
+        self.assertEqual(item["key"], "smart_split:57:56-57")
+        self.assertEqual(item["page"], 57)
+        self.assertEqual(item["boundary"], "56/57")
+        self.assertEqual(item["reason_code"], "smart_split_requires_visual_review")
+        self.assertIn("no_safe_gutter", item["reason"])
+        self.assertEqual(item["risk"], "HIGH")
+        self.assertEqual(item["state"], "pending")
+        with self.assertRaisesRegex(ValueError, "quality_review_items_pending"):
+            self.bridge.confirm_quality_review(self.job_id)
+        after_action = self.bridge.quality_review_action(
+            self.job_id, "smart_split:57:56-57", "reviewed")
+        self.assertEqual(after_action["pending_count"], 1)
+        self.assertEqual(after_action["items"][0]["state"], "pending")
+
+    def test_job_record_refuses_stale_artifact_metrics_from_previous_job(self):
+        (self.output / "timing_report.json").write_text(json.dumps({
+            "processed_images": 99,
+            "groups_translated": 73,
+            "pages_with_error": 0,
+            "quality_validation": {"passed": True},
+        }), encoding="utf-8")
+        (self.output / "job_manifest.json").write_text(json.dumps({
+            "job_id": "a" * 32,
+            "run_id": "old-run",
+        }), encoding="utf-8")
+
+        stale = self.bridge._job_record(self.bridge.store.get_job(self.job_id))
+
+        self.assertNotIn("pages_processed", stale)
+        self.assertNotIn("groups_translated", stale)
+        (self.output / "job_manifest.json").write_text(json.dumps({
+            "job_id": self.job_id,
+            "run_id": self.bridge.store.get_job(self.job_id)["run_id"],
+        }), encoding="utf-8")
+
+        current = self.bridge._job_record(self.bridge.store.get_job(self.job_id))
+
+        self.assertEqual(current["pages_processed"], 99)
+        self.assertEqual(current["groups_translated"], 73)
+
     def test_item_action_persists_and_confirmation_requires_no_pending_items(self):
         with self.assertRaisesRegex(ValueError, "quality_review_items_pending"):
             self.bridge.confirm_quality_review(self.job_id)

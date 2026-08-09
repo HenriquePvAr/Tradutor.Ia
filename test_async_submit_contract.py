@@ -258,6 +258,10 @@ class RuntimeStateLatestJobTests(unittest.TestCase):
             }),
             encoding="utf-8",
         )
+        (output / "job_manifest.json").write_text(
+            json.dumps({"job_id": job_id, "run_id": f"run-{job_id[:8]}"}),
+            encoding="utf-8",
+        )
 
         record = self.bridge.runtime_state(0)["latest"]
 

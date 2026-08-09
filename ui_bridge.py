@@ -662,23 +662,7 @@ class UiBridge:
                 source_analysis_result = stored_result.public() if stored_result else {}
             finally:
                 readiness.close()
-        result_metrics: dict[str, Any] = {}
-        if str(job.get("status") or "") in JobStatus.TERMINAL:
-            report_path = Path(str(job.get("output_dir") or "")) / "timing_report.json"
-            try:
-                report = json.loads(report_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
-                report = {}
-            if isinstance(report, dict):
-                quality = report.get("quality_validation")
-                quality = quality if isinstance(quality, dict) else {}
-                result_metrics = {
-                    "pages_processed": int(
-                        report.get("processed_images") or report.get("total_images") or 0),
-                    "groups_translated": int(report.get("groups_translated") or 0),
-                    "errors": int(report.get("pages_with_error") or 0),
-                    "quality_gate": quality.get("passed"),
-                }
+        result_metrics = self._current_job_result_metrics(job)
         record = {
             "id": job["id"],
             "run_id": job.get("run_id"),
@@ -782,6 +766,54 @@ class UiBridge:
         return record
 
     @staticmethod
+    def _artifact_manifest_matches_job(output_dir: Path, job: dict[str, Any]) -> bool:
+        """Return true only when reused output artifacts identify this job/run."""
+
+        job_id = str(job.get("id") or "")
+        run_id = str(job.get("run_id") or "")
+        job_manifest = output_dir / "job_manifest.json"
+        run_manifest = output_dir / "run_manifest.json"
+        try:
+            if job_manifest.is_file():
+                payload = json.loads(job_manifest.read_text(encoding="utf-8"))
+                if str(payload.get("job_id") or "") != job_id:
+                    return False
+                manifest_run = str(payload.get("run_id") or "")
+                if run_id and manifest_run and manifest_run != run_id:
+                    return False
+                return True
+            if run_manifest.is_file():
+                payload = json.loads(run_manifest.read_text(encoding="utf-8"))
+                manifest_run = str(payload.get("run_id") or "")
+                return bool(run_id and manifest_run and manifest_run == run_id)
+        except (OSError, ValueError, TypeError):
+            return False
+        return False
+
+    def _current_job_result_metrics(self, job: dict[str, Any]) -> dict[str, Any]:
+        if str(job.get("status") or "") not in JobStatus.TERMINAL:
+            return {}
+        output_dir = Path(str(job.get("output_dir") or ""))
+        if not output_dir.is_dir() or not self._artifact_manifest_matches_job(output_dir, job):
+            return {}
+        report_path = output_dir / "timing_report.json"
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            report = {}
+        if not isinstance(report, dict):
+            return {}
+        quality = report.get("quality_validation")
+        quality = quality if isinstance(quality, dict) else {}
+        return {
+            "pages_processed": int(
+                report.get("processed_images") or report.get("total_images") or 0),
+            "groups_translated": int(report.get("groups_translated") or 0),
+            "errors": int(report.get("pages_with_error") or 0),
+            "quality_gate": quality.get("passed"),
+        }
+
+    @staticmethod
     def _quality_review_reason(item: dict[str, Any], page: dict[str, Any]) -> str:
         visual = item.get("visual_validation") or {}
         if float(item.get("text_overflow_ratio") or 0.0) > 0:
@@ -818,6 +850,75 @@ class UiBridge:
         if overflow >= 1.1 or item.get("classification") == "sfx" or "terminology" in reasons:
             return "MEDIUM"
         return "LOW"
+
+    def _smart_split_review_items(
+        self,
+        job: dict[str, Any],
+        report: dict[str, Any],
+        actions: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        validation = ((report.get("summary") or {}).get("quality_validation") or {})
+        details = validation.get("smart_split_details") or []
+        items: list[dict[str, Any]] = []
+        if not isinstance(details, list):
+            return items
+        for index, detail in enumerate(details, start=1):
+            if not isinstance(detail, dict) or not detail.get("requires_review"):
+                continue
+            page = int(detail.get("page") or detail.get("next_page") or index)
+            previous_page = detail.get("previous_page")
+            next_page = detail.get("next_page") or page
+            boundary = str(
+                detail.get("boundary")
+                or detail.get("boundary_label")
+                or (f"{previous_page}/{next_page}" if previous_page else page)
+            )
+            boundary_key = re.sub(r"[^A-Za-z0-9_.:-]+", "-", boundary).strip("-") or str(page)
+            key = f"smart_split:{page}:{boundary_key}"
+            # No safe split-resolution mechanism exists yet.  Keep the finding visible
+            # and fail-closed even if an old/manual action row exists for this key.
+            revision = {}
+            action = "pending"
+            reason_code = str(
+                detail.get("reason_code") or "smart_split_requires_visual_review")
+            unsafe_reason = str(detail.get("reason") or detail.get("unsafe_reason") or reason_code)
+            evidence_bits = [
+                f"boundary {boundary}" if boundary else "",
+                f"reason {unsafe_reason}" if unsafe_reason else "",
+                f"safe_band={detail.get('safe_band')}" if "safe_band" in detail else "",
+                f"band_score={detail.get('band_score')}" if "band_score" in detail else "",
+            ]
+            items.append({
+                "type": "smart_split",
+                "key": key,
+                "region_id": "",
+                "visual_state": "manual_review",
+                "revision_linked": False,
+                "visual_reason_code": reason_code,
+                "reason_code": reason_code,
+                "page": page,
+                "boundary": boundary,
+                "previous_page": previous_page,
+                "next_page": next_page,
+                "label": f"Smart Split {boundary}",
+                "classification": "smart_split",
+                "original": f"Corte {boundary}",
+                "translation": "Revisão visual obrigatória",
+                "version": int(revision.get("version") or 0),
+                "review_reason_code": str(revision.get("reason_code") or ""),
+                "review_reason": str(revision.get("reason") or ""),
+                "reason": "Smart Split requer revisão: "
+                + " · ".join(bit for bit in evidence_bits if bit),
+                "risk": "HIGH",
+                "state": action,
+                "preserved_original": False,
+                "page_url": f"/api/ui/quality-review/{job['id']}/page/{page}",
+                "smart_split_detail": {
+                    key: value for key, value in detail.items()
+                    if key not in {"image", "image_url", "source_url"}
+                },
+            })
+        return items
 
     def _quality_report_data(self, job: dict[str, Any]) -> dict[str, Any] | None:
         report_path = Path(str(job.get("quality_report_path") or ""))
@@ -918,6 +1019,7 @@ class UiBridge:
                     visual_state = ""
                     revision_linked = False
                 items.append({
+                    "type": "region",
                     "key": key,
                     "region_id": f"p{page_number:03d}:{region_id}",
                     "visual_state": visual_state,
@@ -940,6 +1042,7 @@ class UiBridge:
                     "preserved_original": bool(raw.get("preserved_original")),
                     "page_url": f"/api/ui/quality-review/{job['id']}/page/{page_number}",
                 })
+        items.extend(self._smart_split_review_items(job, report, actions))
         report_only = sum(1 for item in items if item["visual_state"] == "report_only")
         visual_summary = ChapterQualityRevision._visual_state_summary(visual_states)
         chapter_counts = {
@@ -3597,6 +3700,13 @@ class UiBridge:
             if latest_result_job and not (present_job or pending)
             else None
         )
+        counter_progress_stages = {
+            "download", "downloading", "downloading_pages", "validating_pages",
+            "validation", "detecting_balloons", "ocr", "reading_text",
+            "classification", "render", "redrawing", "pdf", "generating_pdf",
+            "Baixando imagens", "Validando imagens", "OCR", "Classificação",
+            "Renderização", "Geração de PDF",
+        }
         return {
             "status": status if status in JobStatus.ALL else "ready",
             "pending": pending,
@@ -3613,13 +3723,8 @@ class UiBridge:
                 "counter_stage": counter_stage,
                 "fraction": stage_fraction,
                 "indeterminate": stage_fraction is None and running,
-                "pages": (
-                    current if stage in {
-                        "Baixando imagens", "Validando imagens", "OCR",
-                        "Renderização", "Geração de PDF",
-                    } else 0
-                ),
-                "groups": current if stage == "Classificação" else 0,
+                "pages": current if stage in counter_progress_stages else 0,
+                "groups": current if stage in {"classification", "Classificação"} else 0,
                 "errors": 0,
                 "last_message": progress_message,
                 "elapsed_seconds": elapsed,

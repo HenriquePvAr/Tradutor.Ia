@@ -77,6 +77,51 @@ class MainE2eUiFindingContracts(unittest.TestCase):
         action = action[:action.index("\n  function reviewAction")]
         self.assertIn("Revis\\u00e3o necess\\u00e1ria", action)
 
+    def test_smart_split_review_item_is_visible_but_not_bulk_selectable(self):
+        review = self.js[self.js.index("function renderQualityReview"):]
+        review = review[:review.index("\n  function visibleQualityReviewKeys")]
+        self.assertIn("data-review-type", review)
+        self.assertIn("Tipo: smart_split", review)
+        self.assertIn("boundary:", review)
+        visible_keys = self.js[self.js.index("function visibleQualityReviewKeys"):]
+        visible_keys = visible_keys[:visible_keys.index("\n  function updateQualityReviewSelectionUi")]
+        self.assertIn("item.dataset.reviewType !== 'smart_split'", visible_keys)
+
+    def test_successful_source_analysis_adopts_the_draft_and_exposes_start_reasons(self):
+        validate = self.js[self.js.index("async function validateSource"):]
+        validate = validate[:validate.index("\n  async function startTranslation")]
+        self.assertIn("appState.newTranslationDraft = false", validate)
+        self.assertIn("result?.policy", validate)
+        self.assertIn("workspace_source_policy", validate)
+
+        controls = self.js[self.js.index("function updateTranslationStartControls"):]
+        controls = controls[:controls.index("\n  function", 20)]
+        self.assertIn("translationStartDisabledReasons()", controls)
+        self.assertIn("appState.lastStartDisabledReasons", controls)
+        self.assertIn("start_disabled_reasons", self.js)
+
+    def test_draft_cleanup_never_wipes_a_live_queue_created_pipeline(self):
+        runtime = self.js[self.js.index("function renderRuntime(runtime)"):]
+        runtime = runtime[:runtime.index("\n  function renderRunStatus")]
+        self.assertIn("const draftOnly = appState.newTranslationDraft && !appState.reviewMode && !running", runtime)
+        self.assertIn("const activeRecord =", runtime)
+        self.assertIn("|| queuedRecord", runtime)
+
+    def test_backend_progress_counters_are_keyed_by_real_stage_not_human_label(self):
+        bridge = read("ui_bridge.py")
+        self.assertIn("counter_progress_stages = {", bridge)
+        self.assertIn('"download"', bridge)
+        self.assertIn('"ocr"', bridge)
+        self.assertIn("'tradução nvidia': 'translate'", self.js)
+        self.assertNotIn('stage in {\n                        "Baixando imagens"', bridge)
+
+    def test_current_job_artifacts_must_match_job_identity_before_result_claim(self):
+        bridge = read("ui_bridge.py")
+        self.assertIn("def _artifact_manifest_matches_job", bridge)
+        self.assertIn("run_manifest.json", bridge)
+        self.assertIn("job_manifest.json", bridge)
+        self.assertIn("result_metrics = self._current_job_result_metrics(job)", bridge)
+
 
 class MainE2eDownloadFindingContracts(unittest.TestCase):
     def test_reader_count_mismatch_171_expected_101_downloaded_fails_closed(self):

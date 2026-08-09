@@ -59,6 +59,7 @@
     qualityRevisionPoll: null,
     currentPipelineState: null,
     cancelBusy: false,
+    lastStartDisabledReasons: [],
     expandedFolders: new Set(),
     seriesQuery: '',
     seriesSort: 'recent',
@@ -1031,6 +1032,24 @@
       && appState.sourceValidation.sourceUrl === form.url
       && Boolean(appState.sourceValidation.analysisResultId);
   }
+  function translationStartDisabledReasons() {
+    const reasons = [];
+    const local = appState.selectedSourceType === 'local_folder';
+    const minimumValid = minimumSourceInputIsValid();
+    const validating = appState.sourceValidation.status === 'validating';
+    const pipelineBusy = inFlightStatuses.has(appState.status);
+    const busyBlocksDraft = pipelineBusy && !appState.newTranslationDraft;
+    if (!minimumValid) reasons.push(local ? 'local_folder_missing' : 'source_input_invalid');
+    if (!local) {
+      if (appState.sourceValidation.status !== 'ready') reasons.push('source_not_validated');
+      else if (appState.sourceValidation.sourceUrl !== syncSourceFormState().url) reasons.push('source_validation_stale');
+      if (!appState.sourceValidation.analysisResultId) reasons.push('source_analysis_result_missing');
+      if (!workspacePolicyAllowsProcessing()) reasons.push('workspace_policy_blocked');
+    }
+    if (validating) reasons.push('source_validation_in_progress');
+    if (busyBlocksDraft) reasons.push('pipeline_busy');
+    return reasons;
+  }
   function updateTranslationStartControls() {
     const validating = appState.sourceValidation.status === 'validating';
     const pipelineBusy = inFlightStatuses.has(appState.status);
@@ -1044,6 +1063,11 @@
       ? minimumValid && !busyBlocksDraft
       : minimumValid && sourceValidationMatchesForm()
         && workspacePolicyAllowsProcessing() && !busyBlocksDraft;
+    const disabledReasons = canStart ? [] : translationStartDisabledReasons();
+    if (disabledReasons.join('|') !== appState.lastStartDisabledReasons.join('|')) {
+      appState.lastStartDisabledReasons = disabledReasons;
+      uiTrace('start_disabled_reasons', {reasons: appState.lastStartDisabledReasons});
+    }
     const validate = $('#validateSourceBtn');
     const start = $('#startBtn');
     if (validate) {
@@ -1256,6 +1280,10 @@
         method: 'POST', body: JSON.stringify(payload), timeoutMs: 190000,
       });
       const ready = result?.status === 'source_analysis_ready' && result?.ready === true;
+      if (result?.policy && typeof result.policy === 'object') {
+        appState.settings = appState.settings || {};
+        appState.settings.workspace_source_policy = result.policy;
+      }
       appState.sourceValidation = {
         status: ready ? 'ready' : 'blocked',
         analysisResultId: ready ? String(result.analysis_result_id || '') : '',
@@ -1263,6 +1291,7 @@
         reasonCode: String(result?.reason_code || ''),
         analysis: result?.analysis || null,
       };
+      if (ready) appState.newTranslationDraft = false;
       appState.sourceReady = {
         id: String(result?.analysis_result_id || ''),
         job_id: '',
@@ -1705,7 +1734,7 @@
       && !String(runtime.source_ready?.job_id || runtime.source_ready?.id || '').match(/^[0-9a-f]{32}$/i);
     if (standaloneReady) clearLoadingSurface();
     else renderProgress(visibleProgress, pipelineState);
-    const draftOnly = appState.newTranslationDraft && !appState.reviewMode;
+    const draftOnly = appState.newTranslationDraft && !appState.reviewMode && !running;
     if (draftOnly) clearNewTranslationDraftPanels();
     else if (runtime.source_ready) {
       $('#runStatusCard') && ($('#runStatusCard').hidden = true);
@@ -1959,12 +1988,16 @@
       const compare = visualState && item.page_url
         ? `<button type="button" class="btn-ghost review-compare show" data-review-compare="${escapeAttr(item.page)}">ABRIR COMPARAÇÃO</button>`
           + `<button type="button" class="btn-ghost review-compare show" data-revise-page="${escapeAttr(item.page)}">REVISAR ESTA PÁGINA</button>` : '';
+      const isSmartSplit = String(item.type || '') === 'smart_split';
+      const splitMeta = isSmartSplit
+        ? `<div class="quality-review-visual-reason">Tipo: smart_split · boundary: ${escapeHtml(item.boundary || '—')} · motivo: ${escapeHtml(item.reason_code || item.visual_reason_code || 'requires_review')}</div>`
+        : '';
       // Report-only items are not part of the revision: no checkbox, no
       // mark/preserve actions, so they can never enter a bulk operation.
-      const isReportOnly = visualState === 'report_only';
+      const isReportOnly = visualState === 'report_only' || isSmartSplit;
       const selectBox = isReportOnly ? '' : `<input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> `;
       const reviewActions = isReportOnly ? '' : `<textarea class="quality-review-editor" data-review-translation data-review-version="${escapeAttr(item.version || 0)}" aria-label="Tradução revisada">${escapeHtml(item.translation || '')}</textarea><input class="quality-review-reason-input" data-review-reason placeholder="Motivo da decisão" aria-label="Motivo da revisão"><div class="cta-row"><button type="button" class="btn-ghost show" data-review-deep-action="edited">Salvar edição</button><button type="button" class="btn-ghost show" data-review-deep-action="reviewed">Aprovar</button><button type="button" class="btn-ghost show" data-review-deep-action="rejected">Rejeitar</button><button type="button" class="btn-ghost show" data-review-deep-action="preserved_original">Manter original</button><button type="button" class="btn-ghost show" data-review-deep-action="manual_review">Revisar novamente</button></div>`;
-      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'rejected' ? 'rejeitado' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(item.reason)}</div>${visualNote}<div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Proposta</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="quality-review-actions">${reviewActions}${compare}</div></article>`;
+      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-type="${escapeAttr(item.type || 'region')}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'rejected' ? 'rejeitado' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(item.reason)}</div>${splitMeta}${visualNote}<div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Proposta</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="quality-review-actions">${reviewActions}${compare}</div></article>`;
     }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
     const confirm = $('#confirmQualityReview');
     if (confirm) {
@@ -1983,6 +2016,7 @@
       // Report-only items are not part of the revision, so bulk actions and
       // select-all must never include them.
       .filter(item => item.dataset.visualState !== 'report_only')
+      .filter(item => item.dataset.reviewType !== 'smart_split')
       .filter(item => !risk || String(item.dataset.risk || '').toUpperCase() === String(risk).toUpperCase())
       .map(item => String(item.dataset.reviewKey || ''))
       .filter(Boolean);
