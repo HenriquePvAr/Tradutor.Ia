@@ -6,8 +6,10 @@ only socket use is loopback, so the tests can prove local runtime provenance.
 
 import _test_bootstrap  # noqa: F401
 
+import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -16,8 +18,10 @@ import time
 import unittest
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+import numpy as np
 from PIL import Image
 
 
@@ -89,7 +93,38 @@ class RuntimeUiForensicsTests(unittest.TestCase):
             self.assertIn('<button type="button" class="rail-tab active" data-tab="inicio"', html)
             self.assertNotIn('<li class="rail-tab active" data-tab="inicio"', html)
             self.assertIn("window.__tradutorRuntimeIdentity", html)
-            self.assertIn("0d863495ee5637c8e0532b51bfe2aea62a4952f1", html)
+            current_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            self.assertIn(current_head, html)
+            match = re.search(
+                r"window\.__tradutorRuntimeIdentity\s*=\s*(\{.*?\});"
+                r"window\.__tradutorVisualTestEnabled",
+                html,
+                re.S,
+            )
+            self.assertIsNotNone(match)
+            identity = json.loads(match.group(1))
+            self.assertEqual(current_head, identity["git_head"])
+            self.assertEqual(proc.pid, identity["pid"])
+            self.assertEqual(
+                hashlib.sha256((ROOT / "ui" / "ui_shell.html").read_bytes()).hexdigest(),
+                identity["shell_sha256"],
+            )
+            self.assertEqual(
+                hashlib.sha256((ROOT / "static" / "tradutor_ui.js").read_bytes()).hexdigest(),
+                identity["tradutor_ui_js_sha256"],
+            )
+            self.assertEqual(
+                hashlib.sha256((ROOT / "static" / "tradutor_ui.css").read_bytes()).hexdigest(),
+                identity["tradutor_ui_css_sha256"],
+            )
+            self.assertNotIn(str(Path.home()), html)
+            self.assertNotIn(str(ROOT), html)
         finally:
             proc.terminate()
             try:
@@ -194,6 +229,219 @@ class DownloadCountConservationTests(unittest.TestCase):
         self.assertEqual(101, trace["logical_pages"])
         self.assertEqual(101, trace["processed_pages"])
         self.assertTrue(trace["smart_split_enabled"])
+
+    def test_cache_completeness_compares_source_slices_not_logical_pages(self):
+        import benchmark_pipeline as bp
+
+        manifest = {
+            "download_gate": {"passed": True, "expected_viewer_images": 171},
+            "viewer_image_count": 171,
+            "total_downloaded": 171,
+        }
+
+        self.assertTrue(
+            bp._download_cache_is_complete(
+                manifest,
+                [f"source-slice-{index}" for index in range(171)],
+            )
+        )
+        self.assertFalse(
+            bp._download_cache_is_complete(
+                manifest,
+                [f"logical-page-{index}" for index in range(101)],
+            )
+        )
+
+    def test_report_exposes_explicit_source_slice_and_logical_page_domains(self):
+        import benchmark_pipeline as bp
+
+        states = [{"index": index, "debug_data": {"group_count": 1}} for index in range(101)]
+        page_trace = bp._page_count_trace(
+            {"download_gate": {"passed": True, "expected_viewer_images": 171}},
+            all_image_paths=list(range(171)),
+            source_image_paths=list(range(171)),
+            image_paths=list(range(101)),
+            completed_states=states,
+            smart_split_report={"enabled": True, "source_images": 171, "pdf_pages": 101},
+        )
+        group_trace = bp._group_count_trace(states)
+
+        self.assertEqual(171, page_trace["downloaded"])
+        self.assertEqual(101, page_trace["logical_pages"])
+        self.assertEqual(101, group_trace["logical_pages"])
+        self.assertEqual(101, group_trace["groups_persisted"])
+
+
+class GroupCountDataflowTests(unittest.TestCase):
+    def test_positive_synthetic_ocr_fixture_produces_groups(self):
+        from ocr_balloon import analyze_image_array, get_translatable_groups
+        from ocr_engine import OCRLine
+        import benchmark_pipeline as bp
+
+        original = np.full((420, 320, 3), 255, dtype=np.uint8)
+        raw_lines = [
+            OCRLine(
+                text="Hello there",
+                raw_text="Hello there",
+                confidence=0.95,
+                polygon=np.array([[40, 40], [180, 40], [180, 70], [40, 70]], dtype=np.float32),
+                box=(40, 40, 140, 30),
+                engine="synthetic-ocr",
+                page=1,
+                metadata={"estimated_text_regions": 1},
+            )
+        ]
+
+        candidates, groups = analyze_image_array(original, raw_lines, page_index=1)
+        translatable = get_translatable_groups(groups)
+        trace = bp._group_count_trace([
+            {
+                "index": 1,
+                "ocr_source": "run",
+                "ocr_completed": True,
+                "raw_lines": raw_lines,
+                "ocr_metadata": {"estimated_text_regions": 1},
+                "candidates": candidates,
+                "groups": groups,
+                "translatable_groups": translatable,
+                "debug_data": {"group_count": len(groups), "translated_group_count": 0},
+            }
+        ])
+
+        self.assertGreater(len(candidates), 0)
+        self.assertGreater(len(groups), 0)
+        self.assertGreater(len(translatable), 0)
+        self.assertEqual(1, trace["ocr_nonempty"])
+        self.assertGreater(trace["groups_created"], 0)
+        self.assertGreater(trace["translation_groups"], 0)
+        self.assertGreater(trace["groups_persisted"], 0)
+
+    def test_genuinely_textless_page_can_have_zero_groups_without_bug(self):
+        from ocr_balloon import analyze_image_array, get_translatable_groups
+        import benchmark_pipeline as bp
+
+        original = np.full((420, 320, 3), 255, dtype=np.uint8)
+        candidates, groups = analyze_image_array(original, [], page_index=1)
+        trace = bp._group_count_trace([
+            {
+                "index": 1,
+                "ocr_source": "run",
+                "ocr_completed": True,
+                "raw_lines": [],
+                "candidates": candidates,
+                "groups": groups,
+                "translatable_groups": get_translatable_groups(groups),
+                "debug_data": {"group_count": len(groups), "translated_group_count": 0},
+            }
+        ])
+
+        self.assertEqual([], candidates)
+        self.assertEqual([], groups)
+        self.assertEqual(1, trace["ocr_executed"])
+        self.assertEqual(0, trace["ocr_nonempty"])
+        self.assertEqual(0, trace["groups_created"])
+        self.assertEqual(0, trace["groups_persisted"])
+        self.assertEqual(1, trace["pages_without_text"])
+
+    def test_trace_distinguishes_ocr_not_executed_empty_ocr_and_grouping_loss(self):
+        import benchmark_pipeline as bp
+
+        trace = bp._group_count_trace([
+            {"index": 1, "status": "completed", "precheck_reason": "no_text_detected"},
+            {"index": 2, "ocr_source": "run", "ocr_completed": True, "raw_lines": []},
+            {
+                "index": 3,
+                "ocr_source": "run",
+                "ocr_completed": True,
+                "raw_lines": [SimpleNamespace()],
+                "candidates": [SimpleNamespace(ignored=False)],
+                "groups": [],
+                "debug_data": {"ocr_line_count": 1, "group_count": 0},
+            },
+        ])
+
+        self.assertEqual(3, trace["logical_pages"])
+        self.assertEqual(2, trace["ocr_inputs"])
+        self.assertEqual(2, trace["ocr_executed"])
+        self.assertEqual(1, trace["ocr_nonempty"])
+        self.assertEqual(1, trace["candidate_regions"])
+        self.assertEqual(0, trace["groups_created"])
+
+    def test_trace_uses_persisted_debug_counts_after_raw_ocr_lines_are_dropped(self):
+        import benchmark_pipeline as bp
+
+        trace = bp._group_count_trace([
+            {
+                "index": 1,
+                "status": "completed",
+                "debug_data": {
+                    "ocr_line_count": 1,
+                    "group_count": 1,
+                    "translated_group_count": 1,
+                },
+            }
+        ])
+
+        self.assertEqual(1, trace["ocr_nonempty"])
+        self.assertEqual(0, trace["pages_without_text"])
+        self.assertEqual(1, trace["regions_detected"])
+        self.assertEqual(1, trace["candidate_regions"])
+        self.assertEqual(1, trace["groups_created"])
+        self.assertEqual(1, trace["translation_groups"])
+        self.assertEqual(1, trace["groups_persisted"])
+
+
+class PdfOpenContractTests(unittest.TestCase):
+    def test_pdf_open_contract_is_os_default_viewer_for_owner_scoped_artifact(self):
+        import ui_bridge
+
+        tmp = Path(tempfile.mkdtemp())
+        output = (tmp / "output").resolve()
+        output.mkdir()
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%synthetic\n")
+
+        bridge = ui_bridge.UiBridge.__new__(ui_bridge.UiBridge)
+        bridge.output_root = output
+        bridge.store = SimpleNamespace(
+            get_job_for_owner=lambda owner, job: {
+                "id": job,
+                "owner_id": owner,
+                "pdf_path": str(pdf),
+            }
+        )
+        bridge._job_record = lambda job: job
+
+        with mock.patch.object(bridge, "_open_artifact_path") as opener:
+            bridge.open_artifact_for_owner("owner-a", "job-b", "pdf")
+
+        opener.assert_called_once_with(str(pdf), select=False)
+
+    def test_open_artifact_path_invokes_platform_opener_and_stays_inside_output_root(self):
+        import ui_bridge
+
+        tmp = Path(tempfile.mkdtemp())
+        output = (tmp / "output").resolve()
+        output.mkdir()
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%synthetic\n")
+        outside = (tmp / "outside.pdf").resolve()
+        outside.write_bytes(b"%PDF-1.4\n%outside\n")
+
+        bridge = ui_bridge.UiBridge.__new__(ui_bridge.UiBridge)
+        bridge.output_root = output
+
+        if os.name == "nt":
+            with mock.patch("os.startfile", create=True) as opener:
+                bridge._open_artifact_path(str(pdf))
+            opener.assert_called_once_with(pdf)
+        else:
+            with mock.patch("webbrowser.open") as opener:
+                bridge._open_artifact_path(str(pdf))
+            opener.assert_called_once_with(pdf.as_uri())
+
+        with self.assertRaises(ValueError):
+            bridge._open_artifact_path(str(outside))
 
 
 if __name__ == "__main__":

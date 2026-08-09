@@ -270,6 +270,75 @@ def _page_count_trace(download_report, *, all_image_paths, source_image_paths,
     }
 
 
+def _group_count_trace(page_states):
+    """Return count-only OCR/grouping provenance without exposing OCR text."""
+
+    states = list(page_states or [])
+    trace = {
+        "logical_pages": len(states),
+        "detector_inputs": 0,
+        "regions_detected": 0,
+        "ocr_inputs": 0,
+        "ocr_executed": 0,
+        "ocr_nonempty": 0,
+        "candidate_regions": 0,
+        "groups_created": 0,
+        "groups_filtered": 0,
+        "translation_groups": 0,
+        "groups_persisted": 0,
+        "pages_without_text": 0,
+        "pages_with_ocr_error": 0,
+    }
+    for state in states:
+        raw_lines = list(state.get("raw_lines") or [])
+        candidates = list(state.get("candidates") or [])
+        groups = list(state.get("groups") or [])
+        translatable = list(state.get("translatable_groups") or [])
+        debug = state.get("debug_data") if isinstance(state.get("debug_data"), dict) else {}
+        metadata = state.get("ocr_metadata") if isinstance(state.get("ocr_metadata"), dict) else {}
+        raw_line_count = len(raw_lines)
+        if not raw_line_count:
+            raw_line_count = int(debug.get("ocr_line_count") or 0)
+
+        skipped_without_text = state.get("status") == "completed" and bool(
+            (state.get("precheck") or {}).get("skipped_no_text")
+            or state.get("precheck_reason")
+        )
+        trace["detector_inputs"] += 1
+        trace["ocr_inputs"] += 0 if skipped_without_text else 1
+        if (
+            state.get("ocr_source") in {"run", "cache"}
+            or raw_line_count
+            or state.get("ocr_completed")
+        ):
+            trace["ocr_executed"] += 1
+        if raw_line_count:
+            trace["ocr_nonempty"] += 1
+        elif not groups and not int(debug.get("group_count") or 0):
+            trace["pages_without_text"] += 1
+        if state.get("ocr_error"):
+            trace["pages_with_ocr_error"] += 1
+
+        estimated_regions = _safe_count(metadata.get("estimated_text_regions"))
+        trace["regions_detected"] += (
+            estimated_regions if estimated_regions is not None else raw_line_count
+        )
+        trace["candidate_regions"] += (
+            len(candidates) if candidates else int(debug.get("ocr_line_count") or 0)
+        )
+        created = len(groups) if groups else int(debug.get("group_count") or 0)
+        translation_count = (
+            len(translatable)
+            if translatable
+            else int(debug.get("translated_group_count") or 0)
+        )
+        trace["groups_created"] += created
+        trace["translation_groups"] += translation_count
+        trace["groups_filtered"] += max(0, created - translation_count)
+        trace["groups_persisted"] += int(debug.get("group_count") or created)
+    return trace
+
+
 def _output_run_manifest(output_folder, report, translator):
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     git = _git_metadata()
@@ -1322,6 +1391,7 @@ def run_benchmark(args):
         completed_states=completed_states,
         smart_split_report=smart_split_report,
     )
+    group_count_trace = _group_count_trace(completed_states)
     set_active_profiler(None)
     final_status = derive_final_run_status(
         technical_success=True,
@@ -1354,6 +1424,12 @@ def run_benchmark(args):
         "status": final_status,
         "smart_pdf_split": smart_split_report,
         "page_count_trace": page_count_trace,
+        "group_count_trace": group_count_trace,
+        "source_expected_slices": page_count_trace["source_expected"],
+        "downloaded_source_slices": page_count_trace["downloaded"],
+        "source_image_slices": page_count_trace["source_images"],
+        "logical_page_count": page_count_trace["logical_pages"],
+        "processed_logical_pages": page_count_trace["processed_pages"],
         "source_expected_pages": page_count_trace["source_expected"],
         "downloaded_pages": page_count_trace["downloaded"],
         "logical_pages": page_count_trace["logical_pages"],
