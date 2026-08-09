@@ -72,6 +72,46 @@ class FakeReader:
         return items
 
 
+class VirtualizedBatchReader(FakeReader):
+    """A reader whose DOM starts complete for the visible window, then appends batches."""
+
+    def __init__(self, *, batches):
+        super().__init__(total=batches[0], resolved=batches[0])
+        self.batches = list(batches)
+        self.batch_index = 0
+        self.total_reader_slots = self.batches[-1]
+
+    def reader_bounds(self):
+        return 0, self.total_reader_slots * SLOT_HEIGHT
+
+    def scroll_to(self, y):
+        self.position = int(y)
+        self.scrolls.append(self.position)
+        if self.batch_index < len(self.batches) - 1:
+            self.batch_index += 1
+            self.total = self.batches[self.batch_index]
+            self.resolved.update(range(self.total))
+
+
+class TemporarilyStableBatchReader(VirtualizedBatchReader):
+    """One scroll may show no new DOM; that must not be mistaken for the end."""
+
+    def __init__(self, *, batches):
+        super().__init__(batches=batches)
+        self._first_bottom_visit = True
+
+    def scroll_to(self, y):
+        self.position = int(y)
+        self.scrolls.append(self.position)
+        if self._first_bottom_visit:
+            self._first_bottom_visit = False
+            return
+        if self.batch_index < len(self.batches) - 1:
+            self.batch_index += 1
+            self.total = self.batches[self.batch_index]
+            self.resolved.update(range(self.total))
+
+
 def run(reader, **kw):
     events = []
     kw.setdefault("limits", ResolverLimits(stable_rounds=2, settle_seconds=0))
@@ -118,6 +158,21 @@ class ProgressiveResolutionTests(unittest.TestCase):
         result, _ = run(FakeReader(total=10, resolved=2))
         for candidate in result.resolved_candidates:
             self.assertNotIn(PLACEHOLDER_HOST, candidate["url"])
+
+    def test_resolved_initial_window_is_not_mistaken_for_reader_end(self):
+        result, _ = run(VirtualizedBatchReader(batches=[101, 130, 171]),
+                        limits=ResolverLimits(stable_rounds=2, settle_seconds=0,
+                                              timeout_seconds=1e6))
+        self.assertEqual(result.counts["total"], 171)
+        self.assertEqual(result.counts["resolved"], 171)
+        self.assertGreaterEqual(result.rounds, 2)
+
+    def test_one_temporarily_stable_bottom_read_does_not_stop_discovery(self):
+        result, _ = run(TemporarilyStableBatchReader(batches=[20, 45, 72, 101, 130, 171]),
+                        limits=ResolverLimits(stable_rounds=2, settle_seconds=0,
+                                              timeout_seconds=1e6))
+        self.assertEqual(result.counts["total"], 171)
+        self.assertEqual(result.counts["resolved"], 171)
 
 
 class BudgetTests(unittest.TestCase):

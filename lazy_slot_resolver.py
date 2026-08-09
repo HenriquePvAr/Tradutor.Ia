@@ -128,6 +128,7 @@ def resolve_lazy_reader_slots(
     cancelled = False
     slots: list[dict[str, Any]] = []
     baseline_total = 0
+    no_pending_stable = 0
 
     try:
         # Inside the try: cancelling before the first read is a cancelled run, not an
@@ -140,13 +141,45 @@ def resolve_lazy_reader_slots(
         while rounds < limits.max_rounds:
             counts = slot_counts(slots)
             if counts["pending"] == 0:
-                # Everything settled; the reader end is implied by having no slot left.
+                # A virtualized reader may expose a fully-resolved visible window while
+                # additional slots appear only after scrolling near the reader end.  Do not
+                # treat "no pending in the current DOM" as final until repeated bottom
+                # rereads confirm that no new slots are appended.
+                if no_pending_stable >= limits.stable_rounds:
+                    reached_end = True
+                    break
+                if clock() - started > limits.timeout_seconds:
+                    timed_out = True
+                    warnings.append(LAZY_RESOLUTION_TIMEOUT)
+                    break
+                check_cancel()
+                top, bottom = reader_bounds()
+                del top
+                scroll_to(bottom)
                 reached_end = True
-                break
+                check_cancel()
+                sleep(limits.settle_seconds)
+                check_cancel()
+                rounds += 1
+                before_total = len(slots)
+                slots, changed = _merge_reread(slots, read_slots(), adapter=adapter)
+                if changed and READER_DOM_CHANGED not in warnings:
+                    warnings.append(READER_DOM_CHANGED)
+                after_counts = slot_counts(slots)
+                emit(slots, f"Carregando pÃ¡ginas do leitor: {after_counts['resolved']}/{len(slots)}")
+                if len(slots) > before_total or after_counts["pending"] > 0:
+                    no_pending_stable = 0
+                    stable = 0
+                    continue
+                no_pending_stable += 1
+                if no_pending_stable >= limits.stable_rounds:
+                    break
+                continue
             if clock() - started > limits.timeout_seconds:
                 timed_out = True
                 warnings.append(LAZY_RESOLUTION_TIMEOUT)
                 break
+            no_pending_stable = 0
 
             check_cancel()
             top, bottom = reader_bounds()
