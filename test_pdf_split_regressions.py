@@ -136,6 +136,35 @@ class SmartWebtoonSplitTests(unittest.TestCase):
             self.assertGreaterEqual(report["unsafe_split_count"], 1)
             self.assertEqual(report["splits"][0]["reason"], "lowest_risk_band")
 
+    def test_expands_past_hard_limit_when_next_safe_gutter_is_nearby(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stream = Image.new("RGB", (240, 5200), (76, 92, 118))
+            draw = ImageDraw.Draw(stream)
+            for y in range(0, 5200, 80):
+                draw.line((0, y, 239, min(5199, y + 70)), fill=(225, 105, 75), width=11)
+            draw.rectangle((0, 4590, 239, 4634), fill="white")
+            sources = []
+            for index in range(6):
+                path = root / f"source_{index + 1:03}.png"
+                stream.crop((0, index * 900, 240, min(5200, (index + 1) * 900))).save(path)
+                sources.append(str(path))
+            stream.close()
+
+            _, report = prepare_smart_webtoon_pages(
+                sources,
+                root / "logical",
+                target_height=1800,
+                min_height=1050,
+                max_height=2400,
+            )
+
+            self.assertEqual(report["unsafe_split_count"], 0)
+            self.assertTrue(report["splits"][0]["safe_band"])
+            self.assertEqual(report["splits"][0]["reason"], "white_gutter")
+            self.assertGreater(report["splits"][0]["height"], 4200)
+            self.assertLess(abs(report["splits"][0]["height"] - 4612), 35)
+
     def test_generates_pdf_from_rebuilt_logical_pages(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

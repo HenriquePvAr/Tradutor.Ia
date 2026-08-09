@@ -109,7 +109,8 @@ def prepare_smart_webtoon_pages(
     buffer = None
     source_images = 0
     source_height = 0
-    for path in paths:
+    for source_position, path in enumerate(paths):
+        is_last_source = source_position == len(paths) - 1
         with Image.open(path) as opened:
             image = to_rgb(opened)
         source_images += 1
@@ -130,6 +131,32 @@ def prepare_smart_webtoon_pages(
             )
             if not metrics.get("safe_band") and buffer.height < hard_max_height:
                 break
+            extended_hard_height = hard_max_height + min(target_height // 2, 900)
+            if (
+                not metrics.get("safe_band")
+                and not is_last_source
+                and buffer.height < extended_hard_height
+            ):
+                break
+            if not metrics.get("safe_band") and buffer.height >= hard_max_height:
+                # The hard limit is the point where we must stop waiting indefinitely,
+                # not permission to cut through artwork when a real gutter is only a
+                # short distance later in the already-buffered stream. Prefer a nearby
+                # safe band over a known-dangerous lowest-risk cut; if no such band is
+                # present, preserve the fail-closed unsafe record below.
+                overshoot_max_height = min(
+                    buffer.height - 1,
+                    extended_hard_height,
+                )
+                if overshoot_max_height > hard_max_height:
+                    overshoot_y, overshoot_metrics = _find_safe_horizontal_split(
+                        buffer,
+                        target_height=hard_max_height,
+                        min_height=hard_max_height + 1,
+                        max_height=overshoot_max_height,
+                    )
+                    if overshoot_metrics.get("safe_band"):
+                        split_y, metrics = overshoot_y, overshoot_metrics
             page = buffer.crop((0, 0, buffer.width, split_y))
             remainder = buffer.crop((0, split_y, buffer.width, buffer.height))
             buffer.close()
