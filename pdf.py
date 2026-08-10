@@ -25,6 +25,30 @@ _MIN_PROTECTED_HEIGHT = 40
 # A flat band reaching across the page is the gutter we want to cut in, never a balloon.
 _PAGE_SPANNING_WIDTH_RATIO = 0.97
 
+# Flat blobs only see balloons whose interior is one uniform fill. A balloon with a
+# gradient, a light texture or lettering inside is flat nowhere, so it used to escape
+# and the seam could run straight through it. What survives texture is the shape: a
+# closed high contrast outline around an interior that is still calm compared with the
+# artwork around it. Both halves are required - the outline alone matches panels and
+# character shapes, the calm fill alone matches any quiet patch of art.
+# ponytail: fixed thresholds, calibrated against the real chapter plus flat, gradient
+# and lettered balloon fixtures. Balloons noisier than std 14 inside would need the
+# calm limit raised, which costs precision - measure before turning this knob.
+_ENCLOSURE_EDGE_THRESHOLDS = (60, 160)
+_ENCLOSURE_CALM_STD_LIMIT = 14.0
+_ENCLOSURE_CALM_FRACTION = 0.40
+_ENCLOSURE_MIN_EXTENT = 0.5
+
+
+class ProtectedRegionDetectionError(RuntimeError):
+    """The balloon detector could not run over a buffer.
+
+    A detector that failed knows nothing about the page, which is not the same as a
+    detector that ran and found no balloon. Only the second one may produce a
+    semantically safe cut, so the first is raised instead of being read as "no
+    protected regions".
+    """
+
 
 def to_rgb(img):
     if img.mode == "RGB":
@@ -230,6 +254,10 @@ def prepare_smart_webtoon_pages(
             {
                 "page": len(page_paths) + 1,
                 "height": buffer.height,
+                # The chapter end is where the stream stops, not a seam anyone chose,
+                # so it clears both constraints by construction.
+                "semantic_safe": True,
+                "gutter_safe": True,
                 "safe_band": True,
                 "gutter": True,
                 "reason": "chapter_end",
@@ -254,8 +282,20 @@ def prepare_smart_webtoon_pages(
         "physical_maximum_height": MAX_LOGICAL_PAGE_HEIGHT,
         "protected_region_padding": PROTECTED_REGION_PADDING,
         "splits": split_records,
+        # A detector that raised never gets here - the exception propagates - so a
+        # report existing at all means every buffer was actually inspected.
+        "balloon_detector": "ran",
         "unsafe_split_count": sum(
             not bool(record.get("safe_band")) for record in split_records
+        ),
+        "gutter_split_count": sum(
+            bool(record.get("gutter_safe")) for record in split_records
+        ),
+        # Cuts through artwork that no balloon, text box or group crosses. These are
+        # applied automatically and are not gutters.
+        "semantic_only_split_count": sum(
+            bool(record.get("semantic_safe")) and not bool(record.get("gutter_safe"))
+            for record in split_records
         ),
     }
     with (folder / "smart_split_report.json").open("w", encoding="utf-8") as file:
@@ -363,6 +403,8 @@ def smart_split_audit(report):
                 "hard_collision_count": record.get("hard_collision_count"),
                 "decision": str(record.get("decision") or record.get("reason") or ""),
                 "reason": str(record.get("reason") or ""),
+                "semantic_safe": False,
+                "gutter_safe": False,
                 "safe_band": False,
                 # Reaching here means no position in the normal or expanded window
                 # cleared the protected regions and the page already hit the physical
@@ -481,14 +523,16 @@ def _merge_intervals(intervals):
     return [(top, bottom) for top, bottom in merged]
 
 
-def _uniform_blob_intervals(image):
-    """Vertical spans of flat, page-internal blobs - the pre-OCR balloon signal."""
-    gray = np.asarray(image.convert("L"), dtype=np.float32)
-    height, width = gray.shape
+def _local_variance(gray):
     window = (_UNIFORM_WINDOW, _UNIFORM_WINDOW)
     mean = cv2.blur(gray, window)
-    variance = cv2.blur(gray * gray, window) - mean * mean
-    flat = (variance <= _UNIFORM_STD_LIMIT**2).astype(np.uint8)
+    return cv2.blur(gray * gray, window) - mean * mean
+
+
+def _uniform_blob_intervals(gray):
+    """Vertical spans of flat, page-internal blobs - the pre-OCR balloon signal."""
+    height, width = gray.shape
+    flat = (_local_variance(gray) <= _UNIFORM_STD_LIMIT**2).astype(np.uint8)
     # Open drops flat speckle inside artwork, close reunites a balloon interior
     # that its own lettering broke into pieces.
     flat = cv2.morphologyEx(flat, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
@@ -505,6 +549,52 @@ def _uniform_blob_intervals(image):
     return intervals
 
 
+def _enclosed_balloon_intervals(gray):
+    """Vertical spans of closed outlines holding a calm fill - textured balloons.
+
+    An enclosure is a hole in the edge map: a contour with a parent, meaning the
+    outline around it closes. Artwork produces those too - panels, character shapes,
+    crossing speed lines - so the interior still has to read as a container fill
+    rather than as drawing, which is what the calm fraction measures. Lettering is
+    allowed to break the fill up; closing puts it back together before it is measured.
+    """
+    width = gray.shape[1]
+    edges = cv2.Canny(
+        np.clip(gray, 0, 255).astype(np.uint8), *_ENCLOSURE_EDGE_THRESHOLDS
+    )
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8))
+    contours, hierarchy = cv2.findContours(
+        edges, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if hierarchy is None:
+        return []
+    calm = (_local_variance(gray) <= _ENCLOSURE_CALM_STD_LIMIT**2).astype(np.uint8)
+    calm = cv2.morphologyEx(calm, cv2.MORPH_CLOSE, np.ones((31, 31), np.uint8))
+    intervals = []
+    for index, contour in enumerate(contours):
+        if hierarchy[0][index][3] < 0:
+            # An outer contour is the artwork itself; only an enclosed hole is a
+            # candidate container.
+            continue
+        left, top, box_width, box_height = cv2.boundingRect(contour)
+        area = cv2.contourArea(contour)
+        if area < _MIN_PROTECTED_AREA or box_height < _MIN_PROTECTED_HEIGHT:
+            continue
+        if box_width >= _PAGE_SPANNING_WIDTH_RATIO * width:
+            continue
+        if area < _ENCLOSURE_MIN_EXTENT * box_width * box_height:
+            # A balloon fills its own bounding box; a thin ribbon between art strokes
+            # does not.
+            continue
+        interior = np.zeros((box_height, box_width), np.uint8)
+        cv2.drawContours(interior, [contour], -1, 1, -1, offset=(-left, -top))
+        window = calm[top : top + box_height, left : left + box_width]
+        if float(window[interior.astype(bool)].mean()) < _ENCLOSURE_CALM_FRACTION:
+            continue
+        intervals.append((int(top), int(top + box_height)))
+    return intervals
+
+
 def protected_vertical_intervals(
     image,
     extra_regions=(),
@@ -517,8 +607,17 @@ def protected_vertical_intervals(
     hold real boxes - OCR lines, text blocks, translation groups - pass them as
     ``(top, bottom)`` pairs in ``extra_regions`` and they are protected verbatim,
     which keeps the guarantee alive even when the pixel detector finds nothing.
+
+    Raises ``ProtectedRegionDetectionError`` when a detector cannot run, so a broken
+    detector can never be mistaken for a page without balloons.
     """
-    regions = list(_uniform_blob_intervals(image))
+    gray = np.asarray(image.convert("L"), dtype=np.float32)
+    try:
+        regions = _uniform_blob_intervals(gray) + _enclosed_balloon_intervals(gray)
+    except Exception as exc:
+        raise ProtectedRegionDetectionError(
+            f"balloon detector unavailable: {exc}"
+        ) from exc
     regions.extend((int(top), int(bottom)) for top, bottom in extra_regions or ())
     return _merge_intervals(
         (top - padding, bottom + padding) for top, bottom in regions if bottom > top
@@ -607,6 +706,11 @@ def _find_safe_horizontal_split(
             best = candidate
     if best is None:
         return target, {
+            # ``semantic_safe`` is the hard constraint (crosses no protected region),
+            # ``gutter_safe`` the soft one (the seam sits in a real gutter).
+            # ``safe_band`` is kept as the published alias of ``semantic_safe``.
+            "semantic_safe": False,
+            "gutter_safe": False,
             "safe_band": False,
             "gutter": False,
             "reason": "no_semantic_safe_band" if protected else "no_candidate_band",
@@ -630,8 +734,12 @@ def _find_safe_horizontal_split(
         band_type,
     ) = best
     return int(y), {
-        # Every surviving candidate clears the hard constraints, so it is safe to cut
-        # here even when the artwork behind the seam is busy.
+        # Every surviving candidate clears the hard constraint, so it is safe to cut
+        # here even when the artwork behind the seam is busy. That is not the same
+        # claim as "this seam is a white/quiet gutter" - ``gutter_safe`` is the only
+        # field that means that, and ``reason`` names which of the two it was.
+        "semantic_safe": True,
+        "gutter_safe": bool(gutter),
         "safe_band": True,
         "gutter": bool(gutter),
         "reason": band_type,

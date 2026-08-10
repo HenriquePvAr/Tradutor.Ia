@@ -7,17 +7,21 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
 import benchmark_pipeline
 from benchmark_pipeline import _resolve_download_max_images, _select_image_entries
+import pdf
 from pdf import (
     MAX_LOGICAL_PAGE_HEIGHT,
     PROTECTED_REGION_PADDING,
+    ProtectedRegionDetectionError,
     generate_smart_webtoon_pdf,
     prepare_smart_webtoon_pages,
     protected_vertical_intervals,
+    smart_split_audit,
 )
 
 
@@ -213,8 +217,80 @@ def _paint_balloon(canvas, top, bottom, left=280, right=600):
     canvas[top:bottom, right - 6 : right] = 255
 
 
+def _paint_textured_balloon(canvas, top, bottom, left=280, right=600, seed=3):
+    """A balloon whose interior is not flat: a gradient plus texture inside the outline.
+
+    Nothing here is uniform enough for the flat-blob detector, but a reader sees a
+    balloon: a closed high contrast outline around a calm fill.
+    """
+    rng = np.random.default_rng(seed)
+    height, width = bottom - top, right - left
+    gradient = np.linspace(150.0, 232.0, height)[:, None]
+    interior = np.clip(gradient + rng.normal(0, 11, (height, width)), 0, 255)
+    canvas[top:bottom, left:right] = interior.astype(np.uint8)[:, :, None]
+    canvas[top : top + 6, left:right] = 0
+    canvas[bottom - 6 : bottom, left:right] = 0
+    canvas[top:bottom, left : left + 6] = 0
+    canvas[top:bottom, right - 6 : right] = 0
+
+
+def _paint_lettered_balloon(canvas, top, bottom, left=280, right=600, seed=5):
+    """A balloon whose interior is broken into strips by its own lettering."""
+    rng = np.random.default_rng(seed)
+    height, width = bottom - top, right - left
+    interior = np.clip(rng.normal(238, 7, (height, width)), 0, 255)
+    canvas[top:bottom, left:right] = interior.astype(np.uint8)[:, :, None]
+    canvas[top : top + 5, left:right] = 0
+    canvas[bottom - 5 : bottom, left:right] = 0
+    canvas[top:bottom, left : left + 5] = 0
+    canvas[top:bottom, right - 5 : right] = 0
+    for row in range(top + 30, bottom - 30, 46):
+        x = left + 24
+        while x < right - 40:
+            glyph = int(rng.integers(10, 24))
+            canvas[row : row + 26, x : x + glyph] = 12
+            x += glyph + int(rng.integers(6, 14))
+
+
+def _paint_textured_art(canvas, top, bottom, left=200, right=640, seed=11):
+    """Bright, busy artwork inside a border - balloon-shaped but not a balloon.
+
+    Screentone and crossing strokes, so the fill never reads as a container. This is
+    the false positive a stronger detector must not invent.
+    """
+    rng = np.random.default_rng(seed)
+    height, width = bottom - top, right - left
+    patch = np.clip(rng.normal(212, 15, (height, width)), 0, 255)
+    rows, columns = np.mgrid[0:height, 0:width]
+    patch[(rows % 6 < 2) & (columns % 6 < 2)] = 55
+    canvas[top:bottom, left:right] = patch.astype(np.uint8)[:, :, None]
+    for _ in range(45):
+        x = int(rng.integers(left, right))
+        y = int(rng.integers(top, bottom))
+        cv2.line(
+            canvas,
+            (x, y),
+            (x + int(rng.integers(-180, 180)), y + int(rng.integers(-180, 180))),
+            (10, 10, 10),
+            5,
+        )
+    cv2.rectangle(canvas, (left, top), (right - 1, bottom - 1), (0, 0, 0), 6)
+
+
 def _paint_white_gutter(canvas, top, bottom):
     canvas[top:bottom, :] = 255
+
+
+def _covering_interval(canvas, top, bottom):
+    """The protected interval containing ``top..bottom``, or ``None``."""
+    image = Image.fromarray(canvas)
+    try:
+        intervals = protected_vertical_intervals(image)
+    finally:
+        image.close()
+    return next(
+        (pair for pair in intervals if pair[0] <= top and pair[1] >= bottom), None
+    )
 
 
 def _slice_stream(canvas, root, slice_height=900):
@@ -418,6 +494,173 @@ class SmartSplitProtectedRegionTests(unittest.TestCase):
                     self.assertEqual(image.height, int(record["height"]))
                     rendered += image.height
             self.assertEqual(rendered, 9000)
+
+
+class BalloonDetectorRecallTests(unittest.TestCase):
+    """A balloon is protected because it is a balloon, not because it is flat.
+
+    The flat-blob detector only recognised a balloon whose interior was one uniform
+    fill. Give the same balloon a gradient, a light texture or its own lettering and it
+    became invisible: no protected interval, so the seam was free to run through it and
+    the cut was still reported as semantically safe. These are that class of page.
+    """
+
+    def _split(self, canvas, root, **kwargs):
+        options = {"target_height": 1800, "min_height": 1050, "max_height": 2400}
+        options.update(kwargs)
+        return prepare_smart_webtoon_pages(
+            _slice_stream(canvas, root), root / "logical", **options
+        )
+
+    def _boundaries(self, report):
+        offsets = []
+        running = 0
+        for record in report["splits"][:-1]:
+            running += int(record["height"])
+            offsets.append(running)
+        return offsets
+
+    def test_flat_balloon_crossing_the_target_is_protected(self):
+        canvas = _noise_art(5400)
+        _paint_balloon(canvas, 1700, 2000)
+
+        self.assertIsNotNone(_covering_interval(canvas, 1700, 2000))
+
+    def test_textured_balloon_crossing_the_target_is_protected(self):
+        canvas = _noise_art(5400)
+        _paint_textured_balloon(canvas, 1700, 2000)
+
+        self.assertIsNotNone(_covering_interval(canvas, 1700, 2000))
+
+    def test_balloon_with_lettering_inside_is_protected(self):
+        canvas = _noise_art(5400)
+        _paint_lettered_balloon(canvas, 1650, 2060)
+
+        self.assertIsNotNone(_covering_interval(canvas, 1650, 2060))
+
+    def test_no_cut_lands_inside_a_textured_balloon(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(5400)
+            _paint_textured_balloon(canvas, 1700, 2000)
+            _, report = self._split(canvas, root)
+
+            self.assertEqual(report["unsafe_split_count"], 0)
+            for cut in self._boundaries(report):
+                self.assertFalse(1700 <= cut <= 2000, f"cut {cut} bisects the balloon")
+
+    def test_no_cut_lands_inside_a_lettered_balloon(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(5400)
+            _paint_lettered_balloon(canvas, 1650, 2060)
+            _, report = self._split(canvas, root)
+
+            self.assertEqual(report["unsafe_split_count"], 0)
+            for cut in self._boundaries(report):
+                self.assertFalse(1650 <= cut <= 2060, f"cut {cut} bisects the balloon")
+
+    def test_textured_artwork_is_not_protected_as_a_balloon(self):
+        # Recall for balloons may not be bought by calling every bordered bright shape
+        # a balloon: the page would stop being splittable at all.
+        canvas = _noise_art(5400)
+        _paint_textured_art(canvas, 1500, 2300)
+
+        self.assertIsNone(_covering_interval(canvas, 1500, 2300))
+
+    def test_a_cut_through_textured_artwork_is_still_applied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(6000)
+            # The artwork covers the whole search window, so the only way out of the
+            # first page is a cut straight through it.
+            _paint_textured_art(canvas, 900, 4300)
+            _, report = self._split(canvas, root)
+
+            self.assertEqual(report["unsafe_split_count"], 0)
+            first = report["splits"][0]
+            self.assertTrue(first["semantic_safe"])
+            self.assertFalse(first["gutter_safe"])
+            self.assertTrue(900 <= int(first["height"]) <= 4300, first["height"])
+
+    def test_white_gutter_still_wins_over_a_nearby_textured_balloon(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(5400)
+            _paint_textured_balloon(canvas, 1500, 1900)
+            _paint_white_gutter(canvas, 2180, 2240)
+            _, report = self._split(canvas, root)
+
+            self.assertEqual(report["splits"][0]["reason"], "white_gutter")
+            self.assertTrue(report["splits"][0]["gutter_safe"])
+            self.assertLess(abs(report["splits"][0]["height"] - 2210), 40)
+
+    def test_detector_failure_is_never_read_as_zero_balloons(self):
+        # An exploded detector knows nothing about the page. Reporting no protected
+        # region would turn every seam into a semantically safe cut.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(5400)
+            _paint_textured_balloon(canvas, 1700, 2000)
+            with mock.patch.object(
+                pdf.cv2, "Canny", side_effect=RuntimeError("opencv build has no Canny")
+            ):
+                with self.assertRaises(ProtectedRegionDetectionError) as caught:
+                    self._split(canvas, root)
+
+            self.assertIn("opencv build has no Canny", str(caught.exception))
+
+    def test_report_separates_gutter_cuts_from_semantic_cuts(self):
+        # ``safe_band`` alone cannot tell a white gutter from a deliberate cut through
+        # artwork, and the two are not the same evidence.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(5400)
+            _paint_white_gutter(canvas, 2180, 2240)
+            _, report = self._split(canvas, root)
+
+            first = report["splits"][0]
+            self.assertTrue(first["semantic_safe"])
+            self.assertTrue(first["gutter_safe"])
+            self.assertEqual(report["balloon_detector"], "ran")
+            self.assertEqual(
+                report["gutter_split_count"] + report["semantic_only_split_count"],
+                len(report["splits"]) - report["unsafe_split_count"],
+            )
+
+    def test_art_only_cut_is_reported_as_semantic_not_as_a_gutter(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, report = self._split(_noise_art(9000), root)
+
+            first = report["splits"][0]
+            self.assertTrue(first["semantic_safe"])
+            self.assertFalse(first["gutter_safe"])
+            self.assertEqual(first["reason"], "semantic_safe")
+            self.assertGreaterEqual(report["semantic_only_split_count"], 1)
+
+    def test_impossible_page_stays_fail_closed_and_requires_review(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(16000, width=200)
+            # Nothing anywhere in the stream may be cut.
+            _, report = self._split(canvas, root, protected_regions=[(0, 16000)])
+
+            self.assertGreaterEqual(report["unsafe_split_count"], 1)
+            unsafe = next(
+                record for record in report["splits"] if not record["safe_band"]
+            )
+            self.assertFalse(unsafe["semantic_safe"])
+            self.assertFalse(unsafe["gutter_safe"])
+            self.assertEqual(unsafe["reason"], "no_semantic_safe_band")
+            # The cut only happens once waiting would breach the PDF page limit.
+            self.assertGreaterEqual(
+                sum(int(record["height"]) for record in report["splits"]),
+                MAX_LOGICAL_PAGE_HEIGHT,
+            )
+            audit = smart_split_audit(report)
+            self.assertFalse(audit["safe"])
+            self.assertTrue(all(item["requires_review"] for item in audit["details"]))
 
 
 if __name__ == "__main__":
