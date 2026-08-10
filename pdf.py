@@ -1,9 +1,29 @@
 from pathlib import Path
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from json_utils import dump_json
+
+# Pillow writes a PDF page at 72 dpi, so one pixel is one PDF unit and the format's
+# 14400-unit page limit is the real ceiling for a logical page. Nothing else in the
+# pipeline resizes a page, so this is the only physical height constraint.
+MAX_LOGICAL_PAGE_HEIGHT = 14400
+
+# A balloon border sitting exactly on the seam still reads as cut, so the protected
+# span is widened by this much on each side. A cut is rejected when
+# ``top - padding < cut_y < bottom + padding``; the two edges themselves are allowed.
+PROTECTED_REGION_PADDING = 12
+
+# A balloon is a flat fill enclosed by a high contrast border. Pre-OCR that is the
+# only thing the pixels can tell us, so flat blobs are what gets protected.
+_UNIFORM_WINDOW = 15
+_UNIFORM_STD_LIMIT = 6.0
+_MIN_PROTECTED_AREA = 3000
+_MIN_PROTECTED_HEIGHT = 40
+# A flat band reaching across the page is the gutter we want to cut in, never a balloon.
+_PAGE_SPANNING_WIDTH_RATIO = 0.97
 
 
 def to_rgb(img):
@@ -82,6 +102,7 @@ def prepare_smart_webtoon_pages(
     min_height=1050,
     max_height=2400,
     logical_pages=False,
+    protected_regions=None,
 ):
     """Join source slices and rebuild logical pages around low-risk horizontal bands.
 
@@ -92,6 +113,10 @@ def prepare_smart_webtoon_pages(
     ``logical_pages=True`` means the caller already supplies complete pages — the usual case
     for a local folder. Joining and re-cutting those would destroy the author's page
     boundaries, so the inputs pass through untouched, in order.
+
+    ``protected_regions`` are ``(top, bottom)`` spans in joined-stream coordinates that a
+    cut may never cross — OCR lines, text blocks or translation groups a caller already
+    knows about. Balloons found in the pixels are protected on top of these.
     """
 
     paths = [str(path) for path in image_paths if path]
@@ -107,6 +132,7 @@ def prepare_smart_webtoon_pages(
     page_paths = []
     split_records = []
     buffer = None
+    consumed = 0
     source_images = 0
     source_height = 0
     for source_position, path in enumerate(paths):
@@ -123,22 +149,27 @@ def prepare_smart_webtoon_pages(
             # balloon/panel merely to preserve a fixed page height.
             hard_max_height = max_height + target_height
             search_max_height = min(buffer.height - 1, hard_max_height)
+            protected = protected_vertical_intervals(
+                buffer,
+                _local_protected_regions(protected_regions, consumed, buffer.height),
+            )
             split_y, metrics = _find_safe_horizontal_split(
                 buffer,
                 target_height=target_height,
                 min_height=min_height,
                 max_height=search_max_height,
+                protected=protected,
             )
-            if not metrics.get("safe_band") and buffer.height < hard_max_height:
+            if not metrics.get("gutter") and buffer.height < hard_max_height:
                 break
             extended_hard_height = hard_max_height + min(target_height // 2, 900)
             if (
-                not metrics.get("safe_band")
+                not metrics.get("gutter")
                 and not is_last_source
                 and buffer.height < extended_hard_height
             ):
                 break
-            if not metrics.get("safe_band") and buffer.height >= hard_max_height:
+            if not metrics.get("gutter") and buffer.height >= hard_max_height:
                 # The hard limit is the point where we must stop waiting indefinitely,
                 # not permission to cut through artwork when a real gutter is only a
                 # short distance later in the already-buffered stream. Prefer a nearby
@@ -154,9 +185,27 @@ def prepare_smart_webtoon_pages(
                         target_height=hard_max_height,
                         min_height=hard_max_height + 1,
                         max_height=overshoot_max_height,
+                        protected=protected,
                     )
-                    if overshoot_metrics.get("safe_band"):
+                    if overshoot_metrics.get("gutter"):
                         split_y, metrics = overshoot_y, overshoot_metrics
+            if not metrics.get("safe_band"):
+                # Every position in the normal window would divide a balloon, a text
+                # box or a translation group. Search the rest of the buffered stream
+                # before even considering a cut through protected content.
+                split_y, metrics = _expanded_semantic_split(
+                    buffer,
+                    target_height=target_height,
+                    min_height=min_height,
+                    hard_max_height=hard_max_height,
+                    protected=protected,
+                    fallback=(split_y, metrics),
+                )
+            if not metrics.get("safe_band") and buffer.height < MAX_LOGICAL_PAGE_HEIGHT:
+                # Keep the segments together: a taller logical page is always better
+                # than a cut balloon, and the page may still find a safe seam once
+                # more of the chapter is buffered.
+                break
             page = buffer.crop((0, 0, buffer.width, split_y))
             remainder = buffer.crop((0, split_y, buffer.width, buffer.height))
             buffer.close()
@@ -171,6 +220,7 @@ def prepare_smart_webtoon_pages(
                     **metrics,
                 }
             )
+            consumed += split_y
             buffer = remainder
 
     if buffer is not None and buffer.height:
@@ -181,7 +231,13 @@ def prepare_smart_webtoon_pages(
                 "page": len(page_paths) + 1,
                 "height": buffer.height,
                 "safe_band": True,
+                "gutter": True,
                 "reason": "chapter_end",
+                "decision": "chapter_end",
+                "target_y": buffer.height,
+                "selected_y": buffer.height,
+                "delta": 0,
+                "hard_collision_count": 0,
             }
         )
         page_paths.append(str(page_path))
@@ -195,6 +251,8 @@ def prepare_smart_webtoon_pages(
         "minimum_height": min_height,
         "maximum_height": max_height,
         "hard_maximum_height": max_height + target_height,
+        "physical_maximum_height": MAX_LOGICAL_PAGE_HEIGHT,
+        "protected_region_padding": PROTECTED_REGION_PADDING,
         "splits": split_records,
         "unsafe_split_count": sum(
             not bool(record.get("safe_band")) for record in split_records
@@ -204,6 +262,42 @@ def prepare_smart_webtoon_pages(
         dump_json(report, file, ensure_ascii=False, indent=2)
     return page_paths, report
 
+
+
+def _local_protected_regions(regions, consumed, height):
+    """Rebase caller-supplied stream spans onto the live buffer window."""
+    for top, bottom in regions or ():
+        local_top = int(top) - consumed
+        local_bottom = int(bottom) - consumed
+        if local_bottom > 0 and local_top < height:
+            yield local_top, local_bottom
+
+
+def _expanded_semantic_split(
+    image,
+    target_height,
+    min_height,
+    hard_max_height,
+    protected,
+    fallback,
+):
+    """Look past the normal window for the first cut that respects every balloon."""
+    split_y, metrics = _find_safe_horizontal_split(
+        image,
+        target_height=target_height,
+        min_height=min_height,
+        max_height=min(image.height - 1, MAX_LOGICAL_PAGE_HEIGHT),
+        protected=protected,
+    )
+    if not metrics.get("safe_band"):
+        return fallback
+    if split_y > hard_max_height:
+        metrics = {
+            **metrics,
+            "reason": f"expanded_{metrics['reason']}",
+            "decision": f"expanded_{metrics['decision']}",
+        }
+    return split_y, metrics
 
 
 def _passthrough_logical_pages(paths, split_folder):
@@ -263,10 +357,17 @@ def smart_split_audit(report):
                 "dark_ratio": record.get("dark_ratio"),
                 "texture": record.get("texture"),
                 "horizontal_edges": record.get("horizontal_edges"),
+                "target_y": record.get("target_y"),
+                "selected_y": record.get("selected_y"),
+                "delta": record.get("delta"),
+                "hard_collision_count": record.get("hard_collision_count"),
+                "decision": str(record.get("decision") or record.get("reason") or ""),
                 "reason": str(record.get("reason") or ""),
                 "safe_band": False,
-                # The lowest-risk band is taken rather than letting the page grow
-                # without bound; nothing is discarded, so the cut is applied.
+                # Reaching here means no position in the normal or expanded window
+                # cleared the protected regions and the page already hit the physical
+                # PDF limit, so the cut is applied and flagged rather than silently
+                # producing an unopenable page.
                 "fallback_decision": "kept_lowest_risk_band",
                 "accepted": True,
                 "requires_review": True,
@@ -370,16 +471,90 @@ def _append_vertical(current, image):
     return canvas
 
 
-def _find_safe_horizontal_split(image, target_height, min_height, max_height):
+def _merge_intervals(intervals):
+    merged = []
+    for top, bottom in sorted((int(top), int(bottom)) for top, bottom in intervals):
+        if merged and top <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], bottom)
+        else:
+            merged.append([top, bottom])
+    return [(top, bottom) for top, bottom in merged]
+
+
+def _uniform_blob_intervals(image):
+    """Vertical spans of flat, page-internal blobs - the pre-OCR balloon signal."""
+    gray = np.asarray(image.convert("L"), dtype=np.float32)
+    height, width = gray.shape
+    window = (_UNIFORM_WINDOW, _UNIFORM_WINDOW)
+    mean = cv2.blur(gray, window)
+    variance = cv2.blur(gray * gray, window) - mean * mean
+    flat = (variance <= _UNIFORM_STD_LIMIT**2).astype(np.uint8)
+    # Open drops flat speckle inside artwork, close reunites a balloon interior
+    # that its own lettering broke into pieces.
+    flat = cv2.morphologyEx(flat, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
+    flat = cv2.morphologyEx(flat, cv2.MORPH_CLOSE, np.ones((31, 31), np.uint8))
+    count, _, stats, _ = cv2.connectedComponentsWithStats(flat, 8)
+    intervals = []
+    for index in range(1, count):
+        left, top, blob_width, blob_height, area = stats[index]
+        if area < _MIN_PROTECTED_AREA or blob_height < _MIN_PROTECTED_HEIGHT:
+            continue
+        if blob_width >= _PAGE_SPANNING_WIDTH_RATIO * width:
+            continue
+        intervals.append((int(top), int(top + blob_height)))
+    return intervals
+
+
+def protected_vertical_intervals(
+    image,
+    extra_regions=(),
+    padding=PROTECTED_REGION_PADDING,
+):
+    """Vertical spans a page cut must never pass through.
+
+    Smart split runs before OCR, so no balloon, text or translation-group box exists
+    yet and the containers have to be recovered from the pixels. Callers that already
+    hold real boxes - OCR lines, text blocks, translation groups - pass them as
+    ``(top, bottom)`` pairs in ``extra_regions`` and they are protected verbatim,
+    which keeps the guarantee alive even when the pixel detector finds nothing.
+    """
+    regions = list(_uniform_blob_intervals(image))
+    regions.extend((int(top), int(bottom)) for top, bottom in extra_regions or ())
+    return _merge_intervals(
+        (top - padding, bottom + padding) for top, bottom in regions if bottom > top
+    )
+
+
+def _protected_collision(y, intervals):
+    for top, bottom in intervals:
+        if top < y < bottom:
+            return (top, bottom)
+    return None
+
+
+def _find_safe_horizontal_split(
+    image,
+    target_height,
+    min_height,
+    max_height,
+    protected=(),
+):
     upper = min(int(max_height), image.height - 1)
     lower = min(int(min_height), upper)
     target = max(lower, min(int(target_height), upper))
     gray = np.asarray(image.convert("L"), dtype=np.float32)
+    protected = _merge_intervals(protected)
+    collisions = 0
     best = None
     # A wider band prevents a one-pixel quiet row inside letters or balloon
     # borders from being mistaken for a genuine panel gutter.
     band_radius = 18
     for y in range(lower, upper + 1, 3):
+        if _protected_collision(y, protected) is not None:
+            # Hard constraint: cutting here would divide a balloon, a text box or a
+            # translation group. No visual score can buy this position back.
+            collisions += 1
+            continue
         band = gray[max(0, y - band_radius) : min(gray.shape[0], y + band_radius)]
         if band.size == 0:
             continue
@@ -399,7 +574,7 @@ def _find_safe_horizontal_split(image, target_height, min_height, max_height):
             and horizontal_edges <= 1.0
         )
         uniform_gutter = texture <= 4.5 and horizontal_edges <= 2.5
-        safe_band = white_gutter or dark_gutter or uniform_gutter
+        gutter = white_gutter or dark_gutter or uniform_gutter
         dominant_uniform_ratio = max(white_ratio, dark_ratio)
         score = (
             dominant_uniform_ratio * 5.0
@@ -415,10 +590,10 @@ def _find_safe_horizontal_split(image, target_height, min_height, max_height):
             if dark_gutter
             else "uniform_gutter"
             if uniform_gutter
-            else "low_risk"
+            else "semantic_safe"
         )
         candidate = (
-            safe_band,
+            gutter,
             score,
             -distance,
             y,
@@ -433,11 +608,18 @@ def _find_safe_horizontal_split(image, target_height, min_height, max_height):
     if best is None:
         return target, {
             "safe_band": False,
-            "reason": "no_candidate_band",
+            "gutter": False,
+            "reason": "no_semantic_safe_band" if protected else "no_candidate_band",
+            "decision": "no_semantic_safe_band" if protected else "no_candidate_band",
             "orientation": "horizontal",
+            "target_y": int(target),
+            "selected_y": int(target),
+            "delta": 0,
+            "hard_collision_count": collisions,
+            "protected_intervals": len(protected),
         }
     (
-        safe_band,
+        gutter,
         score,
         _,
         y,
@@ -448,14 +630,23 @@ def _find_safe_horizontal_split(image, target_height, min_height, max_height):
         band_type,
     ) = best
     return int(y), {
-        "safe_band": bool(safe_band),
-        "reason": band_type if safe_band else "lowest_risk_band",
+        # Every surviving candidate clears the hard constraints, so it is safe to cut
+        # here even when the artwork behind the seam is busy.
+        "safe_band": True,
+        "gutter": bool(gutter),
+        "reason": band_type,
+        "decision": band_type,
         "orientation": "horizontal",
         "band_score": round(float(score), 6),
         "white_ratio": round(float(white_ratio), 6),
         "dark_ratio": round(float(dark_ratio), 6),
         "texture": round(float(texture), 6),
         "horizontal_edges": round(float(horizontal_edges), 6),
+        "target_y": int(target),
+        "selected_y": int(y),
+        "delta": int(y) - int(target),
+        "hard_collision_count": collisions,
+        "protected_intervals": len(protected),
     }
 
 

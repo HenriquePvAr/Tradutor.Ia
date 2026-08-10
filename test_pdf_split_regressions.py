@@ -7,11 +7,18 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 import benchmark_pipeline
 from benchmark_pipeline import _resolve_download_max_images, _select_image_entries
-from pdf import generate_smart_webtoon_pdf, prepare_smart_webtoon_pages
+from pdf import (
+    MAX_LOGICAL_PAGE_HEIGHT,
+    PROTECTED_REGION_PADDING,
+    generate_smart_webtoon_pdf,
+    prepare_smart_webtoon_pages,
+    protected_vertical_intervals,
+)
 
 
 class SmartWebtoonSplitTests(unittest.TestCase):
@@ -117,7 +124,10 @@ class SmartWebtoonSplitTests(unittest.TestCase):
             self.assertEqual(report["pdf_pages"], 1)
             self.assertEqual(report["splits"][0]["height"], 3000)
 
-    def test_forces_low_risk_cut_only_after_hard_height_limit(self):
+    def test_art_without_a_gutter_is_cut_automatically_after_the_hard_limit(self):
+        # Busy artwork with no gutter is not a reason to ask a human anything: no
+        # balloon, text box or translation group crosses the seam, so the cut is
+        # applied and the chapter stays publishable.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             sources = self._write_source_slices(
@@ -133,8 +143,9 @@ class SmartWebtoonSplitTests(unittest.TestCase):
                 max_height=2400,
             )
 
-            self.assertGreaterEqual(report["unsafe_split_count"], 1)
-            self.assertEqual(report["splits"][0]["reason"], "lowest_risk_band")
+            self.assertEqual(report["unsafe_split_count"], 0)
+            self.assertEqual(report["splits"][0]["reason"], "semantic_safe")
+            self.assertFalse(report["splits"][0]["gutter"])
 
     def test_expands_past_hard_limit_when_next_safe_gutter_is_nearby(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -185,6 +196,228 @@ class SmartWebtoonSplitTests(unittest.TestCase):
             for page in pages:
                 with Image.open(page) as image:
                     image.verify()
+
+
+def _noise_art(height, width=800, seed=7):
+    """Continuous artwork with no flat area anywhere - never a safe visual gutter."""
+    rng = np.random.default_rng(seed)
+    return rng.integers(0, 256, (height, width, 3), dtype=np.uint8)
+
+
+def _paint_balloon(canvas, top, bottom, left=280, right=600):
+    """Paint a speech balloon: flat interior inside a high contrast border."""
+    canvas[top:bottom, left:right] = 20
+    canvas[top : top + 6, left:right] = 255
+    canvas[bottom - 6 : bottom, left:right] = 255
+    canvas[top:bottom, left : left + 6] = 255
+    canvas[top:bottom, right - 6 : right] = 255
+
+
+def _paint_white_gutter(canvas, top, bottom):
+    canvas[top:bottom, :] = 255
+
+
+def _slice_stream(canvas, root, slice_height=900):
+    stream = Image.fromarray(canvas)
+    paths = []
+    for index, top in enumerate(range(0, stream.height, slice_height), start=1):
+        path = root / f"source_{index:03}.png"
+        stream.crop((0, top, stream.width, min(stream.height, top + slice_height))).save(path)
+        paths.append(str(path))
+    stream.close()
+    return paths
+
+
+class SmartSplitProtectedRegionTests(unittest.TestCase):
+    """Hard constraint: a cut may cross artwork, never a balloon/text/group."""
+
+    def _split(self, canvas, root, **kwargs):
+        options = {"target_height": 1800, "min_height": 1050, "max_height": 2400}
+        options.update(kwargs)
+        return prepare_smart_webtoon_pages(
+            _slice_stream(canvas, root),
+            root / "logical",
+            **options,
+        )
+
+    def _boundaries(self, report):
+        """Absolute stream coordinates of every applied cut."""
+        offsets = []
+        running = 0
+        for record in report["splits"][:-1]:
+            running += int(record["height"])
+            offsets.append(running)
+        return offsets
+
+    def test_interval_merging_unions_touching_protected_regions(self):
+        image = Image.fromarray(_noise_art(2000))
+        merged = protected_vertical_intervals(
+            image,
+            extra_regions=[(1000, 1300), (1250, 1500)],
+            padding=0,
+        )
+        image.close()
+        self.assertIn((1000, 1500), merged)
+
+    def test_protected_interval_edges_follow_the_documented_inequality(self):
+        image = Image.fromarray(_noise_art(2000))
+        merged = protected_vertical_intervals(
+            image, extra_regions=[(1000, 1300)], padding=PROTECTED_REGION_PADDING
+        )
+        image.close()
+        interval = next(pair for pair in merged if pair[0] <= 1000 <= pair[1])
+        self.assertEqual(interval, (1000 - PROTECTED_REGION_PADDING, 1300 + PROTECTED_REGION_PADDING))
+
+    def test_overlapping_balloons_are_protected_as_one_union(self):
+        canvas = _noise_art(3000)
+        _paint_balloon(canvas, 1200, 1500, left=200, right=520)
+        _paint_balloon(canvas, 1450, 1760, left=380, right=700)
+        image = Image.fromarray(canvas)
+        merged = protected_vertical_intervals(image)
+        image.close()
+        covering = [pair for pair in merged if pair[0] <= 1300 and pair[1] >= 1700]
+        self.assertEqual(len(covering), 1, merged)
+
+    def test_long_balloon_pushes_the_cut_out_of_its_interval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(9000)
+            _paint_balloon(canvas, 2800, 3500)
+            _, report = self._split(canvas, root, target_height=3000, min_height=1800, max_height=3600)
+
+            for cut in self._boundaries(report):
+                self.assertFalse(2800 <= cut <= 3500, f"cut {cut} bisects the balloon")
+
+    def test_real_56_57_geometry_no_longer_bisects_the_balloon(self):
+        # Geometry taken from the real chapter: the applied cut was y=1671 and the
+        # balloon measured y=1583..1833, so the seam ran through the middle of it.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(5391)
+            _paint_balloon(canvas, 1583, 1833, left=329, right=649)
+            _paint_white_gutter(canvas, 5105, 5391)
+            _, report = self._split(canvas, root)
+
+            self.assertEqual(report["unsafe_split_count"], 0)
+            cuts = self._boundaries(report)
+            self.assertTrue(cuts)
+            for cut in cuts:
+                self.assertFalse(1583 <= cut <= 1833, f"cut {cut} bisects the balloon")
+
+    def test_art_only_high_band_score_is_resolved_without_review(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, report = self._split(_noise_art(9000), root)
+
+            self.assertEqual(report["unsafe_split_count"], 0)
+            self.assertGreater(report["pdf_pages"], 1)
+            self.assertTrue(all(item["safe_band"] for item in report["splits"]))
+
+    def test_white_gutter_is_still_preferred_over_a_nearer_art_cut(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(5400)
+            _paint_white_gutter(canvas, 2180, 2240)
+            _, report = self._split(canvas, root)
+
+            self.assertEqual(report["splits"][0]["reason"], "white_gutter")
+            self.assertLess(abs(report["splits"][0]["height"] - 2210), 40)
+
+    def test_injected_text_region_moves_the_cut_without_a_balloon_detector(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(5400)
+            # No painted balloon at all: only an OCR/text box is known.
+            _, report = self._split(canvas, root, protected_regions=[(1700, 2100)])
+
+            for cut in self._boundaries(report):
+                self.assertFalse(1700 <= cut <= 2100, f"cut {cut} splits the text box")
+
+    def test_injected_translation_group_stays_inside_one_logical_page(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(5400)
+            _, report = self._split(canvas, root, protected_regions=[(1500, 2600)])
+
+            for cut in self._boundaries(report):
+                self.assertFalse(1500 <= cut <= 2600, f"cut {cut} splits the group")
+
+    def test_keeps_segments_together_when_the_whole_window_is_protected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(6000)
+            _paint_white_gutter(canvas, 5400, 5460)
+            # One balloon spanning the entire normal and expanded search window.
+            _, report = self._split(
+                canvas, root, protected_regions=[(1000, 5350)]
+            )
+
+            self.assertEqual(report["unsafe_split_count"], 0)
+            for cut in self._boundaries(report):
+                self.assertFalse(1000 <= cut <= 5350, f"cut {cut} splits the balloon")
+
+    def test_variable_logical_page_height_is_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(9000)
+            _paint_balloon(canvas, 1700, 2300)
+            _, report = self._split(canvas, root)
+
+            heights = [int(item["height"]) for item in report["splits"]]
+            self.assertGreater(len(set(heights)), 1, heights)
+            self.assertEqual(sum(heights), 9000)
+
+    def test_selection_is_deterministic_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(7000)
+            _paint_balloon(canvas, 1700, 2100)
+            first = self._split(canvas, root)[1]
+            second = self._split(canvas, root)[1]
+
+            self.assertEqual(first["splits"], second["splits"])
+
+    def test_maximum_logical_page_height_matches_the_pdf_unit_limit(self):
+        # A PDF page is written at 72 dpi, so one pixel is one PDF unit and the
+        # format caps a page at 14400 units.
+        self.assertEqual(MAX_LOGICAL_PAGE_HEIGHT, 14400)
+
+    def test_trace_records_the_decision_for_every_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(6000)
+            _paint_balloon(canvas, 1700, 2100)
+            _, report = self._split(canvas, root)
+
+            boundary = report["splits"][0]
+            for field in ("target_y", "selected_y", "delta", "hard_collision_count", "decision"):
+                self.assertIn(field, boundary)
+            self.assertGreater(boundary["hard_collision_count"], 0)
+
+    def test_pdf_keeps_every_variable_height_page_uncropped_and_in_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canvas = _noise_art(9000)
+            _paint_balloon(canvas, 1700, 2300)
+            _paint_white_gutter(canvas, 5000, 5060)
+            pdf_path = root / "chapter.pdf"
+            pages, report = generate_smart_webtoon_pdf(
+                _slice_stream(canvas, root),
+                pdf_path,
+                root / "logical",
+                target_height=1800,
+                min_height=1050,
+                max_height=2400,
+            )
+
+            self.assertTrue(pdf_path.is_file())
+            self.assertEqual(len(pages), len(report["splits"]))
+            rendered = 0
+            for page, record in zip(pages, report["splits"]):
+                with Image.open(page) as image:
+                    self.assertEqual(image.height, int(record["height"]))
+                    rendered += image.height
+            self.assertEqual(rendered, 9000)
 
 
 if __name__ == "__main__":
