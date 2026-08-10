@@ -45,6 +45,7 @@ PIPELINE_OPERATIONS = (
     "reconstruct", "generate_pdf",
 )
 WORKSPACE_POLICY_REQUIRED = "workspace_source_authorization_required"
+WORKSPACE_POLICY_SCOPE_INDEX = "idx_workspace_source_policy_scope"
 
 
 def _canonical(payload: dict[str, Any]) -> str:
@@ -184,6 +185,38 @@ class SourceReadinessStore:
     def close(self) -> None:
         self._conn.close()
 
+    def _policy_execute(self, sql: str, params: tuple[Any, ...]) -> sqlite3.Cursor:
+        """Run one policy statement, rebuilding the scope index if SQLite calls it damaged.
+
+        A damaged index root page makes every scoped read *and* every insert fail, which
+        is what turned the settings toggle into a server error. The rows themselves stay
+        readable, so the index is rebuilt from them instead of failing the operation.
+        """
+        try:
+            return self._conn.execute(sql, params)
+        except sqlite3.DatabaseError as exc:
+            if "malformed" not in str(exc):
+                raise
+            self._rebuild_policy_scope_index()
+            return self._conn.execute(sql, params)
+
+    def _rebuild_policy_scope_index(self) -> None:
+        """Detach and recreate the scope index without touching a single policy row.
+
+        Neither REINDEX nor DROP INDEX can repair a corrupt b-tree: both have to read the
+        damaged pages first. Removing the schema entry orphans those pages (a later VACUUM
+        reclaims them) and lets ``_ensure_schema`` build a clean index from the table.
+        """
+        try:
+            self._conn.execute("PRAGMA writable_schema=ON")
+            self._conn.execute(
+                "DELETE FROM sqlite_master WHERE type='index' AND name=?",
+                (WORKSPACE_POLICY_SCOPE_INDEX,))
+        finally:
+            self._conn.execute("PRAGMA writable_schema=RESET")
+            self._conn.execute("PRAGMA writable_schema=OFF")
+        self._ensure_schema()
+
     def _ensure_schema(self) -> None:
         self._conn.executescript("""
         CREATE TABLE IF NOT EXISTS source_analysis_results (
@@ -280,7 +313,7 @@ class SourceReadinessStore:
             "status": "active", "policy_hash": policy_hash,
         }
         event_id = f"wpe_{uuid.uuid4().hex}"
-        self._conn.execute(
+        self._policy_execute(
             """INSERT INTO workspace_source_authorization_policies
                (event_id,policy_id,owner,workspace_id,status,policy_hash,payload_json,created_at)
                VALUES (?,?,?,?,?,?,?,?)""",
@@ -292,7 +325,7 @@ class SourceReadinessStore:
     def active_workspace_policy(
         self, *, owner: str, workspace_id: str,
     ) -> WorkspaceSourceAuthorizationPolicy | None:
-        row = self._conn.execute(
+        row = self._policy_execute(
             """SELECT payload_json FROM workspace_source_authorization_policies
                WHERE owner=? AND workspace_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1""",
             (_safe_id(owner, "owner"), _safe_id(workspace_id, "workspace_id")),
@@ -305,7 +338,7 @@ class SourceReadinessStore:
     def workspace_policy_history(
         self, *, owner: str, workspace_id: str,
     ) -> list[WorkspaceSourceAuthorizationPolicy]:
-        rows = self._conn.execute(
+        rows = self._policy_execute(
             """SELECT payload_json FROM workspace_source_authorization_policies
                WHERE owner=? AND workspace_id=? ORDER BY created_at, rowid""",
             (_safe_id(owner, "owner"), _safe_id(workspace_id, "workspace_id")),
@@ -322,7 +355,7 @@ class SourceReadinessStore:
         payload = current.public()
         payload.update(status="revoked", revoked_at=now, updated_at=now)
         event_id = f"wpe_{uuid.uuid4().hex}"
-        self._conn.execute(
+        self._policy_execute(
             """INSERT INTO workspace_source_authorization_policies
                (event_id,policy_id,owner,workspace_id,status,policy_hash,payload_json,created_at)
                VALUES (?,?,?,?,?,?,?,?)""",

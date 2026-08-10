@@ -1711,7 +1711,9 @@ def api_source_policy_update(
     payload: dict[str, Any] = Body(default={}),
 ) -> dict[str, Any]:
     _ui_principal(request, mutate=True)
-    if payload.get("active") not in {True, False}:
+    # `1` and `0` compare equal to `True`/`False`, so a membership test alone would let a
+    # numeric payload decide an authorization. The intent must arrive as a real boolean.
+    if not isinstance(payload.get("active"), bool):
         raise HTTPException(status_code=422, detail={
             "code": "invalid_workspace_policy_state",
             "message": "Informe explicitamente se a política deve ficar ativa.",

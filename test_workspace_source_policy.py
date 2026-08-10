@@ -2,15 +2,41 @@
 from __future__ import annotations
 import _test_bootstrap  # noqa: F401
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 from job_store import JobStatus, JobStore
 from source_readiness import (
-    PIPELINE_OPERATIONS, SourceReadinessStore, default_workspace_id,
-    download_fixture_assets,
+    PIPELINE_OPERATIONS, WORKSPACE_POLICY_SCOPE_INDEX, SourceReadinessStore,
+    default_workspace_id, download_fixture_assets,
 )
+
+STATEMENT = "Workspace restricted to authorized sources."
+
+
+def corrupt_policy_scope_index(db_path: Path) -> None:
+    """Damage exactly the policy scope index b-tree, leaving every row intact.
+
+    This reproduces the observed production failure: one index root page becomes
+    unreadable, so every scoped policy statement raises ``sqlite3.DatabaseError``
+    while the table itself still holds the persisted authorization.
+    """
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        root = conn.execute(
+            "SELECT rootpage FROM sqlite_master WHERE type='index' AND name=?",
+            (WORKSPACE_POLICY_SCOPE_INDEX,)).fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    finally:
+        conn.close()
+    with open(db_path, "r+b") as handle:
+        handle.seek((root - 1) * page_size)
+        handle.write(b"\xff" * page_size)
 
 
 class WorkspacePolicyTests(unittest.TestCase):
@@ -249,6 +275,209 @@ class WorkspaceAuthorizedTransitionTests(unittest.TestCase):
         self.assertEqual(first["manifest_id"], second["manifest_id"])
         self.assertEqual(first["asset_count"], 2)
         self.assertEqual(len(list(output.glob("*.png"))), 2)
+
+
+class CorruptPolicyIndexRecoveryTests(unittest.TestCase):
+    """SOURCE-POLICY-500-001: a damaged scope index must not brick the policy toggle."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self.tmp.name) / "jobs.sqlite3"
+        self.workspace = default_workspace_id(self.db)
+        store = SourceReadinessStore(self.db)
+        try:
+            self.seeded = store.activate_workspace_policy(
+                owner="local", workspace_id=self.workspace, created_by="local",
+                authorization_statement=STATEMENT)
+            store.activate_workspace_policy(
+                owner="other", workspace_id=self.workspace, created_by="other",
+                authorization_statement=STATEMENT)
+        finally:
+            store.close()
+        corrupt_policy_scope_index(self.db)
+        self.opened: list = []
+
+    def tearDown(self):
+        for handle in self.opened:
+            handle.close()
+        self.tmp.cleanup()
+
+    def open_store(self) -> SourceReadinessStore:
+        store = SourceReadinessStore(self.db)
+        self.opened.append(store)
+        return store
+
+    def open_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db)
+        self.opened.append(conn)
+        return conn
+
+    def test_corruption_is_actually_reproduced_at_the_sqlite_layer(self):
+        conn = self.open_connection()
+        with self.assertRaises(sqlite3.DatabaseError):
+            conn.execute(
+                "SELECT payload_json FROM workspace_source_authorization_policies "
+                "INDEXED BY " + WORKSPACE_POLICY_SCOPE_INDEX + " "
+                "WHERE owner=? AND workspace_id=?",
+                ("local", self.workspace)).fetchone()
+
+    def test_reading_the_policy_recovers_the_persisted_authorization(self):
+        policy = self.open_store().active_workspace_policy(
+            owner="local", workspace_id=self.workspace)
+        self.assertIsNotNone(policy)
+        self.assertEqual(policy.policy_id, self.seeded.policy_id)
+
+    def test_revocation_and_reactivation_persist_across_reloads(self):
+        revoked = self.open_store().revoke_workspace_policy(
+            owner="local", workspace_id=self.workspace, revoked_by="local")
+        self.assertEqual(revoked.status, "revoked")
+        self.assertIsNone(self.open_store().active_workspace_policy(
+            owner="local", workspace_id=self.workspace))
+
+        reactivated = self.open_store().activate_workspace_policy(
+            owner="local", workspace_id=self.workspace, created_by="local",
+            authorization_statement=STATEMENT)
+        self.assertEqual(reactivated.status, "active")
+        restored = self.open_store().active_workspace_policy(
+            owner="local", workspace_id=self.workspace)
+        self.assertEqual(restored.policy_id, reactivated.policy_id)
+
+    def test_repair_rebuilds_the_index_without_dropping_history_or_other_scopes(self):
+        store = self.open_store()
+        self.assertEqual(len(store.workspace_policy_history(
+            owner="local", workspace_id=self.workspace)), 1)
+        self.assertIsNotNone(store.active_workspace_policy(
+            owner="other", workspace_id=self.workspace))
+        conn = self.open_connection()
+        self.assertEqual(
+            conn.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?",
+                (WORKSPACE_POLICY_SCOPE_INDEX,)).fetchone()[0], 1)
+        self.assertNotIn("malformed", str(
+            conn.execute("PRAGMA quick_check(20)").fetchall()))
+
+
+class _StubAuth:
+    def require_authenticated(self, request):
+        return SimpleNamespace(user_id="user-a", owner_id="user-a", authenticated=True)
+
+    def require_csrf(self, request, principal):
+        return None
+
+
+class SourcePolicyRouteTests(unittest.TestCase):
+    """The settings toggle contract, exercised over the real persistence layer."""
+
+    def setUp(self):
+        import app_ui
+        from ui_bridge import UiBridge
+
+        self.app_ui = app_ui
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.env = patch.dict("os.environ", {
+            "APP_ENV": "test",
+            "ALLOW_LOCAL_TEST_IDENTITIES": "1",
+            "TRADUTOR_TEST_RUNTIME_ROOT": str(self.root),
+        })
+        self.env.start()
+        self.bridge = UiBridge()
+        self.workspace = default_workspace_id(self.bridge.store.db_path)
+        self.patcher = patch.multiple(app_ui, AUTH=_StubAuth(), BRIDGE=self.bridge)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        self.bridge.close()
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def update(self, payload):
+        return self.app_ui.api_source_policy_update(SimpleNamespace(), payload=payload)
+
+    def stored_status(self) -> str:
+        store = SourceReadinessStore(self.bridge.store.db_path)
+        try:
+            policy = store.active_workspace_policy(
+                owner="local", workspace_id=self.workspace)
+        finally:
+            store.close()
+        return policy.status if policy else "inactive"
+
+    def test_enable_succeeds_persists_and_is_read_back_by_the_settings_route(self):
+        result = self.update({"active": True})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["policy"]["status"], "active")
+        self.assertTrue(result["policy"]["all_submitted_sources_authorized"])
+        self.assertEqual(self.stored_status(), "active")
+        served = self.app_ui.api_source_policy(SimpleNamespace())
+        self.assertEqual(served["policy"]["policy_id"], result["policy"]["policy_id"])
+
+    def test_enable_then_disable_persists_the_revocation(self):
+        self.update({"active": True})
+        revoked = self.update({"active": False})
+        self.assertEqual(revoked["policy"]["status"], "revoked")
+        self.assertEqual(self.stored_status(), "inactive")
+
+    def test_repeated_enable_and_disable_are_idempotent(self):
+        first = self.update({"active": True})
+        second = self.update({"active": True})
+        self.assertEqual(first["policy"]["policy_id"], second["policy"]["policy_id"])
+        self.assertEqual(self.stored_status(), "active")
+        self.update({"active": False})
+        with self.assertRaises(self.app_ui.HTTPException) as ctx:
+            self.update({"active": False})
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(self.stored_status(), "inactive")
+
+    def test_a_corrupt_scope_index_no_longer_answers_with_a_server_error(self):
+        self.update({"active": True})
+        corrupt_policy_scope_index(self.bridge.store.db_path)
+        self.assertEqual(self.update({"active": False})["policy"]["status"], "revoked")
+        corrupt_policy_scope_index(self.bridge.store.db_path)
+        self.assertEqual(self.update({"active": True})["policy"]["status"], "active")
+        self.assertEqual(self.stored_status(), "active")
+
+    def test_non_boolean_intent_is_refused_without_touching_the_policy(self):
+        for payload in ({}, {"active": "true"}, {"active": "false"},
+                        {"active": 1}, {"active": 0}, {"active": None}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(self.app_ui.HTTPException) as ctx:
+                    self.update(payload)
+                self.assertEqual(ctx.exception.status_code, 422)
+                self.assertEqual(self.stored_status(), "inactive")
+
+    def test_a_failed_write_never_reports_an_active_policy(self):
+        broken = patch.object(
+            SourceReadinessStore, "activate_workspace_policy",
+            side_effect=sqlite3.OperationalError("disk I/O error"))
+        with broken, self.assertRaises(sqlite3.OperationalError):
+            self.update({"active": True})
+        self.assertEqual(self.stored_status(), "inactive")
+        self.assertEqual(
+            self.app_ui.api_source_policy(SimpleNamespace())["policy"]["status"],
+            "inactive")
+
+
+class SettingsToggleErrorHandlingContract(unittest.TestCase):
+    """The settings pane must never paint an activation the backend refused."""
+
+    UI = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+        encoding="utf-8")
+
+    def submit_handler(self) -> str:
+        start = self.UI.index("#workspaceSourcePolicyConfirmForm")
+        return self.UI[start:start + 1400]
+
+    def test_toggle_failure_restores_the_previous_state_and_reports_it(self):
+        handler = self.submit_handler()
+        self.assertIn("} catch (error) {", handler)
+        self.assertIn("showToast(", handler)
+        self.assertIn(
+            "renderWorkspaceSourcePolicy(appState.settings?.workspace_source_policy || {})",
+            handler)
+        failure = handler[handler.index("} catch (error) {"):]
+        self.assertNotIn("appState.settings.workspace_source_policy =", failure)
 
 
 if __name__ == "__main__":
