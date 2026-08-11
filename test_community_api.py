@@ -122,6 +122,33 @@ class CommunityApiTests(unittest.TestCase):
         self.assertEqual(self.jobs.list_jobs(limit=None), [])
         self.assertEqual(self.api.store.list_user_posts(OWNER.user_id), [])
 
+    def test_publish_rejects_client_controlled_backend_metadata_fields(self):
+        forbidden = (
+            "storage_reference",
+            "storage_file_id",
+            "drive_file_id",
+            "file_id",
+            "provider",
+            "storage_provider",
+            "checksum",
+            "artifact_sha256",
+            "artifact_size_bytes",
+            "owner_user_id",
+            "publication_status",
+            "last_error_code",
+        )
+        for field in forbidden:
+            with self.subTest(field=field):
+                payload = {
+                    "slug": "chap",
+                    "series_slug": "chap",
+                    "episode_number": "1",
+                    "publish_consent": True,
+                    field: "forged",
+                }
+                with self.assertRaisesRegex(community_api.CommunityError, "client_identity_not_allowed"):
+                    self.api.publish(payload, principal=OWNER)
+
     def test_local_test_publish_uses_only_owner_scoped_local_storage(self):
         self.api.close()
         with patch.object(community_api, "storage_provider_name", lambda: "local_test"), patch.dict(

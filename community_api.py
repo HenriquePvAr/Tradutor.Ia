@@ -31,6 +31,10 @@ from community_storage import (
     StorageError,
 )
 from community_store import CommunityStore
+from community_publication_metadata import (
+    PublicationMetadataError,
+    PublicationMetadataRepositoryConfig,
+)
 from job_store import JobStatus
 from publish_authorization import (
     PublishArtifactIdentity,
@@ -43,6 +47,8 @@ COMMUNITY_STORAGE_ROOT = REPO_ROOT / ".cache" / "runtime" / "community_storage"
 _CLIENT_IDENTITY_FIELDS = frozenset({
     "user_id", "role", "roles", "actor_id", "owner", "admin", "moderator",
     "storage_file_id", "drive_file_id", "file_id", "provider", "checksum",
+    "storage_reference", "storage_provider", "artifact_sha256", "artifact_size",
+    "artifact_size_bytes", "owner_user_id", "publication_status", "last_error_code",
 })
 
 
@@ -97,6 +103,41 @@ def _storage_config() -> dict[str, Any]:
             "root_folder_id": os.getenv("COMMUNITY_DRIVE_ROOT_FOLDER_ID", "")}
 
 
+def publication_metadata_config_from_env() -> PublicationMetadataRepositoryConfig:
+    """Build the backend-only publication metadata repository configuration.
+
+    Local/offline mode is explicit. Supabase mode requires the modern
+    SUPABASE_SECRET_KEY and never falls back to the legacy service_role variable.
+    """
+
+    provider = str(
+        os.getenv("COMMUNITY_PUBLICATION_METADATA_PROVIDER") or "none"
+    ).strip().lower()
+    required = (
+        provider == "supabase"
+        or os.getenv("COMMUNITY_PUBLICATION_METADATA_REQUIRED") == "1"
+        or str(os.getenv("APP_ENV") or "").strip().lower() == "production"
+        or storage_provider_name() == "google_drive"
+    )
+    if provider in {"", "none", "null", "offline"} and not required:
+        return PublicationMetadataRepositoryConfig({"provider": "none"})
+    if provider in {"", "none", "null", "offline"} and required:
+        provider = "supabase"
+    if provider == "fake":
+        return PublicationMetadataRepositoryConfig({"provider": "fake"})
+    if provider != "supabase":
+        raise PublicationMetadataError("unsupported_publication_metadata_provider")
+    url = str(os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+    secret_key = str(os.getenv("SUPABASE_SECRET_KEY") or "").strip()
+    if not url or not secret_key.startswith("sb_secret_"):
+        raise PublicationMetadataError("supabase_publication_metadata_not_configured")
+    return PublicationMetadataRepositoryConfig({
+        "provider": "supabase",
+        "url": url,
+        "secret_env_var": "SUPABASE_SECRET_KEY",
+    })
+
+
 def build_read_provider():
     """Provider used to stream a PDF for reading. Google Drive requires configured OAuth,
     which is out of scope here; the local default is the private filesystem fake."""
@@ -136,7 +177,11 @@ class CommunityApi:
                 **{k: v for k, v in _storage_config().items() if k != "storage_provider"},
                 "storage_root": str(storage_root),
             },
-            publication_metadata_config=publication_metadata_config,
+            publication_metadata_config=(
+                publication_metadata_config
+                if publication_metadata_config is not None
+                else publication_metadata_config_from_env()
+            ),
         )
         self._read_provider_factory = read_provider_factory or (
             (lambda: FilesystemStorageProvider(storage_root))

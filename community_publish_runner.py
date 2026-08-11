@@ -446,9 +446,9 @@ def _finalize_publish(
     total,
     job,
 ) -> bool:
-    metadata_repo.finalize(
-        _publication_metadata(config, post_id, job_id, remote_file_id)
-    )
+    metadata = _publication_metadata(config, post_id, job_id, remote_file_id)
+    metadata_repo.record_storage(metadata)
+    metadata_repo.finalize(metadata)
     published = community.complete_publish_attempt(
         post_id=post_id,
         file_id=file_id,

@@ -37,6 +37,7 @@ def isolated_drive_environment(monkeypatch):
 
 
 def _configure(monkeypatch, tmp_path: Path, *, root: str = "", token_path: Path | None = None):
+    monkeypatch.delenv(local_environment.HERMETIC_TEST_ENV, raising=False)
     token_path = token_path or (tmp_path / "tokens" / "drive-token.json")
     client_id = "offline-client-id.example"
     client_secret = "offline-client-secret"
@@ -171,6 +172,7 @@ def test_invalid_configuration_stops_cli_without_values(tmp_path, monkeypatch, c
     invalid_content = "PRIVATE INVALID CONTENT !"
     env_path.write_text(invalid_content + "\n", encoding="utf-8")
     monkeypatch.setattr(local_environment, "LOCAL_ENV_PATH", env_path)
+    monkeypatch.delenv(local_environment.HERMETIC_TEST_ENV, raising=False)
 
     assert drive_auth.main(["status"]) == 2
     captured = capsys.readouterr()
@@ -211,6 +213,7 @@ def test_real_status_subprocess_uses_only_temporary_env_from_other_cwd(tmp_path)
         cwd=elsewhere,
         capture_output=True,
         text=True,
+        env={k: v for k, v in os.environ.items() if k != local_environment.HERMETIC_TEST_ENV},
         check=False,
     )
     output = result.stdout + result.stderr

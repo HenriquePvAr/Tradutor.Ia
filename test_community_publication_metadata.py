@@ -61,7 +61,7 @@ class FakeTransport:
         return self.queue.pop(0)
 
 
-CONFIG = SocialConfig(url="https://proj.supabase.co", publishable_key="sb_publishable_pub")
+CONFIG = SocialConfig(url="https://example.invalid", publishable_key="sb_publishable_pub")
 
 
 class FakePublicationMetadataContractTests(unittest.TestCase):
@@ -69,6 +69,7 @@ class FakePublicationMetadataContractTests(unittest.TestCase):
         repo = FakePublicationMetadataRepository()
         meta = _metadata()
         repo.reserve(meta)
+        repo.record_storage(meta)
         repo.finalize(meta)
         public = repo.get_publication(meta["publication_id"]).public()
         self.assertNotIn("storage_reference", public)
@@ -89,6 +90,7 @@ class FakePublicationMetadataContractTests(unittest.TestCase):
         pending = _metadata(owner_user_id=published["owner_user_id"], artifact_sha256="b" * 64)
         repo.reserve(pending)
         repo.reserve(published)
+        repo.record_storage(published)
         repo.finalize(published)
         rows = repo.list_publications(owner_user_id=published["owner_user_id"])
         self.assertEqual([r.publication_id for r in rows], [published["publication_id"]])
@@ -98,72 +100,99 @@ class FakePublicationMetadataContractTests(unittest.TestCase):
         meta = _metadata(storage_reference="")
         repo.reserve(meta)
         with self.assertRaisesRegex(PublicationMetadataError, "missing_storage_reference"):
+            repo.record_storage(meta)
+
+    def test_finalize_requires_recorded_storage_before_published(self):
+        repo = FakePublicationMetadataRepository()
+        meta = _metadata()
+        repo.reserve(meta)
+        with self.assertRaisesRegex(PublicationMetadataError, "invalid_publication_transition"):
             repo.finalize(meta)
+
+    def test_storage_reference_is_immutable_and_idempotent(self):
+        repo = FakePublicationMetadataRepository()
+        meta = _metadata()
+        repo.reserve(meta)
+        repo.record_storage(meta)
+        repo.record_storage(meta)
+        changed = {**meta, "storage_reference": f"other-{uuid4()}"}
+        with self.assertRaisesRegex(PublicationMetadataError, "storage_reference_conflict"):
+            repo.record_storage(changed)
+        repo.finalize(meta)
+        repo.finalize(meta)
+        with self.assertRaisesRegex(PublicationMetadataError, "storage_reference_conflict"):
+            repo.record_storage(changed)
 
 
 class SupabasePublicationMetadataRepositoryTests(unittest.TestCase):
-    def test_reserve_upserts_private_artifact_without_storage_reference(self):
+    def test_reserve_calls_backend_rpc_without_storage_reference_or_bearer(self):
         transport = FakeTransport()
         meta = _metadata()
-        transport.push(201, [{**meta, "storage_reference": None, "publication_status": "reserved"}])
+        transport.push(200, {"publication_id": meta["publication_id"], "publication_status": "reserved"})
         SupabasePublicationMetadataRepository(
-            CONFIG, access_token="server-token", transport=transport).reserve(meta)
+            CONFIG, secret_key="sb_secret_server_token", transport=transport).reserve(meta)
         call = transport.calls[0]
         self.assertEqual(call["method"], "POST")
-        self.assertIn("/rest/v1/community_publication_artifacts", call["url"])
-        self.assertIn("on_conflict=publication_id", call["url"])
-        self.assertEqual(call["data"]["publication_status"], "reserved")
+        self.assertIn("/rest/v1/rpc/reserve_community_publication_artifact", call["url"])
+        self.assertEqual(call["headers"]["apikey"], "sb_secret_server_token")
+        self.assertNotIn("Authorization", call["headers"])
+        self.assertNotIn("publication_status", call["data"])
         self.assertNotIn("storage_reference", call["data"])
-        self.assertEqual(call["headers"]["Authorization"], "Bearer server-token")
 
-    def test_finalize_patches_published_state_with_storage_reference(self):
+    def test_record_storage_and_finalize_use_narrow_rpcs(self):
         transport = FakeTransport()
         meta = _metadata()
-        transport.push(200, [{**meta, "publication_status": "published"}])
-        SupabasePublicationMetadataRepository(
-            CONFIG, access_token="server-token", transport=transport).finalize(meta)
+        transport.push(200, {"publication_id": meta["publication_id"], "publication_status": "uploaded"})
+        transport.push(200, {"publication_id": meta["publication_id"], "publication_status": "published"})
+        repo = SupabasePublicationMetadataRepository(
+            CONFIG, secret_key="sb_secret_server_token", transport=transport)
+        repo.record_storage(meta)
+        repo.finalize(meta)
         call = transport.calls[0]
-        self.assertEqual(call["method"], "PATCH")
-        self.assertIn(f"publication_id=eq.{meta['publication_id']}", call["url"])
-        self.assertEqual(call["data"]["publication_status"], "published")
-        self.assertEqual(call["data"]["storage_reference"], meta["storage_reference"])
+        self.assertEqual(call["method"], "POST")
+        self.assertIn("/rest/v1/rpc/record_community_publication_storage", call["url"])
+        self.assertEqual(call["data"]["p_storage_reference"], meta["storage_reference"])
+        self.assertNotIn("publication_status", call["data"])
+        self.assertIn("/rest/v1/rpc/finalize_community_publication_artifact", transport.calls[1]["url"])
+        self.assertNotIn("storage_reference", transport.calls[1]["data"])
 
-    def test_get_publication_and_list_keep_backend_reference_internal(self):
+    def test_backend_rpc_response_keeps_storage_reference_internal_when_returned(self):
         transport = FakeTransport()
         meta = _metadata()
         transport.push(200, [{**meta, "publication_status": "published",
                               "created_at": "2026-01-01T00:00:00Z",
                               "updated_at": "2026-01-01T00:00:00Z"}])
-        repo = SupabasePublicationMetadataRepository(CONFIG, access_token="server-token", transport=transport)
-        row = repo.get_publication(meta["publication_id"])
+        repo = SupabasePublicationMetadataRepository(CONFIG, secret_key="sb_secret_server_token", transport=transport)
+        row = repo._metadata_from_rpc_result([{**meta, "publication_status": "published"}])
         self.assertEqual(row.storage_reference, meta["storage_reference"])
         self.assertNotIn("storage_reference", row.public())
-
-        transport.push(200, [{**meta, "publication_status": "published"}])
-        rows = repo.list_publications(owner_user_id=meta["owner_user_id"])
-        self.assertEqual(len(rows), 1)
-        self.assertIn("publication_status=eq.published", transport.calls[-1]["url"])
-        self.assertIn(f"owner_user_id=eq.{meta['owner_user_id']}", transport.calls[-1]["url"])
 
     def test_build_supabase_provider_fails_closed_without_backend_token(self):
         with self.assertRaisesRegex(PublicationMetadataError, "not_configured"):
             build_publication_metadata_repository({
                 "provider": "supabase",
-                "url": "https://proj.supabase.co",
-                "publishable_key": "sb_publishable_pub",
+                "url": "https://example.invalid",
             })
 
     def test_build_supabase_provider_does_not_touch_network(self):
         transport = FakeTransport()
         repo = build_publication_metadata_repository({
             "provider": "supabase",
-            "url": "https://proj.supabase.co",
-            "publishable_key": "sb_publishable_pub",
-            "backend_access_token": "server-token",
+            "url": "https://example.invalid",
+            "secret_key": "sb_secret_server_token",
             "transport": transport,
         })
         self.assertIsInstance(repo, SupabasePublicationMetadataRepository)
         self.assertEqual(transport.calls, [])
+
+    def test_repository_error_does_not_leak_secret_value(self):
+        transport = FakeTransport()
+        transport.push(403, {"message": "permission denied"})
+        secret = "sb_secret_do_not_leak"
+        repo = SupabasePublicationMetadataRepository(CONFIG, secret_key=secret, transport=transport)
+        with self.assertRaises(PublicationMetadataError) as caught:
+            repo.reserve(_metadata())
+        self.assertNotIn(secret, str(caught.exception))
 
 
 if __name__ == "__main__":

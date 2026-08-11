@@ -10,15 +10,101 @@ from __future__ import annotations
 
 import threading
 import time
+import json
+import os
 from dataclasses import dataclass
-from typing import Any, Protocol
-from urllib.parse import quote
+from typing import Any, Mapping, Protocol
 
-from supabase_social import SocialConfig, SupabaseDataClient
+from supabase_social import SocialConfig
 
 
 class PublicationMetadataError(RuntimeError):
     """Safe metadata-layer failure used by the publish runner."""
+
+
+SENSITIVE_CONFIG_KEYS = frozenset({
+    "supabase_secret_key",
+    "supabase_service_role_key",
+    "authorization",
+    "apikey",
+    "token",
+    "access_token",
+    "refresh_token",
+    "password",
+    "secret",
+    "secret_key",
+    "backend_secret_key",
+})
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    normalized = str(key or "").strip().lower()
+    return any(marker in normalized for marker in SENSITIVE_CONFIG_KEYS)
+
+
+def redacted_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return a diagnostics-safe config view without secret values."""
+
+    safe: dict[str, Any] = {}
+    for key, value in dict(config or {}).items():
+        safe[key] = "<redacted>" if _is_sensitive_key(key) else value
+    return safe
+
+
+class PublicationMetadataRepositoryConfig(dict):
+    """Dict-compatible config whose repr/str never reveal secret-bearing fields."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.update(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, _wrap_secret_value(key, value))
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def __repr__(self) -> str:
+        return repr(redacted_config(self))
+
+    __str__ = __repr__
+
+    def safe_debug_dict(self) -> dict[str, Any]:
+        return redacted_config(self)
+
+
+class SecretHeaderDict(dict):
+    """Dict-compatible HTTP headers whose repr/str redact credential values."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.update(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, _wrap_secret_value(key, value))
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def __repr__(self) -> str:
+        return repr(redacted_config(self))
+
+    __str__ = __repr__
+
+
+class SecretValue(str):
+    """String value with redacted representation for assertion/log diffs."""
+
+    def __repr__(self) -> str:
+        return "'<redacted>'"
+
+
+def _wrap_secret_value(key: Any, value: Any) -> Any:
+    if _is_sensitive_key(key) and isinstance(value, str):
+        return SecretValue(value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -57,6 +143,7 @@ class PublicationMetadata:
 
 class PublicationMetadataRepository(Protocol):
     def reserve(self, metadata: dict[str, Any]) -> None: ...
+    def record_storage(self, metadata: dict[str, Any]) -> None: ...
     def finalize(self, metadata: dict[str, Any]) -> None: ...
     def mark_failed(self, publication_id: str, *, reason: str) -> None: ...
     def get_publication(self, publication_id: str) -> PublicationMetadata | None: ...
@@ -68,6 +155,9 @@ class NullPublicationMetadataRepository:
     """Default legacy bridge: no remote metadata side effect."""
 
     def reserve(self, metadata: dict[str, Any]) -> None:
+        return None
+
+    def record_storage(self, metadata: dict[str, Any]) -> None:
         return None
 
     def finalize(self, metadata: dict[str, Any]) -> None:
@@ -123,6 +213,36 @@ class FakePublicationMetadataRepository:
                 updated_at=now,
             )
 
+    def record_storage(self, metadata: dict[str, Any]) -> None:
+        with self._lock:
+            if not str(metadata.get("storage_reference") or ""):
+                raise PublicationMetadataError("missing_storage_reference")
+            publication_id = str(metadata["publication_id"])
+            existing = self._rows.get(publication_id)
+            if not existing:
+                raise PublicationMetadataError("publication_metadata_not_reserved")
+            if existing.owner_user_id != str(metadata["owner_user_id"]):
+                raise PublicationMetadataError("publication_owner_mismatch")
+            if existing.artifact_sha256 != str(metadata["artifact_sha256"]):
+                raise PublicationMetadataError("publication_artifact_mismatch")
+            if existing.artifact_size_bytes != int(metadata["artifact_size_bytes"]):
+                raise PublicationMetadataError("publication_artifact_mismatch")
+            storage_reference = str(metadata["storage_reference"])
+            if existing.storage_reference and existing.storage_reference != storage_reference:
+                raise PublicationMetadataError("storage_reference_conflict")
+            if existing.publication_status in {"failed_terminal"}:
+                raise PublicationMetadataError("invalid_publication_transition")
+            self._rows[publication_id] = PublicationMetadata(
+                **{
+                    **existing.__dict__,
+                    "storage_reference": storage_reference,
+                    "publication_status": (
+                        "published" if existing.publication_status == "published" else "uploaded"
+                    ),
+                    "updated_at": time.time(),
+                }
+            )
+
     def finalize(self, metadata: dict[str, Any]) -> None:
         with self._lock:
             self.finalize_calls += 1
@@ -133,12 +253,18 @@ class FakePublicationMetadataRepository:
                 raise PublicationMetadataError("missing_storage_reference")
             publication_id = str(metadata["publication_id"])
             existing = self._rows.get(publication_id)
+            if not existing:
+                raise PublicationMetadataError("publication_metadata_not_reserved")
             if (
                 existing
                 and existing.publication_status == "published"
                 and existing.storage_reference == str(metadata["storage_reference"])
             ):
                 return
+            if existing.publication_status not in {"uploaded", "finalizing"}:
+                raise PublicationMetadataError("invalid_publication_transition")
+            if existing.storage_reference != str(metadata["storage_reference"]):
+                raise PublicationMetadataError("storage_reference_conflict")
             self._enforce_unique_active_artifact(publication_id, metadata)
             now = time.time()
             self._rows[publication_id] = PublicationMetadata(
@@ -198,16 +324,10 @@ class FakePublicationMetadataRepository:
                 raise PublicationMetadataError("duplicate_publication_run")
 
 
-PUBLICATION_ARTIFACT_FIELDS = (
-    "publication_id,owner_user_id,job_id,run_id,artifact_sha256,artifact_size_bytes,"
-    "mime_type,storage_provider,storage_reference,publication_status,title,last_error_code,"
-    "created_at,updated_at"
-)
-PUBLICATION_ARTIFACT_TABLE = "community_publication_artifacts"
-
-
-def _q(value: Any) -> str:
-    return quote(str(value), safe="")
+RPC_RESERVE = "reserve_community_publication_artifact"
+RPC_RECORD_STORAGE = "record_community_publication_storage"
+RPC_FINALIZE = "finalize_community_publication_artifact"
+RPC_MARK_FAILURE = "mark_community_publication_artifact_failure"
 
 
 def _metadata_from_row(row: dict[str, Any]) -> PublicationMetadata:
@@ -251,7 +371,7 @@ def _row_from_metadata(metadata: dict[str, Any], *, status: str, include_storage
 
 
 class SupabasePublicationMetadataRepository:
-    """Backend-only publication artifact metadata over Supabase/PostgREST.
+    """Backend-only publication artifact metadata over narrow Supabase RPCs.
 
     The token passed here must be provisioned by the server environment. Browser callers
     never provide or see storage_reference; public DTOs must use ``PublicationMetadata.public``.
@@ -260,64 +380,124 @@ class SupabasePublicationMetadataRepository:
 
     provider = "supabase"
 
-    def __init__(self, config: SocialConfig, *, access_token: str, transport=None):
-        if not str(access_token or "").strip():
+    def __init__(self, config: SocialConfig, *, secret_key: str, transport=None):
+        secret = str(secret_key or "").strip()
+        if not secret or not secret.startswith("sb_secret_"):
             raise PublicationMetadataError("supabase_publication_metadata_not_configured")
         self._config = config
-        self._access_token = str(access_token)
+        self._secret_key = secret
         self._transport = transport
 
-    def _client(self) -> SupabaseDataClient:
-        return SupabaseDataClient(self._config, self._access_token, transport=self._transport)
+    def _transport_client(self):
+        if self._transport is not None:
+            return self._transport
+        from google_drive_transport import RequestsHttpTransport
+        return RequestsHttpTransport(connect_timeout=10.0, read_timeout=20.0)
+
+    def _headers(self) -> dict[str, str]:
+        return SecretHeaderDict({
+            "apikey": self._secret_key,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        })
+
+    def _rpc(self, function_name: str, payload: dict[str, Any]) -> Any:
+        url = f"{self._config.rest_url}/rpc/{function_name}"
+        try:
+            resp = self._transport_client().request(
+                "POST",
+                url,
+                headers=self._headers(),
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            )
+        except Exception as exc:
+            raise PublicationMetadataError("publication_metadata_backend_unavailable") from exc
+        raw = resp.content or b""
+        parsed: Any = None
+        if raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                parsed = None
+        if resp.status >= 400:
+            if resp.status in {401, 403}:
+                code = "publication_metadata_backend_not_authorized"
+            elif resp.status == 409:
+                code = "publication_metadata_conflict"
+            elif resp.status in {400, 422}:
+                code = "publication_metadata_invariant_failed"
+            elif resp.status >= 500:
+                code = "publication_metadata_backend_unavailable"
+            else:
+                code = "publication_metadata_backend_error"
+            raise PublicationMetadataError(code)
+        return parsed
+
+    @staticmethod
+    def _metadata_from_rpc_result(parsed: Any) -> PublicationMetadata:
+        if isinstance(parsed, list):
+            if not parsed:
+                raise PublicationMetadataError("publication_metadata_not_found")
+            row = parsed[0]
+        else:
+            row = parsed
+        if not isinstance(row, dict):
+            raise PublicationMetadataError("publication_metadata_malformed_response")
+        return _metadata_from_row(row)
+
+    @staticmethod
+    def _base_payload(metadata: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "p_publication_id": str(metadata["publication_id"]),
+            "p_owner_user_id": str(metadata["owner_user_id"]),
+            "p_job_id": str(metadata.get("job_id") or ""),
+            "p_run_id": str(metadata.get("run_id") or ""),
+            "p_artifact_sha256": str(metadata["artifact_sha256"]),
+            "p_artifact_size_bytes": int(metadata["artifact_size_bytes"]),
+            "p_mime_type": str(metadata.get("mime_type") or "application/pdf"),
+            "p_storage_provider": str(metadata["storage_provider"]),
+            "p_title": str(metadata.get("title") or ""),
+        }
 
     def reserve(self, metadata: dict[str, Any]) -> None:
-        self._client().upsert(
-            PUBLICATION_ARTIFACT_TABLE,
-            _row_from_metadata(metadata, status="reserved", include_storage=False),
-            on_conflict="publication_id",
-            returning=PUBLICATION_ARTIFACT_FIELDS,
-        )
+        self._rpc(RPC_RESERVE, self._base_payload(metadata))
+
+    def record_storage(self, metadata: dict[str, Any]) -> None:
+        storage_reference = str(metadata.get("storage_reference") or "")
+        if not storage_reference:
+            raise PublicationMetadataError("missing_storage_reference")
+        payload = {
+            "p_publication_id": str(metadata["publication_id"]),
+            "p_owner_user_id": str(metadata["owner_user_id"]),
+            "p_artifact_sha256": str(metadata["artifact_sha256"]),
+            "p_artifact_size_bytes": int(metadata["artifact_size_bytes"]),
+            "p_storage_provider": str(metadata["storage_provider"]),
+            "p_storage_reference": storage_reference,
+        }
+        self._rpc(RPC_RECORD_STORAGE, payload)
 
     def finalize(self, metadata: dict[str, Any]) -> None:
-        rows = self._client().update(
-            PUBLICATION_ARTIFACT_TABLE,
-            match=f"publication_id=eq.{_q(metadata['publication_id'])}",
-            row=_row_from_metadata(metadata, status="published", include_storage=True),
-            returning=PUBLICATION_ARTIFACT_FIELDS,
-        )
-        if not rows:
-            raise PublicationMetadataError("publication_metadata_not_reserved")
+        payload = {
+            "p_publication_id": str(metadata["publication_id"]),
+            "p_owner_user_id": str(metadata["owner_user_id"]),
+            "p_artifact_sha256": str(metadata["artifact_sha256"]),
+            "p_artifact_size_bytes": int(metadata["artifact_size_bytes"]),
+        }
+        self._rpc(RPC_FINALIZE, payload)
 
     def mark_failed(self, publication_id: str, *, reason: str) -> None:
-        rows = self._client().update(
-            PUBLICATION_ARTIFACT_TABLE,
-            match=f"publication_id=eq.{_q(publication_id)}",
-            row={"publication_status": "failed_retryable", "last_error_code": str(reason or "failed")},
-            returning=PUBLICATION_ARTIFACT_FIELDS,
-        )
-        if not rows:
-            raise PublicationMetadataError("publication_metadata_not_reserved")
+        self._rpc(RPC_MARK_FAILURE, {
+            "p_publication_id": str(publication_id),
+            "p_failure_status": "failed_retryable",
+            "p_last_error_code": str(reason or "failed"),
+        })
 
     def get_publication(self, publication_id: str) -> PublicationMetadata | None:
-        rows = self._client().select(
-            PUBLICATION_ARTIFACT_TABLE,
-            query=f"select={PUBLICATION_ARTIFACT_FIELDS}&publication_id=eq.{_q(publication_id)}&limit=1",
-        )
-        return _metadata_from_row(rows[0]) if rows else None
+        raise PublicationMetadataError("publication_metadata_read_rpc_not_configured")
 
     def list_publications(self, *, owner_user_id: str | None = None,
                           status: str = "published", limit: int = 100) -> list[PublicationMetadata]:
-        safe_limit = max(1, min(int(limit), 100))
-        filters = [
-            f"select={PUBLICATION_ARTIFACT_FIELDS}",
-            f"publication_status=eq.{_q(status)}",
-            "order=created_at.desc,publication_id.desc",
-            f"limit={safe_limit}",
-        ]
-        if owner_user_id:
-            filters.insert(2, f"owner_user_id=eq.{_q(owner_user_id)}")
-        return [_metadata_from_row(r) for r in self._client().select(
-            PUBLICATION_ARTIFACT_TABLE, query="&".join(filters))]
+        raise PublicationMetadataError("publication_metadata_read_rpc_not_configured")
 
 
 def build_publication_metadata_repository(config: dict[str, Any] | None) -> PublicationMetadataRepository:
@@ -328,14 +508,16 @@ def build_publication_metadata_repository(config: dict[str, Any] | None) -> Publ
         return FakePublicationMetadataRepository()
     if provider == "supabase":
         cfg = config or {}
-        token = str(cfg.get("access_token") or cfg.get("backend_access_token") or "").strip()
-        if not token:
+        secret_key = str(cfg.get("secret_key") or cfg.get("backend_secret_key") or "").strip()
+        secret_env_var = str(cfg.get("secret_env_var") or "").strip()
+        if not secret_key and secret_env_var:
+            secret_key = str(os.environ.get(secret_env_var) or "").strip()
+        if not secret_key or not secret_key.startswith("sb_secret_"):
             raise PublicationMetadataError("supabase_publication_metadata_not_configured")
         url = str(cfg.get("url") or "").strip().rstrip("/")
-        key = str(cfg.get("publishable_key") or "").strip()
-        if not url or not key:
+        if not url:
             raise PublicationMetadataError("supabase_publication_metadata_not_configured")
-        social_config = SocialConfig(url=url, publishable_key=key)
+        social_config = SocialConfig(url=url, publishable_key="server-side-rpc")
         return SupabasePublicationMetadataRepository(
-            social_config, access_token=token, transport=cfg.get("transport"))
+            social_config, secret_key=secret_key, transport=cfg.get("transport"))
     raise PublicationMetadataError("unsupported_publication_metadata_provider")

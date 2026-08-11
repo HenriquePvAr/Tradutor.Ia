@@ -26,6 +26,8 @@ ENV_KEYS = (
     "GOOGLE_OAUTH_SCOPES",
     "LOCAL_ENV_TEST_VALUE",
     "TRADUTOR_ALLOW_DRIVER_DOWNLOAD",
+    "LOCAL_ENV_CANARY",
+    "LOCAL_ENV_LOCAL_CANARY",
 )
 
 
@@ -45,14 +47,14 @@ def test_env_present_and_process_environment_absent(tmp_path, monkeypatch):
     env_path.write_text("LOCAL_ENV_TEST_VALUE=from-local-file\n", encoding="utf-8")
     _select(monkeypatch, env_path)
 
-    assert local_environment.load_local_environment() is True
+    assert local_environment.load_local_environment(env_path) is True
     assert os.environ["LOCAL_ENV_TEST_VALUE"] == "from-local-file"
 
 
 def test_env_absent_is_allowed(tmp_path, monkeypatch):
     _select(monkeypatch, tmp_path / ".env")
 
-    assert local_environment.load_local_environment() is False
+    assert local_environment.load_local_environment(tmp_path / ".env") is False
     assert "LOCAL_ENV_TEST_VALUE" not in os.environ
 
 
@@ -62,7 +64,7 @@ def test_process_environment_overrides_local_file(tmp_path, monkeypatch):
     _select(monkeypatch, env_path)
     monkeypatch.setenv("COMMUNITY_STORAGE_PROVIDER", "filesystem")
 
-    local_environment.load_local_environment()
+    local_environment.load_local_environment(env_path)
 
     assert os.environ["COMMUNITY_STORAGE_PROVIDER"] == "filesystem"
 
@@ -75,7 +77,7 @@ def test_env_local_can_enable_local_driver_policy(tmp_path, monkeypatch):
     )
     _select(monkeypatch, env_path)
 
-    assert local_environment.load_local_environment() is True
+    assert local_environment.load_local_environment(env_path) is True
     assert os.environ["LOCAL_ENV_TEST_VALUE"] == "from-base"
     assert os.environ["TRADUTOR_ALLOW_DRIVER_DOWNLOAD"] == "1"
 
@@ -88,7 +90,7 @@ def test_env_local_does_not_override_process_values(tmp_path, monkeypatch):
     _select(monkeypatch, env_path)
     monkeypatch.setenv("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "0")
 
-    assert local_environment.load_local_environment() is True
+    assert local_environment.load_local_environment(env_path) is True
     assert os.environ["TRADUTOR_ALLOW_DRIVER_DOWNLOAD"] == "0"
 
 
@@ -98,7 +100,7 @@ def test_env_example_is_never_loaded(tmp_path, monkeypatch):
     )
     _select(monkeypatch, tmp_path / ".env")
 
-    assert local_environment.load_local_environment() is False
+    assert local_environment.load_local_environment(tmp_path / ".env") is False
     assert "LOCAL_ENV_TEST_VALUE" not in os.environ
 
 
@@ -112,7 +114,7 @@ def test_loading_is_independent_of_current_working_directory(tmp_path, monkeypat
     _select(monkeypatch, env_path)
     monkeypatch.chdir(elsewhere)
 
-    local_environment.load_local_environment()
+    local_environment.load_local_environment(env_path)
 
     assert os.environ["LOCAL_ENV_TEST_VALUE"] == "deterministic"
 
@@ -123,7 +125,7 @@ def test_windows_path_is_preserved(tmp_path, monkeypatch):
     env_path.write_text(f"GOOGLE_OAUTH_TOKEN_PATH={windows_path}\n", encoding="utf-8")
     _select(monkeypatch, env_path)
 
-    local_environment.load_local_environment()
+    local_environment.load_local_environment(env_path)
 
     assert os.environ["GOOGLE_OAUTH_TOKEN_PATH"] == windows_path
 
@@ -133,7 +135,7 @@ def test_quoted_value_is_supported(tmp_path, monkeypatch):
     env_path.write_text('LOCAL_ENV_TEST_VALUE="quoted value"\n', encoding="utf-8")
     _select(monkeypatch, env_path)
 
-    local_environment.load_local_environment()
+    local_environment.load_local_environment(env_path)
 
     assert os.environ["LOCAL_ENV_TEST_VALUE"] == "quoted value"
 
@@ -143,7 +145,7 @@ def test_unquoted_value_with_spaces_is_supported(tmp_path, monkeypatch):
     env_path.write_text("LOCAL_ENV_TEST_VALUE=value with spaces\n", encoding="utf-8")
     _select(monkeypatch, env_path)
 
-    local_environment.load_local_environment()
+    local_environment.load_local_environment(env_path)
 
     assert os.environ["LOCAL_ENV_TEST_VALUE"] == "value with spaces"
 
@@ -153,7 +155,7 @@ def test_empty_root_folder_value_is_preserved(tmp_path, monkeypatch):
     env_path.write_text("COMMUNITY_DRIVE_ROOT_FOLDER_ID=\n", encoding="utf-8")
     _select(monkeypatch, env_path)
 
-    local_environment.load_local_environment()
+    local_environment.load_local_environment(env_path)
 
     assert os.environ["COMMUNITY_DRIVE_ROOT_FOLDER_ID"] == ""
 
@@ -163,7 +165,7 @@ def test_google_drive_provider_is_loaded(tmp_path, monkeypatch):
     env_path.write_text("COMMUNITY_STORAGE_PROVIDER=google_drive\n", encoding="utf-8")
     _select(monkeypatch, env_path)
 
-    local_environment.load_local_environment()
+    local_environment.load_local_environment(env_path)
 
     assert os.environ["COMMUNITY_STORAGE_PROVIDER"] == "google_drive"
 
@@ -173,12 +175,40 @@ def test_invalid_file_fails_closed_without_echoing_contents(tmp_path, monkeypatc
     invalid_content = "THIS LINE IS INVALID AND PRIVATE !"
     env_path.write_text(invalid_content + "\n", encoding="utf-8")
     _select(monkeypatch, env_path)
+    monkeypatch.delenv(local_environment.HERMETIC_TEST_ENV, raising=False)
 
     assert local_environment.load_local_environment_for_entrypoint() is False
     captured = capsys.readouterr()
     assert "configuration_error" in captured.err
     assert invalid_content not in captured.err
     assert str(env_path) not in captured.err
+
+
+def test_hermetic_test_mode_does_not_read_env_or_env_local(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("LOCAL_ENV_CANARY=from-env\n", encoding="utf-8")
+    (tmp_path / ".env.local").write_text(
+        "LOCAL_ENV_LOCAL_CANARY=from-env-local\n", encoding="utf-8"
+    )
+    _select(monkeypatch, env_path)
+    monkeypatch.setenv(local_environment.HERMETIC_TEST_ENV, "1")
+
+    assert local_environment.load_local_environment() is False
+    assert "LOCAL_ENV_CANARY" not in os.environ
+    assert "LOCAL_ENV_LOCAL_CANARY" not in os.environ
+
+
+def test_explicit_env_path_still_allows_synthetic_loader_tests(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("LOCAL_ENV_CANARY=from-explicit-env\n", encoding="utf-8")
+    (tmp_path / ".env.local").write_text(
+        "LOCAL_ENV_LOCAL_CANARY=from-explicit-env-local\n", encoding="utf-8"
+    )
+    monkeypatch.setenv(local_environment.HERMETIC_TEST_ENV, "1")
+
+    assert local_environment.load_local_environment(env_path) is True
+    assert os.environ["LOCAL_ENV_CANARY"] == "from-explicit-env"
+    assert os.environ["LOCAL_ENV_LOCAL_CANARY"] == "from-explicit-env-local"
 
 
 def test_drive_auth_import_does_not_open_browser(tmp_path):

@@ -13,6 +13,7 @@ from dotenv.parser import parse_stream
 PROJECT_ROOT = Path(__file__).resolve().parent
 LOCAL_ENV_PATH = PROJECT_ROOT / ".env"
 LOCAL_ENV_OVERRIDE_PATH = PROJECT_ROOT / ".env.local"
+HERMETIC_TEST_ENV = "TRADUTOR_IA_HERMETIC_TEST_ENV"
 
 
 class LocalEnvironmentError(RuntimeError):
@@ -41,9 +42,13 @@ def load_local_environment(env_path: str | Path | None = None) -> bool:
     directory. A missing file is allowed; malformed or unreadable files fail closed with
     an error that never includes their contents or absolute path.
     """
+    if env_path is None and os.environ.get(HERMETIC_TEST_ENV) == "1":
+        return False
+
     paths = [LOCAL_ENV_PATH] if env_path is None else [Path(env_path)]
-    if env_path is None and LOCAL_ENV_OVERRIDE_PATH.exists():
-        paths.append(LOCAL_ENV_OVERRIDE_PATH)
+    override_path = LOCAL_ENV_OVERRIDE_PATH if env_path is None else Path(env_path).parent / ".env.local"
+    if override_path.exists():
+        paths.append(override_path)
 
     loaded = False
     protected = set(os.environ)
@@ -56,7 +61,7 @@ def load_local_environment(env_path: str | Path | None = None) -> bool:
         # The base .env is conservative and never replaces process values.  The ignored
         # .env.local may refine local-development toggles such as the Selenium Manager
         # opt-in, but values that existed before this loader ran remain authoritative.
-        override = path == LOCAL_ENV_OVERRIDE_PATH
+        override = path == override_path
         before = dict(os.environ)
         loaded = load_dotenv(
             dotenv_path=path,
