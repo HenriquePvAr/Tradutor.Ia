@@ -798,7 +798,10 @@ class CommunityApi:
             if not job:
                 raise ValueError
             config = job.get("configuration") or {}
-            if not isinstance(config, dict) or config.get("job_type") != "translation":
+            if not isinstance(config, dict) or config.get("job_type") not in {
+                "translation",
+                "artifact_reconstruction",
+            }:
                 raise ValueError
             owner_id = str(config.get("community_owner_id") or "")
             legacy_owner = False

@@ -489,7 +489,12 @@ class JobStore:
         configuration = dict(configuration or {})
         owner_id = str(configuration.get("community_owner_id") or "").strip()
         operation_kind = str(operation_kind or "chapter").strip().casefold()
-        if operation_kind not in {"chapter", "review_rerun", "community_publish"}:
+        if operation_kind not in {
+            "chapter",
+            "review_rerun",
+            "community_publish",
+            "artifact_reconstruction",
+        }:
             raise ValueError("invalid_operation_kind")
         parent_job_id = str(parent_job_id or "").strip()
         if operation_kind == "review_rerun" and not parent_job_id:
