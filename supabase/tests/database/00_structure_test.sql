@@ -86,6 +86,12 @@ select is(
     true,
     'RLS enabled on private.chapter_assets'
 );
+select is(
+    (select relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'private' and c.relname = 'community_publication_artifacts'),
+    true,
+    'RLS enabled on private.community_publication_artifacts'
+);
 
 -- Policies exist and target authenticated ----------------------------------
 select policies_are('public', 'profiles',
@@ -109,6 +115,12 @@ select is(
     (select count(*)::int from pg_policies where schemaname = 'private' and tablename = 'chapter_assets'),
     0,
     'private.chapter_assets exposes no policy'
+);
+select is(
+    (select count(*)::int from pg_policies
+     where schemaname = 'private' and tablename = 'community_publication_artifacts'),
+    0,
+    'private.community_publication_artifacts exposes no policy'
 );
 
 -- Privileges: anon and authenticated cannot touch the private schema --------
@@ -152,6 +164,39 @@ select has_index('public', 'works', 'idx_works_owner_id', 'works.owner_id indexe
 select has_index('public', 'chapters', 'idx_chapters_work_id', 'chapters.work_id indexed');
 select has_index('public', 'comments', 'idx_comments_chapter_id', 'comments.chapter_id indexed');
 select has_index('public', 'notifications', 'idx_notifications_recipient_id', 'notifications.recipient_id indexed');
+select has_index('private', 'community_publication_artifacts',
+                 'community_pub_artifacts_owner_hash_idx',
+                 'publication artifact owner/hash idempotency indexed');
+select has_index('private', 'community_publication_artifacts',
+                 'community_pub_artifacts_storage_ref_idx',
+                 'publication artifact storage ref lookup indexed');
+
+-- Community publication artifact metadata stays private ---------------------
+select has_table('private', 'community_publication_artifacts',
+                 'private.community_publication_artifacts exists');
+select col_is_pk('private', 'community_publication_artifacts', ARRAY['publication_id'],
+                 'publication_id is the publication artifact primary key');
+select has_column('private', 'community_publication_artifacts', 'artifact_sha256',
+                  'artifact hash column exists');
+select has_column('private', 'community_publication_artifacts', 'storage_reference',
+                  'backend-only storage reference column exists');
+select has_column('private', 'community_publication_artifacts', 'publication_status',
+                  'publication status column exists');
+select fk_ok('private', 'community_publication_artifacts', 'publication_id',
+             'public', 'chapters', 'id',
+             'publication artifact is bound to a chapter/publication');
+select fk_ok('private', 'community_publication_artifacts', 'owner_user_id',
+             'public', 'profiles', 'id',
+             'publication artifact is bound to its owner profile');
+select isnt(
+    (select table_schema from information_schema.columns
+     where table_name = 'community_publication_artifacts'
+       and column_name = 'storage_reference'
+       and table_schema = 'public'
+     limit 1),
+    'public',
+    'storage_reference is not exposed in public schema'
+);
 
 select * from finish();
 rollback;

@@ -257,6 +257,14 @@ reset role;
 -- ===========================================================================
 insert into private.chapter_assets (chapter_id, storage_file_id)
 values ('cccc1111-0000-0000-0000-000000000001', 'drive-file-secret-xyz');
+insert into private.community_publication_artifacts (
+    publication_id, owner_user_id, job_id, run_id, artifact_sha256,
+    artifact_size_bytes, storage_provider, storage_reference, publication_status, title
+) values (
+    'cccc1111-0000-0000-0000-000000000001', :'user_a', 'job-private-artifact',
+    'run-private-artifact', repeat('a', 64), 1234, 'google_drive',
+    'opaque-provider-ref-for-rls', 'published', 'A private artifact ref'
+);
 
 set local role authenticated;
 set local request.jwt.claims = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
@@ -265,6 +273,16 @@ select throws_ok(
     '42501',
     NULL,
     '28 authenticated cannot read private.chapter_assets');
+select throws_ok(
+    $$select storage_reference from private.community_publication_artifacts$$,
+    '42501',
+    NULL,
+    '28b authenticated cannot read private publication artifact storage_reference');
+select throws_ok(
+    $$update private.community_publication_artifacts set publication_status = 'published'$$,
+    '42501',
+    NULL,
+    '28c authenticated cannot mutate private publication artifact state');
 reset role;
 
 set local role anon;
@@ -274,6 +292,11 @@ select throws_ok(
     '42501',
     NULL,
     '29 anon cannot read private.chapter_assets');
+select throws_ok(
+    $$select storage_reference from private.community_publication_artifacts$$,
+    '42501',
+    NULL,
+    '29b anon cannot read private publication artifact storage_reference');
 reset role;
 
 -- 30: the Drive id lives only in private (asserted structurally in 00_structure_test.sql).
