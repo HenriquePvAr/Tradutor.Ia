@@ -17,12 +17,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from benchmark_pipeline import _build_quality_report, _translation_quality_accounting
+from benchmark_pipeline import _build_quality_report, _translation_quality_accounting, _validate_quality
 from community_service import sha256_of_file
 from job_store import JobStatus, JobStore
 from ocr_balloon import validate_translation_text
 from pdf import generate_pdf
-from pipeline_cache import atomic_write_json
+from pipeline_cache import atomic_write_json, valid_image
 
 
 class ReconstructionError(RuntimeError):
@@ -50,6 +50,11 @@ def _text_sha256(value: str) -> str:
 def _file_sha256(path: Path) -> str:
     digest, _size = sha256_of_file(path)
     return digest
+
+
+def _file_identity(path: Path) -> dict[str, Any]:
+    digest, size = sha256_of_file(path)
+    return {"sha256": digest, "size_bytes": int(size)}
 
 
 def _stable_id(payload: dict[str, Any]) -> str:
@@ -138,10 +143,16 @@ def default_quality_builder(
     pages: list[dict[str, Any]],
     source: dict[str, Any],
 ) -> dict[str, Any]:
+    physical_quality = source.get("physical_quality") if isinstance(source.get("physical_quality"), dict) else {}
     quality_validation = _translation_quality_accounting(pages)
+    quality_validation.update(physical_quality)
     quality_validation.update({
-        "passed": bool(quality_validation.get("quality_passed")),
-        "status": "passed" if quality_validation.get("quality_passed") else "review_required",
+        "passed": bool(quality_validation.get("quality_passed") and physical_quality.get("passed") is True),
+        "status": (
+            "passed"
+            if quality_validation.get("quality_passed") and physical_quality.get("passed") is True
+            else "review_required"
+        ),
         "run_id": run_id,
         "artifact_sha256": artifact_sha256,
         "artifact_size_bytes": artifact_size_bytes,
@@ -205,10 +216,13 @@ class SelectiveArtifactReconstructor:
         if not valid:
             raise ReconstructionError("reconstruction_candidate_invalid")
         source_pdf_sha = _file_sha256(source["pdf_path"]) if source["pdf_path"].is_file() else ""
+        page_provenance = self._collect_page_provenance(pages, _page_number(page))
+        page_provenance_digest = _stable_id({"pages": page_provenance})
         reconstruction_id = _stable_id({
             "source_job_id": source["job"]["id"],
             "source_run_id": source["job"]["run_id"],
             "source_pdf_sha256": source_pdf_sha,
+            "page_provenance_digest": page_provenance_digest,
             "page": _page_number(page),
             "region_id": item.get("region_id"),
             "candidate_sha256": _text_sha256(candidate),
@@ -242,6 +256,7 @@ class SelectiveArtifactReconstructor:
                     ),
                     "source_job_id": source["job"]["id"],
                     "source_run_id": source["job"]["run_id"],
+                    "page_provenance_digest": page_provenance_digest,
                     "page": _page_number(page),
                     "region_id": str(item.get("region_id") or ""),
                     "candidate_sha256": _text_sha256(candidate),
@@ -260,6 +275,12 @@ class SelectiveArtifactReconstructor:
         promoted = False
         try:
             temp_root.mkdir(parents=True, exist_ok=False)
+            page_snapshots = self._snapshot_reusable_pages(
+                pages,
+                target_page=_page_number(page),
+                temp_root=temp_root,
+                provenance=page_provenance,
+            )
             corrected_page = temp_root / "pages" / f"page_{_page_number(page):03d}.png"
             corrected_page.parent.mkdir(parents=True, exist_ok=True)
             source_page = Path(str(page.get("image_path") or "")).resolve()
@@ -279,7 +300,12 @@ class SelectiveArtifactReconstructor:
                 raise ReconstructionError("reconstruction_render_failed") from None
             if not corrected_page.is_file():
                 raise ReconstructionError("reconstruction_render_failed")
-            rebuilt_pages = self._rebuilt_page_order(pages, _page_number(page), corrected_page)
+            rebuilt_pages = self._rebuilt_page_order(
+                pages,
+                _page_number(page),
+                corrected_page,
+                page_snapshots,
+            )
             pdf_path = temp_root / "artifact.pdf"
             try:
                 self.pdf_builder(rebuilt_pages, str(pdf_path))
@@ -289,8 +315,13 @@ class SelectiveArtifactReconstructor:
                 raise ReconstructionError("reconstruction_pdf_failed") from None
             if not pdf_path.is_file():
                 raise ReconstructionError("reconstruction_pdf_failed")
-            artifact_sha256, artifact_size = sha256_of_file(pdf_path)
             quality_pages = self._quality_pages(pages, page, item, candidate, corrected_page, render_debug)
+            physical_quality = self._validate_physical_quality(
+                quality_pages,
+                pdf_path=pdf_path,
+                expected_page_count=len(pages),
+            )
+            artifact_sha256, artifact_size = sha256_of_file(pdf_path)
             try:
                 quality = self.quality_builder(
                     run_id=run_id,
@@ -299,7 +330,9 @@ class SelectiveArtifactReconstructor:
                     pages=quality_pages,
                     source={
                         "source_url": source["job"].get("source_url") or "",
-                        "pdf_path": str(pdf_path),
+                        "pdf_path": str(final_root / "artifact.pdf"),
+                        "expected_page_count": len(pages),
+                        "physical_quality": physical_quality,
                     },
                 )
             except ReconstructionError:
@@ -313,6 +346,7 @@ class SelectiveArtifactReconstructor:
                 artifact_size=artifact_size,
             )
             self._ensure_source_current(source, source_pdf_sha)
+            self._ensure_page_provenance_current(page_provenance)
             atomic_write_json(temp_root / "quality_report.json", quality)
             manifest = {
                 "schema_version": 1,
@@ -327,6 +361,8 @@ class SelectiveArtifactReconstructor:
                 "source_run_id": source["job"]["run_id"],
                 "source_pdf_path": str(source["pdf_path"]),
                 "source_pdf_sha256": source_pdf_sha,
+                "page_provenance_digest": page_provenance_digest,
+                "page_provenance": page_provenance,
                 "page": _page_number(page),
                 "region_id": str(item.get("region_id") or ""),
                 "candidate_sha256": _text_sha256(candidate),
@@ -437,7 +473,133 @@ class SelectiveArtifactReconstructor:
             raise ReconstructionError("reconstruction_candidate_mismatch")
         return candidate
 
-    def _rebuilt_page_order(self, pages: list[dict[str, Any]], target_page: int, corrected_page: Path) -> list[Path]:
+    def _collect_page_provenance(self, pages: list[dict[str, Any]], target_page: int) -> list[dict[str, Any]]:
+        provenance: list[dict[str, Any]] = []
+        for page in sorted(pages, key=_page_number):
+            number = _page_number(page)
+            if number <= 0:
+                raise ReconstructionError("reconstruction_page_order_incomplete")
+            output_path = Path(str(page.get("output_path") or "")).resolve()
+            if number != target_page:
+                if not output_path.is_file() or not valid_image(str(output_path), 1, 1):
+                    raise ReconstructionError("reconstruction_page_provenance_mismatch")
+                identity = _file_identity(output_path)
+                self._require_expected_page_identity(page, identity)
+                provenance.append({
+                    "page": number,
+                    "role": "reused_rendered_page",
+                    "path": str(output_path),
+                    **identity,
+                })
+                continue
+            source_path = Path(str(page.get("image_path") or "")).resolve()
+            if not source_path.is_file() or not valid_image(str(source_path), 1, 1):
+                raise ReconstructionError("reconstruction_source_page_missing")
+            identity = _file_identity(source_path)
+            provenance.append({
+                "page": number,
+                "role": "affected_source_page",
+                "path": str(source_path),
+                **identity,
+            })
+        return provenance
+
+    @staticmethod
+    def _require_expected_page_identity(page: dict[str, Any], actual: dict[str, Any]) -> None:
+        expected_hash = str(
+            page.get("output_sha256")
+            or page.get("page_sha256")
+            or page.get("sha256")
+            or ""
+        ).strip().lower()
+        expected_size = (
+            page.get("output_size_bytes")
+            or page.get("page_size_bytes")
+            or page.get("size_bytes")
+        )
+        if expected_hash and expected_hash != str(actual["sha256"]).lower():
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        if expected_size is not None:
+            try:
+                parsed_size = int(expected_size)
+            except (TypeError, ValueError):
+                raise ReconstructionError("reconstruction_page_provenance_mismatch") from None
+            if parsed_size != int(actual["size_bytes"]):
+                raise ReconstructionError("reconstruction_page_provenance_mismatch")
+
+    @staticmethod
+    def _snapshot_reusable_pages(
+        pages: list[dict[str, Any]],
+        *,
+        target_page: int,
+        temp_root: Path,
+        provenance: list[dict[str, Any]],
+    ) -> dict[int, Path]:
+        expected_by_page = {
+            int(item["page"]): item
+            for item in provenance
+            if item.get("role") == "reused_rendered_page"
+        }
+        snapshots: dict[int, Path] = {}
+        snapshot_root = temp_root / "input_pages"
+        snapshot_root.mkdir(parents=True, exist_ok=True)
+        for page in pages:
+            number = _page_number(page)
+            if number == target_page:
+                continue
+            source = Path(str(page.get("output_path") or "")).resolve()
+            expected = expected_by_page.get(number)
+            if expected is None:
+                raise ReconstructionError("reconstruction_page_provenance_missing")
+            current = _file_identity(source)
+            if (
+                current["sha256"] != expected["sha256"]
+                or int(current["size_bytes"]) != int(expected["size_bytes"])
+            ):
+                raise ReconstructionError("reconstruction_page_provenance_mismatch")
+            destination = snapshot_root / f"page_{number:03d}{source.suffix or '.png'}"
+            shutil.copyfile(source, destination)
+            copied = _file_identity(destination)
+            if copied != current:
+                raise ReconstructionError("reconstruction_page_provenance_mismatch")
+            snapshots[number] = destination
+        return snapshots
+
+    @staticmethod
+    def _ensure_page_provenance_current(provenance: list[dict[str, Any]]) -> None:
+        for item in provenance:
+            path = Path(str(item.get("path") or "")).resolve()
+            if not path.is_file():
+                raise ReconstructionError("reconstruction_page_provenance_mismatch")
+            current = _file_identity(path)
+            if (
+                current["sha256"] != item.get("sha256")
+                or int(current["size_bytes"]) != int(item.get("size_bytes") or -1)
+            ):
+                raise ReconstructionError("reconstruction_page_provenance_mismatch")
+
+    @staticmethod
+    def _validate_physical_quality(
+        pages: list[dict[str, Any]],
+        *,
+        pdf_path: Path,
+        expected_page_count: int,
+    ) -> dict[str, Any]:
+        try:
+            quality = _validate_quality(pages, str(pdf_path), expected_page_count)
+        except Exception:
+            raise ReconstructionError("reconstruction_physical_quality_failed") from None
+        if quality.get("passed") is not True:
+            raise ReconstructionError("reconstruction_physical_quality_failed")
+        return quality
+
+    def _rebuilt_page_order(
+        self,
+        pages: list[dict[str, Any]],
+        target_page: int,
+        corrected_page: Path,
+        page_snapshots: dict[int, Path],
+    ) -> list[Path]:
         ordered: list[Path] = []
         seen: set[int] = set()
         for page in sorted(pages, key=_page_number):
@@ -445,7 +607,9 @@ class SelectiveArtifactReconstructor:
             if number <= 0 or number in seen:
                 raise ReconstructionError("reconstruction_page_order_incomplete")
             seen.add(number)
-            path = corrected_page if number == target_page else Path(str(page.get("output_path") or "")).resolve()
+            path = corrected_page if number == target_page else page_snapshots.get(number)
+            if path is None:
+                raise ReconstructionError("reconstruction_page_provenance_missing")
             if not path.is_file():
                 raise ReconstructionError("reconstruction_page_order_incomplete")
             ordered.append(path)
@@ -484,10 +648,10 @@ class SelectiveArtifactReconstructor:
                     "manual_review_required": False,
                     "redrawn": True,
                 })
-                if isinstance(render_debug, dict):
-                    item["visual_validation"] = render_debug.get("visual_validation") or {
-                        "visual_validation_passed": True,
-                    }
+                visual_validation = render_debug.get("visual_validation") if isinstance(render_debug, dict) else None
+                if not isinstance(visual_validation, dict) or "visual_validation_passed" not in visual_validation:
+                    raise ReconstructionError("reconstruction_visual_evidence_missing")
+                item["visual_validation"] = visual_validation
         return cloned
 
     @staticmethod

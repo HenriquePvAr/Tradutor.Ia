@@ -9,17 +9,26 @@ import json
 from pathlib import Path
 
 import pytest
+from PIL import Image, ImageDraw
 
 from job_store import JobStatus, JobStore
 
 
-PDF_BYTES = b"%PDF-1.4\nsynthetic reconstruction\n%%EOF\n"
+def _write_png(path: Path, label: str, *, color: tuple[int, int, int] = (245, 245, 245)) -> None:
+    image = Image.new("RGB", (160, 120), color)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((10, 10, 150, 110), outline=(20, 20, 20), width=3)
+    draw.text((20, 45), label, fill=(0, 0, 0))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
 
 
 class SpyRenderer:
-    def __init__(self, *, fail: bool = False, reason: str = "render boom"):
+    def __init__(self, *, fail: bool = False, reason: str = "render boom",
+                 visual_validation: dict | None = None):
         self.fail = fail
         self.reason = reason
+        self.visual_validation = visual_validation
         self.calls: list[dict] = []
 
     def __call__(self, *, source_page: Path, destination: Path, page: dict, item: dict, candidate: str) -> dict:
@@ -32,8 +41,10 @@ class SpyRenderer:
         })
         if self.fail:
             raise RuntimeError(self.reason)
-        destination.write_bytes(b"PNG:" + candidate.encode("utf-8"))
-        return {"visual_validation_passed": True, "text_overflow_ratio": 0.0}
+        _write_png(destination, candidate[:20], color=(230, 248, 235))
+        if self.visual_validation is None:
+            return {"visual_validation_passed": True, "text_overflow_ratio": 0.0}
+        return {"visual_validation": self.visual_validation, "text_overflow_ratio": 0.0}
 
 
 class SpyPdfBuilder:
@@ -45,7 +56,32 @@ class SpyPdfBuilder:
         self.calls.append([str(path) for path in image_paths])
         if self.fail:
             raise RuntimeError("pdf boom")
-        Path(pdf_path).write_bytes(PDF_BYTES)
+        from pdf import generate_pdf
+
+        generate_pdf(image_paths, pdf_path)
+
+
+class InvalidPdfBuilder:
+    def __call__(self, image_paths, pdf_path):
+        Path(pdf_path).write_bytes(b"not a pdf")
+
+
+class OnePagePdfBuilder:
+    def __call__(self, image_paths, pdf_path):
+        from pdf import generate_pdf
+
+        generate_pdf([image_paths[0]], pdf_path)
+
+
+class MutatingPdfBuilder:
+    def __init__(self, path_to_mutate: Path):
+        self.path_to_mutate = path_to_mutate
+
+    def __call__(self, image_paths, pdf_path):
+        from pdf import generate_pdf
+
+        _write_png(self.path_to_mutate, "MUTATED", color=(248, 230, 230))
+        generate_pdf(image_paths, pdf_path)
 
 
 class SpyQualityBuilder:
@@ -125,7 +161,8 @@ def _sha(text: str) -> str:
 def _fixture(tmp_path: Path, *, candidate: str = "SE FOR PRECISO, EU VOU.",
              extra_candidate: str = "", missing_candidate: bool = False,
              missing_geometry: bool = False, missing_source_page: bool = False,
-             missing_non_target: bool = False, current_run: str = "source-run") -> tuple[JobStore, str, Path, str]:
+             missing_non_target: bool = False, current_run: str = "source-run",
+             include_page_identity: bool = False) -> tuple[JobStore, str, Path, str]:
     output = tmp_path / "output"
     pages = output / "pages"
     source = output / "source"
@@ -133,9 +170,9 @@ def _fixture(tmp_path: Path, *, candidate: str = "SE FOR PRECISO, EU VOU.",
     source.mkdir(parents=True)
     for index in (1, 2, 3):
         if index != 2 or not missing_source_page:
-            (source / f"page_{index:03d}.png").write_bytes(f"SOURCE{index}".encode("ascii"))
+            _write_png(source / f"page_{index:03d}.png", f"SOURCE {index}")
         if index != 3 or not missing_non_target:
-            (pages / f"page_{index:03d}.png").write_bytes(f"PAGE{index}".encode("ascii"))
+            _write_png(pages / f"page_{index:03d}.png", f"PAGE {index}")
     item = {
         "id": "BALAO_TEST",
         "region_id": "REGION_TEST_001",
@@ -156,13 +193,19 @@ def _fixture(tmp_path: Path, *, candidate: str = "SE FOR PRECISO, EU VOU.",
         item["bounding_box"] = [10, 20, 120, 40]
     progress_pages = []
     for index in (1, 2, 3):
-        progress_pages.append({
+        page_entry = {
             "index": index,
             "output_path": str(pages / f"page_{index:03d}.png"),
             "image_path": str(source / f"page_{index:03d}.png"),
             "status": "completed",
             "debug_data": {"items": [item] if index == 2 else []},
-        })
+        }
+        if include_page_identity:
+            page_path = pages / f"page_{index:03d}.png"
+            if page_path.is_file():
+                page_entry["output_sha256"] = hashlib.sha256(page_path.read_bytes()).hexdigest()
+                page_entry["output_size_bytes"] = page_path.stat().st_size
+        progress_pages.append(page_entry)
     (output / "progress.json").write_text(json.dumps({
         "status": "review_required",
         "pdf_path": str(output / "chapter.pdf"),
@@ -224,13 +267,14 @@ def _fixture(tmp_path: Path, *, candidate: str = "SE FOR PRECISO, EU VOU.",
 def _service(tmp_path: Path, store: JobStore, *, renderer=None, pdf=None, quality=None):
     from selective_artifact_reconstruction import SelectiveArtifactReconstructor
 
-    return SelectiveArtifactReconstructor(
-        store,
-        workspace_root=tmp_path,
-        renderer=renderer or SpyRenderer(),
-        pdf_builder=pdf or SpyPdfBuilder(),
-        quality_builder=quality or SpyQualityBuilder(),
-    )
+    kwargs = {
+        "workspace_root": tmp_path,
+        "renderer": renderer or SpyRenderer(visual_validation={"visual_validation_passed": True}),
+        "pdf_builder": pdf or SpyPdfBuilder(),
+    }
+    if quality is not None:
+        kwargs["quality_builder"] = quality
+    return SelectiveArtifactReconstructor(store, **kwargs)
 
 
 def _request(job_id: str, candidate_hash: str, *, source_run_id: str = "source-run") -> dict:
@@ -252,7 +296,7 @@ def test_service_imports_after_tdd_green(tmp_path):
 
 def test_historical_artifact_is_never_overwritten_and_quality_precedes_promotion(tmp_path):
     store, job_id, output, candidate_hash = _fixture(tmp_path)
-    renderer = SpyRenderer()
+    renderer = SpyRenderer(visual_validation={"visual_validation_passed": True})
     pdf = SpyPdfBuilder()
     quality = SpyQualityBuilder()
     service = _service(tmp_path, store, renderer=renderer, pdf=pdf, quality=quality)
@@ -264,8 +308,8 @@ def test_historical_artifact_is_never_overwritten_and_quality_precedes_promotion
     assert old_pdf.read_bytes() == old_bytes
     assert result["status"] == JobStatus.FINISHED
     assert result["reconstruction_status"] == "completed"
-    assert result["artifact_sha256"] == hashlib.sha256(PDF_BYTES).hexdigest()
-    assert result["artifact_size_bytes"] == len(PDF_BYTES)
+    assert result["artifact_sha256"] == hashlib.sha256(Path(result["pdf_path"]).read_bytes()).hexdigest()
+    assert result["artifact_size_bytes"] == Path(result["pdf_path"]).stat().st_size
     assert quality.calls == 1
     assert Path(result["pdf_path"]).is_file()
 
@@ -294,7 +338,7 @@ def test_ambiguous_candidate_denied(tmp_path):
     ("missing_candidate", "reconstruction_candidate_missing"),
     ("missing_geometry", "reconstruction_geometry_missing"),
     ("missing_source_page", "reconstruction_source_page_missing"),
-    ("missing_non_target", "reconstruction_page_order_incomplete"),
+    ("missing_non_target", "reconstruction_page_provenance_mismatch"),
 ])
 def test_missing_critical_evidence_fails_closed(tmp_path, flag, reason):
     store, job_id, _output, candidate_hash = _fixture(tmp_path, **{flag: True})
@@ -306,7 +350,7 @@ def test_missing_critical_evidence_fails_closed(tmp_path, flag, reason):
 
 def test_non_target_pages_reused_in_order(tmp_path):
     store, job_id, _output, candidate_hash = _fixture(tmp_path)
-    renderer = SpyRenderer()
+    renderer = SpyRenderer(visual_validation={"visual_validation_passed": True})
     pdf = SpyPdfBuilder()
     result = _service(tmp_path, store, renderer=renderer, pdf=pdf).reconstruct(
         _request(job_id, candidate_hash))
@@ -329,6 +373,118 @@ def test_pdf_failure_cleans_temp_and_does_not_promote(tmp_path):
 
     recon_root = output / "reconstructions"
     assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_default_quality_denies_physically_invalid_pdf(tmp_path):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    service = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation={"visual_validation_passed": True}),
+        pdf=InvalidPdfBuilder(),
+    )
+
+    with pytest.raises(Exception, match="reconstruction_physical_quality_failed"):
+        service.reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_default_quality_denies_wrong_pdf_page_count(tmp_path):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    service = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation={"visual_validation_passed": True}),
+        pdf=OnePagePdfBuilder(),
+    )
+
+    with pytest.raises(Exception, match="reconstruction_physical_quality_failed"):
+        service.reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_missing_visual_validation_evidence_fails_closed_with_default_quality(tmp_path):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    service = _service(tmp_path, store, renderer=SpyRenderer())
+
+    with pytest.raises(Exception, match="reconstruction_visual_evidence_missing"):
+        service.reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_false_visual_validation_evidence_denies_default_quality(tmp_path):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    service = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation={"visual_validation_passed": False}),
+    )
+
+    with pytest.raises(Exception, match="reconstruction_physical_quality_failed"):
+        service.reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_same_path_non_target_page_byte_swap_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    swapped_page = output / "pages" / "page_001.png"
+    _write_png(swapped_page, "SWAPPED", color=(230, 230, 248))
+    service = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation={"visual_validation_passed": True}),
+    )
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        service.reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_same_path_non_target_page_mutation_during_build_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    mutable_page = output / "pages" / "page_001.png"
+    service = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation={"visual_validation_passed": True}),
+        pdf=MutatingPdfBuilder(mutable_page),
+    )
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        service.reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_default_quality_builder_happy_path_uses_physical_pdf_and_visual_evidence(tmp_path):
+    store, job_id, _output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    service = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation={"visual_validation_passed": True}),
+    )
+
+    result = service.reconstruct(_request(job_id, candidate_hash))
+
+    quality = json.loads(Path(result["quality_report_path"]).read_text(encoding="utf-8"))
+    validation = quality["summary"]["quality_validation"]
+    assert validation["passed"] is True
+    assert validation["pdf_pages"] == 3
+    assert validation["expected_pdf_pages"] == 3
+    assert validation["artifact_sha256"] == result["artifact_sha256"]
+    assert validation["artifact_size_bytes"] == result["artifact_size_bytes"]
+    assert validation["visual_validation_failures"] == 0
 
 
 def test_renderer_font_or_fit_failure_cleans_temp_and_does_not_promote(tmp_path):
