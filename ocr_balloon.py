@@ -4350,6 +4350,24 @@ def _center_inside(inner, outer):
 
 PORTUGUESE_ACCENTED_FOLD_TOKENS = {"SO"}
 PORTUGUESE_FOR_PREVIOUS_CONTEXT = {"COMO", "ONDE", "QUANDO", "QUE", "QUEM", "SE"}
+PORTUGUESE_FOR_CONTEXT_BRIDGE_TOKENS = {
+    "AINDA",
+    "ASSIM",
+    "DEPOIS",
+    "DISSO",
+    "ELE",
+    "ELA",
+    "EU",
+    "ISSO",
+    "ISTO",
+    "MAIS",
+    "MESMO",
+    "NAO",
+    "O",
+    "TAMBEM",
+    "VOCE",
+}
+PORTUGUESE_FOR_LEFT_CONTEXT_WINDOW = 4
 HIGH_CONFIDENCE_RESIDUAL_SPANISH_MARKERS = {
     "AHORA",
     "AUNQUE",
@@ -4407,6 +4425,27 @@ def _is_accented_portuguese_fold_token(info):
     return info["has_diacritic"] and info["token"] in PORTUGUESE_ACCENTED_FOLD_TOKENS
 
 
+def _is_portuguese_for_context_bridge_token(token):
+    return (
+        token in PORTUGUESE_MARKERS
+        or token in PORTUGUESE_FOR_CONTEXT_BRIDGE_TOKENS
+    )
+
+
+def _has_portuguese_for_left_context(tokens, index):
+    start = max(0, index - PORTUGUESE_FOR_LEFT_CONTEXT_WINDOW)
+    for anchor_index in range(index - 1, start - 1, -1):
+        anchor = tokens[anchor_index]
+        if anchor in PORTUGUESE_FOR_PREVIOUS_CONTEXT:
+            return all(
+                _is_portuguese_for_context_bridge_token(token)
+                for token in tokens[anchor_index + 1:index]
+            )
+        if not _is_portuguese_for_context_bridge_token(anchor):
+            break
+    return False
+
+
 def _is_portuguese_folded_token(token_infos, index):
     info = token_infos[index]
     token = info["token"]
@@ -4416,11 +4455,10 @@ def _is_portuguese_folded_token(token_infos, index):
         return False
 
     tokens = [item["token"] for item in token_infos]
-    previous_token = tokens[index - 1] if index > 0 else ""
     next_token = tokens[index + 1] if index + 1 < len(tokens) else ""
     next_next_token = tokens[index + 2] if index + 2 < len(tokens) else ""
 
-    if previous_token in PORTUGUESE_FOR_PREVIOUS_CONTEXT:
+    if _has_portuguese_for_left_context(tokens, index):
         return True
     if next_token == "O" and next_next_token == "QUE":
         return True

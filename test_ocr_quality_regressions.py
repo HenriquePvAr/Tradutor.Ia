@@ -7,6 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import cv2
@@ -1199,6 +1200,69 @@ class OCRQualityRegressionTests(unittest.TestCase):
                     "speech",
                 )
                 self.assertTrue(valid, reason)
+
+    def test_portuguese_for_with_intervening_context_is_not_residual_english(self):
+        cases = [
+            "SE ISSO NÃO FOR POSSÍVEL, EU VOLTO.",
+            "SE MESMO ASSIM NÃO FOR SEGURO, PARE.",
+            "SE, DEPOIS DISSO, NÃO FOR NECESSÁRIO, AVISE.",
+            "QUEM AINDA NÃO FOR CHAMADO, ESPERE.",
+            "QUANDO ISSO NÃO FOR MAIS ÚTIL, TROQUE.",
+        ]
+        for translation in cases:
+            with self.subTest(translation=translation):
+                valid, reason = validate_translation_text(
+                    "Portuguese conditional sentence.",
+                    translation,
+                    "narration",
+                )
+                self.assertTrue(valid, reason)
+
+    def test_region_001_candidate_replay_accepts_portuguese_for_context(self):
+        progress_path = Path(
+            "output/the_returned_c_rank_tank_wont_die_episode_51/progress.json"
+        )
+        if not progress_path.exists():
+            self.skipTest("E2E #7 progress artifact not present")
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        region = None
+        for state in progress.get("pages", []):
+            if state.get("index") != 8:
+                continue
+            for item in state.get("debug_data", {}).get("items", []):
+                if item.get("region_id") == "REGION_001":
+                    region = item
+                    break
+        self.assertIsNotNone(region)
+        self.assertEqual(region["translation_validation_reason"], "mixed_language_tokens:FOR")
+
+        valid, reason = validate_translation_text(
+            region["clean_text"],
+            region["translation_candidate"],
+            region["classification"],
+        )
+        self.assertTrue(valid, reason)
+
+        replay_pages = json.loads(json.dumps(progress["pages"], ensure_ascii=False))
+        for state in replay_pages:
+            if state.get("index") != 8:
+                continue
+            for item in state.get("debug_data", {}).get("items", []):
+                if item.get("region_id") == "REGION_001":
+                    item["translation"] = item["translation_candidate"]
+                    item["translation_valid"] = True
+                    item["translation_validation_reason"] = ""
+                    item["translation_final_state"] = "translated"
+                    item["translation_final_reason"] = ""
+                    item["preserved_original"] = False
+                    item["manual_review_required"] = False
+                    item["redrawn"] = True
+        accounting = _translation_quality_accounting(replay_pages)
+        self.assertEqual(accounting["invalid_candidate"], 0)
+        self.assertEqual(accounting["source_language_residual"], 0)
+        self.assertEqual(accounting["manual_review"], 0)
+        self.assertFalse(accounting["requires_review"])
+        self.assertTrue(accounting["quality_passed"])
 
     def test_real_so_and_for_english_residuals_still_fail(self):
         cases = [
