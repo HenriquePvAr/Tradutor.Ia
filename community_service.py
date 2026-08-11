@@ -83,6 +83,7 @@ class CommunityService:
     def __init__(self, store: CommunityStore, job_store, *, output_root: Path,
                  provider_name: str = "fake", community_db_path: str = "",
                  storage_config: dict | None = None,
+                 publication_metadata_config: dict | None = None,
                  build_command: Callable[[dict], list[str]] | None = None):
         self.store = store
         self.job_store = job_store
@@ -90,6 +91,7 @@ class CommunityService:
         self.provider_name = provider_name
         self.community_db_path = community_db_path
         self.storage_config = storage_config or {}
+        self.publication_metadata_config = publication_metadata_config or {}
         # How to turn a publish job into a runnable command; injected so tests can point
         # it at the fake community-publish runner. Defaults to a marker the worker
         # recognises to run the community publish runner by job_type.
@@ -259,6 +261,7 @@ class CommunityService:
                     **self.storage_config,
                     "owner_id": actor,
                 },
+                "publication_metadata": dict(self.publication_metadata_config),
                 **payload,
             },
             series_title=post["series_title"] or "", series_slug=post["series_slug"] or "",

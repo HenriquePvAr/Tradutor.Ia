@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from community_storage import StorageError, build_storage_provider
+from community_publication_metadata import build_publication_metadata_repository
 from community_store import CommunityStore, FileStatus, PostStatus
 from job_store import JobStatus, JobStore, TransitionError
 from local_environment import load_local_environment_for_entrypoint
@@ -170,6 +171,46 @@ def run_job(job_id: str, db_path: str) -> int:
         previous_file = community.get_file(file_id) or {}
         previous_remote_id = str(previous_file.get("storage_file_id") or "")
         previous_session_ref = str(previous_file.get("session_ref") or "")
+        metadata_repo = build_publication_metadata_repository(
+            config.get("publication_metadata") or {}
+        )
+        base_metadata = _publication_metadata(config, post_id, job_id, "")
+        metadata_repo.reserve(base_metadata)
+        if previous_remote_id:
+            try:
+                meta = provider.stat_file(previous_remote_id)
+                if (
+                    not meta.trashed
+                    and meta.size == total
+                    and meta.mime_type == "application/pdf"
+                ):
+                    if not community.update_current_publish_file(
+                        post_id,
+                        file_id,
+                        job_id,
+                        upload_status=FileStatus.VERIFYING,
+                        storage_file_id=previous_remote_id,
+                        bytes_uploaded=total,
+                    ):
+                        _cancel_job(jobs, job_id)
+                        return 0
+                    if _finalize_publish(
+                        jobs,
+                        community,
+                        metadata_repo,
+                        config,
+                        job_id,
+                        post_id,
+                        file_id,
+                        previous_remote_id,
+                        meta.checksum,
+                        total,
+                        job,
+                    ):
+                        return 0
+                    return 0
+            except StorageError:
+                pass
         if previous_remote_id:
             try:
                 provider.delete_file(previous_remote_id)
@@ -331,20 +372,19 @@ def run_job(job_id: str, db_path: str) -> int:
             _fail(jobs, community, job_id, post_id, file_id, job, "verify_mismatch")
             return 0
 
-        published = community.complete_publish_attempt(
-            post_id=post_id,
-            file_id=file_id,
-            upload_job_id=job_id,
-            provider_checksum=meta.checksum,
-            actor_id=config.get("user_id", ""),
-            size=total,
+        _finalize_publish(
+            jobs,
+            community,
+            metadata_repo,
+            config,
+            job_id,
+            post_id,
+            file_id,
+            remote_file_id,
+            meta.checksum,
+            total,
+            job,
         )
-        if not published:
-            community.invalidate_publish_file(file_id, job_id)
-            _cancel_job(jobs, job_id)
-            return 0
-        jobs.transition(job_id, JobStatus.FINISHED, expected_worker=job.get("worker_id"),
-                        stage="finished", pdf_path="")
         return 0
     except Exception as exc:  # noqa: BLE001 - the runner boundary must terminalize jobs
         _fail_unexpected(
@@ -375,6 +415,60 @@ def _upload_with_retry(provider, session, offset, chunk, jobs, job_id):
             jobs.heartbeat(job_id)
             time.sleep(_backoff(attempt))
     return None
+
+
+def _publication_metadata(config: dict, post_id: str, job_id: str, storage_reference: str) -> dict:
+    return {
+        "publication_id": post_id,
+        "owner_user_id": str(config.get("user_id") or ""),
+        "job_id": str(config.get("source_job_id") or ""),
+        "run_id": str(config.get("source_run_id") or ""),
+        "artifact_sha256": str(config.get("pdf_sha256") or ""),
+        "artifact_size_bytes": int(config.get("pdf_size") or 0),
+        "mime_type": "application/pdf",
+        "storage_provider": str(config.get("storage_provider") or ""),
+        "storage_reference": str(storage_reference or ""),
+        "title": str(config.get("series_title") or ""),
+        "upload_job_id": job_id,
+    }
+
+
+def _finalize_publish(
+    jobs,
+    community,
+    metadata_repo,
+    config,
+    job_id,
+    post_id,
+    file_id,
+    remote_file_id,
+    provider_checksum,
+    total,
+    job,
+) -> bool:
+    metadata_repo.finalize(
+        _publication_metadata(config, post_id, job_id, remote_file_id)
+    )
+    published = community.complete_publish_attempt(
+        post_id=post_id,
+        file_id=file_id,
+        upload_job_id=job_id,
+        provider_checksum=provider_checksum,
+        actor_id=config.get("user_id", ""),
+        size=total,
+    )
+    if not published:
+        community.invalidate_publish_file(file_id, job_id)
+        _cancel_job(jobs, job_id)
+        return False
+    jobs.transition(
+        job_id,
+        JobStatus.FINISHED,
+        expected_worker=job.get("worker_id"),
+        stage="finished",
+        pdf_path="",
+    )
+    return True
 
 
 def _discard_remote_file(provider, file_id: str, session_id: str = "") -> None:

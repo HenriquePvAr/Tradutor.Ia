@@ -42,6 +42,7 @@ COMMUNITY_DB_PATH = REPO_ROOT / ".cache" / "runtime" / "community.sqlite3"
 COMMUNITY_STORAGE_ROOT = REPO_ROOT / ".cache" / "runtime" / "community_storage"
 _CLIENT_IDENTITY_FIELDS = frozenset({
     "user_id", "role", "roles", "actor_id", "owner", "admin", "moderator",
+    "storage_file_id", "drive_file_id", "file_id", "provider", "checksum",
 })
 
 
@@ -121,7 +122,8 @@ class CommunityApi:
                  output_root: Path = OUTPUT_ROOT,
                  storage_root: Path = COMMUNITY_STORAGE_ROOT,
                  read_provider_factory: Callable[[], Any] | None = None,
-                 profile_sync: Callable[[RequestPrincipal], Any] | None = None):
+                 profile_sync: Callable[[RequestPrincipal], Any] | None = None,
+                 publication_metadata_config: dict[str, Any] | None = None):
         if storage_provider_name() == "local_test":
             storage_root = Path(os.environ["LOCAL_TEST_STORAGE_ROOT"]).resolve()
         else:
@@ -133,7 +135,9 @@ class CommunityApi:
             storage_config={
                 **{k: v for k, v in _storage_config().items() if k != "storage_provider"},
                 "storage_root": str(storage_root),
-            })
+            },
+            publication_metadata_config=publication_metadata_config,
+        )
         self._read_provider_factory = read_provider_factory or (
             (lambda: FilesystemStorageProvider(storage_root))
             if storage_provider_name() == "filesystem" else build_read_provider

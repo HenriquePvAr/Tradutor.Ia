@@ -152,6 +152,10 @@ class FakeStorageProvider(StorageProvider):
         self._sessions: dict[str, ResumableSession] = {}
         self._folders: dict[tuple[str, str], str] = {}
         self._counter = 0
+        self.ensure_folder_calls = 0
+        self.create_session_calls = 0
+        self.upload_chunk_calls = 0
+        self.stat_calls = 0
         self._lock = threading.Lock()
 
     def _next_id(self, prefix: str) -> str:
@@ -168,6 +172,7 @@ class FakeStorageProvider(StorageProvider):
 
     def ensure_folder(self, name: str, parent_id: str) -> str:
         self._require_online()
+        self.ensure_folder_calls += 1
         key = (parent_id, name)
         if key not in self._folders:
             self._folders[key] = self._next_id("folder")
@@ -175,6 +180,7 @@ class FakeStorageProvider(StorageProvider):
 
     def create_resumable_session(self, *, filename, mime_type, size, parent_id, sha256="") -> ResumableSession:
         self._require_online()
+        self.create_session_calls += 1
         file_id = self._next_id("file")
         self._files[file_id] = _FakeFile(file_id, filename, mime_type, parent_id)
         session = ResumableSession(
@@ -186,6 +192,7 @@ class FakeStorageProvider(StorageProvider):
 
     def upload_chunk(self, session: ResumableSession, offset: int, data: bytes) -> ChunkResult:
         self._require_online()
+        self.upload_chunk_calls += 1
         stored = self._sessions.get(session.session_id)
         if stored is None:
             raise StorageError("unknown or expired upload session", status=404)
@@ -209,6 +216,7 @@ class FakeStorageProvider(StorageProvider):
 
     def stat_file(self, file_id: str) -> RemoteFileMetadata:
         self._require_online()
+        self.stat_calls += 1
         blob = self._files.get(file_id)
         if blob is None:
             raise StorageError("file not found", status=404)
