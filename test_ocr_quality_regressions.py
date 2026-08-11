@@ -4104,5 +4104,245 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertTrue(group.ignored)
 
 
+def _open_narration_group(text="THE NIGHT WAS ALREADY OVER"):
+    line = OCRLine(
+        text=text,
+        confidence=0.95,
+        polygon=np.array([[80, 250], [620, 250], [620, 320], [80, 320]]),
+        box=(80, 250, 540, 70),
+        raw_text=text,
+        engine="rapidocr",
+    )
+    return TextGroup(
+        group_id="T",
+        lines=[line],
+        text=text,
+        classification="narration",
+    )
+
+
+def _dark_narration_image(background):
+    """Light narration lettering drawn on ``background``."""
+    image = background
+    cv2.putText(
+        image,
+        "THE NIGHT WAS",
+        (96, 285),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (240, 240, 240),
+        2,
+        cv2.LINE_AA,
+    )
+    return image
+
+
+class UniformDarkOpenRegionTests(unittest.TestCase):
+    """Cluster 1: narration printed on an open, uniformly dark region.
+
+    The surrounding ring can be contaminated by adjacent bright artwork, so the
+    interior of the group itself has to carry the uniform-dark evidence.
+    """
+
+    def test_uniform_dark_interior_with_contaminated_context_is_narration(self):
+        image = np.full((700, 700, 3), 235, dtype=np.uint8)
+        image[230:340, :] = 14
+        _dark_narration_image(image)
+        group = _open_narration_group()
+        background_type, metrics = _classify_background_region(image, group)
+        self.assertFalse(metrics["dark_context"])
+        self.assertTrue(metrics["uniform_dark_interior"])
+        self.assertEqual(background_type, "narration_box")
+        self.assertTrue(metrics["open_dark_narration"])
+
+    def test_uniform_dark_interior_with_dark_context_is_narration(self):
+        image = np.full((700, 700, 3), 12, dtype=np.uint8)
+        _dark_narration_image(image)
+        group = _open_narration_group()
+        background_type, metrics = _classify_background_region(image, group)
+        self.assertTrue(metrics["uniform_dark_interior"])
+        self.assertEqual(background_type, "narration_box")
+
+    def test_textured_dark_art_is_not_uniform_dark_narration(self):
+        rng = np.random.default_rng(17)
+        image = rng.integers(0, 90, size=(700, 700, 3), dtype=np.uint16).astype(
+            np.uint8
+        )
+        _dark_narration_image(image)
+        group = _open_narration_group()
+        background_type, metrics = _classify_background_region(image, group)
+        self.assertFalse(metrics["uniform_dark_interior"])
+        self.assertNotEqual(background_type, "narration_box")
+
+    def test_dark_gradient_region_is_not_uniform_dark_narration(self):
+        # Steep enough that the group's own band spans a significant range.
+        column = np.concatenate(
+            [
+                np.zeros(230, dtype=np.float32),
+                np.linspace(0, 74, 120, dtype=np.float32),
+                np.full(350, 74, dtype=np.float32),
+            ]
+        )
+        image = np.repeat(
+            np.repeat(column.reshape(-1, 1), 700, axis=1)[:, :, None],
+            3,
+            axis=2,
+        ).astype(np.uint8)
+        _dark_narration_image(image)
+        group = _open_narration_group()
+        _, metrics = _classify_background_region(image, group)
+        self.assertFalse(metrics["uniform_dark_interior"])
+
+    def test_dark_region_with_strong_local_variation_stays_protected(self):
+        image = np.full((700, 700, 3), 20, dtype=np.uint8)
+        for offset in range(-200, 700, 22):
+            cv2.line(image, (offset, 200), (offset + 160, 380), (200, 200, 200), 3)
+        _dark_narration_image(image)
+        group = _open_narration_group()
+        background_type, metrics = _classify_background_region(image, group)
+        self.assertFalse(metrics["uniform_dark_interior"])
+        self.assertNotEqual(background_type, "narration_box")
+
+    def test_dark_balloon_classification_is_not_changed(self):
+        image = np.full((700, 700, 3), 235, dtype=np.uint8)
+        cv2.ellipse(image, (350, 285), (300, 90), 0, 0, 360, (10, 10, 10), -1)
+        _dark_narration_image(image)
+        group = _open_narration_group()
+        group.classification = "speech"
+        group.inside_balloon_like_region = True
+        background_type, _ = _classify_background_region(image, group)
+        self.assertEqual(background_type, "dark_balloon")
+
+    def test_open_light_region_classification_is_not_changed(self):
+        image = np.full((700, 700, 3), 255, dtype=np.uint8)
+        cv2.putText(
+            image,
+            "THE NIGHT WAS",
+            (96, 285),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 0, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        group = _open_narration_group()
+        background_type, metrics = _classify_background_region(image, group)
+        self.assertEqual(background_type, "narration_box")
+        self.assertTrue(metrics["open_white_narration"])
+        self.assertFalse(metrics["uniform_dark_interior"])
+
+    def test_uniform_dark_line_mask_accepts_proven_interior(self):
+        image = np.full((700, 700, 3), 235, dtype=np.uint8)
+        image[230:340, :] = 14
+        _dark_narration_image(image)
+        group = _open_narration_group()
+        _, metrics = _classify_background_region(image, group)
+        group.background_metrics = metrics
+        mask, mask_metrics = _uniform_dark_line_text_mask(image, group)
+        self.assertTrue(np.any(mask))
+        self.assertEqual(mask_metrics["uniform_dark_line_count"], 1)
+
+
+class PostRenderOcrDegradationTests(unittest.TestCase):
+    """Cluster 2: re-OCR noise on a correct render is not source residual."""
+
+    def _check(self, source, translation, observed):
+        group = _scored_group(source)
+        group.classification = "narration"
+        group.translation = translation
+        group.safe_area = (0, 0, 220, 80)
+        image = np.full((100, 240, 3), 255, dtype=np.uint8)
+        lines = [_line(observed)] if observed else []
+        with patch(
+            "ocr_balloon.OCREngine._detect_with_rapidocr",
+            return_value=lines,
+        ):
+            return _post_render_source_text_check(image, group, page_index=3)
+
+    def test_accent_loss_in_reocr_is_not_source_residual(self):
+        result = self._check(
+            "IT WAS ONLY A DREAM",
+            "FOI SÓ UM SONHO",
+            "FOI SO UM SONHO",
+        )
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["reason"], "ok")
+
+    def test_token_split_in_reocr_is_not_source_residual(self):
+        result = self._check(
+            "HE IS WALKING DOWN THE STREET",
+            "ELE VEM ANDANDO PELA RUA",
+            "ELE VEM AND ANDO PELA RUA",
+        )
+        self.assertTrue(result["passed"], result)
+
+    def test_token_merge_in_reocr_is_not_missing_target_text(self):
+        result = self._check(
+            "ARE YOU ALRIGHT",
+            "TUDO BEM COM VOCÊ",
+            "TUDOBEM COM VOCE",
+        )
+        self.assertTrue(result["passed"], result)
+
+    def test_punctuation_and_whitespace_noise_is_tolerated(self):
+        result = self._check(
+            "IT WAS ONLY A DREAM",
+            "FOI SÓ UM SONHO!",
+            "FOI  SO. UM SONHO",
+        )
+        self.assertTrue(result["passed"], result)
+
+    def test_real_source_residual_still_fails(self):
+        result = self._check(
+            "WHAT IS THIS",
+            "O QUE É ISSO",
+            "WHAT IS THIS",
+        )
+        self.assertFalse(result["passed"], result)
+        self.assertIn("WHAT", result["residual_source_tokens"])
+
+    def test_source_residual_next_to_correct_translation_still_fails(self):
+        result = self._check(
+            "GET OUT OF HERE",
+            "SAIA DAQUI AGORA",
+            "SAIA DAQUI AGORA GET OUT",
+        )
+        self.assertFalse(result["passed"], result)
+
+    def test_missing_translated_text_after_render_fails(self):
+        result = self._check(
+            "WHAT IS THIS",
+            "O QUE É ISSO",
+            "",
+        )
+        self.assertFalse(result["passed"], result)
+        self.assertEqual(result["reason"], "translated_text_missing_after_render")
+
+    def test_observed_e2e_accent_and_merge_degradation_passes(self):
+        result = self._check(
+            "..JUST WHEN IWASFINALLY ENJOYING MYSELF.",
+            "..SÓ QUANDO EU FINALMENTE ESTAVA ME DIVERTINDO.",
+            "..SO QUANDO EU FINALMENTEESTAVA MEDIVERTINDO.",
+        )
+        self.assertTrue(result["passed"], result)
+
+    def test_observed_e2e_mid_word_split_degradation_passes(self):
+        result = self._check(
+            "...HUNTERHYEON.",
+            "...CAÇADOR HYEON.",
+            "..CACADOR HYEC ON.",
+        )
+        self.assertTrue(result["passed"], result)
+
+    def test_inconclusive_reocr_is_not_declared_passed(self):
+        result = self._check(
+            "WHAT IS THIS",
+            "O QUE É ISSO",
+            "XQZ VVM KKPT",
+        )
+        self.assertFalse(result["passed"], result)
+        self.assertEqual(result["reason"], "post_render_ocr_inconclusive")
+
+
 if __name__ == "__main__":
     unittest.main()

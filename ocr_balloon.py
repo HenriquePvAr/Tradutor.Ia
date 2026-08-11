@@ -1,3 +1,4 @@
+import difflib
 import json
 import hashlib
 import math
@@ -5382,7 +5383,36 @@ def _classify_background_region(img_bgr, group, page_index=None):
         edge_density = float(np.mean((edges > 0)[background_pixels]))
         sobel_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
         sobel_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-        gradient_strength = float(np.mean(cv2.magnitude(sobel_x, sobel_y)[background_pixels]))
+        gradient_magnitude = cv2.magnitude(sobel_x, sobel_y)
+        gradient_strength = float(np.mean(gradient_magnitude[background_pixels]))
+
+    # An OCR polygon can cover almost the whole draw box, in which case the
+    # sampled "background" falls back to every pixel and the group's own glyphs
+    # dominate every statistic above.  Measure the dark backdrop on its own,
+    # away from the glyph halo, so the region can be judged by what it actually
+    # is instead of by the lettering printed on it.
+    with profile_step("background.interior_backdrop", page_index=page_index):
+        dark_backdrop = ((gray <= 75) & background_pixels).astype(np.uint8)
+        interior_core = cv2.erode(
+            dark_backdrop,
+            np.ones((5, 5), dtype=np.uint8),
+            iterations=1,
+        ) > 0
+        if np.count_nonzero(interior_core) < 32:
+            interior_core = dark_backdrop > 0
+        if np.any(interior_core):
+            core_values = gray[interior_core]
+            interior_dark_std = float(np.std(core_values))
+            interior_value_span = float(
+                np.percentile(core_values, 97) - np.percentile(core_values, 3)
+            )
+            interior_dark_texture = float(np.mean(local_texture[interior_core]))
+            interior_dark_gradient = float(np.mean(gradient_magnitude[interior_core]))
+        else:
+            interior_dark_std = 255.0
+            interior_value_span = 255.0
+            interior_dark_texture = 255.0
+            interior_dark_gradient = 255.0
 
     # Hough must inspect the background, not strokes from the OCR text itself.
     # Otherwise ordinary letters inside a clean white balloon look like dozens
@@ -5522,11 +5552,32 @@ def _classify_background_region(img_bgr, group, page_index=None):
         and context_white_ratio <= 0.02
         and context_saturation_mean <= 12.0
     )
+    # ``dark_context`` samples the ring *around* the group, so bright artwork
+    # next to an open narration caption contaminates it.  Measure the group's
+    # own interior as an independent signal: a region that is dark, flat and
+    # free of local structure is a uniform dark backdrop regardless of what
+    # surrounds it.  The bar is deliberately stricter than ``uniform_dark``
+    # (used for enclosed dark balloons) because no balloon contour proves the
+    # extent of the region here.
+    uniform_dark_interior = bool(
+        # The non-dark minority has to be small enough to be the lettering
+        # itself; the uniformity evidence below is measured on the dark
+        # backdrop only, so it stays valid however the glyphs are sampled.
+        dark_ratio >= 0.80
+        and interior_dark_std <= 18.0
+        and interior_value_span <= 40.0
+        and interior_dark_texture <= 6.0
+        and interior_dark_gradient <= 30.0
+        and saturation_mean <= 60.0
+    )
     open_dark_narration = (
         group.classification in {"narration", "unknown"}
         and w >= max(80, int(h * 1.8))
         and len(compact_text) >= 8
-        and dark_context
+        and (
+            dark_context
+            or (uniform_dark_interior and not group.inside_balloon_like_region)
+        )
     )
     strict_uniform_light = (
         brightness >= config.WHITE_BACKGROUND_MIN_BRIGHTNESS
@@ -5602,6 +5653,11 @@ def _classify_background_region(img_bgr, group, page_index=None):
     metrics["open_white_narration"] = bool(open_white_narration)
     metrics["open_dark_narration"] = bool(open_dark_narration)
     metrics["dark_context"] = bool(dark_context)
+    metrics["uniform_dark_interior"] = bool(uniform_dark_interior)
+    metrics["interior_dark_std"] = round(interior_dark_std, 3)
+    metrics["interior_value_span"] = round(interior_value_span, 3)
+    metrics["interior_dark_texture"] = round(interior_dark_texture, 3)
+    metrics["interior_dark_gradient"] = round(interior_dark_gradient, 3)
     metrics["relaxed_white_context"] = bool(relaxed_white_context)
     metrics["short_text_white_context"] = bool(short_text_white_context)
     metrics["background_edge_density"] = round(float(np.mean(background_edges > 0)), 4)
@@ -6205,16 +6261,29 @@ def _caption_overlay_mask(img_bgr, group, maximum_mask):
     }
 
 
-def _detached_light_text_components_mask(img_bgr, group, source_mask):
-    """Recover isolated bright glyphs beside OCR lines on a uniform dark region."""
-    metrics = getattr(group, "background_metrics", {}) or {}
-    dark_context = bool(
+def _proven_uniform_dark_region(metrics):
+    """Uniform dark backdrop proven by the ring around the group or by its interior.
+
+    ``dark_context`` only samples the surrounding ring, which adjacent bright
+    artwork contaminates.  ``uniform_dark_interior`` proves the same property on
+    the region itself and is accepted as equivalent evidence.
+    """
+
+    metrics = metrics or {}
+    return bool(
         metrics.get("dark_context")
+        or metrics.get("uniform_dark_interior")
         or (
             float(metrics.get("context_dark_pixel_ratio", 0.0)) >= 0.90
             and float(metrics.get("context_saturation_mean", 255.0)) <= 18.0
         )
     )
+
+
+def _detached_light_text_components_mask(img_bgr, group, source_mask):
+    """Recover isolated bright glyphs beside OCR lines on a uniform dark region."""
+    metrics = getattr(group, "background_metrics", {}) or {}
+    dark_context = _proven_uniform_dark_region(metrics)
     empty = np.zeros(source_mask.shape, dtype=np.uint8)
     if not dark_context or not np.any(source_mask):
         return empty, {
@@ -6273,13 +6342,7 @@ def _detached_light_text_components_mask(img_bgr, group, source_mask):
 def _uniform_dark_line_text_mask(img_bgr, group):
     """Cover each OCR line polygon on a proven uniform dark region."""
     metrics = getattr(group, "background_metrics", {}) or {}
-    dark_context = bool(
-        metrics.get("dark_context")
-        or (
-            float(metrics.get("context_dark_pixel_ratio", 0.0)) >= 0.90
-            and float(metrics.get("context_saturation_mean", 255.0)) <= 18.0
-        )
-    )
+    dark_context = _proven_uniform_dark_region(metrics)
     result = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
     if not dark_context:
         return result, {
@@ -6923,6 +6986,28 @@ def _box_overflow_ratio(inner, outer):
     return max(0.0, 1.0 - intersection / max(1, iw * ih))
 
 
+def _ascii_folded_tokens(text):
+    """Accent-folded upper-case word tokens, in reading order."""
+    return re.findall(r"[A-Z']+", _ascii_fold(text or "").upper())
+
+
+def _ocr_shape_similarity(observed_joined, reference_joined):
+    """Similarity of two accent-folded, space-free renderings of a text.
+
+    Dropping whitespace absorbs the space insertions and merges that this OCR
+    pass produces; accent folding absorbs lost diacritics; the ratio absorbs
+    the remaining character-level noise.
+    """
+
+    if not observed_joined or not reference_joined:
+        return 0.0
+    return difflib.SequenceMatcher(
+        None,
+        observed_joined,
+        reference_joined,
+    ).ratio()
+
+
 def _post_render_source_text_check(rendered_bgr, group, page_index=None):
     """Use lightweight OCR to catch source-language text still visible after cleanup.
 
@@ -6994,6 +7079,43 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
             "untranslated_single_english_token",
         )
     )
+    # Three-way evidence: the source text, the translation that was rendered and
+    # the text this independent pass observed.  A token the language validator
+    # flags is only forgiven when the *expected* translation explains it as OCR
+    # noise (lost accent, inserted or dropped space) and the source text does
+    # not.  The observed output is never replaced by the expected string: it
+    # still has to carry evidence of the translation, and any token the
+    # expectation cannot explain keeps failing.
+    expected_sequence = _ascii_folded_tokens(group.translation)
+    expected_joined = "".join(expected_sequence)
+    observed_joined = "".join(_ascii_folded_tokens(final_text))
+    source_joined = "".join(_ascii_folded_tokens(group.text))
+    expected_similarity = _ocr_shape_similarity(observed_joined, expected_joined)
+    source_similarity = _ocr_shape_similarity(observed_joined, source_joined)
+    # The observed output as a whole reads as the expected translation, and
+    # reads less like the source than like the translation.  That is what makes
+    # the flagged tokens OCR noise rather than surviving source text.
+    rendered_matches_expected = bool(
+        len(expected_joined) >= 4
+        and expected_similarity >= 0.90
+        and expected_similarity > source_similarity
+    )
+    flagged_tokens = {
+        token
+        for token in language_reason.partition(":")[2].split(",")
+        if token
+    }
+    forgiven_ocr_noise = sorted(
+        token for token in flagged_tokens if token not in source_tokens
+    )
+    if (
+        source_language_detected
+        and rendered_matches_expected
+        and flagged_tokens
+        and len(forgiven_ocr_noise) == len(flagged_tokens)
+    ):
+        source_language_detected = False
+
     if source_language_detected:
         for info in _translation_token_infos(final_text):
             token = info["token"]
@@ -7006,23 +7128,47 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
             ):
                 residual.add(token)
     residual = sorted(residual)
-    passed = not residual and not source_language_detected
+
+    # The rendered translation must actually be visible.  Correct text in memory
+    # is not evidence that it reached the page.
+    expected_evidence = [token for token in expected_sequence if len(token) >= 3]
+    target_text_found = not expected_evidence or any(
+        token in final_tokens or token in observed_joined
+        for token in expected_evidence
+    )
+
+    passed = not residual and not source_language_detected and target_text_found
+    if passed:
+        reason = "ok"
+    elif residual or source_language_detected:
+        reason = (
+            "source_language_detected_after_render"
+            if source_language_detected
+            else "source_tokens_detected_after_render"
+        )
+    elif not observed_joined:
+        reason = "translated_text_missing_after_render"
+    else:
+        # Something was rendered, but it matches neither the expected
+        # translation nor the source text.  Fail closed for manual review
+        # instead of guessing which of the two it is.
+        reason = "post_render_ocr_inconclusive"
     return {
         "checked": True,
         "passed": passed,
-        "reason": (
-            "ok"
-            if passed
-            else (
-                "source_language_detected_after_render"
-                if source_language_detected
-                else "source_tokens_detected_after_render"
-            )
-        ),
+        "reason": reason,
         "validator_reason": language_reason,
         "source_tokens_checked": sorted(source_tokens),
         "detected_text": final_text,
         "residual_source_tokens": residual,
+        "expected_translation_tokens": expected_sequence,
+        "expected_shape_similarity": round(expected_similarity, 4),
+        "source_shape_similarity": round(source_similarity, 4),
+        "rendered_matches_expected": bool(rendered_matches_expected),
+        "forgiven_ocr_noise_tokens": (
+            forgiven_ocr_noise if rendered_matches_expected else []
+        ),
+        "target_text_found": bool(target_text_found),
         "page": page_index,
     }
 
