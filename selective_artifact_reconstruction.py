@@ -25,6 +25,14 @@ from pdf import generate_pdf
 from pipeline_cache import atomic_write_json, valid_image
 
 
+_NO_CONTENT_PRECHECK_REASONS = frozenset({
+    "nearly_flat_low_edges",
+    "extreme_brightness_low_variation",
+    "no_text_like_components",
+})
+_BLANK_EXCLUSION_REASONS = frozenset({"invalid_or_blank_logical_page"})
+
+
 class ReconstructionError(RuntimeError):
     """Local, categorical reconstruction failure."""
 
@@ -41,6 +49,12 @@ def _read_json(path: Path, code: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReconstructionError(code)
     return value
+
+
+def _read_optional_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    return _read_json(path, "reconstruction_evidence_missing")
 
 
 def _text_sha256(value: str) -> str:
@@ -90,6 +104,46 @@ def _candidate_values(item: dict[str, Any]) -> list[str]:
         if value and value not in values:
             values.append(value)
     return values
+
+
+def _debug_items(page: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in (page.get("debug_data") or {}).get("items", []) or []
+        if isinstance(item, dict)
+    ]
+
+
+def _page_count_trace(timing_report: dict[str, Any]) -> dict[str, Any]:
+    trace = timing_report.get("page_count_trace")
+    return trace if isinstance(trace, dict) else {}
+
+
+def _int_set(values: Any) -> set[int]:
+    if not isinstance(values, list):
+        return set()
+    parsed: set[int] = set()
+    for value in values:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            parsed.add(number)
+    return parsed
+
+
+def _pdf_page_policy(pages: list[dict[str, Any]], timing_report: dict[str, Any]) -> dict[str, Any]:
+    logical_pages = {_page_number(page) for page in pages if _page_number(page) > 0}
+    trace = _page_count_trace(timing_report)
+    excluded = _int_set(trace.get("excluded_logical_pages")) & logical_pages
+    processed = _int_set(trace.get("processed_logical_pages")) & logical_pages
+    included = processed if processed else logical_pages - excluded
+    return {
+        "included": included,
+        "excluded": excluded,
+        "exclusion_reason": str(trace.get("logical_page_exclusion_reason") or ""),
+    }
 
 
 def default_render_page(
@@ -212,9 +266,11 @@ class SelectiveArtifactReconstructor:
     def reconstruct(self, request: dict[str, Any]) -> dict[str, Any]:
         source = self._resolve_source(request)
         progress = _read_json(source["output_dir"] / "progress.json", "reconstruction_evidence_missing")
+        timing_report = _read_optional_json(source["output_dir"] / "timing_report.json")
         pages = [page for page in (progress.get("pages") or []) if isinstance(page, dict)]
         if not pages:
             raise ReconstructionError("reconstruction_page_order_missing")
+        pdf_policy = _pdf_page_policy(pages, timing_report)
         page, item = self._select_item(pages, request)
         candidate = self._select_candidate(item, request)
         valid, reason = validate_translation_text(
@@ -225,7 +281,7 @@ class SelectiveArtifactReconstructor:
         if not valid:
             raise ReconstructionError("reconstruction_candidate_invalid")
         source_pdf_sha = _file_sha256(source["pdf_path"]) if source["pdf_path"].is_file() else ""
-        page_provenance = self._collect_page_provenance(pages, _page_number(page))
+        page_provenance = self._collect_page_provenance(pages, _page_number(page), pdf_policy)
         page_provenance_digest = _stable_id({"pages": page_provenance})
         reconstruction_id = _stable_id({
             "source_job_id": source["job"]["id"],
@@ -314,6 +370,7 @@ class SelectiveArtifactReconstructor:
                 _page_number(page),
                 corrected_page,
                 page_snapshots,
+                page_provenance,
             )
             pdf_path = temp_root / "artifact.pdf"
             try:
@@ -324,11 +381,19 @@ class SelectiveArtifactReconstructor:
                 raise ReconstructionError("reconstruction_pdf_failed") from None
             if not pdf_path.is_file():
                 raise ReconstructionError("reconstruction_pdf_failed")
-            quality_pages = self._quality_pages(pages, page, item, candidate, corrected_page, render_debug)
+            quality_pages = self._quality_pages(
+                pages,
+                page,
+                item,
+                candidate,
+                corrected_page,
+                render_debug,
+                page_provenance,
+            )
             physical_quality = self._validate_physical_quality(
                 quality_pages,
                 pdf_path=pdf_path,
-                expected_page_count=len(pages),
+                expected_page_count=len(quality_pages),
             )
             artifact_sha256, artifact_size = sha256_of_file(pdf_path)
             try:
@@ -340,7 +405,7 @@ class SelectiveArtifactReconstructor:
                     source={
                         "source_url": source["job"].get("source_url") or "",
                         "pdf_path": str(final_root / "artifact.pdf"),
-                        "expected_page_count": len(pages),
+                        "expected_page_count": len(quality_pages),
                         "physical_quality": physical_quality,
                     },
                 )
@@ -482,14 +547,33 @@ class SelectiveArtifactReconstructor:
             raise ReconstructionError("reconstruction_candidate_mismatch")
         return candidate
 
-    def _collect_page_provenance(self, pages: list[dict[str, Any]], target_page: int) -> list[dict[str, Any]]:
+    def _collect_page_provenance(
+        self,
+        pages: list[dict[str, Any]],
+        target_page: int,
+        pdf_policy: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         provenance: list[dict[str, Any]] = []
+        included = set(pdf_policy.get("included") or set())
+        excluded = set(pdf_policy.get("excluded") or set())
         for page in sorted(pages, key=_page_number):
             number = _page_number(page)
             if number <= 0:
                 raise ReconstructionError("reconstruction_page_order_incomplete")
             output_path = Path(str(page.get("output_path") or "")).resolve()
             if number != target_page:
+                if number in excluded:
+                    identity = self._require_no_content_page_provenance(page, pdf_policy)
+                    provenance.append({
+                        "page": number,
+                        "role": "reused_no_content_page",
+                        "path": str(output_path),
+                        "pdf_included": False,
+                        **identity,
+                    })
+                    continue
+                if number not in included:
+                    raise ReconstructionError("reconstruction_page_provenance_mismatch")
                 if not output_path.is_file() or not valid_image(str(output_path), 1, 1):
                     raise ReconstructionError("reconstruction_page_provenance_mismatch")
                 identity = _file_identity(output_path)
@@ -498,6 +582,7 @@ class SelectiveArtifactReconstructor:
                     "page": number,
                     "role": "reused_rendered_page",
                     "path": str(output_path),
+                    "pdf_included": True,
                     **identity,
                 })
                 continue
@@ -509,9 +594,53 @@ class SelectiveArtifactReconstructor:
                 "page": number,
                 "role": "affected_source_page",
                 "path": str(source_path),
+                "pdf_included": True,
                 **identity,
             })
         return provenance
+
+    @classmethod
+    def _require_no_content_page_provenance(
+        cls,
+        page: dict[str, Any],
+        pdf_policy: dict[str, Any],
+    ) -> dict[str, Any]:
+        number = _page_number(page)
+        included = set(pdf_policy.get("included") or set())
+        excluded = set(pdf_policy.get("excluded") or set())
+        if number <= 0 or number not in excluded or number in included:
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        reason = str(pdf_policy.get("exclusion_reason") or "")
+        if reason and reason not in _BLANK_EXCLUSION_REASONS:
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        precheck = page.get("precheck") if isinstance(page.get("precheck"), dict) else {}
+        if precheck.get("skip") is not True:
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        if str(precheck.get("reason") or "") not in _NO_CONTENT_PRECHECK_REASONS:
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        if str(page.get("cache_source") or "") != "no_text_precheck":
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        if _debug_items(page):
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        output_path = Path(str(page.get("output_path") or "")).resolve()
+        source_path = Path(str(page.get("image_path") or "")).resolve()
+        if not output_path.is_file() or not source_path.is_file():
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        rendered = _file_identity(output_path)
+        source = _file_identity(source_path)
+        cls._require_expected_page_identity(page, rendered)
+        expected_source_hash = str(page.get("image_hash") or "").strip().lower()
+        if expected_source_hash and expected_source_hash != str(source["sha256"]).lower():
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        if rendered != source:
+            raise ReconstructionError("reconstruction_page_provenance_mismatch")
+        return {
+            **rendered,
+            "source_path": str(source_path),
+            "source_sha256": source["sha256"],
+            "source_size_bytes": source["size_bytes"],
+            "no_content_reason": str(precheck.get("reason") or ""),
+        }
 
     @staticmethod
     def _require_expected_page_identity(page: dict[str, Any], actual: dict[str, Any]) -> None:
@@ -547,7 +676,7 @@ class SelectiveArtifactReconstructor:
         expected_by_page = {
             int(item["page"]): item
             for item in provenance
-            if item.get("role") == "reused_rendered_page"
+            if item.get("role") in {"reused_rendered_page", "reused_no_content_page"}
         }
         snapshots: dict[int, Path] = {}
         snapshot_root = temp_root / "input_pages"
@@ -566,6 +695,16 @@ class SelectiveArtifactReconstructor:
                 or int(current["size_bytes"]) != int(expected["size_bytes"])
             ):
                 raise ReconstructionError("reconstruction_page_provenance_mismatch")
+            source_path = expected.get("source_path")
+            if source_path:
+                source_identity = _file_identity(Path(str(source_path)).resolve())
+                if (
+                    source_identity["sha256"] != expected.get("source_sha256")
+                    or int(source_identity["size_bytes"]) != int(expected.get("source_size_bytes") or -1)
+                ):
+                    raise ReconstructionError("reconstruction_page_provenance_mismatch")
+            if expected.get("pdf_included") is False:
+                continue
             destination = snapshot_root / f"page_{number:03d}{source.suffix or '.png'}"
             shutil.copyfile(source, destination)
             copied = _file_identity(destination)
@@ -586,6 +725,14 @@ class SelectiveArtifactReconstructor:
                 or int(current["size_bytes"]) != int(item.get("size_bytes") or -1)
             ):
                 raise ReconstructionError("reconstruction_page_provenance_mismatch")
+            source_path = item.get("source_path")
+            if source_path:
+                source = _file_identity(Path(str(source_path)).resolve())
+                if (
+                    source["sha256"] != item.get("source_sha256")
+                    or int(source["size_bytes"]) != int(item.get("source_size_bytes") or -1)
+                ):
+                    raise ReconstructionError("reconstruction_page_provenance_mismatch")
 
     @staticmethod
     def _validate_physical_quality(
@@ -608,21 +755,29 @@ class SelectiveArtifactReconstructor:
         target_page: int,
         corrected_page: Path,
         page_snapshots: dict[int, Path],
+        provenance: list[dict[str, Any]],
     ) -> list[Path]:
         ordered: list[Path] = []
         seen: set[int] = set()
+        pdf_included = {
+            int(item["page"])
+            for item in provenance
+            if item.get("pdf_included") is not False
+        }
         for page in sorted(pages, key=_page_number):
             number = _page_number(page)
             if number <= 0 or number in seen:
                 raise ReconstructionError("reconstruction_page_order_incomplete")
             seen.add(number)
+            if number not in pdf_included:
+                continue
             path = corrected_page if number == target_page else page_snapshots.get(number)
             if path is None:
                 raise ReconstructionError("reconstruction_page_provenance_missing")
             if not path.is_file():
                 raise ReconstructionError("reconstruction_page_order_incomplete")
             ordered.append(path)
-        if len(ordered) != len(pages):
+        if len(ordered) != len(pdf_included):
             raise ReconstructionError("reconstruction_page_order_incomplete")
         return ordered
 
@@ -634,8 +789,14 @@ class SelectiveArtifactReconstructor:
         candidate: str,
         corrected_page: Path,
         render_debug: dict[str, Any],
+        provenance: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         cloned = copy.deepcopy(pages)
+        pdf_included = {
+            int(item["page"])
+            for item in provenance
+            if item.get("pdf_included") is not False
+        }
         for page in cloned:
             if _page_number(page) != _page_number(target_page):
                 continue
@@ -659,7 +820,7 @@ class SelectiveArtifactReconstructor:
                 })
                 visual_validation = render_debug.get("visual_validation") if isinstance(render_debug, dict) else None
                 item["visual_validation"] = _require_strict_visual_validation(visual_validation)
-        return cloned
+        return [page for page in cloned if _page_number(page) in pdf_included]
 
     @staticmethod
     def _require_quality_pass(

@@ -23,6 +23,12 @@ def _write_png(path: Path, label: str, *, color: tuple[int, int, int] = (245, 24
     image.save(path)
 
 
+def _write_blank_png(path: Path, *, size: tuple[int, int] = (160, 120)) -> None:
+    image = Image.new("RGB", size, (255, 255, 255))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+
+
 class SpyRenderer:
     def __init__(self, *, fail: bool = False, reason: str = "render boom",
                  visual_validation: dict | None = None):
@@ -71,6 +77,13 @@ class OnePagePdfBuilder:
         from pdf import generate_pdf
 
         generate_pdf([image_paths[0]], pdf_path)
+
+
+class DuplicateFirstPagePdfBuilder:
+    def __call__(self, image_paths, pdf_path):
+        from pdf import generate_pdf
+
+        generate_pdf([image_paths[0], *image_paths], pdf_path)
 
 
 class MutatingPdfBuilder:
@@ -162,7 +175,13 @@ def _fixture(tmp_path: Path, *, candidate: str = "SE FOR PRECISO, EU VOU.",
              extra_candidate: str = "", missing_candidate: bool = False,
              missing_geometry: bool = False, missing_source_page: bool = False,
              missing_non_target: bool = False, current_run: str = "source-run",
-             include_page_identity: bool = False) -> tuple[JobStore, str, Path, str]:
+             include_page_identity: bool = False,
+             blank_non_target: bool = False,
+             blank_precheck: dict | None = None,
+             blank_groups: list[dict] | None = None,
+             blank_excluded: bool = False,
+             blank_cache_source: str = "no_text_precheck",
+             blank_image_hash: bool = False) -> tuple[JobStore, str, Path, str]:
     output = tmp_path / "output"
     pages = output / "pages"
     source = output / "source"
@@ -170,9 +189,15 @@ def _fixture(tmp_path: Path, *, candidate: str = "SE FOR PRECISO, EU VOU.",
     source.mkdir(parents=True)
     for index in (1, 2, 3):
         if index != 2 or not missing_source_page:
-            _write_png(source / f"page_{index:03d}.png", f"SOURCE {index}")
+            if blank_non_target and index == 1:
+                _write_blank_png(source / f"page_{index:03d}.png")
+            else:
+                _write_png(source / f"page_{index:03d}.png", f"SOURCE {index}")
         if index != 3 or not missing_non_target:
-            _write_png(pages / f"page_{index:03d}.png", f"PAGE {index}")
+            if blank_non_target and index == 1:
+                _write_blank_png(pages / f"page_{index:03d}.png")
+            else:
+                _write_png(pages / f"page_{index:03d}.png", f"PAGE {index}")
     item = {
         "id": "BALAO_TEST",
         "region_id": "REGION_TEST_001",
@@ -193,13 +218,24 @@ def _fixture(tmp_path: Path, *, candidate: str = "SE FOR PRECISO, EU VOU.",
         item["bounding_box"] = [10, 20, 120, 40]
     progress_pages = []
     for index in (1, 2, 3):
+        debug_items = [item] if index == 2 else []
+        if blank_non_target and index == 1 and blank_groups is not None:
+            debug_items = blank_groups
         page_entry = {
             "index": index,
             "output_path": str(pages / f"page_{index:03d}.png"),
             "image_path": str(source / f"page_{index:03d}.png"),
             "status": "completed",
-            "debug_data": {"items": [item] if index == 2 else []},
+            "debug_data": {"items": debug_items},
         }
+        if blank_non_target and index == 1:
+            if blank_precheck is not None:
+                page_entry["precheck"] = blank_precheck
+            page_entry["cache_source"] = blank_cache_source
+            if blank_image_hash:
+                source_path = source / f"page_{index:03d}.png"
+                if source_path.is_file():
+                    page_entry["image_hash"] = hashlib.sha256(source_path.read_bytes()).hexdigest()
         if include_page_identity:
             page_path = pages / f"page_{index:03d}.png"
             if page_path.is_file():
@@ -211,6 +247,20 @@ def _fixture(tmp_path: Path, *, candidate: str = "SE FOR PRECISO, EU VOU.",
         "pdf_path": str(output / "chapter.pdf"),
         "pages": progress_pages,
     }), encoding="utf-8")
+    if blank_excluded:
+        (output / "timing_report.json").write_text(json.dumps({
+            "page_count_trace": {
+                "logical_pages": 3,
+                "processed_pages": 2,
+                "processed_logical_pages": [2, 3],
+                "excluded_logical_pages": [1],
+                "logical_page_exclusion_reason": "invalid_or_blank_logical_page",
+            },
+            "quality_validation": {
+                "pdf_pages": 2,
+                "expected_pdf_pages": 2,
+            },
+        }), encoding="utf-8")
     old_pdf = b"%PDF-1.4\nold synthetic blocked artifact\n%%EOF\n"
     old_sha = hashlib.sha256(old_pdf).hexdigest()
     (output / "quality_report.json").write_text(json.dumps({
@@ -262,6 +312,32 @@ def _fixture(tmp_path: Path, *, candidate: str = "SE FOR PRECISO, EU VOU.",
         "pdf_path": str(output / "chapter.pdf"),
     }), encoding="utf-8")
     return store, job_id, output, _sha(candidate)
+
+
+def _legitimate_blank_precheck() -> dict:
+    return {
+        "skip": True,
+        "reason": "nearly_flat_low_edges",
+        "metrics": {
+            "mean": 255.0,
+            "std": 0.0,
+            "edge_density": 0.0,
+            "small_components": 0,
+            "high_contrast_blocks": 0,
+        },
+    }
+
+
+def _blank_fixture(tmp_path: Path, **overrides) -> tuple[JobStore, str, Path, str]:
+    options = {
+        "include_page_identity": True,
+        "blank_non_target": True,
+        "blank_precheck": _legitimate_blank_precheck(),
+        "blank_excluded": True,
+        "blank_image_hash": True,
+    }
+    options.update(overrides)
+    return _fixture(tmp_path, **options)
 
 
 def _service(tmp_path: Path, store: JobStore, *, renderer=None, pdf=None, quality=None):
@@ -362,6 +438,156 @@ def test_non_target_pages_reused_in_order(tmp_path):
     assert pdf.calls[0][1].endswith("page_002.png")
     assert result["page_path"].endswith("page_002.png")
     assert pdf.calls[0][2].endswith("page_003.png")
+
+
+def test_legitimate_blank_non_target_page_is_provenance_checked_but_excluded_from_pdf(tmp_path):
+    store, job_id, output, candidate_hash = _blank_fixture(tmp_path)
+    pdf = SpyPdfBuilder()
+    quality = SpyQualityBuilder()
+
+    result = _service(tmp_path, store, pdf=pdf, quality=quality).reconstruct(
+        _request(job_id, candidate_hash))
+
+    assert result["status"] == JobStatus.FINISHED
+    assert len(pdf.calls[0]) == 2
+    assert pdf.calls[0][0].endswith("page_002.png")
+    assert pdf.calls[0][1].endswith("page_003.png")
+    assert not any(path.endswith("page_001.png") for path in pdf.calls[0])
+
+
+def test_blank_non_target_without_no_content_evidence_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _blank_fixture(
+        tmp_path,
+        blank_precheck=None,
+        blank_excluded=False,
+    )
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_blank_non_target_with_groups_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _blank_fixture(
+        tmp_path,
+        blank_groups=[{"region_id": "REGION_BLANK", "classification": "narration"}],
+    )
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_blank_non_target_with_skip_false_is_denied(tmp_path):
+    precheck = _legitimate_blank_precheck()
+    precheck["skip"] = False
+    store, job_id, output, candidate_hash = _blank_fixture(tmp_path, blank_precheck=precheck)
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_blank_non_target_with_contradictory_inclusion_evidence_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _blank_fixture(tmp_path)
+    timing = output / "timing_report.json"
+    data = json.loads(timing.read_text(encoding="utf-8"))
+    data["page_count_trace"]["processed_logical_pages"] = [1, 2, 3]
+    timing.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_blank_non_target_render_hash_mismatch_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _blank_fixture(tmp_path)
+    _write_blank_png(output / "pages" / "page_001.png", size=(161, 120))
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_blank_non_target_source_hash_mismatch_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _blank_fixture(tmp_path)
+    _write_blank_png(output / "source" / "page_001.png", size=(161, 120))
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_blank_non_target_same_path_replacement_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _blank_fixture(tmp_path)
+    _write_blank_png(output / "pages" / "page_001.png", size=(160, 121))
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_blank_non_target_missing_exclusion_evidence_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _blank_fixture(tmp_path, blank_excluded=False)
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_content_non_target_with_invalid_image_is_still_denied(tmp_path):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    _write_blank_png(output / "pages" / "page_001.png")
+
+    with pytest.raises(Exception, match="reconstruction_page_provenance_mismatch"):
+        _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+def test_default_quality_builder_happy_path_with_excluded_blank_page(tmp_path):
+    store, job_id, _output, candidate_hash = _blank_fixture(tmp_path)
+
+    result = _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
+
+    quality = json.loads(Path(result["quality_report_path"]).read_text(encoding="utf-8"))
+    validation = quality["summary"]["quality_validation"]
+    assert validation["passed"] is True
+    assert validation["pdf_pages"] == 2
+    assert validation["expected_pdf_pages"] == 2
+    assert [page["index"] for page in quality["pages"]] == [2, 3]
+
+
+def test_excluded_blank_page_wrong_pdf_count_is_denied(tmp_path):
+    store, job_id, output, candidate_hash = _blank_fixture(tmp_path)
+    service = _service(
+        tmp_path,
+        store,
+        pdf=DuplicateFirstPagePdfBuilder(),
+    )
+
+    with pytest.raises(Exception, match="reconstruction_physical_quality_failed"):
+        service.reconstruct(_request(job_id, candidate_hash))
+
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
 
 
 def test_pdf_failure_cleans_temp_and_does_not_promote(tmp_path):
