@@ -433,6 +433,56 @@ def test_false_visual_validation_evidence_denies_default_quality(tmp_path):
     assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
 
 
+@pytest.mark.parametrize("malformed_value", [
+    "yes",
+    "true",
+    1,
+    1.0,
+    ["pass"],
+    {"value": True},
+    None,
+])
+def test_malformed_visual_validation_passed_values_fail_closed(tmp_path, malformed_value):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    old_pdf = output / "chapter.pdf"
+    old_bytes = old_pdf.read_bytes()
+    service = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation={"visual_validation_passed": malformed_value}),
+    )
+
+    with pytest.raises(Exception, match="reconstruction_visual_validation_invalid"):
+        service.reconstruct(_request(job_id, candidate_hash))
+
+    assert old_pdf.read_bytes() == old_bytes
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
+@pytest.mark.parametrize("malformed_visual", [
+    "yes",
+    ["pass"],
+    {},
+])
+def test_malformed_visual_validation_structure_fails_closed(tmp_path, malformed_visual):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    old_pdf = output / "chapter.pdf"
+    old_bytes = old_pdf.read_bytes()
+    service = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation=malformed_visual),
+    )
+
+    with pytest.raises(Exception, match="reconstruction_visual"):
+        service.reconstruct(_request(job_id, candidate_hash))
+
+    assert old_pdf.read_bytes() == old_bytes
+    recon_root = output / "reconstructions"
+    assert not recon_root.exists() or not list(recon_root.glob("*/artifact.pdf"))
+
+
 def test_same_path_non_target_page_byte_swap_is_denied(tmp_path):
     store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
     swapped_page = output / "pages" / "page_001.png"

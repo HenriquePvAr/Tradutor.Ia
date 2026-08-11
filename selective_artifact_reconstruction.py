@@ -62,6 +62,15 @@ def _stable_id(payload: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _require_strict_visual_validation(evidence: Any) -> dict[str, Any]:
+    if not isinstance(evidence, dict) or "visual_validation_passed" not in evidence:
+        raise ReconstructionError("reconstruction_visual_evidence_missing")
+    passed = evidence.get("visual_validation_passed")
+    if passed is not True and passed is not False:
+        raise ReconstructionError("reconstruction_visual_validation_invalid")
+    return dict(evidence)
+
+
 def _page_number(page: dict[str, Any]) -> int:
     try:
         return int(page.get("index") or page.get("sequence_index") or 0)
@@ -649,9 +658,7 @@ class SelectiveArtifactReconstructor:
                     "redrawn": True,
                 })
                 visual_validation = render_debug.get("visual_validation") if isinstance(render_debug, dict) else None
-                if not isinstance(visual_validation, dict) or "visual_validation_passed" not in visual_validation:
-                    raise ReconstructionError("reconstruction_visual_evidence_missing")
-                item["visual_validation"] = visual_validation
+                item["visual_validation"] = _require_strict_visual_validation(visual_validation)
         return cloned
 
     @staticmethod
