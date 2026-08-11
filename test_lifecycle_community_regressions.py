@@ -263,8 +263,9 @@ class CommunityResolutionTests(unittest.TestCase):
             }), encoding="utf-8")
             principal = RequestPrincipal(
                 "local-user", True, auth_source="local_session")
-            with self.assertRaises(ResourceNotFound):
+            with self.assertRaises(ArtifactBindingError) as caught:
                 api._resolve_translation_job(job_id, principal)
+            self.assertEqual(caught.exception.code, "quality_gate_required")
         finally:
             api.close()
             store.close()

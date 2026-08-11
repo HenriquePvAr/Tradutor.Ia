@@ -1180,9 +1180,10 @@
       <div class="field"><label for="publicationTags">Tags</label><input id="publicationTags" maxlength="240" placeholder="separe por vírgulas" /></div>
       <div class="field"><label for="publicationVisibility">Visibilidade</label><select id="publicationVisibility"><option value="public">Comunidade</option><option value="private">Privado</option></select></div>
       <label class="publication-confirm"><input type="checkbox" id="publicationAllowComments" checked /> <span data-i18n="publication.allow_comments">Permitir comentários nesta publicação</span></label>
-      <label class="publication-confirm"><input type="checkbox" id="publicationConfirm" required /> <span>Confirmo que posso publicar este PDF e que a revisão pendente foi conferida.</span></label>
+      <label class="publication-confirm"><input type="checkbox" id="publicationPublishConsent" required /> <span>Confirmo que tenho permissão para publicar e redistribuir este PDF na Comunidade.</span></label>
+      <label class="publication-confirm"><input type="checkbox" id="publicationConfirm" required /> <span>Confirmo que revisei o resultado e as pendências, quando existirem.</span></label>
       <div class="publication-error" id="publicationError" hidden></div>
-      <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="publicationCancel">Cancelar</button><button type="submit" class="btn-primary" id="publicationSubmit">Publicar</button></div>
+      <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="publicationCancel">Cancelar</button><button type="submit" class="btn-primary" id="publicationSubmit" disabled>Publicar</button></div>
     </form>
   </div>
 </div>

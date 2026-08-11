@@ -85,9 +85,10 @@ def create_social_pdf_router(publishing, content_service, auth, retention=None) 
     @router.post("/chapters/{chapter_id}/publish-pdf")
     def publish_pdf(request: Request, chapter_id: str, payload: dict = Body(default={})):
         p, t = ctx(request)
-        body = clean(payload, {"source_job_id", "target_status", "idempotency_key"})
+        body = clean(payload, {"source_job_id", "target_status", "idempotency_key", "publish_consent"})
         return ok(run(publishing.publish_pdf, t, p, chapter_id,
                       body.get("source_job_id"), body.get("target_status"),
+                      publish_consent=body.get("publish_consent") is True,
                       idempotency_key=str(body.get("idempotency_key") or "")))
 
     @router.get("/chapters/{chapter_id}/publish-status")
@@ -104,9 +105,11 @@ def create_social_pdf_router(publishing, content_service, auth, retention=None) 
     @router.post("/chapters/{chapter_id}/asset/replace")
     def replace_asset(request: Request, chapter_id: str, payload: dict = Body(default={})):
         p, t = ctx(request)
-        body = clean(payload, {"source_job_id", "idempotency_key"})
+        body = clean(payload, {"source_job_id", "idempotency_key", "publish_consent"})
         return ok(run(publishing.replace_asset, t, p, chapter_id,
-                      body.get("source_job_id"), idempotency_key=str(body.get("idempotency_key") or "")))
+                      body.get("source_job_id"),
+                      publish_consent=body.get("publish_consent") is True,
+                      idempotency_key=str(body.get("idempotency_key") or "")))
 
     @router.delete("/chapters/{chapter_id}/asset")
     def unlink_asset(request: Request, chapter_id: str):

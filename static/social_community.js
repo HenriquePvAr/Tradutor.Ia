@@ -768,6 +768,11 @@ function publishModal(chapter, mode) {
   let chosen = null;
   const status = el('div', { class: 'sc-pub-status' });
   const visibility = el('div', { class: 'sc-pub-visibility' });
+  const consent = el('input', { attrs: { type: 'checkbox', id: `publishConsent-${chapter.id}-${mode}`, required: 'true' } });
+  const consentLabel = el('label', { class: 'sc-pub-opt' }, [
+    consent,
+    el('span', { text: 'Confirmo que tenho permissão para publicar e redistribuir este PDF.' }),
+  ]);
   if (!isReplace) {
     visibility.appendChild(el('p', { class: 'sc-modal-text',
       text: 'Este PDF ainda está apenas no seu computador. Ao continuar, ele será enviado para o armazenamento privado e publicado conforme a visibilidade escolhida.' }));
@@ -776,8 +781,9 @@ function publishModal(chapter, mode) {
     visibility.append(priv, comm);
   }
   const submit = el('button', { class: 'btn-primary', text: isReplace ? 'Substituir' : 'Publicar', attrs: { disabled: 'true' } });
+  const refreshSubmit = () => { submit.disabled = !chosen || consent.checked !== true || submit.dataset.busy === '1'; };
   const m = modal(isReplace ? 'Substituir PDF' : 'Publicar na comunidade',
-    [el('p', { class: 'sc-field-hint', text: 'Escolha um resultado local concluído:' }), list, visibility, status, el('div', { class: 'sc-modal-actions' }, [submit])]);
+    [el('p', { class: 'sc-field-hint', text: 'Escolha um resultado local concluído:' }), list, visibility, consentLabel, status, el('div', { class: 'sc-modal-actions' }, [submit])]);
   api.listLocalResults().then((res) => {
     list.replaceChildren(); list.removeAttribute('aria-busy');
     const items = (res && res.items) || [];
@@ -787,26 +793,27 @@ function publishModal(chapter, mode) {
         el('input', { attrs: { type: 'radio', name: 'localResult', value: r.source_job_id } }),
         el('span', { text: `${r.title} · ${fmtDate(r.created_at ? r.created_at * 1000 : '')}` }),
       ]);
-      opt.querySelector('input').addEventListener('change', () => { chosen = r.source_job_id; submit.removeAttribute('disabled'); });
+      opt.querySelector('input').addEventListener('change', () => { chosen = r.source_job_id; refreshSubmit(); });
       list.appendChild(opt);
     }
   }).catch((err) => { list.replaceChildren(errorBox(() => publishModal(chapter, mode))); if (err.status === 401) handleExpired(); });
+  consent.addEventListener('change', refreshSubmit);
 
   submit.addEventListener('click', async () => {
-    if (!chosen || submit.dataset.busy) return;
+    if (!chosen || consent.checked !== true || submit.dataset.busy) return;
     submit.dataset.busy = '1'; submit.disabled = true; submit.textContent = 'Enviando…';
     status.textContent = 'Enviando o PDF para o armazenamento privado…';
     try {
       if (isReplace) {
-        await api.replaceAsset(chapter.id, chosen);
+        await api.replaceAsset(chapter.id, chosen, { publish_consent: true });
       } else {
         const target = (visibility.querySelector('input[name="publishVis"]:checked') || {}).value || 'private';
-        await api.publishPdf(chapter.id, { source_job_id: chosen, target_status: target });
+        await api.publishPdf(chapter.id, { source_job_id: chosen, target_status: target, publish_consent: true });
       }
       await pollPublish(chapter.id, status);
       m.destroy(); toast(isReplace ? 'PDF substituído.' : 'Publicado com sucesso.', 'ok'); render();
     } catch (err) {
-      submit.disabled = false; delete submit.dataset.busy; submit.textContent = isReplace ? 'Substituir' : 'Publicar';
+      delete submit.dataset.busy; submit.textContent = isReplace ? 'Substituir' : 'Publicar'; refreshSubmit();
       status.textContent = ''; fail(err);
     }
   });

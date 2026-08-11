@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from community_api import CommunityError
 from community_auth import AuthenticationRequired, RequestPrincipal
 from community_store import FileStatus, PostStatus
 from chapter_asset_repository import ChapterAssetRepository
@@ -47,6 +48,8 @@ class FakeCommunityApi:
         self.publish_calls = 0
 
     def publish(self, payload, *, principal):
+        if payload.get("publish_consent") is not True:
+            raise CommunityError("publish_consent_required")
         self.publish_calls += 1
         # A fresh (pending) publication; the test 'verifies' it later.
         pid = f"pub-{self.publish_calls}"
@@ -128,7 +131,7 @@ class PublishingServiceTests(unittest.TestCase):
         self.assertEqual(self.capi.publish_calls, 0)
 
     def test_publish_then_status_links_and_sets_status_only_after_verified(self):
-        r = self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "community")
+        r = self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "community", publish_consent=True)
         self.assertEqual(r["status"], "pending")
         self.assertEqual(self.capi.publish_calls, 1)
         # Not yet verified → still pending, chapter status unchanged, no asset.
@@ -144,12 +147,18 @@ class PublishingServiceTests(unittest.TestCase):
         self.assertEqual(self.assets.get_asset_for_read("chapA"), "drive-xyz")
 
     def test_double_publish_is_idempotent_single_upload(self):
-        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "private")
-        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "private")  # duplicate click
+        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "private", publish_consent=True)
+        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "private", publish_consent=True)  # duplicate click
         self.assertEqual(self.capi.publish_calls, 1)
 
+    def test_publish_requires_explicit_publish_consent_before_upload(self):
+        with self.assertRaisesRegex(CommunityError, "publish_consent_required"):
+            self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "private")
+        self.assertEqual(self.capi.publish_calls, 0)
+        self.assertFalse(self.assets.get_asset_status("chapA", is_owner=True)["linked"])
+
     def test_failed_upload_keeps_chapter_invisible(self):
-        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "community")
+        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "community", publish_consent=True)
         pid = [k for k in self.capi.store.posts if k.startswith("pub-")][0]
         self.capi.store.posts[pid]["status"] = PostStatus.FAILED
         self.capi.store.files[pid]["upload_status"] = FileStatus.FAILED
@@ -157,7 +166,7 @@ class PublishingServiceTests(unittest.TestCase):
         self.assertEqual(self.social.updates, [])  # never became community
 
     def test_unlink_removes_link_only(self):
-        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "private")
+        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "private", publish_consent=True)
         pid = [k for k in self.capi.store.posts if k.startswith("pub-")][0]
         self.capi.store.verify(pid)
         self.svc.publish_status("owner-A", OWNER, "chapA")
@@ -167,7 +176,7 @@ class PublishingServiceTests(unittest.TestCase):
             self.assets.get_asset_for_read("chapA")
 
     def test_asset_status_owner_vs_reader(self):
-        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "community")
+        self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "community", publish_consent=True)
         pid = [k for k in self.capi.store.posts if k.startswith("pub-")][0]
         self.capi.store.verify(pid)
         self.svc.publish_status("owner-A", OWNER, "chapA")
@@ -190,8 +199,8 @@ class _StubPublishing:
     def __init__(self):
         self.last = None
 
-    def publish_pdf(self, t, p, chapter_id, job, status, *, idempotency_key=""):
-        self.last = {"job": job, "status": status}
+    def publish_pdf(self, t, p, chapter_id, job, status, *, publish_consent=False, idempotency_key=""):
+        self.last = {"job": job, "status": status, "publish_consent": publish_consent}
         return {"status": "pending"}
 
     def list_local_results(self, p):
@@ -272,9 +281,11 @@ class EndpointTests(unittest.TestCase):
 
     def test_publish_forwards_only_allowed_fields(self):
         r = self.client.post("/api/community/social/chapters/c1/publish-pdf", headers=self.h(),
-                             json={"source_job_id": JOB, "target_status": "community"})
+                             json={"source_job_id": JOB, "target_status": "community",
+                                   "publish_consent": True})
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(self.pub.last, {"job": JOB, "status": "community"})
+        self.assertEqual(self.pub.last, {"job": JOB, "status": "community",
+                                         "publish_consent": True})
 
     def test_content_head_and_get_and_range(self):
         head = self.client.head("/api/community/social/chapters/c1/content", headers=self.h())

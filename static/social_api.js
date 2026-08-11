@@ -147,12 +147,12 @@ export const markNotificationRead = (id, o) => request('PATCH', `/notifications/
 
 // ---- explicit PDF publishing + asset lifecycle ----
 export const listLocalResults = (o) => request('GET', '/local-pdf-results', o);
-export const publishPdf = (chapterId, { source_job_id, target_status } = {}, o) =>
-  request('POST', `/chapters/${enc(chapterId)}/publish-pdf`, { ...o, body: { source_job_id, target_status } });
+export const publishPdf = (chapterId, { source_job_id, target_status, publish_consent } = {}, o) =>
+  request('POST', `/chapters/${enc(chapterId)}/publish-pdf`, { ...o, body: { source_job_id, target_status, publish_consent: publish_consent === true } });
 export const publishStatus = (chapterId, o) => request('GET', `/chapters/${enc(chapterId)}/publish-status`, o);
 export const getAsset = (chapterId, o) => request('GET', `/chapters/${enc(chapterId)}/asset`, o);
-export const replaceAsset = (chapterId, source_job_id, o) =>
-  request('POST', `/chapters/${enc(chapterId)}/asset/replace`, { ...o, body: { source_job_id } });
+export const replaceAsset = (chapterId, source_job_id, { publish_consent, ...o } = {}) =>
+  request('POST', `/chapters/${enc(chapterId)}/asset/replace`, { ...o, body: { source_job_id, publish_consent: publish_consent === true } });
 export const retainedAssets = (o) => request('GET', '/retained-assets', o);
 export const assetRetention = (chapterId, o) => request('GET', `/chapters/${enc(chapterId)}/asset/retention`, o);
 // Restore takes no body at all: the server derives owner, publication and deadline.

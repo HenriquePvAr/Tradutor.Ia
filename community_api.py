@@ -32,6 +32,10 @@ from community_storage import (
 )
 from community_store import CommunityStore
 from job_store import JobStatus
+from publish_authorization import (
+    PublishArtifactIdentity,
+    PublishAuthorizationStore,
+)
 from ui_helpers import OUTPUT_ROOT, REPO_ROOT
 
 COMMUNITY_DB_PATH = REPO_ROOT / ".cache" / "runtime" / "community.sqlite3"
@@ -488,6 +492,20 @@ class CommunityApi:
                     exclude_post=(existing_post or {}).get("id", ""),
                 ):
                     raise CommunityError("duplicate_pdf_already_published")
+            pdf = (
+                Path(source["pdf_path"])
+                if source["pdf_path"]
+                else self.service._resolve_pdf(Path(source["output_dir"]))
+            )
+            validate_local_pdf(pdf, self.service.output_root)
+            pdf_sha256, pdf_size = sha256_of_file(pdf)
+            self._authorize_publish_source(
+                payload,
+                principal=principal,
+                source=source,
+                artifact_sha256=pdf_sha256,
+                artifact_size_bytes=pdf_size,
+            )
             draft = self.service.create_draft(
                 principal=principal,
                 output_dir=source["output_dir"],
@@ -508,6 +526,53 @@ class CommunityApi:
                 pdf_path=draft["pdf_path"],
                 force_new_version=force_new_version,
             )
+
+    def _publish_authorization_identity(
+        self,
+        source: dict[str, str],
+        *,
+        principal: RequestPrincipal,
+        artifact_sha256: str,
+        artifact_size_bytes: int,
+    ) -> PublishArtifactIdentity:
+        return PublishArtifactIdentity(
+            owner_id=principal.user_id,
+            job_id=str(source.get("source_job_id") or ""),
+            run_id=str(source.get("source_run_id") or ""),
+            source_url=str(source.get("source_url") or ""),
+            artifact_sha256=artifact_sha256,
+            artifact_size_bytes=int(artifact_size_bytes),
+        )
+
+    def _authorize_publish_source(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal,
+        source: dict[str, str],
+        artifact_sha256: str,
+        artifact_size_bytes: int,
+    ) -> dict[str, Any]:
+        identity = self._publish_authorization_identity(
+            source,
+            principal=principal,
+            artifact_sha256=artifact_sha256,
+            artifact_size_bytes=artifact_size_bytes,
+        )
+        store = PublishAuthorizationStore(self.service.job_store.db_path)
+        try:
+            decision = store.grant(
+                identity,
+                attested=payload.get("publish_consent") is True,
+            )
+            if not decision.allowed:
+                raise CommunityError(decision.reason_code)
+            current = store.require_current(identity, owner_id=principal.user_id)
+            if not current.allowed:
+                raise CommunityError(current.reason_code)
+            return current.public()
+        finally:
+            store.close()
 
     def _resolve_publish_source(
         self,
@@ -541,6 +606,7 @@ class CommunityApi:
                 "pdf_path": "",
                 "source_job_id": "",
                 "source_run_id": "",
+                "source_url": "",
             }
         raise CommunityError("missing_output_identifier")
 
@@ -575,7 +641,7 @@ class CommunityApi:
                 if owner_id != principal.user_id:
                     raise ArtifactBindingError("artifact_not_owned", status_code=403)
             if job.get("status") != JobStatus.FINISHED:
-                raise ValueError
+                raise ArtifactBindingError("quality_gate_required", status_code=422)
             if int(job.get("exit_code")) != 0:
                 raise ValueError
 
@@ -650,6 +716,7 @@ class CommunityApi:
                 "pdf_path": str(pdf_path),
                 "source_job_id": job["id"],
                 "source_run_id": job["run_id"],
+                "source_url": str(job.get("source_url") or ""),
                 "manifest_path": str(manifest_path),
                 "run_manifest_path": str(run_manifest_path),
                 "pdf_sha256": digest.hexdigest(),

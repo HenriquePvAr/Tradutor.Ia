@@ -997,7 +997,8 @@ def test_admin_falls_back_to_legacy_slug_when_history_job_id_is_stale(harness):
         '{"pdf_filename":"chapter.pdf"}', encoding="utf-8")
     response = harness.client.post(
         "/api/community/publish",
-        json={"slug": "legacy_admin", "source_job_id": "f" * 32},
+        json={"slug": "legacy_admin", "source_job_id": "f" * 32,
+              "publish_consent": True},
         headers=harness.headers(harness.admin, csrf=True),
     )
     assert response.status_code == 200, response.text
@@ -1029,6 +1030,7 @@ def test_owned_source_job_publishes_as_session_principal(harness):
             "source_run_id": "forged-client-run",
             "series_slug": "owned",
             "episode_number": "1",
+            "publish_consent": True,
         },
         headers=harness.headers(harness.other, csrf=True),
     )
@@ -1076,7 +1078,8 @@ def test_duplicate_publish_requests_are_idempotent_per_owner_and_source_job(harn
         auth_source="test",
         session_id="idempotent-session",
     )
-    payload = {"source_job_id": source_job_id, "series_slug": "idempotent"}
+    payload = {"source_job_id": source_job_id, "series_slug": "idempotent",
+               "publish_consent": True}
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(
             lambda _index: harness.api.publish(payload, principal=principal),
@@ -1104,12 +1107,12 @@ def test_identical_pdf_from_different_source_job_is_blocked_while_first_is_activ
         owner="user-b", name="same-pdf-two", data=data)
     first = harness.client.post(
         "/api/community/publish",
-        json={"source_job_id": first_source},
+        json={"source_job_id": first_source, "publish_consent": True},
         headers=harness.headers(harness.other, csrf=True),
     )
     second = harness.client.post(
         "/api/community/publish",
-        json={"source_job_id": second_source},
+        json={"source_job_id": second_source, "publish_consent": True},
         headers=harness.headers(harness.other, csrf=True),
     )
     assert first.status_code == 200
@@ -1133,12 +1136,14 @@ def test_same_source_with_conflicting_visibility_is_not_silently_idempotent(harn
     )
     principal = RequestPrincipal("user-b", True, auth_source="test")
     first = harness.api.publish(
-        {"source_job_id": source_job_id, "visibility": "public"},
+        {"source_job_id": source_job_id, "visibility": "public",
+         "publish_consent": True},
         principal=principal,
     )
     with pytest.raises(CommunityError, match="source_publish_conflict"):
         harness.api.publish(
-            {"source_job_id": source_job_id, "visibility": "private"},
+            {"source_job_id": source_job_id, "visibility": "private",
+             "publish_consent": True},
             principal=principal,
         )
     assert harness.api.store.get_post(first["post_id"])["visibility"] == "public"
@@ -1173,7 +1178,7 @@ def test_repeated_completed_publish_and_republish_reuse_verified_file(harness):
         name="completed-idempotent",
     )
     principal = RequestPrincipal("user-b", True, auth_source="test")
-    payload = {"source_job_id": source_job_id}
+    payload = {"source_job_id": source_job_id, "publish_consent": True}
     first = harness.api.publish(payload, principal=principal)
     claimed = harness.jobs.claim_next_job("publisher", 1)
     assert claimed and claimed["id"] == first["job_id"]
@@ -1215,7 +1220,7 @@ def test_failed_publish_retries_same_file_with_new_linked_job(harness):
         name="failed-retry",
     )
     principal = RequestPrincipal("user-b", True, auth_source="test")
-    payload = {"source_job_id": source_job_id}
+    payload = {"source_job_id": source_job_id, "publish_consent": True}
     first = harness.api.publish(payload, principal=principal)
     claimed = harness.jobs.claim_next_job("publisher", 1)
     assert claimed and claimed["id"] == first["job_id"]
@@ -1248,7 +1253,8 @@ def test_invalid_visibility_is_controlled_400_without_creating_post(harness):
     )
     response = harness.client.post(
         "/api/community/publish",
-        json={"source_job_id": source_job_id, "visibility": "everyone"},
+        json={"source_job_id": source_job_id, "visibility": "everyone",
+              "publish_consent": True},
         headers=harness.headers(harness.other, csrf=True),
     )
     assert response.status_code == 400
@@ -1290,6 +1296,7 @@ def test_real_discovered_history_record_maps_to_owned_job_and_publishes(
             "source_job_id": record["job_id"],
             "series_title": record["series_name"],
             "series_slug": record["series_slug"],
+            "publish_consent": True,
         },
         headers=harness.headers(harness.other, csrf=True),
     )
@@ -1305,7 +1312,7 @@ def test_publish_uses_only_runner_recorded_pdf_when_directory_has_multiple(harne
         b"%PDF-decoy")
     response = harness.client.post(
         "/api/community/publish",
-        json={"source_job_id": source_job_id},
+        json={"source_job_id": source_job_id, "publish_consent": True},
         headers=harness.headers(harness.other, csrf=True),
     )
     assert response.status_code == 200
@@ -1328,7 +1335,8 @@ def test_queued_owned_job_cannot_adopt_preexisting_pdf(harness):
         json={"source_job_id": source_job_id},
         headers=harness.headers(harness.other, csrf=True),
     )
-    assert response.status_code == 404
+    assert response.status_code == 422
+    assert response.json()["detail"] == "quality_gate_required"
     assert harness.api.store.list_user_posts("user-b") == []
 
 

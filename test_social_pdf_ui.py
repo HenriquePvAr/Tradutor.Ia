@@ -36,7 +36,8 @@ class PdfApiClientTests(unittest.TestCase):
         self.assertIn("FORBIDDEN", self.src)  # the strip-set is present
 
     def test_publish_body_only_allowed_fields(self):
-        self.assertIn("source_job_id, target_status", self.src)
+        self.assertIn("source_job_id, target_status, publish_consent", self.src)
+        self.assertIn("publish_consent: publish_consent === true", self.src)
 
 
 class PdfUiTests(unittest.TestCase):
@@ -47,6 +48,8 @@ class PdfUiTests(unittest.TestCase):
         self.assertIn("Este PDF ainda está apenas no seu computador", self.src)
         self.assertIn("Privado", self.src)
         self.assertIn("Comunidade", self.src)
+        self.assertIn("Confirmo que tenho permissão para publicar e redistribuir este PDF", self.src)
+        self.assertIn("consent.checked !== true", self.src)
 
     def test_owner_asset_controls(self):
         for label in ("Publicar PDF", "Substituir PDF", "Desvincular", "Ler"):

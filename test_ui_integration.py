@@ -95,6 +95,7 @@ class UiIntegrationTests(unittest.TestCase):
         for marker in (
             "publicationEligibility",
             "publicationModalOverlay",
+            "publicationPublishConsent",
             "publicationConfirm",
             "publicationBusy",
             "Atualizar publicação",
@@ -119,6 +120,16 @@ class UiIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(marker, source)
         self.assertNotIn("if (!$('#publicationConfirm')?.checked) return;", source)
+
+    def test_publication_requires_distinct_publish_consent_in_ui_payload(self):
+        source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        self.assertIn('id="publicationPublishConsent" required', shell)
+        self.assertIn('id="publicationSubmit" disabled', shell)
+        self.assertIn("$('#publicationPublishConsent')) $('#publicationPublishConsent').checked = false", source)
+        self.assertIn("updatePublicationSubmitState", source)
+        self.assertIn("publish_consent_required", source)
+        self.assertIn("publish_consent: $('#publicationPublishConsent')?.checked === true", source)
 
     def test_publication_waits_for_owner_and_exposes_claim_state(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")

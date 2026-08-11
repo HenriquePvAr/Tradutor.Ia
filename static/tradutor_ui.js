@@ -792,6 +792,7 @@
     if (status === 404) return 'Este conteúdo não está disponível.';
     if (code === 'timeout') return 'O serviço demorou para responder. Tente novamente.';
     if (code === 'connection_error') return 'Não foi possível conectar ao serviço local.';
+    if (code === 'publish_consent_required') return 'Confirme a autorização de publicação antes de enviar para a Comunidade.';
     return fallback;
   }
   function shake(element) {
@@ -5349,6 +5350,11 @@
     appState.publicationRecord = null;
     appState.publicationBusy = false;
   }
+  function updatePublicationSubmitState() {
+    const submit = $('#publicationSubmit');
+    if (!submit) return;
+    submit.disabled = appState.publicationBusy || $('#publicationPublishConsent')?.checked !== true;
+  }
   function openPublicationModal(record) {
     const eligibility = publicationEligibility(record);
     if (!eligibility.eligible) {
@@ -5392,7 +5398,9 @@
     $('#publicationVisibility').value = draft.visibility || 'public';
     if ($('#publicationAllowComments')) $('#publicationAllowComments').checked = draft.allow_comments !== false;
     $('#publicationConfirm').checked = false;
+    if ($('#publicationPublishConsent')) $('#publicationPublishConsent').checked = false;
     $('#publicationSubmit').textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar';
+    updatePublicationSubmitState();
     $('#publicationError').hidden = true;
     overlay.classList.add('show');
     overlay.setAttribute('aria-hidden', 'false');
@@ -5409,6 +5417,7 @@
     if (!eligibility.authenticated) { publicationError('Sua sessão não está mais válida. Entre novamente.', 'authentication_required'); return false; }
     if (!eligibility.ownerReady) { publicationError('Vincule este capítulo à sua conta antes de publicar.', 'artifact_has_no_owner'); return false; }
     if (!String($('#publicationTitle')?.value || '').trim()) { publicationError('Informe um título.', 'title_required'); return false; }
+    if (!$('#publicationPublishConsent')?.checked) { publicationError('Confirme que você autoriza a publicação e redistribuição deste PDF na Comunidade.', 'publish_consent_required'); return false; }
     if (!$('#publicationConfirm')?.checked) { publicationError('Confirme que revisou as pendências.', 'confirmation_required'); return false; }
     uiTrace('validation_result', {valid: true, correlation_id: appState.publicationCorrelation});
     return true;
@@ -5458,6 +5467,7 @@
       tags: String($('#publicationTags')?.value || '').split(',').map(value => value.trim()).filter(Boolean).slice(0, 20),
       visibility: $('#publicationVisibility')?.value === 'private' ? 'private' : 'public',
       allow_comments: $('#publicationAllowComments')?.checked !== false,
+      publish_consent: $('#publicationPublishConsent')?.checked === true,
     };
     if (trustedJobId) payload.source_job_id = trustedJobId;
     appState.publicationBusy = true;
@@ -5498,10 +5508,10 @@
       const error = $('#publicationError');
       if (error) { error.textContent = errorValue.message || 'Não foi possível publicar.'; error.hidden = false; }
       appState.publicationBusy = false;
-      if (submit) { submit.disabled = false; submit.textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar'; }
+      if (submit) { submit.textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar'; updatePublicationSubmitState(); }
     } finally {
       appState.publicationBusy = false;
-      if (submit) { submit.disabled = false; submit.textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar'; }
+      if (submit) { submit.textContent = eligibility.published ? 'Atualizar publicação' : 'Publicar'; updatePublicationSubmitState(); }
       uiTrace('loading_cleared', {correlation_id: correlation});
     }
   }
@@ -5517,6 +5527,7 @@
     if (!validatePublicationForm(appState.publicationRecord)) return;
     await publishToCommunity(appState.publicationRecord);
   });
+  $('#publicationPublishConsent')?.addEventListener('change', updatePublicationSubmitState);
 
   function clearCommunityObjectUrls() {
     for (const objectUrl of appState.communityObjectUrls) {

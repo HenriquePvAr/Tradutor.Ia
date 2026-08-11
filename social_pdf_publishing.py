@@ -75,7 +75,8 @@ class SocialPdfPublishingService:
 
     # ---- explicit publish -------------------------------------------------------
     def publish_pdf(self, token: str, principal: RequestPrincipal, chapter_id: str,
-                    source_job_id: str, target_status: str, *, idempotency_key: str = "") -> dict[str, Any]:
+                    source_job_id: str, target_status: str, *, publish_consent: bool = False,
+                    idempotency_key: str = "") -> dict[str, Any]:
         self._require_authenticated(principal)
         if target_status not in TARGET_STATUSES:
             raise SocialValidationError("invalid_target_status")
@@ -94,7 +95,13 @@ class SocialPdfPublishingService:
         # and uploads to the private Drive. visibility stays private at the community layer;
         # the social status is applied only after verification below.
         result = self._community.publish(
-            {"source_job_id": source_job_id, "visibility": "private"}, principal=principal)
+            {
+                "source_job_id": source_job_id,
+                "visibility": "private",
+                "publish_consent": publish_consent is True,
+            },
+            principal=principal,
+        )
         publication_id = result["post_id"]
         self._assets.set_intent(chapter_id, publication_id, target_status,
                                 principal.user_id, source_job_id, idempotency_key)
@@ -157,7 +164,8 @@ class SocialPdfPublishingService:
         return self._assets.get_asset_status(chapter_id, is_owner=is_owner)
 
     def replace_asset(self, token: str, principal: RequestPrincipal, chapter_id: str,
-                      source_job_id: str, *, idempotency_key: str = "") -> dict[str, Any]:
+                      source_job_id: str, *, publish_consent: bool = False,
+                      idempotency_key: str = "") -> dict[str, Any]:
         self._require_authenticated(principal)
         source_job_id = str(source_job_id or "")
         if len(source_job_id) != 32 or any(c not in _HEX32 for c in source_job_id):
@@ -165,7 +173,13 @@ class SocialPdfPublishingService:
         self._require_chapter_owner(token, principal, chapter_id)
         # Upload the new PDF first; the old link stays until the new one is verified.
         result = self._community.publish(
-            {"source_job_id": source_job_id, "visibility": "private"}, principal=principal)
+            {
+                "source_job_id": source_job_id,
+                "visibility": "private",
+                "publish_consent": publish_consent is True,
+            },
+            principal=principal,
+        )
         self._assets.set_intent(chapter_id, result["post_id"], "__replace__",
                                 principal.user_id, source_job_id, idempotency_key)
         return {"status": "pending"}

@@ -99,7 +99,8 @@ class CommunityApiTests(unittest.TestCase):
 
     def _publish_and_run(self, slug="chap"):
         result = self.api.publish({"slug": slug, "series_slug": slug, "episode_number": "1",
-                                   "series_title": "Chap", "title": "T"}, principal=OWNER)
+                                   "series_title": "Chap", "title": "T",
+                                   "publish_consent": True}, principal=OWNER)
         # Run the publish job to completion via the community runner.
         import community_publish_runner
         self.jobs.claim_next_job("w1", 1)
@@ -108,10 +109,18 @@ class CommunityApiTests(unittest.TestCase):
         return result
 
     def test_publish_creates_job_and_publishing_state(self):
-        result = self.api.publish({"slug": "chap", "series_slug": "chap", "episode_number": "1"},
+        result = self.api.publish({"slug": "chap", "series_slug": "chap", "episode_number": "1",
+                                   "publish_consent": True},
                                   principal=OWNER)
         self.assertTrue(result["job_id"])
         self.assertEqual(self.api.store.get_post(result["post_id"])["status"], PostStatus.PUBLISHING)
+
+    def test_publish_requires_explicit_publish_consent_before_job_creation(self):
+        with self.assertRaisesRegex(community_api.CommunityError, "publish_consent_required"):
+            self.api.publish({"slug": "chap", "series_slug": "chap", "episode_number": "1"},
+                             principal=OWNER)
+        self.assertEqual(self.jobs.list_jobs(limit=None), [])
+        self.assertEqual(self.api.store.list_user_posts(OWNER.user_id), [])
 
     def test_local_test_publish_uses_only_owner_scoped_local_storage(self):
         self.api.close()
@@ -196,7 +205,8 @@ class CommunityApiTests(unittest.TestCase):
         self.assertEqual(len(b"".join(stream2.iter_chunks())), 100)
 
     def test_read_blocked_before_published(self):
-        result = self.api.publish({"slug": "chap", "series_slug": "chap", "episode_number": "1"},
+        result = self.api.publish({"slug": "chap", "series_slug": "chap", "episode_number": "1",
+                                   "publish_consent": True},
                                   principal=OWNER)
         with self.assertRaises(ResourceNotFound):
             self.api.open_pdf(result["post_id"], principal=MEMBER)
