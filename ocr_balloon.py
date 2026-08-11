@@ -2174,8 +2174,62 @@ def _classify_groups(groups, image_bgr, page_index=None):
         )
 
 
+def _lettering_is_saturated_effect_art(metrics):
+    """True when the glyph region is saturated colour art, not lettering in a balloon.
+
+    Dialogue is lettered in ink on a fill: whatever the balloon's colour, the glyph
+    region always carries light pixels and almost no saturation. Effect lettering is
+    drawn as coloured art - the whole region is one intense hue with no light fill at
+    all. That difference is what separates a sound effect drawn over a dark panel from
+    a line of speech inside a dark balloon, which the container evidence alone cannot.
+    """
+    return (
+        float(metrics.get("saturation_mean") or 0.0) >= 90.0
+        and float(metrics.get("white_pixel_ratio") or 0.0) <= 0.02
+    )
+
+
 def _refine_classification_with_background(group):
     metrics = group.background_metrics or {}
+    if (
+        group.classification == "speech"
+        and group.classification_reason == "container_over_weak_double_character_repeat"
+        and _lettering_is_saturated_effect_art(metrics)
+        and not group_has_name_only_shape(group)
+    ):
+        # A short doubled-letter token ("KREE!", "HISS!") is only weak evidence of a
+        # sound effect on its own - ordinary words share the shape ("WELL!", "FREE!") -
+        # so container evidence rightly kept it speech. But when the lettering itself is
+        # saturated colour art rather than glyphs on a balloon fill, the shape is no
+        # longer the only signal, and the two together outweigh the enclosure that a
+        # glowing effect drawn on a dark panel produces. Settling it here, before
+        # candidate selection, is what keeps an untranslatable effect out of the
+        # translation request instead of catching it as an echo after the fact.
+        group.inside_balloon_like_region = False
+        group.inside_narration_box_like_region = False
+        group.parent_balloon_id = ""
+        group.region_type = "sfx"
+        group.background_type = "sfx_area"
+        group.background_metrics = {
+            **metrics,
+            "background_type": "sfx_area",
+            "reason": "saturated_effect_lettering",
+        }
+        _set_group_classification(
+            group,
+            "sfx",
+            "saturated_effect_lettering_over_container",
+            confidence=group.classification_confidence,
+            evidence={
+                **(group.classification_evidence or {}),
+                "conflict_resolved": "saturated_effect_lettering",
+                "saturation_mean": metrics.get("saturation_mean"),
+                "white_pixel_ratio": metrics.get("white_pixel_ratio"),
+            },
+        )
+        _apply_classification_policy(group)
+        return
+
     if (
         group.background_type == "narration_box"
         and (

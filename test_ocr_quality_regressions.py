@@ -16,6 +16,7 @@ import config
 from ocr_balloon import (
     TextCandidate,
     TextGroup,
+    _apply_classification_policy,
     _assign_visual_white_regions,
     _classify_background_region,
     _classify_groups,
@@ -4342,6 +4343,180 @@ class PostRenderOcrDegradationTests(unittest.TestCase):
         )
         self.assertFalse(result["passed"], result)
         self.assertEqual(result["reason"], "post_render_ocr_inconclusive")
+
+
+def _effect_lettering_fixture(text):
+    """Saturated colour effect lettering drawn on a dark panel.
+
+    Reproduces the E2E #6 condition: the glow around the effect reads as a closed
+    dark container, so container evidence alone calls the text speech.
+    """
+    image = np.zeros((400, 520, 3), dtype=np.uint8)
+    cv2.ellipse(image, (260, 200), (170, 95), 0, 0, 360, (3, 3, 3), -1)
+    cv2.ellipse(image, (260, 200), (75, 30), 0, 0, 360, (10, 36, 172), -1)
+    line = _boxed_line(text, (200, 180, 120, 44), confidence=0.95)
+    return image, TextGroup(group_id="T", lines=[line], text=text)
+
+
+def _dark_dialogue_fixture(text):
+    """An ordinary dark speech balloon: light lettering on a flat dark fill."""
+    image = np.full((400, 520, 3), 240, dtype=np.uint8)
+    cv2.ellipse(image, (260, 200), (170, 95), 0, 0, 360, (26, 26, 26), -1)
+    cv2.putText(
+        image,
+        "ABCD",
+        (205, 214),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        (255, 255, 255),
+        3,
+    )
+    line = _boxed_line(text, (200, 180, 120, 44), confidence=0.95)
+    return image, TextGroup(group_id="T", lines=[line], text=text)
+
+
+def _classify_in(fixture, text):
+    image, group = fixture(text)
+    with patch("ocr_balloon._enclosure_evidence", return_value=(True, True)):
+        _classify_groups([group], image)
+    return group
+
+
+class ShortEffectLetteringClassificationTests(unittest.TestCase):
+    """The candidate_equals_source finding of E2E #6.
+
+    A short doubled-letter token ("KREE!", "HISS!") lettered as saturated colour art
+    was called speech because the glow around it reads as a closed container, so it
+    became a translation candidate for text the product policy never translates. The
+    elongated variant of the same effect ("KREEE!") was already a sound effect, which
+    is the asymmetry these tests pin down.
+    """
+
+    def test_short_and_elongated_variants_of_one_effect_agree(self):
+        for text in ("KREE!", "KREEE!"):
+            with self.subTest(text=text):
+                group = _classify_in(_effect_lettering_fixture, text)
+                self.assertEqual(group.classification, "sfx")
+                self.assertFalse(_should_translate_group(group))
+
+    def test_short_consonant_repeat_effect_is_a_sound_effect(self):
+        group = _classify_in(_effect_lettering_fixture, "HISS!")
+
+        self.assertEqual(group.classification, "sfx")
+        self.assertEqual(
+            group.classification_reason,
+            "saturated_effect_lettering_over_container",
+        )
+        self.assertEqual(group.background_type, "sfx_area")
+        self.assertFalse(group.inside_balloon_like_region)
+        self.assertFalse(_should_translate_group(group))
+
+    def test_container_evidence_no_longer_outranks_effect_lettering(self):
+        # The container is genuinely there - the fixture forces enclosure evidence
+        # on - but saturated colour art with no fill is not a balloon.
+        group = _classify_in(_effect_lettering_fixture, "KREE!")
+
+        self.assertNotEqual(
+            group.classification_reason,
+            "container_over_weak_double_character_repeat",
+        )
+        self.assertEqual(group.classification, "sfx")
+
+    def test_short_speech_in_a_dark_balloon_stays_speech(self):
+        for text in ("HELP!", "WAIT!", "HUH?!", "STOP!", "NO!"):
+            with self.subTest(text=text):
+                group = _classify_in(_dark_dialogue_fixture, text)
+                self.assertEqual(group.classification, "speech")
+                self.assertTrue(_should_translate_group(group))
+
+    def test_doubled_letter_words_in_a_dark_balloon_stay_speech(self):
+        # Ordinary words share the shape that makes the effect tokens suspicious.
+        # Without the lettering evidence the shape stays weak, exactly as before.
+        for text in ("WELL!", "FREE!", "OFF!", "TOO!", "ALL!", "NOO!", "KREE!"):
+            with self.subTest(text=text):
+                group = _classify_in(_dark_dialogue_fixture, text)
+                self.assertEqual(group.classification, "speech")
+                self.assertTrue(_should_translate_group(group))
+
+    def test_short_uppercase_name_over_effect_art_is_not_a_sound_effect(self):
+        for text in ("ANNA!", "EDDA!"):
+            with self.subTest(text=text):
+                group = _classify_in(_effect_lettering_fixture, text)
+                self.assertEqual(group.classification, "speech")
+
+    def test_acronym_over_effect_art_is_not_a_sound_effect(self):
+        for text in ("FBI!", "NASA!"):
+            with self.subTest(text=text):
+                group = _classify_in(_effect_lettering_fixture, text)
+                self.assertEqual(group.classification, "speech")
+
+    def test_bare_punctuation_keeps_its_existing_classification(self):
+        for text in ("!", "?!", "..."):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    _classify_in(_effect_lettering_fixture, text).classification,
+                    "speech",
+                )
+                self.assertEqual(
+                    _classify_in(_dark_dialogue_fixture, text).classification,
+                    "speech",
+                )
+
+    def test_weak_shape_alone_never_promotes_without_lettering_evidence(self):
+        group = TextGroup(
+            group_id="T",
+            lines=[_boxed_line("KREE!", (200, 180, 120, 44))],
+            text="KREE!",
+        )
+        group.classification = "speech"
+        group.classification_reason = "container_over_weak_double_character_repeat"
+        group.background_type = "dark_balloon"
+        # Measured from a real dark dialogue balloon in the same chapter.
+        group.background_metrics = {
+            "saturation_mean": 39.3,
+            "white_pixel_ratio": 0.195,
+        }
+
+        _refine_classification_with_background(group)
+
+        self.assertEqual(group.classification, "speech")
+
+    def test_effect_lettering_is_excluded_from_translation_candidates(self):
+        effect = _classify_in(_effect_lettering_fixture, "KREE!")
+        speech = _classify_in(_dark_dialogue_fixture, "HELP!")
+
+        with patch.object(config, "TRANSLATE_SFX", False):
+            _apply_classification_policy(effect)
+            _apply_classification_policy(speech)
+            candidates = get_translatable_groups([effect, speech])
+
+        self.assertEqual([group.text for group in candidates], ["HELP!"])
+        self.assertTrue(effect.ignored)
+        self.assertEqual(effect.ignore_reason, "sfx_translation_disabled")
+
+    def test_translate_sfx_policy_still_decides_whether_effects_are_sent(self):
+        # Classification and policy stay separate concerns: with the flag on, a
+        # correctly classified effect is eligible again.
+        with patch.object(config, "TRANSLATE_SFX", True):
+            effect = _classify_in(_effect_lettering_fixture, "KREE!")
+            candidates = get_translatable_groups([effect])
+
+        self.assertEqual(effect.classification, "sfx")
+        self.assertEqual([group.text for group in candidates], ["KREE!"])
+
+    def test_only_speech_reaches_the_translator(self):
+        effect = _classify_in(_effect_lettering_fixture, "KREE!")
+        speech = _classify_in(_dark_dialogue_fixture, "HELP!")
+        received = []
+
+        with patch.object(config, "TRANSLATE_SFX", False):
+            _apply_classification_policy(effect)
+            _apply_classification_policy(speech)
+            received.extend(
+                group.text for group in get_translatable_groups([effect, speech])
+            )
+
+        self.assertEqual(received, ["HELP!"])
 
 
 if __name__ == "__main__":
