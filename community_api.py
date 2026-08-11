@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import threading
 import os
-import hashlib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -89,6 +88,125 @@ def storage_provider_name() -> str:
             raise StorageError("local_test_external_storage_blocked")
         return "local_test"
     return os.getenv("COMMUNITY_STORAGE_PROVIDER", "filesystem")
+
+
+def _quality_report_candidates(job: dict[str, Any], output_dir: Path) -> list[Path]:
+    candidates: list[Path] = []
+    recorded = str(job.get("quality_report_path") or "").strip()
+    if recorded:
+        path = Path(recorded)
+        if not path.is_absolute():
+            path = output_dir / path
+        candidates.append(path)
+        if path.suffix.casefold() in {".html", ".htm"}:
+            candidates.append(path.with_suffix(".json"))
+    candidates.append(output_dir / "quality_report.json")
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(resolved)
+    return unique
+
+
+def _quality_validation_from_report(report: dict[str, Any]) -> dict[str, Any]:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    quality = summary.get("quality_validation")
+    if isinstance(quality, dict):
+        return quality
+    quality = report.get("quality_validation")
+    return quality if isinstance(quality, dict) else {}
+
+
+def _artifact_identity_from_quality_report(
+    report: dict[str, Any],
+    quality: dict[str, Any],
+) -> tuple[str, int]:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    containers = (quality, summary, report)
+    digest = ""
+    size: int | None = None
+    for container in containers:
+        for key in ("artifact_sha256", "pdf_sha256", "sha256"):
+            value = str(container.get(key) or "").strip().lower()
+            if value:
+                digest = value
+                break
+        if digest:
+            break
+    for container in containers:
+        for key in ("artifact_size_bytes", "pdf_size_bytes", "size_bytes"):
+            value = container.get(key)
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                size = parsed
+                break
+        if size is not None:
+            break
+    if not digest or size is None:
+        raise ArtifactBindingError("quality_gate_required", status_code=422)
+    return digest, size
+
+
+def _require_current_quality_pass(
+    job: dict[str, Any],
+    *,
+    output_dir: Path,
+    pdf_path: Path,
+    artifact_sha256: str,
+    artifact_size_bytes: int,
+) -> None:
+    """Fail closed unless current artifact identity has explicit PASS quality evidence."""
+
+    for candidate in _quality_report_candidates(job, output_dir):
+        if not _is_within(candidate, output_dir) or not candidate.is_file():
+            continue
+        try:
+            report = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        recorded_pdf = str(summary.get("pdf_path") or "").strip()
+        if recorded_pdf:
+            try:
+                if _resolve_recorded_path(recorded_pdf, output_dir) != pdf_path:
+                    continue
+            except ValueError:
+                continue
+        quality = _quality_validation_from_report(report)
+        recorded_run = (
+            str(quality.get("run_id") or "").strip()
+            or str(summary.get("run_id") or "").strip()
+            or str(report.get("run_id") or "").strip()
+        )
+        if recorded_run and recorded_run != str(job.get("run_id") or ""):
+            continue
+        if quality.get("passed") is not True:
+            raise ArtifactBindingError("quality_gate_required", status_code=422)
+        try:
+            manual_review_count = int(quality.get("manual_review_required_groups") or 0)
+        except (TypeError, ValueError):
+            manual_review_count = 1
+        if manual_review_count > 0:
+            raise ArtifactBindingError("quality_gate_required", status_code=422)
+        if str(quality.get("status") or "").strip().casefold() == "review_required":
+            raise ArtifactBindingError("quality_gate_required", status_code=422)
+        quality_sha, quality_size = _artifact_identity_from_quality_report(report, quality)
+        if quality_sha != artifact_sha256.lower() or quality_size != artifact_size_bytes:
+            raise ArtifactBindingError("quality_gate_required", status_code=422)
+        return
+    raise ArtifactBindingError("quality_gate_required", status_code=422)
 
 
 def _storage_config() -> dict[str, Any]:
@@ -481,9 +599,16 @@ class CommunityApi:
             manifest_pdf = _resolve_recorded_path(manifest.get("pdf_path"), output_dir)
             if manifest_pdf != pdf_path:
                 raise ArtifactBindingError("manifest_identity_mismatch", status_code=409)
-            digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+            digest, size = sha256_of_file(pdf_path)
             if digest != expected_hash:
                 raise ArtifactBindingError("hash_mismatch", status_code=409)
+            _require_current_quality_pass(
+                job,
+                output_dir=output_dir,
+                pdf_path=pdf_path,
+                artifact_sha256=digest,
+                artifact_size_bytes=size,
+            )
             validate_local_pdf(pdf_path, root)
             run_manifest_path = (output_dir / "run_manifest.json").resolve()
             if not _is_within(run_manifest_path, output_dir):
@@ -753,10 +878,14 @@ class CommunityApi:
                     run_manifest.get("pdf_path") or run_manifest.get("pdf_filename"), output_dir)
                 if run_pdf != pdf_path:
                     raise ValueError
-            digest = hashlib.sha256()
-            with pdf_path.open("rb") as handle:
-                for block in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(block)
+            artifact_sha256, artifact_size_bytes = sha256_of_file(pdf_path)
+            _require_current_quality_pass(
+                job,
+                output_dir=output_dir,
+                pdf_path=pdf_path,
+                artifact_sha256=artifact_sha256,
+                artifact_size_bytes=artifact_size_bytes,
+            )
             if legacy_owner:
                 self.service.job_store.update_fields(
                     job["id"], configuration_json=json.dumps(config, ensure_ascii=False))
@@ -768,7 +897,7 @@ class CommunityApi:
                 "source_url": str(job.get("source_url") or ""),
                 "manifest_path": str(manifest_path),
                 "run_manifest_path": str(run_manifest_path),
-                "pdf_sha256": digest.hexdigest(),
+                "pdf_sha256": artifact_sha256,
             }
         except ArtifactBindingError:
             raise

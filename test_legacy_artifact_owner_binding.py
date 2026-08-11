@@ -82,10 +82,33 @@ class BindingHarness:
             exit_code=0,
             pdf_path=str(pdf),
         )
+        sha = hashlib.sha256(PDF_BYTES).hexdigest()
+        quality_report = folder / "quality_report.json"
+        quality_report.write_text(
+            json.dumps({
+                "summary": {
+                    "pdf_path": str(pdf),
+                    "run_id": "run-legacy-owner-binding",
+                    "artifact_sha256": sha,
+                    "artifact_size_bytes": len(PDF_BYTES),
+                    "quality_validation": {
+                        "passed": True,
+                        "manual_review_required_groups": 0,
+                        "status": "passed",
+                        "run_id": "run-legacy-owner-binding",
+                        "artifact_sha256": sha,
+                        "artifact_size_bytes": len(PDF_BYTES),
+                    },
+                },
+                "pages": [],
+            }),
+            encoding="utf-8",
+        )
         self.jobs.update_fields(
             job_id,
             stage="review_completed",
             review_confirmed_at=1234.0,
+            quality_report_path=str(quality_report),
         )
         manifest = {
             "job_id": job_id,
@@ -99,7 +122,7 @@ class BindingHarness:
         (folder / "job_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (folder / "run_manifest.json").write_text(
             json.dumps({"run_id": "evidence-run", "pdf_path": str(pdf)}), encoding="utf-8")
-        return job_id, "run-legacy-owner-binding", pdf, hashlib.sha256(PDF_BYTES).hexdigest()
+        return job_id, "run-legacy-owner-binding", pdf, sha
 
     @staticmethod
     def headers(issued, *, csrf=True):

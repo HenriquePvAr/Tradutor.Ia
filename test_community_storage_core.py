@@ -5,6 +5,7 @@ Hermetic: no Supabase network, no Google Drive network, no Webtoon/NVIDIA.
 
 import _test_bootstrap  # noqa: F401
 
+import hashlib
 import json
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -62,6 +63,29 @@ def _finished_translation_job(
         exit_code=0,
         pdf_path=str(pdf),
     )
+    pdf_sha256 = hashlib.sha256(data).hexdigest()
+    quality_report = output_dir / "quality_report.json"
+    quality_report.write_text(
+        json.dumps({
+            "summary": {
+                "pdf_path": str(pdf),
+                "run_id": job["run_id"],
+                "artifact_sha256": pdf_sha256,
+                "artifact_size_bytes": len(data),
+                "quality_validation": {
+                    "passed": True,
+                    "manual_review_required_groups": 0,
+                    "status": "passed",
+                    "run_id": job["run_id"],
+                    "artifact_sha256": pdf_sha256,
+                    "artifact_size_bytes": len(data),
+                },
+            },
+            "pages": [],
+        }),
+        encoding="utf-8",
+    )
+    jobs.update_fields(job_id, quality_report_path=str(quality_report))
     (output_dir / "job_manifest.json").write_text(
         json.dumps({
             "job_id": job_id,

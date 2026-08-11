@@ -6,6 +6,7 @@ import _test_bootstrap  # noqa: F401
 
 from dataclasses import FrozenInstanceError
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -208,6 +209,8 @@ class SecurityHarness:
         output_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = output_dir / recorded_pdf_name
         pdf_path.write_bytes(data)
+        pdf_sha256 = hashlib.sha256(data).hexdigest()
+        quality_report_path = output_dir / "quality_report.json"
         job_id = self.jobs.create_job(
             source_url="https://example.invalid/offline",
             output_dir=str(output_dir),
@@ -228,6 +231,27 @@ class SecurityHarness:
             expected_worker=worker,
             exit_code=0,
             pdf_path=str(pdf_path),
+            quality_report_path=str(quality_report_path),
+        )
+        quality_report_path.write_text(
+            json.dumps({
+                "summary": {
+                    "pdf_path": str(pdf_path),
+                    "run_id": job["run_id"],
+                    "artifact_sha256": pdf_sha256,
+                    "artifact_size_bytes": len(data),
+                    "quality_validation": {
+                        "passed": True,
+                        "manual_review_required_groups": 0,
+                        "status": "passed",
+                        "run_id": job["run_id"],
+                        "artifact_sha256": pdf_sha256,
+                        "artifact_size_bytes": len(data),
+                    },
+                },
+                "pages": [],
+            }),
+            encoding="utf-8",
         )
         (output_dir / "job_manifest.json").write_text(
             json.dumps({

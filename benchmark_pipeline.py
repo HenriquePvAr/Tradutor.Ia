@@ -1,4 +1,5 @@
 import json
+import hashlib
 import math
 import os
 import random
@@ -397,6 +398,16 @@ def _output_run_manifest(output_folder, report, translator):
         transport_name=str(report.get("transport_name") or ""),
         source_provenance=report.get("source_provenance"),
     )
+
+
+def _sha256_and_size(path):
+    digest = hashlib.sha256()
+    size = 0
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            size += len(block)
+            digest.update(block)
+    return digest.hexdigest(), size
 
 
 def run_benchmark(args):
@@ -1328,6 +1339,7 @@ def run_benchmark(args):
     pdf_started = time.perf_counter()
     generate_pdf([state["output_path"] for state in completed_states], str(pdf_path))
     stage_seconds["pdf"] = time.perf_counter() - pdf_started
+    artifact_sha256, artifact_size_bytes = _sha256_and_size(pdf_path)
 
     resource_monitor.set_stage("reports")
     preview_started = time.perf_counter()
@@ -1608,6 +1620,8 @@ def run_benchmark(args):
         "difference_from_baseline_seconds": round(total_seconds - BASELINE_SECONDS, 6),
         "reduction_from_baseline_percent": round(old_reduction, 3),
         "pdf_path": str(pdf_path),
+        "artifact_sha256": artifact_sha256,
+        "artifact_size_bytes": artifact_size_bytes,
         "progress_path": str(progress_path),
         "timing_report_json": str(timing_json_path),
         "timing_report_txt": str(timing_txt_path),
@@ -2464,6 +2478,8 @@ def _build_quality_report(report, states, translation_retry_records):
             "total_seconds": report.get("total_seconds"),
             "stage_seconds": report.get("stage_seconds"),
             "pdf_path": report.get("pdf_path"),
+            "artifact_sha256": report.get("artifact_sha256"),
+            "artifact_size_bytes": report.get("artifact_size_bytes"),
             "preview_contact_sheet": report.get("preview_contact_sheet"),
             "preview_compare_sheet": report.get("preview_compare_sheet"),
             "quality_validation": report.get("quality_validation"),

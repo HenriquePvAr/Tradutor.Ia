@@ -47,6 +47,41 @@ def _make_review_required(store: JobStore) -> str:
     return job_id
 
 
+def _write_quality_report(
+    output: Path,
+    *,
+    passed: bool,
+    manual_review_count: int = 0,
+    pdf_path: Path | None = None,
+    run_id: str = "",
+) -> Path:
+    pdf_sha = ""
+    pdf_size = 0
+    if pdf_path is not None:
+        data = pdf_path.read_bytes()
+        pdf_sha = hashlib.sha256(data).hexdigest()
+        pdf_size = len(data)
+    report = output / "quality_report.json"
+    report.write_text(json.dumps({
+        "summary": {
+            "pdf_path": str(pdf_path or ""),
+            "run_id": run_id,
+            "artifact_sha256": pdf_sha,
+            "artifact_size_bytes": pdf_size,
+            "quality_validation": {
+                "passed": bool(passed),
+                "manual_review_required_groups": int(manual_review_count),
+                "status": "passed" if passed else "review_required",
+                "artifact_sha256": pdf_sha,
+                "artifact_size_bytes": pdf_size,
+                "run_id": run_id,
+            },
+        },
+        "pages": [],
+    }), encoding="utf-8")
+    return report
+
+
 class ReviewLifecycleTests(unittest.TestCase):
     def test_confirmed_review_becomes_terminal_and_is_idempotent(self):
         tmp = Path(tempfile.mkdtemp())
@@ -148,6 +183,8 @@ class CommunityResolutionTests(unittest.TestCase):
                             manifest_path=str(output / "run_manifest.json"))
         store.complete_review(job_id)
         job = store.get_job(job_id)
+        report = _write_quality_report(output, passed=True, pdf_path=pdf, run_id=job["run_id"])
+        store.update_fields(job_id, quality_report_path=str(report))
         (output / "job_manifest.json").write_text(json.dumps({
             "job_id": job_id, "run_id": job["run_id"], "status": JobStatus.FINISHED,
             "exit_code": 0, "output_dir": str(output), "pdf_path": str(pdf),
@@ -221,6 +258,8 @@ class CommunityResolutionTests(unittest.TestCase):
             job = store.get_job(job_id)
             store.complete_review(job_id)
             job = store.get_job(job_id)
+            report = _write_quality_report(output, passed=True, pdf_path=pdf, run_id=job["run_id"])
+            store.update_fields(job_id, quality_report_path=str(report))
             (output / "job_manifest.json").write_text(json.dumps({
                 "job_id": job_id,
                 "run_id": job["run_id"],
@@ -270,6 +309,236 @@ class CommunityResolutionTests(unittest.TestCase):
             api.close()
             store.close()
 
+    def test_confirmed_review_required_quality_false_cannot_be_published(self):
+        tmp = Path(tempfile.mkdtemp())
+        output = tmp / "output" / "chapter"
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nquality blocked fixture\n")
+        store = _new_store(tmp)
+        api = CommunityApi(
+            store,
+            community_db_path=tmp / "community.sqlite3",
+            output_root=tmp / "output",
+        )
+        try:
+            job_id = _make_review_required(store)
+            store.update_fields(
+                job_id, output_dir=str(output), pdf_path=str(pdf), exit_code=0)
+            store.complete_review(job_id)
+            job = store.get_job(job_id)
+            report = _write_quality_report(
+                output, passed=False, manual_review_count=1, pdf_path=pdf, run_id=job["run_id"])
+            store.update_fields(job_id, quality_report_path=str(report))
+            self.assertEqual(job["status"], JobStatus.FINISHED)
+            self.assertIsNotNone(job["review_confirmed_at"])
+            (output / "job_manifest.json").write_text(json.dumps({
+                "job_id": job_id,
+                "run_id": job["run_id"],
+                "status": JobStatus.REVIEW_REQUIRED,
+                "exit_code": 0,
+                "pdf_path": str(pdf),
+            }), encoding="utf-8")
+            principal = RequestPrincipal(
+                "local-user", True, auth_source="local_session")
+            with self.assertRaises(ArtifactBindingError) as caught:
+                api._resolve_translation_job(job_id, principal)
+            self.assertEqual(caught.exception.code, "quality_gate_required")
+        finally:
+            api.close()
+            store.close()
+
+    def test_finished_quality_false_cannot_be_published_without_review(self):
+        tmp = Path(tempfile.mkdtemp())
+        output = tmp / "output" / "chapter"
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nfinished but blocked fixture\n")
+        store = _new_store(tmp)
+        api = CommunityApi(
+            store,
+            community_db_path=tmp / "community.sqlite3",
+            output_root=tmp / "output",
+        )
+        try:
+            job_id = _new_translation(store)
+            store.claim_next_job("worker-test", 999999)
+            store.transition(job_id, JobStatus.STARTING, expected_worker="worker-test")
+            store.transition(job_id, JobStatus.RUNNING, expected_worker="worker-test")
+            job = store.transition(
+                job_id, JobStatus.FINISHED, expected_worker="worker-test",
+                exit_code=0, output_dir=str(output), pdf_path=str(pdf))
+            report = _write_quality_report(
+                output, passed=False, manual_review_count=1, pdf_path=pdf, run_id=job["run_id"])
+            store.update_fields(job_id, quality_report_path=str(report))
+            (output / "job_manifest.json").write_text(json.dumps({
+                "job_id": job_id,
+                "run_id": job["run_id"],
+                "status": JobStatus.FINISHED,
+                "exit_code": 0,
+                "pdf_path": str(pdf),
+            }), encoding="utf-8")
+            principal = RequestPrincipal(
+                "local-user", True, auth_source="local_session")
+            with self.assertRaises(ArtifactBindingError) as caught:
+                api._resolve_translation_job(job_id, principal)
+            self.assertEqual(caught.exception.code, "quality_gate_required")
+        finally:
+            api.close()
+            store.close()
+
+    def test_missing_quality_evidence_cannot_be_published(self):
+        tmp = Path(tempfile.mkdtemp())
+        output = tmp / "output" / "chapter"
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nmissing quality fixture\n")
+        store = _new_store(tmp)
+        api = CommunityApi(
+            store,
+            community_db_path=tmp / "community.sqlite3",
+            output_root=tmp / "output",
+        )
+        try:
+            job_id = _new_translation(store)
+            store.claim_next_job("worker-test", 999999)
+            store.transition(job_id, JobStatus.STARTING, expected_worker="worker-test")
+            store.transition(job_id, JobStatus.RUNNING, expected_worker="worker-test")
+            job = store.transition(
+                job_id, JobStatus.FINISHED, expected_worker="worker-test",
+                exit_code=0, output_dir=str(output), pdf_path=str(pdf))
+            (output / "job_manifest.json").write_text(json.dumps({
+                "job_id": job_id,
+                "run_id": job["run_id"],
+                "status": JobStatus.FINISHED,
+                "exit_code": 0,
+                "pdf_path": str(pdf),
+            }), encoding="utf-8")
+            principal = RequestPrincipal(
+                "local-user", True, auth_source="local_session")
+            with self.assertRaises(ArtifactBindingError) as caught:
+                api._resolve_translation_job(job_id, principal)
+            self.assertEqual(caught.exception.code, "quality_gate_required")
+        finally:
+            api.close()
+            store.close()
+
+    def test_quality_pass_current_artifact_can_be_published(self):
+        tmp = Path(tempfile.mkdtemp())
+        output = tmp / "output" / "chapter"
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nquality pass fixture\n")
+        store = _new_store(tmp)
+        api = CommunityApi(
+            store,
+            community_db_path=tmp / "community.sqlite3",
+            output_root=tmp / "output",
+        )
+        try:
+            job_id = _new_translation(store)
+            store.claim_next_job("worker-test", 999999)
+            store.transition(job_id, JobStatus.STARTING, expected_worker="worker-test")
+            store.transition(job_id, JobStatus.RUNNING, expected_worker="worker-test")
+            job = store.transition(
+                job_id, JobStatus.FINISHED, expected_worker="worker-test",
+                exit_code=0, output_dir=str(output), pdf_path=str(pdf))
+            report = _write_quality_report(output, passed=True, pdf_path=pdf, run_id=job["run_id"])
+            store.update_fields(job_id, quality_report_path=str(report))
+            (output / "job_manifest.json").write_text(json.dumps({
+                "job_id": job_id,
+                "run_id": job["run_id"],
+                "status": JobStatus.FINISHED,
+                "exit_code": 0,
+                "pdf_path": str(pdf),
+            }), encoding="utf-8")
+            principal = RequestPrincipal(
+                "local-user", True, auth_source="local_session")
+            resolved = api._resolve_translation_job(job_id, principal)
+            self.assertEqual(resolved["source_job_id"], job_id)
+            self.assertEqual(Path(resolved["pdf_path"]), pdf.resolve())
+        finally:
+            api.close()
+            store.close()
+
+    def test_quality_report_for_previous_artifact_cannot_be_reused(self):
+        tmp = Path(tempfile.mkdtemp())
+        output = tmp / "output" / "chapter"
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nfirst artifact\n")
+        store = _new_store(tmp)
+        api = CommunityApi(
+            store,
+            community_db_path=tmp / "community.sqlite3",
+            output_root=tmp / "output",
+        )
+        try:
+            job_id = _new_translation(store)
+            store.claim_next_job("worker-test", 999999)
+            store.transition(job_id, JobStatus.STARTING, expected_worker="worker-test")
+            store.transition(job_id, JobStatus.RUNNING, expected_worker="worker-test")
+            job = store.transition(
+                job_id, JobStatus.FINISHED, expected_worker="worker-test",
+                exit_code=0, output_dir=str(output), pdf_path=str(pdf))
+            report = _write_quality_report(output, passed=True, pdf_path=pdf, run_id=job["run_id"])
+            store.update_fields(job_id, quality_report_path=str(report))
+            pdf.write_bytes(b"%PDF-1.7\nsecond artifact after quality report\n")
+            (output / "job_manifest.json").write_text(json.dumps({
+                "job_id": job_id,
+                "run_id": job["run_id"],
+                "status": JobStatus.FINISHED,
+                "exit_code": 0,
+                "pdf_path": str(pdf),
+            }), encoding="utf-8")
+            principal = RequestPrincipal(
+                "local-user", True, auth_source="local_session")
+            with self.assertRaises(ArtifactBindingError) as caught:
+                api._resolve_translation_job(job_id, principal)
+            self.assertEqual(caught.exception.code, "quality_gate_required")
+        finally:
+            api.close()
+            store.close()
+
+    def test_quality_report_for_previous_run_cannot_be_reused(self):
+        tmp = Path(tempfile.mkdtemp())
+        output = tmp / "output" / "chapter"
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nsame artifact stale run\n")
+        store = _new_store(tmp)
+        api = CommunityApi(
+            store,
+            community_db_path=tmp / "community.sqlite3",
+            output_root=tmp / "output",
+        )
+        try:
+            job_id = _new_translation(store)
+            store.claim_next_job("worker-test", 999999)
+            store.transition(job_id, JobStatus.STARTING, expected_worker="worker-test")
+            store.transition(job_id, JobStatus.RUNNING, expected_worker="worker-test")
+            job = store.transition(
+                job_id, JobStatus.FINISHED, expected_worker="worker-test",
+                exit_code=0, output_dir=str(output), pdf_path=str(pdf))
+            report = _write_quality_report(
+                output, passed=True, pdf_path=pdf, run_id="previous-run-id")
+            store.update_fields(job_id, quality_report_path=str(report))
+            (output / "job_manifest.json").write_text(json.dumps({
+                "job_id": job_id,
+                "run_id": job["run_id"],
+                "status": JobStatus.FINISHED,
+                "exit_code": 0,
+                "pdf_path": str(pdf),
+            }), encoding="utf-8")
+            principal = RequestPrincipal(
+                "local-user", True, auth_source="local_session")
+            with self.assertRaises(ArtifactBindingError) as caught:
+                api._resolve_translation_job(job_id, principal)
+            self.assertEqual(caught.exception.code, "quality_gate_required")
+        finally:
+            api.close()
+            store.close()
+
     def test_not_found_is_structured_for_the_ui(self):
         with self.assertRaises(Exception) as caught:
             _community_call(lambda: (_ for _ in ()).throw(ResourceNotFound("pdf_not_found")))
@@ -293,6 +562,8 @@ class CommunityResolutionTests(unittest.TestCase):
                                 manifest_path=str(output / "run_manifest.json"))
             store.complete_review(job_id)
             job = store.get_job(job_id)
+            report = _write_quality_report(output, passed=True, pdf_path=pdf, run_id=job["run_id"])
+            store.update_fields(job_id, quality_report_path=str(report))
             (output / "job_manifest.json").write_text(json.dumps({
                 "job_id": job_id, "run_id": job["run_id"], "status": JobStatus.REVIEW_REQUIRED,
                 "exit_code": 0, "pdf_path": str(pdf),
