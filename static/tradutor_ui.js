@@ -5053,7 +5053,7 @@
       groups.get(key).records.push(record);
     });
     list.innerHTML = Array.from(groups.entries()).map(([key, group]) => {
-      const open = appState.expandedFolders.has(key);
+      const open = Boolean(query) || appState.expandedFolders.has(key);
       const folderIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h8l2 2"/></svg>';
       const panelId = `series-panel-${slugify(key) || 'series'}`;
       return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><button type="button" class="cf-header" data-folder="${escapeAttr(key)}" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${escapeAttr(panelId)}" aria-label="${escapeAttr(`Expandir ${group.series}`)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></button><div class="cf-body" id="${escapeAttr(panelId)}" role="region" aria-hidden="${open ? 'false' : 'true'}">${group.records.map(renderHistoryCard).join('')}</div></div>`;
@@ -5133,15 +5133,26 @@
     void refreshBootstrap();
   });
   applyCanonicalAuthSurface(getGlobal('__tradutorAuthState') || 'auth_loading');
+  function closestFromEventPath(event, selector) {
+    const target = event.target?.closest ? event.target : event.target?.parentElement || null;
+    const direct = target?.closest?.(selector);
+    if (direct) return direct;
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    for (const node of path) {
+      if (node?.matches?.(selector)) return node;
+      const match = node?.closest?.(selector);
+      if (match) return match;
+    }
+    return null;
+  }
   async function handleHistoryAction(event) {
-    const target = event.target?.closest ? event.target : null;
-    if (!target?.closest('#histList')) return;
-    const folder = target.closest('.cf-header');
-    if (folder) {
+    if (!closestFromEventPath(event, '#histList')) return;
+    const button = closestFromEventPath(event, '[data-action]');
+    const folder = closestFromEventPath(event, '.cf-header');
+    if (folder && !button) {
       toggleHistoryFolder(folder);
       return;
     }
-    const button = target.closest('[data-action]');
     if (!button) return;
     const rowId = String(button.closest('.hist-item')?.dataset.id || '');
     const reviewJobId = String(button.dataset.reviewJob || '').toLowerCase();
