@@ -22,7 +22,10 @@ import time
 from pathlib import Path
 
 from community_storage import StorageError, build_storage_provider
-from community_publication_metadata import build_publication_metadata_repository
+from community_publication_metadata import (
+    PublicationMetadataError,
+    build_publication_metadata_repository,
+)
 from community_store import CommunityStore, FileStatus, PostStatus
 from job_store import JobStatus, JobStore, TransitionError
 from local_environment import load_local_environment_for_entrypoint
@@ -36,6 +39,8 @@ MAX_TRANSIENT_RETRIES = 6
 _CHUNK_DELAY = 0.0
 
 _STOP = False
+_LOG_PATH = ""
+_SAFE_REASON_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789_:-")
 
 
 def _install_stop_handlers() -> None:
@@ -55,9 +60,51 @@ def _backoff(attempt: int) -> float:
     return min(30.0, (2 ** attempt) * 0.2) + random.uniform(0, 0.2)
 
 
-def run_job(job_id: str, db_path: str) -> int:
+def _metadata_required(config: dict) -> bool:
+    provider = str(((config.get("publication_metadata") or {}).get("provider") or "none")).lower()
+    return provider not in {"", "none", "null"}
+
+
+def _safe_reason(exc: Exception, *, fallback: str = "unexpected_publish_error") -> str:
+    raw = str(exc).strip().split()[0] if str(exc).strip() else ""
+    reason = raw.lower()
+    if reason and all(ch in _SAFE_REASON_CHARS for ch in reason):
+        return reason[:120]
+    return fallback
+
+
+def _redact(value: str) -> str:
+    import re
+
+    text = str(value or "")
+    text = re.sub(r"sb_secret_[A-Za-z0-9._-]+", "<redacted>", text)
+    text = re.sub(r"(?i)(Authorization:\s*Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", text)
+    text = re.sub(r"(?i)(apikey\s*[=:]\s*)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", text)
+    return text
+
+
+def _log_failure(*, stage: str, category: str, reason: str, exc: Exception) -> None:
+    if not _LOG_PATH:
+        return
+    line = (
+        f"stage={_redact(stage)} category={_redact(category)} "
+        f"reason={_redact(reason)} exception={type(exc).__name__} "
+        f"message={_redact(str(exc))}\n"
+    )
+    try:
+        path = Path(_LOG_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+    except Exception:
+        pass
+
+
+def run_job(job_id: str, db_path: str, *, log_path: str = "") -> int:
     global _STOP
+    global _LOG_PATH
     _STOP = False
+    _LOG_PATH = str(log_path or "")
     _install_stop_handlers()
     jobs = JobStore(db_path)
     community = None
@@ -160,6 +207,9 @@ def run_job(job_id: str, db_path: str) -> int:
             community.invalidate_publish_file(file_id, job_id)
             _cancel_job(jobs, job_id)
             return 0
+        canonical_publication_id = str(config.get("canonical_publication_id") or "").strip()
+        if _metadata_required(config) and not canonical_publication_id:
+            raise PublicationMetadataError("canonical_publication_identity_missing")
         provider = build_storage_provider(config.get("storage") or {})
         if (
             jobs.cancel_requested(job_id)
@@ -419,7 +469,7 @@ def _upload_with_retry(provider, session, offset, chunk, jobs, job_id):
 
 def _publication_metadata(config: dict, post_id: str, job_id: str, storage_reference: str) -> dict:
     return {
-        "publication_id": post_id,
+        "publication_id": str(config.get("canonical_publication_id") or post_id),
         "owner_user_id": str(config.get("user_id") or ""),
         "job_id": str(config.get("source_job_id") or ""),
         "run_id": str(config.get("source_run_id") or ""),
@@ -518,15 +568,28 @@ def _fail_unexpected(
     outside the narrow retry loop.  They still need the same conditional rollback as
     an upload failure so no PUBLISHING/PENDING attempt can be stranded forever.
     """
-    if isinstance(exc, StorageError):
+    if isinstance(exc, PublicationMetadataError):
+        reason = _safe_reason(exc, fallback="publication_metadata_error")
+        category = "publication_metadata"
+    elif isinstance(exc, StorageError):
         status = exc.status if isinstance(exc.status, int) else "unknown"
         reason = f"storage_error:{status}"
+        category = "storage"
     elif isinstance(exc, OSError):
         reason = "local_pdf_io_error"
+        category = "local_io"
     elif isinstance(exc, (KeyError, TypeError, ValueError)):
         reason = "invalid_publish_configuration"
+        category = "configuration"
     else:
         reason = "unexpected_publish_error"
+        category = "unexpected"
+    _log_failure(
+        stage=str((job or {}).get("stage") or ""),
+        category=category,
+        reason=reason,
+        exc=exc,
+    )
 
     if community is not None and post_id and file_id:
         try:
@@ -636,7 +699,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not wait_for_start_gate(args.start_gate):
         return 3
-    return run_job(args.job_id, args.db)
+    return run_job(args.job_id, args.db, log_path=args.log)
 
 
 if __name__ == "__main__":

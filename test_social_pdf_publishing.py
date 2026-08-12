@@ -47,10 +47,11 @@ class FakeCommunityApi:
         self.store = FakeCommunityStore()
         self.publish_calls = 0
 
-    def publish(self, payload, *, principal):
+    def publish(self, payload, *, principal, canonical_publication_id=""):
         if payload.get("publish_consent") is not True:
             raise CommunityError("publish_consent_required")
         self.publish_calls += 1
+        self.last_canonical_publication_id = canonical_publication_id
         # A fresh (pending) publication; the test 'verifies' it later.
         pid = f"pub-{self.publish_calls}"
         self.store.posts[pid] = {"user_id": principal.user_id, "status": PostStatus.PUBLISHING}
@@ -134,6 +135,7 @@ class PublishingServiceTests(unittest.TestCase):
         r = self.svc.publish_pdf("owner-A", OWNER, "chapA", JOB, "community", publish_consent=True)
         self.assertEqual(r["status"], "pending")
         self.assertEqual(self.capi.publish_calls, 1)
+        self.assertEqual(self.capi.last_canonical_publication_id, "chapA")
         # Not yet verified → still pending, chapter status unchanged, no asset.
         self.assertEqual(self.svc.publish_status("owner-A", OWNER, "chapA")["status"], "pending")
         self.assertEqual(self.social.updates, [])

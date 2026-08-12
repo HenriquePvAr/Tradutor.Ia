@@ -34,6 +34,9 @@ DRIVE_ENV_KEYS = (
 def isolated_drive_environment(monkeypatch):
     for key in DRIVE_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    yield
+    for key in DRIVE_ENV_KEYS:
+        os.environ.pop(key, None)
 
 
 def _configure(monkeypatch, tmp_path: Path, *, root: str = "", token_path: Path | None = None):

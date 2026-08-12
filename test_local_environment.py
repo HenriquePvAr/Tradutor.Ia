@@ -19,7 +19,11 @@ import worker_service
 
 ENV_KEYS = (
     "COMMUNITY_STORAGE_PROVIDER",
+    "COMMUNITY_PUBLICATION_METADATA_PROVIDER",
+    "COMMUNITY_PUBLICATION_METADATA_REQUIRED",
     "COMMUNITY_DRIVE_ROOT_FOLDER_ID",
+    "SUPABASE_URL",
+    "SUPABASE_SECRET_KEY",
     "GOOGLE_OAUTH_CLIENT_ID",
     "GOOGLE_OAUTH_CLIENT_SECRET",
     "GOOGLE_OAUTH_TOKEN_PATH",
@@ -35,6 +39,9 @@ ENV_KEYS = (
 def isolated_environment(monkeypatch):
     for key in ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    yield
+    for key in ENV_KEYS:
+        os.environ.pop(key, None)
 
 
 def _select(monkeypatch, path: Path) -> None:

@@ -101,6 +101,7 @@ class SocialPdfPublishingService:
                 "publish_consent": publish_consent is True,
             },
             principal=principal,
+            canonical_publication_id=chapter_id,
         )
         publication_id = result["post_id"]
         self._assets.set_intent(chapter_id, publication_id, target_status,
@@ -179,6 +180,7 @@ class SocialPdfPublishingService:
                 "publish_consent": publish_consent is True,
             },
             principal=principal,
+            canonical_publication_id=chapter_id,
         )
         self._assets.set_intent(chapter_id, result["post_id"], "__replace__",
                                 principal.user_id, source_job_id, idempotency_key)

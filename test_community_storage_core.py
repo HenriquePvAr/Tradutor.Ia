@@ -18,7 +18,7 @@ import community_api
 import community_publish_runner
 from community_api import ArtifactBindingError, CommunityApi, CommunityError
 from community_auth import RequestPrincipal
-from community_publication_metadata import FakePublicationMetadataRepository
+from community_publication_metadata import FakePublicationMetadataRepository, PublicationMetadataError
 from community_storage import FakeStorageProvider, StorageError
 from community_store import FileStatus, PostStatus
 from job_store import JobStatus, JobStore
@@ -112,6 +112,14 @@ class ResponseLostAfterCreateProvider(FakeStorageProvider):
         return result
 
 
+class SecretLikeMetadataFailure(FakePublicationMetadataRepository):
+    def reserve(self, metadata):
+        raise PublicationMetadataError(
+            "metadata_reservation_failed sb_secret_test_leak "
+            "Authorization: Bearer jwt.secret apikey=secret-key"
+        )
+
+
 class StorageCoreHarness:
     def __init__(self, tmp_path: Path):
         self.tmp = tmp_path
@@ -128,13 +136,15 @@ class StorageCoreHarness:
         self.api.close()
         self.jobs.close()
 
-    def publish(self, job_id: str, *, principal=OWNER, consent=True) -> dict:
+    def publish(self, job_id: str, *, principal=OWNER, consent=True,
+                canonical_publication_id: str = "") -> dict:
         return self.api.publish(
             {"source_job_id": job_id, "series_slug": "series", "publish_consent": consent},
             principal=principal,
+            canonical_publication_id=canonical_publication_id,
         )
 
-    def run_publish_job(self, job_id: str, provider, metadata_repo) -> int:
+    def run_publish_job(self, job_id: str, provider, metadata_repo, *, log_path: Path | None = None) -> int:
         claimed = self.jobs.claim_next_job("publisher", 1)
         assert claimed and claimed["id"] == job_id
         self.jobs.transition(job_id, JobStatus.STARTING, expected_worker="publisher")
@@ -144,6 +154,10 @@ class StorageCoreHarness:
                  "build_publication_metadata_repository",
                  lambda _config: metadata_repo,
              ):
+            if log_path is not None:
+                return community_publish_runner.run_job(
+                    job_id, str(self.tmp / "jobs.sqlite3"), log_path=str(log_path)
+                )
             return community_publish_runner.run_job(job_id, str(self.tmp / "jobs.sqlite3"))
 
 
@@ -213,7 +227,7 @@ def test_stale_artifact_is_denied_before_drive_upload(harness):
     provider = FakeStorageProvider()
     metadata = FakePublicationMetadataRepository()
     job_id, pdf = _finished_translation_job(harness.jobs, harness.output_root)
-    publish = harness.publish(job_id)
+    publish = harness.publish(job_id, canonical_publication_id="11111111-1111-4111-8111-111111111111")
     pdf.write_bytes(b"%PDF-1.4\nmutated-after-reservation\n%%EOF\n")
 
     harness.run_publish_job(publish["job_id"], provider, metadata)
@@ -228,13 +242,14 @@ def test_happy_path_uploads_once_and_persists_publication_metadata(harness):
     provider = FakeStorageProvider()
     metadata = FakePublicationMetadataRepository()
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
+    chapter_id = "11111111-1111-4111-8111-111111111111"
 
-    publish = harness.publish(job_id)
+    publish = harness.publish(job_id, canonical_publication_id=chapter_id)
     harness.run_publish_job(publish["job_id"], provider, metadata)
 
     post = harness.api.store.get_post(publish["post_id"])
     file = harness.api.store.get_file(publish["file_id"])
-    row = metadata.get_publication(publish["post_id"])
+    row = metadata.get_publication(chapter_id)
     assert post["status"] == PostStatus.PUBLISHED
     assert file["upload_status"] == FileStatus.VERIFIED
     assert provider.create_session_calls == 1
@@ -242,9 +257,72 @@ def test_happy_path_uploads_once_and_persists_publication_metadata(harness):
     assert metadata.reserve_calls == 1
     assert metadata.finalize_calls == 1
     assert row is not None
+    assert row.publication_id == chapter_id
+    assert row.publication_id != publish["post_id"]
     assert row.publication_status == "published"
     assert row.storage_reference == file["storage_file_id"]
     assert "storage_reference" not in row.public()
+
+
+def test_metadata_enabled_publish_without_canonical_identity_fails_before_drive(harness):
+    provider = FakeStorageProvider()
+    metadata = FakePublicationMetadataRepository()
+    job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
+
+    publish = harness.publish(job_id)
+    harness.run_publish_job(publish["job_id"], provider, metadata)
+
+    post = harness.api.store.get_post(publish["post_id"])
+    file = harness.api.store.get_file(publish["file_id"])
+    assert post["status"] == PostStatus.FAILED
+    assert file["upload_status"] == FileStatus.FAILED
+    assert file["bytes_uploaded"] == 0
+    assert file["storage_file_id"] in ("", None)
+    assert provider.create_session_calls == 0
+    assert provider.upload_chunk_calls == 0
+    assert metadata.reserve_calls == 0
+
+
+def test_metadata_reservation_failure_is_specific_and_drive_zero(harness):
+    provider = FakeStorageProvider()
+    metadata = FakePublicationMetadataRepository(fail_reserve=True)
+    job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
+    publish = harness.publish(
+        job_id,
+        canonical_publication_id="11111111-1111-4111-8111-111111111111",
+    )
+
+    harness.run_publish_job(publish["job_id"], provider, metadata)
+
+    file = harness.api.store.get_file(publish["file_id"])
+    events = harness.api.store.events_for_post(publish["post_id"])
+    assert file["upload_status"] == FileStatus.FAILED
+    assert file["bytes_uploaded"] == 0
+    assert provider.create_session_calls == 0
+    assert metadata.reserve_calls == 1
+    assert events[-1]["event_type"] == "publish_failed"
+    assert json.loads(events[-1]["metadata_json"])["reason"] == "metadata_reservation_failed"
+
+
+def test_runner_log_records_sanitized_metadata_failure(harness, tmp_path):
+    provider = FakeStorageProvider()
+    metadata = SecretLikeMetadataFailure()
+    job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
+    publish = harness.publish(
+        job_id,
+        canonical_publication_id="11111111-1111-4111-8111-111111111111",
+    )
+    log_path = tmp_path / "community-publish.log"
+
+    harness.run_publish_job(publish["job_id"], provider, metadata, log_path=log_path)
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "stage=snapshotting" in text
+    assert "category=publication_metadata" in text
+    assert "reason=metadata_reservation_failed" in text
+    assert "sb_secret_test_leak" not in text
+    assert "jwt.secret" not in text
+    assert "secret-key" not in text
 
 
 def test_duplicate_publish_is_idempotent_one_upload_one_publication(harness):
@@ -252,8 +330,9 @@ def test_duplicate_publish_is_idempotent_one_upload_one_publication(harness):
     metadata = FakePublicationMetadataRepository()
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
 
-    first = harness.publish(job_id)
-    second = harness.publish(job_id)
+    chapter_id = "11111111-1111-4111-8111-111111111111"
+    first = harness.publish(job_id, canonical_publication_id=chapter_id)
+    second = harness.publish(job_id, canonical_publication_id=chapter_id)
     assert first == second
     harness.run_publish_job(first["job_id"], provider, metadata)
 
@@ -267,8 +346,12 @@ def test_concurrent_equivalent_publish_is_safe(harness):
     metadata = FakePublicationMetadataRepository()
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
 
+    chapter_id = "11111111-1111-4111-8111-111111111111"
     with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(lambda _i: harness.publish(job_id), range(2)))
+        results = list(executor.map(
+            lambda _i: harness.publish(job_id, canonical_publication_id=chapter_id),
+            range(2),
+        ))
 
     assert results[0] == results[1]
     harness.run_publish_job(results[0]["job_id"], provider, metadata)
@@ -280,7 +363,7 @@ def test_drive_failure_does_not_mark_published(harness):
     provider = FakeStorageProvider(online=False)
     metadata = FakePublicationMetadataRepository()
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
-    publish = harness.publish(job_id)
+    publish = harness.publish(job_id, canonical_publication_id="11111111-1111-4111-8111-111111111111")
 
     harness.run_publish_job(publish["job_id"], provider, metadata)
 
@@ -293,7 +376,8 @@ def test_response_lost_retry_reuses_remote_reference_without_duplicate_upload(ha
     provider = ResponseLostAfterCreateProvider()
     metadata = FakePublicationMetadataRepository()
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
-    first = harness.publish(job_id)
+    chapter_id = "11111111-1111-4111-8111-111111111111"
+    first = harness.publish(job_id, canonical_publication_id=chapter_id)
 
     harness.run_publish_job(first["job_id"], provider, metadata)
     assert harness.api.store.get_post(first["post_id"])["status"] == PostStatus.FAILED
@@ -301,7 +385,7 @@ def test_response_lost_retry_reuses_remote_reference_without_duplicate_upload(ha
     failed_file = harness.api.store.get_file(first["file_id"])
     assert failed_file["storage_file_id"]
 
-    retry = harness.publish(job_id)
+    retry = harness.publish(job_id, canonical_publication_id=chapter_id)
     harness.run_publish_job(retry["job_id"], provider, metadata)
 
     assert provider.create_session_calls == 1
@@ -313,14 +397,15 @@ def test_drive_success_and_metadata_finalization_failure_is_recoverable(harness)
     provider = FakeStorageProvider()
     metadata = FakePublicationMetadataRepository(fail_finalize_once=True)
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
-    first = harness.publish(job_id)
+    chapter_id = "11111111-1111-4111-8111-111111111111"
+    first = harness.publish(job_id, canonical_publication_id=chapter_id)
 
     harness.run_publish_job(first["job_id"], provider, metadata)
     assert harness.api.store.get_post(first["post_id"])["status"] == PostStatus.FAILED
     failed_file = harness.api.store.get_file(first["file_id"])
     assert failed_file["storage_file_id"]
 
-    retry = harness.publish(job_id)
+    retry = harness.publish(job_id, canonical_publication_id=chapter_id)
     harness.run_publish_job(retry["job_id"], provider, metadata)
 
     assert provider.create_session_calls == 1
@@ -331,16 +416,21 @@ def test_drive_success_and_metadata_finalization_failure_is_recoverable(harness)
 def test_client_cannot_choose_storage_reference(harness):
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
 
-    with pytest.raises(CommunityError, match="client_identity_not_allowed"):
-        harness.api.publish(
-            {
-                "source_job_id": job_id,
-                "series_slug": "series",
-                "publish_consent": True,
-                "storage_file_id": "client-selected-drive-id",
-            },
-            principal=OWNER,
-        )
+    for field, value in {
+        "storage_file_id": "client-selected-drive-id",
+        "canonical_publication_id": "11111111-1111-4111-8111-111111111111",
+        "chapter_id": "11111111-1111-4111-8111-111111111111",
+    }.items():
+        with pytest.raises(CommunityError, match="client_identity_not_allowed"):
+            harness.api.publish(
+                {
+                    "source_job_id": job_id,
+                    "series_slug": "series",
+                    "publish_consent": True,
+                    field: value,
+                },
+                principal=OWNER,
+            )
 
 
 def test_source_processing_policy_alone_does_not_grant_publish(harness):

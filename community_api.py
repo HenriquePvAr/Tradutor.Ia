@@ -48,6 +48,7 @@ _CLIENT_IDENTITY_FIELDS = frozenset({
     "storage_file_id", "drive_file_id", "file_id", "provider", "checksum",
     "storage_reference", "storage_provider", "artifact_sha256", "artifact_size",
     "artifact_size_bytes", "owner_user_id", "publication_status", "last_error_code",
+    "canonical_publication_id", "chapter_id", "remote_chapter_id",
 })
 
 
@@ -639,7 +640,8 @@ class CommunityApi:
             raise ArtifactBindingError("artifact_not_found", status_code=404) from None
 
     # ---- operations for the endpoints --------------------------------------
-    def publish(self, payload: dict[str, Any], *, principal: RequestPrincipal) -> dict[str, Any]:
+    def publish(self, payload: dict[str, Any], *, principal: RequestPrincipal,
+                canonical_publication_id: str = "") -> dict[str, Any]:
         self._require_authenticated_principal(principal)
         if _CLIENT_IDENTITY_FIELDS.intersection(payload):
             raise CommunityError("client_identity_not_allowed")
@@ -699,6 +701,7 @@ class CommunityApi:
                 principal=principal,
                 pdf_path=draft["pdf_path"],
                 force_new_version=force_new_version,
+                canonical_publication_id=canonical_publication_id,
             )
 
     def _publish_authorization_identity(

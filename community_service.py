@@ -179,7 +179,8 @@ class CommunityService:
 
     def request_publish(self, post_id: str, *, principal: RequestPrincipal,
                         pdf_path: str = "",
-                        force_new_version: bool = False) -> dict[str, Any]:
+                        force_new_version: bool = False,
+                        canonical_publication_id: str = "") -> dict[str, Any]:
         self._require_authenticated(principal)
         post = self.store.get_post(post_id)
         if not post:
@@ -239,6 +240,7 @@ class CommunityService:
         file_id = preparation.get("file_id") or uuid.uuid4().hex
         payload = {
             "post_id": post_id, "file_id": file_id, "user_id": actor,
+            "canonical_publication_id": str(canonical_publication_id or ""),
             "local_pdf_path": str(pdf), "pdf_filename": filename, "pdf_size": size,
             "pdf_sha256": sha256, "series_slug": post["series_slug"] or "series",
             "series_title": post["series_title"] or "", "episode_number": post["episode_number"] or "",
