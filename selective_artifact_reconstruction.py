@@ -11,13 +11,16 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import shutil
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
-from benchmark_pipeline import _build_quality_report, _translation_quality_accounting, _validate_quality
+from benchmark_pipeline import _build_quality_report, _count_pdf_pages, _translation_quality_accounting, _validate_quality
 from community_service import sha256_of_file
 from job_store import JobStatus, JobStore
 from ocr_balloon import validate_translation_text
@@ -31,6 +34,7 @@ _NO_CONTENT_PRECHECK_REASONS = frozenset({
     "no_text_like_components",
 })
 _BLANK_EXCLUSION_REASONS = frozenset({"invalid_or_blank_logical_page"})
+_RECONSTRUCTION_RECOVERY_REASONS = frozenset({"orphaned_worker_gone"})
 
 
 class ReconstructionError(RuntimeError):
@@ -69,6 +73,24 @@ def _file_sha256(path: Path) -> str:
 def _file_identity(path: Path) -> dict[str, Any]:
     digest, size = sha256_of_file(path)
     return {"sha256": digest, "size_bytes": int(size)}
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_recorded_path(value: Any, base: Path) -> Path:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ReconstructionError("reconstruction_recovery_path_missing")
+    path = Path(raw)
+    if not path.is_absolute():
+        path = base / path
+    return path.resolve()
 
 
 def _stable_id(payload: dict[str, Any]) -> str:
@@ -263,6 +285,48 @@ class SelectiveArtifactReconstructor:
         self.quality_builder = quality_builder
         self.clock = clock
 
+    @contextmanager
+    def _registered_reconstruction_worker(self, child_id: str) -> Iterator[str]:
+        worker_id = f"artifact-reconstruction-{child_id[:8]}-{uuid.uuid4().hex[:12]}"
+        stop = threading.Event()
+        heartbeat_error: list[BaseException] = []
+        try:
+            self.job_store.register_worker(worker_id, os.getpid())
+        except Exception:
+            raise ReconstructionError("reconstruction_worker_registration_failed") from None
+
+        def beat() -> None:
+            while not stop.wait(1.0):
+                try:
+                    self.job_store.worker_heartbeat(worker_id)
+                except BaseException as exc:  # noqa: BLE001 - surfaced at lease checkpoints
+                    heartbeat_error.append(exc)
+                    stop.set()
+
+        thread = threading.Thread(
+            target=beat,
+            name=f"{worker_id}-heartbeat",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            yield worker_id
+            if heartbeat_error:
+                raise ReconstructionError("reconstruction_worker_heartbeat_failed")
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+            try:
+                self.job_store.unregister_worker(worker_id)
+            except Exception:
+                pass
+
+    def _heartbeat_reconstruction_worker(self, worker_id: str) -> None:
+        try:
+            self.job_store.worker_heartbeat(worker_id)
+        except Exception:
+            raise ReconstructionError("reconstruction_worker_heartbeat_failed") from None
+
     def reconstruct(self, request: dict[str, Any]) -> dict[str, Any]:
         source = self._resolve_source(request)
         progress = _read_json(source["output_dir"] / "progress.json", "reconstruction_evidence_missing")
@@ -330,166 +394,319 @@ class SelectiveArtifactReconstructor:
                 operation_kind="artifact_reconstruction",
                 parent_job_id=str(source["job"]["id"]),
             )
-        claimed = self.job_store.claim_next_job(f"artifact-reconstruction-{child_id[:8]}", 1)
-        worker = str((claimed or {}).get("worker_id") or "")
-        if claimed and claimed.get("id") == child_id:
-            self.job_store.transition(child_id, JobStatus.STARTING, expected_worker=worker)
-            self.job_store.transition(child_id, JobStatus.RUNNING, expected_worker=worker)
-
         temp_root = source["output_dir"] / "reconstructions" / f".tmp-{child_id}-{uuid.uuid4().hex}"
         promoted = False
-        try:
-            temp_root.mkdir(parents=True, exist_ok=False)
-            page_snapshots = self._snapshot_reusable_pages(
-                pages,
-                target_page=_page_number(page),
-                temp_root=temp_root,
-                provenance=page_provenance,
-            )
-            corrected_page = temp_root / "pages" / f"page_{_page_number(page):03d}.png"
-            corrected_page.parent.mkdir(parents=True, exist_ok=True)
-            source_page = Path(str(page.get("image_path") or "")).resolve()
-            if not source_page.is_file():
-                raise ReconstructionError("reconstruction_source_page_missing")
+        worker = ""
+        with self._registered_reconstruction_worker(child_id) as worker:
+            claimed = self.job_store.claim_next_job(worker, os.getpid())
+            if not claimed or claimed.get("id") != child_id:
+                raise ReconstructionError("reconstruction_child_claim_failed")
+            self.job_store.transition(child_id, JobStatus.STARTING, expected_worker=worker)
+            self.job_store.transition(child_id, JobStatus.RUNNING, expected_worker=worker)
             try:
-                render_debug = self.renderer(
-                    source_page=source_page,
-                    destination=corrected_page,
-                    page=page,
-                    item=item,
-                    candidate=candidate,
+                temp_root.mkdir(parents=True, exist_ok=False)
+                page_snapshots = self._snapshot_reusable_pages(
+                    pages,
+                    target_page=_page_number(page),
+                    temp_root=temp_root,
+                    provenance=page_provenance,
                 )
-            except ReconstructionError:
-                raise
-            except Exception:
-                raise ReconstructionError("reconstruction_render_failed") from None
-            if not corrected_page.is_file():
-                raise ReconstructionError("reconstruction_render_failed")
-            rebuilt_pages = self._rebuilt_page_order(
-                pages,
-                _page_number(page),
-                corrected_page,
-                page_snapshots,
-                page_provenance,
-            )
-            pdf_path = temp_root / "artifact.pdf"
-            try:
-                self.pdf_builder(rebuilt_pages, str(pdf_path))
-            except ReconstructionError:
-                raise
-            except Exception:
-                raise ReconstructionError("reconstruction_pdf_failed") from None
-            if not pdf_path.is_file():
-                raise ReconstructionError("reconstruction_pdf_failed")
-            quality_pages = self._quality_pages(
-                pages,
-                page,
-                item,
-                candidate,
-                corrected_page,
-                render_debug,
-                page_provenance,
-            )
-            physical_quality = self._validate_physical_quality(
-                quality_pages,
-                pdf_path=pdf_path,
-                expected_page_count=len(quality_pages),
-            )
-            artifact_sha256, artifact_size = sha256_of_file(pdf_path)
-            try:
-                quality = self.quality_builder(
+                corrected_page = temp_root / "pages" / f"page_{_page_number(page):03d}.png"
+                corrected_page.parent.mkdir(parents=True, exist_ok=True)
+                source_page = Path(str(page.get("image_path") or "")).resolve()
+                if not source_page.is_file():
+                    raise ReconstructionError("reconstruction_source_page_missing")
+                try:
+                    render_debug = self.renderer(
+                        source_page=source_page,
+                        destination=corrected_page,
+                        page=page,
+                        item=item,
+                        candidate=candidate,
+                    )
+                    self._heartbeat_reconstruction_worker(worker)
+                except ReconstructionError:
+                    raise
+                except Exception:
+                    raise ReconstructionError("reconstruction_render_failed") from None
+                if not corrected_page.is_file():
+                    raise ReconstructionError("reconstruction_render_failed")
+                rebuilt_pages = self._rebuilt_page_order(
+                    pages,
+                    _page_number(page),
+                    corrected_page,
+                    page_snapshots,
+                    page_provenance,
+                )
+                pdf_path = temp_root / "artifact.pdf"
+                try:
+                    self.pdf_builder(rebuilt_pages, str(pdf_path))
+                    self._heartbeat_reconstruction_worker(worker)
+                except ReconstructionError:
+                    raise
+                except Exception:
+                    raise ReconstructionError("reconstruction_pdf_failed") from None
+                if not pdf_path.is_file():
+                    raise ReconstructionError("reconstruction_pdf_failed")
+                quality_pages = self._quality_pages(
+                    pages,
+                    page,
+                    item,
+                    candidate,
+                    corrected_page,
+                    render_debug,
+                    page_provenance,
+                )
+                physical_quality = self._validate_physical_quality(
+                    quality_pages,
+                    pdf_path=pdf_path,
+                    expected_page_count=len(quality_pages),
+                )
+                self._heartbeat_reconstruction_worker(worker)
+                artifact_sha256, artifact_size = sha256_of_file(pdf_path)
+                try:
+                    quality = self.quality_builder(
+                        run_id=run_id,
+                        artifact_sha256=artifact_sha256,
+                        artifact_size_bytes=artifact_size,
+                        pages=quality_pages,
+                        source={
+                            "source_url": source["job"].get("source_url") or "",
+                            "pdf_path": str(final_root / "artifact.pdf"),
+                            "expected_page_count": len(quality_pages),
+                            "physical_quality": physical_quality,
+                        },
+                    )
+                    self._heartbeat_reconstruction_worker(worker)
+                except ReconstructionError:
+                    raise
+                except Exception:
+                    raise ReconstructionError("reconstruction_quality_failed") from None
+                self._require_quality_pass(
+                    quality,
                     run_id=run_id,
                     artifact_sha256=artifact_sha256,
-                    artifact_size_bytes=artifact_size,
-                    pages=quality_pages,
-                    source={
-                        "source_url": source["job"].get("source_url") or "",
-                        "pdf_path": str(final_root / "artifact.pdf"),
-                        "expected_page_count": len(quality_pages),
-                        "physical_quality": physical_quality,
-                    },
+                    artifact_size=artifact_size,
                 )
-            except ReconstructionError:
-                raise
-            except Exception:
-                raise ReconstructionError("reconstruction_quality_failed") from None
-            self._require_quality_pass(
-                quality,
-                run_id=run_id,
-                artifact_sha256=artifact_sha256,
-                artifact_size=artifact_size,
-            )
-            self._ensure_source_current(source, source_pdf_sha)
-            self._ensure_page_provenance_current(page_provenance)
-            atomic_write_json(temp_root / "quality_report.json", quality)
-            manifest = {
-                "schema_version": 1,
-                "status": JobStatus.FINISHED,
-                "reconstruction_status": "completed",
-                "job_id": child_id,
-                "reconstruction_id": reconstruction_id[:32],
-                "run_id": run_id,
-                "exit_code": 0,
-                "output_dir": str(final_root),
-                "source_job_id": source["job"]["id"],
-                "source_run_id": source["job"]["run_id"],
-                "source_pdf_path": str(source["pdf_path"]),
-                "source_pdf_sha256": source_pdf_sha,
-                "page_provenance_digest": page_provenance_digest,
-                "page_provenance": page_provenance,
-                "page": _page_number(page),
-                "region_id": str(item.get("region_id") or ""),
-                "candidate_sha256": _text_sha256(candidate),
-                "reason": str(request.get("reason") or "selective_reconstruction"),
-                "page_path": str(final_root / "pages" / corrected_page.name),
-                "pdf_path": str(final_root / "artifact.pdf"),
-                "quality_report_path": str(final_root / "quality_report.json"),
-                "artifact_sha256": artifact_sha256,
-                "artifact_size_bytes": artifact_size,
-                "created_at": self.clock(),
-            }
-            atomic_write_json(temp_root / "reconstruction_manifest.json", manifest)
-            if final_root.exists():
-                shutil.rmtree(final_root)
-            temp_root.rename(final_root)
-            promoted = True
-            self.job_store.update_fields(
-                child_id,
-                output_dir=str(final_root),
-                pdf_path=str(final_root / "artifact.pdf"),
-                quality_report_path=str(final_root / "quality_report.json"),
-                manifest_path=str(final_root / "reconstruction_manifest.json"),
-                exit_code=0,
-            )
-            child = self.job_store.get_job(child_id)
-            if child and child["status"] in {JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING}:
-                self.job_store.transition(
+                self._ensure_source_current(source, source_pdf_sha)
+                self._ensure_page_provenance_current(page_provenance)
+                atomic_write_json(temp_root / "quality_report.json", quality)
+                manifest = {
+                    "schema_version": 1,
+                    "status": JobStatus.FINISHED,
+                    "reconstruction_status": "completed",
+                    "job_id": child_id,
+                    "reconstruction_id": reconstruction_id[:32],
+                    "run_id": run_id,
+                    "exit_code": 0,
+                    "output_dir": str(final_root),
+                    "source_job_id": source["job"]["id"],
+                    "source_run_id": source["job"]["run_id"],
+                    "source_pdf_path": str(source["pdf_path"]),
+                    "source_pdf_sha256": source_pdf_sha,
+                    "page_provenance_digest": page_provenance_digest,
+                    "page_provenance": page_provenance,
+                    "page": _page_number(page),
+                    "region_id": str(item.get("region_id") or ""),
+                    "candidate_sha256": _text_sha256(candidate),
+                    "reason": str(request.get("reason") or "selective_reconstruction"),
+                    "page_path": str(final_root / "pages" / corrected_page.name),
+                    "pdf_path": str(final_root / "artifact.pdf"),
+                    "quality_report_path": str(final_root / "quality_report.json"),
+                    "artifact_sha256": artifact_sha256,
+                    "artifact_size_bytes": artifact_size,
+                    "created_at": self.clock(),
+                }
+                atomic_write_json(temp_root / "reconstruction_manifest.json", manifest)
+                if final_root.exists():
+                    shutil.rmtree(final_root)
+                temp_root.rename(final_root)
+                promoted = True
+                self.job_store.update_fields(
                     child_id,
-                    JobStatus.FINISHED,
-                    expected_worker=worker,
-                    stage="artifact_reconstruction_completed",
-                    reason_code="quality_passed",
+                    output_dir=str(final_root),
+                    pdf_path=str(final_root / "artifact.pdf"),
+                    quality_report_path=str(final_root / "quality_report.json"),
+                    manifest_path=str(final_root / "reconstruction_manifest.json"),
+                    exit_code=0,
                 )
-            return _read_json(final_root / "reconstruction_manifest.json", "reconstruction_manifest_invalid")
-        except Exception:
-            if temp_root.exists():
-                shutil.rmtree(temp_root, ignore_errors=True)
-            if promoted and final_root.exists():
-                shutil.rmtree(final_root, ignore_errors=True)
-            child = self.job_store.get_job(child_id)
-            if child and child["status"] in {JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING}:
-                try:
+                child = self.job_store.get_job(child_id)
+                if child and child["status"] in {JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING}:
                     self.job_store.transition(
                         child_id,
-                        JobStatus.FAILED,
+                        JobStatus.FINISHED,
                         expected_worker=worker,
-                        stage="artifact_reconstruction_failed",
-                        reason_code="reconstruction_failed",
-                        exit_code=1,
+                        stage="artifact_reconstruction_completed",
+                        reason_code="quality_passed",
                     )
-                except Exception:
-                    pass
-            raise
+                else:
+                    raise ReconstructionError("reconstruction_child_finalization_failed")
+                return _read_json(final_root / "reconstruction_manifest.json", "reconstruction_manifest_invalid")
+            except Exception:
+                if temp_root.exists():
+                    shutil.rmtree(temp_root, ignore_errors=True)
+                if promoted and final_root.exists():
+                    shutil.rmtree(final_root, ignore_errors=True)
+                child = self.job_store.get_job(child_id)
+                if child and child["status"] in {JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING}:
+                    try:
+                        self.job_store.transition(
+                            child_id,
+                            JobStatus.FAILED,
+                            expected_worker=worker,
+                            stage="artifact_reconstruction_failed",
+                            reason_code="reconstruction_failed",
+                            exit_code=1,
+                        )
+                    except Exception:
+                        pass
+                raise
+
+    def validate_completed_reconstruction_recovery(self, job_id: str) -> dict[str, Any]:
+        child_id = str(job_id or "").strip()
+        if len(child_id) != 32 or any(char not in "0123456789abcdef" for char in child_id):
+            raise ReconstructionError("reconstruction_recovery_job_missing")
+        job = self.job_store.get_job(child_id)
+        if not job:
+            raise ReconstructionError("reconstruction_recovery_job_missing")
+        config = job.get("configuration") or {}
+        if not isinstance(config, dict) or config.get("job_type") != "artifact_reconstruction":
+            raise ReconstructionError("reconstruction_recovery_wrong_job_type")
+        if job.get("status") == JobStatus.FINISHED:
+            recovery_status = "already_reconciled"
+        elif (
+            job.get("status") == JobStatus.INTERRUPTED
+            and str(job.get("interrupted_reason") or "") in _RECONSTRUCTION_RECOVERY_REASONS
+        ):
+            recovery_status = "eligible"
+        else:
+            raise ReconstructionError("reconstruction_recovery_status_not_allowed")
+
+        output_dir = Path(str(job.get("output_dir") or "")).resolve()
+        if not output_dir.is_dir() or not _is_within(output_dir, self.workspace_root):
+            raise ReconstructionError("reconstruction_recovery_path_missing")
+        manifest_path = _resolve_recorded_path(
+            job.get("manifest_path") or output_dir / "reconstruction_manifest.json",
+            output_dir,
+        )
+        if not _is_within(manifest_path, output_dir) or not manifest_path.is_file():
+            raise ReconstructionError("reconstruction_recovery_manifest_missing")
+        manifest = _read_json(manifest_path, "reconstruction_recovery_manifest_missing")
+        if manifest.get("status") != JobStatus.FINISHED or manifest.get("reconstruction_status") != "completed":
+            raise ReconstructionError("reconstruction_recovery_manifest_incomplete")
+        if (
+            manifest.get("job_id") != child_id
+            or manifest.get("reconstruction_id") != child_id
+            or str(manifest.get("run_id") or "") != str(job.get("run_id") or "")
+        ):
+            raise ReconstructionError("reconstruction_recovery_manifest_mismatch")
+
+        source_job_id = str(config.get("source_job_id") or "")
+        source_run_id = str(config.get("source_run_id") or "")
+        if (
+            str(manifest.get("source_job_id") or "") != source_job_id
+            or str(manifest.get("source_run_id") or "") != source_run_id
+        ):
+            raise ReconstructionError("reconstruction_recovery_source_mismatch")
+        source = self.job_store.get_job(source_job_id)
+        if not source or str(source.get("run_id") or "") != source_run_id:
+            raise ReconstructionError("reconstruction_recovery_source_mismatch")
+        if str(config.get("page_provenance_digest") or "") != str(manifest.get("page_provenance_digest") or ""):
+            raise ReconstructionError("reconstruction_recovery_provenance_mismatch")
+        if str(config.get("candidate_sha256") or "") != str(manifest.get("candidate_sha256") or ""):
+            raise ReconstructionError("reconstruction_recovery_candidate_mismatch")
+
+        pdf_path = _resolve_recorded_path(job.get("pdf_path"), output_dir)
+        manifest_pdf = _resolve_recorded_path(manifest.get("pdf_path"), output_dir)
+        if pdf_path != manifest_pdf or not _is_within(pdf_path, output_dir) or not pdf_path.is_file():
+            raise ReconstructionError("reconstruction_recovery_artifact_missing")
+        quality_path = _resolve_recorded_path(job.get("quality_report_path"), output_dir)
+        manifest_quality = _resolve_recorded_path(manifest.get("quality_report_path"), output_dir)
+        if (
+            quality_path != manifest_quality
+            or not _is_within(quality_path, output_dir)
+            or not quality_path.is_file()
+        ):
+            raise ReconstructionError("reconstruction_recovery_quality_missing")
+
+        artifact_sha256, artifact_size = sha256_of_file(pdf_path)
+        if (
+            str(manifest.get("artifact_sha256") or "").lower() != artifact_sha256
+            or int(manifest.get("artifact_size_bytes") or 0) != artifact_size
+        ):
+            raise ReconstructionError("reconstruction_recovery_artifact_mismatch")
+        if str(job.get("pdf_path") or "") and (job.get("exit_code") not in (0, None)):
+            raise ReconstructionError("reconstruction_recovery_status_not_allowed")
+
+        quality = _read_json(quality_path, "reconstruction_recovery_quality_missing")
+        summary = quality.get("summary") if isinstance(quality.get("summary"), dict) else {}
+        validation = summary.get("quality_validation")
+        validation = validation if isinstance(validation, dict) else quality.get("quality_validation")
+        if not isinstance(validation, dict):
+            raise ReconstructionError("reconstruction_recovery_quality_missing")
+        recorded_run = (
+            str(validation.get("run_id") or "").strip()
+            or str(summary.get("run_id") or "").strip()
+            or str(quality.get("run_id") or "").strip()
+        )
+        if recorded_run != str(job.get("run_id") or ""):
+            raise ReconstructionError("reconstruction_recovery_quality_mismatch")
+        quality_sha = (
+            str(validation.get("artifact_sha256") or "").strip().lower()
+            or str(summary.get("artifact_sha256") or "").strip().lower()
+        )
+        try:
+            quality_size = int(validation.get("artifact_size_bytes") or summary.get("artifact_size_bytes") or 0)
+        except (TypeError, ValueError):
+            quality_size = 0
+        if quality_sha != artifact_sha256 or quality_size != artifact_size:
+            raise ReconstructionError("reconstruction_recovery_quality_mismatch")
+        if validation.get("passed") is not True:
+            raise ReconstructionError("reconstruction_recovery_quality_invalid")
+        if str(validation.get("status") or "").strip().casefold() == "review_required":
+            raise ReconstructionError("reconstruction_recovery_quality_invalid")
+        if int(validation.get("manual_review_required_groups") or 0) != 0:
+            raise ReconstructionError("reconstruction_recovery_quality_invalid")
+        if int(validation.get("source_language_residual") or 0) != 0:
+            raise ReconstructionError("reconstruction_recovery_quality_invalid")
+        if int(validation.get("mixed_language_items") or 0) != 0:
+            raise ReconstructionError("reconstruction_recovery_quality_invalid")
+        if int(validation.get("visual_validation_failures") or 0) != 0:
+            raise ReconstructionError("reconstruction_recovery_quality_invalid")
+        if validation.get("invalid_or_blank_pages") not in ([], None):
+            raise ReconstructionError("reconstruction_recovery_quality_invalid")
+        try:
+            expected_pdf_pages = int(validation.get("expected_pdf_pages") or validation.get("pdf_pages") or 0)
+            recorded_pdf_pages = int(validation.get("pdf_pages") or 0)
+        except (TypeError, ValueError):
+            raise ReconstructionError("reconstruction_recovery_quality_invalid") from None
+        physical_pdf_pages = _count_pdf_pages(pdf_path)
+        if expected_pdf_pages <= 0 or recorded_pdf_pages != expected_pdf_pages or physical_pdf_pages != expected_pdf_pages:
+            raise ReconstructionError("reconstruction_recovery_physical_pdf_invalid")
+
+        return {
+            "recovery_status": recovery_status,
+            "job_id": child_id,
+            "run_id": str(job.get("run_id") or ""),
+            "status": job.get("status"),
+            "manifest_path": str(manifest_path),
+            "pdf_path": str(pdf_path),
+            "quality_report_path": str(quality_path),
+            "artifact_sha256": artifact_sha256,
+            "artifact_size_bytes": artifact_size,
+            "pdf_pages": physical_pdf_pages,
+        }
+
+    def reconcile_completed_reconstruction(self, job_id: str) -> dict[str, Any]:
+        evidence = self.validate_completed_reconstruction_recovery(job_id)
+        if evidence["recovery_status"] == "already_reconciled":
+            row = self.job_store.get_job(str(job_id))
+            return {**evidence, "status": JobStatus.FINISHED, "job": row}
+        try:
+            row = self.job_store.reconcile_artifact_reconstruction_finished(str(job_id))
+        except Exception:
+            raise ReconstructionError("reconstruction_recovery_transition_failed") from None
+        return {**evidence, "status": row.get("status"), "job": row}
 
     def _resolve_source(self, request: dict[str, Any]) -> dict[str, Any]:
         job_id = str(request.get("source_job_id") or "")

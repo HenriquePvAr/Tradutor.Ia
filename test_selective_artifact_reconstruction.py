@@ -133,6 +133,30 @@ class SpyQualityBuilder:
         }
 
 
+class OrphanReconcilingQualityBuilder(SpyQualityBuilder):
+    def __init__(self, store: JobStore, *, exclude_worker: str = "other-worker"):
+        super().__init__(passed=True)
+        self.store = store
+        self.exclude_worker = exclude_worker
+        self.interrupted: list[str] = []
+
+    def __call__(self, **kwargs) -> dict:
+        report = super().__call__(**kwargs)
+        for job in self.store.orphaned_in_flight_jobs(
+            exclude_worker=self.exclude_worker,
+            worker_stale_seconds=15.0,
+        ):
+            if job.get("operation_kind") == "artifact_reconstruction":
+                self.store.transition(
+                    job["id"],
+                    JobStatus.INTERRUPTED,
+                    interrupted_reason="orphaned_worker_gone",
+                    recoverable=1,
+                )
+                self.interrupted.append(job["id"])
+        return report
+
+
 class StaleOnSecondSourceReadStore:
     def __init__(self, inner: JobStore, source_job_id: str):
         self.inner = inner
@@ -362,6 +386,33 @@ def _request(job_id: str, candidate_hash: str, *, source_run_id: str = "source-r
         "candidate_sha256": candidate_hash,
         "reason": "synthetic false positive recovery",
     }
+
+
+def _completed_reconstruction_fixture(tmp_path: Path):
+    store, job_id, output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    result = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation={"visual_validation_passed": True}),
+    ).reconstruct(_request(job_id, candidate_hash))
+    child_id = result["reconstruction_id"]
+    store.update_fields(
+        child_id,
+        status=JobStatus.INTERRUPTED,
+        interrupted_reason="orphaned_worker_gone",
+        reason_code="interrupted",
+        recoverable=1,
+        finished_at=None,
+    )
+    return store, job_id, output, result
+
+
+def _load_reconstruction_quality(result: dict) -> dict:
+    return json.loads(Path(result["quality_report_path"]).read_text(encoding="utf-8"))
+
+
+def _write_reconstruction_quality(result: dict, report: dict) -> None:
+    Path(result["quality_report_path"]).write_text(json.dumps(report), encoding="utf-8")
 
 
 def test_service_imports_after_tdd_green(tmp_path):
@@ -763,6 +814,52 @@ def test_default_quality_builder_happy_path_uses_physical_pdf_and_visual_evidenc
     assert validation["visual_validation_failures"] == 0
 
 
+def test_reconstruction_worker_lease_prevents_false_orphan_during_success(tmp_path):
+    store, job_id, _output, candidate_hash = _fixture(tmp_path, include_page_identity=True)
+    quality = OrphanReconcilingQualityBuilder(store)
+    result = _service(
+        tmp_path,
+        store,
+        renderer=SpyRenderer(visual_validation={"visual_validation_passed": True}),
+        quality=quality,
+    ).reconstruct(_request(job_id, candidate_hash))
+
+    child = store.get_job(result["reconstruction_id"])
+    assert quality.interrupted == []
+    assert child["status"] == JobStatus.FINISHED
+    assert child["exit_code"] == 0
+    assert child["finished_at"] is not None
+    assert store.healthy_worker(stale_seconds=999999) is None
+
+
+def test_true_unleased_reconstruction_orphan_is_still_interrupted(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    job_id = store.create_job(
+        source_url="https://example.invalid",
+        output_dir=str(tmp_path / "out"),
+        command=["selective_artifact_reconstruction"],
+        configuration={"job_type": "artifact_reconstruction", "community_owner_id": "owner-a"},
+        operation_kind="artifact_reconstruction",
+    )
+    claimed = store.claim_next_job("missing-reconstruction-worker", 12345)
+    assert claimed and claimed["id"] == job_id
+    store.transition(job_id, JobStatus.STARTING, expected_worker="missing-reconstruction-worker")
+    store.transition(job_id, JobStatus.RUNNING, expected_worker="missing-reconstruction-worker")
+
+    orphans = store.orphaned_in_flight_jobs(exclude_worker="other-worker", worker_stale_seconds=15.0)
+    assert [job["id"] for job in orphans] == [job_id]
+    store.transition(
+        job_id,
+        JobStatus.INTERRUPTED,
+        interrupted_reason="orphaned_worker_gone",
+        recoverable=1,
+    )
+
+    child = store.get_job(job_id)
+    assert child["status"] == JobStatus.INTERRUPTED
+    assert child["interrupted_reason"] == "orphaned_worker_gone"
+
+
 def test_renderer_font_or_fit_failure_cleans_temp_and_does_not_promote(tmp_path):
     store, job_id, output, candidate_hash = _fixture(tmp_path)
     service = _service(tmp_path, store, renderer=SpyRenderer(fail=True, reason="font unavailable"))
@@ -793,6 +890,7 @@ def test_quality_hash_size_and_run_binding_are_required(tmp_path):
     with pytest.raises(Exception, match="reconstruction_quality_run_mismatch"):
         service.reconstruct(_request(job_id, candidate_hash))
 
+    store, job_id, _output, candidate_hash = _fixture(tmp_path / "bad-hash")
     bad_hash = SpyQualityBuilder(sha256="0" * 64)
     with pytest.raises(Exception, match="reconstruction_quality_artifact_mismatch"):
         _service(tmp_path, store, quality=bad_hash).reconstruct(_request(job_id, candidate_hash))
@@ -859,3 +957,166 @@ def test_publication_resolution_denies_historical_but_accepts_fresh_reconstructi
     assert resolved["source_job_id"] == result["reconstruction_id"]
     assert resolved["source_run_id"] == result["run_id"]
     assert resolved["pdf_sha256"] == result["artifact_sha256"]
+
+
+def test_safe_recovery_finalizes_completed_interrupted_reconstruction_without_rebuild(tmp_path):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    pdf_before = Path(result["pdf_path"]).read_bytes()
+
+    recovered = _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+    child = store.get_job(result["reconstruction_id"])
+    assert recovered["status"] == JobStatus.FINISHED
+    assert child["status"] == JobStatus.FINISHED
+    assert child["exit_code"] == 0
+    assert child["finished_at"] is not None
+    assert Path(result["pdf_path"]).read_bytes() == pdf_before
+
+
+def test_safe_recovery_is_idempotent_for_already_finished_reconstruction(tmp_path):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    service = _service(tmp_path, store)
+
+    first = service.reconcile_completed_reconstruction(result["reconstruction_id"])
+    second = service.reconcile_completed_reconstruction(result["reconstruction_id"])
+
+    assert first["status"] == JobStatus.FINISHED
+    assert second["status"] == JobStatus.FINISHED
+    assert second["recovery_status"] == "already_reconciled"
+
+
+def test_safe_recovery_makes_reconstruction_publication_lifecycle_eligible(tmp_path):
+    from community_api import ArtifactBindingError, CommunityApi
+    from community_auth import RequestPrincipal
+
+    store, _job_id, output, result = _completed_reconstruction_fixture(tmp_path)
+    api = CommunityApi(store, community_db_path=tmp_path / "community.sqlite3", output_root=output)
+    principal = RequestPrincipal("owner-a", True, auth_source="test")
+    try:
+        with pytest.raises(ArtifactBindingError, match="quality_gate_required"):
+            api._resolve_translation_job(result["reconstruction_id"], principal)
+
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+        resolved = api._resolve_translation_job(result["reconstruction_id"], principal)
+    finally:
+        api.close()
+
+    assert resolved["source_job_id"] == result["reconstruction_id"]
+    assert resolved["source_run_id"] == result["run_id"]
+    assert resolved["pdf_sha256"] == result["artifact_sha256"]
+
+
+@pytest.mark.parametrize("status", [JobStatus.CANCELLED, JobStatus.FAILED])
+def test_safe_recovery_denies_cancelled_or_failed_reconstruction(tmp_path, status):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    store.update_fields(result["reconstruction_id"], status=status)
+
+    with pytest.raises(Exception, match="reconstruction_recovery_status_not_allowed"):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+    assert store.get_job(result["reconstruction_id"])["status"] == status
+
+
+def test_safe_recovery_denies_wrong_job_type_even_with_evidence(tmp_path):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    child = store.get_job(result["reconstruction_id"])
+    config = dict(child["configuration"])
+    config["job_type"] = "translation"
+    store.update_fields(result["reconstruction_id"], configuration_json=json.dumps(config))
+
+    with pytest.raises(Exception, match="reconstruction_recovery_wrong_job_type"):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+
+@pytest.mark.parametrize("reason", ["worker_stop", "", "stale_heartbeat"])
+def test_safe_recovery_denies_untrusted_interrupted_reason(tmp_path, reason):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    store.update_fields(result["reconstruction_id"], interrupted_reason=reason)
+
+    with pytest.raises(Exception, match="reconstruction_recovery_status_not_allowed"):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+
+def test_safe_recovery_denies_exit_code_zero_without_completed_evidence(tmp_path):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    Path(result["quality_report_path"]).unlink()
+
+    with pytest.raises(Exception, match="reconstruction_recovery_quality_missing"):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+
+@pytest.mark.parametrize("manifest_status,reconstruction_status", [
+    ("running", "completed"),
+    (JobStatus.FINISHED, "failed"),
+])
+def test_safe_recovery_denies_manifest_not_completed(tmp_path, manifest_status, reconstruction_status):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    manifest_path = Path(result["output_dir"]) / "reconstruction_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["status"] = manifest_status
+    manifest["reconstruction_status"] = reconstruction_status
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(Exception, match="reconstruction_recovery_manifest_incomplete"):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+
+def test_safe_recovery_denies_manifest_or_quality_run_mismatch(tmp_path):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    quality = _load_reconstruction_quality(result)
+    quality["summary"]["run_id"] = "stale-run"
+    quality["summary"]["quality_validation"]["run_id"] = "stale-run"
+    _write_reconstruction_quality(result, quality)
+
+    with pytest.raises(Exception, match="reconstruction_recovery_quality_mismatch"):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+
+def test_safe_recovery_denies_source_binding_mismatch(tmp_path):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    manifest_path = Path(result["output_dir"]) / "reconstruction_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source_run_id"] = "stale-source-run"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(Exception, match="reconstruction_recovery_source_mismatch"):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+
+@pytest.mark.parametrize("field,value,expected", [
+    ("artifact_sha256", "0" * 64, "reconstruction_recovery_artifact_mismatch"),
+    ("artifact_size_bytes", 1, "reconstruction_recovery_artifact_mismatch"),
+])
+def test_safe_recovery_denies_manifest_identity_mismatch(tmp_path, field, value, expected):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    manifest_path = Path(result["output_dir"]) / "reconstruction_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[field] = value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(Exception, match=expected):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+
+@pytest.mark.parametrize("quality_mutation,expected", [
+    (lambda q: q["summary"]["quality_validation"].update({"passed": False}), "reconstruction_recovery_quality_invalid"),
+    (lambda q: q["summary"]["quality_validation"].update({"manual_review_required_groups": 1}), "reconstruction_recovery_quality_invalid"),
+    (lambda q: q["summary"]["quality_validation"].update({"artifact_sha256": "0" * 64}), "reconstruction_recovery_quality_mismatch"),
+    (lambda q: q["summary"]["quality_validation"].update({"artifact_size_bytes": 1}), "reconstruction_recovery_quality_mismatch"),
+])
+def test_safe_recovery_denies_invalid_quality_evidence(tmp_path, quality_mutation, expected):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    quality = _load_reconstruction_quality(result)
+    quality_mutation(quality)
+    _write_reconstruction_quality(result, quality)
+
+    with pytest.raises(Exception, match=expected):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])
+
+
+def test_safe_recovery_denies_invalid_physical_pdf(tmp_path):
+    store, _job_id, _output, result = _completed_reconstruction_fixture(tmp_path)
+    Path(result["pdf_path"]).write_bytes(b"not a pdf")
+
+    with pytest.raises(Exception, match="reconstruction_recovery_artifact_mismatch"):
+        _service(tmp_path, store).reconcile_completed_reconstruction(result["reconstruction_id"])

@@ -1231,6 +1231,49 @@ class JobStore:
             raise TransitionError("community publish changed during terminal reconciliation")
         return self.get_job(job_id)  # type: ignore[return-value]
 
+    def reconcile_artifact_reconstruction_finished(self, job_id: str) -> dict[str, Any]:
+        """Close an interrupted artifact reconstruction after external evidence validated.
+
+        Validation of manifest, artifact bytes, quality, and source binding intentionally
+        lives in the reconstruction service.  This method is only the guarded lifecycle
+        write: it is scoped to artifact_reconstruction rows and preserves the original
+        interrupted_reason as audit trail.
+        """
+        row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise TransitionError(f"unknown job: {job_id}")
+        try:
+            config = json.loads(row["configuration_json"] or "{}")
+        except (TypeError, ValueError):
+            config = {}
+        if not isinstance(config, dict) or config.get("job_type") != "artifact_reconstruction":
+            raise TransitionError("job is not an artifact reconstruction")
+        if row["status"] == JobStatus.FINISHED:
+            return self._row_to_dict(row)  # type: ignore[return-value]
+        if row["status"] != JobStatus.INTERRUPTED:
+            raise TransitionError(
+                f"cannot reconcile {row['status']} artifact reconstruction to finished"
+            )
+        now = time.time()
+        cur = self._conn.execute(
+            "UPDATE jobs SET status=?,stage=?,exit_code=?,finished_at=?,updated_at=?,"
+            "reason_code=?,recoverable=? WHERE id=? AND status=?",
+            (
+                JobStatus.FINISHED,
+                "artifact_reconstruction_completed",
+                0,
+                now,
+                now,
+                "quality_passed",
+                0,
+                job_id,
+                JobStatus.INTERRUPTED,
+            ),
+        )
+        if cur.rowcount != 1:
+            raise TransitionError("artifact reconstruction changed during terminal reconciliation")
+        return self.get_job(job_id)  # type: ignore[return-value]
+
     # ---- worker registry ----------------------------------------------------
     def register_worker(self, worker_id: str, pid: int, create_time: float | None = None) -> None:
         now = time.time()
