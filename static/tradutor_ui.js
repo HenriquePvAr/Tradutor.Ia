@@ -5015,7 +5015,9 @@
   function renderHistoryCard(record) {
     const title = record.chapter_name || record.slug || 'Capítulo';
     const engine = record.mode === 'fast' ? 'rapid' : 'paddle';
-    const statusLabel = record.review_status === 'completed' ? 'revisão concluída' : (runStatusLabels[record.status] || record.status || 'local');
+    const statusLabel = record.operation_kind === 'artifact_reconstruction'
+      ? (record.operation_label || 'Reconstrução corrigida')
+      : record.review_status === 'completed' ? 'revisão concluída' : (runStatusLabels[record.status] || record.status || 'local');
     const gateValue = boolish(record.quality_gate);
     const gate = gateValue === true ? 'gate aprovado' : gateValue === false ? 'gate reprovado' : 'gate pendente';
     const provenance = record.output_verification === 'legacy_unverified' ? 'origem não verificada' : record.output_verification === 'e2e_evidence' ? 'evidência E2E' : record.output_verification === 'manifest_verified' ? 'manifest verificado' : 'origem não informada';

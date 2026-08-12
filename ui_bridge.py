@@ -672,6 +672,8 @@ class UiBridge:
             "operation_label": (
                 "Rerun de pendências"
                 if str(job.get("operation_kind") or "") == "review_rerun"
+                else "Reconstrução corrigida"
+                if str(job.get("operation_kind") or "") == "artifact_reconstruction"
                 else "Tradução de capítulo"
             ),
             "target_region_count": len(config.get("targets") or []),
@@ -743,6 +745,8 @@ class UiBridge:
             "cancellation_completed_at": _epoch_to_iso(job.get("cancellation_completed_at")),
             **result_metrics,
         }
+        if record["operation_kind"] == "artifact_reconstruction":
+            record["manifest_path"] = job.get("manifest_path") or ""
         if str(job.get("operation_kind") or "") == "review_rerun":
             record.update(self._review_rerun_public_state(job, config))
         output_dir = Path(str(job.get("output_dir") or ""))
@@ -763,6 +767,14 @@ class UiBridge:
                 str(manifest.get("pdf_sha256") or "")
                 or history_store._sha256_file(pdf_path)
             )
+        elif record.get("pdf_path"):
+            try:
+                pdf_path = Path(str(record.get("pdf_path") or "")).resolve()
+                pdf_path.relative_to(confined_output)
+                pdf_path.relative_to(output_root)
+                record["pdf_sha256"] = history_store._sha256_file(pdf_path)
+            except (OSError, ValueError):
+                pass
         return record
 
     @staticmethod
@@ -772,10 +784,13 @@ class UiBridge:
         job_id = str(job.get("id") or "")
         run_id = str(job.get("run_id") or "")
         job_manifest = output_dir / "job_manifest.json"
+        reconstruction_manifest = output_dir / "reconstruction_manifest.json"
         run_manifest = output_dir / "run_manifest.json"
         try:
-            if job_manifest.is_file():
-                payload = json.loads(job_manifest.read_text(encoding="utf-8"))
+            for manifest_path in (job_manifest, reconstruction_manifest):
+                if not manifest_path.is_file():
+                    continue
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
                 if str(payload.get("job_id") or "") != job_id:
                     return False
                 manifest_run = str(payload.get("run_id") or "")
@@ -800,18 +815,60 @@ class UiBridge:
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            report = {}
+            report = self._load_quality_report_metrics_document(job, output_dir)
         if not isinstance(report, dict):
             return {}
         quality = report.get("quality_validation")
+        if not isinstance(quality, dict):
+            summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+            quality = summary.get("quality_validation")
         quality = quality if isinstance(quality, dict) else {}
+        try:
+            manual_review_count = int(quality.get("manual_review_required_groups") or 0)
+        except (TypeError, ValueError):
+            manual_review_count = 0
         return {
             "pages_processed": int(
                 report.get("processed_images") or report.get("total_images") or 0),
             "groups_translated": int(report.get("groups_translated") or 0),
+            "manual_review_count": manual_review_count,
             "errors": int(report.get("pages_with_error") or 0),
             "quality_gate": quality.get("passed"),
         }
+
+    @staticmethod
+    def _load_quality_report_metrics_document(
+        job: dict[str, Any],
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        candidates: list[Path] = []
+        recorded = str(job.get("quality_report_path") or "").strip()
+        if recorded:
+            candidates.append(Path(recorded))
+        candidates.append(output_dir / "quality_report.json")
+        seen: set[Path] = set()
+        for candidate in candidates:
+            candidate = candidate if candidate.is_absolute() else output_dir / candidate
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                continue
+            try:
+                candidate.relative_to(output_dir.resolve())
+            except (OSError, ValueError):
+                continue
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if not candidate.is_file():
+                continue
+            try:
+                document = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(document, dict):
+                return document
+        return {}
 
     @staticmethod
     def _quality_review_reason(item: dict[str, Any], page: dict[str, Any]) -> str:
@@ -3438,6 +3495,56 @@ class UiBridge:
         job_type = str((job.get("configuration") or {}).get("job_type") or "translation")
         return job_type == "translation"
 
+    def _is_publishable_reconstruction_history_job(
+        self,
+        job: dict[str, Any] | None,
+        *,
+        owner_id: str,
+    ) -> bool:
+        if not job:
+            return False
+        if str(job.get("operation_kind") or "") != "artifact_reconstruction":
+            return False
+        config = job.get("configuration") or {}
+        if not isinstance(config, dict) or config.get("job_type") != "artifact_reconstruction":
+            return False
+        if str(config.get("community_owner_id") or "") != str(owner_id or ""):
+            return False
+        parent_job_id = str(job.get("parent_job_id") or "")
+        if not parent_job_id or str(config.get("source_job_id") or "") != parent_job_id:
+            return False
+        parent = self.store.get_job(parent_job_id)
+        if not parent:
+            return False
+        parent_config = parent.get("configuration") or {}
+        if (
+            not isinstance(parent_config, dict)
+            or str(parent_config.get("job_type") or "translation") != "translation"
+        ):
+            return False
+        if str(parent_config.get("community_owner_id") or "") != str(owner_id or ""):
+            return False
+        source_run = str(config.get("source_run_id") or "")
+        if source_run and source_run != str(parent.get("run_id") or ""):
+            return False
+        current = self.store.latest_artifact_reconstruction(parent_job_id)
+        if not current or str(current.get("id") or "") != str(job.get("id") or ""):
+            return False
+        if job.get("status") != JobStatus.FINISHED:
+            return False
+        try:
+            if int(job.get("exit_code")) != 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+        metrics = self._current_job_result_metrics(job)
+        if metrics.get("quality_gate") is not True:
+            return False
+        try:
+            return int(metrics.get("manual_review_count") or 0) <= 0
+        except (TypeError, ValueError):
+            return False
+
     @staticmethod
     def _is_queue_operation(job: dict[str, Any] | None) -> bool:
         if not job:
@@ -3576,7 +3683,11 @@ class UiBridge:
         for job in self.store.list_jobs_for_owner(
             owner_id, statuses=list(JobStatus.TERMINAL), limit=None
         ):
-            if not self._is_translation_job(job):
+            if not (
+                self._is_translation_job(job)
+                or self._is_publishable_reconstruction_history_job(
+                    job, owner_id=owner_id)
+            ):
                 continue
             record = self._job_record(job)
             if record:

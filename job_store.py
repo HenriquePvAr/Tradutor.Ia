@@ -558,6 +558,15 @@ class JobStore:
         ).fetchone()
         return self._row_to_dict(row)
 
+    def latest_artifact_reconstruction(self, parent_job_id: str) -> dict[str, Any] | None:
+        """Return the newest reconstruction child for a source job lifecycle."""
+        row = self._conn.execute(
+            "SELECT * FROM jobs WHERE parent_job_id=? AND operation_kind='artifact_reconstruction' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (str(parent_job_id or ""),),
+        ).fetchone()
+        return self._row_to_dict(row)
+
     def queue_position(self, job_id: str) -> int | None:
         """One-based position for a queued job, or ``None`` once it leaves the queue."""
         row = self._conn.execute(
