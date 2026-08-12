@@ -345,6 +345,26 @@ def test_history_publish_materializes_canonical_identity_before_local_attempt(ha
     assert metadata.reserve_calls == 1
 
 
+def test_materialized_canonical_identity_survives_worker_configuration_roundtrip(harness):
+    job_id, _ = _finished_translation_job(
+        harness.jobs,
+        harness.output_root,
+        canonical_identity=_canonical_identity(),
+    )
+
+    publish = harness.publish(job_id)
+    materializer = harness.api._canonical_identity_materializer
+    assert isinstance(materializer, FakeCanonicalSocialIdentityMaterializer)
+    chapter_id = next(iter(materializer.chapter_mappings.values()))["chapter_id"]
+
+    job = harness.jobs.get_job(publish["job_id"])
+    assert job is not None
+    assert job["configuration"]["canonical_publication_id"] == chapter_id
+    assert job["configuration"]["canonical_publication_id"] != publish["post_id"]
+    assert job["configuration"]["canonical_publication_id"] != publish["file_id"]
+    assert job["configuration"]["canonical_publication_id"] != job_id
+
+
 def test_history_materialization_backend_failure_creates_no_local_attempt(harness):
     harness.api._canonical_identity_materializer = FakeCanonicalSocialIdentityMaterializer(fail=True)
     job_id, _ = _finished_translation_job(
@@ -470,6 +490,110 @@ def test_concurrent_equivalent_publish_is_safe(harness):
     harness.run_publish_job(results[0]["job_id"], provider, metadata)
     assert provider.create_session_calls == 1
     assert len(harness.api.store.list_user_posts(OWNER.user_id)) == 1
+
+
+def test_failed_pre_drive_retry_creates_isolated_attempt_and_preserves_old_rows(harness):
+    provider = FakeStorageProvider()
+    metadata = FakePublicationMetadataRepository(fail_reserve=True)
+    job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
+    chapter_id = "11111111-1111-4111-8111-111111111111"
+
+    first = harness.publish(job_id, canonical_publication_id=chapter_id)
+    harness.run_publish_job(first["job_id"], provider, metadata)
+    old_post_before = harness.api.store.get_post(first["post_id"])
+    old_file_before = harness.api.store.get_file(first["file_id"])
+    assert old_post_before["status"] == PostStatus.FAILED
+    assert old_file_before["upload_status"] == FileStatus.FAILED
+    assert old_file_before["bytes_uploaded"] == 0
+    assert not old_file_before["storage_file_id"]
+    assert not old_file_before["session_ref"]
+
+    retry = harness.publish(job_id, canonical_publication_id=chapter_id)
+
+    old_post_after = harness.api.store.get_post(first["post_id"])
+    old_file_after = harness.api.store.get_file(first["file_id"])
+    assert retry["post_id"] != first["post_id"]
+    assert retry["file_id"] != first["file_id"]
+    assert retry["job_id"] != first["job_id"]
+    for field in ("id", "status", "published_at", "updated_at"):
+        assert old_post_after[field] == old_post_before[field]
+    for field in (
+        "id",
+        "upload_status",
+        "bytes_uploaded",
+        "storage_file_id",
+        "session_ref",
+        "upload_job_id",
+        "updated_at",
+    ):
+        assert old_file_after[field] == old_file_before[field]
+
+
+def test_failed_pre_drive_retry_failure_does_not_mutate_old_attempt(harness):
+    provider = FakeStorageProvider()
+    metadata = FakePublicationMetadataRepository(fail_reserve=True)
+    job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
+    chapter_id = "11111111-1111-4111-8111-111111111111"
+
+    first = harness.publish(job_id, canonical_publication_id=chapter_id)
+    harness.run_publish_job(first["job_id"], provider, metadata)
+    old_post_before = harness.api.store.get_post(first["post_id"])
+    old_file_before = harness.api.store.get_file(first["file_id"])
+
+    retry = harness.publish(job_id, canonical_publication_id=chapter_id)
+    harness.run_publish_job(retry["job_id"], provider, metadata)
+
+    assert harness.api.store.get_post(retry["post_id"])["status"] == PostStatus.FAILED
+    assert harness.api.store.get_file(retry["file_id"])["upload_status"] == FileStatus.FAILED
+    old_post_after = harness.api.store.get_post(first["post_id"])
+    old_file_after = harness.api.store.get_file(first["file_id"])
+    for field in ("id", "status", "published_at", "updated_at"):
+        assert old_post_after[field] == old_post_before[field]
+    for field in (
+        "id",
+        "upload_status",
+        "bytes_uploaded",
+        "storage_file_id",
+        "session_ref",
+        "upload_job_id",
+        "updated_at",
+    ):
+        assert old_file_after[field] == old_file_before[field]
+
+
+def test_failed_pre_drive_retry_success_uses_new_rows_without_mutating_old(harness):
+    provider = FakeStorageProvider()
+    failing_metadata = FakePublicationMetadataRepository(fail_reserve=True)
+    job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
+    chapter_id = "11111111-1111-4111-8111-111111111111"
+
+    first = harness.publish(job_id, canonical_publication_id=chapter_id)
+    harness.run_publish_job(first["job_id"], provider, failing_metadata)
+    old_post_before = harness.api.store.get_post(first["post_id"])
+    old_file_before = harness.api.store.get_file(first["file_id"])
+
+    succeeding_metadata = FakePublicationMetadataRepository()
+    retry = harness.publish(job_id, canonical_publication_id=chapter_id)
+    harness.run_publish_job(retry["job_id"], provider, succeeding_metadata)
+
+    assert retry["post_id"] != first["post_id"]
+    assert retry["file_id"] != first["file_id"]
+    assert harness.api.store.get_post(retry["post_id"])["status"] == PostStatus.PUBLISHED
+    assert harness.api.store.get_file(retry["file_id"])["upload_status"] == FileStatus.VERIFIED
+    old_post_after = harness.api.store.get_post(first["post_id"])
+    old_file_after = harness.api.store.get_file(first["file_id"])
+    for field in ("id", "status", "published_at", "updated_at"):
+        assert old_post_after[field] == old_post_before[field]
+    for field in (
+        "id",
+        "upload_status",
+        "bytes_uploaded",
+        "storage_file_id",
+        "session_ref",
+        "upload_job_id",
+        "updated_at",
+    ):
+        assert old_file_after[field] == old_file_before[field]
 
 
 def test_drive_failure_does_not_mark_published(harness):

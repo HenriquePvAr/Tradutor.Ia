@@ -381,7 +381,14 @@ class CommunityStore:
         return post_id
 
     def create_or_get_source_post(self, **fields: Any) -> tuple[str, bool]:
-        """Atomically claim one post per owner/source job for idempotent publishing."""
+        """Atomically pick the reusable post for a source publish, or create a new attempt.
+
+        The source/reconstruction identity is not itself a publish attempt.  Active,
+        completed, blocked, draft, or post-Drive ambiguous rows remain authoritative
+        and are reused so duplicate clicks and recovery stay bounded.  A terminal
+        failed pre-Drive attempt is immutable history: a later explicit submit gets a
+        fresh post/file/job lifecycle instead of reviving that row.
+        """
         user_id = str(fields.get("user_id") or "")
         source_job_id = str(fields.get("source_job_id") or "")
         if not source_job_id:
@@ -389,13 +396,19 @@ class CommunityStore:
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             existing = self._conn.execute(
-                "SELECT id FROM community_posts WHERE user_id=? AND source_job_id=? "
-                "ORDER BY created_at ASC, rowid ASC LIMIT 1",
+                "SELECT p.id,p.status,f.upload_status,f.bytes_uploaded,f.storage_file_id,"
+                "f.session_ref FROM community_posts p "
+                "LEFT JOIN community_files f ON f.id=("
+                "SELECT latest.id FROM community_files latest WHERE latest.post_id=p.id "
+                "ORDER BY latest.created_at DESC,latest.rowid DESC LIMIT 1) "
+                "WHERE p.user_id=? AND p.source_job_id=? "
+                "ORDER BY p.created_at DESC,p.rowid DESC",
                 (user_id, source_job_id),
-            ).fetchone()
-            if existing:
-                self._conn.execute("COMMIT")
-                return str(existing["id"]), False
+            ).fetchall()
+            for row in existing:
+                if self._source_post_reusable_for_publish(row):
+                    self._conn.execute("COMMIT")
+                    return str(row["id"]), False
             post_id = self.create_post(**fields)
             self._conn.execute("COMMIT")
             return post_id, True
@@ -403,6 +416,20 @@ class CommunityStore:
             if self._conn.in_transaction:
                 self._conn.execute("ROLLBACK")
             raise
+
+    @staticmethod
+    def _source_post_reusable_for_publish(row: sqlite3.Row) -> bool:
+        status = str(row["status"] or "")
+        if status == PostStatus.FAILED:
+            if str(row["storage_file_id"] or "") or str(row["session_ref"] or ""):
+                return True
+            try:
+                if int(row["bytes_uploaded"] or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                return True
+            return False
+        return True
 
     def get_post(self, post_id: str) -> dict[str, Any] | None:
         return self._with_decoded_tags(self._row(self._conn.execute(
@@ -1161,6 +1188,16 @@ class CommunityStore:
         if existing and existing["upload_status"] in {
             FileStatus.DELETING, FileStatus.DELETED,
         }:
+            return {"outcome": "unavailable"}, existing
+        if existing and existing["upload_status"] == FileStatus.FAILED:
+            if post["status"] != PostStatus.FAILED:
+                return {"outcome": "conflict"}, existing
+            if (
+                str(existing.get("storage_file_id") or "")
+                or str(existing.get("session_ref") or "")
+                or int(existing.get("bytes_uploaded") or 0) > 0
+            ):
+                return None, existing
             return {"outcome": "unavailable"}, existing
         return None, existing
 

@@ -1238,7 +1238,7 @@ def test_repeated_completed_publish_and_republish_reuse_verified_file(harness):
     assert [job["id"] for job in publish_jobs] == [first["job_id"]]
 
 
-def test_failed_publish_retries_same_file_with_new_linked_job(harness):
+def test_failed_pre_drive_publish_retry_creates_new_attempt_without_mutating_old(harness):
     source_job_id, _ = harness.create_finished_translation_job(
         owner="user-b",
         name="failed-retry",
@@ -1259,14 +1259,18 @@ def test_failed_publish_retries_same_file_with_new_linked_job(harness):
     )
     harness.jobs.transition(
         first["job_id"], JobStatus.FAILED, expected_worker="publisher")
+    old_post = harness.api.store.get_post(first["post_id"])
+    old_file = harness.api.store.get_file(first["file_id"])
 
     retried = harness.api.publish(payload, principal=principal)
-    assert retried["post_id"] == first["post_id"]
-    assert retried["file_id"] == first["file_id"]
+    assert retried["post_id"] != first["post_id"]
+    assert retried["file_id"] != first["file_id"]
     assert retried["job_id"] != first["job_id"]
-    file = harness.api.store.get_file(first["file_id"])
-    assert file["upload_status"] == FileStatus.PENDING
-    assert file["upload_job_id"] == retried["job_id"]
+    assert harness.api.store.get_post(first["post_id"]) == old_post
+    assert harness.api.store.get_file(first["file_id"]) == old_file
+    new_file = harness.api.store.get_file(retried["file_id"])
+    assert new_file["upload_status"] == FileStatus.PENDING
+    assert new_file["upload_job_id"] == retried["job_id"]
     assert harness.jobs.get_job(retried["job_id"])["status"] == JobStatus.QUEUED
 
 
