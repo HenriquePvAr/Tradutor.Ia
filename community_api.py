@@ -817,6 +817,23 @@ class CommunityApi:
                     raise ArtifactBindingError("artifact_has_no_owner", status_code=422)
                 if owner_id != principal.user_id:
                     raise ArtifactBindingError("artifact_not_owned", status_code=403)
+            if config.get("job_type") == "artifact_reconstruction":
+                parent_job_id = str(job.get("parent_job_id") or "")
+                if not parent_job_id or str(config.get("source_job_id") or "") != parent_job_id:
+                    raise ArtifactBindingError("artifact_source_mismatch", status_code=422)
+                parent = self.service.job_store.get_job(parent_job_id)
+                parent_config = parent.get("configuration") if parent else {}
+                if (
+                    not parent
+                    or not isinstance(parent_config, dict)
+                    or str(parent_config.get("job_type") or "translation") != "translation"
+                ):
+                    raise ArtifactBindingError("artifact_source_mismatch", status_code=422)
+                if str(parent_config.get("community_owner_id") or "") != owner_id:
+                    raise ArtifactBindingError("artifact_source_mismatch", status_code=422)
+                source_run = str(config.get("source_run_id") or "")
+                if source_run and source_run != str(parent.get("run_id") or ""):
+                    raise ArtifactBindingError("artifact_source_mismatch", status_code=422)
             if job.get("status") != JobStatus.FINISHED:
                 raise ArtifactBindingError("quality_gate_required", status_code=422)
             if int(job.get("exit_code")) != 0:

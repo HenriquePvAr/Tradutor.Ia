@@ -4604,7 +4604,8 @@
     const terminal = terminalRunStatuses.has(status);
     const publishableTerminal = ['finished', 'review_completed'].includes(status);
     const hasPdf = Boolean(record.pdf_path);
-    const manifest = record.output_verification === 'manifest_verified' || Boolean(record.manifest_path);
+    const manifest = record.output_verification === 'manifest_verified'
+      || record.publication_manifest_ready === true;
     const authenticated = isCanonicalCommunityAuthenticated();
     const technicalGatePassed = boolish(record.quality_gate) === true;
     const reviewCompleted = record.review_status === 'completed' || record.review_confirmed === true;

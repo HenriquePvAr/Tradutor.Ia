@@ -562,10 +562,19 @@ class JobStore:
         """Return the newest reconstruction child for a source job lifecycle."""
         row = self._conn.execute(
             "SELECT * FROM jobs WHERE parent_job_id=? AND operation_kind='artifact_reconstruction' "
-            "ORDER BY created_at DESC LIMIT 1",
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
             (str(parent_job_id or ""),),
         ).fetchone()
         return self._row_to_dict(row)
+
+    def artifact_reconstructions_for_parent(self, parent_job_id: str) -> list[dict[str, Any]]:
+        """Return reconstruction children newest-first with deterministic tie-breaking."""
+        rows = self._conn.execute(
+            "SELECT * FROM jobs WHERE parent_job_id=? AND operation_kind='artifact_reconstruction' "
+            "ORDER BY created_at DESC, id DESC",
+            (str(parent_job_id or ""),),
+        ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
 
     def queue_position(self, job_id: str) -> int | None:
         """One-based position for a queued job, or ``None`` once it leaves the queue."""

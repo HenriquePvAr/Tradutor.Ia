@@ -746,7 +746,9 @@ class UiBridge:
             **result_metrics,
         }
         if record["operation_kind"] == "artifact_reconstruction":
-            record["manifest_path"] = job.get("manifest_path") or ""
+            record["publication_manifest_ready"] = (
+                self._reconstruction_publication_manifest_ready(job)
+            )
         if str(job.get("operation_kind") or "") == "review_rerun":
             record.update(self._review_rerun_public_state(job, config))
         output_dir = Path(str(job.get("output_dir") or ""))
@@ -803,6 +805,41 @@ class UiBridge:
                 return bool(run_id and manifest_run and manifest_run == run_id)
         except (OSError, ValueError, TypeError):
             return False
+
+    def _reconstruction_publication_manifest_ready(self, job: dict[str, Any]) -> bool:
+        """Server-side presentation capability for reconstruction publication UX."""
+
+        if str(job.get("operation_kind") or "") != "artifact_reconstruction":
+            return False
+        output_dir = Path(str(job.get("output_dir") or ""))
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+        try:
+            confined_output = output_dir.resolve()
+            confined_output.relative_to(output_root)
+        except (OSError, ValueError):
+            return False
+        job_id = str(job.get("id") or "")
+        run_id = str(job.get("run_id") or "")
+        if not job_id or not run_id:
+            return False
+        for manifest_path in (
+            confined_output / "job_manifest.json",
+            confined_output / "reconstruction_manifest.json",
+        ):
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(manifest, dict):
+                continue
+            if str(manifest.get("job_id") or "") != job_id:
+                continue
+            manifest_run = str(manifest.get("run_id") or "")
+            if manifest_run and manifest_run != run_id:
+                continue
+            return True
         return False
 
     def _current_job_result_metrics(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -3495,7 +3532,7 @@ class UiBridge:
         job_type = str((job.get("configuration") or {}).get("job_type") or "translation")
         return job_type == "translation"
 
-    def _is_publishable_reconstruction_history_job(
+    def _is_structurally_publishable_reconstruction_history_job(
         self,
         job: dict[str, Any] | None,
         *,
@@ -3527,15 +3564,14 @@ class UiBridge:
         source_run = str(config.get("source_run_id") or "")
         if source_run and source_run != str(parent.get("run_id") or ""):
             return False
-        current = self.store.latest_artifact_reconstruction(parent_job_id)
-        if not current or str(current.get("id") or "") != str(job.get("id") or ""):
-            return False
         if job.get("status") != JobStatus.FINISHED:
             return False
         try:
             if int(job.get("exit_code")) != 0:
                 return False
         except (TypeError, ValueError):
+            return False
+        if not self._reconstruction_publication_manifest_ready(job):
             return False
         metrics = self._current_job_result_metrics(job)
         if metrics.get("quality_gate") is not True:
@@ -3544,6 +3580,24 @@ class UiBridge:
             return int(metrics.get("manual_review_count") or 0) <= 0
         except (TypeError, ValueError):
             return False
+
+    def _is_publishable_reconstruction_history_job(
+        self,
+        job: dict[str, Any] | None,
+        *,
+        owner_id: str,
+    ) -> bool:
+        if not self._is_structurally_publishable_reconstruction_history_job(
+            job, owner_id=owner_id
+        ):
+            return False
+        parent_job_id = str((job or {}).get("parent_job_id") or "")
+        for candidate in self.store.artifact_reconstructions_for_parent(parent_job_id):
+            if self._is_structurally_publishable_reconstruction_history_job(
+                candidate, owner_id=owner_id
+            ):
+                return str(candidate.get("id") or "") == str((job or {}).get("id") or "")
+        return False
 
     @staticmethod
     def _is_queue_operation(job: dict[str, Any] | None) -> bool:

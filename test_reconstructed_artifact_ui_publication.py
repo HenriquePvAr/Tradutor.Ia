@@ -124,6 +124,9 @@ class ReconstructedArtifactUiPublicationTests(unittest.TestCase):
         child_quality_passed: bool = True,
         child_manual_review_count: int = 0,
         child_parent: str | None = None,
+        child_source_run_id: str | None = None,
+        child_output_name: str = "child",
+        child_created_at: float | None = None,
     ) -> tuple[str, str, str]:
         source_output = self.output_root / "chapter-source"
         source_pdf = source_output / "historical.pdf"
@@ -162,9 +165,9 @@ class ReconstructedArtifactUiPublicationTests(unittest.TestCase):
             manual_review_count=1,
         )
 
-        child_output = source_output / "reconstructions" / "child"
+        child_output = source_output / "reconstructions" / child_output_name
         child_pdf = child_output / "artifact.pdf"
-        child_sha, _size = _write_pdf(child_pdf, b"fresh reconstruction")
+        child_sha, _size = _write_pdf(child_pdf, f"fresh reconstruction {child_output_name}".encode())
         child_id = self.store.create_job(
             source_url="https://example.invalid/chapter",
             output_dir=str(child_output),
@@ -174,7 +177,11 @@ class ReconstructedArtifactUiPublicationTests(unittest.TestCase):
                 "job_type": "artifact_reconstruction",
                 "community_owner_id": OWNER_ID,
                 "source_job_id": source_id,
-                "source_run_id": self.store.get_job(source_id)["run_id"],
+                "source_run_id": (
+                    child_source_run_id
+                    if child_source_run_id is not None
+                    else self.store.get_job(source_id)["run_id"]
+                ),
             },
             initial_status=JobStatus.QUEUED,
             operation_kind="artifact_reconstruction",
@@ -204,7 +211,77 @@ class ReconstructedArtifactUiPublicationTests(unittest.TestCase):
             passed=child_quality_passed,
             manual_review_count=child_manual_review_count,
         )
+        if child_created_at is not None:
+            self.store._conn.execute(
+                "UPDATE jobs SET created_at=?, updated_at=? WHERE id=?",
+                (float(child_created_at), float(child_created_at), child_id),
+            )
+            self.store._conn.commit()
         return source_id, child_id, child_sha
+
+    def _add_reconstruction_child(
+        self,
+        source_id: str,
+        *,
+        output_name: str,
+        status: str = JobStatus.FINISHED,
+        quality_passed: bool = True,
+        manual_review_count: int = 0,
+        source_run_id: str | None = None,
+        owner_id: str = OWNER_ID,
+        parent_id: str | None = None,
+        created_at: float,
+    ) -> tuple[str, str]:
+        source = self.store.get_job(source_id)
+        assert source is not None
+        child_output = self.output_root / "chapter-source" / "reconstructions" / output_name
+        child_pdf = child_output / "artifact.pdf"
+        child_sha, _size = _write_pdf(child_pdf, f"reconstruction {output_name}".encode())
+        child_id = self.store.create_job(
+            source_url="https://example.invalid/chapter",
+            output_dir=str(child_output),
+            command=["selective_artifact_reconstruction"],
+            run_id=f"recon-{output_name}",
+            configuration={
+                "job_type": "artifact_reconstruction",
+                "community_owner_id": owner_id,
+                "source_job_id": source_id,
+                "source_run_id": source_run_id if source_run_id is not None else source["run_id"],
+            },
+            initial_status=JobStatus.QUEUED,
+            operation_kind="artifact_reconstruction",
+            parent_job_id=parent_id if parent_id is not None else source_id,
+        )
+        self.store.update_fields(
+            child_id,
+            status=status,
+            stage="artifact_reconstruction_completed",
+            exit_code=0,
+            pdf_path=str(child_pdf),
+            manifest_path=str(child_output / "job_manifest.json"),
+            quality_report_path=str(child_output / "quality_report.json"),
+        )
+        _write_manifests(
+            child_output,
+            job_id=child_id,
+            run_id=f"recon-{output_name}",
+            status=status,
+            pdf=child_pdf,
+            quality_passed=quality_passed,
+        )
+        _write_quality_report(
+            child_output,
+            pdf=child_pdf,
+            run_id=f"recon-{output_name}",
+            passed=quality_passed,
+            manual_review_count=manual_review_count,
+        )
+        self.store._conn.execute(
+            "UPDATE jobs SET created_at=?, updated_at=? WHERE id=?",
+            (float(created_at), float(created_at), child_id),
+        )
+        self.store._conn.commit()
+        return child_id, child_sha
 
     def test_owner_history_exposes_finished_reconstruction_without_enabling_source(self):
         source_id, child_id, child_sha = self._create_source_and_reconstruction()
@@ -218,7 +295,8 @@ class ReconstructedArtifactUiPublicationTests(unittest.TestCase):
         self.assertFalse(by_job[source_id].get("quality_gate"))
         self.assertEqual(by_job[child_id]["operation_kind"], "artifact_reconstruction")
         self.assertEqual(by_job[child_id]["parent_job_id"], source_id)
-        self.assertTrue(by_job[child_id].get("manifest_path"))
+        self.assertNotIn("manifest_path", by_job[child_id])
+        self.assertTrue(by_job[child_id].get("publication_manifest_ready"))
         self.assertEqual(by_job[child_id]["pdf_sha256"], child_sha)
         self.assertTrue(by_job[child_id].get("quality_gate"))
 
@@ -283,6 +361,173 @@ class ReconstructedArtifactUiPublicationTests(unittest.TestCase):
         self.assertNotIn(child_id, by_job)
         with self.assertRaisesRegex(ArtifactBindingError, "quality_gate_required"):
             self.api._resolve_translation_job(source_id, OWNER)
+        with self.assertRaisesRegex(ArtifactBindingError, "artifact_source_mismatch"):
+            self.api._resolve_translation_job(child_id, OWNER)
+
+    def test_newer_invalid_reconstruction_attempts_do_not_shadow_old_valid_result(self):
+        denied_newer = [
+            ("failed", JobStatus.FAILED, True, 0, None),
+            ("interrupted", JobStatus.INTERRUPTED, True, 0, None),
+            ("cancelled", JobStatus.CANCELLED, True, 0, None),
+            ("quality_fail", JobStatus.FINISHED, False, 0, None),
+            ("manual_review", JobStatus.FINISHED, True, 2, None),
+            ("stale_run", JobStatus.FINISHED, True, 0, "stale-source-run"),
+        ]
+        for name, status, passed, manual, source_run_id in denied_newer:
+            with self.subTest(name=name):
+                tmp = Path(tempfile.mkdtemp())
+                store = JobStore(tmp / "jobs.sqlite3")
+                api = CommunityApi(
+                    store,
+                    community_db_path=tmp / "community.sqlite3",
+                    output_root=tmp / "output",
+                )
+                bridge = object.__new__(ui_bridge.UiBridge)
+                bridge.store = store
+                bridge.output_root = tmp / "output"
+                bridge.history_store = UIHistoryStore(tmp / "ui_history.json")
+                bridge.history = []
+                bridge.history_revision = 1
+                try:
+                    old_store, old_api, old_bridge, old_output_root = (
+                        self.store, self.api, self.bridge, self.output_root
+                    )
+                    self.store, self.api, self.bridge, self.output_root = (
+                        store, api, bridge, tmp / "output"
+                    )
+                    source_id, old_id, old_sha = self._create_source_and_reconstruction(
+                        child_output_name=f"{name}-old",
+                        child_created_at=1000,
+                    )
+                    newer_id, _newer_sha = self._add_reconstruction_child(
+                        source_id,
+                        output_name=f"{name}-new",
+                        status=status,
+                        quality_passed=passed,
+                        manual_review_count=manual,
+                        source_run_id=source_run_id,
+                        created_at=2000,
+                    )
+
+                    records = self.bridge._history_payload_for_owner(OWNER_ID)
+                    reconstruction_ids = {
+                        item["job_id"] for item in records
+                        if item.get("operation_kind") == "artifact_reconstruction"
+                    }
+
+                    self.assertIn(old_id, reconstruction_ids)
+                    self.assertNotIn(newer_id, reconstruction_ids)
+                    resolved = self.api._resolve_translation_job(old_id, OWNER)
+                    self.assertEqual(resolved["pdf_sha256"], old_sha)
+                    with self.assertRaises(ArtifactBindingError):
+                        self.api._resolve_translation_job(newer_id, OWNER)
+                finally:
+                    self.store, self.api, self.bridge, self.output_root = (
+                        old_store, old_api, old_bridge, old_output_root
+                    )
+                    api.close()
+                    store.close()
+
+    def test_newer_valid_reconstruction_supersedes_old_valid_deterministically(self):
+        source_id, old_id, _old_sha = self._create_source_and_reconstruction(
+            child_output_name="old-valid",
+            child_created_at=1000,
+        )
+        new_id, new_sha = self._add_reconstruction_child(
+            source_id,
+            output_name="new-valid",
+            created_at=2000,
+        )
+
+        records = self.bridge._history_payload_for_owner(OWNER_ID)
+        reconstruction_ids = [
+            item["job_id"] for item in records
+            if item.get("operation_kind") == "artifact_reconstruction"
+        ]
+
+        self.assertEqual(reconstruction_ids, [new_id])
+        self.assertNotIn(old_id, reconstruction_ids)
+        resolved = self.api._resolve_translation_job(new_id, OWNER)
+        self.assertEqual(resolved["pdf_sha256"], new_sha)
+
+    def test_reconstruction_currentness_tie_breaker_is_deterministic(self):
+        source_id, old_id, _old_sha = self._create_source_and_reconstruction(
+            child_output_name="tie-old",
+            child_created_at=1000,
+        )
+        new_id, _new_sha = self._add_reconstruction_child(
+            source_id,
+            output_name="tie-new",
+            created_at=1000,
+        )
+
+        records = self.bridge._history_payload_for_owner(OWNER_ID)
+        reconstruction_ids = [
+            item["job_id"] for item in records
+            if item.get("operation_kind") == "artifact_reconstruction"
+        ]
+
+        self.assertEqual(reconstruction_ids, [max(old_id, new_id)])
+
+    def test_wrong_owner_reconstruction_is_not_exposed_in_owner_history(self):
+        source_id, _old_id, _old_sha = self._create_source_and_reconstruction(
+            child_output_name="owned-valid",
+            child_created_at=1000,
+        )
+        wrong_owner_id, _wrong_sha = self._add_reconstruction_child(
+            source_id,
+            output_name="wrong-owner",
+            owner_id="other-owner",
+            created_at=2000,
+        )
+
+        records = self.bridge._history_payload_for_owner(OWNER_ID)
+        reconstruction_ids = {
+            item["job_id"] for item in records
+            if item.get("operation_kind") == "artifact_reconstruction"
+        }
+
+        self.assertNotIn(wrong_owner_id, reconstruction_ids)
+
+    def test_no_valid_reconstruction_child_leaves_no_reconstruction_publication_card(self):
+        source_id, child_id, _sha = self._create_source_and_reconstruction(
+            child_status=JobStatus.FAILED,
+            child_output_name="failed-only",
+        )
+
+        records = self.bridge._history_payload_for_owner(OWNER_ID)
+        reconstruction_ids = {
+            item["job_id"] for item in records
+            if item.get("operation_kind") == "artifact_reconstruction"
+        }
+
+        self.assertIn(source_id, {item["job_id"] for item in records})
+        self.assertNotIn(child_id, reconstruction_ids)
+
+    def test_reconstruction_publication_capability_does_not_leak_manifest_path(self):
+        source_id, child_id, _sha = self._create_source_and_reconstruction()
+        row = self.store.get_job(child_id)
+        assert row is not None
+
+        record = self.bridge._job_record(row)
+        serialized = json.dumps(record)
+
+        self.assertNotIn("manifest_path", record)
+        self.assertNotIn("job_manifest.json", serialized)
+        self.assertTrue(record.get("publication_manifest_ready"))
+
+    def test_missing_manifest_yields_false_capability_without_leaking_path(self):
+        _source_id, child_id, _sha = self._create_source_and_reconstruction()
+        row = self.store.get_job(child_id)
+        assert row is not None
+        Path(str(row["manifest_path"])).unlink()
+
+        record = self.bridge._job_record(row)
+        serialized = json.dumps(record)
+
+        self.assertNotIn("manifest_path", record)
+        self.assertNotIn("job_manifest.json", serialized)
+        self.assertFalse(record.get("publication_manifest_ready"))
 
 
 class ReconstructedArtifactFrontendContractTests(unittest.TestCase):
@@ -297,6 +542,16 @@ class ReconstructedArtifactFrontendContractTests(unittest.TestCase):
         self.assertIn("payload.source_job_id = trustedJobId", publish)
         self.assertNotIn("parent_job_id", publish)
         self.assertNotIn("effective", publish.lower())
+
+    def test_publication_eligibility_uses_server_capability_not_manifest_path(self):
+        source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+            encoding="utf-8"
+        )
+        eligibility = source[source.index("function publicationEligibility"):source.index(
+            "function publicationAction"
+        )]
+        self.assertIn("publication_manifest_ready", eligibility)
+        self.assertNotIn("manifest_path", eligibility)
 
     def test_reconstruction_status_label_is_distinct_from_historical_review_required(self):
         source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
