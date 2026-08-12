@@ -39,6 +39,11 @@ from publish_authorization import (
     PublishArtifactIdentity,
     PublishAuthorizationStore,
 )
+from canonical_social_identity import (
+    CanonicalSocialIdentityError,
+    build_canonical_social_identity_materializer,
+    canonical_source_identity_from_publish_source,
+)
 from ui_helpers import OUTPUT_ROOT, REPO_ROOT
 
 COMMUNITY_DB_PATH = REPO_ROOT / ".cache" / "runtime" / "community.sqlite3"
@@ -288,12 +293,18 @@ class CommunityApi:
                  storage_root: Path = COMMUNITY_STORAGE_ROOT,
                  read_provider_factory: Callable[[], Any] | None = None,
                  profile_sync: Callable[[RequestPrincipal], Any] | None = None,
-                 publication_metadata_config: dict[str, Any] | None = None):
+                 publication_metadata_config: dict[str, Any] | None = None,
+                 canonical_identity_materializer: Any | None = None):
         if storage_provider_name() == "local_test":
             storage_root = Path(os.environ["LOCAL_TEST_STORAGE_ROOT"]).resolve()
         else:
             storage_root = Path(storage_root).resolve()
         self.store = CommunityStore(community_db_path)
+        metadata_config = (
+            publication_metadata_config
+            if publication_metadata_config is not None
+            else publication_metadata_config_from_env()
+        )
         self.service = CommunityService(
             self.store, job_store, output_root=Path(output_root),
             provider_name=storage_provider_name(), community_db_path=str(community_db_path),
@@ -301,11 +312,12 @@ class CommunityApi:
                 **{k: v for k, v in _storage_config().items() if k != "storage_provider"},
                 "storage_root": str(storage_root),
             },
-            publication_metadata_config=(
-                publication_metadata_config
-                if publication_metadata_config is not None
-                else publication_metadata_config_from_env()
-            ),
+            publication_metadata_config=metadata_config,
+        )
+        self._canonical_identity_materializer = (
+            canonical_identity_materializer
+            if canonical_identity_materializer is not None
+            else build_canonical_social_identity_materializer(dict(metadata_config))
         )
         self._read_provider_factory = read_provider_factory or (
             (lambda: FilesystemStorageProvider(storage_root))
@@ -690,6 +702,26 @@ class CommunityApi:
                 artifact_sha256=pdf_sha256,
                 artifact_size_bytes=pdf_size,
             )
+            if (
+                _publication_metadata_required(dict(self.service.publication_metadata_config))
+                and not str(canonical_publication_id or "").strip()
+            ):
+                try:
+                    source_identity = canonical_source_identity_from_publish_source(
+                        source,
+                        self.service.job_store,
+                    )
+                    canonical = self._canonical_identity_materializer.resolve_or_materialize(
+                        principal,
+                        source_identity,
+                    )
+                except CanonicalSocialIdentityError:
+                    raise
+                except Exception as exc:
+                    raise CanonicalSocialIdentityError(
+                        "canonical_social_identity_backend_unavailable"
+                    ) from exc
+                canonical_publication_id = canonical.chapter_id
             if (
                 _publication_metadata_required(dict(self.service.publication_metadata_config))
                 and not str(canonical_publication_id or "").strip()

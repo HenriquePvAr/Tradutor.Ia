@@ -13,6 +13,12 @@ BACKEND_ACCESS_MIGRATION = (
     / "migrations"
     / "20260811130000_community_publication_metadata_backend_access.sql"
 )
+SOURCE_IDENTITY_MIGRATION = (
+    ROOT
+    / "supabase"
+    / "migrations"
+    / "20260811140000_community_social_source_identity_mapping.sql"
+)
 STRUCTURE_TEST = ROOT / "supabase" / "tests" / "database" / "00_structure_test.sql"
 RLS_TEST = ROOT / "supabase" / "tests" / "database" / "01_rls_policies_test.sql"
 
@@ -70,3 +76,52 @@ def test_backend_access_migration_exposes_only_hardened_service_role_rpcs():
     assert "to service_role" in sql
     assert "join public.works" in sql
     assert "for update" in sql
+
+
+def test_source_identity_mapping_migration_is_private_additive_and_constrained():
+    sql = SOURCE_IDENTITY_MIGRATION.read_text(encoding="utf-8").lower()
+    assert "create table if not exists private.community_source_work_mappings" in sql
+    assert "create table if not exists private.community_source_chapter_mappings" in sql
+    assert "unique (owner_id, source_provider, source_work_key)" in sql
+    assert "unique (work_id)" in sql
+    assert "unique (work_mapping_id, source_chapter_key)" in sql
+    assert "unique (chapter_id)" in sql
+    assert "references public.profiles (id)" in sql
+    assert "references public.works (id)" in sql
+    assert "references public.chapters (id)" in sql
+    assert "source_identity_version int not null default 1" in sql
+    assert "source_identity_hash" in sql
+    assert "first_source_job_id" in sql
+    assert "first_reconstruction_job_id" in sql
+    assert "alter table private.community_source_work_mappings enable row level security" in sql
+    assert "alter table private.community_source_chapter_mappings enable row level security" in sql
+    assert "revoke all on private.community_source_work_mappings from public, anon, authenticated" in sql
+    assert "revoke all on private.community_source_chapter_mappings from public, anon, authenticated" in sql
+    assert "create policy" not in sql
+    assert "drop table" not in sql
+    assert "alter table public.works" not in sql
+    assert "alter table public.chapters" not in sql
+
+
+def test_source_identity_materialization_rpc_is_backend_only_and_hardened():
+    sql = SOURCE_IDENTITY_MIGRATION.read_text(encoding="utf-8").lower()
+    function_name = "public.resolve_or_materialize_community_source_identity"
+    assert f"create or replace function {function_name}" in sql
+    assert "security definer" in sql
+    assert "set search_path = ''" in sql
+    assert "pg_advisory_xact_lock" in sql
+    assert "for update" in sql
+    assert "gen_random_uuid()" in sql
+    assert "insert into public.works" in sql
+    assert "insert into public.chapters" in sql
+    assert "raise exception 'canonical_social_identity_conflict'" in sql
+    assert f"revoke execute on function {function_name}" in sql
+    assert "from public" in sql
+    assert "from anon" in sql
+    assert "from authenticated" in sql
+    assert f"grant execute on function {function_name}" in sql
+    assert "to service_role" in sql
+    assert "execute format" not in sql
+    assert "execute immediate" not in sql
+    assert "|| p_work_title" not in sql
+    assert "|| p_work_slug" not in sql

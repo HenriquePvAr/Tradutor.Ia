@@ -16,6 +16,7 @@ import pytest
 
 import community_api
 import community_publish_runner
+from canonical_social_identity import FakeCanonicalSocialIdentityMaterializer
 from community_api import ArtifactBindingError, CommunityApi, CommunityError
 from community_auth import RequestPrincipal
 from community_publication_metadata import FakePublicationMetadataRepository, PublicationMetadataError
@@ -42,14 +43,18 @@ def _finished_translation_job(
     name: str = "chapter",
     status: str = JobStatus.FINISHED,
     data: bytes = b"%PDF-1.4\nstorage-core\n%%EOF\n",
+    canonical_identity: dict | None = None,
 ) -> tuple[str, Path]:
     output_dir = output_root / name
     pdf = _write_pdf(output_dir / "chapter.pdf", data)
+    configuration = {"job_type": "translation", "community_owner_id": owner}
+    if canonical_identity is not None:
+        configuration["source_analysis"] = {"canonical_identity": canonical_identity}
     job_id = jobs.create_job(
         source_url="https://example.invalid/offline",
         output_dir=str(output_dir),
         command=["offline"],
-        configuration={"job_type": "translation", "community_owner_id": owner},
+        configuration=configuration,
     )
     claimed = jobs.claim_next_job(f"worker-{name}", 1)
     assert claimed and claimed["id"] == job_id
@@ -131,6 +136,18 @@ class BroadSecretLikeMetadataFailure(FakePublicationMetadataRepository):
             '"cookie":"fake-cookie-json" access_token=fake-access '
             'id_token=fake-id client_secret=fake-client-secret set-cookie=fake-set-cookie'
         )
+
+
+def _canonical_identity(series: str = "9001", episode: str = "12", digest: str = "b") -> dict:
+    return {
+        "schema_version": 1,
+        "adapter_name": "webtoons",
+        "series_identifier": series,
+        "episode_identifier": episode,
+        "series_slug": "synthetic-series",
+        "episode_label": f"episode-{episode}",
+        "identity_hash": digest * 64,
+    }
 
 
 class StorageCoreHarness:
@@ -282,7 +299,7 @@ def test_metadata_enabled_publish_without_canonical_identity_fails_before_drive(
     metadata = FakePublicationMetadataRepository()
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
 
-    with pytest.raises(CommunityError, match="canonical_chapter_missing"):
+    with pytest.raises(CommunityError, match="canonical_source_identity_unavailable"):
         harness.publish(job_id)
 
     assert harness.api.store.list_user_posts(OWNER.user_id) == []
@@ -295,11 +312,52 @@ def test_metadata_enabled_publish_without_canonical_identity_fails_before_drive(
 def test_metadata_enabled_history_publish_without_canonical_identity_fails_before_local_attempt(harness):
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
 
-    with pytest.raises(CommunityError, match="canonical_chapter_missing"):
+    with pytest.raises(CommunityError, match="canonical_source_identity_unavailable"):
         harness.publish(job_id)
 
     assert harness.jobs.list_jobs(limit=None)[0]["id"] == job_id
     assert harness.api.store.list_user_posts(OWNER.user_id) == []
+
+
+def test_history_publish_materializes_canonical_identity_before_local_attempt(harness):
+    provider = FakeStorageProvider()
+    metadata = FakePublicationMetadataRepository()
+    job_id, _ = _finished_translation_job(
+        harness.jobs,
+        harness.output_root,
+        canonical_identity=_canonical_identity(),
+    )
+
+    publish = harness.publish(job_id)
+    materializer = harness.api._canonical_identity_materializer
+    assert isinstance(materializer, FakeCanonicalSocialIdentityMaterializer)
+    assert len(materializer.work_mappings) == 1
+    assert len(materializer.chapter_mappings) == 1
+    chapter_id = next(iter(materializer.chapter_mappings.values()))["chapter_id"]
+
+    harness.run_publish_job(publish["job_id"], provider, metadata)
+
+    row = metadata.get_publication(chapter_id)
+    assert row is not None
+    assert row.publication_id == chapter_id
+    assert row.publication_id != publish["post_id"]
+    assert provider.create_session_calls == 1
+    assert metadata.reserve_calls == 1
+
+
+def test_history_materialization_backend_failure_creates_no_local_attempt(harness):
+    harness.api._canonical_identity_materializer = FakeCanonicalSocialIdentityMaterializer(fail=True)
+    job_id, _ = _finished_translation_job(
+        harness.jobs,
+        harness.output_root,
+        canonical_identity=_canonical_identity(),
+    )
+
+    with pytest.raises(CommunityError, match="canonical_social_identity_backend_unavailable"):
+        harness.publish(job_id)
+
+    assert harness.api.store.list_user_posts(OWNER.user_id) == []
+    assert len(harness.jobs.list_jobs(limit=None)) == 1
 
 
 def test_metadata_reservation_failure_is_specific_and_drive_zero(harness):
