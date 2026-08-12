@@ -5133,28 +5133,49 @@
     void refreshBootstrap();
   });
   applyCanonicalAuthSurface(getGlobal('__tradutorAuthState') || 'auth_loading');
-  function closestFromEventPath(event, selector) {
+  function eventPathCandidates(event, selector) {
+    const nodes = [];
     const target = event.target?.closest ? event.target : event.target?.parentElement || null;
-    const direct = target?.closest?.(selector);
-    if (direct) return direct;
-    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
-    for (const node of path) {
-      if (node?.matches?.(selector)) return node;
-      const match = node?.closest?.(selector);
-      if (match) return match;
+    if (target) nodes.push(target);
+    if (typeof event.composedPath === 'function') nodes.push(...event.composedPath());
+    const candidates = [];
+    for (const node of nodes) {
+      const match = node?.matches?.(selector) ? node : node?.closest?.(selector);
+      if (match && !candidates.includes(match)) candidates.push(match);
     }
-    return null;
+    return candidates;
+  }
+  function boundedHistoryActionContext(event) {
+    const histList = $('#histList');
+    if (!histList) return null;
+    const actions = eventPathCandidates(event, '[data-action]').filter(action => {
+      if (!histList.contains(action)) return false;
+      const item = action.closest('.hist-item');
+      return Boolean(item && histList.contains(item));
+    });
+    if (actions.length !== 1) return null;
+    const button = actions[0];
+    const item = button.closest('.hist-item');
+    if (!item || !histList.contains(item)) return null;
+    return {button, item, histList};
+  }
+  function boundedHistoryFolder(event) {
+    const histList = $('#histList');
+    if (!histList) return null;
+    const folders = eventPathCandidates(event, '.cf-header')
+      .filter(folder => histList.contains(folder));
+    return folders.length === 1 ? folders[0] : null;
   }
   async function handleHistoryAction(event) {
-    if (!closestFromEventPath(event, '#histList')) return;
-    const button = closestFromEventPath(event, '[data-action]');
-    const folder = closestFromEventPath(event, '.cf-header');
-    if (folder && !button) {
+    const context = boundedHistoryActionContext(event);
+    if (!context) {
+      const folder = boundedHistoryFolder(event);
+      if (!folder) return;
       toggleHistoryFolder(folder);
       return;
     }
-    if (!button) return;
-    const rowId = String(button.closest('.hist-item')?.dataset.id || '');
+    const {button, item} = context;
+    const rowId = String(item.dataset.id || '');
     const reviewJobId = String(button.dataset.reviewJob || '').toLowerCase();
     const record = appState.history.find(item =>
       String(item.id) === rowId ||

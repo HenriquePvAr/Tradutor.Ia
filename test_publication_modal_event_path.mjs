@@ -101,6 +101,14 @@ class FakeElement {
     if (child.id) this.ownerDocument._ids.set(child.id, child);
     return child;
   }
+  contains(candidate) {
+    let node = candidate;
+    while (node) {
+      if (node === this) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
   append(...children) { children.forEach((child) => this.appendChild(child)); }
   replaceChildren(...children) {
     this.children = [];
@@ -439,6 +447,18 @@ function clickRetargetedThroughComposedPath(document, button) {
   document.dispatchEvent(event);
 }
 
+function dispatchMalformedComposedPath(document, path) {
+  const event = {
+    type: 'click',
+    target: document,
+    defaultPrevented: false,
+    composedPath: () => path,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() {},
+  };
+  document.dispatchEvent(event);
+}
+
 function modalState(document) {
   const overlay = document.getElementById('publicationModalOverlay');
   return {
@@ -486,6 +506,81 @@ await test('retargeted browser click opens modal using composed event path', asy
     title: 'Synthetic Chapter',
     submitDisabled: true,
   });
+});
+
+await test('malformed composed path with outside action and histList is denied', async () => {
+  const child = makeRecord('boundary-child-1', {
+    operation_kind: 'artifact_reconstruction',
+    operation_label: 'ReconstruÃ§Ã£o corrigida',
+    output_verification: 'legacy_unverified',
+    publication_manifest_ready: true,
+  });
+  const { document } = await loadTradutorUi([child]);
+  const histList = document.getElementById('histList');
+  const outsideItem = document.createElement('div');
+  outsideItem.setAttribute('class', 'hist-item');
+  outsideItem.setAttribute('data-id', 'boundary-child-1');
+  const outsideButton = document.createElement('button');
+  outsideButton.setAttribute('data-action', 'publish');
+  outsideButton.textContent = 'Outside publish';
+  outsideItem.appendChild(outsideButton);
+  document.body.appendChild(outsideItem);
+
+  dispatchMalformedComposedPath(document, [outsideButton, outsideItem, histList, document]);
+
+  assert.equal(modalState(document).open, false);
+});
+
+await test('action from a different container is denied even when histList appears in path', async () => {
+  const child = makeRecord('other-container-child-1', {
+    operation_kind: 'artifact_reconstruction',
+    operation_label: 'ReconstruÃ§Ã£o corrigida',
+    output_verification: 'legacy_unverified',
+    publication_manifest_ready: true,
+  });
+  const { document } = await loadTradutorUi([child]);
+  const histList = document.getElementById('histList');
+  const otherList = document.createElement('div');
+  otherList.setAttribute('id', 'otherList');
+  const otherItem = document.createElement('div');
+  otherItem.setAttribute('class', 'hist-item');
+  otherItem.setAttribute('data-id', 'other-container-child-1');
+  const otherButton = document.createElement('button');
+  otherButton.setAttribute('data-action', 'publish');
+  otherButton.textContent = 'Other publish';
+  otherItem.appendChild(otherButton);
+  otherList.appendChild(otherItem);
+  document.body.appendChild(otherList);
+
+  dispatchMalformedComposedPath(document, [otherButton, otherItem, otherList, histList, document]);
+
+  assert.equal(modalState(document).open, false);
+});
+
+await test('conflicting composed path actions from different cards are denied', async () => {
+  const childA = makeRecord('boundary-card-a', {
+    operation_kind: 'artifact_reconstruction',
+    operation_label: 'ReconstruÃ§Ã£o corrigida',
+    output_verification: 'legacy_unverified',
+    publication_manifest_ready: true,
+    chapter_name: 'Boundary Card A',
+  });
+  const childB = makeRecord('boundary-card-b', {
+    operation_kind: 'artifact_reconstruction',
+    operation_label: 'ReconstruÃ§Ã£o corrigida',
+    output_verification: 'legacy_unverified',
+    publication_manifest_ready: true,
+    chapter_name: 'Boundary Card B',
+  });
+  const { document } = await loadTradutorUi([childA, childB]);
+  const histList = document.getElementById('histList');
+  const items = document.querySelectorAll('.hist-item');
+  const buttonA = items[0].querySelector('button[data-action="publish"]');
+  const buttonB = items[1].querySelector('button[data-action="publish"]');
+
+  dispatchMalformedComposedPath(document, [buttonB, items[1], buttonA, items[0], histList, document]);
+
+  assert.equal(modalState(document).open, false);
 });
 
 await test('history search opens matching folder so publish action is physically reachable', async () => {
