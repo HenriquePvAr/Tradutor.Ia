@@ -120,6 +120,19 @@ class SecretLikeMetadataFailure(FakePublicationMetadataRepository):
         )
 
 
+class BroadSecretLikeMetadataFailure(FakePublicationMetadataRepository):
+    def reserve(self, metadata):
+        raise PublicationMetadataError(
+            'metadata_reservation_failed '
+            'sb_secret_fake_value Authorization: Bearer fake-bearer apikey=fake-api-key '
+            'refresh_token=fake-refresh Refresh_Token: fake-refresh-title '
+            'REFRESH_TOKEN=fake-refresh-upper cookie=fake-cookie Cookie: fake-cookie-title '
+            'COOKIE=fake-cookie-upper "refresh_token":"fake-refresh-json" '
+            '"cookie":"fake-cookie-json" access_token=fake-access '
+            'id_token=fake-id client_secret=fake-client-secret set-cookie=fake-set-cookie'
+        )
+
+
 class StorageCoreHarness:
     def __init__(self, tmp_path: Path):
         self.tmp = tmp_path
@@ -269,18 +282,24 @@ def test_metadata_enabled_publish_without_canonical_identity_fails_before_drive(
     metadata = FakePublicationMetadataRepository()
     job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
 
-    publish = harness.publish(job_id)
-    harness.run_publish_job(publish["job_id"], provider, metadata)
+    with pytest.raises(CommunityError, match="canonical_chapter_missing"):
+        harness.publish(job_id)
 
-    post = harness.api.store.get_post(publish["post_id"])
-    file = harness.api.store.get_file(publish["file_id"])
-    assert post["status"] == PostStatus.FAILED
-    assert file["upload_status"] == FileStatus.FAILED
-    assert file["bytes_uploaded"] == 0
-    assert file["storage_file_id"] in ("", None)
+    assert harness.api.store.list_user_posts(OWNER.user_id) == []
+    assert len(harness.jobs.list_jobs(limit=None)) == 1
     assert provider.create_session_calls == 0
     assert provider.upload_chunk_calls == 0
     assert metadata.reserve_calls == 0
+
+
+def test_metadata_enabled_history_publish_without_canonical_identity_fails_before_local_attempt(harness):
+    job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
+
+    with pytest.raises(CommunityError, match="canonical_chapter_missing"):
+        harness.publish(job_id)
+
+    assert harness.jobs.list_jobs(limit=None)[0]["id"] == job_id
+    assert harness.api.store.list_user_posts(OWNER.user_id) == []
 
 
 def test_metadata_reservation_failure_is_specific_and_drive_zero(harness):
@@ -323,6 +342,42 @@ def test_runner_log_records_sanitized_metadata_failure(harness, tmp_path):
     assert "sb_secret_test_leak" not in text
     assert "jwt.secret" not in text
     assert "secret-key" not in text
+
+
+def test_runner_log_redacts_common_credential_like_fields(harness, tmp_path):
+    provider = FakeStorageProvider()
+    metadata = BroadSecretLikeMetadataFailure()
+    job_id, _ = _finished_translation_job(harness.jobs, harness.output_root)
+    publish = harness.publish(
+        job_id,
+        canonical_publication_id="11111111-1111-4111-8111-111111111111",
+    )
+    log_path = tmp_path / "community-publish.log"
+
+    harness.run_publish_job(publish["job_id"], provider, metadata, log_path=log_path)
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "stage=snapshotting" in text
+    assert "category=publication_metadata" in text
+    assert "reason=metadata_reservation_failed" in text
+    for leaked in (
+        "sb_secret_fake_value",
+        "fake-bearer",
+        "fake-api-key",
+        "fake-refresh",
+        "fake-refresh-title",
+        "fake-refresh-upper",
+        "fake-cookie",
+        "fake-cookie-title",
+        "fake-cookie-upper",
+        "fake-refresh-json",
+        "fake-cookie-json",
+        "fake-access",
+        "fake-id",
+        "fake-client-secret",
+        "fake-set-cookie",
+    ):
+        assert leaked not in text
 
 
 def test_duplicate_publish_is_idempotent_one_upload_one_publication(harness):
@@ -420,6 +475,7 @@ def test_client_cannot_choose_storage_reference(harness):
         "storage_file_id": "client-selected-drive-id",
         "canonical_publication_id": "11111111-1111-4111-8111-111111111111",
         "chapter_id": "11111111-1111-4111-8111-111111111111",
+        "remote_chapter_id": "11111111-1111-4111-8111-111111111111",
     }.items():
         with pytest.raises(CommunityError, match="client_identity_not_allowed"):
             harness.api.publish(

@@ -80,6 +80,12 @@ def _redact(value: str) -> str:
     text = re.sub(r"sb_secret_[A-Za-z0-9._-]+", "<redacted>", text)
     text = re.sub(r"(?i)(Authorization:\s*Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", text)
     text = re.sub(r"(?i)(apikey\s*[=:]\s*)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", text)
+    text = re.sub(
+        r'(?i)(\b(?:refresh_token|access_token|id_token|client_secret|set-cookie|cookie)\b"?\s*[=:]\s*"?)'
+        r'[^"\s]+',
+        r"\1<redacted>",
+        text,
+    )
     return text
 
 

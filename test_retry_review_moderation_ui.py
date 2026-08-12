@@ -312,7 +312,8 @@ def test_publication_ui_requires_technical_gate_or_completed_human_review():
     assert "qualityApproved" in eligibility
     assert "technicalGatePassed || reviewCompleted" in eligibility
     assert "publishableTerminal" in eligibility
-    assert "eligible: baseEligible && ownerReady && qualityApproved && publishableTerminal" in eligibility
+    assert "canonicalChapterReady" in eligibility
+    assert "eligible: baseEligible && ownerReady && canonicalChapterReady && qualityApproved && publishableTerminal" in eligibility
     claim = js[js.index("function claimEligibility"):js.index("function claimAction")]
     assert "eligibility.qualityApproved" in claim
     assert "eligibility.publishableTerminal" in claim

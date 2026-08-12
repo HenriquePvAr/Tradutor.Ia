@@ -257,6 +257,11 @@ def publication_metadata_config_from_env() -> PublicationMetadataRepositoryConfi
     })
 
 
+def _publication_metadata_required(config: dict[str, Any] | None) -> bool:
+    provider = str(((config or {}).get("provider") or "none")).strip().lower()
+    return provider not in {"", "none", "null", "offline"}
+
+
 def build_read_provider():
     """Provider used to stream a PDF for reading. Google Drive requires configured OAuth,
     which is out of scope here; the local default is the private filesystem fake."""
@@ -311,6 +316,9 @@ class CommunityApi:
         # serializes the short draft+enqueue boundary so duplicate clicks observe the
         # first fully linked job instead of a half-created cross-database attempt.
         self._community_lock = threading.RLock()
+
+    def requires_canonical_publication_identity(self) -> bool:
+        return _publication_metadata_required(dict(self.service.publication_metadata_config))
 
     def close(self) -> None:
         self.store.close()
@@ -682,6 +690,11 @@ class CommunityApi:
                 artifact_sha256=pdf_sha256,
                 artifact_size_bytes=pdf_size,
             )
+            if (
+                _publication_metadata_required(dict(self.service.publication_metadata_config))
+                and not str(canonical_publication_id or "").strip()
+            ):
+                raise CommunityError("canonical_chapter_missing")
             draft = self.service.create_draft(
                 principal=principal,
                 output_dir=source["output_dir"],

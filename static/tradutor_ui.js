@@ -4615,11 +4615,15 @@
     const changed = published && record.publication_pdf_sha256 && record.pdf_sha256 && record.publication_pdf_sha256 !== record.pdf_sha256;
     const ownership = String(record.community_ownership || '');
     const ownerReady = ownership !== 'legacy' && ownership !== 'unowned_new';
+    const requiresCanonicalChapter = appState.bootstrap?.community?.requires_canonical_chapter_publication === true;
+    const canonicalChapterReady = !requiresCanonicalChapter
+      || Boolean(record.canonical_chapter_id || record.social_chapter_id || record.remote_chapter_id);
     const baseEligible = hasPdf && manifest && terminal && authenticated;
     return {terminal, hasPdf, manifest, authenticated, review, reviewCompleted,
       technicalGatePassed, published, changed,
       ownership, ownerReady, baseEligible, qualityApproved, publishableTerminal,
-      eligible: baseEligible && ownerReady && qualityApproved && publishableTerminal};
+      requiresCanonicalChapter, canonicalChapterReady,
+      eligible: baseEligible && ownerReady && canonicalChapterReady && qualityApproved && publishableTerminal};
   }
   function publicationAction(record) {
     const eligibility = publicationEligibility(record);
@@ -4631,6 +4635,7 @@
     if (!eligibility.authenticated) return '<button class="btn-ghost" data-action="publish" disabled title="Entre para publicar">Publicação indisponível</button>';
     if (!eligibility.manifest || !eligibility.terminal) return '<button class="btn-ghost" data-action="publish" disabled>Publicação indisponível</button>';
     if (!eligibility.ownerReady) return '<button class="btn-ghost" data-action="publish" disabled>Vincule antes de publicar</button>';
+    if (!eligibility.canonicalChapterReady) return '<button class="btn-ghost" data-action="publish" disabled title="Crie ou selecione o capitulo canonico na Comunidade antes de publicar">PublicaÃ§Ã£o indisponÃ­vel</button>';
     if (!eligibility.qualityApproved) return '<button class="btn-ghost" data-action="publish" disabled title="Conclua a revis\u00e3o antes de publicar">Revis\u00e3o necess\u00e1ria</button>';
     if (eligibility.published && !eligibility.changed) return '<button class="btn-ghost" data-action="publish">Publicado</button>';
     return `<button class="btn-ghost" data-action="publish">${eligibility.changed ? 'Atualizar publicação' : 'Publicar na comunidade'}</button>`;

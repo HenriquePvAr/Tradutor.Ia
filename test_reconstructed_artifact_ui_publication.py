@@ -553,6 +553,23 @@ class ReconstructedArtifactFrontendContractTests(unittest.TestCase):
         self.assertIn("publication_manifest_ready", eligibility)
         self.assertNotIn("manifest_path", eligibility)
 
+    def test_history_publication_requires_server_canonical_chapter_when_configured(self):
+        source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+            encoding="utf-8"
+        )
+        eligibility = source[source.index("function publicationEligibility"):source.index(
+            "function publicationAction"
+        )]
+        action = source[source.index("function publicationAction"):source.index(
+            "function claimEligibility"
+        )]
+        self.assertIn("requires_canonical_chapter_publication", eligibility)
+        self.assertIn("canonicalChapterReady", eligibility)
+        self.assertIn("record.canonical_chapter_id", eligibility)
+        self.assertIn("record.social_chapter_id", eligibility)
+        self.assertIn("record.remote_chapter_id", eligibility)
+        self.assertIn("!eligibility.canonicalChapterReady", action)
+
     def test_reconstruction_status_label_is_distinct_from_historical_review_required(self):
         source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
             encoding="utf-8"

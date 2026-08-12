@@ -479,6 +479,9 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "user_id": "",
             "available": True,
             "social": _SOCIAL_STATUS,
+            "requires_canonical_chapter_publication": (
+                COMMUNITY.requires_canonical_publication_identity()
+            ),
         },
     }
     try:
@@ -494,6 +497,9 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "user_id": principal.user_id if principal.authenticated else "",
             "available": True,
             "social": _SOCIAL_STATUS,
+            "requires_canonical_chapter_publication": (
+                COMMUNITY.requires_canonical_publication_identity()
+            ),
         }
         payload["profile"] = _profile_for_principal(principal)
         try:
@@ -514,6 +520,9 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             "user_id": "",
             "available": True,
             "social": _SOCIAL_STATUS,
+            "requires_canonical_chapter_publication": (
+                COMMUNITY.requires_canonical_publication_identity()
+            ),
         }
         payload["profile"] = {}
     return payload

@@ -136,6 +136,9 @@ class CommunityApiTests(unittest.TestCase):
             "owner_user_id",
             "publication_status",
             "last_error_code",
+            "canonical_publication_id",
+            "chapter_id",
+            "remote_chapter_id",
         )
         for field in forbidden:
             with self.subTest(field=field):
