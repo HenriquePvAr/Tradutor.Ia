@@ -112,6 +112,7 @@ PRIORITIZE_ENCLOSED_TEXT = _env_bool("PRIORITIZE_ENCLOSED_TEXT", True)
 
 # Translation mode: google, huggingface, or nvidia.
 TRANSLATION_MODE = _env_str("TRANSLATION_MODE", "nvidia").lower()
+PTBR_NATURALIZATION_MODE = _env_str("PTBR_NATURALIZATION_MODE", "selective").lower()
 
 # HuggingFace/local translation settings.
 HF_MODEL = _env_str("HF_MODEL", "Helsinki-NLP/opus-mt-mul-pt")

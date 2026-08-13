@@ -250,6 +250,53 @@ class RefinementService:
             return stored
 
 
+class RuntimePtBrNaturalizer:
+    """Automatic selective adapter used by the translation pipeline.
+
+    The router decides whether this is called; this class only converts the
+    already-trusted translation candidate into the existing refinement contract.
+    """
+
+    def __init__(self, service: RefinementService, *, owner: str = "runtime",
+                 provider: str = "nvidia", model: str = ""):
+        self.service = service
+        self.owner = owner
+        self.provider = provider
+        self.model = model
+
+    def naturalize_ptbr(self, request: dict[str, Any]) -> str:
+        refined_request = build_request(
+            owner=self.owner,
+            job_id=request.get("job_id") or "",
+            run_id=request.get("run_id") or "",
+            revision_id=request.get("revision_id") or "",
+            page_id=request.get("page_id") or "",
+            region_id=request.get("region_id") or request.get("group_id") or "",
+            source_text=request.get("source_text") or "",
+            current_translation=request.get("trusted_translation") or "",
+            context_before=request.get("character_context") or [],
+            context_after=[],
+            region_type=request.get("region_type") or "",
+            speaker="",
+            tone="",
+            emotion="",
+            register=str(request.get("reason") or ""),
+            visual_character_limit=0,
+            glossary=request.get("terminology") or {},
+            previous_decision_id="",
+            provider=self.provider,
+            model=self.model,
+        )
+        result = self.service.refine(refined_request, authorized=True)
+        if result.get("status") != "valid_suggestion":
+            raise RuntimeError(
+                ",".join(result.get("reason_codes") or [])
+                or str(result.get("status") or "refinement_unavailable")
+            )
+        payload = result.get("result") or {}
+        return str(payload.get("natural_ptbr") or "").strip()
+
+
 def select_option(result: dict[str, Any], *, owner: str, option: str,
                   reviewer: str, authorization: str,
                   previous_decision_id: str = "", manual_text: str = "") -> dict[str, Any]:

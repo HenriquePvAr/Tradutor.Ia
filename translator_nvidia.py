@@ -19,8 +19,8 @@ from provider_transport import (
 )
 
 
-PROMPT_VERSION = "nvidia-manga-v3-json-qa"
-TRANSLATION_CACHE_SCHEMA_VERSION = 2
+PROMPT_VERSION = "nvidia-manga-v4-json-qa-naturalization-signal"
+TRANSLATION_CACHE_SCHEMA_VERSION = 3
 SYSTEM_PROMPT_TEMPLATE = """Traduzir textos de baloes de manga/manhwa de {source_language} para {target_language}.
 Manter IDs iguais.
 Nao juntar baloes.
@@ -29,7 +29,21 @@ Nao usar markdown.
 Usar linguagem natural no idioma de destino.
 Preservar emocao, gritos, pausas e tom dramatico.
 Usar frases curtas para caber nos baloes.
-Retornar somente JSON."""
+Retornar somente JSON.
+Para cada ID, pode retornar string simples ou objeto com:
+translation, naturalization_needed, naturalization_reason.
+naturalization_needed e apenas sinal de estilo, nunca autoridade semantica.
+Use naturalization_needed=true somente quando a traducao estiver fiel mas soar
+literal, travada ou pouco natural em portugues brasileiro.
+Quando true, use naturalization_reason como um destes codigos compactos:
+literal_translation, awkward_ptbr, style_refinement_needed."""
+
+
+class TranslationResult(str):
+    def __new__(cls, text, *, quality_evidence=None):
+        obj = str.__new__(cls, str(text or ""))
+        obj.quality_evidence = dict(quality_evidence or {})
+        return obj
 
 class TranslatorNvidiaBatch:
     def __init__(
@@ -388,9 +402,9 @@ class TranslatorNvidiaBatch:
             ):
                 translated = self._postprocess_translation(original_text, translated)
                 if succeeded and translated and str(translated).strip():
-                    translations[original_idx] = str(translated).strip()
+                    translations[original_idx] = translated
                     self._increment_stat("translation_results_associated")
-                    self._save_translation_cache(original_text, translations[original_idx])
+                    self._save_translation_cache(original_text, translated)
 
         return translations
 
@@ -668,7 +682,12 @@ class TranslatorNvidiaBatch:
         ):
             return None
         translation = payload.get("translation")
-        return str(translation).strip() if translation else None
+        if not translation:
+            return None
+        return TranslationResult(
+            str(translation).strip(),
+            quality_evidence=payload.get("quality_evidence") or {},
+        )
 
     def _save_translation_cache(self, text, translation):
         if not self.enable_cache:
@@ -686,6 +705,7 @@ class TranslatorNvidiaBatch:
                 "normalized_source": self._normalized_cache_source(text),
                 "text": str(text),
                 "translation": str(translation),
+                "quality_evidence": dict(getattr(translation, "quality_evidence", {}) or {}),
             },
         )
 
@@ -719,7 +739,10 @@ class TranslatorNvidiaBatch:
         if isinstance(parsed, dict):
             if isinstance(parsed.get("translations"), list):
                 return TranslatorNvidiaBatch._list_to_mapping(parsed["translations"])
-            return {str(key): str(value) for key, value in parsed.items()}
+            return {
+                str(key): TranslatorNvidiaBatch._translation_result_from_value(value)
+                for key, value in parsed.items()
+            }
 
         if isinstance(parsed, list):
             return TranslatorNvidiaBatch._list_to_mapping(parsed)
@@ -770,9 +793,55 @@ class TranslatorNvidiaBatch:
             )
 
             if text_id and translation:
-                mapping[str(text_id)] = str(translation)
+                mapping[str(text_id)] = TranslatorNvidiaBatch._translation_result_from_value(item)
 
         return mapping
+
+    @staticmethod
+    def _translation_result_from_value(value):
+        if not isinstance(value, dict):
+            return TranslationResult(str(value or ""))
+        translation = (
+            value.get("translation")
+            or value.get("traducao")
+            or value.get("translated_text")
+            or value.get("text")
+            or ""
+        )
+        evidence = {}
+        raw_needed = value.get("naturalization_needed")
+        if isinstance(raw_needed, str):
+            needed = raw_needed.strip().lower() in {"1", "true", "yes", "sim"}
+        else:
+            needed = bool(raw_needed)
+        reason = str(value.get("naturalization_reason") or "").strip()
+        if needed:
+            evidence["naturalization_needed"] = True
+            evidence["ptbr_naturalization_needed"] = True
+            evidence["naturalization_eligibility_source"] = "provider_structured_metadata"
+            evidence["naturalization_reason"] = reason or "style_refinement_needed"
+            if reason in {
+                "naturalization_needed",
+                "style_refinement_needed",
+                "literal_translation",
+                "literalness",
+                "awkward_ptbr",
+            }:
+                evidence[
+                    "literal_translation" if reason == "literalness" else reason
+                ] = True
+            elif reason == "register":
+                evidence["style_refinement_needed"] = True
+        else:
+            evidence["naturalization_needed"] = False
+            evidence["ptbr_naturalization_needed"] = False
+            evidence["naturalization_eligibility_source"] = "provider_structured_metadata"
+            if reason:
+                evidence["naturalization_reason"] = reason
+        nested = value.get("quality_evidence")
+        if isinstance(nested, dict):
+            evidence.update(nested)
+        return TranslationResult(str(translation or ""), quality_evidence=evidence)
 
     @staticmethod
     def _chunks(items, size):
@@ -782,4 +851,5 @@ class TranslatorNvidiaBatch:
 
     @staticmethod
     def _postprocess_translation(original_text, translated):
-        return translated
+        evidence = dict(getattr(translated, "quality_evidence", {}) or {})
+        return TranslationResult(str(translated or ""), quality_evidence=evidence)

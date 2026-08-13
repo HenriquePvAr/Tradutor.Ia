@@ -91,7 +91,28 @@ def get_translator(choice):
         from translator_nvidia import TranslatorNvidiaBatch
 
         print(f"Usando NVIDIA API ({config.NVIDIA_TRANSLATION_MODEL}) - Origem: {source_language}")
-        return TranslatorNvidiaBatch(source_language=source_language), ocr_code
+        translator = TranslatorNvidiaBatch(source_language=source_language)
+        naturalization_mode = str(
+            getattr(config, "PTBR_NATURALIZATION_MODE", "selective") or "selective"
+        ).lower()
+        if naturalization_mode not in {"off", "selective"}:
+            raise ValueError("ptbr_naturalization_mode_invalid")
+        if naturalization_mode == "selective":
+            import natural_ptbr_refinement
+
+            translator.ptbr_naturalizer = natural_ptbr_refinement.RuntimePtBrNaturalizer(
+                natural_ptbr_refinement.RefinementService(
+                    natural_ptbr_refinement.NvidiaRefinementProvider(translator)
+                ),
+                model=translator.model,
+            )
+            translator.stats["naturalization_enabled"] = True
+            translator.stats["naturalization_mode"] = "selective"
+        else:
+            translator.ptbr_naturalizer = None
+            translator.stats["naturalization_enabled"] = False
+            translator.stats["naturalization_mode"] = "off"
+        return translator, ocr_code
 
     if mode == "google":
         print(f"Usando Google Translator (online) - Origem: {google_lang}")

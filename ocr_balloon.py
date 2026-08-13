@@ -1035,8 +1035,17 @@ def apply_group_translations(groups, translations):
     translations = list(translations or [])
     for index, group in enumerate(groups):
         group.sent_to_translation = True
+        raw_translation = translations[index] if index < len(translations) else ""
+        evidence = dict(getattr(raw_translation, "quality_evidence", {}) or {})
+        if isinstance(raw_translation, dict):
+            nested = raw_translation.get("quality_evidence")
+            if isinstance(nested, dict):
+                evidence.update(nested)
+        if evidence:
+            group.quality_evidence = {**group.quality_evidence, **evidence}
         translated = clean_ocr_text(
-            translations[index] if index < len(translations) else ""
+            raw_translation.get("translation", "") if isinstance(raw_translation, dict)
+            else raw_translation
         )
         if not translated:
             group.translation_candidate = ""
