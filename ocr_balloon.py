@@ -369,6 +369,15 @@ class TextGroup:
     preserve_as_name: bool = False
     ocr_quality_blocked: bool = False
     ocr_quality_block_reason: str = ""
+    quality_evidence: dict = field(default_factory=dict)
+    naturalization_eligible: bool = False
+    naturalization_attempted: bool = False
+    naturalization_accepted: bool = False
+    naturalization_status: str = ""
+    naturalization_candidate: str = ""
+    naturalization_rejected_reason: str = ""
+    naturalization_selected_version: str = ""
+    naturalization_context: dict = field(default_factory=dict)
 
     @property
     def confidence(self):
@@ -5273,6 +5282,206 @@ def _retry_terminology_drift(
         _set_translation_terminal_state(group, "translated", resolved_reason)
 
 
+NATURALIZATION_ELIGIBILITY_SIGNALS = frozenset({
+    "ptbr_naturalization_needed",
+    "naturalization_needed",
+    "style_refinement_needed",
+    "literal_translation",
+    "awkward_ptbr",
+})
+
+
+def _bump_counter(stats, name, value=1):
+    if stats is None:
+        return
+    stats[name] = int(stats.get(name, 0)) + value
+
+
+def _naturalization_signal(group):
+    evidence = {}
+    for source in (
+        getattr(group, "quality_evidence", None),
+        getattr(group, "classification_evidence", None),
+        getattr(group, "visual_validation", None),
+    ):
+        if isinstance(source, dict):
+            evidence.update(source)
+    reasons = set(str(item) for item in getattr(group, "quality_reasons", []) or [])
+    for signal in NATURALIZATION_ELIGIBILITY_SIGNALS:
+        if bool(evidence.get(signal)) or signal in reasons:
+            return signal
+    return ""
+
+
+def _naturalization_candidate_text(value):
+    if isinstance(value, dict):
+        for key in ("natural_ptbr", "text", "candidate", "translation"):
+            text = clean_ocr_text(value.get(key) or "")
+            if text:
+                return text
+        return ""
+    return clean_ocr_text(value)
+
+
+def _naturalization_rejection_reason(reason):
+    reason = str(reason or "").strip()
+    if reason.startswith(f"{semantic_fidelity.FIDELITY_UNCERTAIN}:"):
+        details = [item for item in reason.split(":", 1)[1].split(",") if item]
+        return details[0] if details else semantic_fidelity.FIDELITY_UNCERTAIN
+    return reason.split(":", 1)[0] if reason else "naturalization_rejected"
+
+
+def _naturalization_request(group, trusted_translation, ledger, reason):
+    context_lines, terms = _fidelity_context(ledger)
+    request = {
+        "source_text": str(group.text or ""),
+        "trusted_translation": str(trusted_translation or ""),
+        "target_locale": "pt-BR",
+        "classification": str(group.classification or ""),
+        "region_type": str(group.region_type or ""),
+        "group_id": str(group.group_id or ""),
+        "region_id": str(group.region_id or ""),
+        "reason": str(reason or ""),
+        "terminology": dict(terms or {}),
+        "protected_proper_names": list(group_proper_name_spans(group)),
+        "character_context": list(context_lines or ()),
+        "max_context_lines": FIDELITY_CONTEXT_MAX_LINES,
+        "max_terms": FIDELITY_CONTEXT_MAX_TERMS,
+    }
+    group.naturalization_context = {
+        "reason": request["reason"],
+        "term_count": len(request["terminology"]),
+        "character_context_count": len(request["character_context"]),
+        "bounded": True,
+    }
+    return request
+
+
+def _naturalizer_call(naturalizer, request):
+    if hasattr(naturalizer, "naturalize_ptbr"):
+        return naturalizer.naturalize_ptbr(request)
+    if hasattr(naturalizer, "naturalize"):
+        return naturalizer.naturalize(request)
+    if callable(naturalizer):
+        return naturalizer(request)
+    raise RuntimeError("naturalizer_unavailable")
+
+
+def _maybe_naturalize_translation(
+    group,
+    naturalizer,
+    *,
+    terminology_ledger,
+    fidelity_verifier,
+    fidelity_stats,
+):
+    group.naturalization_selected_version = "trusted_translation"
+    if (
+        naturalizer is None
+        or not group.translation_valid
+        or group.translation_final_state != "translated"
+        or group.ocr_quality_blocked
+        or group.classification not in semantic_fidelity.TRANSLATABLE_CLASSIFICATIONS
+    ):
+        _bump_counter(fidelity_stats, "naturalization_skipped")
+        return
+    signal = _naturalization_signal(group)
+    if not signal:
+        _bump_counter(fidelity_stats, "naturalization_skipped")
+        return
+
+    trusted_translation = clean_ocr_text(group.translation)
+    if not trusted_translation:
+        _bump_counter(fidelity_stats, "naturalization_skipped")
+        return
+    group.naturalization_eligible = True
+    _bump_counter(fidelity_stats, "naturalization_eligible")
+
+    request = _naturalization_request(
+        group, trusted_translation, terminology_ledger, signal
+    )
+    try:
+        raw = _naturalizer_call(naturalizer, request)
+    except Exception as exc:  # noqa: BLE001 - enhancement failure falls back.
+        group.naturalization_attempted = True
+        group.naturalization_status = "failed"
+        group.naturalization_rejected_reason = f"naturalizer_error:{type(exc).__name__}"
+        _bump_counter(fidelity_stats, "naturalization_attempted")
+        _bump_counter(fidelity_stats, "naturalization_failed")
+        _bump_counter(fidelity_stats, "naturalization_fallback_to_translation")
+        return
+
+    group.naturalization_attempted = True
+    _bump_counter(fidelity_stats, "naturalization_attempted")
+    candidate = _match_source_case(
+        group.text,
+        _naturalization_candidate_text(raw),
+    )
+    group.naturalization_candidate = candidate
+    if not candidate:
+        group.naturalization_status = "failed"
+        group.naturalization_rejected_reason = "naturalization_candidate_empty"
+        _bump_counter(fidelity_stats, "naturalization_failed")
+        _bump_counter(fidelity_stats, "naturalization_fallback_to_translation")
+        return
+
+    name_spans = group_proper_name_spans(group)
+    valid, reason = validate_translation_text(
+        group.text,
+        candidate,
+        group.classification,
+        _group_validation_allowed_proper_names(group),
+        required_name_spans=name_spans,
+    )
+    if valid:
+        drift = _chapter_consistency_reason(
+            terminology_ledger, group.text, candidate
+        )
+        if drift:
+            valid, reason = False, drift
+    if valid:
+        local_post_fidelity = semantic_fidelity.evaluate_local_fidelity(
+            group.text,
+            candidate,
+            classification=group.classification,
+            protected_entities=_fidelity_protected_entities(
+                group, terminology_ledger
+            ),
+            proper_names=name_spans,
+        )
+        post_budget = {"verifier_calls": 0}
+        reason = _fidelity_reason_for(
+            group,
+            candidate,
+            ledger=terminology_ledger,
+            verifier=fidelity_verifier,
+            budget=post_budget,
+            name_spans=name_spans,
+            stats=fidelity_stats,
+        )
+        if (
+            reason == semantic_fidelity.FIDELITY_UNCERTAIN
+            and local_post_fidelity.primary_reason
+        ):
+            reason = local_post_fidelity.primary_reason
+        valid = not bool(reason)
+    if valid:
+        group.translation = candidate
+        group.translation_candidate = candidate
+        group.naturalization_accepted = True
+        group.naturalization_status = "accepted"
+        group.naturalization_selected_version = "naturalized"
+        group.translation_validation_reason = "naturalization_ok"
+        _set_translation_terminal_state(group, "translated", "naturalization_ok")
+        _bump_counter(fidelity_stats, "naturalization_accepted")
+        return
+
+    group.naturalization_status = "rejected"
+    group.naturalization_rejected_reason = _naturalization_rejection_reason(reason)
+    _bump_counter(fidelity_stats, "naturalization_rejected_fidelity")
+    _bump_counter(fidelity_stats, "naturalization_fallback_to_translation")
+
+
 FIDELITY_VERIFIER_CALLS_PER_GROUP = 1
 FIDELITY_CONTEXT_MAX_LINES = 4
 FIDELITY_CONTEXT_MAX_TERMS = 20
@@ -5384,6 +5593,7 @@ def validate_and_retry_translations(
     terminology_ledger=None,
     fidelity_verifier=None,
     fidelity_stats=None,
+    ptbr_naturalizer=None,
 ):
     retry_records = []
     for group in groups:
@@ -5429,6 +5639,13 @@ def validate_and_retry_translations(
                 force,
                 retry_records,
                 fidelity_check=fidelity_reason_for,
+            )
+            _maybe_naturalize_translation(
+                group,
+                ptbr_naturalizer,
+                terminology_ledger=terminology_ledger,
+                fidelity_verifier=fidelity_verifier,
+                fidelity_stats=fidelity_stats,
             )
             continue
         if semantic_fidelity.is_fidelity_reason(reason):
@@ -5494,6 +5711,13 @@ def validate_and_retry_translations(
                     group.rejected_translation = ""
                     group.manual_review_required = False
                     _set_translation_terminal_state(group, "translated", "retry_ok")
+                    _maybe_naturalize_translation(
+                        group,
+                        ptbr_naturalizer,
+                        terminology_ledger=terminology_ledger,
+                        fidelity_verifier=fidelity_verifier,
+                        fidelity_stats=fidelity_stats,
+                    )
                     break
                 reason = new_reason
 
@@ -5549,6 +5773,13 @@ def validate_and_retry_translations(
                     group.manual_review_required = False
                     _set_translation_terminal_state(
                         group, "translated", "isolated_retry_ok"
+                    )
+                    _maybe_naturalize_translation(
+                        group,
+                        ptbr_naturalizer,
+                        terminology_ledger=terminology_ledger,
+                        fidelity_verifier=fidelity_verifier,
+                        fidelity_stats=fidelity_stats,
                     )
                 else:
                     reason = new_reason
@@ -8358,6 +8589,17 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "manual_review_required": bool(group.manual_review_required),
                 "detected_proper_names": list(group.detected_proper_names),
                 "preserve_as_name": bool(group.preserve_as_name),
+                "quality_evidence": dict(group.quality_evidence),
+                "naturalization": {
+                    "eligible": bool(group.naturalization_eligible),
+                    "attempted": bool(group.naturalization_attempted),
+                    "accepted": bool(group.naturalization_accepted),
+                    "status": group.naturalization_status,
+                    "candidate": group.naturalization_candidate,
+                    "rejected_reason": group.naturalization_rejected_reason,
+                    "selected_version": group.naturalization_selected_version,
+                    "context": dict(group.naturalization_context),
+                },
                 "translated": group.translation_final_state == "translated",
                 "ignored": group.ignored,
                 "ignore_reason": group.ignore_reason,
