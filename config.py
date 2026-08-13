@@ -236,6 +236,20 @@ OCR_GROUP_FALLBACK_MAX_GROUPS = max(0, _env_int("OCR_GROUP_FALLBACK_MAX_GROUPS",
 OCR_GROUP_FALLBACK_PADDING = max(8, _env_int("OCR_GROUP_FALLBACK_PADDING", 34))
 OCR_GROUP_MIN_QUALITY_SCORE = _env_float("OCR_GROUP_MIN_QUALITY_SCORE", 0.62)
 
+# RapidOCR is the primary engine of the fast path, so its quality signal has to
+# be actionable without doubling the OCR bill. A suspicious region is re-read
+# once, by RapidOCR only, and only when the diagnostics carry real corruption
+# evidence rather than merely unusual vocabulary. Replaying this policy over the
+# persisted diagnostics of a full chapter keeps the retry rate near 15% of
+# regions instead of the ~40% the broader fallback policy would request.
+RAPIDOCR_REGION_RECOVERY = _env_bool("RAPIDOCR_REGION_RECOVERY", True)
+RAPIDOCR_RECOVERY_MIN_QUALITY_SCORE = _env_float(
+    "RAPIDOCR_RECOVERY_MIN_QUALITY_SCORE", 0.35
+)
+RAPIDOCR_RECOVERY_MAX_REGIONS_PER_PAGE = max(
+    0, _env_int("RAPIDOCR_RECOVERY_MAX_REGIONS_PER_PAGE", 12)
+)
+
 TRANSLATION_VALIDATION = _env_bool("TRANSLATION_VALIDATION", True)
 TRANSLATION_RETRY_ON_MIXED_LANGUAGE = _env_bool(
     "TRANSLATION_RETRY_ON_MIXED_LANGUAGE",

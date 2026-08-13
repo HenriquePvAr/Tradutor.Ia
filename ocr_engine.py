@@ -75,7 +75,7 @@ class OCREngine:
 
         return ""
 
-    def detect_lines(self, img_bgr, upscale=True, page=None):
+    def detect_lines(self, img_bgr, upscale=True, page=None, rapidocr_upscale=False):
         if img_bgr is None or img_bgr.size == 0:
             self.last_run_metadata = self._run_metadata(
                 page,
@@ -86,7 +86,9 @@ class OCREngine:
             return []
 
         if self.engine == "rapidocr":
-            return self._detect_rapidocr_hybrid(img_bgr, page=page)
+            return self._detect_rapidocr_hybrid(
+                img_bgr, page=page, upscale=rapidocr_upscale
+            )
 
         if self.engine not in {"paddle", "paddle_mobile", "paddle_no_upscale"}:
             text = self._read_with_tesseract(img_bgr)
@@ -130,7 +132,7 @@ class OCREngine:
             )
             return []
 
-    def _detect_rapidocr_hybrid(self, img_bgr, page=None):
+    def _detect_rapidocr_hybrid(self, img_bgr, page=None, upscale=False):
         if not config.RAPIDOCR_ENABLED:
             return self._fallback_from_rapidocr(
                 img_bgr,
@@ -139,7 +141,7 @@ class OCREngine:
             )
 
         try:
-            lines = self._detect_with_rapidocr(img_bgr)
+            lines = self._detect_with_rapidocr(img_bgr, upscale=upscale)
         except Exception as exc:
             print(f"RapidOCR falhou nesta imagem/regiao: {exc}")
             return self._fallback_from_rapidocr(
@@ -274,9 +276,18 @@ class OCREngine:
         lines = _extract_lines(results, scale)
         return [line for line in lines if line.text]
 
-    def _detect_with_rapidocr(self, img_bgr):
+    def _detect_with_rapidocr(self, img_bgr, upscale=False):
         rapidocr = self._get_rapidocr()
-        output = rapidocr(img_bgr)
+        # A small balloon crop carries far fewer pixels per glyph than the page
+        # it came from, so re-reading it at the recogniser's preferred scale is a
+        # genuinely different attempt rather than a repeat of the first one.
+        scale = _ocr_scale(img_bgr.shape[1], img_bgr.shape[0]) if upscale else 1.0
+        image_for_ocr = (
+            cv2.resize(img_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            if scale != 1.0
+            else img_bgr
+        )
+        output = rapidocr(image_for_ocr)
         results = output[0] if isinstance(output, tuple) else output
         lines = []
         for item in results or []:
@@ -286,7 +297,7 @@ class OCREngine:
             text = clean_ocr_text(str(raw_text))
             if not text:
                 continue
-            polygon = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
+            polygon = np.asarray(polygon, dtype=np.float32).reshape(-1, 2) / float(scale)
             polygon = np.round(polygon).astype(np.int32)
             lines.append(
                 OCRLine(

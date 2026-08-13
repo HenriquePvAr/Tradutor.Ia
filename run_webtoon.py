@@ -434,6 +434,10 @@ def _configure_mode(mode):
         config.RAPIDOCR_PAGE_FALLBACK = False
         if not config.FAST_OCR_HEAVY_FALLBACK:
             config.OCR_HYBRID_FALLBACK = False
+        # The heavy cross-engine paths are off, so RapidOCR's own quality signal
+        # is what keeps a corrupted region out of the translation: one extra
+        # RapidOCR read of that region only, never a second engine.
+        config.RAPIDOCR_REGION_RECOVERY = True
     if engine == "rapidocr":
         config.POST_RENDER_OCR_VALIDATION = True
     return engine

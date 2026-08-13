@@ -366,6 +366,8 @@ class TextGroup:
     manual_review_required: bool = False
     detected_proper_names: list[str] = field(default_factory=list)
     preserve_as_name: bool = False
+    ocr_quality_blocked: bool = False
+    ocr_quality_block_reason: str = ""
 
     @property
     def confidence(self):
@@ -2429,6 +2431,11 @@ def _should_translate_group(group):
         return False
     if group.preserve_as_name:
         return False
+    # OCR corruption is an OCR problem. A region the recogniser could not read
+    # twice is held back for review instead of being handed to the translator,
+    # which has no way to recover the characters that were never read.
+    if group.ocr_quality_blocked:
+        return False
     # Translation validation runs after the initial target list is built. If a
     # retry still fails, keep the untouched source region instead of erasing it
     # and drawing broken/mixed text back onto the page.
@@ -2818,6 +2825,242 @@ def _classify_paddle_full_call(call):
     if call.get("full_candidate_exists") and full_score < pre_full_score:
         return "FULL_WORSE"
     return "FULL_NO_CHANGE"
+
+
+# Evidence that the recogniser produced characters, not words: the shapes it
+# returned do not form text any language would write. Each of these alone is
+# enough to justify one more RapidOCR read of the same pixels.
+RAPIDOCR_CORRUPTION_REASONS = frozenset(
+    {
+        "empty_text",
+        "non_ascii_ocr_artifact",
+        "mixed_case_ocr_artifact",
+        "short_malformed_case_ocr_artifact",
+        "improbable_apostrophe_pattern",
+        "long_consonant_run",
+        "improbable_tokens",
+        "many_improbable_characters",
+        "long_token_without_spaces",
+        "cross_line_lexical_confidence_disagreement",
+    }
+)
+
+# Weaker signals that are individually normal in comics: a rank ("B2"), a
+# stat line, a quiet balloon. Two of them together stop looking like a
+# coincidence, one of them never does. Stat-shaped signals
+# (``short_improbable_caps_token``, ``improbable_number_token``) are excluded
+# outright: "HP 50" trips both and is perfectly good text.
+RAPIDOCR_CORROBORATING_REASONS = frozenset(
+    {
+        "alphanumeric_ocr_artifact",
+        "unknown_short_token_in_phrase",
+        "low_confidence",
+    }
+)
+
+
+# A rank, a level or a stat is written with the digits at the edge of the token
+# ("B2", "LEVEL 10", "HP 50"). Digits *inside* a run of letters is not how text
+# is written, it is how a recogniser reports glyphs it could not resolve.
+_EMBEDDED_DIGIT_TOKEN = re.compile(r"[A-Za-z]+[0-9]+[A-Za-z]+")
+
+
+def _has_embedded_digit_corruption(text):
+    return bool(_EMBEDDED_DIGIT_TOKEN.search(_ascii_fold(str(text or ""))))
+
+
+def rapidocr_region_decision(group):
+    """Return ``"accept"`` or ``"retry"`` for one RapidOCR region.
+
+    Deliberately narrower than :func:`group_needs_selective_fallback`, which
+    exists to justify a *cross-engine* second opinion. Vocabulary-shaped signals
+    (``dictionary_near_miss``, ``compact_word_segmentation_candidate``) are not
+    corruption: rare names, ranks and stylised text trip them constantly, and
+    re-reading the same pixels with the same engine cannot resolve them anyway.
+    """
+    if not _rapidocr_recovery_enabled():
+        return "accept"
+    if group.source_engine and group.source_engine not in {"rapidocr", "mixed"}:
+        return "accept"
+    if group.preserve_as_name:
+        return "accept"
+    reasons = set(group.quality_reasons or [])
+    if reasons & RAPIDOCR_CORRUPTION_REASONS:
+        return "retry"
+    if _has_embedded_digit_corruption(group.text):
+        return "retry"
+    if len(reasons & RAPIDOCR_CORROBORATING_REASONS) >= 2:
+        return "retry"
+    if float(group.quality_score) < config.RAPIDOCR_RECOVERY_MIN_QUALITY_SCORE:
+        return "retry"
+    return "accept"
+
+
+def _rapidocr_recovery_enabled():
+    return bool(
+        getattr(config, "RAPIDOCR_REGION_RECOVERY", False)
+        and config.OCR_ENGINE == "rapidocr"
+    )
+
+
+def _rapidocr_attempt_record(attempt, strategy, text, score, reasons):
+    return {
+        "attempt": attempt,
+        "strategy": strategy,
+        "raw_text": text,
+        "normalized_text": _normalized_ocr_candidate_text(text),
+        "quality_score": round(float(score), 4),
+        "quality_reasons": list(reasons or []),
+    }
+
+
+def apply_rapidocr_region_recovery(
+    original_bgr,
+    raw_lines,
+    groups,
+    ocr_lang,
+    page_index=None,
+):
+    """Re-read suspicious RapidOCR regions once, with RapidOCR, on their own crop.
+
+    The fast path stays fast: a region whose diagnostics look clean costs exactly
+    one OCR call and is never touched here. A region carrying corruption evidence
+    costs exactly one more — the same recogniser, the same pixels, read at the
+    scale the recogniser prefers instead of at whatever scale the page happened
+    to have. Paddle is never invoked, no page or chapter is reprocessed, and a
+    second bad reading is reported rather than silently preferred.
+    """
+    lines = list(raw_lines or [])
+    if not _rapidocr_recovery_enabled():
+        return lines, []
+    if original_bgr is None or original_bgr.size == 0:
+        return lines, []
+
+    suspects = [group for group in groups if rapidocr_region_decision(group) == "retry"]
+    accepted = len(groups) - len(suspects)
+    record_count("rapidocr_recovery.primary_accepted", accepted, page_index=page_index)
+    if not suspects:
+        return lines, []
+    suspects = suspects[: config.RAPIDOCR_RECOVERY_MAX_REGIONS_PER_PAGE]
+
+    engine = None
+    records = []
+    for group in suspects:
+        crop_box = _fallback_crop_box(group, original_bgr.shape)
+        x, y, width, height = crop_box
+        crop = original_bgr[y : y + height, x : x + width]
+        record = {
+            "region_id": group.region_id or group.group_id,
+            "group_id": group.group_id,
+            "crop_box": list(crop_box),
+            "attempts": [
+                _rapidocr_attempt_record(
+                    1,
+                    "rapidocr_page_scale",
+                    group.text,
+                    group.quality_score,
+                    group.quality_reasons,
+                )
+            ],
+            "selection": "rejected",
+            "reason": "rapidocr_retry_not_better",
+        }
+        records.append(record)
+        if crop.size == 0:
+            record["reason"] = "rapidocr_retry_empty_crop"
+            record_count("rapidocr_recovery.retry_failed", page_index=page_index)
+            continue
+
+        record_count("rapidocr_recovery.retry_attempted", page_index=page_index)
+        try:
+            with profile_step(
+                "rapidocr_recovery.ocr",
+                page_index=page_index,
+                metadata={"group_id": group.group_id},
+            ):
+                if engine is None:
+                    engine = OCREngine(ocr_lang, engine="rapidocr", fallback_engine="")
+                crop_lines = engine.detect_lines(
+                    crop, page=page_index, rapidocr_upscale=True
+                )
+        except Exception as exc:  # noqa: BLE001 - a failed retry must fail closed.
+            record["reason"] = "rapidocr_retry_error"
+            record["error"] = f"{type(exc).__name__}: {exc}"
+            record_count("rapidocr_recovery.retry_failed", page_index=page_index)
+            continue
+
+        crop_lines = [
+            _offset_line(line, x, y, "rapidocr", group.group_id)
+            for line in (crop_lines or [])
+        ]
+        candidate = _best_candidate_group(
+            _candidate_groups_for_fallback(
+                original_bgr, crop_lines, page_index=page_index
+            ),
+            group.box,
+        )
+        if candidate is None:
+            record["reason"] = "rapidocr_retry_no_candidate"
+            record_count("rapidocr_recovery.retry_failed", page_index=page_index)
+            continue
+
+        candidate.source_engine = "rapidocr"
+        record["attempts"].append(
+            _rapidocr_attempt_record(
+                2,
+                "rapidocr_region_crop_upscaled",
+                candidate.text,
+                candidate.quality_score,
+                candidate.quality_reasons,
+            )
+        )
+        # Attempt 1 already failed the policy, so there is no "both acceptable"
+        # tie to break: attempt 2 wins only by clearing the same bar attempt 1
+        # could not. Nothing is preferred merely for being newer.
+        if rapidocr_region_decision(candidate) != "accept":
+            record_count("rapidocr_recovery.retry_rejected", page_index=page_index)
+            continue
+
+        record["selection"] = "attempt_2"
+        record["reason"] = "rapidocr_retry_accepted"
+        record_count("rapidocr_recovery.retry_selected", page_index=page_index)
+        replaced = {id(line) for line in [*group.lines, *group.cleanup_lines]}
+        lines = [line for line in lines if id(line) not in replaced]
+        for line in _cleanup_lines_for_group(candidate):
+            line.metadata = {
+                **(line.metadata or {}),
+                "rapidocr_recovery_used": True,
+                "rapidocr_recovery_attempt": 2,
+                "rapidocr_recovery_strategy": "rapidocr_region_crop_upscaled",
+                "original_group_id": group.group_id,
+                "original_text": group.text,
+            }
+            lines.append(line)
+
+    lines.sort(key=lambda line: (line.box[1], line.box[0]))
+    return lines, records
+
+
+def enforce_rapidocr_quality_gate(groups, page_index=None):
+    """Hold back any region that still fails the policy after its last attempt."""
+    if not _rapidocr_recovery_enabled():
+        return []
+    blocked = []
+    for group in groups:
+        if group.ocr_quality_blocked or rapidocr_region_decision(group) == "accept":
+            continue
+        group.ocr_quality_blocked = True
+        group.ocr_quality_block_reason = ";".join(group.quality_reasons) or "low_quality_score"
+        group.manual_review_required = True
+        blocked.append(group)
+    if blocked:
+        record_count(
+            "rapidocr_recovery.all_attempts_rejected",
+            len(blocked),
+            page_index=page_index,
+        )
+        record_count("ocr_quality_blocked", len(blocked), page_index=page_index)
+    return blocked
 
 
 def apply_selective_ocr_fallbacks(

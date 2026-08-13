@@ -26,9 +26,11 @@ from ocr_balloon import (
     PROPER_NAME_ONLY_REASON,
     TRANSLATION_TERMINAL_STATES,
     analyze_image_array,
+    apply_rapidocr_region_recovery,
     apply_selective_ocr_fallbacks,
     apply_speech_container_reocr,
     apply_group_translations,
+    enforce_rapidocr_quality_gate,
     get_translatable_groups,
     normalize_recurring_compact_names,
     summarize_speech_container_reocr,
@@ -950,6 +952,35 @@ def run_benchmark(args):
                         reocr_lines,
                         page_index=state["index"],
                     )
+        recovery_started = time.perf_counter()
+        with profile_step(
+            "pipeline.rapidocr_region_recovery",
+            page_index=state["index"],
+            items=len(groups),
+        ):
+            recovery_lines, recovery_records = apply_rapidocr_region_recovery(
+                original,
+                state.get("raw_lines", []),
+                groups,
+                ocr_lang,
+                state["index"],
+            )
+        if recovery_records:
+            state["rapidocr_region_recovery"] = recovery_records
+            recovery_elapsed = time.perf_counter() - recovery_started
+            stage_seconds["ocr_selective_fallback"] += recovery_elapsed
+            if any(record.get("selection") == "attempt_2" for record in recovery_records):
+                state["raw_lines"] = recovery_lines
+                with profile_step(
+                    "pipeline.analyze_after_rapidocr_recovery",
+                    page_index=state["index"],
+                    items=len(recovery_lines),
+                ):
+                    candidates, groups = analyze_image_array(
+                        original,
+                        recovery_lines,
+                        page_index=state["index"],
+                    )
         selective_started = time.perf_counter()
         with profile_step(
             "pipeline.selective_ocr_fallbacks",
@@ -1104,6 +1135,10 @@ def run_benchmark(args):
         state["original_bgr"] = original
         state["candidates"] = candidates
         state["groups"] = groups
+        # Last gate before the translation list is built: a region RapidOCR could
+        # not read acceptably, even after its one selective retry, goes to review
+        # instead of to the translator.
+        enforce_rapidocr_quality_gate(groups, page_index=state["index"])
         with profile_step(
             "pipeline.get_translatable_groups",
             page_index=state["index"],
