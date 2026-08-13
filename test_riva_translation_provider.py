@@ -250,6 +250,94 @@ class RivaProviderTests(unittest.TestCase):
         )
         self.assertTrue(all(call["max_tokens"] <= 512 for call in calls))
 
+    def test_riva_source_equal_english_subset_gets_one_corrective_request(self):
+        translator, calls = self._translator([
+            (
+                '{"BALAO_1":"Tudo bem.","BALAO_2":"TH-THANK YOU!",'
+                '"BALAO_3":"Vamos.","BALAO_4":"Certo.","BALAO_5":"Sim.",'
+                '"BALAO_6":"Nao.","BALAO_7":"Agora.","BALAO_8":"Depois."}'
+            ),
+            '{"BALAO_2":"O-OBRIGADO!"}',
+        ])
+
+        translated = translator.translate_many(
+            [
+                "ALL RIGHT.",
+                "TH-THANK YOU!",
+                "LET'S GO.",
+                "OKAY.",
+                "YES.",
+                "NO.",
+                "NOW.",
+                "LATER.",
+            ],
+            force=True,
+        )
+
+        self.assertEqual(str(translated[1]), "O-OBRIGADO!")
+        self.assertTrue(translated[1].quality_evidence["riva_corrective_retry"])
+        self.assertEqual(len(calls), 2)
+        self.assertIn('"BALAO_2":"TH-THANK YOU!"', calls[1]["messages"][1]["content"])
+        self.assertNotIn('"BALAO_1":"ALL RIGHT."', calls[1]["messages"][1]["content"])
+        self.assertEqual(calls[1]["messages"][1]["content"].count("\nJSON:\n"), 1)
+        self.assertNotIn("Rejected source-equal output", calls[1]["messages"][1]["content"])
+        self.assertEqual(translator.stats["riva_source_equal_detected"], 1)
+        self.assertEqual(translator.stats["riva_corrective_retry_requested"], 1)
+        self.assertEqual(translator.stats["riva_corrective_retry_succeeded"], 1)
+
+    def test_riva_normal_sentence_echo_gets_corrective_request(self):
+        translator, calls = self._translator([
+            "{\"BALAO_1\":\"I'M GOING HOME.\"}",
+            '{"BALAO_1":"VOU PARA CASA."}',
+        ])
+
+        translated = translator.translate_many(["I'M GOING HOME."], force=True)
+
+        self.assertEqual([str(item) for item in translated], ["VOU PARA CASA."])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(translator.stats["riva_corrective_retry_requested"], 1)
+
+    def test_riva_second_source_equal_failure_stops_without_third_call(self):
+        translator, calls = self._translator([
+            '{"BALAO_1":"TH-THANK YOU!"}',
+            '{"BALAO_1":"TH-THANK YOU!"}',
+            '{"BALAO_1":"Nao deve ser chamado"}',
+        ])
+
+        translated = translator.translate_many(["TH-THANK YOU!"], force=True)
+
+        self.assertEqual([str(item) for item in translated], ["TH-THANK YOU!"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(translator.stats["riva_corrective_retry_failed"], 1)
+        self.assertEqual(translator.stats["riva_untranslated_blocked"], 1)
+
+    def test_riva_name_code_and_sfx_source_equal_are_not_corrected(self):
+        translator, calls = self._translator([
+            '{"BALAO_1":"PAEHYEOK","BALAO_2":"S-RANK","BALAO_3":"BANG"}',
+        ])
+
+        translated = translator.translate_many(["PAEHYEOK", "S-RANK", "BANG"], force=True)
+
+        self.assertEqual([str(item) for item in translated], ["PAEHYEOK", "S-RANK", "BANG"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(translator.stats["riva_source_equal_detected"], 3)
+        self.assertEqual(translator.stats["riva_source_equal_legitimate"], 3)
+        self.assertEqual(translator.stats["riva_corrective_retry_requested"], 0)
+
+    def test_riva_all_valid_batch_has_no_extra_request(self):
+        translator, calls = self._translator([
+            '{"BALAO_1":"Vou para casa.","BALAO_2":"Obrigado."}',
+        ])
+
+        translated = translator.translate_many(
+            ["I'M GOING HOME.", "THANK YOU."],
+            force=True,
+        )
+
+        self.assertEqual([str(item) for item in translated], ["Vou para casa.", "Obrigado."])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(translator.stats["riva_source_equal_detected"], 0)
+
 
 class CredentialPoolTests(unittest.TestCase):
     def test_single_legacy_key_behaves_like_one_slot(self):

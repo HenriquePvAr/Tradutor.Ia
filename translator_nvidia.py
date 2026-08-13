@@ -24,6 +24,19 @@ from provider_transport import (
 PROMPT_VERSION = "nvidia-manga-v4-json-qa-naturalization-signal"
 RIVA_PROMPT_VERSION = "nvidia-riva-translate-v2-json-framing-translation-only"
 TRANSLATION_CACHE_SCHEMA_VERSION = 3
+_RIVA_ENGLISH_SIGNAL_TOKENS = {
+    "A", "AN", "AND", "ARE", "BE", "BEING", "BUT", "CAN", "DID", "DIDN", "DO",
+    "DON", "EVERY", "FOR", "GET", "GOING", "HAD", "HAS", "HAVE", "HERE", "HOME",
+    "I", "IF", "IN", "INTO", "IS", "IT", "JUST", "KNOW", "LIKE", "ME", "NEXT",
+    "NOT", "OF", "REMEMBER", "RUN", "SHOULD", "STILL", "THANK", "THAN", "THAT",
+    "THE", "THERE", "THIS", "TIME", "TO", "TOOK", "TWO", "US", "WAS", "WAY",
+    "WERE", "WHAT", "WHEN", "WHY", "WITH", "YOU", "YOUR",
+}
+_RIVA_PRESERVED_SFX_TOKENS = {
+    "AH", "BAM", "BANG", "BOOM", "CRACK", "GASP", "GRR", "HA", "HAHA",
+    "HUH", "MM", "MMM", "OOF", "OW", "SFX", "SLAM", "SNAP", "SWISH",
+    "THUD", "UGH", "WHAM", "WHOOSH", "ZAP",
+}
 SYSTEM_PROMPT_TEMPLATE = """Traduzir textos de baloes de manga/manhwa de {source_language} para {target_language}.
 Manter IDs iguais.
 Nao juntar baloes.
@@ -353,6 +366,12 @@ class TranslatorNvidiaBatch:
             "riva_output_token_ceiling": int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_CEILING", 512) or 512),
             "riva_logical_request_attempt_limit": self.riva_logical_request_attempt_limit,
             "riva_logical_batch_timeout_seconds": self.riva_logical_batch_timeout_seconds,
+            "riva_source_equal_detected": 0,
+            "riva_source_equal_legitimate": 0,
+            "riva_corrective_retry_requested": 0,
+            "riva_corrective_retry_succeeded": 0,
+            "riva_corrective_retry_failed": 0,
+            "riva_untranslated_blocked": 0,
             "provider_request_telemetry": [],
         }
 
@@ -676,6 +695,11 @@ class TranslatorNvidiaBatch:
         ids = [f"BALAO_{idx}" for idx in range(1, len(texts) + 1)]
         payload = dict(zip(ids, texts))
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        logical_batch_id = self._next_logical_batch_id("riva")
+        provider_budget = {
+            "remaining": self._logical_provider_call_limit(),
+            "limit": self._logical_provider_call_limit(),
+        }
         parsed = self._request_json_with_retry(
             [
                 {"role": "system", "content": self._riva_language_pair()},
@@ -694,21 +718,122 @@ class TranslatorNvidiaBatch:
             ],
             expected_ids=ids,
             max_tokens=self._riva_max_tokens_for_texts(texts),
-            logical_batch_id=self._next_logical_batch_id("riva"),
+            logical_batch_id=logical_batch_id,
             item_count=len(texts),
             source_chars=sum(len(str(text or "")) for text in texts),
+            provider_budget=provider_budget,
+        )
+        parsed = self._recover_riva_source_equal_subset(
+            texts,
+            ids,
+            parsed,
+            logical_batch_id=logical_batch_id,
+            provider_budget=provider_budget,
         )
         return [
-            TranslationResult(
-                str(parsed.get(text_id, original) or original),
-                quality_evidence={
-                    "translation_provider": "riva",
-                    "translation_model": self.model,
-                    "naturalization_eligibility_source": "riva_translation_only",
-                },
-            )
+            self._riva_translation_result(parsed.get(text_id, original), original)
             for text_id, original in zip(ids, texts)
         ]
+
+    def _riva_translation_result(self, value, original):
+        evidence = dict(getattr(value, "quality_evidence", {}) or {})
+        evidence.update(
+            {
+                "translation_provider": "riva",
+                "translation_model": self.model,
+                "naturalization_eligibility_source": "riva_translation_only",
+            }
+        )
+        return TranslationResult(str(value or original), quality_evidence=evidence)
+
+    def _recover_riva_source_equal_subset(
+        self,
+        texts,
+        ids,
+        parsed,
+        *,
+        logical_batch_id,
+        provider_budget,
+    ):
+        if self.translation_provider != "riva":
+            return parsed
+        corrective = []
+        for text_id, original in zip(ids, texts):
+            candidate = str(parsed.get(text_id, "") or "")
+            if not self._riva_is_source_equal(original, candidate):
+                continue
+            self._increment_stat("riva_source_equal_detected")
+            if not self._riva_source_equal_recovery_eligible(original):
+                self._increment_stat("riva_source_equal_legitimate")
+                continue
+            corrective.append((text_id, original, candidate))
+
+        if not corrective:
+            return parsed
+        if not provider_budget or provider_budget.get("remaining", 0) <= 0:
+            self._increment_stat("riva_untranslated_blocked", len(corrective))
+            return parsed
+
+        corrective_ids = [text_id for text_id, _original, _candidate in corrective]
+        corrective_payload = {
+            text_id: str(original)
+            for text_id, original, _candidate in corrective
+        }
+        self._increment_stat("riva_corrective_retry_requested", len(corrective))
+        try:
+            recovered = self._request_json_with_retry(
+                [
+                    {
+                        "role": "system",
+                        "content": self._riva_language_pair(),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Translate every JSON string value from English to "
+                            "Brazilian Portuguese. The previous attempt copied these "
+                            "values unchanged; do not repeat the English source. "
+                            "Preserve proper names, codes, ranks, and intentional SFX "
+                            "only when they appear inside a translated sentence. "
+                            "Preserve all JSON keys exactly. Return only a valid JSON "
+                            "object with the same keys and translated string values. "
+                            "Do not add explanations, markdown, or extra keys.\n"
+                            + self._riva_context_prompt()
+                            + "\nJSON:\n"
+                            + json.dumps(corrective_payload, ensure_ascii=False, separators=(",", ":"))
+                        ),
+                    },
+                ],
+                expected_ids=corrective_ids,
+                max_tokens=self._riva_max_tokens_for_texts(
+                    [original for _text_id, original, _candidate in corrective]
+                ),
+                logical_batch_id=logical_batch_id,
+                item_count=len(corrective),
+                source_chars=sum(len(str(original or "")) for _text_id, original, _candidate in corrective),
+                provider_budget=provider_budget,
+            )
+        except Exception:
+            self._increment_stat("riva_corrective_retry_failed", len(corrective))
+            self._increment_stat("riva_untranslated_blocked", len(corrective))
+            return parsed
+
+        updated = dict(parsed)
+        for text_id, original, _candidate in corrective:
+            new_value = str(recovered.get(text_id, "") or "")
+            if new_value.strip() and not self._riva_is_source_equal(original, new_value):
+                updated[text_id] = TranslationResult(
+                    new_value,
+                    quality_evidence={
+                        "riva_corrective_retry": True,
+                        "riva_corrective_retry_reason": "source_equal_english",
+                    },
+                )
+                self._increment_stat("riva_corrective_retry_succeeded")
+            else:
+                self._increment_stat("riva_corrective_retry_failed")
+                self._increment_stat("riva_untranslated_blocked")
+        return updated
 
     def _request_json_with_retry(
         self,
@@ -720,6 +845,7 @@ class TranslatorNvidiaBatch:
         logical_batch_id="",
         item_count=0,
         source_chars=0,
+        provider_budget=None,
     ):
         """Retry model-format failures separately from HTTP/transport retries."""
 
@@ -735,10 +861,11 @@ class TranslatorNvidiaBatch:
                 max(1.0, self.riva_logical_batch_timeout_seconds),
             )
         deadline = self._clock() + deadline_seconds
-        provider_budget = {
-            "remaining": self._logical_provider_call_limit(),
-            "limit": self._logical_provider_call_limit(),
-        }
+        if provider_budget is None:
+            provider_budget = {
+                "remaining": self._logical_provider_call_limit(),
+                "limit": self._logical_provider_call_limit(),
+            }
         for attempt in range(1, max(1, attempts) + 1):
             response_text = self._call_request_with_retry(
                 request_messages,
@@ -1344,6 +1471,102 @@ class TranslatorNvidiaBatch:
         if self.translation_provider == "riva":
             return max(1, int(self.riva_logical_request_attempt_limit or 1))
         return max(1, int(self.transport_retry_limit) * int(self.json_retry_limit))
+
+    @classmethod
+    def _riva_is_source_equal(cls, source, candidate):
+        return (
+            cls._riva_normalized_source_equal_text(source)
+            == cls._riva_normalized_source_equal_text(candidate)
+        )
+
+    @staticmethod
+    def _riva_normalized_source_equal_text(text):
+        normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
+        normalized = re.sub(r"[\u2018\u2019]", "'", normalized)
+        normalized = re.sub(r"[\u201c\u201d]", '"', normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
+
+    @staticmethod
+    def _riva_ascii_tokens(text):
+        return re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", str(text or ""))
+
+    @classmethod
+    def _riva_source_equal_recovery_eligible(cls, source):
+        text = str(source or "").strip()
+        if not text:
+            return False
+        tokens = cls._riva_ascii_tokens(text)
+        if not tokens:
+            return False
+        compact = re.sub(r"[^A-Za-z0-9]+", "", text).upper()
+        token_upper = [re.sub(r"[^A-Za-z]+", "", token).upper() for token in tokens]
+        token_upper = [token for token in token_upper if token]
+        if not token_upper:
+            return False
+        if cls._riva_looks_like_code_or_rank(text, compact, token_upper):
+            return False
+        if cls._riva_looks_like_preserved_sfx(compact, token_upper):
+            return False
+        if cls._riva_looks_like_name_or_entity_only(text, token_upper):
+            return False
+        return cls._riva_likely_ordinary_english(token_upper)
+
+    @staticmethod
+    def _riva_looks_like_code_or_rank(text, compact, token_upper):
+        if re.fullmatch(r"[A-Z]-RANK", str(text or "").strip().upper()):
+            return True
+        if re.fullmatch(r"[A-Z]{1,4}[-_]?[0-9]+", compact):
+            return True
+        if re.fullmatch(r"[A-Z0-9]{1,4}", compact) and any(ch.isdigit() for ch in compact):
+            return True
+        return False
+
+    @staticmethod
+    def _riva_looks_like_preserved_sfx(compact, token_upper):
+        if bool(getattr(config, "TRANSLATE_SFX", False)):
+            return False
+        if compact in _RIVA_PRESERVED_SFX_TOKENS:
+            return True
+        return (
+            len(token_upper) <= 2
+            and all(token in _RIVA_PRESERVED_SFX_TOKENS for token in token_upper)
+        )
+
+    @staticmethod
+    def _riva_looks_like_name_or_entity_only(text, token_upper):
+        stripped = re.sub(r"^[.\s]+|[.\s!?,;:]+$", "", str(text or "")).strip()
+        if not stripped:
+            return False
+        if len(token_upper) == 1:
+            token = token_upper[0]
+            original_letters = "".join(ch for ch in stripped if ch.isalpha())
+            if token not in _RIVA_ENGLISH_SIGNAL_TOKENS:
+                return True
+            if (
+                original_letters
+                and not original_letters.isupper()
+                and not original_letters.islower()
+                and token not in {"I"}
+            ):
+                return True
+        if len(token_upper) <= 3:
+            entity_titles = {"MR", "MRS", "MS", "MISS", "SIR", "LADY", "LORD"}
+            if token_upper[0] in entity_titles:
+                return True
+            if all(token not in _RIVA_ENGLISH_SIGNAL_TOKENS for token in token_upper):
+                return True
+        return False
+
+    @staticmethod
+    def _riva_likely_ordinary_english(token_upper):
+        hits = sum(1 for token in token_upper if token in _RIVA_ENGLISH_SIGNAL_TOKENS)
+        if hits >= 2:
+            return True
+        if hits == 1 and len(token_upper) <= 3:
+            return True
+        contraction_markers = {"DIDN", "DON", "I", "I'LL", "I'M", "YOU'RE"}
+        return any(token in contraction_markers for token in token_upper)
 
     def _next_request_id(self):
         with self._telemetry_lock:
