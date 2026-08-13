@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import threading
 import time
@@ -229,6 +230,14 @@ class TranslatorNvidiaBatch:
         )
         self.model = model or default_model
         self.batch_size = int(batch_size or config.NVIDIA_TRANSLATION_BATCH_SIZE or 20)
+        if self.translation_provider == "riva":
+            self.batch_size = max(
+                1,
+                min(
+                    self.batch_size,
+                    int(getattr(config, "NVIDIA_RIVA_MAX_BATCH_ITEMS", 8) or 8),
+                ),
+            )
         self.max_requests_per_minute = int(
             max_requests_per_minute or config.NVIDIA_MAX_REQUESTS_PER_MINUTE or 20
         )
@@ -279,6 +288,12 @@ class TranslatorNvidiaBatch:
         self.transport_retry_limit = int(config.NVIDIA_TRANSPORT_RETRY_LIMIT)
         self.json_retry_limit = int(config.NVIDIA_JSON_RETRY_LIMIT)
         self.retry_backoff_seconds = float(config.NVIDIA_RETRY_BACKOFF_SECONDS)
+        self.riva_logical_request_attempt_limit = int(
+            getattr(config, "NVIDIA_RIVA_LOGICAL_REQUEST_ATTEMPT_LIMIT", 3) or 3
+        )
+        self.riva_logical_batch_timeout_seconds = float(
+            getattr(config, "NVIDIA_RIVA_LOGICAL_BATCH_TIMEOUT_SECONDS", 60.0) or 60.0
+        )
         if (
             self.transport_retry_limit <= 0
             or self.json_retry_limit <= 0
@@ -293,6 +308,8 @@ class TranslatorNvidiaBatch:
         self._request_times = deque()
         self._rate_lock = threading.Lock()
         self._stats_lock = threading.Lock()
+        self._telemetry_lock = threading.Lock()
+        self._request_sequence = 0
         self.stats = {
             "input_texts": 0,
             "provider_name": self.translation_provider,
@@ -330,6 +347,13 @@ class TranslatorNvidiaBatch:
             "json_repair_attempts": 0,
             "circuit_rejections": 0,
             "last_transport_reason": "",
+            "riva_max_batch_items": int(getattr(config, "NVIDIA_RIVA_MAX_BATCH_ITEMS", 8) or 8),
+            "riva_max_batch_source_tokens": int(getattr(config, "NVIDIA_RIVA_MAX_BATCH_SOURCE_TOKENS", 600) or 600),
+            "riva_output_token_floor": int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_FLOOR", 96) or 96),
+            "riva_output_token_ceiling": int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_CEILING", 512) or 512),
+            "riva_logical_request_attempt_limit": self.riva_logical_request_attempt_limit,
+            "riva_logical_batch_timeout_seconds": self.riva_logical_batch_timeout_seconds,
+            "provider_request_telemetry": [],
         }
 
     @property
@@ -520,6 +544,13 @@ class TranslatorNvidiaBatch:
                     },
                 ],
                 expected_ids=["BALAO_1"],
+                max_tokens=(
+                    self._riva_max_tokens_for_texts([text])
+                    if self.translation_provider == "riva" else None
+                ),
+                logical_batch_id=self._next_logical_batch_id("strict"),
+                item_count=1,
+                source_chars=len(str(text or "")),
             )
             return parsed.get("BALAO_1", text) or text
         finally:
@@ -553,7 +584,7 @@ class TranslatorNvidiaBatch:
             translations[original_idx] = cached
             self._increment_stat("cache_hits")
 
-        batches = list(self._chunks(misses, self.batch_size))
+        batches = list(self._translation_batches(misses))
         self._increment_stat("translation_batches", len(batches))
         if not batches:
             return translations
@@ -662,6 +693,10 @@ class TranslatorNvidiaBatch:
                 },
             ],
             expected_ids=ids,
+            max_tokens=self._riva_max_tokens_for_texts(texts),
+            logical_batch_id=self._next_logical_batch_id("riva"),
+            item_count=len(texts),
+            source_chars=sum(len(str(text or "")) for text in texts),
         )
         return [
             TranslationResult(
@@ -675,7 +710,17 @@ class TranslatorNvidiaBatch:
             for text_id, original in zip(ids, texts)
         ]
 
-    def _request_json_with_retry(self, messages, expected_ids, attempts=None):
+    def _request_json_with_retry(
+        self,
+        messages,
+        expected_ids,
+        attempts=None,
+        *,
+        max_tokens=None,
+        logical_batch_id="",
+        item_count=0,
+        source_chars=0,
+    ):
         """Retry model-format failures separately from HTTP/transport retries."""
 
         expected_ids = [str(item) for item in expected_ids]
@@ -683,10 +728,28 @@ class TranslatorNvidiaBatch:
         request_messages = list(base_messages)
         last_error = None
         attempts = self.json_retry_limit if attempts is None else int(attempts)
-        deadline = self._clock() + self.timeout_policy.total_timeout_seconds
+        deadline_seconds = self.timeout_policy.total_timeout_seconds
+        if self.translation_provider == "riva":
+            deadline_seconds = min(
+                deadline_seconds,
+                max(1.0, self.riva_logical_batch_timeout_seconds),
+            )
+        deadline = self._clock() + deadline_seconds
+        provider_budget = {
+            "remaining": self._logical_provider_call_limit(),
+            "limit": self._logical_provider_call_limit(),
+        }
         for attempt in range(1, max(1, attempts) + 1):
-            response_text = self._request_with_retry(
-                request_messages, deadline=deadline)
+            response_text = self._call_request_with_retry(
+                request_messages,
+                deadline=deadline,
+                max_tokens=max_tokens,
+                provider_budget=provider_budget,
+                logical_batch_id=logical_batch_id,
+                logical_attempt=attempt,
+                item_count=item_count,
+                source_chars=source_chars,
+            )
             try:
                 parsed = self._parse_json_response(response_text)
                 missing = [text_id for text_id in expected_ids if not parsed.get(text_id)]
@@ -700,12 +763,17 @@ class TranslatorNvidiaBatch:
                         "Resposta JSON contem IDs inesperados: " + ", ".join(extra)
                     )
                 self._increment_stat("translation_results_parsed", len(parsed))
+                self._mark_latest_request_parse(True, True)
                 return parsed
             except (TypeError, ValueError) as exc:
                 last_error = exc
+                self._mark_latest_request_parse(False, False)
                 if attempt >= attempts:
                     self._increment_stat("invalid_json_failures")
                     raise
+                if provider_budget["remaining"] <= 0:
+                    self._increment_stat("invalid_json_failures")
+                    raise ProviderTransportError("provider_logical_attempt_budget_exhausted") from exc
                 self._increment_stat("invalid_json_retries")
                 self._increment_stat("json_repair_attempts")
                 request_messages = base_messages + [
@@ -725,7 +793,43 @@ class TranslatorNvidiaBatch:
                 ]
         raise last_error or ValueError("Resposta JSON invalida.")
 
-    def _request_with_retry(self, messages, *, deadline=None, response_format=None):
+    def _call_request_with_retry(self, messages, **kwargs):
+        """Call the transport layer while keeping older hermetic test doubles valid."""
+        try:
+            return self._request_with_retry(messages, **kwargs)
+        except TypeError as exc:
+            text = str(exc)
+            extended = (
+                "max_tokens",
+                "provider_budget",
+                "logical_batch_id",
+                "logical_attempt",
+                "item_count",
+                "source_chars",
+            )
+            if "unexpected keyword argument" not in text or not any(
+                f"'{name}'" in text or f'"{name}"' in text for name in extended
+            ):
+                raise
+            legacy_kwargs = {
+                "deadline": kwargs.get("deadline"),
+                "response_format": kwargs.get("response_format"),
+            }
+            return self._request_with_retry(messages, **legacy_kwargs)
+
+    def _request_with_retry(
+        self,
+        messages,
+        *,
+        deadline=None,
+        response_format=None,
+        max_tokens=None,
+        provider_budget=None,
+        logical_batch_id="",
+        logical_attempt=1,
+        item_count=0,
+        source_chars=0,
+    ):
         retry_statuses = {429, 500, 502, 503, 504}
         last_error = None
         deadline = (
@@ -734,9 +838,18 @@ class TranslatorNvidiaBatch:
         )
         for attempt in range(1, max(1, self.transport_retry_limit) + 1):
             credential = None
+            request_id = ""
+            request_started = self._clock()
+            effective_max_tokens = (
+                int(max_tokens)
+                if max_tokens is not None
+                else self._default_max_tokens_for_messages(messages)
+            )
             remaining = deadline - self._clock()
             if remaining <= 0:
                 raise ProviderTransportError("provider_total_deadline_exceeded")
+            if provider_budget is not None and provider_budget["remaining"] <= 0:
+                raise ProviderTransportError("provider_logical_attempt_budget_exhausted")
             try:
                 self.circuit_breaker.before_call()
             except ProviderTransportError:
@@ -752,19 +865,51 @@ class TranslatorNvidiaBatch:
                 self._thread_local.api_key = credential.api_key
                 self._thread_local.credential_id = credential.credential_id
                 self.stats["last_credential_id"] = credential.credential_id
+                if provider_budget is not None:
+                    provider_budget["remaining"] -= 1
                 self._increment_stat("api_requests")
                 self._increment_stat("transport_attempts")
+                request_id = self._next_request_id()
+                request_started = self._clock()
                 request_kwargs = dict(
                     model=self.model,
                     messages=messages,
                     temperature=0.2,
-                    max_tokens=4096,
+                    max_tokens=effective_max_tokens,
                 )
                 if response_format is not None:
                     request_kwargs["response_format"] = response_format
                 client = self._get_client(remaining_total_seconds=remaining)
                 completion = client.chat.completions.create(**request_kwargs)
-                content = completion.choices[0].message.content or ""
+                choice = completion.choices[0]
+                content = choice.message.content or ""
+                finish_reason = str(getattr(choice, "finish_reason", "") or "")
+                usage = getattr(completion, "usage", None)
+                generated_tokens = getattr(usage, "completion_tokens", None)
+                self._record_request_telemetry(
+                    request_id=request_id,
+                    logical_batch_id=logical_batch_id,
+                    attempt=attempt,
+                    logical_attempt=logical_attempt,
+                    attempt_reason="initial" if attempt == 1 else "transport_retry",
+                    item_count=item_count,
+                    source_chars=source_chars,
+                    messages=messages,
+                    max_tokens=effective_max_tokens,
+                    credential_id=credential.credential_id,
+                    started_at=request_started,
+                    finished_at=self._clock(),
+                    http_status=200,
+                    finish_reason=finish_reason,
+                    response_chars=len(content),
+                    generated_tokens=generated_tokens,
+                    parse_success=None,
+                    mapping_success=None,
+                    retry_scheduled=False,
+                    retry_reason="",
+                )
+                if finish_reason == "length":
+                    raise ProviderTransportError("provider_response_truncated")
                 if self._clock() > deadline:
                     raise ProviderTransportError(
                         "provider_total_deadline_exceeded")
@@ -780,6 +925,31 @@ class TranslatorNvidiaBatch:
                 if credential is not None:
                     self.credential_pool.release_failure(credential, reason)
                     self._refresh_pool_stats()
+                    self._record_request_telemetry(
+                        request_id=locals().get("request_id", self._next_request_id()),
+                        logical_batch_id=logical_batch_id,
+                        attempt=attempt,
+                        logical_attempt=logical_attempt,
+                        attempt_reason="initial" if attempt == 1 else "transport_retry",
+                        item_count=item_count,
+                        source_chars=source_chars,
+                        messages=messages,
+                        max_tokens=locals().get(
+                            "effective_max_tokens",
+                            self._default_max_tokens_for_messages(messages),
+                        ),
+                        credential_id=credential.credential_id,
+                        started_at=locals().get("request_started", self._clock()),
+                        finished_at=self._clock(),
+                        http_status=status,
+                        finish_reason="",
+                        response_chars=0,
+                        generated_tokens=None,
+                        parse_success=False,
+                        mapping_success=False,
+                        retry_scheduled=False,
+                        retry_reason=reason,
+                    )
                 if reason == "provider_rate_limited":
                     self._increment_stat("provider_rate_limited_count")
                 elif reason in {"provider_connect_timeout", "provider_read_timeout", "provider_total_deadline_exceeded"}:
@@ -809,6 +979,12 @@ class TranslatorNvidiaBatch:
                 if self._clock() + backoff >= deadline:
                     raise ProviderTransportError(
                         "provider_total_deadline_exceeded") from exc
+                if provider_budget is not None and provider_budget["remaining"] <= 0:
+                    raise ProviderTransportError(
+                        "provider_logical_attempt_budget_exhausted") from exc
+                if self.stats["provider_request_telemetry"]:
+                    self.stats["provider_request_telemetry"][-1]["retry_scheduled"] = True
+                    self.stats["provider_request_telemetry"][-1]["retry_reason"] = reason
                 self._sleep(backoff)
 
         raise last_error
@@ -1112,6 +1288,144 @@ class TranslatorNvidiaBatch:
         size = max(1, int(size or 20))
         for start in range(0, len(items), size):
             yield items[start : start + size]
+
+    def _translation_batches(self, items):
+        if self.translation_provider != "riva":
+            yield from self._chunks(items, self.batch_size)
+            return
+        max_items = max(1, int(getattr(config, "NVIDIA_RIVA_MAX_BATCH_ITEMS", 8) or 8))
+        max_source_tokens = max(
+            1,
+            int(getattr(config, "NVIDIA_RIVA_MAX_BATCH_SOURCE_TOKENS", 600) or 600),
+        )
+        batch = []
+        token_total = 0
+        for item in items:
+            item_tokens = self._approx_tokens(str(item[1] if isinstance(item, tuple) else item))
+            if batch and (
+                len(batch) >= min(self.batch_size, max_items)
+                or token_total + item_tokens > max_source_tokens
+            ):
+                yield batch
+                batch = []
+                token_total = 0
+            batch.append(item)
+            token_total += item_tokens
+        if batch:
+            yield batch
+
+    def _riva_max_tokens_for_texts(self, texts):
+        source_tokens = sum(self._approx_tokens(text) for text in texts)
+        floor = max(1, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_FLOOR", 96) or 96))
+        ceiling = max(floor, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_CEILING", 512) or 512))
+        ratio = max(1.0, float(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_RATIO", 2.4) or 2.4))
+        overhead = max(0, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_ITEM_OVERHEAD", 12) or 12))
+        estimate = math.ceil(source_tokens * ratio + len(texts) * overhead)
+        return min(ceiling, max(floor, estimate))
+
+    def _default_max_tokens_for_messages(self, messages):
+        if self.translation_provider == "riva":
+            # Fallback for call sites that do not have source texts separated.
+            user_chars = sum(
+                len(str(message.get("content") or ""))
+                for message in (messages or [])
+                if message.get("role") == "user"
+            )
+            return min(
+                int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_CEILING", 512) or 512),
+                max(
+                    int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_FLOOR", 96) or 96),
+                    math.ceil(self._approx_tokens(user_chars) * 1.2),
+                ),
+            )
+        return 4096
+
+    def _logical_provider_call_limit(self):
+        if self.translation_provider == "riva":
+            return max(1, int(self.riva_logical_request_attempt_limit or 1))
+        return max(1, int(self.transport_retry_limit) * int(self.json_retry_limit))
+
+    def _next_request_id(self):
+        with self._telemetry_lock:
+            self._request_sequence += 1
+            return f"nvidia_req_{self._request_sequence:06d}"
+
+    def _next_logical_batch_id(self, prefix):
+        with self._telemetry_lock:
+            self._request_sequence += 1
+            return f"{prefix}_batch_{self._request_sequence:06d}"
+
+    def _record_request_telemetry(
+        self,
+        *,
+        request_id,
+        logical_batch_id,
+        attempt,
+        logical_attempt,
+        attempt_reason,
+        item_count,
+        source_chars,
+        messages,
+        max_tokens,
+        credential_id,
+        started_at,
+        finished_at,
+        http_status,
+        finish_reason,
+        response_chars,
+        generated_tokens,
+        parse_success,
+        mapping_success,
+        retry_scheduled,
+        retry_reason,
+    ):
+        input_chars = sum(len(str(message.get("content") or "")) for message in (messages or []))
+        entry = {
+            "request_id": request_id,
+            "logical_batch_id": logical_batch_id,
+            "provider": self.translation_provider,
+            "model": self.model,
+            "attempt": attempt,
+            "logical_attempt": logical_attempt,
+            "attempt_reason": attempt_reason,
+            "item_count": int(item_count or 0),
+            "source_chars": int(source_chars or 0),
+            "prompt_chars": input_chars,
+            "approx_input_tokens": self._approx_tokens(input_chars),
+            "max_tokens": int(max_tokens or 0),
+            "credential_slot": str(credential_id or ""),
+            "started_at": float(started_at),
+            "finished_at": float(finished_at),
+            "latency_ms": int(max(0.0, float(finished_at) - float(started_at)) * 1000),
+            "http_status": http_status,
+            "finish_reason": str(finish_reason or ""),
+            "response_chars": int(response_chars or 0),
+            "generated_tokens": generated_tokens,
+            "parse_success": parse_success,
+            "mapping_success": mapping_success,
+            "retry_scheduled": bool(retry_scheduled),
+            "retry_reason": str(retry_reason or ""),
+        }
+        with self._stats_lock:
+            telemetry = self.stats.setdefault("provider_request_telemetry", [])
+            telemetry.append(entry)
+            if len(telemetry) > 500:
+                del telemetry[:-500]
+
+    def _mark_latest_request_parse(self, parse_success, mapping_success):
+        with self._stats_lock:
+            telemetry = self.stats.get("provider_request_telemetry") or []
+            if telemetry:
+                telemetry[-1]["parse_success"] = bool(parse_success)
+                telemetry[-1]["mapping_success"] = bool(mapping_success)
+
+    @staticmethod
+    def _approx_tokens(value):
+        if isinstance(value, (int, float)):
+            chars = int(value)
+        else:
+            chars = len(str(value or ""))
+        return max(1, math.ceil(chars / 4))
 
     @staticmethod
     def _postprocess_translation(original_text, translated):

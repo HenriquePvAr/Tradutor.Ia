@@ -48,9 +48,15 @@ def circuit_policy():
 
 
 class FakeCompletion:
-    def __init__(self, content):
+    def __init__(self, content, *, finish_reason="stop"):
         message = type("Message", (), {"content": content})()
-        self.choices = [type("Choice", (), {"message": message})()]
+        self.choices = [
+            type("Choice", (), {
+                "message": message,
+                "finish_reason": finish_reason,
+            })()
+        ]
+        self.usage = type("Usage", (), {"completion_tokens": 7})()
 
 
 class FakeClient:
@@ -65,6 +71,8 @@ class FakeClient:
         result = self.responses.pop(0)
         if isinstance(result, Exception):
             raise result
+        if isinstance(result, tuple):
+            return FakeCompletion(result[0], finish_reason=result[1])
         return FakeCompletion(result)
 
 
@@ -90,9 +98,8 @@ class RivaProviderTests(unittest.TestCase):
             sleeper=clock.sleep,
             circuit_breaker=ProviderCircuitBreaker(circuit_policy(), clock=clock),
         )
-        translator._get_client = lambda *, remaining_total_seconds=None: FakeClient(
-            responses, calls
-        )
+        client = FakeClient(responses, calls)
+        translator._get_client = lambda *, remaining_total_seconds=None: client
         return translator, calls
 
     def test_riva_request_uses_official_model_language_pair_and_compact_prompt(self):
@@ -116,6 +123,8 @@ class RivaProviderTests(unittest.TestCase):
         self.assertNotIn("chain-of-thought", user_prompt.casefold())
         self.assertEqual(translator.stats["provider_name"], "riva")
         self.assertEqual(translator.stats["credential_pool_size"], 1)
+        self.assertLess(calls[0]["max_tokens"], 4096)
+        self.assertLessEqual(calls[0]["max_tokens"], 512)
 
     def test_riva_translation_result_does_not_fabricate_naturalization_signal(self):
         translator, _calls = self._translator(['{"BALAO_1":"Eu assumo daqui."}'])
@@ -158,6 +167,88 @@ class RivaProviderTests(unittest.TestCase):
         translated = translator.translate_many(["FIRST", "SECOND"], force=True)
 
         self.assertEqual([str(item) for item in translated], ["Primeiro", "Segundo"])
+
+    def test_riva_tiny_request_uses_bounded_output_budget_not_4096(self):
+        translator, calls = self._translator(['{"BALAO_1":"Oi"}'])
+
+        translated = translator.translate_many(["HI"], force=True)
+
+        self.assertEqual([str(item) for item in translated], ["Oi"])
+        self.assertGreaterEqual(calls[0]["max_tokens"], 1)
+        self.assertLess(calls[0]["max_tokens"], 4096)
+        self.assertLessEqual(calls[0]["max_tokens"], 512)
+
+    def test_riva_transport_and_json_retries_share_logical_budget(self):
+        translator, calls = self._translator(["not-json", "still-not-json", "bad"])
+        translator.transport_retry_limit = 4
+        translator.json_retry_limit = 3
+        translator.riva_logical_request_attempt_limit = 3
+
+        translated = translator.translate_many(["HELLO"], force=True)
+
+        self.assertEqual(translated, ["HELLO"])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(translator.stats["failed_batches"], 1)
+        self.assertEqual(translator.stats["invalid_json_failures"], 1)
+
+    def test_riva_transport_timeouts_do_not_exceed_logical_budget(self):
+        translator, calls = self._translator([
+            TimeoutError("read timeout"),
+            TimeoutError("read timeout"),
+            TimeoutError("read timeout"),
+            '{"BALAO_1":"Nunca"}',
+        ])
+        translator.transport_retry_limit = 4
+        translator.json_retry_limit = 3
+        translator.riva_logical_request_attempt_limit = 3
+
+        translated = translator.translate_many(["HELLO"], force=True)
+
+        self.assertEqual(translated, ["HELLO"])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(translator.stats["provider_timeout_count"], 3)
+
+    def test_riva_finish_reason_length_fails_closed(self):
+        translator, calls = self._translator([
+            ('{"BALAO_1":"Truncado', "length"),
+            '{"BALAO_1":"Nao deve ser usado"}',
+        ])
+
+        translated = translator.translate_many(["HELLO"], force=True)
+
+        self.assertEqual(translated, ["HELLO"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(translator.stats["failed_batches"], 1)
+        self.assertEqual(
+            translator.stats["provider_request_telemetry"][0]["finish_reason"],
+            "length",
+        )
+
+    def test_riva_twenty_items_are_split_by_riva_batch_limit(self):
+        responses = []
+        for count in (8, 8, 4):
+            responses.append(
+                "{"
+                + ",".join(
+                    f'"BALAO_{index}":"T{index}"'
+                    for index in range(1, count + 1)
+                )
+                + "}"
+            )
+        translator, calls = self._translator(responses)
+
+        translated = translator.translate_many(
+            [f"SOURCE {index}" for index in range(20)],
+            force=True,
+        )
+
+        self.assertEqual(len(translated), 20)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(
+            [call["messages"][1]["content"].count("BALAO_") for call in calls],
+            [8, 8, 4],
+        )
+        self.assertTrue(all(call["max_tokens"] <= 512 for call in calls))
 
 
 class CredentialPoolTests(unittest.TestCase):
