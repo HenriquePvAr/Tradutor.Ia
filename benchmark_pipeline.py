@@ -1232,6 +1232,8 @@ def run_benchmark(args):
         translator,
         force=args.force,
         terminology_ledger=session_context,
+        fidelity_verifier=getattr(translator, "fidelity_verifier", None),
+        fidelity_stats=translator_stats,
     )
     if session_context is not None:
         session_context.record_translations(translation_targets)

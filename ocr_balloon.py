@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import config
 import font_fidelity
+import semantic_fidelity
 from classification_profiler import profile_step, record_count, record_group
 from json_utils import dump_json
 from ocr_engine import (
@@ -1132,6 +1133,8 @@ def _terminal_translation_failure_reason(group, validation_reason, candidate):
         )
     ):
         return "residual_source_language_after_retries"
+    if semantic_fidelity.is_fidelity_reason(validation_reason):
+        return "semantic_fidelity_failed_after_retries"
     if str(validation_reason or "").startswith("strict_retry_error"):
         return "translation_failed_after_retries"
     return "invalid_translation_after_retries"
@@ -5194,7 +5197,9 @@ def _chapter_consistency_reason(ledger, source, candidate):
     return str(ledger.character_conflict_reason(source, candidate) or "")
 
 
-def _retry_terminology_drift(group, translator, ledger, force, retry_records):
+def _retry_terminology_drift(
+    group, translator, ledger, force, retry_records, fidelity_check=None
+):
     """One extra call when a candidate contradicts a decision already taken.
 
     Purely additive: only the chapter's own established facts are checked, and a
@@ -5245,6 +5250,10 @@ def _retry_terminology_drift(group, translator, ledger, force, retry_records):
         valid = bool(valid) and not _chapter_consistency_reason(
             ledger, group.text, candidate
         )
+        # This retry may only ever improve the region. A consistency fix that
+        # arrived with a changed meaning is not an improvement.
+        if valid and fidelity_check is not None:
+            valid = not fidelity_check(candidate)
     resolved_reason = f"{reason_code.removesuffix('_conflict')}_retry_ok"
     retry_records.append({
         "group_id": group.group_id,
@@ -5264,12 +5273,138 @@ def _retry_terminology_drift(group, translator, ledger, force, retry_records):
         _set_translation_terminal_state(group, "translated", resolved_reason)
 
 
-def validate_and_retry_translations(groups, translator, force=False, terminology_ledger=None):
+FIDELITY_VERIFIER_CALLS_PER_GROUP = 1
+FIDELITY_CONTEXT_MAX_LINES = 4
+FIDELITY_CONTEXT_MAX_TERMS = 20
+
+
+def _bump_fidelity(stats, name, value=1):
+    if stats is None:
+        return
+    stats[name] = int(stats.get(name, 0)) + value
+
+
+def _fidelity_context(ledger):
+    """The bounded facts the adjudicator may see - never the chapter."""
+    lines, terms = (), {}
+    if ledger is None:
+        return lines, terms
+    if hasattr(ledger, "character_prompt_lines"):
+        lines = tuple(ledger.character_prompt_lines() or ())[:FIDELITY_CONTEXT_MAX_LINES]
+    if hasattr(ledger, "term_bindings"):
+        terms = {
+            str(entry.get("source") or key): str(entry.get("target") or "")
+            for key, entry in list((ledger.term_bindings() or {}).items())[
+                :FIDELITY_CONTEXT_MAX_TERMS
+            ]
+            if isinstance(entry, dict)
+        }
+    return lines, terms
+
+
+def _fidelity_protected_entities(group, ledger):
+    """Chapter identities strong enough to block a translation on their own.
+
+    The ledger files a name under its source spelling, and an ordinary source
+    word that once survived a region is filed the same way. Blocking on those
+    would reject correct translations of common nouns, so the same lexical
+    authority that decides whether a token may be preserved as a name decides
+    here too - this adds no proper-name detector of its own.
+    """
+    return tuple(
+        entity
+        for entity in semantic_fidelity.ledger_entities_for(group.text, ledger)
+        if not all(
+            _token_is_source_vocabulary(token.upper())
+            for token in re.findall(r"[^\W\d_]+", entity, flags=re.UNICODE)
+        )
+    )
+
+
+def _fidelity_reason_for(group, candidate, *, ledger, verifier, budget, name_spans, stats):
+    """Why this candidate may not be trusted, or '' when it may.
+
+    Local invariants first and free; the semantic verifier only for what they
+    cannot settle, at most once per region, and its uncertainty is never read as
+    a yes.
+    """
+    protected = _fidelity_protected_entities(group, ledger)
+    finding = semantic_fidelity.evaluate_local_fidelity(
+        group.text,
+        candidate,
+        classification=group.classification,
+        protected_entities=protected,
+        proper_names=name_spans,
+    )
+    if finding.faithful:
+        _bump_fidelity(stats, "fidelity_fast_path_pass")
+        return ""
+    if finding.status == semantic_fidelity.BLOCKED:
+        _bump_fidelity(stats, "fidelity_local_block")
+        return finding.reason()
+
+    can_adjudicate = verifier is not None and hasattr(verifier, "verify_fidelity")
+    if not can_adjudicate or budget["verifier_calls"] >= FIDELITY_VERIFIER_CALLS_PER_GROUP:
+        # No adjudication available or already spent: unproven, so not trusted.
+        _bump_fidelity(stats, "fidelity_verifier_uncertain")
+        return semantic_fidelity.FidelityFinding(
+            semantic_fidelity.VERIFY,
+            (semantic_fidelity.FIDELITY_UNCERTAIN,) + tuple(finding.reason_codes),
+        ).reason()
+
+    budget["verifier_calls"] += 1
+    _bump_fidelity(stats, "fidelity_verifier_requested")
+    context_lines, terms = _fidelity_context(ledger)
+    verdict = semantic_fidelity.adjudicate(
+        verifier,
+        source_text=group.text,
+        candidate=candidate,
+        finding=finding,
+        target_language=getattr(config, "TARGET_LANGUAGE", "pt"),
+        protected_entities=protected + tuple(name_spans or ()),
+        terminology=terms,
+        context=context_lines,
+    )
+    if verdict.faithful:
+        _bump_fidelity(stats, "fidelity_verifier_pass")
+        return ""
+    _bump_fidelity(
+        stats,
+        "fidelity_verifier_fail"
+        if verdict.status == semantic_fidelity.BLOCKED
+        else "fidelity_verifier_uncertain",
+    )
+    return verdict.reason()
+
+
+def validate_and_retry_translations(
+    groups,
+    translator,
+    force=False,
+    terminology_ledger=None,
+    fidelity_verifier=None,
+    fidelity_stats=None,
+):
     retry_records = []
     for group in groups:
         if not group.sent_to_translation:
             continue
         name_spans = group_proper_name_spans(group)
+        # One budget per region: no module state, so two workers translating two
+        # chapters can never spend each other's calls or contaminate a verdict.
+        fidelity_budget = {"verifier_calls": 0}
+
+        def fidelity_reason_for(candidate):
+            return _fidelity_reason_for(
+                group,
+                candidate,
+                ledger=terminology_ledger,
+                verifier=fidelity_verifier,
+                budget=fidelity_budget,
+                name_spans=name_spans,
+                stats=fidelity_stats,
+            )
+
         valid, reason = validate_translation_text(
             group.text,
             group.translation,
@@ -5277,14 +5412,27 @@ def validate_and_retry_translations(groups, translator, force=False, terminology
             _group_validation_allowed_proper_names(group),
             required_name_spans=name_spans,
         )
+        if valid:
+            # Everything above answered "is this the target language". This asks
+            # whether it still says what the source said.
+            fidelity_reason = fidelity_reason_for(group.translation)
+            if fidelity_reason:
+                valid, reason = False, fidelity_reason
         group.translation_valid = valid
         group.translation_validation_reason = reason
         if valid:
             _set_translation_terminal_state(group, "translated", reason)
             _retry_terminology_drift(
-                group, translator, terminology_ledger, force, retry_records
+                group,
+                translator,
+                terminology_ledger,
+                force,
+                retry_records,
+                fidelity_check=fidelity_reason_for,
             )
             continue
+        if semantic_fidelity.is_fidelity_reason(reason):
+            _bump_fidelity(fidelity_stats, "fidelity_retry")
         original_candidate = group.translation_candidate or clean_ocr_text(
             group.translation
         )
@@ -5320,6 +5468,12 @@ def validate_and_retry_translations(groups, translator, force=False, terminology
                     _group_validation_allowed_proper_names(group),
                     required_name_spans=name_spans,
                 )
+                if valid and candidate:
+                    # A retry is a new candidate, not a correction we may assume
+                    # worked: it faces the same fidelity gate as the first one.
+                    fidelity_reason = fidelity_reason_for(candidate)
+                    if fidelity_reason:
+                        valid, new_reason = False, fidelity_reason
                 retry_records.append(
                     {
                         "group_id": group.group_id,
@@ -5370,6 +5524,10 @@ def validate_and_retry_translations(groups, translator, force=False, terminology
                     _group_validation_allowed_proper_names(group),
                     required_name_spans=name_spans,
                 )
+                if valid:
+                    fidelity_reason = fidelity_reason_for(candidate)
+                    if fidelity_reason:
+                        valid, new_reason = False, fidelity_reason
                 retry_records.append(
                     {
                         "group_id": group.group_id,
@@ -5403,6 +5561,10 @@ def validate_and_retry_translations(groups, translator, force=False, terminology
         # model reporting there is nothing to translate, which is what a name is.
         if names_were_forbidden and _finalize_proper_name_only(group, latest_candidate):
             continue
+        if semantic_fidelity.is_fidelity_reason(reason):
+            # Both attempts stayed materially unfaithful. The least bad of two
+            # wrong meanings is still a wrong meaning: the region is held.
+            _bump_fidelity(fidelity_stats, "fidelity_blocked")
         failure_reason = _terminal_translation_failure_reason(
             group,
             "strict_retry_error" if had_retry_error and not latest_candidate else reason,

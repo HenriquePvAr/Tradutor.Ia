@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import config
+import semantic_fidelity
 from pipeline_cache import atomic_write_json, load_json, stable_hash
 from provider_transport import (
     CircuitBreakerPolicy,
@@ -248,8 +249,34 @@ class TranslatorNvidiaBatch:
                 "A tentativa anterior usou um pronome incompativel com o personagem ja "
                 "identificado neste capitulo; use os pronomes listados no contexto de "
                 "personagens.",
+            # Semantic fidelity: the constraint that failed, never why we think so.
+            semantic_fidelity.NEGATION_CHANGED:
+                "A tentativa anterior alterou a negacao do original; preserve exatamente "
+                "o que e negado e o que e afirmado.",
+            semantic_fidelity.QUANTITY_CHANGED:
+                "A tentativa anterior alterou um numero ou quantidade do original; "
+                "preserve todos os valores numericos exatamente como no original.",
+            semantic_fidelity.ENTITY_CHANGED:
+                "A tentativa anterior removeu ou substituiu um nome proprio ja "
+                "estabelecido neste capitulo; mantenha o nome exatamente como esta.",
+            semantic_fidelity.ACTOR_RELATION_CHANGED:
+                "A tentativa anterior pode ter trocado quem faz o que a quem; preserve "
+                "exatamente o sujeito, o objeto e a direcao da acao.",
+            semantic_fidelity.STATE_ACTION_CHANGED:
+                "A tentativa anterior transformou uma acao ou decisao do original em um "
+                "estado do personagem; preserve a intencao e a acao do original.",
+            semantic_fidelity.MEANING_MISMATCH:
+                "A tentativa anterior mudou o sentido do original; traduza preservando "
+                "negacao, quantidades, nomes, relacoes e intencao.",
+            semantic_fidelity.FIDELITY_UNCERTAIN:
+                "Nao foi possivel confirmar que a tentativa anterior preserva o sentido "
+                "do original; traduza de forma direta, preservando negacao, quantidades, "
+                "nomes, relacoes e intencao.",
         }
-        return table.get(str(validation_reason or "").strip(),
+        # A fidelity reason carries the offending facts after a colon; the
+        # instruction is chosen by the code alone.
+        code = str(validation_reason or "").split(":", 1)[0].strip()
+        return table.get(code,
                           "Refaca a traducao evitando o mesmo problema da tentativa anterior.")
 
     def translate_strict(
@@ -274,6 +301,10 @@ class TranslatorNvidiaBatch:
                 "traducao_rejeitada": str(previous_translation or ""),
                 "motivo_rejeicao": str(validation_reason or ""),
             }
+            constraint = semantic_fidelity.retry_constraint(validation_reason)
+            if constraint:
+                # The model is told which constraint failed, never any reasoning.
+                payload["restricao"] = constraint
             parsed = self._request_json_with_retry(
                 [
                     {
