@@ -4936,7 +4936,71 @@ def _needs_isolated_retry(group, reason):
     )
 
 
-def validate_and_retry_translations(groups, translator, force=False):
+def _retry_terminology_drift(group, translator, ledger, force, retry_records):
+    """One extra call when a candidate contradicts a decision already taken.
+
+    Purely additive: the chapter's own established source -> target binding is
+    the only thing checked, and a candidate the quality gate already accepted is
+    never downgraded by it. If the extra attempt does not resolve the conflict
+    the accepted translation stays exactly as it was - protecting consistency
+    must not become a new way to fail a region.
+    """
+    if ledger is None or not hasattr(translator, "translate_strict"):
+        return
+    drift = str(ledger.drift_reason(group.text, group.translation) or "")
+    if not drift:
+        return
+    name_spans = group_proper_name_spans(group)
+    try:
+        candidate = translator.translate_strict(
+            group.text,
+            previous_translation=group.translation,
+            validation_reason="terminology_conflict",
+            force=force,
+            proper_names=name_spans,
+        )
+    except Exception as exc:  # noqa: BLE001 - one region must not sink the chapter.
+        retry_records.append({
+            "group_id": group.group_id,
+            "source": group.text,
+            "previous_translation": group.translation,
+            "candidate_translation": "",
+            "attempt": group.translation_retry_count + 1,
+            "valid": True,
+            "reason": f"terminology_retry_error:{type(exc).__name__}",
+            "terminology": drift,
+        })
+        return
+    candidate = _match_source_case(group.text, clean_ocr_text(candidate))
+    valid = False
+    if candidate:
+        valid, _reason = validate_translation_text(
+            group.text,
+            candidate,
+            group.classification,
+            _group_validation_allowed_proper_names(group),
+            required_name_spans=name_spans,
+        )
+        valid = bool(valid) and not ledger.drift_reason(group.text, candidate)
+    retry_records.append({
+        "group_id": group.group_id,
+        "source": group.text,
+        "previous_translation": group.translation,
+        "candidate_translation": candidate,
+        "attempt": group.translation_retry_count + 1,
+        "valid": True,
+        "reason": "terminology_retry_ok" if valid else "terminology_conflict_unresolved",
+        "terminology": drift,
+    })
+    group.translation_retry_count += 1
+    if valid:
+        group.translation = candidate
+        group.translation_candidate = candidate
+        group.translation_validation_reason = "terminology_retry_ok"
+        _set_translation_terminal_state(group, "translated", "terminology_retry_ok")
+
+
+def validate_and_retry_translations(groups, translator, force=False, terminology_ledger=None):
     retry_records = []
     for group in groups:
         if not group.sent_to_translation:
@@ -4953,6 +5017,9 @@ def validate_and_retry_translations(groups, translator, force=False):
         group.translation_validation_reason = reason
         if valid:
             _set_translation_terminal_state(group, "translated", reason)
+            _retry_terminology_drift(
+                group, translator, terminology_ledger, force, retry_records
+            )
             continue
         original_candidate = group.translation_candidate or clean_ocr_text(
             group.translation

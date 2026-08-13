@@ -1185,10 +1185,18 @@ def run_benchmark(args):
         and bool(getattr(group, "translation_valid", False))
     )
     retry_started = time.perf_counter()
+    if session_context is not None:
+        # Learn the chapter's terminology from the first pass *before* retrying,
+        # so a region near the end is judged against the decisions taken at the
+        # start instead of against whatever survived the rolling window.
+        session_context.record_translations(translation_targets)
+        if hasattr(translator, "set_session_context"):
+            translator.set_session_context(session_context)
     translation_retry_records = validate_and_retry_translations(
         translation_targets,
         translator,
         force=args.force,
+        terminology_ledger=session_context,
     )
     if session_context is not None:
         session_context.record_translations(translation_targets)
