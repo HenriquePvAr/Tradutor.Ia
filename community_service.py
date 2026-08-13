@@ -101,7 +101,6 @@ class CommunityService:
     def create_draft(self, *, principal: RequestPrincipal, output_dir: str,
                      pdf_path: str = "",
                      source_job_id: str = "", source_run_id: str = "",
-                     reuse_source_post: bool = True,
                      series_title: str = "", series_slug: str = "", episode_number: str = "",
                      title: str = "", description: str = "", visibility: str = Visibility.PUBLIC,
                      tags: Any = None,
@@ -137,7 +136,7 @@ class CommunityService:
             "visibility": visibility,
             "tags": normalized_tags,
         }
-        if source_job_id and reuse_source_post:
+        if source_job_id:
             post_id, created = self.store.create_or_get_source_post(**post_fields)
             if not created:
                 existing = self.store.get_post(post_id) or {}
@@ -179,7 +178,6 @@ class CommunityService:
 
     def request_publish(self, post_id: str, *, principal: RequestPrincipal,
                         pdf_path: str = "",
-                        force_new_version: bool = False,
                         canonical_publication_id: str = "") -> dict[str, Any]:
         self._require_authenticated(principal)
         post = self.store.get_post(post_id)
@@ -218,7 +216,6 @@ class CommunityService:
             post_id=post_id,
             sha256=sha256,
             actor_id=actor,
-            allow_duplicate=force_new_version,
         )
         outcome = preparation.get("outcome")
         if outcome in {"active", "completed"}:
@@ -283,7 +280,6 @@ class CommunityService:
                 sha256=sha256,
                 storage_provider=self.provider_name,
                 actor_id=actor,
-                allow_duplicate=force_new_version,
             )
         except BaseException:
             # The community transaction may have committed before the connection

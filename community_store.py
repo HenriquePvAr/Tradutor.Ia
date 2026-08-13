@@ -999,7 +999,6 @@ class CommunityStore:
         post_id: str,
         sha256: str,
         actor_id: str,
-        allow_duplicate: bool = False,
     ) -> dict[str, Any]:
         """Classify a publish from one database snapshot before creating a job.
 
@@ -1014,7 +1013,6 @@ class CommunityStore:
                 post_id=post_id,
                 sha256=sha256,
                 actor_id=actor_id,
-                allow_duplicate=allow_duplicate,
             )
             self._conn.execute("COMMIT")
             if outcome:
@@ -1040,7 +1038,6 @@ class CommunityStore:
         sha256: str,
         storage_provider: str,
         actor_id: str,
-        allow_duplicate: bool = False,
     ) -> dict[str, Any]:
         """Atomically link file/job and move the post to PUBLISHING.
 
@@ -1055,7 +1052,6 @@ class CommunityStore:
                 post_id=post_id,
                 sha256=sha256,
                 actor_id=actor_id,
-                allow_duplicate=allow_duplicate,
             )
             if outcome:
                 self._conn.execute("COMMIT")
@@ -1113,7 +1109,6 @@ class CommunityStore:
         post_id: str,
         sha256: str,
         actor_id: str,
-        allow_duplicate: bool,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """Classify while the caller owns a community DB write transaction."""
         now = time.time()
@@ -1125,10 +1120,8 @@ class CommunityStore:
         if post["status"] in {PostStatus.BLOCKED, PostStatus.DELETED}:
             return {"outcome": "not_publishable"}, None
 
-        if not allow_duplicate:
-            duplicate = self.blocking_sha_exists(sha256, exclude_post=post_id)
-            if duplicate:
-                return {"outcome": "duplicate"}, None
+        if self.blocking_sha_exists(sha256, exclude_post=post_id):
+            return {"outcome": "duplicate"}, None
 
         active = self._row(self._conn.execute(
             "SELECT f.* FROM community_files f WHERE f.post_id=? "

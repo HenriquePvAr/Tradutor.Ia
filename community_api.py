@@ -55,6 +55,11 @@ _CLIENT_IDENTITY_FIELDS = frozenset({
     "artifact_size_bytes", "owner_user_id", "publication_status", "last_error_code",
     "canonical_publication_id", "chapter_id", "remote_chapter_id",
 })
+# Attempt lifecycle (first attempt / reuse active / already published / fresh attempt
+# after a pre-Drive failure / post-Drive recovery) is derived from persisted server
+# state alone.  A request may not choose to bypass duplicate protection or to revive a
+# terminal attempt, so this legacy opt-in is rejected instead of honoured.
+_CLIENT_RETRY_CONTROL_FIELDS = frozenset({"force_new_version"})
 
 
 class RangeNotSatisfiable(CommunityError):
@@ -665,29 +670,26 @@ class CommunityApi:
         self._require_authenticated_principal(principal)
         if _CLIENT_IDENTITY_FIELDS.intersection(payload):
             raise CommunityError("client_identity_not_allowed")
+        if _CLIENT_RETRY_CONTROL_FIELDS.intersection(payload):
+            raise CommunityError("client_retry_control_not_allowed")
         with self._community_lock:
             source = self._resolve_publish_source(payload, principal)
-            raw_force = payload.get("force_new_version", False)
-            if not isinstance(raw_force, bool):
-                raise CommunityError("invalid_force_new_version")
-            force_new_version = raw_force
-            if not force_new_version:
-                preflight_pdf = (
-                    Path(source["pdf_path"])
-                    if source["pdf_path"]
-                    else self.service._resolve_pdf(Path(source["output_dir"]))
-                )
-                validate_local_pdf(preflight_pdf, self.service.output_root)
-                preflight_sha, _ = sha256_of_file(preflight_pdf)
-                existing_post = self.store.post_for_owner_source(
-                    principal.user_id,
-                    source["source_job_id"],
-                )
-                if self.store.blocking_sha_exists(
-                    preflight_sha,
-                    exclude_post=(existing_post or {}).get("id", ""),
-                ):
-                    raise CommunityError("duplicate_pdf_already_published")
+            preflight_pdf = (
+                Path(source["pdf_path"])
+                if source["pdf_path"]
+                else self.service._resolve_pdf(Path(source["output_dir"]))
+            )
+            validate_local_pdf(preflight_pdf, self.service.output_root)
+            preflight_sha, _ = sha256_of_file(preflight_pdf)
+            existing_post = self.store.post_for_owner_source(
+                principal.user_id,
+                source["source_job_id"],
+            )
+            if self.store.blocking_sha_exists(
+                preflight_sha,
+                exclude_post=(existing_post or {}).get("id", ""),
+            ):
+                raise CommunityError("duplicate_pdf_already_published")
             pdf = (
                 Path(source["pdf_path"])
                 if source["pdf_path"]
@@ -733,7 +735,6 @@ class CommunityApi:
                 pdf_path=source["pdf_path"],
                 source_job_id=source["source_job_id"],
                 source_run_id=source["source_run_id"],
-                reuse_source_post=not force_new_version,
                 series_title=str(payload.get("series_title") or ""),
                 series_slug=str(payload.get("series_slug") or ""),
                 episode_number=str(payload.get("episode_number") or ""),
@@ -745,7 +746,6 @@ class CommunityApi:
                 draft["post_id"],
                 principal=principal,
                 pdf_path=draft["pdf_path"],
-                force_new_version=force_new_version,
                 canonical_publication_id=canonical_publication_id,
             )
 

@@ -1177,19 +1177,20 @@ def test_same_source_with_conflicting_visibility_is_not_silently_idempotent(harn
     ]) == 1
 
 
-@pytest.mark.parametrize("invalid_force", ["false", 1, [], {}])
-def test_force_new_version_requires_json_boolean(harness, invalid_force):
+@pytest.mark.parametrize("forced", [True, False, "false", 1, [], {}])
+def test_client_cannot_control_publish_retry_semantics(harness, forced):
+    """Attempt lifecycle is derived from server state; a request may not opt out."""
     source_job_id, _ = harness.create_finished_translation_job(
         owner="user-b",
-        name=f"invalid-force-{type(invalid_force).__name__}",
+        name=f"forced-{type(forced).__name__}-{str(forced).lower()}",
     )
     response = harness.client.post(
         "/api/community/publish",
-        json={"source_job_id": source_job_id, "force_new_version": invalid_force},
+        json={"source_job_id": source_job_id, "force_new_version": forced},
         headers=harness.headers(harness.other, csrf=True),
     )
     assert response.status_code == 400
-    assert response.json() == {"detail": "invalid_force_new_version"}
+    assert response.json() == {"detail": "client_retry_control_not_allowed"}
     assert not any(
         post["source_job_id"] == source_job_id
         for post in harness.api.store.list_user_posts("user-b")

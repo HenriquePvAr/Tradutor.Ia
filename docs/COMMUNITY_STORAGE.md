@@ -157,8 +157,14 @@ verified mais antiga após exclusão ou nova tentativa.
 
 Pedidos normais são idempotentes por owner + source job: cliques concorrentes reutilizam
 o mesmo post e o mesmo job ativo. Também verifica SHA-256 e publicação ativa para bloquear
-duplicata acidental. `force_new_version` é o opt-in explícito para uma nova versão e
-preserva o source job na proveniência.
+duplicata acidental.
+
+O ciclo de vida da tentativa é derivado **apenas** do estado persistido no servidor:
+primeira tentativa, reuso da tentativa ativa, já publicado (idempotente), tentativa nova
+e isolada após falha terminal pré-Drive, ou recuperação in-place quando já existe
+`storage_file_id`/`session_ref`/bytes enviados. O cliente não escolhe: um pedido que
+tente controlar isso (`force_new_version`) é rejeitado com
+`client_retry_control_not_allowed`.
 
 ## OAuth administrativo (Desktop app)
 
