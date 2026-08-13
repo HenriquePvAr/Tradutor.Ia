@@ -892,7 +892,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
         self.assertEqual(group.rejected_translation, initial_translation)
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
 
     def test_portuguese_ambiguity_fix_preserves_multilingual_and_sfx_controls(self):
         invalid_cases = [
@@ -1445,7 +1445,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
         self.assertEqual(group.rejected_translation, "QUIZÁS SEJA POR AQUI.")
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
 
     def test_partial_source_language_retry_is_rejected_and_reported(self):
         valid, reason = validate_translation_text(
@@ -1479,7 +1479,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
         self.assertEqual(group.rejected_translation, "Sh-She'S VINDO!")
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
 
         item = {
             "id": group.group_id,
@@ -2189,7 +2189,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
                 self.assertFalse(group.translation_valid)
                 self.assertTrue(group.manual_review_required)
                 self.assertEqual(group.rejected_translation, "Sh- Ela tá vindo!")
-                self.assertEqual(group.translation, group.text)
+                self.assertEqual(group.translation, "")
 
         debug_data = _debug_payload("", group.lines, [], [group])
         item = debug_data["items"][0]
@@ -2502,7 +2502,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
         self.assertEqual(group.rejected_translation, "ESTE LUGAR E HELL!!")
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
         self.assertFalse(_should_translate_group(group))
 
         item = {
@@ -2547,7 +2547,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(group.translation_final_state, "manual_review")
         self.assertTrue(group.manual_review_required)
         self.assertTrue(group.preserved_original)
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
         debug_data = _debug_payload("", group.lines, [], [group])
         self.assertEqual(debug_data["translated_group_count"], 0)
         self.assertFalse(debug_data["items"][0]["translated"])
@@ -2595,7 +2595,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
         self.assertTrue(group.preserved_original)
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
 
     def test_isolated_retry_is_not_used_when_a_proper_name_is_known(self):
         # A detected proper name legitimately stays in the translation, so the
@@ -2633,7 +2633,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(group.translation_final_state, "manual_review")
         self.assertTrue(group.manual_review_required)
         self.assertTrue(group.preserved_original)
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
 
     def test_source_echo_translation_preserves_original_art_without_redraw(self):
         # A group whose accepted translation only echoes the source (e.g. a
@@ -3835,7 +3835,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertFalse(any(record["valid"] for record in records))
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
 
     def test_post_render_ocr_rejects_residual_source_english(self):
         group = _scored_group("WHAT IS THIS")

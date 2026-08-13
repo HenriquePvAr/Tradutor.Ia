@@ -147,7 +147,8 @@ class SelectivePtBrNaturalizationTests(unittest.TestCase):
 
         self.assertEqual(naturalizer.calls, [])
         self.assertFalse(group.translation_valid)
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
+        self.assertEqual(group.rejected_translation, "Restam dois inimigos.")
         self.assertEqual(stats.get("naturalization_attempted", 0), 0)
 
     def test_meaning_changing_naturalization_is_rejected_after_fidelity(self):

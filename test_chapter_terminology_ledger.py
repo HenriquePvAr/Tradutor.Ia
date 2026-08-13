@@ -291,7 +291,7 @@ class SameChapterConsistencyTests(unittest.TestCase):
                 records,
             )
 
-    def test_unfixable_drift_keeps_the_valid_translation(self):
+    def test_unfixable_drift_requires_review_instead_of_trusting_conflict(self):
         with tempfile.TemporaryDirectory() as folder:
             store = _store(folder)
             store.prepare([])
@@ -309,10 +309,14 @@ class SameChapterConsistencyTests(unittest.TestCase):
                 translator,
                 terminology_ledger=store,
             )
-            # Additive protection only: an unresolved conflict never downgrades a
-            # translation the quality gate already accepted.
-            self.assertTrue(drifted.translation_valid)
-            self.assertEqual(drifted.translation, "O PORTALIS ESTA FECHADO")
+            self.assertFalse(drifted.translation_valid)
+            self.assertEqual(drifted.translation, "")
+            self.assertEqual(drifted.rejected_translation, "O PORTALIS ESTA FECHADO")
+            self.assertTrue(drifted.manual_review_required)
+            self.assertEqual(
+                drifted.translation_final_reason,
+                "terminology_conflict_after_retries",
+            )
 
 
 class ChapterIsolationTests(unittest.TestCase):

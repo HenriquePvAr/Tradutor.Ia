@@ -325,7 +325,8 @@ class SelectiveVerificationTests(unittest.TestCase):
         _run(group, verifier=_unfaithful())
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
+        self.assertEqual(group.rejected_translation, INTENT_CORRUPTED)
         self.assertNotIn(group, get_translatable_groups([group]))
 
     def test_verifier_acceptance_lets_a_legitimate_adaptation_through(self):
@@ -420,7 +421,8 @@ class RetryTests(unittest.TestCase):
         group = _group(QUANTITY_SOURCE, QUANTITY_CORRUPTED)
         _records, stats = _run(group, translator=translator)
         self.assertFalse(group.translation_valid)
-        self.assertEqual(group.translation, group.text)
+        self.assertEqual(group.translation, "")
+        self.assertTrue(group.rejected_translation)
         self.assertTrue(group.manual_review_required)
         self.assertEqual(stats["fidelity_blocked"], 1)
         self.assertEqual(group.translation_final_reason,

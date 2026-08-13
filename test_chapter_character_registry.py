@@ -659,16 +659,22 @@ class CharacterRetryTests(unittest.TestCase):
             )
             self.assertEqual(store.summary()["character_consistency_retries"], 1)
 
-    def test_unresolved_conflict_never_downgrades_an_accepted_translation(self):
+    def test_unresolved_conflict_requires_review_instead_of_trusting_candidate(self):
         with tempfile.TemporaryDirectory() as folder:
             store = _feminine_chapter_store(folder)
             group = self._conflicting_group()
-            previous = group.translation
             translator = _StubTranslator("O CACADOR NARIN DESVIOU O OLHAR")
             records = validate_and_retry_translations(
                 [group], translator, force=True, terminology_ledger=store
             )
-            self.assertEqual(group.translation, previous)
+            self.assertFalse(group.translation_valid)
+            self.assertEqual(group.translation, "")
+            self.assertEqual(group.rejected_translation, "O CACADOR NARIN DESVIOU O OLHAR")
+            self.assertTrue(group.manual_review_required)
+            self.assertEqual(
+                group.translation_final_reason,
+                "character_gender_conflict_after_retries",
+            )
             self.assertTrue(
                 any(
                     record["reason"] == "character_gender_conflict_unresolved"

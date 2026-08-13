@@ -356,6 +356,10 @@ class TextGroup:
     translation_final_reason: str = ""
     translation_quality_impact: str = ""
     preserved_original: bool = False
+    translation_unresolved: bool = False
+    translation_attempts_exhausted: bool = False
+    trusted_translation_missing: bool = False
+    source_fallback_prevented: bool = False
     text_overflow_ratio: float = 0.0
     draw_box: tuple | None = None
     safe_area: tuple | None = None
@@ -1202,10 +1206,22 @@ def _finalize_translation_failure(
             group.text,
             rejected_candidate,
         )
-    group.translation = group.text
+    group.translation = ""
     group.translation_valid = False
     group.translation_validation_reason = str(
         validator_reason or group.translation_validation_reason or reason
+    )
+    group.translation_unresolved = True
+    group.trusted_translation_missing = True
+    group.source_fallback_prevented = True
+    group.translation_attempts_exhausted = bool(
+        str(reason).endswith("_after_retries")
+        or str(reason)
+        in {
+            "untranslated_source_after_retries",
+            "missing_translation_candidate",
+            "translation_not_rendered_after_validation",
+        }
     )
     group.manual_review_required = True
     state = (
@@ -5220,11 +5236,10 @@ def _retry_terminology_drift(
 ):
     """One extra call when a candidate contradicts a decision already taken.
 
-    Purely additive: only the chapter's own established facts are checked, and a
-    candidate the quality gate already accepted is never downgraded by it. If the
-    extra attempt does not resolve the conflict the accepted translation stays
-    exactly as it was - protecting consistency must not become a new way to fail
-    a region.
+    Chapter facts are part of the trust boundary. If the only available target
+    keeps contradicting established terminology or character identity after the
+    bounded retry, the region is review-required instead of silently trusting a
+    known-conflicting candidate.
     """
     if ledger is None or not hasattr(translator, "translate_strict"):
         return
@@ -5250,10 +5265,18 @@ def _retry_terminology_drift(
             "previous_translation": group.translation,
             "candidate_translation": "",
             "attempt": group.translation_retry_count + 1,
-            "valid": True,
+            "valid": False,
             "reason": f"terminology_retry_error:{type(exc).__name__}",
             "terminology": drift,
         })
+        group.translation_retry_count += 1
+        _finalize_translation_failure(
+            group,
+            f"{reason_code}_after_retries",
+            candidate="",
+            rejected_candidate=group.translation,
+            validator_reason=drift,
+        )
         return
     candidate = _match_source_case(group.text, clean_ocr_text(candidate))
     valid = False
@@ -5279,7 +5302,7 @@ def _retry_terminology_drift(
         "previous_translation": group.translation,
         "candidate_translation": candidate,
         "attempt": group.translation_retry_count + 1,
-        "valid": True,
+        "valid": valid,
         "reason": resolved_reason if valid else f"{reason_code}_unresolved",
         "terminology": drift,
     })
@@ -5289,6 +5312,14 @@ def _retry_terminology_drift(
         group.translation_candidate = candidate
         group.translation_validation_reason = resolved_reason
         _set_translation_terminal_state(group, "translated", resolved_reason)
+        return
+    _finalize_translation_failure(
+        group,
+        f"{reason_code}_after_retries",
+        candidate=candidate,
+        rejected_candidate=candidate or group.translation,
+        validator_reason=drift,
+    )
 
 
 NATURALIZATION_ELIGIBILITY_SIGNALS = frozenset({
@@ -8580,6 +8611,12 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "translation_final_state": group.translation_final_state,
                 "translation_final_reason": group.translation_final_reason,
                 "translation_quality_impact": group.translation_quality_impact,
+                "translation_unresolved": bool(group.translation_unresolved),
+                "translation_attempts_exhausted": bool(
+                    group.translation_attempts_exhausted
+                ),
+                "trusted_translation_missing": bool(group.trusted_translation_missing),
+                "source_fallback_prevented": bool(group.source_fallback_prevented),
                 "preserved_original": bool(group.preserved_original),
                 "text_overflow_ratio": round(group.text_overflow_ratio, 6),
                 "draw_box": list(group.draw_box) if group.draw_box else None,

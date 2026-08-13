@@ -2236,6 +2236,11 @@ def _translation_quality_accounting(states):
         "manual_review": 0,
         "preserved_original": 0,
         "translation_failed": 0,
+        "translation_unresolved": 0,
+        "translation_attempts_exhausted": 0,
+        "translation_review_required": 0,
+        "source_fallback_prevented": 0,
+        "trusted_translation_missing": 0,
         "skipped_with_reason": 0,
         "source_language_residual": 0,
         "missing_candidate": 0,
@@ -2281,6 +2286,16 @@ def _translation_quality_accounting(states):
             result[state] += 1
         if state == "translated" and item.get("redrawn"):
             result["translated_rendered"] += 1
+        if item.get("translation_unresolved"):
+            result["translation_unresolved"] += 1
+        if item.get("translation_attempts_exhausted"):
+            result["translation_attempts_exhausted"] += 1
+        if item.get("manual_review_required"):
+            result["translation_review_required"] += 1
+        if item.get("source_fallback_prevented"):
+            result["source_fallback_prevented"] += 1
+        if item.get("trusted_translation_missing"):
+            result["trusted_translation_missing"] += 1
         if item.get("preserved_original"):
             result["preserved_original"] += 1
         # A balloon holding only a character's name has no sentence to translate:
@@ -2321,6 +2336,8 @@ def _translation_quality_accounting(states):
         result["manual_review"]
         or result["rejected"]
         or result["translation_failed"]
+        or result["translation_unresolved"]
+        or result["trusted_translation_missing"]
         or result["missing_candidate"]
         or result["candidate_equals_source"]
         or result["source_language_residual"]
@@ -2348,6 +2365,10 @@ def _build_quality_report(report, states, translation_retry_records):
         "ocr_repairs_rejected": 0,
         "groups_reverted_for_visual_safety": 0,
         "manual_review_required_groups": 0,
+        "translation_unresolved": 0,
+        "translation_attempts_exhausted": 0,
+        "source_fallback_prevented": 0,
+        "trusted_translation_missing": 0,
         "translations_retried": len(translation_retry_records),
         "translations_rejected": 0,
         "external_narrations_translated": 0,
@@ -2444,6 +2465,18 @@ def _build_quality_report(report, states, translation_retry_records):
         )
         totals["manual_review_required_groups"] += sum(
             1 for item in items if item.get("manual_review_required")
+        )
+        totals["translation_unresolved"] += sum(
+            1 for item in items if item.get("translation_unresolved")
+        )
+        totals["translation_attempts_exhausted"] += sum(
+            1 for item in items if item.get("translation_attempts_exhausted")
+        )
+        totals["source_fallback_prevented"] += sum(
+            1 for item in items if item.get("source_fallback_prevented")
+        )
+        totals["trusted_translation_missing"] += sum(
+            1 for item in items if item.get("trusted_translation_missing")
         )
         totals["white_patch_rejections"] += sum(
             1
