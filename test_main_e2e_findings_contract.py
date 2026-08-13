@@ -72,9 +72,8 @@ class MainE2eUiFindingContracts(unittest.TestCase):
         block = self.js[self.js.index("function publicationEligibility"):]
         block = block[:block.index("\n  function publicationAction")]
         self.assertIn("qualityApproved", block)
-        self.assertIn("canonicalChapterReady", block)
         self.assertIn(
-            "eligible: baseEligible && ownerReady && canonicalChapterReady && qualityApproved && publishableTerminal",
+            "eligible: baseEligible && ownerReady && qualityApproved && publishableTerminal",
             block,
         )
         action = self.js[self.js.index("function publicationAction"):]

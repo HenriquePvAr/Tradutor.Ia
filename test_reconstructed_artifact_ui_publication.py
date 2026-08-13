@@ -553,7 +553,13 @@ class ReconstructedArtifactFrontendContractTests(unittest.TestCase):
         self.assertIn("publication_manifest_ready", eligibility)
         self.assertNotIn("manifest_path", eligibility)
 
-    def test_history_publication_requires_server_canonical_chapter_when_configured(self):
+    def test_history_publication_never_requires_a_client_canonical_chapter(self):
+        """Canonical publication identity stays server authoritative.
+
+        No production writer ever populates a canonical/remote chapter id on a local
+        record, so requiring one in the browser was an unsatisfiable gate.  The server
+        resolves it from the trusted source lineage and fails closed when it cannot.
+        """
         source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
             encoding="utf-8"
         )
@@ -563,12 +569,15 @@ class ReconstructedArtifactFrontendContractTests(unittest.TestCase):
         action = source[source.index("function publicationAction"):source.index(
             "function claimEligibility"
         )]
-        self.assertIn("requires_canonical_chapter_publication", eligibility)
-        self.assertIn("canonicalChapterReady", eligibility)
-        self.assertIn("record.canonical_chapter_id", eligibility)
-        self.assertIn("record.social_chapter_id", eligibility)
-        self.assertIn("record.remote_chapter_id", eligibility)
-        self.assertIn("!eligibility.canonicalChapterReady", action)
+        for field in (
+            "requires_canonical_chapter_publication",
+            "canonicalChapterReady",
+            "canonical_chapter_id",
+            "social_chapter_id",
+            "remote_chapter_id",
+        ):
+            self.assertNotIn(field, eligibility)
+            self.assertNotIn(field, action)
 
     def test_reconstruction_status_label_is_distinct_from_historical_review_required(self):
         source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
