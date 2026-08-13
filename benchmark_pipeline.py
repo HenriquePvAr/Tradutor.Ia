@@ -1585,6 +1585,22 @@ def run_benchmark(args):
         "translation_api_texts": translator_stats.get("api_texts", 0),
         "translation_cache_hits": translator_stats.get("cache_hits", 0),
         "translation_api_requests": translator_stats.get("api_requests", 0),
+        "translation_provider": translator_stats.get("provider_name", ""),
+        "translation_model_runtime": translator_stats.get(
+            "model", config.NVIDIA_TRANSLATION_MODEL
+        ),
+        "translation_language_pair": translator_stats.get("language_pair", ""),
+        "credential_pool_size": translator_stats.get("credential_pool_size", 0),
+        "eligible_credentials": translator_stats.get("eligible_credentials", 0),
+        "credential_switches": translator_stats.get("credential_switches", 0),
+        "credential_429_cooldowns": translator_stats.get(
+            "credential_429_cooldowns", 0
+        ),
+        "provider_rate_limited_count": translator_stats.get(
+            "provider_rate_limited_count", 0
+        ),
+        "provider_timeout_count": translator_stats.get("provider_timeout_count", 0),
+        "provider_error_count": translator_stats.get("provider_error_count", 0),
         "translation_candidates": translator_stats.get("translation_candidates", 0),
         "translation_batches": translator_stats.get("translation_batches", 0),
         "translation_requests_succeeded": translator_stats.get("successful_batches", 0),

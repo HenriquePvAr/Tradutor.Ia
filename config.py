@@ -120,10 +120,16 @@ NLLB_MODEL_DIR = _env_str("NLLB_MODEL_DIR", r"C:\Users\Henrique\Downloads\NLLB_2
 
 # NVIDIA OpenAI-compatible API settings.
 NVIDIA_API_KEY = _env_str("NVIDIA_API_KEY", "")
+NVIDIA_API_KEYS_JSON = _env_str("NVIDIA_API_KEYS_JSON", "")
 NVIDIA_BASE_URL = _env_str("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+NVIDIA_TRANSLATION_PROVIDER = _env_str("NVIDIA_TRANSLATION_PROVIDER", "nemotron").lower()
 NVIDIA_TRANSLATION_MODEL = _env_str(
     "NVIDIA_TRANSLATION_MODEL",
     "nvidia/nemotron-3-super-120b-a12b",
+)
+NVIDIA_RIVA_TRANSLATION_MODEL = _env_str(
+    "NVIDIA_RIVA_TRANSLATION_MODEL",
+    "nvidia/riva-translate-4b-instruct-v2",
 )
 NVIDIA_TRANSLATION_BATCH_SIZE = _env_int("NVIDIA_TRANSLATION_BATCH_SIZE", 20)
 NVIDIA_MAX_REQUESTS_PER_MINUTE = _env_int("NVIDIA_MAX_REQUESTS_PER_MINUTE", 20)

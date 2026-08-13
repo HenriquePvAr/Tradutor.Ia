@@ -3,6 +3,7 @@ import re
 import threading
 import time
 import unicodedata
+from dataclasses import dataclass
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,6 +21,7 @@ from provider_transport import (
 
 
 PROMPT_VERSION = "nvidia-manga-v4-json-qa-naturalization-signal"
+RIVA_PROMPT_VERSION = "nvidia-riva-translate-v2-json-framing-translation-only"
 TRANSLATION_CACHE_SCHEMA_VERSION = 3
 SYSTEM_PROMPT_TEMPLATE = """Traduzir textos de baloes de manga/manhwa de {source_language} para {target_language}.
 Manter IDs iguais.
@@ -45,6 +47,138 @@ class TranslationResult(str):
         obj.quality_evidence = dict(quality_evidence or {})
         return obj
 
+
+@dataclass
+class NvidiaCredential:
+    credential_id: str
+    api_key: str
+    enabled: bool = True
+    in_flight: int = 0
+    cooldown_until: float = 0.0
+    consecutive_failures: int = 0
+    rate_limited: bool = False
+
+
+class NvidiaCredentialPool:
+    """Small deterministic pool for authorized NVIDIA credentials.
+
+    It exists to make future authorized multi-key benchmarking observable, not to
+    manufacture capacity. With one key it behaves like the legacy transport.
+    """
+
+    def __init__(self, credentials, *, clock=None, cooldown_seconds=60.0):
+        self._clock = clock or time.monotonic
+        self.cooldown_seconds = max(0.0, float(cooldown_seconds or 0.0))
+        self.credentials = [
+            credential
+            for credential in (credentials or [])
+            if credential.enabled and str(credential.api_key or "").strip()
+        ]
+        self._lock = threading.Lock()
+        self._last_credential_id = ""
+        self.credential_switches = 0
+        self.cooldown_events = 0
+
+    @classmethod
+    def from_config(cls, *, api_key=None, clock=None, cooldown_seconds=60.0):
+        configured = _configured_nvidia_credentials(api_key)
+        return cls(configured, clock=clock, cooldown_seconds=cooldown_seconds)
+
+    @property
+    def size(self):
+        return len(self.credentials)
+
+    def snapshot(self):
+        with self._lock:
+            now = self._clock()
+            eligible = [
+                item for item in self.credentials
+                if item.enabled and item.cooldown_until <= now
+            ]
+            return {
+                "pool_size": len(self.credentials),
+                "eligible_credentials": len(eligible),
+                "credential_switches": self.credential_switches,
+                "credential_429_cooldowns": self.cooldown_events,
+                "credentials": [
+                    {
+                        "credential_id": item.credential_id,
+                        "enabled": item.enabled,
+                        "in_flight": item.in_flight,
+                        "cooldown_active": item.cooldown_until > now,
+                        "consecutive_failures": item.consecutive_failures,
+                        "rate_limited": item.rate_limited,
+                    }
+                    for item in self.credentials
+                ],
+            }
+
+    def acquire(self):
+        with self._lock:
+            now = self._clock()
+            eligible = [
+                item for item in self.credentials
+                if item.enabled and item.cooldown_until <= now
+            ]
+            if not eligible:
+                raise ProviderTransportError("provider_credentials_unavailable")
+            selected = min(eligible, key=lambda item: (item.in_flight, item.credential_id))
+            if self._last_credential_id and selected.credential_id != self._last_credential_id:
+                self.credential_switches += 1
+            self._last_credential_id = selected.credential_id
+            selected.in_flight += 1
+            return selected
+
+    def release_success(self, credential):
+        with self._lock:
+            credential.in_flight = max(0, credential.in_flight - 1)
+            credential.consecutive_failures = 0
+            credential.rate_limited = False
+
+    def release_failure(self, credential, reason):
+        with self._lock:
+            credential.in_flight = max(0, credential.in_flight - 1)
+            credential.consecutive_failures += 1
+            if reason == "provider_rate_limited" and len(self.credentials) > 1:
+                credential.rate_limited = True
+                credential.cooldown_until = self._clock() + self.cooldown_seconds
+                self.cooldown_events += 1
+
+
+def _configured_nvidia_credentials(api_key=None):
+    raw_registry = str(getattr(config, "NVIDIA_API_KEYS_JSON", "") or "").strip()
+    credentials = []
+    if raw_registry:
+        try:
+            parsed = json.loads(raw_registry)
+        except json.JSONDecodeError:
+            parsed = []
+        if isinstance(parsed, list):
+            for index, item in enumerate(parsed, start=1):
+                if isinstance(item, str):
+                    key = item
+                    enabled = True
+                elif isinstance(item, dict):
+                    key = item.get("api_key") or item.get("key") or ""
+                    enabled = bool(item.get("enabled", True))
+                else:
+                    continue
+                key = str(key or "").strip()
+                if key and key != "sua_chave_aqui":
+                    credentials.append(
+                        NvidiaCredential(
+                            credential_id=f"slot_{index}",
+                            api_key=key,
+                            enabled=enabled,
+                        )
+                    )
+    legacy = api_key if api_key is not None else config.NVIDIA_API_KEY
+    legacy = str(legacy or "").strip()
+    if not credentials and legacy and legacy != "sua_chave_aqui":
+        credentials.append(NvidiaCredential("slot_1", legacy, enabled=True))
+    return credentials
+
+
 class TranslatorNvidiaBatch:
     def __init__(
         self,
@@ -63,10 +197,37 @@ class TranslatorNvidiaBatch:
         clock=None,
         sleeper=None,
         circuit_breaker=None,
+        translation_provider=None,
+        credential_pool=None,
     ):
-        self.api_key = api_key if api_key is not None else config.NVIDIA_API_KEY
+        self.translation_provider = str(
+            translation_provider or config.NVIDIA_TRANSLATION_PROVIDER or "nemotron"
+        ).strip().lower()
+        if self.translation_provider in {"", "nvidia"}:
+            self.translation_provider = "nemotron"
+        if self.translation_provider not in {"nemotron", "riva"}:
+            raise ValueError("nvidia_translation_provider_invalid")
+        self.credential_pool = credential_pool or NvidiaCredentialPool.from_config(
+            api_key=api_key,
+            clock=clock,
+            cooldown_seconds=float(config.NVIDIA_RETRY_BACKOFF_SECONDS or 1.0) * 30,
+        )
+        first_credential = (
+            self.credential_pool.credentials[0]
+            if self.credential_pool.credentials else None
+        )
+        self.api_key = (
+            first_credential.api_key
+            if first_credential is not None
+            else (api_key if api_key is not None else config.NVIDIA_API_KEY)
+        )
         self.base_url = base_url or config.NVIDIA_BASE_URL
-        self.model = model or config.NVIDIA_TRANSLATION_MODEL
+        default_model = (
+            config.NVIDIA_RIVA_TRANSLATION_MODEL
+            if self.translation_provider == "riva"
+            else config.NVIDIA_TRANSLATION_MODEL
+        )
+        self.model = model or default_model
         self.batch_size = int(batch_size or config.NVIDIA_TRANSLATION_BATCH_SIZE or 20)
         self.max_requests_per_minute = int(
             max_requests_per_minute or config.NVIDIA_MAX_REQUESTS_PER_MINUTE or 20
@@ -134,6 +295,14 @@ class TranslatorNvidiaBatch:
         self._stats_lock = threading.Lock()
         self.stats = {
             "input_texts": 0,
+            "provider_name": self.translation_provider,
+            "model": self.model,
+            "language_pair": self._riva_language_pair(),
+            "credential_pool_size": self.credential_pool.size,
+            "eligible_credentials": self.credential_pool.snapshot()["eligible_credentials"],
+            "credential_switches": 0,
+            "credential_429_cooldowns": 0,
+            "active_real_credentials": self.credential_pool.size,
             "cache_hits": 0,
             "api_texts": 0,
             "api_requests": 0,
@@ -154,6 +323,10 @@ class TranslatorNvidiaBatch:
             "invalid_json_failures": 0,
             "detected_name_count": 0,
             "transport_attempts": 0,
+            "provider_rate_limited_count": 0,
+            "provider_timeout_count": 0,
+            "provider_error_count": 0,
+            "last_credential_id": "",
             "json_repair_attempts": 0,
             "circuit_rejections": 0,
             "last_transport_reason": "",
@@ -161,7 +334,7 @@ class TranslatorNvidiaBatch:
 
     @property
     def is_configured(self):
-        return bool(self.api_key and self.api_key != "sua_chave_aqui")
+        return self.credential_pool.size > 0
 
     def translate(self, text):
         return self.translate_many([text])[0]
@@ -435,12 +608,17 @@ class TranslatorNvidiaBatch:
         from openai import OpenAI
 
         return OpenAI(
-            api_key=self.api_key,
+            api_key=getattr(self._thread_local, "api_key", self.api_key),
             base_url=self.base_url,
             timeout=self.timeout_policy.httpx_timeout(remaining_total_seconds),
         )
 
     def _translate_batch(self, texts):
+        if self.translation_provider == "riva":
+            return self._translate_batch_riva(texts)
+        return self._translate_batch_nemotron(texts)
+
+    def _translate_batch_nemotron(self, texts):
         ids = [f"BALAO_{idx}" for idx in range(1, len(texts) + 1)]
         payload = dict(zip(ids, texts))
         content = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -463,6 +641,40 @@ class TranslatorNvidiaBatch:
         )
         return [parsed.get(text_id, original) or original for text_id, original in zip(ids, texts)]
 
+    def _translate_batch_riva(self, texts):
+        ids = [f"BALAO_{idx}" for idx in range(1, len(texts) + 1)]
+        payload = dict(zip(ids, texts))
+        content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        parsed = self._request_json_with_retry(
+            [
+                {"role": "system", "content": self._riva_language_pair()},
+                {
+                    "role": "user",
+                    "content": (
+                        "Translate every JSON string value from English to Brazilian "
+                        "Portuguese. Preserve all JSON keys exactly. Return only a "
+                        "valid JSON object with the same keys and translated string "
+                        "values. Do not add explanations, markdown, or extra keys.\n"
+                        + self._riva_context_prompt()
+                        + "\nJSON:\n"
+                        + content
+                    ),
+                },
+            ],
+            expected_ids=ids,
+        )
+        return [
+            TranslationResult(
+                str(parsed.get(text_id, original) or original),
+                quality_evidence={
+                    "translation_provider": "riva",
+                    "translation_model": self.model,
+                    "naturalization_eligibility_source": "riva_translation_only",
+                },
+            )
+            for text_id, original in zip(ids, texts)
+        ]
+
     def _request_json_with_retry(self, messages, expected_ids, attempts=None):
         """Retry model-format failures separately from HTTP/transport retries."""
 
@@ -481,6 +693,11 @@ class TranslatorNvidiaBatch:
                 if missing:
                     raise ValueError(
                         "Resposta JSON sem IDs obrigatorios: " + ", ".join(missing)
+                    )
+                extra = sorted(set(parsed) - set(expected_ids))
+                if extra:
+                    raise ValueError(
+                        "Resposta JSON contem IDs inesperados: " + ", ".join(extra)
                     )
                 self._increment_stat("translation_results_parsed", len(parsed))
                 return parsed
@@ -516,6 +733,7 @@ class TranslatorNvidiaBatch:
             if deadline is None else float(deadline)
         )
         for attempt in range(1, max(1, self.transport_retry_limit) + 1):
+            credential = None
             remaining = deadline - self._clock()
             if remaining <= 0:
                 raise ProviderTransportError("provider_total_deadline_exceeded")
@@ -530,7 +748,10 @@ class TranslatorNvidiaBatch:
                 if remaining <= 0:
                     raise ProviderTransportError(
                         "provider_total_deadline_exceeded")
-                client = self._get_client(remaining_total_seconds=remaining)
+                credential = self.credential_pool.acquire()
+                self._thread_local.api_key = credential.api_key
+                self._thread_local.credential_id = credential.credential_id
+                self.stats["last_credential_id"] = credential.credential_id
                 self._increment_stat("api_requests")
                 self._increment_stat("transport_attempts")
                 request_kwargs = dict(
@@ -541,18 +762,30 @@ class TranslatorNvidiaBatch:
                 )
                 if response_format is not None:
                     request_kwargs["response_format"] = response_format
+                client = self._get_client(remaining_total_seconds=remaining)
                 completion = client.chat.completions.create(**request_kwargs)
                 content = completion.choices[0].message.content or ""
                 if self._clock() > deadline:
                     raise ProviderTransportError(
                         "provider_total_deadline_exceeded")
                 self.circuit_breaker.record_success()
+                self.credential_pool.release_success(credential)
+                self._refresh_pool_stats()
                 return content
             except Exception as exc:
                 last_error = exc
                 status = self._status_code_from_exception(exc)
                 reason = self._transport_reason(exc, status)
                 self.stats["last_transport_reason"] = reason
+                if credential is not None:
+                    self.credential_pool.release_failure(credential, reason)
+                    self._refresh_pool_stats()
+                if reason == "provider_rate_limited":
+                    self._increment_stat("provider_rate_limited_count")
+                elif reason in {"provider_connect_timeout", "provider_read_timeout", "provider_total_deadline_exceeded"}:
+                    self._increment_stat("provider_timeout_count")
+                else:
+                    self._increment_stat("provider_error_count")
                 self.circuit_breaker.record_failure(reason)
                 retryable = (
                     status in retry_statuses
@@ -638,7 +871,8 @@ class TranslatorNvidiaBatch:
         return stable_hash(
             {
                 "cache_schema_version": TRANSLATION_CACHE_SCHEMA_VERSION,
-                "prompt_version": PROMPT_VERSION,
+                "prompt_version": self._prompt_version(),
+                "translation_provider": self.translation_provider,
                 "text": self._normalized_cache_source(text),
                 "model": self.model,
                 "source_language": self.source_language,
@@ -673,7 +907,8 @@ class TranslatorNvidiaBatch:
             payload.get("key") != key
             or payload.get("cache_schema_version")
             != TRANSLATION_CACHE_SCHEMA_VERSION
-            or payload.get("prompt_version") != PROMPT_VERSION
+            or payload.get("prompt_version") != self._prompt_version()
+            or payload.get("translation_provider", "nemotron") != self.translation_provider
             or payload.get("model") != self.model
             or payload.get("source_language") != self.source_language
             or payload.get("target_language") != self.target_language
@@ -698,7 +933,8 @@ class TranslatorNvidiaBatch:
             {
                 "key": key,
                 "cache_schema_version": TRANSLATION_CACHE_SCHEMA_VERSION,
-                "prompt_version": PROMPT_VERSION,
+                "prompt_version": self._prompt_version(),
+                "translation_provider": self.translation_provider,
                 "model": self.model,
                 "source_language": self.source_language,
                 "target_language": self.target_language,
@@ -713,6 +949,34 @@ class TranslatorNvidiaBatch:
         if self.target_language.casefold() in {"pt-br", "pt_br", "português", "portugues"}:
             return "portugues do Brasil"
         return self.target_language
+
+    def _prompt_version(self):
+        return RIVA_PROMPT_VERSION if self.translation_provider == "riva" else PROMPT_VERSION
+
+    def _riva_language_pair(self):
+        source = "en" if str(self.source_language).casefold() in {"ingles", "english", "en"} else str(self.source_language)
+        target = "pt-BR" if self.target_language.casefold() in {"pt-br", "pt_br", "portugues", "português"} else self.target_language
+        return f"{source}-{target}"
+
+    def _riva_context_prompt(self):
+        fragments = []
+        if self.session_context_prompt:
+            fragments.append(
+                "Use this bounded chapter context for terminology and character consistency only; "
+                "do not translate or explain the context itself:\n" + self.session_context_prompt
+            )
+        if self.detected_names_prompt:
+            fragments.append(self.detected_names_prompt)
+        if not fragments:
+            return ""
+        return "\n".join(fragments)
+
+    def _refresh_pool_stats(self):
+        snapshot = self.credential_pool.snapshot()
+        self.stats["credential_pool_size"] = snapshot["pool_size"]
+        self.stats["eligible_credentials"] = snapshot["eligible_credentials"]
+        self.stats["credential_switches"] = snapshot["credential_switches"]
+        self.stats["credential_429_cooldowns"] = snapshot["credential_429_cooldowns"]
 
     @staticmethod
     def _normalized_cache_source(text):
