@@ -4936,26 +4936,44 @@ def _needs_isolated_retry(group, reason):
     )
 
 
+def _chapter_consistency_reason(ledger, source, candidate):
+    """Why a candidate contradicts something the chapter already established.
+
+    Terminology first, then character identity: both are chapter-scoped facts
+    the pipeline decided earlier, and both are reported with the same structured
+    ``reason:subject`` shape so the retry can name the constraint.
+    """
+    if ledger is None:
+        return ""
+    reason = str(ledger.drift_reason(source, candidate) or "")
+    if reason or not hasattr(ledger, "character_conflict_reason"):
+        return reason
+    return str(ledger.character_conflict_reason(source, candidate) or "")
+
+
 def _retry_terminology_drift(group, translator, ledger, force, retry_records):
     """One extra call when a candidate contradicts a decision already taken.
 
-    Purely additive: the chapter's own established source -> target binding is
-    the only thing checked, and a candidate the quality gate already accepted is
-    never downgraded by it. If the extra attempt does not resolve the conflict
-    the accepted translation stays exactly as it was - protecting consistency
-    must not become a new way to fail a region.
+    Purely additive: only the chapter's own established facts are checked, and a
+    candidate the quality gate already accepted is never downgraded by it. If the
+    extra attempt does not resolve the conflict the accepted translation stays
+    exactly as it was - protecting consistency must not become a new way to fail
+    a region.
     """
     if ledger is None or not hasattr(translator, "translate_strict"):
         return
-    drift = str(ledger.drift_reason(group.text, group.translation) or "")
+    drift = _chapter_consistency_reason(ledger, group.text, group.translation)
     if not drift:
         return
+    reason_code = drift.split(":", 1)[0]
+    if reason_code != "terminology_conflict" and hasattr(ledger, "note_character_retry"):
+        ledger.note_character_retry()
     name_spans = group_proper_name_spans(group)
     try:
         candidate = translator.translate_strict(
             group.text,
             previous_translation=group.translation,
-            validation_reason="terminology_conflict",
+            validation_reason=reason_code,
             force=force,
             proper_names=name_spans,
         )
@@ -4981,7 +4999,10 @@ def _retry_terminology_drift(group, translator, ledger, force, retry_records):
             _group_validation_allowed_proper_names(group),
             required_name_spans=name_spans,
         )
-        valid = bool(valid) and not ledger.drift_reason(group.text, candidate)
+        valid = bool(valid) and not _chapter_consistency_reason(
+            ledger, group.text, candidate
+        )
+    resolved_reason = f"{reason_code.removesuffix('_conflict')}_retry_ok"
     retry_records.append({
         "group_id": group.group_id,
         "source": group.text,
@@ -4989,15 +5010,15 @@ def _retry_terminology_drift(group, translator, ledger, force, retry_records):
         "candidate_translation": candidate,
         "attempt": group.translation_retry_count + 1,
         "valid": True,
-        "reason": "terminology_retry_ok" if valid else "terminology_conflict_unresolved",
+        "reason": resolved_reason if valid else f"{reason_code}_unresolved",
         "terminology": drift,
     })
     group.translation_retry_count += 1
     if valid:
         group.translation = candidate
         group.translation_candidate = candidate
-        group.translation_validation_reason = "terminology_retry_ok"
-        _set_translation_terminal_state(group, "translated", "terminology_retry_ok")
+        group.translation_validation_reason = resolved_reason
+        _set_translation_terminal_state(group, "translated", resolved_reason)
 
 
 def validate_and_retry_translations(groups, translator, force=False, terminology_ledger=None):

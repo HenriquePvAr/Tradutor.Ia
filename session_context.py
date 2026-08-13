@@ -35,6 +35,91 @@ LEDGER_MAX_OBSERVATIONS = 8
 LEDGER_MAX_TOKENS_PER_OBSERVATION = 16
 LEDGER_MIN_TERM_LENGTH = 4
 TERMINOLOGY_CONFLICT_REASON = "terminology_conflict"
+
+# --- chapter character registry ---------------------------------------------
+# The ledger above preserves *text*: which target form a source term was bound
+# to. It says nothing about the entity behind the name, so a character
+# established early as feminine could be addressed later with a masculine form
+# of address and nothing in the pipeline noticed. The registry is the separate,
+# entity-level memory: who exists in this chapter and which linguistic
+# properties we have actual evidence for. Authority is split on purpose -
+# term_bindings owns source -> target spelling, the registry owns attributes.
+CHARACTER_MAX_RECORDS = 60
+CHARACTER_MAX_EVIDENCE = 8
+CHARACTER_MAX_IN_PROMPT = 12
+CHARACTER_MIN_NAME_LENGTH = 3
+CHARACTER_GENDER_CONFLICT_REASON = "character_gender_conflict"
+CHARACTER_PRONOUN_CONFLICT_REASON = "character_pronoun_conflict"
+GENDER_FEATURE = "gender"
+PRONOUN_FEATURE = "pronouns"
+GENDER_UNKNOWN = "unknown"
+HONORIFIC_CONFIDENCE = 0.9
+HONORIFIC_PROVENANCE = "explicit_honorific"
+
+# Honorific -> grammatical gender, as data keyed by source language. No business
+# logic below names a specific honorific, and an entry mapping to "" addresses a
+# person without asserting any gender at all.
+SOURCE_HONORIFICS = {
+    "ingles": {
+        "MISS": "feminine",
+        "MRS": "feminine",
+        "MS": "feminine",
+        "MADAM": "feminine",
+        "MADAME": "feminine",
+        "LADY": "feminine",
+        "MR": "masculine",
+        "SIR": "masculine",
+        "LORD": "masculine",
+        "DR": "",
+        "DOCTOR": "",
+        "PROF": "",
+        "PROFESSOR": "",
+        "CAPTAIN": "",
+    },
+}
+
+# Third-person personal pronouns of the source language. Their only job is to
+# *suppress* a finding: when the source itself spells out a pronoun, whatever
+# pronoun the target uses is a rendering of that word, not drift about our
+# character. An offline replay of a real chapter flagged exactly this - a region
+# whose source said "he" about somebody else, in a sentence that merely
+# contained a known character's family name.
+SOURCE_PERSONAL_PRONOUNS = {
+    "ingles": {
+        "HE", "HIM", "HIS", "SHE", "HER", "HERS", "THEY", "THEM", "THEIR",
+        "THEIRS", "HIMSELF", "HERSELF", "THEMSELVES",
+    },
+}
+
+# Per target language: how a gender is stated in the prompt, which pronouns it
+# implies, and the few closed-class words needed to keep the agreement check
+# from firing on an unrelated person.
+TARGET_LANGUAGE_FEATURES = {
+    "pt": {
+        "labels": {"feminine": "feminino", "masculine": "masculino"},
+        "pronouns": {
+            "feminine": ["ela", "dela"],
+            "masculine": ["ele", "dele"],
+        },
+        "pronoun_gender": {
+            "ELA": "feminine",
+            "DELA": "feminine",
+            "ELE": "masculine",
+            "DELE": "masculine",
+        },
+        # A pronoun governed by a preposition is usually an oblique reference to
+        # somebody else in the panel, so it is never treated as a contradiction.
+        "prepositions": {
+            "PARA", "PRA", "COM", "POR", "SEM", "SOBRE", "ENTRE", "CONTRA",
+            "ATE", "APOS", "PERANTE", "DE", "A", "EM", "NELE", "NELA",
+        },
+        "feminine_endings": ("A", "AS"),
+        "masculine_endings": ("O", "OS", "OR", "ORES"),
+    },
+}
+DEFAULT_TARGET_LANGUAGE = "pt"
+DEFAULT_SOURCE_LANGUAGE = "ingles"
+
 TRANSLATION_STYLE = "portugues brasileiro natural para webtoon/manhwa"
 PRESERVATION_RULES = [
     "Preservar nomes proprios e a grafia escolhida durante o capitulo.",
@@ -111,8 +196,63 @@ def _candidate_term_keys(text):
     return keys
 
 
+def _target_word_gender(language, word):
+    """Grammatical gender a target word carries by its ending, or "".
+
+    Deliberately morphological and deliberately tiny: it is only ever asked
+    about the single word the source itself marked as a form of address, never
+    about a sentence. Anything wider would be a grammar engine.
+    """
+    features = TARGET_LANGUAGE_FEATURES.get(str(language or ""))
+    if not features:
+        return ""
+    folded = _fold(word)
+    if folded.endswith(features["feminine_endings"]):
+        return "feminine"
+    if folded.endswith(features["masculine_endings"]):
+        return "masculine"
+    return ""
+
+
+def _derive_feature(evidence, feature):
+    """Value of a feature implied by the evidence, plus whether it conflicts.
+
+    Order-independent by construction: the answer is a function of the evidence
+    *set*, never of the order observations arrived in, so two workers observing
+    the same chapter concurrently converge on the same record. The strongest
+    evidence wins; a tie between different values is a conflict and yields no
+    authoritative value at all, because unknown is better than wrong.
+    """
+    strongest = {}
+    for item in evidence or []:
+        if not isinstance(item, dict) or str(item.get("feature") or "") != feature:
+            continue
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        confidence = float(item.get("confidence") or 0.0)
+        strongest[value] = max(strongest.get(value, 0.0), confidence)
+    if not strongest:
+        return "", 0.0, False
+    top = max(strongest.values())
+    winners = sorted(
+        value for value, confidence in strongest.items() if confidence >= top - 1e-9
+    )
+    if len(winners) > 1:
+        return "", top, True
+    return winners[0], top, False
+
+
 class SessionContextStore:
-    def __init__(self, path, chapter_url):
+    def __init__(
+        self,
+        path,
+        chapter_url,
+        target_language=DEFAULT_TARGET_LANGUAGE,
+        source_language=DEFAULT_SOURCE_LANGUAGE,
+    ):
+        self.target_language = str(target_language or DEFAULT_TARGET_LANGUAGE)
+        self.source_language = str(source_language or DEFAULT_SOURCE_LANGUAGE)
         self.path = Path(path).resolve()
         # Context is an output-side convenience artifact, not a credential store. The
         # downloader retains the raw URL in memory; this persisted record never needs it.
@@ -227,6 +367,10 @@ class SessionContextStore:
             # Carried forward untouched: a terminology decision outlives the
             # dialogue window and every re-preparation of the chapter.
             "term_bindings": dict(compatible_data.get("term_bindings") or {}),
+            # Same reasoning as the ledger: who a character is does not expire
+            # with the dialogue window, and re-preparing the chapter must not
+            # forget it.
+            "characters": dict(compatible_data.get("characters") or {}),
             "ledger_stats": dict(compatible_data.get("ledger_stats") or {}),
         }
         self.save()
@@ -385,6 +529,278 @@ class SessionContextStore:
         names.append({"text": name_text, "mentions": 1, "preserve": True})
         self.data["proper_names"] = names[:80]
 
+    # --- character registry -------------------------------------------------
+    def _characters(self):
+        characters = self.data.get("characters")
+        if not isinstance(characters, dict):
+            characters = {}
+            self.data["characters"] = characters
+        return characters
+
+    def _record(self, name):
+        """The chapter-scoped record for a name, created on first sighting."""
+        key = _normalized_token(name)
+        display = str(name or "").strip()
+        if len(key) < CHARACTER_MIN_NAME_LENGTH or not display:
+            return None
+        characters = self._characters()
+        record = characters.get(key)
+        if record is None:
+            if len(characters) >= CHARACTER_MAX_RECORDS:
+                return None
+            record = {
+                "canonical_name": display,
+                "aliases": [],
+                "forms_of_address": [],
+                "evidence": [],
+                "mentions": 0,
+                "first_seen": _utc_now(),
+            }
+            characters[key] = record
+        return record
+
+    def _observe_character(
+        self,
+        name,
+        feature="",
+        value="",
+        provenance="",
+        confidence=0.0,
+        alias="",
+        form_of_address="",
+    ):
+        """Record one compact, attributable observation about a character.
+
+        Nothing here infers: a caller must say *why* it believes the fact and how
+        far it trusts it. Evidence is deduplicated by (feature, value,
+        provenance) and never overwritten, so the derived attributes stay a pure
+        function of what was actually seen.
+        """
+        record = self._record(name)
+        if record is None:
+            return None
+        record["mentions"] = int(record.get("mentions") or 0) + 1
+        for field, item in (("aliases", alias), ("forms_of_address", form_of_address)):
+            item = str(item or "").strip()
+            values = list(record.get(field) or [])
+            if item and item.upper() not in {str(entry).upper() for entry in values}:
+                values.append(item)
+                record[field] = sorted(values)[:8]
+        feature = str(feature or "").strip()
+        value = str(value or "").strip()
+        if not feature or not value or value == GENDER_UNKNOWN:
+            return record
+        evidence = list(record.get("evidence") or [])
+        signature = (feature, value, str(provenance or ""))
+        for item in evidence:
+            if (
+                str(item.get("feature") or ""),
+                str(item.get("value") or ""),
+                str(item.get("provenance") or ""),
+            ) == signature:
+                item["confidence"] = max(
+                    float(item.get("confidence") or 0.0), float(confidence or 0.0)
+                )
+                break
+        else:
+            evidence.append(
+                {
+                    "feature": feature,
+                    "value": value,
+                    "provenance": str(provenance or "unattributed"),
+                    "confidence": float(confidence or 0.0),
+                }
+            )
+        record["evidence"] = sorted(
+            evidence,
+            key=lambda item: (
+                str(item.get("feature")),
+                str(item.get("value")),
+                str(item.get("provenance")),
+            ),
+        )[:CHARACTER_MAX_EVIDENCE]
+        # A proven character name is also a name the translation must preserve.
+        # The ledger stays the single authority for the *spelling*; this only
+        # makes sure the name is protected at all.
+        self._merge_proper_name(str(record.get("canonical_name") or name).strip())
+        return record
+
+    def observe_character(self, name, **evidence):
+        with self._lock:
+            record = self._observe_character(name, **evidence)
+            self.save()
+            return record
+
+    def _character_facts(self, key, record):
+        gender, gender_confidence, gender_conflict = _derive_feature(
+            record.get("evidence"), GENDER_FEATURE
+        )
+        pronouns, _confidence, pronoun_conflict = _derive_feature(
+            record.get("evidence"), PRONOUN_FEATURE
+        )
+        features = TARGET_LANGUAGE_FEATURES.get(self.target_language) or {}
+        derived = list(features.get("pronouns", {}).get(gender) or [])
+        return {
+            "character_key": key,
+            "canonical_name": str(record.get("canonical_name") or key),
+            "aliases": list(record.get("aliases") or []),
+            "forms_of_address": list(record.get("forms_of_address") or []),
+            "gender": gender,
+            "gender_confidence": gender_confidence,
+            "pronouns": [item for item in pronouns.split("/") if item] or derived,
+            "conflict": bool(gender_conflict or pronoun_conflict),
+            "mentions": int(record.get("mentions") or 0),
+            "evidence": [dict(item) for item in record.get("evidence") or []],
+        }
+
+    def characters(self):
+        """Every known character of this chapter with its derived attributes."""
+        return {
+            key: self._character_facts(key, record)
+            for key, record in sorted(self._characters().items())
+            if isinstance(record, dict)
+        }
+
+    def character_facts(self, name):
+        key = _normalized_token(name)
+        record = self._characters().get(key)
+        return self._character_facts(key, record) if isinstance(record, dict) else {}
+
+    def _learn_characters_from_group(self, group):
+        """Harvest character evidence from the source text of one region.
+
+        The only evidence trusted here is an explicit source-language honorific
+        directly addressing a name. Appearance, first names, capitalisation and
+        model speculation are all deliberately absent: an honorific is something
+        the author wrote, everything else would be a guess.
+        """
+        source = str(getattr(group, "text", "") or "")
+        if not source.strip():
+            return
+        honorifics = SOURCE_HONORIFICS.get(self.source_language) or {}
+        words = _tokens(source)
+        detected = {
+            _normalized_token(name)
+            for name in (getattr(group, "detected_proper_names", []) or [])
+        }
+        for index, word in enumerate(words[:-1]):
+            gender = honorifics.get(_normalized_token(word))
+            if gender is None:
+                continue
+            following = words[index + 1]
+            key = _normalized_token(following)
+            if len(key) < CHARACTER_MIN_NAME_LENGTH:
+                continue
+            if key not in detected and _is_known_english_word(key):
+                continue
+            self._observe_character(
+                following,
+                feature=GENDER_FEATURE if gender else "",
+                value=gender,
+                provenance=HONORIFIC_PROVENANCE,
+                confidence=HONORIFIC_CONFIDENCE if gender else 0.0,
+                alias=f"{word} {following}",
+                form_of_address=word,
+            )
+
+    # --- character consistency ---------------------------------------------
+    def _resolved_characters(self, source_text):
+        """Characters this region actually refers to, by name or alias."""
+        present = {_normalized_token(word) for word in _word_surfaces(source_text)}
+        return [
+            (key, record, self._character_facts(key, record))
+            for key, record in sorted(self._characters().items())
+            if isinstance(record, dict) and key in present
+        ]
+
+    def _source_marks_address(self, source_text, key):
+        honorifics = SOURCE_HONORIFICS.get(self.source_language) or {}
+        words = _tokens(source_text)
+        return any(
+            _normalized_token(word) in honorifics
+            and _normalized_token(words[index + 1]) == key
+            for index, word in enumerate(words[:-1])
+        )
+
+    def character_conflict_reason(self, source_text, candidate):
+        """Why a candidate contradicts a character fact this chapter established.
+
+        Two narrow checks, both requiring exactly one resolved character with a
+        high-confidence gender in the region - with two characters present no
+        gendered word can be attributed to either of them, so nothing is
+        reported.
+
+        ponytail: the form-of-address check only runs where the *source* itself
+        marked an address with an honorific, and the pronoun check only outside
+        prepositional phrases. That trades recall for precision on purpose: a
+        wrongly rejected valid translation costs a real call and real trust,
+        while a missed one is the status quo. Widen it only with a real
+        dependency-parsed subject, never with a bigger regex.
+        """
+        features = TARGET_LANGUAGE_FEATURES.get(self.target_language)
+        candidate = str(candidate or "").strip()
+        if not features or not candidate:
+            return ""
+        resolved = self._resolved_characters(source_text)
+        gendered = [item for item in resolved if item[2].get("gender")]
+        if len(gendered) != 1:
+            return ""
+        key, record, facts = gendered[0]
+        gender = facts["gender"]
+        name = facts["canonical_name"]
+        words = _word_surfaces(candidate)
+        folded_key = _fold(key)
+
+        if self._source_marks_address(source_text, key):
+            for index, word in enumerate(words):
+                if index == 0 or _fold(word) != folded_key:
+                    continue
+                previous = words[index - 1]
+                if len(previous) < 4:
+                    continue
+                observed = _target_word_gender(self.target_language, previous)
+                if observed and observed != gender:
+                    self._bump("character_fact_conflicts")
+                    return f"{CHARACTER_GENDER_CONFLICT_REASON}:{name}"
+
+        source_pronouns = SOURCE_PERSONAL_PRONOUNS.get(self.source_language) or set()
+        source_spells_a_pronoun = any(
+            _normalized_token(word) in source_pronouns
+            for word in _word_surfaces(source_text)
+        )
+        if (
+            len(resolved) == 1
+            and not source_spells_a_pronoun
+            and not self._other_names_present(words, folded_key)
+        ):
+            for index, word in enumerate(words):
+                observed = features["pronoun_gender"].get(_fold(word))
+                if not observed or observed == gender:
+                    continue
+                if index and _fold(words[index - 1]) in features["prepositions"]:
+                    continue
+                self._bump("character_fact_conflicts")
+                return f"{CHARACTER_PRONOUN_CONFLICT_REASON}:{name}"
+        return ""
+
+    def note_character_retry(self):
+        with self._lock:
+            self._bump("character_consistency_retries")
+            self.save()
+
+    def _other_names_present(self, words, folded_key):
+        """True when another known person could own a pronoun in this text."""
+        folded = {_fold(word) for word in words}
+        known = set(self._characters())
+        known.update(
+            key
+            for key, entry in self._bindings().items()
+            if entry.get("kind") == KIND_PROPER_NAME
+        )
+        return any(
+            _fold(key) in folded for key in known if _fold(key) != folded_key
+        )
+
     def term_bindings(self):
         """Established source -> target decisions, as an ordered mapping."""
         return {
@@ -437,6 +853,9 @@ class SessionContextStore:
             for group in groups:
                 source = str(getattr(group, "text", "") or "").strip()
                 translation = str(getattr(group, "translation", "") or "").strip()
+                # Character evidence lives in the *source*, so it is harvested
+                # even for a region that never produced a translation.
+                self._learn_characters_from_group(group)
                 self._learn_from_group(group)
                 if not source or not translation or source.casefold() == translation.casefold():
                     continue
@@ -500,9 +919,45 @@ class SessionContextStore:
                     "Terminologia ja fixada neste capitulo (obrigatoria, mesmo que a "
                     "decisao tenha sido tomada muitas falas atras):\n" + "\n".join(glossary)
                 )
+        character_lines = self.character_prompt_lines()
+        if character_lines:
+            sections.append(
+                "Personagens ja identificados neste capitulo (respeite genero, "
+                "pronomes e formas de tratamento):\n" + "\n".join(character_lines)
+            )
         if translations:
             sections.append("Traducoes ja usadas:\n" + "\n".join(translations))
         return "\n".join(sections)
+
+    def character_prompt_lines(self):
+        """The few characters worth spending prompt budget on, never all of them.
+
+        Only established facts are emitted, and only for characters that have
+        one: a character we know nothing about contributes nothing but tokens,
+        and stating "gender unknown" would invite the model to invent it. The
+        full registry stays internal and unbounded by this cap.
+        """
+        features = TARGET_LANGUAGE_FEATURES.get(self.target_language) or {}
+        labels = features.get("labels", {})
+        ranked = sorted(
+            self.characters().values(),
+            key=lambda facts: (-int(facts.get("mentions") or 0), facts["canonical_name"]),
+        )
+        lines = []
+        for facts in ranked:
+            parts = [facts["canonical_name"]]
+            if facts.get("gender"):
+                parts.append(f"genero: {labels.get(facts['gender'], facts['gender'])}")
+            if facts.get("pronouns"):
+                parts.append("pronomes: " + ", ".join(facts["pronouns"]))
+            if facts.get("aliases"):
+                parts.append("tambem chamado(a): " + ", ".join(facts["aliases"]))
+            if len(parts) == 1:
+                continue
+            lines.append(" | ".join(parts))
+            if len(lines) >= CHARACTER_MAX_IN_PROMPT:
+                break
+        return lines
 
     def signature(self):
         return stable_hash(
@@ -514,13 +969,29 @@ class SessionContextStore:
                 "terms": self.data.get("recurring_terms"),
                 "translations": self.data.get("translations_used"),
                 "bindings": self.term_bindings(),
+                "characters": self.characters(),
             }
         )
 
     def summary(self):
         bindings = self.term_bindings()
         stats = self._stats()
+        characters = self.characters()
         return {
+            "character_count": len(characters),
+            "characters_with_gender": sum(
+                1 for facts in characters.values() if facts.get("gender")
+            ),
+            "characters_with_pronouns": sum(
+                1 for facts in characters.values() if facts.get("pronouns")
+            ),
+            "character_evidence_conflicts": sum(
+                1 for facts in characters.values() if facts.get("conflict")
+            ),
+            "character_fact_conflicts": int(stats.get("character_fact_conflicts") or 0),
+            "character_consistency_retries": int(
+                stats.get("character_consistency_retries") or 0
+            ),
             "path": str(self.path),
             "proper_names": len(self.data.get("proper_names", [])),
             "possible_characters": len(self.data.get("possible_characters", [])),

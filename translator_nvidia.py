@@ -240,6 +240,14 @@ class TranslatorNvidiaBatch:
             "terminology_conflict":
                 "A tentativa anterior usou termo inconsistente com o glossario/contexto "
                 "ja estabelecidos neste capitulo; use a terminologia ja adotada.",
+            "character_gender_conflict":
+                "A tentativa anterior tratou um personagem com genero gramatical "
+                "diferente do ja estabelecido neste capitulo; use exatamente o genero "
+                "e as formas de tratamento listados no contexto de personagens.",
+            "character_pronoun_conflict":
+                "A tentativa anterior usou um pronome incompativel com o personagem ja "
+                "identificado neste capitulo; use os pronomes listados no contexto de "
+                "personagens.",
         }
         return table.get(str(validation_reason or "").strip(),
                           "Refaca a traducao evitando o mesmo problema da tentativa anterior.")
