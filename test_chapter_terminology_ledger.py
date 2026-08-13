@@ -392,6 +392,169 @@ class ConflictPolicyTests(unittest.TestCase):
             self.assertEqual(store.summary()["binding_conflicts"], 1)
 
 
+class TerminologyAuthorityPolicyTests(unittest.TestCase):
+    """TDD #8: ordinary lexical observations are prompt hints, not hard law."""
+
+    def test_contraction_youre_does_not_hard_fail_contextual_portuguese(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations(
+                [_group("YOU'RE BOTH S-RANK", "VOCÊS SÃO S-RANK")]
+            )
+
+            self.assertEqual(
+                store.drift_reason("YOU'RE STRONG TOO.", "VOCÊ TAMBÉM É FORTE."),
+                "",
+            )
+
+    def test_common_verb_stop_allows_contextual_inflection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations(
+                [_group("WE NEED TO STOP IT", "PRECISAMOS PARAR ISSO")]
+            )
+
+            self.assertEqual(
+                store.drift_reason("STOP TALKING!", "PARA DE FALAR!"),
+                "",
+            )
+
+    def test_quit_context_does_not_require_one_surface_verb(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations(
+                [_group("I DIDN'T THINK I'D QUIT THIS SOON", "NÃO PENSEI QUE FOSSE DESISTIR TÃO CEDO")]
+            )
+
+            self.assertEqual(
+                store.drift_reason(
+                    "I'M GOING TO QUIT BEING A HUNTER.",
+                    "VOU DEIXAR DE SER CAÇADOR.",
+                ),
+                "",
+            )
+
+    def test_contraction_thats_does_not_become_a_rigid_binding(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations(
+                [_group("THAT'S YOUR REASON?", "ESSE É O SEU MOTIVO?")]
+            )
+
+            self.assertEqual(
+                store.drift_reason("THAT'S THE REASON.", "É POR ISSO."),
+                "",
+            )
+
+    def test_generic_nouns_do_not_hard_bind_after_one_alignment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations([_group("A MONSTER", "UMA CRIATURA")])
+
+            self.assertEqual(
+                store.drift_reason("A MONSTER APPEARED", "UM MONSTRO APARECEU"),
+                "",
+            )
+
+    def test_expletive_or_dialogue_word_does_not_become_required_term(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations([_group("HOLY CRAP", "CARALHO")])
+
+            self.assertEqual(
+                store.drift_reason("HOLY CRAP", "MALDITO CARA"),
+                "",
+            )
+
+    def test_common_perception_verb_does_not_become_required_term(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations([_group("LOOKS LIKE TROUBLE", "PARECE PROBLEMA")])
+
+            self.assertEqual(
+                store.drift_reason("IT LOOKS LIKE TROUBLE", "PARE QUE É PROBLEMA"),
+                "",
+            )
+
+    def test_proper_name_remains_strict(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations(
+                [_group("PAEHYEOK", "PAEHYEOK", final_reason="proper_name_only")]
+            )
+
+            self.assertTrue(
+                store.drift_reason("PAEHYEOK ARRIVED", "ELE CHEGOU").startswith(
+                    "terminology_conflict"
+                )
+            )
+            self.assertEqual(
+                store.drift_reason("PAEHYEOK ARRIVED", "PAEHYEOK CHEGOU"),
+                "",
+            )
+
+    def test_domain_term_remains_strict_when_authoritative(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations(
+                [_group("THE DUNGEON OPENED", "A MASMORRA ABRIU")]
+            )
+            binding = store.data["term_bindings"]["DUNGEON"]
+            binding["target"] = "MASMORRA"
+            binding["authority"] = "established_domain_term"
+            binding["provenance"] = "domain_term"
+
+            self.assertTrue(
+                store.drift_reason("THE DUNGEON IS CLOSED", "O PORTAL ESTÁ FECHADO").startswith(
+                    "terminology_conflict"
+                )
+            )
+            self.assertEqual(
+                store.drift_reason("THE DUNGEON IS CLOSED", "A MASMORRA ESTÁ FECHADA"),
+                "",
+            )
+
+    def test_domain_term_allows_gender_and_number_family(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations([_group("HUNTER", "CAÇADOR")])
+            binding = store.data["term_bindings"]["HUNTER"]
+            binding["target"] = "CAÇADOR"
+            binding["authority"] = "established_domain_term"
+            binding["provenance"] = "domain_term"
+
+            self.assertEqual(
+                store.drift_reason("HUNTER", "CAÇADORA"),
+                "",
+            )
+            self.assertEqual(
+                store.drift_reason("HUNTER", "CAÇADORES"),
+                "",
+            )
+
+    def test_true_term_drift_still_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations([_group("ZARQUON", "ZARQUONITE")])
+
+            self.assertTrue(
+                store.drift_reason("THE ZARQUON IS CLOSED", "O PORTAL ESTÁ FECHADO").startswith(
+                    "terminology_conflict"
+                )
+            )
+
+
 class LedgerConcurrencyTests(unittest.TestCase):
     """GREEN 9: concurrent discovery of the same term stays single-valued."""
 

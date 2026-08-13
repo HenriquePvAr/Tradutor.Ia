@@ -30,11 +30,41 @@ CONTEXT_VERSION = "chapter-session-v2"
 # per unique term, never a transcript.
 KIND_PROPER_NAME = "proper_name"
 KIND_TERMINOLOGY = "terminology"
+TERM_AUTHORITY_EXPLICIT_GLOSSARY = "explicit_glossary"
+TERM_AUTHORITY_PROPER_NAME = "proper_name"
+TERM_AUTHORITY_ENTITY_TERM = "entity_term"
+TERM_AUTHORITY_DOMAIN_TERM = "established_domain_term"
+TERM_AUTHORITY_LEARNED_TERM = "learned_term"
+TERM_AUTHORITY_LEXICAL_HINT = "learned_lexical_hint"
+TERM_AUTHORITY_NON_AUTHORITATIVE = "non_authoritative"
 LEDGER_MAX_TERMS = 120
 LEDGER_MAX_OBSERVATIONS = 8
 LEDGER_MAX_TOKENS_PER_OBSERVATION = 16
 LEDGER_MIN_TERM_LENGTH = 4
 TERMINOLOGY_CONFLICT_REASON = "terminology_conflict"
+_AUTHORITATIVE_TERM_AUTHORITIES = {
+    TERM_AUTHORITY_EXPLICIT_GLOSSARY,
+    TERM_AUTHORITY_PROPER_NAME,
+    TERM_AUTHORITY_ENTITY_TERM,
+    TERM_AUTHORITY_DOMAIN_TERM,
+    TERM_AUTHORITY_LEARNED_TERM,
+}
+_AUTHORITATIVE_TERM_PROVENANCES = {
+    "explicit_glossary",
+    "domain_term",
+    "established_domain_term",
+    "name_preserved_in_translation",
+}
+_DOMAIN_TERM_KEYS = {
+    "DUNGEON", "DUNGEONS", "GUILD", "GUILDS", "GUILDMASTER", "GUILDMASTERS",
+    "HUNTER", "HUNTERS", "RANK",
+}
+_LEXICAL_HINT_KEYS = {
+    "ABOUT", "CRAP", "HELP", "HOLY", "LOOKS", "LUCKY", "MONSTER", "MONSTERS",
+    "QUIT", "REASON", "SERIOUSLY", "SOMEONE", "STOP", "THAT", "THING",
+    "THINGS", "UNFORTUNATE",
+}
+_CONTRACTION_RE = re.compile(r"[A-Z]+(?:'[A-Z]+)+$")
 
 # --- chapter character registry ---------------------------------------------
 # The ledger above preserves *text*: which target form a source term was bound
@@ -194,6 +224,74 @@ def _candidate_term_keys(text):
             continue
         keys.append(key)
     return keys
+
+
+def _source_term_authority(key, *, kind=KIND_TERMINOLOGY, provenance=""):
+    key = _normalized_token(key)
+    provenance = str(provenance or "")
+    if kind == KIND_PROPER_NAME:
+        return TERM_AUTHORITY_PROPER_NAME
+    if provenance in _AUTHORITATIVE_TERM_PROVENANCES:
+        if provenance == "name_preserved_in_translation":
+            return TERM_AUTHORITY_PROPER_NAME
+        return TERM_AUTHORITY_DOMAIN_TERM
+    if key in _DOMAIN_TERM_KEYS:
+        return TERM_AUTHORITY_DOMAIN_TERM
+    if key in _LEXICAL_HINT_KEYS:
+        return TERM_AUTHORITY_LEXICAL_HINT
+    if _CONTRACTION_RE.fullmatch(key):
+        return TERM_AUTHORITY_LEXICAL_HINT
+    if _is_known_english_word(key) or _token_is_source_vocabulary(key):
+        return TERM_AUTHORITY_LEXICAL_HINT
+    # Glued OCR terms and invented proper nouns are useful context, but the
+    # ledger should not hard-fail them unless another authority upgrades them.
+    if len(key) > 14:
+        return TERM_AUTHORITY_LEXICAL_HINT
+    return TERM_AUTHORITY_LEARNED_TERM
+
+
+def _binding_authority(entry):
+    if not isinstance(entry, dict):
+        return TERM_AUTHORITY_NON_AUTHORITATIVE
+    explicit = str(entry.get("authority") or "").strip()
+    if explicit:
+        return explicit
+    return _source_term_authority(
+        entry.get("source") or "",
+        kind=entry.get("kind") or KIND_TERMINOLOGY,
+        provenance=entry.get("provenance") or "",
+    )
+
+
+def _binding_is_authoritative(entry):
+    return _binding_authority(entry) in _AUTHORITATIVE_TERM_AUTHORITIES
+
+
+def _target_family_forms(target):
+    target = str(target or "").strip()
+    if not target:
+        return set()
+    forms = {_fold(target)}
+    folded = _fold(target)
+    suffixes = {
+        "O": ("A", "OS", "AS"),
+        "A": ("O", "AS", "OS"),
+        "OR": ("ORA", "ORES", "ORAS"),
+        "AO": ("A", "OES", "AS"),
+    }
+    for suffix, variants in suffixes.items():
+        if folded.endswith(suffix) and len(folded) > len(suffix) + 2:
+            stem = folded[: -len(suffix)]
+            forms.update(stem + variant for variant in variants)
+    if folded.endswith("S") and len(folded) > 4:
+        forms.add(folded[:-1])
+    else:
+        forms.add(folded + "S")
+    return forms
+
+
+def _target_binding_present(target, candidate_folded_words):
+    return bool(_target_family_forms(target) & set(candidate_folded_words))
 
 
 def _target_word_gender(language, word):
@@ -407,6 +505,9 @@ class SessionContextStore:
                 "source": source,
                 "target": "",
                 "kind": kind,
+                "authority": _source_term_authority(
+                    source, kind=kind, provenance=provenance
+                ),
                 "provenance": "",
                 "observations": [],
                 "conflicts": 0,
@@ -417,9 +518,18 @@ class SessionContextStore:
         # it stays one, so the kind is only ever upgraded.
         if kind == KIND_PROPER_NAME:
             entry["kind"] = KIND_PROPER_NAME
+            entry["authority"] = TERM_AUTHORITY_PROPER_NAME
         entry.setdefault("provenance", "")
         if not entry["provenance"]:
             entry["provenance"] = provenance
+        entry.setdefault(
+            "authority",
+            _source_term_authority(
+                entry.get("source") or source,
+                kind=entry.get("kind") or kind,
+                provenance=entry.get("provenance") or provenance,
+            ),
+        )
         return entry
 
     def _drop_weakest_binding(self):
@@ -441,6 +551,11 @@ class SessionContextStore:
             return
         entry["target"] = target
         entry["provenance"] = provenance
+        entry["authority"] = _source_term_authority(
+            entry.get("source") or "",
+            kind=entry.get("kind") or KIND_TERMINOLOGY,
+            provenance=provenance,
+        )
         entry["observations"] = []
 
     def _observe_terminology(self, entry, target_surfaces):
@@ -837,9 +952,13 @@ class SessionContextStore:
             target = str(entry.get("target") or "")
             if not target or key not in present:
                 continue
-            if _fold(target) in candidate_folded:
+            if not _binding_is_authoritative(entry):
+                self._bump("term_binding_prompt_only")
+                continue
+            if _target_binding_present(target, candidate_folded):
                 self._bump("bindings_reused")
                 continue
+            self._bump("terminology_hard_conflict")
             return f"{TERMINOLOGY_CONFLICT_REASON}:{entry.get('source') or key}"
         return ""
 
@@ -907,7 +1026,13 @@ class SessionContextStore:
             glossary = [
                 f"{entry['source']} => {entry['target']}"
                 for entry in bindings.values()
+                if entry.get("kind") != KIND_PROPER_NAME and _binding_is_authoritative(entry)
+            ]
+            hints = [
+                f"{entry['source']} => {entry['target']}"
+                for entry in bindings.values()
                 if entry.get("kind") != KIND_PROPER_NAME
+                and not _binding_is_authoritative(entry)
             ]
             if proper:
                 sections.append(
@@ -918,6 +1043,12 @@ class SessionContextStore:
                 sections.append(
                     "Terminologia ja fixada neste capitulo (obrigatoria, mesmo que a "
                     "decisao tenha sido tomada muitas falas atras):\n" + "\n".join(glossary)
+                )
+            if hints:
+                sections.append(
+                    "Observacoes lexicais deste capitulo (contexto nao obrigatorio; "
+                    "nao force se a gramatica ou o contexto pedirem outra forma):\n"
+                    + "\n".join(hints[:40])
                 )
         character_lines = self.character_prompt_lines()
         if character_lines:
