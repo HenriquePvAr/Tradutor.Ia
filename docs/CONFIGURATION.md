@@ -84,9 +84,11 @@ O fallback não substitui palavras por regras fixas. Ele pede novas leituras e c
 | `SELENIUM_CLEANUP_TIMEOUT_SECONDS` | `3` | Janela do cleanup seletivo, restrita a 0,25–30 s |
 
 `CHROMEDRIVER_PATH` é suportada pelo código, mas não aparece no template. Se estiver vazia,
-o código procura apenas `chromedriver`/`chromedriver.exe` já presentes no `PATH`; ele não
-usa webdriver-manager nem Selenium Manager para baixar um driver. Defina um caminho local
-quando o `PATH` não tiver um driver compatível.
+o código procura `chromedriver`/`chromedriver.exe` já presentes no `PATH` e, quando nenhum
+driver local existe, deixa o Selenium Manager oficial resolver um driver compatível de
+forma cacheada. Em testes herméticos (`TRADUTOR_IA_HERMETIC_TEST_ENV=1`) essa resolução
+permanece desligada por padrão; defina `TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1` apenas quando
+quiser permitir explicitamente a resolução no ambiente de teste.
 
 ## Máscara, texto e reconstrução
 

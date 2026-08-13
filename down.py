@@ -521,11 +521,19 @@ def _webtoons_lazy_resolver(*, cancel_check=None, on_progress=None,
 def driver_download_allowed(env=None) -> bool:
     """Whether the official Selenium Manager may resolve a missing ChromeDriver.
 
-    Opt-in and exact-match: only the literal "1" enables it, so a stray "true" or "0" in an
-    environment file cannot silently turn a browser download on.
+    Selenium 4 ships the supported, bounded Selenium Manager resolver.  Production source
+    validation may use it when no explicit/project/PATH driver is available, so a clean
+    Windows beta install is not reduced to "download ChromeDriver manually".  Hermetic
+    tests still fail closed by default, and any explicit value keeps exact-match semantics:
+    only the literal "1" enables the resolver.
     """
     values = os.environ if env is None else env
-    return str(values.get("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "")).strip() == "1"
+    raw = values.get("TRADUTOR_ALLOW_DRIVER_DOWNLOAD")
+    if raw is not None:
+        return str(raw).strip() == "1"
+    if str(values.get("TRADUTOR_IA_HERMETIC_TEST_ENV", "")).strip() == "1":
+        return False
+    return True
 
 
 def driver_resolution_diagnostics(env=None) -> dict[str, object]:
@@ -623,9 +631,14 @@ def _create_driver():
         except (AttributeError, TypeError):
             shutil.rmtree(profile_dir, ignore_errors=True)
         return driver
-    except Exception:
+    except Exception as exc:
         shutil.rmtree(profile_dir, ignore_errors=True)
-        raise
+        if isinstance(exc, SourceError):
+            raise
+        raise SourceError(
+            _pipeline_exception_code(exc),
+            "browser driver resolution or launch failed",
+        ) from exc
 
 
 def _set_browser_timeouts(driver, timeout_seconds=45):

@@ -220,9 +220,10 @@ preflight (200), container, seletores (167 imagens), lazy loading, autorização
 transport funcionam — comprovado até **duas** imagens baixadas e validadas. O capítulo
 inteiro **não** foi processado, e nada aqui afirma suporte completo ao Webtoons.
 
-O driver é opt-in: `TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1` permite ao Selenium Manager oficial
-resolver o ChromeDriver. Sem driver e sem a flag, o submit falha com `chromedriver_unavailable` —
-era essa a causa de ambiente.
+O driver é resolvido por configuração explícita, `PATH` ou Selenium Manager oficial. Em
+testes herméticos, `TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1` permite exercitar esse resolvedor sem
+transformar a suíte padrão em uma dependência de rede. Se todos os caminhos falharem, o
+submit falha com erro categorizado de driver.
 
 ### Dívida técnica registrada
 

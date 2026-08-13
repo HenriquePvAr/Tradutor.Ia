@@ -91,11 +91,13 @@ Tesseract está presente apenas como caminho opcional de compatibilidade. Ele n�
 O downloader inicia o Chrome em modo headless. A resolução do driver segue esta ordem:
 
 1. `CHROMEDRIVER_PATH`, quando configurado e válido;
-2. `chromedriver` ou `chromedriver.exe` já disponível no `PATH`.
+2. `chromedriver` ou `chromedriver.exe` já disponível no `PATH`;
+3. Selenium Manager oficial, cacheado pelo Selenium, quando nenhum driver local existe.
 
-Não há download automático por webdriver-manager ou Selenium Manager por padrão: a análise
-de fonte não deve introduzir uma requisição implícita. Se o driver local não for encontrado,
-o job termina com `chromedriver_unavailable`; defina um caminho genérico no `.env`:
+Essa terceira etapa evita que uma instalação Windows limpa dependa de download manual de
+ChromeDriver. Em testes herméticos, a resolução automática fica desligada por padrão; use
+`TRADUTOR_ALLOW_DRIVER_DOWNLOAD=1` somente quando quiser permitir esse resolvedor no teste.
+Se a resolução automática falhar, defina um caminho genérico no `.env`:
 
 ```dotenv
 CHROMEDRIVER_PATH=C:\ferramentas\chromedriver.exe

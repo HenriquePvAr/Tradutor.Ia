@@ -130,11 +130,11 @@ Reduzir o limite de requisições é mais seguro do que aumentar retries sem evi
 ## Chrome ou ChromeDriver não inicia
 
 Atualize o Chrome e confirme que ele abre normalmente. O downloader tenta
-`CHROMEDRIVER_PATH` e depois apenas `chromedriver`/`chromedriver.exe` já presente no
-`PATH`; ele não baixa drivers automaticamente.
+`CHROMEDRIVER_PATH`, depois `chromedriver`/`chromedriver.exe` já presente no `PATH` e,
+por fim, o Selenium Manager oficial para resolver/cachear um driver compatível.
 
-Quando a descoberta automática falhar, o job deve terminar com `chromedriver_unavailable`.
-Configure um driver compatível:
+Quando a resolução automática falhar, o job deve terminar com um erro categorizado de
+driver. Como workaround local, configure um driver compatível:
 
 ```dotenv
 CHROMEDRIVER_PATH=C:\ferramentas\chromedriver.exe
