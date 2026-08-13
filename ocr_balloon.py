@@ -2896,6 +2896,23 @@ RAPIDOCR_CORROBORATING_REASONS = frozenset(
 )
 
 
+# Signals that lower the local OCR quality score but are not proof that the
+# source text is unsafe to translate by themselves. Comics regularly contain
+# contractions, stutters, rare names, ranks, fantasy vocabulary and compact
+# lettering; treating these vocabulary-shaped warnings as hard OCR corruption is
+# what holds back readable speech/narration before the translator ever sees it.
+RAPIDOCR_WARNING_ONLY_REASONS = frozenset(
+    {
+        "dictionary_near_miss",
+        "generic_ocr_repair_available",
+        "short_improbable_caps_token",
+        "unknown_short_token_in_phrase",
+        "improbable_number_token",
+        "adjacent_repeated_word_near_miss",
+    }
+)
+
+
 # A rank, a level or a stat is written with the digits at the edge of the token
 # ("B2", "LEVEL 10", "HP 50"). Digits *inside* a run of letters is not how text
 # is written, it is how a recogniser reports glyphs it could not resolve.
@@ -2904,6 +2921,15 @@ _EMBEDDED_DIGIT_TOKEN = re.compile(r"[A-Za-z]+[0-9]+[A-Za-z]+")
 
 def _has_embedded_digit_corruption(text):
     return bool(_EMBEDDED_DIGIT_TOKEN.search(_ascii_fold(str(text or ""))))
+
+
+def _rapidocr_warning_only_quality(group):
+    reasons = set(group.quality_reasons or [])
+    if not reasons:
+        return False
+    if reasons - RAPIDOCR_WARNING_ONLY_REASONS:
+        return False
+    return not _has_embedded_digit_corruption(group.text)
 
 
 def rapidocr_region_decision(group):
@@ -2929,6 +2955,8 @@ def rapidocr_region_decision(group):
     if len(reasons & RAPIDOCR_CORROBORATING_REASONS) >= 2:
         return "retry"
     if float(group.quality_score) < config.RAPIDOCR_RECOVERY_MIN_QUALITY_SCORE:
+        if _rapidocr_warning_only_quality(group):
+            return "accept"
         return "retry"
     return "accept"
 
@@ -3083,13 +3111,27 @@ def enforce_rapidocr_quality_gate(groups, page_index=None):
     if not _rapidocr_recovery_enabled():
         return []
     blocked = []
+    warning_accepted = 0
     for group in groups:
-        if group.ocr_quality_blocked or rapidocr_region_decision(group) == "accept":
+        decision = rapidocr_region_decision(group)
+        if group.ocr_quality_blocked or decision == "accept":
+            if (
+                not group.ocr_quality_blocked
+                and decision == "accept"
+                and _rapidocr_warning_only_quality(group)
+            ):
+                warning_accepted += 1
             continue
         group.ocr_quality_blocked = True
         group.ocr_quality_block_reason = ";".join(group.quality_reasons) or "low_quality_score"
         group.manual_review_required = True
         blocked.append(group)
+    if warning_accepted:
+        record_count(
+            "ocr_quality_warning_accept",
+            warning_accepted,
+            page_index=page_index,
+        )
     if blocked:
         record_count(
             "rapidocr_recovery.all_attempts_rejected",
@@ -3097,6 +3139,7 @@ def enforce_rapidocr_quality_gate(groups, page_index=None):
             page_index=page_index,
         )
         record_count("ocr_quality_blocked", len(blocked), page_index=page_index)
+        record_count("translation_held_by_ocr", len(blocked), page_index=page_index)
     return blocked
 
 

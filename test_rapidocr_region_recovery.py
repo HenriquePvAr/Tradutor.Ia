@@ -140,6 +140,62 @@ class RapidOCRQualityDecisionTests(unittest.TestCase):
                 group = _scored_group(text)
                 self.assertEqual(rapidocr_region_decision(group), "accept")
 
+    def test_warning_only_low_score_dialogue_is_accepted_for_translation(self):
+        examples = [
+            "WHAT ARE YOU DOING?",
+            "FOR ME, IT'S BECAUSE OUR GUILDMASTER IS STRONG.",
+        ]
+        for text in examples:
+            with self.subTest(text=text):
+                group = _scored_group(text)
+                self.assertLess(group.quality_score, config.RAPIDOCR_RECOVERY_MIN_QUALITY_SCORE)
+                self.assertEqual(rapidocr_region_decision(group), "accept")
+                with patch.object(ocr_balloon, "record_count") as counter:
+                    enforce_rapidocr_quality_gate([group])
+                self.assertTrue(_should_translate_group(group))
+                counted = {call.args[0] for call in counter.call_args_list}
+                self.assertIn("ocr_quality_warning_accept", counted)
+                self.assertNotIn("ocr_quality_blocked", counted)
+
+    def test_pure_dictionary_near_miss_is_warning_not_retry(self):
+        group = _scored_group("KAELRIN, WAIT!")
+        group.quality_score = 0.2
+        group.quality_reasons = ["dictionary_near_miss"]
+        self.assertEqual(rapidocr_region_decision(group), "accept")
+
+    def test_legitimate_contractions_are_warning_accepted(self):
+        for text in ("YOU'RE READY?", "THEY'RE GOING NOW.", "I'D LIKE TO GO."):
+            with self.subTest(text=text):
+                group = _scored_group(text)
+                self.assertEqual(rapidocr_region_decision(group), "accept")
+
+    def test_stutter_is_warning_accepted(self):
+        group = _scored_group("TH-THANK YOU!")
+        self.assertEqual(rapidocr_region_decision(group), "accept")
+
+    def test_word_spacing_corruption_requests_retry(self):
+        group = _scored_group("AN OT HER ONE ABOVE US!!")
+        group.quality_score = 0.2
+        group.quality_reasons = [
+            "compact_word_segmentation_candidate",
+            "unknown_short_token_in_phrase",
+        ]
+        self.assertEqual(rapidocr_region_decision(group), "retry")
+
+    def test_independent_corroborating_artifact_reasons_request_retry(self):
+        group = _scored_group("FOR ME IT IS SAFE")
+        group.quality_score = 0.2
+        group.quality_reasons = [
+            "unknown_short_token_in_phrase",
+            "low_confidence",
+        ]
+        self.assertEqual(rapidocr_region_decision(group), "retry")
+
+    def test_malformed_contraction_still_requests_retry(self):
+        group = _scored_group("THEY'REDOING THIS.")
+        self.assertIn("improbable_apostrophe_pattern", group.quality_reasons)
+        self.assertEqual(rapidocr_region_decision(group), "retry")
+
     def test_proper_name_is_accepted(self):
         group = _scored_group("KAELRIN, WAIT!")
         group.detected_proper_names = ["KAELRIN"]
@@ -204,6 +260,7 @@ class SelectiveRecoveryTests(unittest.TestCase):
         counted = {call.args[0] for call in counter.call_args_list}
         self.assertIn("rapidocr_recovery.all_attempts_rejected", counted)
         self.assertIn("ocr_quality_blocked", counted)
+        self.assertIn("translation_held_by_ocr", counted)
 
     def test_retry_budget_is_bounded_per_page(self):
         groups = [

@@ -2359,6 +2359,9 @@ def _build_quality_report(report, states, translation_retry_records):
         "groups_suspicious": 0,
         "selective_fallback_attempts": 0,
         "selective_fallbacks_used": 0,
+        "rapidocr_region_retry_requested": 0,
+        "rapidocr_region_retry_selected": 0,
+        "rapidocr_region_retry_failed": 0,
         "fallbacks_to_paddle_mobile": 0,
         "fallbacks_to_paddle_full": 0,
         "ocr_repairs": 0,
@@ -2394,6 +2397,7 @@ def _build_quality_report(report, states, translation_retry_records):
         debug = state.get("debug_data", {})
         items = debug.get("items", [])
         fallback_records = debug.get("selective_ocr_fallbacks", [])
+        rapidocr_records = debug.get("rapidocr_region_recovery", [])
         suspicious = [
             item
             for item in items
@@ -2441,6 +2445,15 @@ def _build_quality_report(report, states, translation_retry_records):
         totals["selective_fallback_attempts"] += len(fallback_records)
         totals["selective_fallbacks_used"] += sum(
             1 for record in fallback_records if record.get("fallback_used")
+        )
+        totals["rapidocr_region_retry_requested"] += len(rapidocr_records)
+        totals["rapidocr_region_retry_selected"] += sum(
+            1 for record in rapidocr_records if record.get("selection") == "attempt_2"
+        )
+        totals["rapidocr_region_retry_failed"] += sum(
+            1
+            for record in rapidocr_records
+            if record.get("selection") != "attempt_2"
         )
         totals["fallbacks_to_paddle_mobile"] += sum(
             1
@@ -2519,6 +2532,7 @@ def _build_quality_report(report, states, translation_retry_records):
                     _quality_item_summary(item) for item in suspicious[:12]
                 ],
                 "selective_ocr_fallbacks": fallback_records,
+                "rapidocr_region_recovery": rapidocr_records,
                 "speech_container_reocr": state.get("speech_container_reocr", []),
                 "text_repairs": debug.get("text_repairs", []),
                 "rejected_text_repairs": debug.get("rejected_text_repairs", []),
@@ -2869,6 +2883,7 @@ def _serializable_state(state):
         "cache_source",
         "debug_data",
         "selective_ocr_fallbacks",
+        "rapidocr_region_recovery",
         "speech_container_reocr",
         "fast_ocr_fallback",
         "fast_ocr_fallback_metadata",
@@ -3035,6 +3050,9 @@ def _aggregate_debug_data(states):
         "ocr_page_fallbacks": 0,
         "ocr_region_fallbacks": 0,
         "ocr_region_fallback_attempts": 0,
+        "rapidocr_region_retry_requested": 0,
+        "rapidocr_region_retry_selected": 0,
+        "rapidocr_region_retry_failed": 0,
         "paddle_mobile_region_fallbacks": 0,
         "paddle_full_region_fallbacks": 0,
         "paddle_full_calls": 0,
@@ -3092,6 +3110,16 @@ def _aggregate_debug_data(states):
         )
         fallback_records = debug_data.get("selective_ocr_fallbacks", [])
         result["ocr_region_fallback_attempts"] += len(fallback_records)
+        rapidocr_records = debug_data.get("rapidocr_region_recovery", [])
+        result["rapidocr_region_retry_requested"] += len(rapidocr_records)
+        result["rapidocr_region_retry_selected"] += sum(
+            1 for record in rapidocr_records if record.get("selection") == "attempt_2"
+        )
+        result["rapidocr_region_retry_failed"] += sum(
+            1
+            for record in rapidocr_records
+            if record.get("selection") != "attempt_2"
+        )
         for record in fallback_records:
             for full_call in record.get("paddle_full_calls", []) or []:
                 result["paddle_full_calls"] += 1
