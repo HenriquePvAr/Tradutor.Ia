@@ -311,6 +311,59 @@ class RivaProviderTests(unittest.TestCase):
         self.assertEqual(translator.stats["riva_corrective_retry_failed"], 1)
         self.assertEqual(translator.stats["riva_untranslated_blocked"], 1)
 
+    def test_riva_partial_english_residual_gets_one_corrective_request(self):
+        translator, calls = self._translator([
+            '{"BALAO_1":"TOOK YOU LONGER THAN I EXPECTED.","BALAO_2":"Tudo certo."}',
+            '{"BALAO_1":"Você demorou mais do que eu esperava."}',
+        ])
+
+        translated = translator.translate_many(
+            ["IT TOOK YOU LONGER THAN I EXPECTED.", "ALL RIGHT."],
+            force=True,
+        )
+
+        self.assertEqual(str(translated[0]), "Você demorou mais do que eu esperava.")
+        self.assertEqual(str(translated[1]), "Tudo certo.")
+        self.assertEqual(len(calls), 2)
+        self.assertIn('"BALAO_1":"IT TOOK YOU LONGER THAN I EXPECTED."', calls[1]["messages"][1]["content"])
+        self.assertNotIn('"BALAO_2":"ALL RIGHT."', calls[1]["messages"][1]["content"])
+        self.assertIn("partially untranslated", calls[1]["messages"][1]["content"])
+        self.assertEqual(translator.stats["riva_residual_english_detected"], 1)
+        self.assertEqual(translator.stats["riva_corrective_retry_requested"], 1)
+
+    def test_riva_multiple_residuals_are_corrected_individually_not_as_full_batch(self):
+        translator, calls = self._translator([
+            (
+                '{"BALAO_1":"TOOK YOU LONGER THAN I EXPECTED.",'
+                '"BALAO_2":"Tudo certo.",'
+                '"BALAO_3":"YOU SHOULD RUN."}'
+            ),
+            '{"BALAO_1":"Você demorou mais do que eu esperava."}',
+            '{"BALAO_3":"Se você está atrasado, deveria correr."}',
+        ])
+
+        translated = translator.translate_many(
+            [
+                "IT TOOK YOU LONGER THAN I EXPECTED.",
+                "ALL RIGHT.",
+                "IF YOU ARE LATE, YOU SHOULD RUN.",
+            ],
+            force=True,
+        )
+
+        self.assertEqual(str(translated[0]), "Você demorou mais do que eu esperava.")
+        self.assertEqual(str(translated[1]), "Tudo certo.")
+        self.assertEqual(str(translated[2]), "Se você está atrasado, deveria correr.")
+        self.assertEqual(len(calls), 3)
+        self.assertIn('"BALAO_1":"IT TOOK YOU LONGER THAN I EXPECTED."', calls[1]["messages"][1]["content"])
+        self.assertNotIn('"BALAO_2":"ALL RIGHT."', calls[1]["messages"][1]["content"])
+        self.assertNotIn('"BALAO_3":"IF YOU ARE LATE, YOU SHOULD RUN."', calls[1]["messages"][1]["content"])
+        self.assertIn('"BALAO_3":"IF YOU ARE LATE, YOU SHOULD RUN."', calls[2]["messages"][1]["content"])
+        self.assertNotIn('"BALAO_1":"IT TOOK YOU LONGER THAN I EXPECTED."', calls[2]["messages"][1]["content"])
+        self.assertEqual(translator.stats["riva_residual_english_detected"], 2)
+        self.assertEqual(translator.stats["riva_corrective_retry_requested"], 2)
+        self.assertEqual(translator.stats["riva_corrective_retry_succeeded"], 2)
+
     def test_riva_name_code_and_sfx_source_equal_are_not_corrected(self):
         translator, calls = self._translator([
             '{"BALAO_1":"PAEHYEOK","BALAO_2":"S-RANK","BALAO_3":"BANG"}',

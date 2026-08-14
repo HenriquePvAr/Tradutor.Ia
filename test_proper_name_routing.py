@@ -294,6 +294,51 @@ class ProperNameAuthorityValidationTests(unittest.TestCase):
         )
         self.assertTrue(valid, reason)
 
+    def test_interjection_translation_is_not_proper_name_altered(self):
+        valid, reason = validate_translation_text(
+            "HUH?!",
+            "O QUE?",
+            "speech",
+            required_name_spans=["HUH"],
+        )
+        self.assertTrue(valid, reason)
+
+    def test_short_registered_name_altered_still_fails(self):
+        valid, reason = validate_translation_text(
+            "IO, WAIT!",
+            "IA, ESPERE!",
+            "speech",
+            allowed_proper_names=["IO"],
+            required_name_spans=["IO"],
+        )
+        self.assertFalse(valid)
+        self.assertTrue(reason.startswith("proper_name_altered"), reason)
+
+    def test_hyphenated_entity_internal_i_is_not_language_residual(self):
+        valid, reason = validate_translation_text(
+            "SERIOUSLY, CHO-I, STOP TALKING!",
+            "SÉRIO, CHO-I, PARA DE FALAR!",
+            "narration",
+        )
+        self.assertTrue(valid, reason)
+
+    def test_standalone_english_i_still_fails_residual_check(self):
+        valid, reason = validate_translation_text(
+            "I CAN'T DO THIS.",
+            "EU NÃO SEI, I CAN'T DO THIS.",
+            "speech",
+        )
+        self.assertFalse(valid)
+        self.assertIn("mixed_language", reason)
+
+    def test_hyphenated_entity_segments_are_excluded_from_residual_scan(self):
+        valid, reason = validate_translation_text(
+            "NAR-IO ARRIVED.",
+            "NAR-IO CHEGOU.",
+            "speech",
+        )
+        self.assertTrue(valid, reason)
+
 
 class ProperNameOnlyTerminalStateTests(unittest.TestCase):
     """Phase 7: a lone name is settled by the model, never by its shape.

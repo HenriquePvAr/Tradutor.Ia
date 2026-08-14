@@ -4751,6 +4751,10 @@ def _translation_token_infos(text):
             {
                 "raw": raw,
                 "token": token,
+                "start": match.start(),
+                "end": match.end(),
+                "left_hyphen": match.start() > 0 and value[match.start() - 1] == "-",
+                "right_hyphen": match.end() < len(value) and value[match.end()] == "-",
                 "has_diacritic": _has_diacritic(raw),
                 "normalized": unicodedata.normalize("NFC", raw).upper(),
                 "quoted": any(
@@ -4810,7 +4814,38 @@ def _is_english_residual_candidate(token_infos, index, vocabulary):
     token = token_infos[index]["token"]
     if token not in vocabulary:
         return False
+    if _is_token_inside_hyphenated_entity_fragment(token_infos, index):
+        return False
     return not _is_portuguese_folded_token(token_infos, index)
+
+
+def _is_token_inside_hyphenated_entity_fragment(token_infos, index):
+    info = token_infos[index]
+    token = info["token"]
+    if not token:
+        return False
+    if len(token) > 2:
+        return False
+    previous_info = token_infos[index - 1] if index > 0 and info.get("left_hyphen") else None
+    next_info = (
+        token_infos[index + 1]
+        if index + 1 < len(token_infos) and info.get("right_hyphen")
+        else None
+    )
+    return any(_hyphenated_entity_neighbour(item) for item in (previous_info, next_info))
+
+
+def _hyphenated_entity_neighbour(info):
+    if not info:
+        return False
+    token = info["token"]
+    return bool(
+        token
+        and len(token) >= 3
+        and token not in RESIDUAL_TRANSLATION_ENGLISH_WORDS
+        and not _looks_like_inflected_english_token(token)
+        and not _is_nonlexical_vocalization_token({token})
+    )
 
 
 _HORIZONTAL_WHITESPACE_PATTERN = (
@@ -4982,6 +5017,8 @@ def _required_name_span_is_hard_authority(span):
         return False
     if _looks_like_inflected_english_token(token):
         return False
+    if _is_nonlexical_vocalization_token({token}):
+        return False
     if _can_segment_ocr_joined_source_words(token):
         return False
     if _looks_like_title_name_ocr_compound(token):
@@ -5085,6 +5122,7 @@ def validate_translation_text(
         if (
             token in COMMON_ENGLISH_WORDS
             and token in source_tokens
+            and not _is_token_inside_hyphenated_entity_fragment(translated_infos, index)
             and not _is_portuguese_folded_token(translated_infos, index)
         ):
             forbidden.append(token)
@@ -5095,6 +5133,7 @@ def validate_translation_text(
         if (
             token in COMMON_ENGLISH_WORDS
             and token not in {"A", "I", "O", "E"}
+            and not _is_token_inside_hyphenated_entity_fragment(translated_infos, index)
             and not _is_portuguese_folded_token(translated_infos, index)
         ):
             current_run += 1
@@ -5115,6 +5154,7 @@ def validate_translation_text(
         if token in source_tokens
         and token in SOURCE_PRESERVED_ENGLISH_PHRASE_WORDS
         and token not in allowed_names
+        and not _is_token_inside_hyphenated_entity_fragment(translated_infos, index)
         and not _is_portuguese_folded_token(translated_infos, index)
     ]
     if (
@@ -5197,6 +5237,7 @@ def validate_translation_text(
             if token in source_tokens
             and token not in allowed_names
             and token not in PORTUGUESE_MARKERS
+            and not _is_token_inside_hyphenated_entity_fragment(translated_infos, index)
             and not _is_portuguese_folded_token(translated_infos, index)
             and _looks_like_inflected_english_token(token)
         }
@@ -5220,6 +5261,7 @@ def validate_translation_text(
         for index, token in enumerate(translated_tokens)
         if token in COMMON_ENGLISH_WORDS
         and token not in {"I"}
+        and not _is_token_inside_hyphenated_entity_fragment(translated_infos, index)
         and not _is_portuguese_folded_token(translated_infos, index)
     ]
     if (
