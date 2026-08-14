@@ -98,6 +98,7 @@
   const TOAST_DISMISS_MS = 3200;
   const TOAST_DEDUP_LIMIT = 80;
   const TERMINAL_NOTIFICATION_STORAGE_KEY = 'tradutor.terminalNotifications.v1';
+  const SOURCE_VALIDATION_DRAFT_STORAGE_KEY = 'tradutor.sourceValidationDraft.v1';
   const toastRegistry = new Map();
   const consumedTerminalNotifications = new Set();
   try {
@@ -912,7 +913,10 @@
   }
   function handleSourceUrlInput() {
     const state = syncSourceFormState();
-    if (state.sourceChanged) invalidateSourceValidation();
+    if (state.sourceChanged) {
+      clearSourceValidationDraft();
+      invalidateSourceValidation();
+    }
     const value = state.url;
     if (!/^https?:\/\//i.test(value)) return;
     const guess = guessFromUrl(value);
@@ -925,7 +929,10 @@
   bindSourceFormInput('#urlInput', handleSourceUrlInput);
   bindSourceFormInput('#localFolderInput', () => {
     const state = syncSourceFormState();
-    if (state.sourceChanged) invalidateSourceValidation();
+    if (state.sourceChanged) {
+      clearSourceValidationDraft();
+      invalidateSourceValidation();
+    }
     $('#localFolderError')?.classList.remove('show');
     updateTranslationStartControls();
   });
@@ -948,6 +955,7 @@
   $('#providerSelect')?.addEventListener('change', () => {
     appState.providerDirty = true;
     syncSourceFormState();
+    refreshStoredSourceExecutionDraft();
     updateTranslationStartControls();
   });
   function applyProviderDefault(value) {
@@ -959,6 +967,149 @@
     syncSourceFormState();
   }
 
+  function currentSourceExecutionDraft(sourceUrl = '') {
+    const form = syncSourceFormState();
+    return {
+      source_url: String(sourceUrl || form.url || '').trim(),
+      chapter_name: form.chapterName || '',
+      output_slug: form.outputSlug || '',
+      translation_provider: form.translationProvider || normalizeTranslationProvider($('#providerSelect')?.value),
+      selected_mode: appState.selectedMode,
+      selected_scope: appState.selectedScope,
+      custom_scope: $('#scopeCustomInput')?.value || '',
+      use_cache: Boolean($('#cacheToggle')?.checked),
+      force: Boolean($('#forceToggle')?.checked),
+      use_context: Boolean($('#ctxToggle')?.checked),
+      open_output: Boolean($('#openToggle')?.checked),
+      create_source_profile: Boolean($('#sourceProfileToggle')?.checked),
+    };
+  }
+  function readSourceValidationDraft() {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(SOURCE_VALIDATION_DRAFT_STORAGE_KEY) || 'null');
+      return value && typeof value === 'object' ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  function writeSourceValidationDraft(value) {
+    try {
+      sessionStorage.setItem(SOURCE_VALIDATION_DRAFT_STORAGE_KEY, JSON.stringify(value));
+    } catch (_) { /* advisory browser state only */ }
+  }
+  function clearSourceValidationDraft() {
+    try { sessionStorage.removeItem(SOURCE_VALIDATION_DRAFT_STORAGE_KEY); }
+    catch (_) { /* advisory browser state only */ }
+  }
+  function persistSourceValidationDraft(result, sourceUrl) {
+    const analysis = result?.source_analysis_result || {};
+    const analysisId = String(result?.analysis_result_id || analysis.analysis_id || '');
+    if (!analysisId || result?.status !== 'source_analysis_ready' || result?.ready !== true) {
+      clearSourceValidationDraft();
+      return;
+    }
+    writeSourceValidationDraft({
+      schema_version: 1,
+      status: 'source_analysis_ready',
+      analysis_result_id: analysisId,
+      source_url: String(sourceUrl || '').trim(),
+      normalized_url_hash: String(analysis.normalized_url_hash || ''),
+      result_hash: String(analysis.result_hash || ''),
+      reason_code: String(result?.reason_code || analysis.reason_code || ''),
+      execution: currentSourceExecutionDraft(sourceUrl),
+      updated_at: Date.now(),
+    });
+  }
+  function refreshStoredSourceExecutionDraft() {
+    const draft = readSourceValidationDraft();
+    if (!draft || appState.sourceValidation.status !== 'ready') return;
+    if (String(draft.analysis_result_id || '') !== appState.sourceValidation.analysisResultId) return;
+    draft.execution = currentSourceExecutionDraft(appState.sourceValidation.sourceUrl);
+    draft.updated_at = Date.now();
+    writeSourceValidationDraft(draft);
+  }
+  function applyStoredExecutionDraft(execution) {
+    if (!execution || typeof execution !== 'object') return;
+    appState.programmingFields = true;
+    if (execution.chapter_name && $('#nameInput')) $('#nameInput').value = execution.chapter_name;
+    if (execution.output_slug && $('#outputInput')) $('#outputInput').value = execution.output_slug;
+    const provider = normalizeTranslationProvider(execution.translation_provider);
+    if (provider && $('#providerSelect')) {
+      $('#providerSelect').value = provider;
+      appState.providerDirty = true;
+    }
+    if ($('#cacheToggle') && typeof execution.use_cache === 'boolean') $('#cacheToggle').checked = execution.use_cache;
+    if ($('#forceToggle') && typeof execution.force === 'boolean') $('#forceToggle').checked = execution.force;
+    if ($('#ctxToggle') && typeof execution.use_context === 'boolean') $('#ctxToggle').checked = execution.use_context;
+    if ($('#openToggle') && typeof execution.open_output === 'boolean') $('#openToggle').checked = execution.open_output;
+    if ($('#sourceProfileToggle') && typeof execution.create_source_profile === 'boolean') {
+      $('#sourceProfileToggle').checked = execution.create_source_profile;
+    }
+    appState.programmingFields = false;
+    appState.selectedMode = execution.selected_mode === 'quality' || execution.selected_mode === 'download_only'
+      ? execution.selected_mode : 'fast';
+    $$('.choice-card').forEach(card => card.classList.toggle('selected', card.dataset.mode === appState.selectedMode));
+    const scope = String(execution.selected_scope || 'full');
+    const scopeCard = $(`.scope-card[data-scope="${escapeAttr(scope)}"]`) || $('.scope-card[data-scope="full"]');
+    if (scopeCard) {
+      $$('.scope-card').forEach(card => card.classList.toggle('selected', card === scopeCard));
+      appState.selectedScope = scopeCard.dataset.scope || 'full';
+    }
+    if (appState.selectedScope === 'custom' && $('#scopeCustomInput')) {
+      $('#scopeCustomInput').value = execution.custom_scope || $('#scopeCustomInput').value || '1';
+    }
+    $('#scopeCustom')?.classList.toggle('open', appState.selectedScope === 'custom');
+  }
+  function rehydrateSourceValidationFromReadyRecord(record) {
+    const result = record?.source_analysis_result || {};
+    const analysisId = String(record?.analysis_result_id || record?.id || result.analysis_id || '');
+    const status = String(record?.status || result.status || '');
+    const draft = readSourceValidationDraft();
+    if (!analysisId || status !== 'source_analysis_ready'
+        || String(result.status || 'source_analysis_ready') !== 'source_analysis_ready'
+        || !String(result.normalized_url_hash || '')) {
+      invalidateSourceValidation();
+      return {ready: false, reason: 'missing_validation_evidence'};
+    }
+    if (sourceValidationMatchesForm()
+        && appState.sourceValidation.analysisResultId === analysisId) {
+      return {ready: true, reason: 'already_ready'};
+    }
+    if (!draft || String(draft.analysis_result_id || '') !== analysisId
+        || String(draft.status || '') !== 'source_analysis_ready'
+        || !String(draft.source_url || '').trim()) {
+      invalidateSourceValidation();
+      return {ready: false, reason: 'missing_source_validation_draft'};
+    }
+    if (String(draft.normalized_url_hash || '') !== String(result.normalized_url_hash || '')) {
+      invalidateSourceValidation();
+      return {ready: false, reason: 'source_validation_hash_mismatch'};
+    }
+    const currentUrl = $('#urlInput')?.value?.trim() || '';
+    const draftUrl = String(draft.source_url || '').trim();
+    if (currentUrl && currentUrl !== draftUrl) {
+      invalidateSourceValidation();
+      return {ready: false, reason: 'source_validation_stale'};
+    }
+    setSourceType('url');
+    appState.programmingFields = true;
+    if ($('#urlInput')) $('#urlInput').value = draftUrl;
+    appState.programmingFields = false;
+    applyStoredExecutionDraft(draft.execution || {});
+    syncSourceFormState();
+    appState.sourceValidation = {
+      status: 'ready',
+      analysisResultId: analysisId,
+      sourceUrl: draftUrl,
+      reasonCode: String(record?.reason_code || result.reason_code || draft.reason_code || ''),
+      analysis: record?.analysis || null,
+    };
+    appState.currentSourceUrl = draftUrl;
+    appState.newTranslationDraft = false;
+    updateTranslationStartControls();
+    return {ready: sourceValidationMatchesForm(), reason: 'rehydrated'};
+  }
+
   /* ---------- form ---------- */
   $$('.choice-card').forEach(card => card.addEventListener('click', () => {
     $$('.choice-card').forEach(item => item.classList.remove('selected'));
@@ -966,6 +1117,7 @@
     appState.selectedMode = card.dataset.mode;
     const label = $('.stage-item[data-stage="ocr"] span:nth-of-type(2)');
     if (label) label.textContent = 'Leitura do texto';
+    refreshStoredSourceExecutionDraft();
   }));
   $$('.scope-card').forEach(card => card.addEventListener('click', () => {
     if (appState.selectedSourceType === 'local_folder' && card.dataset.scope !== 'full') return;
@@ -973,13 +1125,17 @@
     card.classList.add('selected');
     appState.selectedScope = card.dataset.scope;
     $('#scopeCustom')?.classList.toggle('open', card.dataset.scope === 'custom');
+    refreshStoredSourceExecutionDraft();
   }));
   $('#cacheToggle')?.addEventListener('change', event => {
     if (event.target.checked) $('#forceToggle').checked = false;
+    refreshStoredSourceExecutionDraft();
   });
   $('#forceToggle')?.addEventListener('change', event => {
     if (event.target.checked) $('#cacheToggle').checked = false;
+    refreshStoredSourceExecutionDraft();
   });
+  $('#scopeCustomInput')?.addEventListener('input', refreshStoredSourceExecutionDraft);
   function validateForm() {
     const form = syncSourceFormState();
     const local = appState.selectedSourceType === 'local_folder';
@@ -1331,6 +1487,8 @@
         analysis: result?.analysis || {},
         reason_code: result?.reason_code || '',
       };
+      if (ready) persistSourceValidationDraft(result, sourceUrl);
+      else clearSourceValidationDraft();
       renderSourceAnalysisReady(appState.sourceReady);
       $('#balloonText') && ($('#balloonText').textContent = ready
         ? (workspacePolicyAllowsProcessing()
@@ -4707,6 +4865,14 @@
     if (!panel) return;
     const result = record?.source_analysis_result || {};
     const analysis = record?.analysis || {};
+    const hydrated = rehydrateSourceValidationFromReadyRecord(record);
+    if (!hydrated.ready) {
+      panel.hidden = true;
+      appState.sourceReady = null;
+      uiTrace('source_validation_state', {state: hydrated.reason || 'missing'});
+      return;
+    }
+    uiTrace('source_validation_state', {state: hydrated.reason || 'rehydrated'});
     appState.sourceReady = record || null;
     const policy = appState.settings?.workspace_source_policy || {};
     const safe = value => escapeHtml(String(value || '—'));

@@ -4,7 +4,10 @@ from __future__ import annotations
 import _test_bootstrap  # noqa: F401
 
 import hashlib
+import json
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +22,177 @@ from test_translation_start import WEBTOON_URL, _Bridge, drive
 ROOT = Path(__file__).resolve().parent
 UI = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
 LOADING_VIEW = (ROOT / "static" / "loading_view.js").read_text(encoding="utf-8")
+NODE = shutil.which("node")
+
+
+SOURCE_REHYDRATION_HARNESS = r"""
+'use strict';
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const scenario = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+
+function extractFunction(name) {
+  const marker = `function ${name}(`;
+  const start = source.indexOf(marker);
+  if (start < 0) throw new Error(`missing function ${name}`);
+  const brace = source.indexOf('{', start);
+  let depth = 0;
+  for (let i = brace; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  throw new Error(`unterminated function ${name}`);
+}
+
+const names = [
+  'normalizeTranslationProvider',
+  'syncSourceFormState',
+  'minimumSourceInputIsValid',
+  'workspacePolicyAllowsProcessing',
+  'sourceValidationMatchesForm',
+  'translationStartDisabledReasons',
+  'updateTranslationStartControls',
+  'invalidateSourceValidation',
+  'setSourceType',
+  'currentSourceExecutionDraft',
+  'readSourceValidationDraft',
+  'writeSourceValidationDraft',
+  'clearSourceValidationDraft',
+  'persistSourceValidationDraft',
+  'refreshStoredSourceExecutionDraft',
+  'applyStoredExecutionDraft',
+  'rehydrateSourceValidationFromReadyRecord',
+  'formPayload',
+  'renderSourceAnalysisReady',
+];
+
+const elements = {};
+function makeElement(selector, value) {
+  const element = {
+    value: '',
+    checked: false,
+    disabled: false,
+    hidden: false,
+    textContent: '',
+    innerHTML: '',
+    dataset: {},
+    classList: {toggle() {}, add() {}, remove() {}},
+    setAttribute() {},
+  };
+  if (value && typeof value === 'object' && !Array.isArray(value)) Object.assign(element, value);
+  else if (value !== undefined) element.value = String(value);
+  return element;
+}
+for (const [selector, value] of Object.entries(scenario.elements || {})) {
+  elements[selector] = makeElement(selector, value);
+}
+for (const selector of [
+  '#urlInput', '#localFolderInput', '#nameInput', '#outputInput', '#providerSelect',
+  '#cacheToggle', '#forceToggle', '#ctxToggle', '#openToggle', '#sourceProfileToggle',
+  '#scopeCustomInput', '#validateSourceBtn', '#startBtn', '#sourceReadyPanel',
+  '#sourceReadyMeta', '#sourceReadyPolicyState', '#openSourcePolicySettings',
+  '#urlSourceField', '#localFolderSourceField', '#urlError', '#localFolderError',
+  '#scopeCustom',
+]) {
+  if (!elements[selector]) elements[selector] = makeElement(selector);
+}
+const sourceTypeCards = [{dataset: {sourceType: 'url'}, classList: elements['#urlInput'].classList, setAttribute() {}},
+                         {dataset: {sourceType: 'local_folder'}, classList: elements['#urlInput'].classList, setAttribute() {}}];
+const scopeCards = ['full', '3', '5', '20', '50', 'custom'].map(scope => ({
+  dataset: {scope}, classList: {toggle() {}}, setAttribute() {},
+}));
+const choiceCards = ['fast', 'quality', 'download_only'].map(mode => ({
+  dataset: {mode}, classList: {toggle() {}},
+}));
+function $(selector) {
+  const scopeMatch = String(selector).match(/^\.scope-card\[data-scope="([^"]+)"\]$/);
+  if (scopeMatch) return scopeCards.find(card => card.dataset.scope === scopeMatch[1]) || null;
+  if (!elements[selector]) elements[selector] = makeElement(selector);
+  return elements[selector];
+}
+function $$(selector) {
+  if (selector === '.source-type-card') return sourceTypeCards;
+  if (selector === '.scope-card') return scopeCards;
+  if (selector === '.choice-card') return choiceCards;
+  if (selector === '.stage-item') return [];
+  return [];
+}
+const storage = new Map(Object.entries(scenario.sessionStorage || {}));
+const sessionStorage = {
+  getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+  setItem(key, value) { storage.set(key, String(value)); },
+  removeItem(key) { storage.delete(key); },
+};
+const document = {createElement: () => ({textContent: '', innerHTML: ''})};
+const window = {TradutorI18n: {t: () => ''}};
+const SOURCE_VALIDATION_DRAFT_STORAGE_KEY = 'tradutor.sourceValidationDraft.v1';
+const appState = Object.assign({
+  selectedScope: 'full',
+  selectedMode: 'fast',
+  selectedSourceType: 'url',
+  providerDirty: false,
+  programmingFields: false,
+  settings: {workspace_source_policy: {status: 'active', all_submitted_sources_authorized: true}},
+  sourceValidation: {status: 'idle', analysisResultId: '', sourceUrl: '', reasonCode: ''},
+  sourceForm: {url: '', localFolder: '', chapterName: '', outputSlug: '', translationProvider: ''},
+  lastStartDisabledReasons: [],
+  sourceReady: null,
+  newTranslationDraft: false,
+  currentSourceUrl: '',
+}, scenario.appState || {});
+const trace = [];
+function uiTrace(event, payload) { trace.push({event, payload}); }
+function escapeHtml(value) { return String(value ?? ''); }
+function escapeAttr(value) { return String(value ?? '').replace(/"/g, '&quot;'); }
+function slugify(value) { return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); }
+function guessFromUrl() { return {title: 'Fixture chapter', slug: 'fixture_chapter'}; }
+function shake() {}
+function showToast() {}
+
+const body = `const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
+${names.map(extractFunction).join('\n')}
+return {appState, elements, storage, trace,
+  persistSourceValidationDraft, renderSourceAnalysisReady, rehydrateSourceValidationFromReadyRecord,
+  refreshStoredSourceExecutionDraft, formPayload, updateTranslationStartControls};`;
+const ui = new Function('$', '$$', 'elements', 'storage', 'trace', 'sessionStorage', 'document', 'window',
+  'SOURCE_VALIDATION_DRAFT_STORAGE_KEY', 'appState', 'uiTrace', 'escapeHtml',
+  'escapeAttr', 'slugify', 'guessFromUrl', 'shake', 'showToast', body)(
+  $, $$, elements, storage, trace, sessionStorage, document, window, SOURCE_VALIDATION_DRAFT_STORAGE_KEY,
+  appState, uiTrace, escapeHtml, escapeAttr, slugify, guessFromUrl, shake, showToast);
+
+let payload = null;
+if (scenario.action === 'persist') {
+  ui.persistSourceValidationDraft(scenario.validationResult, scenario.sourceUrl);
+} else if (scenario.action === 'render') {
+  ui.renderSourceAnalysisReady(scenario.record);
+  if (scenario.buildPayload) payload = ui.formPayload();
+} else if (scenario.action === 'render_then_edit') {
+  ui.renderSourceAnalysisReady(scenario.record);
+  ui.elements['#urlInput'].value = scenario.editedUrl;
+  ui.appState.sourceForm.url = scenario.sourceUrl;
+  ui.appState.sourceValidation = {status: 'ready', analysisResultId: scenario.analysisId,
+    sourceUrl: scenario.sourceUrl, reasonCode: ''};
+  ui.appState.sourceForm.url = scenario.sourceUrl;
+  const state = {sourceChanged: true};
+  if (state.sourceChanged) { ui.storage.delete(SOURCE_VALIDATION_DRAFT_STORAGE_KEY); }
+  ui.appState.sourceValidation = {status: 'idle', analysisResultId: '', sourceUrl: '', reasonCode: '', analysis: null};
+  ui.updateTranslationStartControls();
+}
+
+process.stdout.write(JSON.stringify({
+  appState: ui.appState,
+  elements: Object.fromEntries(Object.entries(ui.elements).map(([key, value]) => [key, {
+    value: value.value, checked: value.checked, disabled: value.disabled, hidden: value.hidden,
+    textContent: value.textContent, innerHTML: value.innerHTML,
+  }])),
+  storage: Object.fromEntries(ui.storage.entries()),
+  trace: ui.trace,
+  payload,
+}));
+"""
 
 
 def source_payload(**extra):
@@ -146,6 +320,20 @@ class JoblessSourceAnalysisTests(unittest.TestCase):
 
         self.assertIsNone(self.bridge.latest_source_analysis("local"))
 
+    def test_standalone_source_analysis_survives_bridge_process_restart(self):
+        self.activate_policy()
+        result = drive(self.bridge.analyze_source_candidate(source_payload()))
+        self.bridge.store.close()
+
+        restarted = SourceStateBridge(self.db)
+        try:
+            restored = restarted.latest_source_analysis("local")
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored["analysis_result_id"], result["analysis_result_id"])
+            self.assertEqual(restored["source_analysis_result"]["status"], "source_analysis_ready")
+        finally:
+            restarted.store.close()
+
 
 class WorkspacePolicyScopeTests(unittest.TestCase):
     def test_workspace_policy_reader_uses_the_same_machine_scope_as_the_writer(self):
@@ -176,6 +364,71 @@ class FrontendSourceStateContracts(unittest.TestCase):
                     return UI[start:index + 1]
         self.fail(f"{name} function body was not closed")
 
+    def _ready_record(self, analysis_id: str = "sa_fixture") -> dict:
+        return {
+            "id": analysis_id,
+            "analysis_result_id": analysis_id,
+            "job_id": "",
+            "status": "source_analysis_ready",
+            "stage": "source_analysis_ready",
+            "source_type": "public_url",
+            "source_analysis_result": {
+                "analysis_id": analysis_id,
+                "status": "source_analysis_ready",
+                "normalized_url_hash": hashlib.sha256(WEBTOON_URL.encode("utf-8")).hexdigest(),
+                "result_hash": "result-hash",
+                "adapter": "webtoons",
+                "estimated_asset_count": 171,
+                "browser_inspection_performed": True,
+                "browser_engine": "chrome",
+                "public_structure_indicators_present": True,
+                "completed_at": 1786733617,
+                "reason_code": "source_structure_compatible",
+            },
+            "download_authorization": {},
+        }
+
+    def _stored_draft(self, analysis_id: str = "sa_fixture", *, url: str = WEBTOON_URL) -> dict:
+        return {
+            "schema_version": 1,
+            "status": "source_analysis_ready",
+            "analysis_result_id": analysis_id,
+            "source_url": url,
+            "normalized_url_hash": hashlib.sha256(url.encode("utf-8")).hexdigest(),
+            "result_hash": "result-hash",
+            "reason_code": "workspace_policy_authorized",
+            "execution": {
+                "source_url": url,
+                "chapter_name": "The Returned C-Rank Tank - Episode 51",
+                "output_slug": "the_returned_c_rank_tank_episode_51",
+                "translation_provider": "riva",
+                "selected_mode": "fast",
+                "selected_scope": "full",
+                "custom_scope": "",
+                "use_cache": False,
+                "force": True,
+                "use_context": True,
+                "open_output": False,
+                "create_source_profile": False,
+            },
+            "updated_at": 1786733617000,
+        }
+
+    def _run_rehydration_harness(self, scenario: dict) -> dict:
+        if NODE is None:
+            self.skipTest("node is required for source rehydration UI harness")
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Path(tmp) / "source_rehydration.cjs"
+            payload = Path(tmp) / "scenario.json"
+            harness.write_text(SOURCE_REHYDRATION_HARNESS, encoding="utf-8")
+            payload.write_text(json.dumps(scenario), encoding="utf-8")
+            result = subprocess.run(
+                [NODE, str(harness), str(ROOT / "static" / "tradutor_ui.js"), str(payload)],
+                capture_output=True, text=True, timeout=60,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
     def test_bootstrap_completion_never_uses_translation_terminal_copy(self):
         self.assertIn("mode === MODE_PIPELINE ? TERMINAL_COPY[status] : null", LOADING_VIEW)
 
@@ -205,6 +458,103 @@ class FrontendSourceStateContracts(unittest.TestCase):
         matching = UI[UI.index("function sourceValidationMatchesForm"):]
         matching = matching[:matching.index("\n  function", 20)]
         self.assertIn("sourceValidation.status === 'ready'", matching)
+
+    def test_bootstrap_rehydrates_authorized_source_state_after_runtime_restart(self):
+        key = "tradutor.sourceValidationDraft.v1"
+        result = self._run_rehydration_harness({
+            "action": "render",
+            "record": self._ready_record(),
+            "buildPayload": True,
+            "sessionStorage": {key: json.dumps(self._stored_draft())},
+            "elements": {
+                "#urlInput": {"value": ""},
+                "#providerSelect": {"value": "nemotron"},
+                "#cacheToggle": {"checked": True},
+                "#forceToggle": {"checked": False},
+                "#ctxToggle": {"checked": True},
+                "#openToggle": {"checked": False},
+                "#sourceProfileToggle": {"checked": False},
+            },
+        })
+
+        self.assertEqual(result["appState"]["sourceValidation"]["status"], "ready")
+        self.assertEqual(result["appState"]["sourceValidation"]["analysisResultId"], "sa_fixture")
+        self.assertEqual(result["elements"]["#urlInput"]["value"], WEBTOON_URL)
+        self.assertEqual(result["elements"]["#providerSelect"]["value"], "riva")
+        self.assertFalse(result["elements"]["#cacheToggle"]["checked"])
+        self.assertTrue(result["elements"]["#forceToggle"]["checked"])
+        self.assertFalse(result["elements"]["#startBtn"]["disabled"])
+        self.assertIn("Fonte autorizada. Pronta para processamento.",
+                      result["elements"]["#sourceReadyPolicyState"]["textContent"])
+        self.assertNotIn("source_analysis_result_id", result["payload"])
+        self.assertEqual(result["payload"]["translation_provider"], "riva")
+        self.assertFalse(result["payload"]["use_cache"])
+        self.assertTrue(result["payload"]["force"])
+
+    def test_rehydrated_start_payload_keeps_source_analysis_and_execution_config(self):
+        key = "tradutor.sourceValidationDraft.v1"
+        result = self._run_rehydration_harness({
+            "action": "render",
+            "record": self._ready_record(),
+            "buildPayload": True,
+            "sessionStorage": {key: json.dumps(self._stored_draft())},
+        })
+        # The startTranslation boundary appends source_analysis_result_id from
+        # appState.sourceValidation; formPayload must preserve the current operator config.
+        self.assertEqual(result["appState"]["sourceValidation"]["analysisResultId"], "sa_fixture")
+        self.assertEqual(result["payload"]["url"], WEBTOON_URL)
+        self.assertEqual(result["payload"]["translation_provider"], "riva")
+        self.assertTrue(result["payload"]["full"])
+
+    def test_bootstrap_does_not_auto_call_source_analyze_to_recover_state(self):
+        bootstrap = UI[UI.index("async function runBootstrapRefresh"):]
+        bootstrap = bootstrap[:bootstrap.index("\n  async function pollState")]
+        self.assertNotIn("/api/ui/source/analyze", bootstrap)
+
+    def test_source_changed_after_restart_does_not_reuse_previous_validation(self):
+        key = "tradutor.sourceValidationDraft.v1"
+        result = self._run_rehydration_harness({
+            "action": "render",
+            "record": self._ready_record(),
+            "sessionStorage": {key: json.dumps(self._stored_draft())},
+            "elements": {"#urlInput": {"value": "https://example.org/other"}},
+        })
+
+        self.assertEqual(result["appState"]["sourceValidation"]["status"], "idle")
+        self.assertTrue(result["elements"]["#startBtn"]["disabled"])
+        self.assertTrue(result["elements"]["#sourceReadyPanel"]["hidden"])
+
+    def test_incomplete_ready_evidence_fails_closed_and_does_not_display_authorized(self):
+        key = "tradutor.sourceValidationDraft.v1"
+        record = self._ready_record()
+        record["source_analysis_result"].pop("normalized_url_hash")
+        result = self._run_rehydration_harness({
+            "action": "render",
+            "record": record,
+            "sessionStorage": {key: json.dumps(self._stored_draft())},
+        })
+
+        self.assertEqual(result["appState"]["sourceValidation"]["status"], "idle")
+        self.assertTrue(result["elements"]["#startBtn"]["disabled"])
+        self.assertTrue(result["elements"]["#sourceReadyPanel"]["hidden"])
+
+    def test_display_and_canonical_source_ready_are_consistent_after_bootstrap(self):
+        key = "tradutor.sourceValidationDraft.v1"
+        ready = self._run_rehydration_harness({
+            "action": "render",
+            "record": self._ready_record(),
+            "sessionStorage": {key: json.dumps(self._stored_draft())},
+        })
+        self.assertFalse(ready["elements"]["#sourceReadyPanel"]["hidden"])
+        self.assertEqual(ready["appState"]["sourceValidation"]["status"], "ready")
+
+        blocked = self._run_rehydration_harness({
+            "action": "render",
+            "record": self._ready_record("sa_other"),
+            "sessionStorage": {key: json.dumps(self._stored_draft("sa_fixture"))},
+        })
+        self.assertTrue(blocked["elements"]["#sourceReadyPanel"]["hidden"])
+        self.assertNotEqual(blocked["appState"]["sourceValidation"]["status"], "ready")
 
     def test_source_url_form_state_is_canonicalized_before_validation_and_payload(self):
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
