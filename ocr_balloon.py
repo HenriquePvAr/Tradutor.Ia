@@ -127,16 +127,28 @@ COMMON_ENGLISH_WORDS = {
     "FOR",
     "FRIEND",
     "GOING",
+    "HELP",
     "HAVE",
+    "HOLY",
     "HEAD",
     "HE",
     "HER",
     "HIM",
     "HIS",
     "I",
+    "IT",
+    "LIKE",
+    "LATE",
+    "LUCKY",
+    "MONSTER",
     "MET",
     "MOM",
     "MY",
+    "AWAY",
+    "BOSS",
+    "CRAP",
+    "FEEL",
+    "REASON",
     "OR",
     "OF",
     "ON",
@@ -146,8 +158,12 @@ COMMON_ENGLISH_WORDS = {
     "SHE",
     "SO",
     "SOON",
+    "SOMEONE",
+    "STOP",
     "THE",
     "THESE",
+    "THAT",
+    "THANK",
     "TODAY",
     "UP",
     "VOICE",
@@ -159,6 +175,7 @@ COMMON_ENGLISH_WORDS = {
     "WITH",
     "YEAH",
     "YOU",
+    "YOUR",
 }
 
 RESIDUAL_TRANSLATION_ENGLISH_WORDS = COMMON_ENGLISH_WORDS | {
@@ -208,6 +225,7 @@ ENGLISH_INFLECTION_BASE_WORDS = frozenset(
     "CRY",
     "DRINK",
     "LIGHT",
+    "LOOK",
     "MAP",
     "MONSTER",
     "WAIT",
@@ -4894,6 +4912,83 @@ def _is_nonlexical_vocalization_token(source_tokens):
     )
 
 
+OCR_JOINED_NAME_FALSE_POSITIVE_PARTS = frozenset(
+    {
+        "A", "ABOUT", "AGAIN", "ALOT", "AS", "BACK", "BARELY", "BE", "BECOMING",
+        "BECAREFUL", "BOSS", "BUT", "CONSIDER", "CRAP", "DEVOURED", "DO", "DUNGEON",
+        "ELSE", "ENTRANCE", "FEEL", "GET", "GOING", "HAVE", "HERE", "HOLY", "I",
+        "INTO", "IS", "IT", "JUST", "KNOW", "LATE", "LIKE", "LOOKS", "LUCKY",
+        "LL", "M", "MADE", "MATTER", "MONSTER", "MORE", "NEAR", "NEXT", "NO", "OF", "OUT",
+        "PLEASE", "REASON", "RIGHT", "SEEN", "SERIOUSLY", "SO", "SOMEONE",
+        "SPECIAL", "STILL", "STOP", "TALKING", "THAN", "THAT", "THE", "THERE",
+        "TIME", "TO", "TURNED", "UNFORTUNATE", "US", "VE", "WAY", "WERE", "YOUR",
+        "YOURSELVES",
+    }
+)
+
+
+def _can_segment_ocr_joined_source_words(token):
+    token = re.sub(r"[^A-Z]", "", str(token or "").upper())
+    if len(token) < 7:
+        return False
+    if token in OCR_LEXICAL_REFERENCE_WORDS:
+        return False
+    parts = OCR_JOINED_NAME_FALSE_POSITIVE_PARTS | OCR_LEXICAL_REFERENCE_WORDS
+    reachable = [False] * (len(token) + 1)
+    reachable[0] = True
+    for start in range(len(token)):
+        if not reachable[start]:
+            continue
+        for end in range(start + 1, len(token) + 1):
+            piece = token[start:end]
+            if len(piece) >= 1 and piece in parts:
+                reachable[end] = True
+    return reachable[-1]
+
+
+def _looks_like_source_contraction_token(token):
+    token = str(token or "").upper().strip()
+    if "'" not in token:
+        return False
+    left, right = token.split("'", 1)
+    right = right.strip("'")
+    if right not in {"D", "LL", "M", "RE", "S", "T", "VE"}:
+        return False
+    if left in ENGLISH_FUNCTION_TOKENS or left in OCR_LEXICAL_REFERENCE_WORDS:
+        return True
+    return _can_segment_ocr_joined_source_words(left)
+
+
+def _looks_like_title_name_ocr_compound(token):
+    token = re.sub(r"[^A-Z]", "", str(token or "").upper())
+    for title in sorted(NAME_TITLE_TOKENS | {"HUNTER"}, key=len, reverse=True):
+        if not token.startswith(title) or len(token) <= len(title) + 2:
+            continue
+        remainder = token[len(title):]
+        if remainder and not _token_is_source_vocabulary(remainder):
+            return True
+    return False
+
+
+def _required_name_span_is_hard_authority(span):
+    token = _name_token_of(span)
+    if not token:
+        return False
+    if _looks_like_source_contraction_token(token):
+        return False
+    if token in ENGLISH_FUNCTION_TOKENS:
+        return False
+    if _token_is_source_vocabulary(token):
+        return False
+    if _looks_like_inflected_english_token(token):
+        return False
+    if _can_segment_ocr_joined_source_words(token):
+        return False
+    if _looks_like_title_name_ocr_compound(token):
+        return False
+    return True
+
+
 def validate_translation_text(
     source_text,
     translation,
@@ -4920,10 +5015,12 @@ def validate_translation_text(
     }
     altered_names = sorted(
         {
-            _name_token_of(span)
+            token
             for span in (required_name_spans or ())
-            if _name_token_of(span) in source_tokens
-            and _name_token_of(span) not in translated_tokens
+            for token in [_name_token_of(span)]
+            if token in source_tokens
+            and token not in translated_tokens
+            and _required_name_span_is_hard_authority(span)
         }
     )
     if translatable_context_for_names and altered_names:

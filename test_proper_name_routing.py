@@ -206,6 +206,95 @@ class FalseNameControlTests(unittest.TestCase):
         )
 
 
+class ProperNameAuthorityValidationTests(unittest.TestCase):
+    """TDD #10: shape-only/OCR tokens are hints, not hard name authority."""
+
+    def test_all_caps_ordinary_lexical_token_is_not_hard_name(self):
+        valid, reason = validate_translation_text(
+            "THE MONSTER IS HERE.",
+            "O MONSTRO ESTÁ AQUI.",
+            "speech",
+            required_name_spans=["MONSTER"],
+        )
+        self.assertTrue(valid, reason)
+
+    def test_sentence_initial_common_word_is_not_required_name(self):
+        valid, reason = validate_translation_text(
+            "Reason doesn't matter.",
+            "O motivo não importa.",
+            "speech",
+            required_name_spans=["Reason"],
+        )
+        self.assertTrue(valid, reason)
+
+    def test_ocr_joined_ordinary_phrase_is_not_hard_name(self):
+        valid, reason = validate_translation_text(
+            "THEMONSTER DEVOUREDASSOONAS YOUVESEEN.",
+            "O monstro devorou assim que você viu.",
+            "narration",
+            required_name_spans=["THEMONSTER", "DEVOUREDASSOONAS", "YOUVESEEN"],
+        )
+        self.assertTrue(valid, reason)
+
+    def test_shape_only_unknown_without_registry_is_not_detected_as_name(self):
+        self.assertEqual(detect_proper_name_spans("VELRAN ARRIVED."), [])
+
+    def test_registered_character_altered_still_fails(self):
+        valid, reason = validate_translation_text(
+            "HYEON, WAIT!",
+            "HÉLIO, ESPERE!",
+            "speech",
+            allowed_proper_names=["HYEON"],
+            required_name_spans=["HYEON"],
+        )
+        self.assertFalse(valid)
+        self.assertTrue(reason.startswith("proper_name_altered"), reason)
+
+    def test_registered_character_preserved_passes(self):
+        valid, reason = validate_translation_text(
+            "HYEON, WAIT!",
+            "HYEON, ESPERE!",
+            "speech",
+            allowed_proper_names=["HYEON"],
+            required_name_spans=["HYEON"],
+        )
+        self.assertTrue(valid, reason)
+
+    def test_authoritative_entity_altered_still_fails(self):
+        valid, reason = validate_translation_text(
+            "ZARQUON OPENED THE GATE.",
+            "ZARQUIN ABRIU O PORTÃO.",
+            "narration",
+            allowed_proper_names=["ZARQUON"],
+            required_name_spans=["ZARQUON"],
+        )
+        self.assertFalse(valid)
+        self.assertTrue(reason.startswith("proper_name_altered"), reason)
+
+    def test_ocr_suspect_name_like_token_is_not_promoted(self):
+        valid, reason = validate_translation_text(
+            "THEREARESTILLALOT NEARTHEENTRANCE,SO PLEASEBECAREFUL.",
+            "Ainda tem muitos perto da entrada, por isso tenha cuidado.",
+            "narration",
+            required_name_spans=[
+                "THEREARESTILLALOT",
+                "NEARTHEENTRANCE",
+                "SO",
+                "PLEASEBECAREFUL",
+            ],
+        )
+        self.assertTrue(valid, reason)
+
+    def test_joined_title_name_blob_is_not_the_authoritative_span(self):
+        valid, reason = validate_translation_text(
+            "...HUNTERHYEON.",
+            "... CAÇADOR HYEON.",
+            "speech",
+            required_name_spans=["HUNTERHYEON"],
+        )
+        self.assertTrue(valid, reason)
+
+
 class ProperNameOnlyTerminalStateTests(unittest.TestCase):
     """Phase 7: a lone name is settled by the model, never by its shape.
 
