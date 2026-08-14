@@ -208,12 +208,12 @@ class RivaProviderTests(unittest.TestCase):
 
         translated = translator.translate_many(["HELLO", "BYE"], force=True)
 
-        self.assertEqual([str(item) for item in translated], ["Olá", "BYE"])
+        self.assertEqual([str(item) for item in translated], ["Olá", ""])
         self.assertEqual(len(calls), 2)
         self.assertEqual(translator.stats["format_failure_missing_id"], 1)
         self.assertEqual(translator.stats["selective_recovery_requests"], 1)
         self.assertEqual(translator.stats["riva_corrective_retry_failed"], 1)
-        self.assertEqual(translator.stats["translation_results_associated"], 2)
+        self.assertEqual(translator.stats["translation_results_associated"], 1)
 
     def test_riva_extra_output_fails_closed(self):
         translator, _calls = self._translator(
@@ -222,9 +222,19 @@ class RivaProviderTests(unittest.TestCase):
 
         translated = translator.translate_many(["HELLO"], force=True)
 
-        self.assertEqual(translated, ["HELLO"])
+        self.assertEqual([str(item) for item in translated], [""])
         self.assertEqual(translator.stats["failed_batches"], 1)
         self.assertEqual(translator.stats["translation_results_associated"], 0)
+
+    def test_riva_malformed_response_never_becomes_source_equal_candidate(self):
+        translator, calls = self._translator(["not-json", "still-not-json"])
+
+        translated = translator.translate_many(["PLEASE WAIT HERE."], force=True)
+
+        self.assertEqual([str(item) for item in translated], [""])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(translator.stats["failed_batches"], 1)
+        self.assertEqual(translator.stats["invalid_json_failures"], 1)
 
     def test_riva_mapping_returns_requested_order_not_provider_order(self):
         translator, _calls = self._translator(
@@ -279,7 +289,7 @@ class RivaProviderTests(unittest.TestCase):
 
         translated = translator.translate_many(["HELLO"], force=True)
 
-        self.assertEqual(translated, ["HELLO"])
+        self.assertEqual([str(item) for item in translated], [""])
         self.assertEqual(len(calls), 2)
         self.assertEqual(translator.stats["format_failure_wrong_schema"], 1)
         self.assertEqual(translator.stats["format_failure_extra_id"], 1)
@@ -318,7 +328,7 @@ class RivaProviderTests(unittest.TestCase):
 
         translated = translator.translate_many(["HELLO"], force=True)
 
-        self.assertEqual(translated, ["HELLO"])
+        self.assertEqual([str(item) for item in translated], [""])
         self.assertEqual(len(calls), 2)
         self.assertEqual(translator.stats["failed_batches"], 1)
         self.assertEqual(translator.stats["invalid_json_failures"], 1)
@@ -336,7 +346,7 @@ class RivaProviderTests(unittest.TestCase):
 
         translated = translator.translate_many(["HELLO"], force=True)
 
-        self.assertEqual(translated, ["HELLO"])
+        self.assertEqual([str(item) for item in translated], [""])
         self.assertEqual(len(calls), 3)
         self.assertEqual(translator.stats["provider_timeout_count"], 3)
 
@@ -366,7 +376,7 @@ class RivaProviderTests(unittest.TestCase):
 
         translated = translator.translate_many(["HELLO"], force=True)
 
-        self.assertEqual(translated, ["HELLO"])
+        self.assertEqual([str(item) for item in translated], [""])
         self.assertEqual(len(calls), 2)
         self.assertEqual(translator.stats["failed_batches"], 1)
         self.assertEqual(translator.stats["finish_reason_length"], 2)

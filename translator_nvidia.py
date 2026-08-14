@@ -694,7 +694,11 @@ class TranslatorNvidiaBatch:
             return []
 
         force = self.force_cache if force is None else bool(force)
-        translations = list(texts)
+        translations = (
+            ["" for _ in texts]
+            if self.translation_provider == "riva"
+            else list(texts)
+        )
         indexed_texts = [(idx, text) for idx, text in enumerate(texts) if str(text).strip()]
         self._increment_stat("input_texts", len(indexed_texts))
 
@@ -858,7 +862,7 @@ class TranslatorNvidiaBatch:
             provider_budget=provider_budget,
         )
         return [
-            self._riva_translation_result(parsed.get(text_id, original), original)
+            self._riva_translation_result(parsed.get(text_id, ""), original)
             for text_id, original in zip(ids, texts)
         ]
 
@@ -871,7 +875,7 @@ class TranslatorNvidiaBatch:
                 "naturalization_eligibility_source": "riva_translation_only",
             }
         )
-        return TranslationResult(str(value or original), quality_evidence=evidence)
+        return TranslationResult(str(value or ""), quality_evidence=evidence)
 
     def _recover_riva_missing_or_empty_subset(
         self,
