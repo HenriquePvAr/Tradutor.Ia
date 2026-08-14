@@ -208,23 +208,35 @@ def resolve_provider_provenance(translator, requested_provider=""):
         stats["provider_requested"] = requested
         stats["provider_source"] = "run_argument"
     else:
-        stats.setdefault("provider_requested", effective)
+        # A run nobody asked a provider for stays *unrequested*.  Copying the effective
+        # provider here is what let a lost --translation-provider flag self-certify as
+        # "requested=nemotron, effective=nemotron, mismatch=false" for a riva job.
         stats.setdefault("provider_source", "runtime_default")
     stats["provider_effective"] = effective
     stats["provider_fallback_used"] = False
     stats["provider_fallback_reason"] = ""
+    return report_provider_provenance(stats)
+
+
+def report_provider_provenance(translator_stats):
+    """Provenance of a finished run, derived only from what was actually requested.
+
+    ``provider_requested`` is an immutable job identity: no runtime default, environment
+    variable, CLI default or effective provider may become a request after the fact.
+    """
+    stats = translator_stats if isinstance(translator_stats, dict) else {}
+    requested = str(stats.get("provider_requested") or "").strip().lower()
+    effective = str(
+        stats.get("provider_effective") or stats.get("provider_name") or ""
+    ).strip().lower()
     return {
-        "provider_requested": stats.get("provider_requested", ""),
-        "provider_effective": stats.get("provider_effective", ""),
-        "provider_model": stats.get("model", ""),
+        "provider_requested": requested,
+        "provider_effective": effective,
+        "provider_model": stats.get("model", config.NVIDIA_TRANSLATION_MODEL),
         "provider_source": stats.get("provider_source", ""),
         "provider_fallback_used": bool(stats.get("provider_fallback_used", False)),
         "provider_fallback_reason": str(stats.get("provider_fallback_reason", "")),
-        "provider_mismatch": bool(
-            stats.get("provider_requested")
-            and stats.get("provider_effective")
-            and stats.get("provider_requested") != stats.get("provider_effective")
-        ),
+        "provider_mismatch": bool(requested and effective and requested != effective),
     }
 
 
@@ -1636,30 +1648,7 @@ def run_benchmark(args):
         "translation_cache_hits": translator_stats.get("cache_hits", 0),
         "translation_api_requests": translator_stats.get("api_requests", 0),
         "translation_provider": translator_stats.get("provider_name", ""),
-        "provider_provenance": {
-            "provider_requested": translator_stats.get(
-                "provider_requested", translator_stats.get("provider_name", "")
-            ),
-            "provider_effective": translator_stats.get(
-                "provider_effective", translator_stats.get("provider_name", "")
-            ),
-            "provider_model": translator_stats.get(
-                "model", config.NVIDIA_TRANSLATION_MODEL
-            ),
-            "provider_source": translator_stats.get("provider_source", ""),
-            "provider_fallback_used": bool(
-                translator_stats.get("provider_fallback_used", False)
-            ),
-            "provider_fallback_reason": str(
-                translator_stats.get("provider_fallback_reason", "")
-            ),
-            "provider_mismatch": bool(
-                translator_stats.get("provider_requested")
-                and translator_stats.get("provider_effective")
-                and translator_stats.get("provider_requested")
-                != translator_stats.get("provider_effective")
-            ),
-        },
+        "provider_provenance": report_provider_provenance(translator_stats),
         "translation_model_runtime": translator_stats.get(
             "model", config.NVIDIA_TRANSLATION_MODEL
         ),

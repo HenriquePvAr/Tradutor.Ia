@@ -38,6 +38,7 @@ from ui_helpers import (
     build_run_command,
     clean_url,
     env_status,
+    record_command_provider,
     sanitize_diagnostic_text,
     sanitize_output_name,
     suggest_chapter_details,
@@ -4790,20 +4791,6 @@ class UiBridge:
         if not status["env_exists"] or not status["nvidia_configured"]:
             raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
         config = job.get("configuration") or {}
-        command = build_run_command(
-            url=str(job.get("source_url") or ""),
-            mode=str(config.get("mode") or "fast"),
-            output=Path(str(job.get("output_dir") or "chapter")).name,
-            full=bool(config.get("full", True)),
-            max_images=config.get("max_images"),
-            use_cache=bool(config.get("use_cache")),
-            force=bool(config.get("force")),
-            use_context=bool(config.get("use_context", True)),
-            source_candidate_ids=selected,
-            open_output=bool(config.get("open_output", False)),
-            download_only=bool(config.get("download_only", False)),
-            python_executable=sys.executable,
-        )
         selection = {
             "candidate_ids": selected,
             "automatic": False,
@@ -4819,6 +4806,13 @@ class UiBridge:
             "manual_reordered": selected != [item for item in accepted_ids if item in selected],
         }
         config["source_selection"] = selection
+        # One rebuild helper for both source-selection paths: an argument the rebuild would
+        # otherwise have to remember (the requested provider) is read from the job itself and
+        # verified there, instead of being re-listed by every caller.
+        from source_analysis_phase import command_with_source_selection
+
+        command = command_with_source_selection(job, selection)
+        record_command_provider(config, command, "provider_command_final")
         self.store.update_fields(
             job["id"], command_json=json.dumps(command, ensure_ascii=False),
             source_selection_json=json.dumps(selection, ensure_ascii=False),
@@ -5010,6 +5004,8 @@ class UiBridge:
             "create_source_profile": normalized["create_source_profile"],
             "provider_provenance": {
                 "provider_requested": normalized["translation_provider"],
+                "provider_command_initial": normalized["translation_provider"],
+                "provider_command_final": normalized["translation_provider"],
                 "provider_effective": "",
                 "provider_model": "",
                 "provider_source": "ui_payload",

@@ -247,6 +247,57 @@ def build_run_command(
     return command
 
 
+def requested_translation_provider(configuration: object) -> str:
+    """The single canonical provider a job asked for, or "" when it never asked.
+
+    Persisted job configuration is the only source of truth here: a rebuild must never fall
+    back to the process environment or the runtime default, which is exactly how an explicit
+    ``riva`` job silently executed Nemotron.
+    """
+    config = configuration if isinstance(configuration, dict) else {}
+    provenance = config.get("provider_provenance")
+    requested = (provenance or {}).get("provider_requested") if isinstance(provenance, dict) else ""
+    return str(requested or config.get("translation_provider") or "").strip().lower()
+
+
+def command_translation_provider(command: object) -> str:
+    """The provider a concrete argv would actually run with, or "" when absent."""
+    args = [str(value) for value in (command or [])]
+    if "--translation-provider" not in args:
+        return ""
+    index = args.index("--translation-provider") + 1
+    return args[index].strip().lower() if index < len(args) else ""
+
+
+def assert_command_provider(command: list[str], configuration: object) -> list[str]:
+    """Fail closed when a command lost or changed the provider the job requested.
+
+    Applied to every rebuild and once more to the final argv, so a future rebuild caller that
+    forgets ``translation_provider`` is caught before any provider call happens.
+    """
+    requested = requested_translation_provider(configuration)
+    if not requested:
+        return command                       # legacy/implicit job: nothing was requested
+    actual = command_translation_provider(command)
+    if not actual:
+        raise ValueError("provider_argument_missing")
+    if actual != requested:
+        raise ValueError("provider_mismatch")
+    return command
+
+
+def record_command_provider(configuration: object, command: list[str], field: str) -> None:
+    """Stamp which provider a persisted command actually carries.
+
+    ``provider_requested`` alone proved insufficient: the stored submit command said ``riva``
+    while the executed argv said nothing at all.  Recording the initial and final command
+    provider makes that divergence visible in provenance instead of only in a post-mortem.
+    """
+    provenance = (configuration or {}).get("provider_provenance") if isinstance(configuration, dict) else None
+    if isinstance(provenance, dict):
+        provenance[field] = command_translation_provider(command)
+
+
 def mask_secrets(text: str) -> str:
     masked = str(text or "")
     for index, pattern in enumerate(_SECRET_PATTERNS):

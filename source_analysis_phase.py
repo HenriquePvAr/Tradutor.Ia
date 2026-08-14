@@ -138,15 +138,21 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
     worker has a concrete set of opaque candidate IDs, the command must carry them to
     ``run_webtoon.py``; otherwise a bounded selected run looks like an unconfirmed generic
     smart-split run and can expand back to the whole chapter.
+
+    This is the single rebuild helper: every per-job argument the rebuild must not silently
+    drop — the requested translation provider above all — is read from the persisted job
+    configuration here, and the result is checked against it before it can be persisted.
     """
     from pathlib import Path
     import sys
 
-    from ui_helpers import build_run_command
+    from ui_helpers import (
+        assert_command_provider, build_run_command, requested_translation_provider,
+    )
 
     config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
     command_selection = _bounded_command_selection(config, selection)
-    return build_run_command(
+    return assert_command_provider(build_run_command(
         url=str(job.get("source_url") or ""),
         mode=str(config.get("mode") or "fast"),
         output=Path(str(job.get("output_dir") or "chapter")).name,
@@ -158,8 +164,9 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
         source_candidate_ids=command_selection,
         open_output=bool(config.get("open_output", False)),
         download_only=bool(config.get("download_only", False)),
+        translation_provider=requested_translation_provider(config) or None,
         python_executable=sys.executable,
-    )
+    ), config)
 
 
 def _bounded_command_selection(config: dict[str, Any], selection: dict[str, Any]) -> list[str]:
@@ -293,6 +300,9 @@ def apply_source_analysis(
     configuration["source_analysis"] = public_analysis
     configuration["source_selection"] = selection
     command = command_with_source_selection(job, selection)
+    from ui_helpers import record_command_provider
+
+    record_command_provider(configuration, command, "provider_command_final")
     from source_readiness import SourceReadinessStore, source_result_from_analysis
 
     readiness = SourceReadinessStore(store.db_path)

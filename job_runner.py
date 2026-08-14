@@ -321,6 +321,19 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                              reason_code="invalid_job_command")
             return 2
 
+        # The FINAL argv, after every rebuild, is the only command that can execute. A job
+        # that explicitly requested a provider never reaches the provider with a different
+        # one — or with none, which silently selects the runtime default.
+        from ui_helpers import assert_command_provider
+
+        try:
+            assert_command_provider(command, job.get("configuration"))
+        except ValueError as exc:
+            reason_code = str(exc)
+            store.transition(job_id, JobStatus.FAILED, error_type="config",
+                             error_message=reason_code, reason_code=reason_code)
+            return 2
+
         # Ensure the job is STARTING then RUNNING, and write the initial manifest. The
         # worker owns runner_pid/runner_create_time: it records the top of the runner tree
         # (the process it spawned), so the recovery termination catches the whole tree
