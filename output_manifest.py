@@ -181,6 +181,44 @@ def sanitize_provider_provenance(value: Mapping[str, Any] | None) -> dict[str, A
     return result
 
 
+_PHYSICAL_QUALITY_INT_FIELDS = (
+    "physical_regions_expected",
+    "physical_regions_translated",
+    "physical_regions_preserved",
+    "physical_regions_review_source_retained",
+    "physical_regions_render_failed",
+    "physical_regions_other_explicit",
+    "physical_source_residual_count",
+)
+
+
+def sanitize_physical_quality(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return canonical physical residual evidence without manufacturing PASS."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    source = (
+        value.get("physical_quality")
+        if isinstance(value.get("physical_quality"), Mapping)
+        else value
+    )
+    if not isinstance(source, Mapping):
+        return {}
+    if "physical_gate_passed" not in source:
+        return {}
+    result: dict[str, Any] = {}
+    for field in _PHYSICAL_QUALITY_INT_FIELDS:
+        result[field] = max(0, int(source.get(field) or 0))
+    group_ids = source.get("physical_source_residual_group_ids")
+    result["physical_source_residual_group_ids"] = (
+        [str(item) for item in group_ids[:200]]
+        if isinstance(group_ids, list)
+        else []
+    )
+    result["physical_gate_passed"] = bool(source.get("physical_gate_passed"))
+    return result
+
+
 def sanitize_source_url(url: str) -> str:
     """Keep an auditable origin and opaque path fingerprint in output metadata.
 
@@ -238,6 +276,7 @@ def build_run_manifest(
     transport_name: str = "",
     source_provenance: Mapping[str, Any] | None = None,
     provider_provenance: Mapping[str, Any] | None = None,
+    quality_validation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     # The descriptive fields are optional so a manifest written before they
     # existed stays valid; readers fall back to the path when they are absent.
@@ -277,6 +316,9 @@ def build_run_manifest(
     provider = sanitize_provider_provenance(provider_provenance)
     if provider:
         manifest["provider_provenance"] = provider
+    physical_quality = sanitize_physical_quality(quality_validation)
+    if physical_quality:
+        manifest["physical_quality"] = physical_quality
     return manifest
 
 
@@ -335,5 +377,11 @@ def load_verified_run_manifest(output_folder: Path) -> dict[str, Any]:
         if not isinstance(provenance, dict):
             return {}
         if provenance != sanitize_provider_provenance(provenance):
+            return {}
+    if "physical_quality" in payload:
+        physical_quality = payload.get("physical_quality")
+        if not isinstance(physical_quality, dict):
+            return {}
+        if physical_quality != sanitize_physical_quality(physical_quality):
             return {}
     return payload

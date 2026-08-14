@@ -444,6 +444,7 @@ def _output_run_manifest(output_folder, report, translator):
         transport_name=str(report.get("transport_name") or ""),
         source_provenance=report.get("source_provenance"),
         provider_provenance=report.get("provider_provenance"),
+        quality_validation=quality,
     )
 
 
