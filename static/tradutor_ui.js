@@ -1004,6 +1004,7 @@
       use_context: $('#ctxToggle').checked,
       open_output: $('#openToggle').checked,
       create_source_profile: !local && $('#sourceProfileToggle').checked,
+      translation_provider: String(appState.settings?.translation_provider || 'nemotron').toLowerCase(),
       pipeline_intent: {
         requested: true,
         mode: appState.selectedMode === 'download_only' ? 'download_only' : appState.selectedMode,

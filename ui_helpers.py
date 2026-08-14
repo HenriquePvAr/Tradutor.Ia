@@ -178,6 +178,7 @@ def build_run_command(
     source_candidate_ids: list[str] | tuple[str, ...] | None = None,
     open_output: bool = False,
     download_only: bool = False,
+    translation_provider: str | None = None,
     python_executable: str | None = None,
 ) -> list[str]:
     from chapter_source import select_adapter
@@ -232,6 +233,11 @@ def build_run_command(
         command.append("--no-context")
     if download_only:
         command.append("--download-only")
+    provider = str(translation_provider or "").strip().lower()
+    if provider:
+        if provider not in {"nemotron", "riva"}:
+            raise ValueError("nvidia_translation_provider_invalid")
+        command.extend(["--translation-provider", provider])
     for candidate_id in source_candidate_ids or []:
         value = str(candidate_id or "").strip()
         if value:

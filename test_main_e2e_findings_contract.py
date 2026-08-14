@@ -125,6 +125,14 @@ class MainE2eUiFindingContracts(unittest.TestCase):
         self.assertIn("job_manifest.json", bridge)
         self.assertIn("result_metrics = self._current_job_result_metrics(job)", bridge)
 
+    def test_translation_provider_is_explicit_in_start_payload_and_job_command(self):
+        self.assertIn("translation_provider: String(appState.settings?.translation_provider", self.js)
+        bridge = read("ui_bridge.py")
+        helpers = read("ui_helpers.py")
+        self.assertIn('"translation_provider": translation_provider', bridge)
+        self.assertIn("translation_provider=normalized[\"translation_provider\"]", bridge)
+        self.assertIn("command.extend([\"--translation-provider\", provider])", helpers)
+
 
 class MainE2eDownloadFindingContracts(unittest.TestCase):
     def test_reader_count_mismatch_171_expected_101_downloaded_fails_closed(self):

@@ -196,6 +196,38 @@ def _source_manifest_provenance(download_report):
     return sanitize_source_provenance(raw_provenance)
 
 
+def resolve_provider_provenance(translator, requested_provider=""):
+    requested = str(requested_provider or "").strip().lower()
+    if requested and requested not in {"nemotron", "riva"}:
+        raise ValueError("nvidia_translation_provider_invalid")
+    stats = getattr(translator, "stats", {})
+    effective = str(stats.get("provider_name") or "").strip().lower()
+    if requested and effective != requested:
+        raise RuntimeError("provider_mismatch")
+    if requested:
+        stats["provider_requested"] = requested
+        stats["provider_source"] = "run_argument"
+    else:
+        stats.setdefault("provider_requested", effective)
+        stats.setdefault("provider_source", "runtime_default")
+    stats["provider_effective"] = effective
+    stats["provider_fallback_used"] = False
+    stats["provider_fallback_reason"] = ""
+    return {
+        "provider_requested": stats.get("provider_requested", ""),
+        "provider_effective": stats.get("provider_effective", ""),
+        "provider_model": stats.get("model", ""),
+        "provider_source": stats.get("provider_source", ""),
+        "provider_fallback_used": bool(stats.get("provider_fallback_used", False)),
+        "provider_fallback_reason": str(stats.get("provider_fallback_reason", "")),
+        "provider_mismatch": bool(
+            stats.get("provider_requested")
+            and stats.get("provider_effective")
+            and stats.get("provider_requested") != stats.get("provider_effective")
+        ),
+    }
+
+
 def _safe_count(value):
     if isinstance(value, bool):
         return None
@@ -399,6 +431,7 @@ def _output_run_manifest(output_folder, report, translator):
         adapter_version=str(report.get("adapter_version") or ""),
         transport_name=str(report.get("transport_name") or ""),
         source_provenance=report.get("source_provenance"),
+        provider_provenance=report.get("provider_provenance"),
     )
 
 
@@ -625,9 +658,15 @@ def run_benchmark(args):
             if str(record.get("index", "")).isdigit()
         }
 
-    translator, ocr_lang = get_translator("3")
+    requested_provider = str(getattr(args, "translation_provider", "") or "").strip().lower()
+    if requested_provider and requested_provider not in {"nemotron", "riva"}:
+        raise ValueError("nvidia_translation_provider_invalid")
+    translator, ocr_lang = get_translator(
+        "3", translation_provider=requested_provider or None
+    )
     if hasattr(translator, "force_cache"):
         translator.force_cache = bool(args.force)
+    resolve_provider_provenance(translator, requested_provider)
 
     counters = {
         "images_skipped_by_cache": 0,
@@ -1416,7 +1455,9 @@ def run_benchmark(args):
     )
     summary = _aggregate_debug_data(completed_states)
     translation_accounting = _translation_quality_accounting(completed_states)
+    physical_accounting = _physical_residual_accounting(completed_states)
     quality["translation_accounting"] = translation_accounting
+    quality["physical_quality"] = physical_accounting
     quality["translation_terminal_states_complete"] = translation_accounting[
         "accounting_closed"
     ]
@@ -1429,8 +1470,17 @@ def run_benchmark(args):
     quality["source_language_residual_groups"] = translation_accounting[
         "source_language_residual"
     ]
+    quality["physical_source_residual_count"] = physical_accounting[
+        "physical_source_residual_count"
+    ]
+    quality["physical_source_residual_group_ids"] = physical_accounting[
+        "physical_source_residual_group_ids"
+    ]
+    quality["physical_gate_passed"] = physical_accounting["physical_gate_passed"]
     quality["passed"] = bool(
-        quality.get("passed") and translation_accounting["quality_passed"]
+        quality.get("passed")
+        and translation_accounting["quality_passed"]
+        and physical_accounting["physical_gate_passed"]
     )
     counters["ocr_page_fallbacks"] = summary["ocr_page_fallbacks"]
     counters["ocr_region_fallbacks"] = summary["ocr_region_fallbacks"]
@@ -1586,6 +1636,30 @@ def run_benchmark(args):
         "translation_cache_hits": translator_stats.get("cache_hits", 0),
         "translation_api_requests": translator_stats.get("api_requests", 0),
         "translation_provider": translator_stats.get("provider_name", ""),
+        "provider_provenance": {
+            "provider_requested": translator_stats.get(
+                "provider_requested", translator_stats.get("provider_name", "")
+            ),
+            "provider_effective": translator_stats.get(
+                "provider_effective", translator_stats.get("provider_name", "")
+            ),
+            "provider_model": translator_stats.get(
+                "model", config.NVIDIA_TRANSLATION_MODEL
+            ),
+            "provider_source": translator_stats.get("provider_source", ""),
+            "provider_fallback_used": bool(
+                translator_stats.get("provider_fallback_used", False)
+            ),
+            "provider_fallback_reason": str(
+                translator_stats.get("provider_fallback_reason", "")
+            ),
+            "provider_mismatch": bool(
+                translator_stats.get("provider_requested")
+                and translator_stats.get("provider_effective")
+                and translator_stats.get("provider_requested")
+                != translator_stats.get("provider_effective")
+            ),
+        },
         "translation_model_runtime": translator_stats.get(
             "model", config.NVIDIA_TRANSLATION_MODEL
         ),
@@ -1636,6 +1710,9 @@ def run_benchmark(args):
         "translation_invalid_json_failures": translator_stats.get(
             "invalid_json_failures", 0
         ),
+        "provider_request_telemetry": list(
+            translator_stats.get("provider_request_telemetry") or []
+        )[:500],
         "pages_with_error": counters["pages_with_error"],
         "ocr_detected_lines": summary["ocr_detected_lines"],
         "groups_formed": summary["groups_formed"],
@@ -2367,9 +2444,72 @@ def _translation_quality_accounting(states):
     return result
 
 
+def _physical_residual_accounting(states):
+    """Account final-render source retention separately from logical quality."""
+
+    result = {
+        "physical_regions_expected": 0,
+        "physical_regions_translated": 0,
+        "physical_regions_preserved": 0,
+        "physical_regions_review_source_retained": 0,
+        "physical_regions_render_failed": 0,
+        "physical_regions_other_explicit": 0,
+        "physical_source_residual_count": 0,
+        "physical_source_residual_group_ids": [],
+        "physical_gate_passed": False,
+    }
+    residual_ids = []
+    for state in states:
+        page = int(state.get("index") or 0)
+        for item in state.get("debug_data", {}).get("items", []):
+            if item.get("classification") not in {"speech", "narration"}:
+                continue
+            result["physical_regions_expected"] += 1
+            group_id = str(item.get("id") or "")
+            region_id = f"p{page:03}:{group_id}" if group_id else f"p{page:03}"
+            final_state = str(item.get("translation_final_state") or "")
+            final_reason = str(item.get("translation_final_reason") or "")
+            translated = bool(str(item.get("translation") or "").strip())
+            valid = bool(item.get("translation_valid"))
+            redrawn = bool(item.get("redrawn"))
+            preserved = bool(item.get("preserved_original"))
+            review = bool(item.get("manual_review_required"))
+
+            if final_state == "translated" and translated and valid and redrawn:
+                result["physical_regions_translated"] += 1
+                continue
+            if final_reason == PROPER_NAME_ONLY_REASON:
+                result["physical_regions_preserved"] += 1
+                continue
+
+            if final_state == "translated" and translated and valid and not redrawn:
+                result["physical_regions_render_failed"] += 1
+            elif review or preserved or final_state in {
+                "manual_review",
+                "skipped_with_reason",
+                "translation_failed",
+                "translation_unresolved",
+                "translation_attempts_exhausted",
+            }:
+                result["physical_regions_review_source_retained"] += 1
+            else:
+                result["physical_regions_other_explicit"] += 1
+            residual_ids.append(region_id)
+
+    result["physical_source_residual_count"] = len(residual_ids)
+    result["physical_source_residual_group_ids"] = residual_ids[:200]
+    result["physical_gate_passed"] = (
+        result["physical_regions_expected"]
+        == result["physical_regions_translated"] + result["physical_regions_preserved"]
+        and result["physical_source_residual_count"] == 0
+    )
+    return result
+
+
 def _build_quality_report(report, states, translation_retry_records):
     pages = []
     translation_accounting = _translation_quality_accounting(states)
+    physical_accounting = _physical_residual_accounting(states)
     totals = {
         "groups_detected": 0,
         "groups_suspicious": 0,
@@ -2400,6 +2540,23 @@ def _build_quality_report(report, states, translation_retry_records):
         "broad_mask_rejections": 0,
         "background_type_counts": {},
         "translation_accounting": translation_accounting,
+        "physical_quality": physical_accounting,
+        "physical_regions_expected": physical_accounting["physical_regions_expected"],
+        "physical_regions_translated": physical_accounting["physical_regions_translated"],
+        "physical_regions_preserved": physical_accounting["physical_regions_preserved"],
+        "physical_regions_review_source_retained": physical_accounting[
+            "physical_regions_review_source_retained"
+        ],
+        "physical_regions_render_failed": physical_accounting[
+            "physical_regions_render_failed"
+        ],
+        "physical_source_residual_count": physical_accounting[
+            "physical_source_residual_count"
+        ],
+        "physical_source_residual_group_ids": physical_accounting[
+            "physical_source_residual_group_ids"
+        ],
+        "physical_gate_passed": physical_accounting["physical_gate_passed"],
         "speech_container_reocr": summarize_speech_container_reocr(
             [
                 record

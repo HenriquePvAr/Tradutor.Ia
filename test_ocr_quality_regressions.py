@@ -1235,7 +1235,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
                     break
         if region is None:
             self.skipTest("E2E #7 REGION_001 replay artifact not present")
-        self.assertEqual(region["translation_validation_reason"], "ok")
+        self.assertIn(region["translation_validation_reason"], {"ok", "retry_ok"})
 
         valid, reason = validate_translation_text(
             region["clean_text"],

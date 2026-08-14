@@ -66,7 +66,7 @@ class TranslatorGoogle:
             return text
 
 
-def get_translator(choice):
+def get_translator(choice, *, translation_provider=None):
     choice = str(choice).strip()
 
     if choice == "1":
@@ -90,8 +90,19 @@ def get_translator(choice):
     if mode == "nvidia":
         from translator_nvidia import TranslatorNvidiaBatch
 
-        print(f"Usando NVIDIA API ({config.NVIDIA_TRANSLATION_MODEL}) - Origem: {source_language}")
-        translator = TranslatorNvidiaBatch(source_language=source_language)
+        provider = str(translation_provider or "").strip().lower()
+        if provider and provider not in {"nemotron", "riva"}:
+            raise ValueError("nvidia_translation_provider_invalid")
+        model = (
+            config.NVIDIA_RIVA_TRANSLATION_MODEL
+            if provider == "riva"
+            else config.NVIDIA_TRANSLATION_MODEL
+        )
+        print(f"Usando NVIDIA API ({model}) - Origem: {source_language}")
+        translator = TranslatorNvidiaBatch(
+            source_language=source_language,
+            translation_provider=provider or None,
+        )
         naturalization_mode = str(
             getattr(config, "PTBR_NATURALIZATION_MODE", "selective") or "selective"
         ).lower()

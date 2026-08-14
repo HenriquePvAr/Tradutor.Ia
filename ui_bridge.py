@@ -4028,8 +4028,20 @@ class UiBridge:
 
         values = _read_env_file()
         env = env_status()
+        translation_provider = (
+            os.getenv("NVIDIA_TRANSLATION_PROVIDER")
+            or values.get("NVIDIA_TRANSLATION_PROVIDER", "nemotron")
+        )
+        translation_provider = str(translation_provider or "nemotron").strip().lower()
+        if translation_provider in {"", "nvidia"}:
+            translation_provider = "nemotron"
+        if translation_provider not in {"nemotron", "riva"}:
+            translation_provider = "nemotron"
         model = os.getenv("NVIDIA_TRANSLATION_MODEL") or values.get(
             "NVIDIA_TRANSLATION_MODEL", "nvidia/nemotron-3-super-120b-a12b"
+        )
+        riva_model = os.getenv("NVIDIA_RIVA_TRANSLATION_MODEL") or values.get(
+            "NVIDIA_RIVA_TRANSLATION_MODEL", "nvidia/riva-translate-4b-instruct-v2"
         )
         driver = driver_resolution_diagnostics()
         try:
@@ -4050,7 +4062,9 @@ class UiBridge:
             "env_exists": env["env_exists"],
             "nvidia_configured": env["nvidia_configured"],
             "translation_mode": os.getenv("TRANSLATION_MODE") or values.get("TRANSLATION_MODE", "nvidia"),
+            "translation_provider": translation_provider,
             "translation_model": model,
+            "riva_translation_model": riva_model,
             "translation_batch_size": os.getenv("NVIDIA_TRANSLATION_BATCH_SIZE")
             or values.get("NVIDIA_TRANSLATION_BATCH_SIZE", "20"),
             "max_requests_per_minute": os.getenv("NVIDIA_MAX_REQUESTS_PER_MINUTE")
@@ -4947,6 +4961,19 @@ class UiBridge:
     ) -> dict[str, Any]:
         if principal is not None and not isinstance(principal, RequestPrincipal):
             raise TypeError("principal must be a RequestPrincipal")
+        if payload.get("benchmark_preflight_required") is True:
+            from benchmark_environment import clean_benchmark_preflight
+
+            benchmark_preflight = clean_benchmark_preflight(
+                duration_seconds=float(payload.get("benchmark_preflight_seconds") or 30.0)
+            )
+            if benchmark_preflight.get("status") != "pass":
+                raise ValueError(
+                    str(
+                        benchmark_preflight.get("reason_code")
+                        or "BENCHMARK_ENVIRONMENT_NOT_CLEAN"
+                    )
+                )
         normalized = self._normalize_payload(payload, require_environment=require_environment)
         command = build_run_command(
             url=normalized["url"],
@@ -4960,6 +4987,7 @@ class UiBridge:
             source_candidate_ids=list(payload.get("source_candidate_ids") or []),
             open_output=normalized["open_output"],
             download_only=normalized["download_only"],
+            translation_provider=normalized["translation_provider"],
             python_executable=sys.executable,
         )
         output_folder = (
@@ -4980,6 +5008,15 @@ class UiBridge:
             "chapter_name": normalized["chapter_name"],
             "open_output": normalized["open_output"],
             "create_source_profile": normalized["create_source_profile"],
+            "provider_provenance": {
+                "provider_requested": normalized["translation_provider"],
+                "provider_effective": "",
+                "provider_model": "",
+                "provider_source": "ui_payload",
+                "provider_fallback_used": False,
+                "provider_fallback_reason": "",
+            },
+            "translation_provider": normalized["translation_provider"],
             "source_analysis": source_analysis or {},
             "source_selection": source_selection or {},
         }
@@ -5853,6 +5890,7 @@ class UiBridge:
             force=force,
             use_context=bool(payload.get("use_context", True)),
             download_only=download_only,
+            translation_provider=self._normalize_translation_provider(payload),
         )
         return {
             "id": str(payload.get("id") or uuid.uuid4()),
@@ -5868,7 +5906,23 @@ class UiBridge:
             "use_context": bool(payload.get("use_context", True)),
             "open_output": bool(payload.get("open_output", False)),
             "create_source_profile": payload.get("create_source_profile") is True,
+            "translation_provider": self._normalize_translation_provider(payload),
         }
+
+    @staticmethod
+    def _normalize_translation_provider(payload: dict[str, Any]) -> str:
+        raw = (
+            payload.get("translation_provider")
+            or payload.get("provider_requested")
+            or os.getenv("NVIDIA_TRANSLATION_PROVIDER")
+            or "nemotron"
+        )
+        provider = str(raw or "").strip().lower()
+        if provider in {"", "nvidia"}:
+            provider = "nemotron"
+        if provider not in {"nemotron", "riva"}:
+            raise ValueError("nvidia_translation_provider_invalid")
+        return provider
 
     def _refresh_history(self) -> None:
         self.history = self.history_store.discover_outputs()

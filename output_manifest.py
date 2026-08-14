@@ -35,6 +35,7 @@ _REQUIRED_FIELDS = {
 # particular, candidate ids, URLs, DOM selectors, cookie-bearing headers and filesystem paths
 # do not belong here.
 _SAFE_SOURCE_CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}\Z")
+_SAFE_PROVIDER_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,119}\Z")
 _SAFE_RUN_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,119}\Z")
 _MAX_SOURCE_COUNT = 1_000_000
 
@@ -148,6 +149,38 @@ def sanitize_source_provenance(value: Mapping[str, Any] | None) -> dict[str, Any
     return result
 
 
+def sanitize_provider_provenance(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return a scalar provider provenance block safe for manifests and reports."""
+
+    if not isinstance(value, Mapping):
+        return {}
+
+    requested = _safe_source_code(value.get("provider_requested"), maximum=40)
+    effective = _safe_source_code(value.get("provider_effective"), maximum=40)
+    raw_model = str(value.get("provider_model") or "").strip()
+    model = raw_model if _SAFE_PROVIDER_MODEL_RE.fullmatch(raw_model) else ""
+    source = _safe_source_code(value.get("provider_source"), maximum=80)
+    fallback_reason = _safe_source_code(
+        value.get("provider_fallback_reason"), maximum=120
+    )
+    result: dict[str, Any] = {}
+    if requested:
+        result["provider_requested"] = requested
+    if effective:
+        result["provider_effective"] = effective
+    if model:
+        result["provider_model"] = model
+    if source:
+        result["provider_source"] = source
+    result["provider_fallback_used"] = value.get("provider_fallback_used") is True
+    if fallback_reason:
+        result["provider_fallback_reason"] = fallback_reason
+    result["provider_mismatch"] = bool(
+        requested and effective and requested != effective
+    )
+    return result
+
+
 def sanitize_source_url(url: str) -> str:
     """Keep an auditable origin and opaque path fingerprint in output metadata.
 
@@ -204,6 +237,7 @@ def build_run_manifest(
     adapter_version: str = "",
     transport_name: str = "",
     source_provenance: Mapping[str, Any] | None = None,
+    provider_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     # The descriptive fields are optional so a manifest written before they
     # existed stays valid; readers fall back to the path when they are absent.
@@ -240,6 +274,9 @@ def build_run_manifest(
     provenance = sanitize_source_provenance(source_provenance)
     if provenance:
         manifest["source_provenance"] = provenance
+    provider = sanitize_provider_provenance(provider_provenance)
+    if provider:
+        manifest["provider_provenance"] = provider
     return manifest
 
 
@@ -292,5 +329,11 @@ def load_verified_run_manifest(output_folder: Path) -> dict[str, Any]:
         # A value written by this version must already be exactly the scalar-only public
         # representation.  Older manifests omit the optional field and remain valid.
         if provenance != sanitize_source_provenance(provenance):
+            return {}
+    if "provider_provenance" in payload:
+        provenance = payload.get("provider_provenance")
+        if not isinstance(provenance, dict):
+            return {}
+        if provenance != sanitize_provider_provenance(provenance):
             return {}
     return payload

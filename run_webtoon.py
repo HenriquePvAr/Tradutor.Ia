@@ -86,6 +86,14 @@ def build_parser():
         default=[],
         help="ID de uma pagina aprovada na revisao de fonte (uso interno da UI).",
     )
+    parser.add_argument(
+        "--translation-provider",
+        choices=("nemotron", "riva"),
+        help=(
+            "Provider NVIDIA exigido para esta execucao. "
+            "Quando informado, a execucao falha fechada se outro provider for efetivado."
+        ),
+    )
     return parser
 
 
@@ -136,6 +144,7 @@ def main(argv=None):
         use_context=not args.no_context,
         session_context_path=str(context_path),
         source_candidate_ids=list(args.source_candidate_id or []),
+        translation_provider=args.translation_provider,
         local_manifest_path=str(getattr(args, "local_manifest_path", "") or ""),
     )
 
@@ -143,6 +152,8 @@ def main(argv=None):
     print(f"Modo: {args.mode} ({engine})")
     print(f"Cache: {'ignorado' if args.force else 'ativado'}")
     print(f"Contexto: {'desativado' if args.no_context else context_path}")
+    if args.translation_provider:
+        print(f"Provider NVIDIA solicitado: {args.translation_provider}")
     print(f"Saida: {output_folder}")
 
     report = _run_benchmark(benchmark_args)
