@@ -811,7 +811,12 @@ class TranslatorNvidiaBatch:
 
     def _translate_batch_riva(self, texts):
         ids = [f"BALAO_{idx}" for idx in range(1, len(texts) + 1)]
-        payload = dict(zip(ids, texts))
+        payload_pairs = list(zip(ids, texts))
+        payload_pairs = sorted(
+            enumerate(payload_pairs),
+            key=lambda indexed: self._riva_batch_schedule_key(indexed[1][1], indexed[0]),
+        )
+        payload = {text_id: text for _position, (text_id, text) in payload_pairs}
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         logical_batch_id = self._next_logical_batch_id(
             "riva",
@@ -1754,6 +1759,21 @@ class TranslatorNvidiaBatch:
             token_total += item_tokens
         if batch:
             yield batch
+
+    def _riva_batch_schedule_key(self, item, position=0):
+        text = str(item[1] if isinstance(item, tuple) else item)
+        compacted = bool(re.search(r"[A-Za-z]{8,}", text.replace("'", "")))
+        short_stutter = bool(
+            len(re.findall(r"[A-Za-z]+", text)) <= 4
+            and re.search(r"\b[A-Za-z]{1,4}-[A-Za-z]", text)
+        )
+        if compacted:
+            bucket = 0
+        elif short_stutter:
+            bucket = 2
+        else:
+            bucket = 1
+        return (bucket, -self._approx_tokens(text), int(position or 0))
 
     def _riva_output_token_ceiling(self):
         floor = max(1, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_FLOOR", 96) or 96))

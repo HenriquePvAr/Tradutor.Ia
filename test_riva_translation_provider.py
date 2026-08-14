@@ -408,6 +408,34 @@ class RivaProviderTests(unittest.TestCase):
         )
         self.assertTrue(all(call["max_tokens"] <= 512 for call in calls))
 
+    def test_riva_batches_schedule_context_rich_items_before_short_stutters(self):
+        translator, calls = self._translator([
+            (
+                '{"BALAO_1":"Obrigado!",'
+                '"BALAO_2":"Por favor, espere aqui.",'
+                '"BALAO_3":"Não foi só isso.",'
+                '"BALAO_4":"Todas as vezes que entro no dungeon..."}'
+            )
+        ])
+
+        translated = translator.translate_many(
+            [
+                "TH-THANK YOU!",
+                "PLEASE WAIT HERE.",
+                "IT'S NOT JUST THAT I LOST AGAIN AND ALMOST EVERYONE... KILLED",
+                "EVERYTIMEIGO INTOADUNGEON TRYINGTOGETRID OF THIS THING...",
+            ],
+            force=True,
+        )
+
+        prompt = calls[0]["messages"][1]["content"]
+        self.assertLess(prompt.index("EVERYTIMEIGO"), prompt.index("TH-THANK YOU!"))
+        self.assertLess(prompt.index("IT'S NOT JUST"), prompt.index("TH-THANK YOU!"))
+        self.assertEqual(
+            [str(item) for item in translated],
+            ["Obrigado!", "Por favor, espere aqui.", "Não foi só isso.", "Todas as vezes que entro no dungeon..."],
+        )
+
     def test_riva_source_equal_english_subset_gets_one_corrective_request(self):
         translator, calls = self._translator([
             (
