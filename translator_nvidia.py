@@ -327,6 +327,7 @@ class TranslatorNvidiaBatch:
         self._stats_lock = threading.Lock()
         self._telemetry_lock = threading.Lock()
         self._request_sequence = 0
+        self._logical_call_metadata = {}
         self.stats = {
             "input_texts": 0,
             "provider_name": self.translation_provider,
@@ -380,6 +381,7 @@ class TranslatorNvidiaBatch:
             # Attempt conservation: logical_batches + every named corrective call
             # must reconcile with provider_http_attempts.
             "logical_batches": 0,
+            "logical_calls_by_origin": {},
             "provider_http_attempts": 0,
             "provider_attempts_by_kind": {},
             "format_failures_total": 0,
@@ -544,6 +546,8 @@ class TranslatorNvidiaBatch:
         force=False,
         allow_proper_names=True,
         proper_names=None,
+        retry_origin="quality_retry",
+        retry_attempt=1,
     ):
         if not str(text).strip():
             return text
@@ -554,7 +558,12 @@ class TranslatorNvidiaBatch:
         started = time.perf_counter()
         try:
             if self.translation_provider == "riva":
-                return self._translate_strict_riva(text, validation_reason)
+                return self._translate_strict_riva(
+                    text,
+                    validation_reason,
+                    retry_origin=retry_origin,
+                    retry_attempt=retry_attempt,
+                )
             payload = {
                 "BALAO_1": str(text),
                 "traducao_rejeitada": str(previous_translation or ""),
@@ -596,9 +605,16 @@ class TranslatorNvidiaBatch:
                     self._riva_max_tokens_for_texts([text])
                     if self.translation_provider == "riva" else None
                 ),
-                logical_batch_id=self._next_logical_batch_id("strict"),
+                logical_batch_id=self._next_logical_batch_id(
+                    "strict",
+                    origin=retry_origin,
+                    item_count=1,
+                    reason=validation_reason,
+                    attempt=retry_attempt,
+                ),
                 item_count=1,
                 source_chars=len(str(text or "")),
+                attempt_kind=retry_origin,
             )
             return parsed.get("BALAO_1", text) or text
         finally:
@@ -624,7 +640,14 @@ class TranslatorNvidiaBatch:
         code = str(validation_reason or "").split(":", 1)[0].strip()
         return self._RIVA_STRICT_HINTS.get(code, "")
 
-    def _translate_strict_riva(self, text, validation_reason):
+    def _translate_strict_riva(
+        self,
+        text,
+        validation_reason,
+        *,
+        retry_origin="quality_retry",
+        retry_attempt=1,
+    ):
         text_id = "BALAO_1"
         hint = self._riva_strict_hint(validation_reason)
         parsed = self._request_json_with_retry(
@@ -653,9 +676,16 @@ class TranslatorNvidiaBatch:
             ],
             expected_ids=[text_id],
             max_tokens=self._riva_max_tokens_for_texts([text]),
-            logical_batch_id=self._next_logical_batch_id("strict"),
+            logical_batch_id=self._next_logical_batch_id(
+                "strict",
+                origin=retry_origin,
+                item_count=1,
+                reason=validation_reason,
+                attempt=retry_attempt,
+            ),
             item_count=1,
             source_chars=len(str(text or "")),
+            attempt_kind=retry_origin,
         )
         return parsed.get(text_id, text) or text
 
@@ -779,7 +809,13 @@ class TranslatorNvidiaBatch:
         ids = [f"BALAO_{idx}" for idx in range(1, len(texts) + 1)]
         payload = dict(zip(ids, texts))
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        logical_batch_id = self._next_logical_batch_id("riva")
+        logical_batch_id = self._next_logical_batch_id(
+            "riva",
+            origin="initial_batch",
+            item_count=len(texts),
+            reason="initial_translation",
+            attempt=1,
+        )
         provider_budget = {
             "remaining": self._logical_provider_call_limit(),
             "limit": self._logical_provider_call_limit(),
@@ -1919,11 +1955,33 @@ class TranslatorNvidiaBatch:
             self._request_sequence += 1
             return f"nvidia_req_{self._request_sequence:06d}"
 
-    def _next_logical_batch_id(self, prefix):
+    def _next_logical_batch_id(
+        self,
+        prefix,
+        *,
+        origin="initial_batch",
+        parent_id="",
+        item_count=0,
+        reason="",
+        attempt=1,
+    ):
         self._increment_stat("logical_batches")
         with self._telemetry_lock:
             self._request_sequence += 1
-            return f"{prefix}_batch_{self._request_sequence:06d}"
+            logical_call_id = f"{prefix}_batch_{self._request_sequence:06d}"
+            normalized_origin = str(origin or "initial_batch")
+            self._logical_call_metadata[logical_call_id] = {
+                "logical_call_id": logical_call_id,
+                "logical_call_origin": normalized_origin,
+                "logical_call_parent_id": str(parent_id or ""),
+                "logical_call_item_count": int(item_count or 0),
+                "logical_call_reason": str(reason or ""),
+                "logical_call_attempt": int(attempt or 1),
+            }
+        with self._stats_lock:
+            origins = self.stats.setdefault("logical_calls_by_origin", {})
+            origins[normalized_origin] = int(origins.get(normalized_origin) or 0) + 1
+        return logical_call_id
 
     def _count_attempt_kind(self, kind):
         with self._stats_lock:
@@ -1955,9 +2013,28 @@ class TranslatorNvidiaBatch:
         retry_reason,
     ):
         input_chars = sum(len(str(message.get("content") or "")) for message in (messages or []))
+        logical_meta = dict(self._logical_call_metadata.get(logical_batch_id) or {})
+        logical_origin = logical_meta.get("logical_call_origin") or {
+            "initial": "initial_batch",
+            "format_retry": "format_recovery",
+            "source_equal_recovery": "source_equal_recovery",
+            "partial_residual_recovery": "partial_residual_recovery",
+            "selective_recovery": "selective_recovery",
+            "transport_retry": "transport_retry",
+        }.get(str(attempt_reason or ""), str(attempt_reason or "initial_batch"))
         entry = {
             "request_id": request_id,
             "logical_batch_id": logical_batch_id,
+            "logical_call_id": logical_meta.get("logical_call_id", logical_batch_id),
+            "logical_call_origin": logical_origin,
+            "logical_call_parent_id": logical_meta.get("logical_call_parent_id", ""),
+            "logical_call_item_count": int(
+                logical_meta.get("logical_call_item_count", item_count) or 0
+            ),
+            "logical_call_reason": logical_meta.get("logical_call_reason", ""),
+            "logical_call_attempt": int(
+                logical_meta.get("logical_call_attempt", logical_attempt) or 1
+            ),
             "provider": self.translation_provider,
             "model": self.model,
             "attempt": attempt,

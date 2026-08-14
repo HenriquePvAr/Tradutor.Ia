@@ -100,7 +100,8 @@ class _StubTranslator:
         self.calls = []
 
     def translate_strict(self, text, previous_translation="", validation_reason="",
-                         force=False, allow_proper_names=True, proper_names=None):
+                         force=False, allow_proper_names=True, proper_names=None,
+                         **kwargs):
         self.calls.append({
             "text": text,
             "previous_translation": previous_translation,

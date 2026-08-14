@@ -244,6 +244,7 @@ class _IsolatedRetryTranslator:
         force=False,
         allow_proper_names=True,
         proper_names=None,
+        **kwargs,
     ):
         record = {
             "text": text,
@@ -271,6 +272,7 @@ class _StrictRetryTranslator:
         force=False,
         allow_proper_names=True,
         proper_names=None,
+        **kwargs,
     ):
         self.calls.append(
             {
@@ -1447,16 +1449,15 @@ class OCRQualityRegressionTests(unittest.TestCase):
         with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
             records = validate_and_retry_translations([group], translator)
 
-        # The strict retry keeps the Spanish token, so the group has no detected
-        # name and earns the final isolated attempt, which fails as well.
-        self.assertEqual(len(records), 2)
+        # The central retry decision spends exactly one call. For this source-
+        # language residual with no known name, that call is the isolated prompt.
+        self.assertEqual(len(records), 1)
         self.assertFalse(records[0]["valid"], records)
         self.assertTrue(
             records[0]["reason"].startswith("residual_spanish_token"),
             records,
         )
-        self.assertTrue(records[-1]["isolated"], records)
-        self.assertFalse(records[-1]["valid"], records)
+        self.assertTrue(records[0]["isolated"], records)
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)
         self.assertEqual(group.rejected_translation, "QUIZÁS SEJA POR AQUI.")
@@ -2549,6 +2550,63 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(aggregate["manual_review_required_groups"], 1)
         self.assertEqual(aggregate["translation_rejections"], 1)
         self.assertEqual(aggregate["mixed_language_items"], 1)
+
+    def test_quality_retry_consumes_at_most_one_call_even_with_higher_config_budget(self):
+        group = _scored_group("THIS PLACE IS HELL!!")
+        apply_group_translations([group], ["ESTE LUGAR E HELL!!"])
+
+        translator = _StrictRetryTranslator(
+            "THIS PLACE E HELL!!",
+            "ESTE LUGAR E UM INFERNO!!",
+            "ESTE LUGAR E UM INFERNO MESMO!!",
+        )
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 5):
+            records = validate_and_retry_translations([group], translator)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(group.translation_retry_count, 1)
+        self.assertEqual(group.selective_retry_calls, 1)
+        self.assertEqual(group.retry_budget_remaining, 0)
+        self.assertEqual(len(records), 1)
+        self.assertFalse(records[0]["valid"], records)
+        self.assertTrue(group.manual_review_required)
+
+    def test_production_path_frozen_96_groups_caps_selective_retry_amplification(self):
+        groups = []
+        for index in range(96):
+            group = _scored_group("THIS PLACE IS HELL!!")
+            group.group_id = f"T{index:03d}"
+            apply_group_translations([group], ["ESTE LUGAR E HELL!!"])
+            groups.append(group)
+
+        translator = _StrictRetryTranslator(*(["ESTE LUGAR AINDA E HELL!!"] * 96))
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 5):
+            records = validate_and_retry_translations(groups, translator)
+
+        base_batches_for_96_riva_groups = 12
+        self.assertEqual(len(translator.calls), 12)
+        self.assertEqual(len(records), 12)
+        self.assertLessEqual(base_batches_for_96_riva_groups + len(translator.calls), 25)
+        self.assertTrue(all(group.selective_retry_calls <= 1 for group in groups))
+        self.assertTrue(all(group.translation_final_state == "manual_review" for group in groups))
+
+    def test_isolated_retry_is_the_single_retry_decision_not_a_second_call(self):
+        group = _scored_group("SHUT IT, Will YoU?")
+        apply_group_translations([group], ["Cala a boca, Will!"])
+
+        translator = _IsolatedRetryTranslator(
+            strict="Cala a boca, Will!",
+            isolated="Cala a boca, ta bom?",
+        )
+        with patch.object(config, "TRANSLATION_MAX_RETRIES", 5):
+            validate_and_retry_translations([group], translator)
+
+        self.assertEqual(translator.strict_calls, [])
+        self.assertEqual(len(translator.isolated_calls), 1)
+        self.assertEqual(group.translation_retry_count, 1)
+        self.assertEqual(group.selective_retry_calls, 1)
+        self.assertEqual(group.retry_budget_remaining, 0)
+        self.assertTrue(group.translation_valid, group.translation_validation_reason)
 
     def test_missing_translation_candidate_is_explicit_manual_review(self):
         group = _scored_group("THE SIGNAL IS CLEAR.")
@@ -3842,11 +3900,10 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
         with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
             records = validate_and_retry_translations([group], InvalidTranslator())
-        # The strict retry runs, then the isolated attempt (no proper name is
-        # known, so a full translation is demanded). Both fail here, and the
-        # region is still preserved for review rather than rendered.
-        self.assertEqual(len(records), 2)
-        self.assertTrue(records[-1]["isolated"])
+        # The central retry decision spends exactly one call and routes this
+        # source-equal failure straight to the isolated prompt.
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["isolated"])
         self.assertFalse(any(record["valid"] for record in records))
         self.assertFalse(group.translation_valid)
         self.assertTrue(group.manual_review_required)

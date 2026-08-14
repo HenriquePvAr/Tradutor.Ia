@@ -71,6 +71,7 @@ class _RecordingTranslator:
         force=False,
         allow_proper_names=True,
         proper_names=None,
+        **kwargs,
     ):
         self.calls.append(
             {
@@ -394,7 +395,7 @@ class ProperNameOnlyTerminalStateTests(unittest.TestCase):
         group = _group("WAIT!")
         apply_group_translations([group], ["WAIT!"])
 
-        translator = _RecordingTranslator("WAIT!", "ESPERA!")
+        translator = _RecordingTranslator("ESPERA!")
         with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
             validate_and_retry_translations([group], translator)
 

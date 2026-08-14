@@ -40,7 +40,8 @@ class _Fake:
         self.calls = []
 
     def translate_strict(self, text, previous_translation="", validation_reason="",
-                         force=False, allow_proper_names=True, proper_names=None):
+                         force=False, allow_proper_names=True, proper_names=None,
+                         **kwargs):
         self.calls.append({"allow_proper_names": allow_proper_names})
         return self.responses.pop(0) if self.responses else previous_translation
 
@@ -130,7 +131,7 @@ class MixedCaseNoiseTests(unittest.TestCase):
         grp = _group("STeP")
         apply_group_translations([grp], ["STeP"])
         self.assertFalse(grp.translation_valid)
-        translator = _Fake("STeP", "PASSO")  # strict echoes, isolated translates
+        translator = _Fake("PASSO")  # central retry chooses isolated immediately
         with patch.object(config, "TRANSLATION_MAX_RETRIES", 1):
             validate_and_retry_translations([grp], translator)
         self.assertEqual(grp.translation, "PASSO")

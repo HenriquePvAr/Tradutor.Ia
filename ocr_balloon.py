@@ -5398,6 +5398,20 @@ def _needs_isolated_retry(group, reason):
     )
 
 
+def _selective_translation_retry_budget(groups):
+    """Global production retry budget for one validation pass.
+
+    The initial translator already batched the chapter. This gate may ask for a
+    bounded selective correction, but it must never turn many validation
+    findings into one request per region. For the 96-region production fixture
+    this yields 12 retries, keeping total logical calls near 12 + 12 = 24.
+    """
+    total = len([group for group in (groups or []) if getattr(group, "sent_to_translation", False)])
+    if total <= 0 or int(config.TRANSLATION_MAX_RETRIES) <= 0:
+        return 0
+    return max(1, min(total, math.ceil(total / 8)))
+
+
 def _chapter_consistency_reason(ledger, source, candidate):
     """Why a candidate contradicts something the chapter already established.
 
@@ -5439,6 +5453,8 @@ def _retry_terminology_drift(
             validation_reason=reason_code,
             force=force,
             proper_names=name_spans,
+            retry_origin="terminology_retry",
+            retry_attempt=group.translation_retry_count + 1,
         )
     except Exception as exc:  # noqa: BLE001 - one region must not sink the chapter.
         retry_records.append({
@@ -5818,9 +5834,14 @@ def validate_and_retry_translations(
     ptbr_naturalizer=None,
 ):
     retry_records = []
+    selective_retry_budget_remaining = _selective_translation_retry_budget(groups)
     for group in groups:
         if not group.sent_to_translation:
             continue
+        group.initial_translation_calls = 1
+        group.selective_retry_calls = 0
+        group.retry_reasons_seen = []
+        group.retry_budget_remaining = 1 if selective_retry_budget_remaining > 0 else 0
         name_spans = group_proper_name_spans(group)
         # One budget per region: no module state, so two workers translating two
         # chapters can never spend each other's calls or contaminate a verdict.
@@ -5852,6 +5873,8 @@ def validate_and_retry_translations(
                 valid, reason = False, fidelity_reason
         group.translation_valid = valid
         group.translation_validation_reason = reason
+        if reason:
+            group.retry_reasons_seen.append(reason)
         if valid:
             _set_translation_terminal_state(group, "translated", reason)
             _retry_terminology_drift(
@@ -5877,134 +5900,95 @@ def validate_and_retry_translations(
         )
         latest_candidate = original_candidate
         had_retry_error = False
+        names_were_forbidden = False
         retry_enabled = bool(
             config.TRANSLATION_VALIDATION
             and config.TRANSLATION_RETRY_ON_MIXED_LANGUAGE
+            and int(config.TRANSLATION_MAX_RETRIES) > 0
             and hasattr(translator, "translate_strict")
+            and group.retry_budget_remaining > 0
+            and selective_retry_budget_remaining > 0
         )
         if retry_enabled:
-            for attempt in range(1, config.TRANSLATION_MAX_RETRIES + 1):
-                try:
-                    candidate = translator.translate_strict(
-                        group.text,
-                        previous_translation=latest_candidate,
-                        validation_reason=reason,
-                        force=force,
-                        proper_names=name_spans,
-                    )
-                except Exception as exc:
-                    candidate = ""
-                    reason = f"strict_retry_error:{type(exc).__name__}"
-                    had_retry_error = True
-                candidate = _match_source_case(group.text, clean_ocr_text(candidate))
-                latest_candidate = candidate or latest_candidate
-                if candidate:
-                    group.translation_candidate = candidate
-                valid, new_reason = validate_translation_text(
-                    group.text,
-                    candidate,
-                    group.classification,
-                    _group_validation_allowed_proper_names(group),
-                    required_name_spans=name_spans,
-                )
-                if valid and candidate:
-                    # A retry is a new candidate, not a correction we may assume
-                    # worked: it faces the same fidelity gate as the first one.
-                    fidelity_reason = fidelity_reason_for(candidate)
-                    if fidelity_reason:
-                        valid, new_reason = False, fidelity_reason
-                retry_records.append(
-                    {
-                        "group_id": group.group_id,
-                        "source": group.text,
-                        "previous_translation": group.translation,
-                        "candidate_translation": candidate,
-                        "attempt": attempt,
-                        "valid": valid,
-                        "reason": new_reason,
-                    }
-                )
-                group.translation_retry_count = attempt
-                if valid:
-                    group.translation = candidate
-                    group.translation_candidate = candidate
-                    group.translation_valid = True
-                    group.translation_validation_reason = "retry_ok"
-                    group.rejected_translation = ""
-                    group.manual_review_required = False
-                    _set_translation_terminal_state(group, "translated", "retry_ok")
-                    _maybe_naturalize_translation(
-                        group,
-                        ptbr_naturalizer,
-                        terminology_ledger=terminology_ledger,
-                        fidelity_verifier=fidelity_verifier,
-                        fidelity_stats=fidelity_stats,
-                    )
-                    break
-                reason = new_reason
-
-        names_were_forbidden = False
-        if not group.translation_valid and _needs_isolated_retry(group, reason):
-            names_were_forbidden = True
+            selective_retry_budget_remaining -= 1
+            attempt = group.translation_retry_count + 1
+            isolated_first = _needs_isolated_retry(group, reason)
+            names_were_forbidden = bool(isolated_first)
             try:
                 candidate = translator.translate_strict(
                     group.text,
                     previous_translation=latest_candidate,
                     validation_reason=reason,
                     force=force,
-                    allow_proper_names=False,
-                    proper_names=[],
+                    allow_proper_names=not isolated_first,
+                    proper_names=[] if isolated_first else name_spans,
+                    retry_origin="isolated_retry" if isolated_first else "quality_retry",
+                    retry_attempt=attempt,
                 )
             except Exception as exc:  # noqa: BLE001 - keep the caller on failure.
                 candidate = ""
                 had_retry_error = True
-                reason = f"isolated_retry_error:{type(exc).__name__}"
+                reason = (
+                    f"isolated_retry_error:{type(exc).__name__}"
+                    if isolated_first
+                    else f"strict_retry_error:{type(exc).__name__}"
+                )
             candidate = _match_source_case(group.text, clean_ocr_text(candidate))
             if candidate:
                 latest_candidate = candidate
                 group.translation_candidate = candidate
-                valid, new_reason = validate_translation_text(
-                    group.text,
-                    candidate,
-                    group.classification,
-                    _group_validation_allowed_proper_names(group),
-                    required_name_spans=name_spans,
+            valid, new_reason = validate_translation_text(
+                group.text,
+                candidate,
+                group.classification,
+                _group_validation_allowed_proper_names(group),
+                required_name_spans=name_spans,
+            )
+            if valid and candidate:
+                # A retry is a new candidate, not a correction we may assume
+                # worked: it faces the same fidelity gate as the first one.
+                fidelity_reason = fidelity_reason_for(candidate)
+                if fidelity_reason:
+                    valid, new_reason = False, fidelity_reason
+            retry_record = {
+                "group_id": group.group_id,
+                "source": group.text,
+                "previous_translation": group.translation,
+                "candidate_translation": candidate,
+                "attempt": attempt,
+                "valid": valid,
+                "reason": new_reason,
+                "retry_type": "isolated" if isolated_first else "quality",
+            }
+            if isolated_first:
+                retry_record["isolated"] = True
+            retry_records.append(retry_record)
+            group.translation_retry_count = attempt
+            group.selective_retry_calls += 1
+            group.retry_budget_remaining = 0
+            if new_reason:
+                group.retry_reasons_seen.append(new_reason)
+            if valid:
+                group.translation = candidate
+                group.translation_candidate = candidate
+                group.translation_valid = True
+                group.translation_validation_reason = "retry_ok"
+                group.rejected_translation = ""
+                group.manual_review_required = False
+                _set_translation_terminal_state(
+                    group,
+                    "translated",
+                    "retry_ok",
                 )
-                if valid:
-                    fidelity_reason = fidelity_reason_for(candidate)
-                    if fidelity_reason:
-                        valid, new_reason = False, fidelity_reason
-                retry_records.append(
-                    {
-                        "group_id": group.group_id,
-                        "source": group.text,
-                        "previous_translation": group.translation,
-                        "candidate_translation": candidate,
-                        "attempt": group.translation_retry_count + 1,
-                        "valid": valid,
-                        "reason": new_reason,
-                        "isolated": True,
-                    }
+                _maybe_naturalize_translation(
+                    group,
+                    ptbr_naturalizer,
+                    terminology_ledger=terminology_ledger,
+                    fidelity_verifier=fidelity_verifier,
+                    fidelity_stats=fidelity_stats,
                 )
-                group.translation_retry_count += 1
-                if valid:
-                    group.translation = candidate
-                    group.translation_valid = True
-                    group.translation_validation_reason = "isolated_retry_ok"
-                    group.rejected_translation = ""
-                    group.manual_review_required = False
-                    _set_translation_terminal_state(
-                        group, "translated", "isolated_retry_ok"
-                    )
-                    _maybe_naturalize_translation(
-                        group,
-                        ptbr_naturalizer,
-                        terminology_ledger=terminology_ledger,
-                        fidelity_verifier=fidelity_verifier,
-                        fidelity_stats=fidelity_stats,
-                    )
-                else:
-                    reason = new_reason
+            else:
+                reason = new_reason
 
         if group.translation_valid:
             continue

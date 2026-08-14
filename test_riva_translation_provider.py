@@ -157,6 +157,37 @@ class RivaProviderTests(unittest.TestCase):
         self.assertNotIn("restricao", prompt)
         self.assertGreaterEqual(calls[0]["max_tokens"], 96)
 
+    def test_riva_logical_call_telemetry_distinguishes_initial_and_quality_retry(self):
+        translator, _calls = self._translator([
+            '{"BALAO_1":"Olá!"}',
+            '{"BALAO_1":"Obrigado!"}',
+        ])
+
+        translator.translate_many(["HELLO!"], force=True)
+        translator.translate_strict(
+            "THANK YOU!",
+            previous_translation="THANK YOU!",
+            validation_reason="candidate_equals_source",
+            retry_origin="quality_retry",
+        )
+
+        telemetry = translator.stats["provider_request_telemetry"]
+        self.assertEqual(
+            [entry["logical_call_origin"] for entry in telemetry],
+            ["initial_batch", "quality_retry"],
+        )
+        self.assertEqual(
+            translator.stats["logical_calls_by_origin"],
+            {"initial_batch": 1, "quality_retry": 1},
+        )
+        self.assertEqual(
+            sum(translator.stats["logical_calls_by_origin"].values()),
+            translator.stats["logical_batches"],
+        )
+        self.assertEqual(
+            translator.stats["provider_attempts_by_kind"]["quality_retry"], 1
+        )
+
     def test_riva_missing_output_preserves_partial_success_and_fails_closed_item(self):
         translator, calls = self._translator([
             '{"BALAO_1":"Olá"}',

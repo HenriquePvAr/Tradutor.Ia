@@ -1701,6 +1701,9 @@ def run_benchmark(args):
             "invalid_json_failures", 0
         ),
         "translation_logical_batches": translator_stats.get("logical_batches", 0),
+        "logical_calls_by_origin": dict(
+            translator_stats.get("logical_calls_by_origin") or {}
+        ),
         "provider_http_attempts": translator_stats.get("provider_http_attempts", 0),
         "provider_attempts_by_kind": dict(
             translator_stats.get("provider_attempts_by_kind") or {}

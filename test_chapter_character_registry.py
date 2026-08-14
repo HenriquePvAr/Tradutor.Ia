@@ -122,6 +122,7 @@ class _StubTranslator:
         force=False,
         allow_proper_names=True,
         proper_names=None,
+        **kwargs,
     ):
         self.calls.append(
             {
