@@ -1699,6 +1699,24 @@ def run_benchmark(args):
         "translation_invalid_json_failures": translator_stats.get(
             "invalid_json_failures", 0
         ),
+        "translation_logical_batches": translator_stats.get("logical_batches", 0),
+        "provider_http_attempts": translator_stats.get("provider_http_attempts", 0),
+        "provider_attempts_by_kind": dict(
+            translator_stats.get("provider_attempts_by_kind") or {}
+        ),
+        "format_failures_total": translator_stats.get("format_failures_total", 0),
+        "format_failure_truncated": translator_stats.get("format_failure_truncated", 0),
+        "format_failure_malformed": translator_stats.get("format_failure_malformed", 0),
+        "format_failure_wrong_schema": translator_stats.get("format_failure_wrong_schema", 0),
+        "format_failure_missing_id": translator_stats.get("format_failure_missing_id", 0),
+        "format_retry_requests": translator_stats.get("format_retry_requests", 0),
+        "format_retry_success": translator_stats.get("format_retry_success", 0),
+        "format_retry_failure": translator_stats.get("format_retry_failure", 0),
+        "selective_recovery_requests": translator_stats.get("selective_recovery_requests", 0),
+        "source_equal_recovery_requests": translator_stats.get("source_equal_recovery_requests", 0),
+        "partial_residual_recovery_requests": translator_stats.get("partial_residual_recovery_requests", 0),
+        "finish_reason_length": translator_stats.get("finish_reason_length", 0),
+        "retry_budget_exhausted": translator_stats.get("retry_budget_exhausted", 0),
         "provider_request_telemetry": list(
             translator_stats.get("provider_request_telemetry") or []
         )[:500],

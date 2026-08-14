@@ -308,6 +308,9 @@ class TranslatorNvidiaBatch:
         self.riva_logical_batch_timeout_seconds = float(
             getattr(config, "NVIDIA_RIVA_LOGICAL_BATCH_TIMEOUT_SECONDS", 60.0) or 60.0
         )
+        self.riva_format_retry_limit = max(
+            0, int(getattr(config, "NVIDIA_RIVA_FORMAT_RETRY_LIMIT", 1) or 0)
+        )
         if (
             self.transport_retry_limit <= 0
             or self.json_retry_limit <= 0
@@ -364,7 +367,7 @@ class TranslatorNvidiaBatch:
             "riva_max_batch_items": int(getattr(config, "NVIDIA_RIVA_MAX_BATCH_ITEMS", 8) or 8),
             "riva_max_batch_source_tokens": int(getattr(config, "NVIDIA_RIVA_MAX_BATCH_SOURCE_TOKENS", 600) or 600),
             "riva_output_token_floor": int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_FLOOR", 96) or 96),
-            "riva_output_token_ceiling": int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_CEILING", 512) or 512),
+            "riva_output_token_ceiling": int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_CEILING", 2048) or 2048),
             "riva_logical_request_attempt_limit": self.riva_logical_request_attempt_limit,
             "riva_logical_batch_timeout_seconds": self.riva_logical_batch_timeout_seconds,
             "riva_source_equal_detected": 0,
@@ -374,6 +377,28 @@ class TranslatorNvidiaBatch:
             "riva_corrective_retry_succeeded": 0,
             "riva_corrective_retry_failed": 0,
             "riva_untranslated_blocked": 0,
+            # Attempt conservation: logical_batches + every named corrective call
+            # must reconcile with provider_http_attempts.
+            "logical_batches": 0,
+            "provider_http_attempts": 0,
+            "provider_attempts_by_kind": {},
+            "format_failures_total": 0,
+            "format_failure_truncated": 0,
+            "format_failure_malformed": 0,
+            "format_failure_wrong_schema": 0,
+            "format_failure_missing_id": 0,
+            "format_failure_extra_id": 0,
+            "format_failure_duplicate_id": 0,
+            "format_failure_empty_translation": 0,
+            "format_recoverable_wrapper": 0,
+            "format_retry_requests": 0,
+            "format_retry_success": 0,
+            "format_retry_failure": 0,
+            "selective_recovery_requests": 0,
+            "source_equal_recovery_requests": 0,
+            "partial_residual_recovery_requests": 0,
+            "finish_reason_length": 0,
+            "retry_budget_exhausted": 0,
             "provider_request_telemetry": [],
         }
 
@@ -528,6 +553,8 @@ class TranslatorNvidiaBatch:
         self._increment_stat("api_texts", 1)
         started = time.perf_counter()
         try:
+            if self.translation_provider == "riva":
+                return self._translate_strict_riva(text, validation_reason)
             payload = {
                 "BALAO_1": str(text),
                 "traducao_rejeitada": str(previous_translation or ""),
@@ -576,6 +603,61 @@ class TranslatorNvidiaBatch:
             return parsed.get("BALAO_1", text) or text
         finally:
             self._increment_stat("api_seconds", time.perf_counter() - started)
+
+    # Riva is a translation model, not an instruction-following one: it
+    # translates every JSON string value it is given. The Nemotron strict
+    # payload also carried traducao_rejeitada/motivo_rejeicao/restricao, so the
+    # reply came back with those keys translated too, the expected-id check
+    # rejected it as "IDs inesperados" on 100% of calls, and every quality retry
+    # burned the whole logical budget for nothing. Only the source goes in the
+    # payload here; the corrective guidance stays prose outside the JSON.
+    _RIVA_STRICT_HINTS = {
+        "empty_translation": "The previous attempt was empty; produce a complete translation.",
+        "candidate_equals_source": "The previous attempt repeated the English source; do not repeat it.",
+        "source_language_residual": "The previous attempt left English behind; translate everything.",
+        "mixed_language_candidate": "The previous attempt mixed English and Portuguese; output only Portuguese.",
+        "suspicious_truncation": "The previous attempt was incomplete; translate the whole text without omitting anything.",
+        "no_target_language_orthography": "The previous attempt did not read as natural Brazilian Portuguese.",
+    }
+
+    def _riva_strict_hint(self, validation_reason):
+        code = str(validation_reason or "").split(":", 1)[0].strip()
+        return self._RIVA_STRICT_HINTS.get(code, "")
+
+    def _translate_strict_riva(self, text, validation_reason):
+        text_id = "BALAO_1"
+        hint = self._riva_strict_hint(validation_reason)
+        parsed = self._request_json_with_retry(
+            [
+                {"role": "system", "content": self._riva_language_pair()},
+                {
+                    "role": "user",
+                    "content": (
+                        "Translate every JSON string value from English to natural "
+                        "Brazilian Portuguese. The previous translation was rejected by "
+                        "quality control; translate the complete English meaning again. "
+                        + (hint + " " if hint else "")
+                        + "Preserve only proper names, codes, and ranks that appear "
+                        "inside the sentence. Preserve all JSON keys exactly. Return "
+                        "only a valid JSON object containing exactly this key: "
+                        f"{text_id}. Do not add explanations, markdown, or extra keys.\n"
+                        + self._riva_context_prompt()
+                        + "\nJSON:\n"
+                        + json.dumps(
+                            {text_id: str(text)},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    ),
+                },
+            ],
+            expected_ids=[text_id],
+            max_tokens=self._riva_max_tokens_for_texts([text]),
+            logical_batch_id=self._next_logical_batch_id("strict"),
+            item_count=1,
+            source_chars=len(str(text or "")),
+        )
+        return parsed.get(text_id, text) or text
 
     def translate_many(self, texts, force=None):
         if not texts:
@@ -725,6 +807,13 @@ class TranslatorNvidiaBatch:
             source_chars=sum(len(str(text or "")) for text in texts),
             provider_budget=provider_budget,
         )
+        parsed = self._recover_riva_missing_or_empty_subset(
+            texts,
+            ids,
+            parsed,
+            logical_batch_id=logical_batch_id,
+            provider_budget=provider_budget,
+        )
         parsed = self._recover_riva_source_equal_subset(
             texts,
             ids,
@@ -747,6 +836,77 @@ class TranslatorNvidiaBatch:
             }
         )
         return TranslationResult(str(value or original), quality_evidence=evidence)
+
+    def _recover_riva_missing_or_empty_subset(
+        self,
+        texts,
+        ids,
+        parsed,
+        *,
+        logical_batch_id,
+        provider_budget,
+    ):
+        if self.translation_provider != "riva":
+            return parsed
+        updated = dict(parsed)
+        for text_id, original in zip(ids, texts):
+            if text_id in updated and str(updated.get(text_id) or "").strip():
+                continue
+            if not provider_budget or provider_budget.get("remaining", 0) <= 0:
+                self._increment_stat("riva_corrective_retry_failed")
+                self._increment_stat("riva_untranslated_blocked")
+                continue
+            self._increment_stat("riva_corrective_retry_requested")
+            self._increment_stat("selective_recovery_requests")
+            corrective_payload = {text_id: str(original)}
+            try:
+                recovered = self._request_json_with_retry(
+                    [
+                        {"role": "system", "content": self._riva_language_pair()},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Translate this single JSON string value from English "
+                                "to natural Brazilian Portuguese. The previous batch "
+                                "reply omitted this item or returned it empty. Preserve "
+                                "the JSON key exactly. Return only a valid JSON object "
+                                f"containing exactly this key: {text_id}.\n"
+                                + self._riva_context_prompt()
+                                + "\nJSON:\n"
+                                + json.dumps(
+                                    corrective_payload,
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                )
+                            ),
+                        },
+                    ],
+                    expected_ids=[text_id],
+                    max_tokens=self._riva_max_tokens_for_texts([original]),
+                    logical_batch_id=logical_batch_id,
+                    item_count=1,
+                    source_chars=len(str(original or "")),
+                    provider_budget=provider_budget,
+                    attempt_kind="selective_recovery",
+                )
+            except Exception:
+                self._increment_stat("riva_corrective_retry_failed")
+                self._increment_stat("riva_untranslated_blocked")
+                continue
+            new_value = str(recovered.get(text_id, "") or "")
+            if new_value.strip():
+                updated[text_id] = TranslationResult(
+                    new_value,
+                    quality_evidence={
+                        "riva_corrective_retry": True,
+                        "riva_corrective_retry_reason": "missing_or_empty_json_item",
+                    },
+                )
+                self._increment_stat("riva_corrective_retry_succeeded")
+            else:
+                self._increment_stat("riva_corrective_retry_failed")
+                self._increment_stat("riva_untranslated_blocked")
+        return updated
 
     def _recover_riva_source_equal_subset(
         self,
@@ -791,6 +951,13 @@ class TranslatorNvidiaBatch:
                 self._increment_stat("riva_untranslated_blocked")
                 continue
             self._increment_stat("riva_corrective_retry_requested")
+            self._increment_stat("selective_recovery_requests")
+            if self._riva_is_source_equal(original, candidate):
+                self._increment_stat("source_equal_recovery_requests")
+                attempt_kind = "source_equal_recovery"
+            else:
+                self._increment_stat("partial_residual_recovery_requests")
+                attempt_kind = "partial_residual_recovery"
             corrective_payload = {text_id: str(original)}
             try:
                 recovered = self._request_json_with_retry(
@@ -827,6 +994,7 @@ class TranslatorNvidiaBatch:
                 item_count=1,
                 source_chars=len(str(original or "")),
                 provider_budget=provider_budget,
+                attempt_kind=attempt_kind,
             )
             except Exception:
                 self._increment_stat("riva_corrective_retry_failed")
@@ -866,6 +1034,7 @@ class TranslatorNvidiaBatch:
         item_count=0,
         source_chars=0,
         provider_budget=None,
+        attempt_kind="initial",
     ):
         """Retry model-format failures separately from HTTP/transport retries."""
 
@@ -873,7 +1042,15 @@ class TranslatorNvidiaBatch:
         base_messages = [dict(message) for message in messages]
         request_messages = list(base_messages)
         last_error = None
-        attempts = self.json_retry_limit if attempts is None else int(attempts)
+        if attempts is None:
+            attempts = (
+                1 + self.riva_format_retry_limit
+                if self.translation_provider == "riva"
+                else self.json_retry_limit
+            )
+        else:
+            attempts = int(attempts)
+        effective_max_tokens = max_tokens
         deadline_seconds = self.timeout_policy.total_timeout_seconds
         if self.translation_provider == "riva":
             deadline_seconds = min(
@@ -887,42 +1064,96 @@ class TranslatorNvidiaBatch:
                 "limit": self._logical_provider_call_limit(),
             }
         for attempt in range(1, max(1, attempts) + 1):
-            response_text = self._call_request_with_retry(
-                request_messages,
-                deadline=deadline,
-                max_tokens=max_tokens,
-                provider_budget=provider_budget,
-                logical_batch_id=logical_batch_id,
-                logical_attempt=attempt,
-                item_count=item_count,
-                source_chars=source_chars,
-            )
+            try:
+                response_text = self._call_request_with_retry(
+                    request_messages,
+                    deadline=deadline,
+                    max_tokens=effective_max_tokens,
+                    provider_budget=provider_budget,
+                    logical_batch_id=logical_batch_id,
+                    logical_attempt=attempt,
+                    item_count=item_count,
+                    source_chars=source_chars,
+                    attempt_kind=attempt_kind,
+                )
+            except ProviderTransportError as exc:
+                # A reply cut off by the output budget is a format failure, not a
+                # transport failure: repeating it with the same budget can only
+                # truncate again, so the one allowed retry raises the budget.
+                if exc.reason_code != "provider_response_truncated":
+                    raise
+                self._record_format_failure("truncated")
+                self._increment_stat("finish_reason_length")
+                if (
+                    attempt >= attempts
+                    or (provider_budget is not None and provider_budget["remaining"] <= 0)
+                ):
+                    self._increment_stat("format_retry_failure")
+                    raise
+                effective_max_tokens = self._escalated_max_tokens(
+                    effective_max_tokens, request_messages)
+                self._increment_stat("format_retry_requests")
+                continue
             try:
                 parsed = self._parse_json_response(response_text)
-                missing = [text_id for text_id in expected_ids if not parsed.get(text_id)]
-                if missing:
+                duplicates = self._duplicate_ids(response_text)
+                if duplicates:
                     raise ValueError(
-                        "Resposta JSON sem IDs obrigatorios: " + ", ".join(missing)
+                        "duplicate_id: Resposta JSON com IDs repetidos: "
+                        + ", ".join(duplicates)
                     )
                 extra = sorted(set(parsed) - set(expected_ids))
                 if extra:
                     raise ValueError(
-                        "Resposta JSON contem IDs inesperados: " + ", ".join(extra)
+                        "extra_id: Resposta JSON contem IDs inesperados: "
+                        + ", ".join(extra)
+                    )
+                absent = [text_id for text_id in expected_ids if text_id not in parsed]
+                if absent:
+                    if self.translation_provider == "riva":
+                        self._record_format_failure("missing_id")
+                        self._mark_latest_request_parse(True, False)
+                        return parsed
+                    raise ValueError(
+                        "missing_id: Resposta JSON sem IDs obrigatorios: "
+                        + ", ".join(absent)
+                    )
+                empty = [
+                    text_id for text_id in expected_ids
+                    if not str(parsed.get(text_id) or "").strip()
+                ]
+                if empty:
+                    if self.translation_provider == "riva":
+                        self._record_format_failure("empty_translation")
+                        self._mark_latest_request_parse(True, False)
+                        return parsed
+                    raise ValueError(
+                        "empty_translation: Resposta JSON sem traducao para: "
+                        + ", ".join(empty)
                     )
                 self._increment_stat("translation_results_parsed", len(parsed))
                 self._mark_latest_request_parse(True, True)
+                if not str(response_text or "").strip().startswith(("{", "[")):
+                    self._increment_stat("format_recoverable_wrapper")
+                if attempt > 1:
+                    self._increment_stat("format_retry_success")
                 return parsed
             except (TypeError, ValueError) as exc:
                 last_error = exc
                 self._mark_latest_request_parse(False, False)
+                self._record_format_failure(self._format_failure_class(exc))
                 if attempt >= attempts:
                     self._increment_stat("invalid_json_failures")
+                    if attempt > 1:
+                        self._increment_stat("format_retry_failure")
                     raise
                 if provider_budget["remaining"] <= 0:
                     self._increment_stat("invalid_json_failures")
+                    self._increment_stat("retry_budget_exhausted")
                     raise ProviderTransportError("provider_logical_attempt_budget_exhausted") from exc
                 self._increment_stat("invalid_json_retries")
                 self._increment_stat("json_repair_attempts")
+                self._increment_stat("format_retry_requests")
                 request_messages = base_messages + [
                     {
                         "role": "assistant",
@@ -953,6 +1184,7 @@ class TranslatorNvidiaBatch:
                 "logical_attempt",
                 "item_count",
                 "source_chars",
+                "attempt_kind",
             )
             if "unexpected keyword argument" not in text or not any(
                 f"'{name}'" in text or f'"{name}"' in text for name in extended
@@ -976,8 +1208,10 @@ class TranslatorNvidiaBatch:
         logical_attempt=1,
         item_count=0,
         source_chars=0,
+        attempt_kind="initial",
     ):
         retry_statuses = {429, 500, 502, 503, 504}
+        logical_kind = attempt_kind if logical_attempt == 1 else "format_retry"
         last_error = None
         deadline = (
             self._clock() + self.timeout_policy.total_timeout_seconds
@@ -1038,7 +1272,8 @@ class TranslatorNvidiaBatch:
                     logical_batch_id=logical_batch_id,
                     attempt=attempt,
                     logical_attempt=logical_attempt,
-                    attempt_reason="initial" if attempt == 1 else "transport_retry",
+                    attempt_reason=(
+                        logical_kind if attempt == 1 else "transport_retry"),
                     item_count=item_count,
                     source_chars=source_chars,
                     messages=messages,
@@ -1077,7 +1312,8 @@ class TranslatorNvidiaBatch:
                         logical_batch_id=logical_batch_id,
                         attempt=attempt,
                         logical_attempt=logical_attempt,
-                        attempt_reason="initial" if attempt == 1 else "transport_retry",
+                        attempt_reason=(
+                            logical_kind if attempt == 1 else "transport_retry"),
                         item_count=item_count,
                         source_chars=source_chars,
                         messages=messages,
@@ -1325,14 +1561,20 @@ class TranslatorNvidiaBatch:
 
         if isinstance(parsed, dict):
             if isinstance(parsed.get("translations"), list):
-                return TranslatorNvidiaBatch._list_to_mapping(parsed["translations"])
+                mapped = TranslatorNvidiaBatch._list_to_mapping(parsed["translations"])
+                if parsed["translations"] and not mapped:
+                    raise ValueError("wrong_schema: Resposta JSON em schema invalido.")
+                return mapped
             return {
                 str(key): TranslatorNvidiaBatch._translation_result_from_value(value)
                 for key, value in parsed.items()
             }
 
         if isinstance(parsed, list):
-            return TranslatorNvidiaBatch._list_to_mapping(parsed)
+            mapped = TranslatorNvidiaBatch._list_to_mapping(parsed)
+            if parsed and not mapped:
+                raise ValueError("wrong_schema: Resposta JSON em schema invalido.")
+            return mapped
 
         raise ValueError("Resposta JSON da NVIDIA em formato inesperado.")
 
@@ -1345,7 +1587,7 @@ class TranslatorNvidiaBatch:
         return cleaned
 
     @staticmethod
-    def _loads_json(text):
+    def _loads_json(text, *, object_pairs_hook=None):
         candidates = [text]
 
         obj_start, obj_end = text.find("{"), text.rfind("}")
@@ -1358,7 +1600,7 @@ class TranslatorNvidiaBatch:
 
         for candidate in candidates:
             try:
-                return json.loads(candidate)
+                return json.loads(candidate, object_pairs_hook=object_pairs_hook)
             except json.JSONDecodeError:
                 continue
 
@@ -1461,14 +1703,73 @@ class TranslatorNvidiaBatch:
         if batch:
             yield batch
 
-    def _riva_max_tokens_for_texts(self, texts):
-        source_tokens = sum(self._approx_tokens(text) for text in texts)
+    def _riva_output_token_ceiling(self):
         floor = max(1, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_FLOOR", 96) or 96))
-        ceiling = max(floor, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_CEILING", 512) or 512))
+        return max(floor, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_CEILING", 2048) or 2048))
+
+    def _riva_max_tokens_for_texts(self, texts):
+        """Budget the RESPONSE, not the source.
+
+        Every item costs its key, quotes, escaping and a comma whatever the
+        source length, so a batch of eight two-word balloons still needs far
+        more than the old source-driven floor. Each item gets its own floor and
+        the envelope gets a fixed allowance on top.
+        """
+        texts = list(texts or [])
+        floor = max(1, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_FLOOR", 96) or 96))
+        ceiling = self._riva_output_token_ceiling()
         ratio = max(1.0, float(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_RATIO", 2.4) or 2.4))
         overhead = max(0, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_ITEM_OVERHEAD", 12) or 12))
-        estimate = math.ceil(source_tokens * ratio + len(texts) * overhead)
+        item_floor = max(
+            1, int(getattr(config, "NVIDIA_RIVA_OUTPUT_TOKEN_PER_ITEM_FLOOR", 24) or 24))
+        envelope = 8
+        estimate = envelope + sum(
+            overhead + max(item_floor, math.ceil(self._approx_tokens(text) * ratio))
+            for text in texts
+        )
         return min(ceiling, max(floor, estimate))
+
+    def _escalated_max_tokens(self, current, messages):
+        base = int(current or self._default_max_tokens_for_messages(messages))
+        if self.translation_provider != "riva":
+            return base
+        return min(self._riva_output_token_ceiling(), max(base + 1, base * 2))
+
+    def _record_format_failure(self, kind):
+        self._increment_stat("format_failures_total")
+        self._increment_stat(f"format_failure_{kind}")
+
+    @staticmethod
+    def _format_failure_class(exc):
+        text = str(exc)
+        folded = text.casefold()
+        for prefix in (
+            "duplicate_id", "missing_id", "empty_translation", "extra_id",
+            "wrong_schema",
+        ):
+            if text.startswith(prefix + ":"):
+                return prefix
+        if "formato inesperado" in folded:
+            return "wrong_schema"
+        return "malformed"
+
+    @classmethod
+    def _duplicate_ids(cls, text):
+        """Detect repeated keys json.loads would silently collapse."""
+        seen = []
+
+        def hook(pairs):
+            seen.extend(key for key, _ in pairs)
+            return dict(pairs)
+
+        try:
+            cls._loads_json(cls._remove_markdown_fence(text), object_pairs_hook=hook)
+        except (TypeError, ValueError):
+            return []
+        counts = {}
+        for key in seen:
+            counts[key] = counts.get(key, 0) + 1
+        return sorted(key for key, count in counts.items() if count > 1)
 
     def _default_max_tokens_for_messages(self, messages):
         if self.translation_provider == "riva":
@@ -1619,9 +1920,15 @@ class TranslatorNvidiaBatch:
             return f"nvidia_req_{self._request_sequence:06d}"
 
     def _next_logical_batch_id(self, prefix):
+        self._increment_stat("logical_batches")
         with self._telemetry_lock:
             self._request_sequence += 1
             return f"{prefix}_batch_{self._request_sequence:06d}"
+
+    def _count_attempt_kind(self, kind):
+        with self._stats_lock:
+            kinds = self.stats.setdefault("provider_attempts_by_kind", {})
+            kinds[kind] = kinds.get(kind, 0) + 1
 
     def _record_request_telemetry(
         self,
@@ -1675,6 +1982,11 @@ class TranslatorNvidiaBatch:
             "retry_reason": str(retry_reason or ""),
         }
         with self._stats_lock:
+            self.stats["provider_http_attempts"] = (
+                int(self.stats.get("provider_http_attempts") or 0) + 1
+            )
+            kinds = self.stats.setdefault("provider_attempts_by_kind", {})
+            kinds[attempt_reason] = int(kinds.get(attempt_reason) or 0) + 1
             telemetry = self.stats.setdefault("provider_request_telemetry", [])
             telemetry.append(entry)
             if len(telemetry) > 500:

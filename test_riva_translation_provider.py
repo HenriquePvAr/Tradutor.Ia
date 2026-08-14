@@ -1,4 +1,5 @@
 import _test_bootstrap  # noqa: F401
+import json
 import unittest
 
 from provider_transport import (
@@ -139,14 +140,37 @@ class RivaProviderTests(unittest.TestCase):
         )
         self.assertNotIn("ptbr_naturalization_needed", result.quality_evidence)
 
-    def test_riva_missing_output_fails_closed(self):
-        translator, _calls = self._translator(['{"BALAO_1":"Olá"}'])
+    def test_riva_strict_retry_uses_single_source_payload_without_rejected_metadata(self):
+        translator, calls = self._translator(['{"BALAO_1":"Obrigado!"}'])
+
+        result = translator.translate_strict(
+            "THANK YOU!",
+            previous_translation="THANK YOU!",
+            validation_reason="candidate_equals_source",
+        )
+
+        self.assertEqual(result, "Obrigado!")
+        prompt = calls[0]["messages"][1]["content"]
+        self.assertIn('"BALAO_1":"THANK YOU!"', prompt)
+        self.assertNotIn("traducao_rejeitada", prompt)
+        self.assertNotIn("motivo_rejeicao", prompt)
+        self.assertNotIn("restricao", prompt)
+        self.assertGreaterEqual(calls[0]["max_tokens"], 96)
+
+    def test_riva_missing_output_preserves_partial_success_and_fails_closed_item(self):
+        translator, calls = self._translator([
+            '{"BALAO_1":"Olá"}',
+            ProviderTransportError("provider_unavailable"),
+        ])
 
         translated = translator.translate_many(["HELLO", "BYE"], force=True)
 
-        self.assertEqual(translated, ["HELLO", "BYE"])
-        self.assertEqual(translator.stats["failed_batches"], 1)
-        self.assertEqual(translator.stats["translation_results_associated"], 0)
+        self.assertEqual([str(item) for item in translated], ["Olá", "BYE"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(translator.stats["format_failure_missing_id"], 1)
+        self.assertEqual(translator.stats["selective_recovery_requests"], 1)
+        self.assertEqual(translator.stats["riva_corrective_retry_failed"], 1)
+        self.assertEqual(translator.stats["translation_results_associated"], 2)
 
     def test_riva_extra_output_fails_closed(self):
         translator, _calls = self._translator(
@@ -178,6 +202,71 @@ class RivaProviderTests(unittest.TestCase):
         self.assertLess(calls[0]["max_tokens"], 4096)
         self.assertLessEqual(calls[0]["max_tokens"], 512)
 
+    def test_riva_eight_short_items_get_response_budget_for_json_structure(self):
+        translator, calls = self._translator([
+            "{"
+            + ",".join(f'"BALAO_{index}":"T{index}"' for index in range(1, 9))
+            + "}"
+        ])
+
+        translated = translator.translate_many([f"GO {index}" for index in range(1, 9)], force=True)
+
+        self.assertEqual([str(item) for item in translated], [f"T{index}" for index in range(1, 9)])
+        self.assertGreaterEqual(calls[0]["max_tokens"], 8 + 8 * 24)
+        self.assertLess(calls[0]["max_tokens"], 4096)
+
+    def test_riva_markdown_fence_json_recovers_locally_without_provider_retry(self):
+        translator, calls = self._translator([
+            '```json\n{"BALAO_1":"Olá"}\n```',
+        ])
+
+        translated = translator.translate_many(["HELLO"], force=True)
+
+        self.assertEqual([str(item) for item in translated], ["Olá"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(translator.stats["format_recoverable_wrapper"], 1)
+        self.assertEqual(translator.stats["format_retry_requests"], 0)
+
+    def test_riva_wrong_schema_gets_one_bounded_format_retry_then_fails_closed(self):
+        translator, calls = self._translator([
+            '["Olá"]',
+            '{"unexpected":"Olá"}',
+            '{"BALAO_1":"Nao deve ser chamado"}',
+        ])
+
+        translated = translator.translate_many(["HELLO"], force=True)
+
+        self.assertEqual(translated, ["HELLO"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(translator.stats["format_failure_wrong_schema"], 1)
+        self.assertEqual(translator.stats["format_failure_extra_id"], 1)
+        self.assertEqual(translator.stats["format_retry_requests"], 1)
+        self.assertEqual(translator.stats["format_retry_failure"], 1)
+
+    def test_riva_partial_success_recovers_only_missing_item_not_whole_batch(self):
+        initial = {
+            f"BALAO_{index}": f"T{index}"
+            for index in range(1, 8)
+        }
+        translator, calls = self._translator([
+            json.dumps(initial, ensure_ascii=False, separators=(",", ":")),
+            '{"BALAO_8":"T8"}',
+        ])
+
+        translated = translator.translate_many([f"SOURCE {index}" for index in range(1, 9)], force=True)
+
+        self.assertEqual([str(item) for item in translated], [f"T{index}" for index in range(1, 9)])
+        self.assertEqual(len(calls), 2)
+        self.assertIn('"BALAO_8":"SOURCE 8"', calls[1]["messages"][1]["content"])
+        self.assertNotIn('"BALAO_1":"SOURCE 1"', calls[1]["messages"][1]["content"])
+        self.assertEqual(translator.stats["format_failure_missing_id"], 1)
+        self.assertEqual(translator.stats["selective_recovery_requests"], 1)
+        self.assertEqual(translator.stats["provider_http_attempts"], 2)
+        self.assertEqual(
+            translator.stats["provider_attempts_by_kind"],
+            {"initial": 1, "selective_recovery": 1},
+        )
+
     def test_riva_transport_and_json_retries_share_logical_budget(self):
         translator, calls = self._translator(["not-json", "still-not-json", "bad"])
         translator.transport_retry_limit = 4
@@ -187,7 +276,7 @@ class RivaProviderTests(unittest.TestCase):
         translated = translator.translate_many(["HELLO"], force=True)
 
         self.assertEqual(translated, ["HELLO"])
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(translator.stats["failed_batches"], 1)
         self.assertEqual(translator.stats["invalid_json_failures"], 1)
 
@@ -208,21 +297,37 @@ class RivaProviderTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual(translator.stats["provider_timeout_count"], 3)
 
-    def test_riva_finish_reason_length_fails_closed(self):
+    def test_riva_finish_reason_length_gets_one_bounded_format_retry(self):
         translator, calls = self._translator([
             ('{"BALAO_1":"Truncado', "length"),
-            '{"BALAO_1":"Nao deve ser usado"}',
+            '{"BALAO_1":"Recuperado"}',
+        ])
+
+        translated = translator.translate_many(["HELLO"], force=True)
+
+        self.assertEqual([str(item) for item in translated], ["Recuperado"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(translator.stats["finish_reason_length"], 1)
+        self.assertEqual(translator.stats["format_retry_requests"], 1)
+        self.assertEqual(
+            translator.stats["provider_request_telemetry"][0]["finish_reason"],
+            "length",
+        )
+
+    def test_riva_finish_reason_length_second_failure_fails_closed(self):
+        translator, calls = self._translator([
+            ('{"BALAO_1":"Truncado', "length"),
+            ('{"BALAO_1":"Ainda truncado', "length"),
+            '{"BALAO_1":"Nao deve ser chamado"}',
         ])
 
         translated = translator.translate_many(["HELLO"], force=True)
 
         self.assertEqual(translated, ["HELLO"])
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(translator.stats["failed_batches"], 1)
-        self.assertEqual(
-            translator.stats["provider_request_telemetry"][0]["finish_reason"],
-            "length",
-        )
+        self.assertEqual(translator.stats["finish_reason_length"], 2)
+        self.assertEqual(translator.stats["format_retry_failure"], 1)
 
     def test_riva_twenty_items_are_split_by_riva_batch_limit(self):
         responses = []

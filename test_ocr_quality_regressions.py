@@ -3,6 +3,7 @@ from offline_test_guard import install_offline_network_guard
 install_offline_network_guard()
 
 import json
+import subprocess
 import sys
 import tempfile
 import types
@@ -1224,6 +1225,14 @@ class OCRQualityRegressionTests(unittest.TestCase):
         )
         if not progress_path.exists():
             self.skipTest("E2E #7 progress artifact not present")
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", str(progress_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if tracked.returncode != 0:
+            self.skipTest("E2E #7 progress artifact is local/untracked, not a controlled fixture")
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         region = None
         for state in progress.get("pages", []):
