@@ -7,10 +7,12 @@ from pathlib import Path
 
 from ocr_balloon import (
     COMMON_ENGLISH_WORDS,
+    PORTUGUESE_MARKERS,
     PROPER_NAME_ONLY_REASON,
     SFX_WORDS,
     _token_is_source_vocabulary,
     detect_proper_name_spans,
+    validate_translation_text,
 )
 from ocr_engine import COMMON_ENGLISH_WORDS as OCR_ENGLISH_WORDS
 from output_manifest import sanitize_source_url
@@ -63,6 +65,24 @@ _LEXICAL_HINT_KEYS = {
     "ABOUT", "CRAP", "HELP", "HOLY", "LOOKS", "LUCKY", "MONSTER", "MONSTERS",
     "QUIT", "REASON", "SERIOUSLY", "SOMEONE", "STOP", "THAT", "THING",
     "THINGS", "UNFORTUNATE",
+}
+_DIALOGUE_MEMORY_ENGLISH_RESIDUAL_WORDS = {
+    "BECAUSE",
+    "BEING",
+    "DUNGEON",
+    "EVERY",
+    "EVERYONE",
+    "FEEL",
+    "GOING",
+    "HUNTER",
+    "INTO",
+    "KILLED",
+    "LIKE",
+    "MONSTER",
+    "QUIT",
+    "THING",
+    "TIME",
+    "TRYING",
 }
 _CONTRACTION_RE = re.compile(r"[A-Z]+(?:'[A-Z]+)+$")
 
@@ -180,6 +200,59 @@ def _entry_map(entries, key="text"):
         if value:
             result[value.upper()] = dict(entry)
     return result
+
+
+def _translation_memory_entry_is_usable(entry):
+    if not isinstance(entry, dict):
+        return False
+    source = str(entry.get("source") or "").strip()
+    translation = str(entry.get("translation") or "").strip()
+    region_type = str(entry.get("region_type") or "unknown")
+    if not source or not translation:
+        return False
+    if _fold(source) == _fold(translation):
+        return False
+    if _translation_memory_target_has_source_language_residual(translation):
+        return False
+    valid, _reason = validate_translation_text(
+        source,
+        translation,
+        region_type,
+        [],
+        required_name_spans=[],
+    )
+    return bool(valid)
+
+
+def _translation_memory_target_has_source_language_residual(translation):
+    tokens = [_normalized_token(token) for token in _word_surfaces(translation)]
+    tokens = [token for token in tokens if token]
+    if not tokens:
+        return False
+    has_target_signal = any(
+        token in PORTUGUESE_MARKERS and token not in {"A", "O", "E"}
+        for token in tokens
+    ) or any(
+        unicodedata.normalize("NFKD", char) != char
+        for char in str(translation or "")
+    )
+    if has_target_signal:
+        return False
+    english_hits = [
+        token
+        for token in tokens
+        if token not in {"A", "I", "O", "E"}
+        and (
+            token in COMMON_ENGLISH_WORDS
+            or token in _DIALOGUE_MEMORY_ENGLISH_RESIDUAL_WORDS
+            or token.lower() in OCR_ENGLISH_WORDS
+        )
+    ]
+    if len(english_hits) >= 2:
+        return True
+    if len(tokens) >= 4 and english_hits:
+        return True
+    return False
 
 
 def _is_known_english_word(token):
@@ -459,9 +532,11 @@ class SessionContextStore:
             "proper_names": names,
             "possible_characters": possible_characters,
             "recurring_terms": recurring_terms,
-            "translations_used": list(
-                compatible_data.get("translations_used") or []
-            )[-250:],
+            "translations_used": [
+                item
+                for item in (compatible_data.get("translations_used") or [])
+                if _translation_memory_entry_is_usable(item)
+            ][-250:],
             # Carried forward untouched: a terminology decision outlives the
             # dialogue window and every re-preparation of the chapter.
             "term_bindings": dict(compatible_data.get("term_bindings") or {}),
@@ -967,7 +1042,7 @@ class SessionContextStore:
             previous = {
                 str(item.get("source") or "").strip(): dict(item)
                 for item in self.data.get("translations_used", [])
-                if isinstance(item, dict) and str(item.get("source") or "").strip()
+                if _translation_memory_entry_is_usable(item)
             }
             for group in groups:
                 source = str(getattr(group, "text", "") or "").strip()
@@ -976,13 +1051,14 @@ class SessionContextStore:
                 # even for a region that never produced a translation.
                 self._learn_characters_from_group(group)
                 self._learn_from_group(group)
-                if not source or not translation or source.casefold() == translation.casefold():
-                    continue
-                previous[source] = {
+                entry = {
                     "source": source,
                     "translation": translation,
                     "region_type": str(getattr(group, "classification", "unknown")),
                 }
+                if not _translation_memory_entry_is_usable(entry):
+                    continue
+                previous[source] = entry
             self.data["translations_used"] = list(previous.values())[-250:]
             self.data["updated_at"] = _utc_now()
             self.save()

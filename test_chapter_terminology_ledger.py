@@ -189,6 +189,76 @@ class RollingDialogueStaysBoundedTests(unittest.TestCase):
             self.assertLessEqual(len(store.data.get("term_bindings") or {}), 120)
 
 
+class DialogueMemoryQualityGateTests(unittest.TestCase):
+    """TDD #18: stale source-language memory must not poison provider prompts."""
+
+    def test_dialogue_memory_rejects_source_language_residual_translations(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations(
+                [
+                    _group(
+                        "I'M GOING TO QUIT BEING A HUNTER.",
+                        "I'M GOING TO QUIT BEING A HUNTER.",
+                    ),
+                    _group(
+                        "EVERYTIMEIGO INTOADUNGEON TRYINGTOGETRID OF THIS THING...",
+                        "EVERY TIME I GO INTO A DUNGEON TRYING TO GET RID OF THIS THING...",
+                    ),
+                    _group(
+                        "PLEASE WAIT HERE.",
+                        "POR FAVOR, ESPERE AQUI.",
+                    ),
+                ]
+            )
+
+            fragment = store.prompt_fragment()
+
+            self.assertIn("POR FAVOR, ESPERE AQUI", fragment)
+            self.assertNotIn("=> I'M GOING TO QUIT BEING A HUNTER.", fragment)
+            self.assertNotIn("=> EVERY TIME I GO INTO A DUNGEON", fragment)
+
+    def test_prepare_drops_legacy_bad_translation_memory_for_same_chapter(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session_context.json"
+            canonical_chapter_url = _store(folder).chapter_url
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": "chapter-session-v2",
+                        "chapter_url": canonical_chapter_url,
+                        "translations_used": [
+                            {
+                                "source": "I'M GOING TO QUIT BEING A HUNTER.",
+                                "translation": "I'M GOING TO QUIT BEING A HUNTER.",
+                                "region_type": "speech",
+                            },
+                            {
+                                "source": "EVERYTIMEIGO...",
+                                "translation": "EVERY TIME I GO INTO A DUNGEON...",
+                                "region_type": "speech",
+                            },
+                            {
+                                "source": "PLEASE WAIT HERE.",
+                                "translation": "POR FAVOR, ESPERE AQUI.",
+                                "region_type": "speech",
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            store = _store(folder)
+
+            store.prepare([_group("I'M GOING TO QUIT BEING A HUNTER.")])
+
+            translations = store.data["translations_used"]
+            self.assertEqual(len(translations), 1)
+            self.assertEqual(translations[0]["translation"], "POR FAVOR, ESPERE AQUI.")
+
+
 class ProperNameContextTests(unittest.TestCase):
     """RED 2 / GREEN 3 / GREEN 4: names become real data in the real payload."""
 

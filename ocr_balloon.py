@@ -369,6 +369,10 @@ class TextGroup:
     translation_retry_count: int = 0
     translation_validation_reason: str = ""
     rejected_translation: str = ""
+    raw_provider_candidate: str = ""
+    raw_provider_candidate_class: str = ""
+    retry_candidate: str = ""
+    retry_candidate_class: str = ""
     translation_candidate: str = ""
     translation_final_state: str = ""
     translation_final_reason: str = ""
@@ -1069,6 +1073,12 @@ def apply_group_translations(groups, translations):
             raw_translation.get("translation", "") if isinstance(raw_translation, dict)
             else raw_translation
         )
+        group.raw_provider_candidate = translated
+        group.raw_provider_candidate_class = _candidate_forensic_class(
+            group.text,
+            translated,
+            group.classification,
+        )
         if not translated:
             group.translation_candidate = ""
             _finalize_translation_failure(
@@ -1149,6 +1159,39 @@ def _translation_echoes_source(group):
     if not normalized_source:
         return False
     return _normalized_translation_text(translation) == normalized_source
+
+
+def _candidate_forensic_class(source, candidate, classification=""):
+    candidate = clean_ocr_text(candidate)
+    if not candidate:
+        return "EMPTY"
+    if _normalized_translation_text(candidate) == _normalized_translation_text(source):
+        return "SOURCE_EQUAL"
+    if str(classification or "").casefold() == "sfx":
+        return "ENTITY/SFX/PRESERVED"
+    valid, reason = validate_translation_text(
+        source,
+        candidate,
+        classification,
+        [],
+        required_name_spans=[],
+    )
+    if valid:
+        return "PTBR_CLEAN"
+    reason = str(reason or "")
+    if reason.startswith(("mixed_language", "multilingual_partial")):
+        return "PARTIAL_ENGLISH"
+    if reason.startswith(
+        (
+            "residual_english",
+            "residual_inflected_english",
+            "untranslated_english",
+            "untranslated_single_english",
+            "english_phrase",
+        )
+    ):
+        return "FULL_ENGLISH_OTHER"
+    return "OTHER"
 
 
 def _terminal_translation_failure_reason(group, validation_reason, candidate):
@@ -5934,6 +5977,12 @@ def validate_and_retry_translations(
                     else f"strict_retry_error:{type(exc).__name__}"
                 )
             candidate = _match_source_case(group.text, clean_ocr_text(candidate))
+            group.retry_candidate = candidate
+            group.retry_candidate_class = _candidate_forensic_class(
+                group.text,
+                candidate,
+                group.classification,
+            )
             if candidate:
                 latest_candidate = candidate
                 group.translation_candidate = candidate
@@ -8773,6 +8822,10 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "translation_retry_count": group.translation_retry_count,
                 "translation_validation_reason": group.translation_validation_reason,
                 "rejected_translation": group.rejected_translation,
+                "raw_provider_candidate": group.raw_provider_candidate,
+                "raw_provider_candidate_class": group.raw_provider_candidate_class,
+                "retry_candidate": group.retry_candidate,
+                "retry_candidate_class": group.retry_candidate_class,
                 "translation_candidate": group.translation_candidate,
                 "translation_final_state": group.translation_final_state,
                 "translation_final_reason": group.translation_final_reason,

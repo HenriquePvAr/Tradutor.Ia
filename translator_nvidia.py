@@ -22,7 +22,7 @@ from provider_transport import (
 
 
 PROMPT_VERSION = "nvidia-manga-v4-json-qa-naturalization-signal"
-RIVA_PROMPT_VERSION = "nvidia-riva-translate-v2-json-framing-translation-only"
+RIVA_PROMPT_VERSION = "nvidia-riva-translate-v3-json-framing-ptbr-anti-echo"
 TRANSLATION_CACHE_SCHEMA_VERSION = 3
 _RIVA_ENGLISH_SIGNAL_TOKENS = {
     "A", "AN", "AND", "ARE", "BE", "BEING", "BUT", "CAN", "DID", "DIDN", "DO",
@@ -652,7 +652,7 @@ class TranslatorNvidiaBatch:
         hint = self._riva_strict_hint(validation_reason)
         parsed = self._request_json_with_retry(
             [
-                {"role": "system", "content": self._riva_language_pair()},
+                {"role": "system", "content": self._riva_system_prompt()},
                 {
                     "role": "user",
                     "content": (
@@ -822,7 +822,7 @@ class TranslatorNvidiaBatch:
         }
         parsed = self._request_json_with_retry(
             [
-                {"role": "system", "content": self._riva_language_pair()},
+                {"role": "system", "content": self._riva_system_prompt()},
                 {
                     "role": "user",
                     "content": (
@@ -898,7 +898,7 @@ class TranslatorNvidiaBatch:
             try:
                 recovered = self._request_json_with_retry(
                     [
-                        {"role": "system", "content": self._riva_language_pair()},
+                        {"role": "system", "content": self._riva_system_prompt()},
                         {
                             "role": "user",
                             "content": (
@@ -1000,7 +1000,7 @@ class TranslatorNvidiaBatch:
                 [
                     {
                         "role": "system",
-                        "content": self._riva_language_pair(),
+                        "content": self._riva_system_prompt(),
                     },
                     {
                         "role": "user",
@@ -1552,6 +1552,18 @@ class TranslatorNvidiaBatch:
         source = "en" if str(self.source_language).casefold() in {"ingles", "english", "en"} else str(self.source_language)
         target = "pt-BR" if self.target_language.casefold() in {"pt-br", "pt_br", "portugues", "português"} else self.target_language
         return f"{source}-{target}"
+
+    def _riva_system_prompt(self):
+        pair = self._riva_language_pair()
+        return (
+            f"{pair}\n"
+            "You are a professional comic/manhwa dialogue translator. Translate "
+            "English source text into natural Brazilian Portuguese. Never echo "
+            "ordinary English dialogue or narration unchanged. Preserve only "
+            "proper names, ranks/codes, and true SFX/onomatopoeia when they are "
+            "not meant to be translated. Return translations only through the "
+            "requested JSON contract."
+        )
 
     def _riva_context_prompt(self):
         fragments = []

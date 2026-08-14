@@ -2590,6 +2590,41 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertTrue(all(group.selective_retry_calls <= 1 for group in groups))
         self.assertTrue(all(group.translation_final_state == "manual_review" for group in groups))
 
+    def test_raw_provider_candidate_is_recorded_before_quality_failure_fallback(self):
+        group = _scored_group("I'M GOING TO QUIT BEING A HUNTER.")
+        apply_group_translations([group], ["I'M GOING TO QUIT BEING A HUNTER."])
+
+        class RetryTranslator:
+            def translate_strict(self, *args, **kwargs):
+                return "I'M GOING TO QUIT BEING A HUNTER."
+
+        validate_and_retry_translations([group], RetryTranslator())
+        payload = _debug_payload("", group.lines, [], [group])
+        item = payload["items"][0]
+
+        self.assertEqual(
+            item["raw_provider_candidate"],
+            "I'M GOING TO QUIT BEING A HUNTER.",
+        )
+        self.assertEqual(item["raw_provider_candidate_class"], "SOURCE_EQUAL")
+        self.assertEqual(item["retry_candidate"], "I'M GOING TO QUIT BEING A HUNTER.")
+        self.assertEqual(item["retry_candidate_class"], "SOURCE_EQUAL")
+        self.assertEqual(item["translation_final_state"], "manual_review")
+        self.assertTrue(item["source_fallback_prevented"])
+
+    def test_clean_ptbr_candidate_survives_quality_and_is_not_marked_mixed(self):
+        group = _scored_group("I'M GOING TO QUIT BEING A HUNTER.")
+        apply_group_translations([group], ["VOU PARAR DE SER CAÇADOR."])
+        validate_and_retry_translations([group], object())
+        payload = _debug_payload("", group.lines, [], [group])
+        item = payload["items"][0]
+
+        self.assertEqual(item["raw_provider_candidate"], "VOU PARAR DE SER CAÇADOR.")
+        self.assertEqual(item["raw_provider_candidate_class"], "PTBR_CLEAN")
+        self.assertEqual(item["translation_candidate"], "VOU PARAR DE SER CAÇADOR.")
+        self.assertEqual(item["translation_final_state"], "translated")
+        self.assertFalse(item["manual_review_required"])
+
     def test_isolated_retry_is_the_single_retry_decision_not_a_second_call(self):
         group = _scored_group("SHUT IT, Will YoU?")
         apply_group_translations([group], ["Cala a boca, Will!"])

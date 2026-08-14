@@ -114,7 +114,11 @@ class RivaProviderTests(unittest.TestCase):
 
         self.assertEqual([str(item) for item in translated], ["Olá!", "Tchau!"])
         self.assertEqual(calls[0]["model"], "nvidia/riva-translate-4b-instruct-v2")
-        self.assertEqual(calls[0]["messages"][0], {"role": "system", "content": "en-pt-BR"})
+        self.assertTrue(calls[0]["messages"][0]["content"].startswith("en-pt-BR\n"))
+        self.assertIn(
+            "Never echo ordinary English dialogue or narration unchanged",
+            calls[0]["messages"][0]["content"],
+        )
         user_prompt = calls[0]["messages"][1]["content"]
         self.assertIn('"BALAO_1":"HELLO!"', user_prompt)
         self.assertIn('"BALAO_2":"BYE!"', user_prompt)
@@ -139,6 +143,14 @@ class RivaProviderTests(unittest.TestCase):
             "riva_translation_only",
         )
         self.assertNotIn("ptbr_naturalization_needed", result.quality_evidence)
+
+    def test_riva_prompt_version_changes_for_anti_echo_contract(self):
+        translator, _calls = self._translator(['{"BALAO_1":"Olá!"}'])
+
+        self.assertEqual(
+            translator._prompt_version(),
+            "nvidia-riva-translate-v3-json-framing-ptbr-anti-echo",
+        )
 
     def test_riva_strict_retry_uses_single_source_payload_without_rejected_metadata(self):
         translator, calls = self._translator(['{"BALAO_1":"Obrigado!"}'])
