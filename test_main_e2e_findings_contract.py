@@ -126,7 +126,11 @@ class MainE2eUiFindingContracts(unittest.TestCase):
         self.assertIn("result_metrics = self._current_job_result_metrics(job)", bridge)
 
     def test_translation_provider_is_explicit_in_start_payload_and_job_command(self):
-        self.assertIn("translation_provider: String(appState.settings?.translation_provider", self.js)
+        # The payload now carries the operator's explicit form choice; the runtime default
+        # is only the fallback when no provider was ever selected.
+        self.assertIn("translation_provider: form.translationProvider", self.js)
+        self.assertIn(
+            "normalizeTranslationProvider(appState.settings?.translation_provider)", self.js)
         bridge = read("ui_bridge.py")
         helpers = read("ui_helpers.py")
         self.assertIn('"translation_provider": translation_provider', bridge)

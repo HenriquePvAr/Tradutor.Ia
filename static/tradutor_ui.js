@@ -38,6 +38,7 @@
     selectedSourceType: 'url',
     nameDirty: false,
     outputDirty: false,
+    providerDirty: false,
     programmingFields: false,
     activeStage: 'prepare',
     polling: false,
@@ -876,6 +877,12 @@
   }
   $$('.source-type-card').forEach(card => card.addEventListener('click', () => setSourceType(card.dataset.sourceType)));
   setSourceType(appState.selectedSourceType);
+  // Only the two providers the runner accepts are representable in form state; anything
+  // else (tampered <option>, stale stored value) collapses to '' and never reaches a job.
+  function normalizeTranslationProvider(value) {
+    const provider = String(value == null ? '' : value).trim().toLowerCase();
+    return provider === 'riva' || provider === 'nemotron' ? provider : '';
+  }
   function syncSourceFormState() {
     const previous = {...appState.sourceForm};
     const next = {
@@ -883,6 +890,8 @@
       localFolder: $('#localFolderInput')?.value?.trim() || '',
       chapterName: $('#nameInput')?.value?.trim() || '',
       outputSlug: slugify($('#outputInput')?.value || ''),
+      translationProvider: normalizeTranslationProvider($('#providerSelect')?.value)
+        || normalizeTranslationProvider(previous.translationProvider),
     };
     appState.sourceForm = next;
     return {
@@ -933,6 +942,22 @@
     try { event.target.setSelectionRange(start, start); } catch (_) { /* unsupported */ }
     updateTranslationStartControls();
   });
+
+  // Provider is execution configuration, not source identity: switching it must never
+  // invalidate an already validated source or trigger another source analysis.
+  $('#providerSelect')?.addEventListener('change', () => {
+    appState.providerDirty = true;
+    syncSourceFormState();
+    updateTranslationStartControls();
+  });
+  function applyProviderDefault(value) {
+    const select = $('#providerSelect');
+    const provider = normalizeTranslationProvider(value);
+    // Bootstrap refreshes repeatedly; an explicit operator choice outranks the runtime default.
+    if (!select || !provider || appState.providerDirty) return;
+    select.value = provider;
+    syncSourceFormState();
+  }
 
   /* ---------- form ---------- */
   $$('.choice-card').forEach(card => card.addEventListener('click', () => {
@@ -1004,7 +1029,9 @@
       use_context: $('#ctxToggle').checked,
       open_output: $('#openToggle').checked,
       create_source_profile: !local && $('#sourceProfileToggle').checked,
-      translation_provider: String(appState.settings?.translation_provider || 'nemotron').toLowerCase(),
+      translation_provider: form.translationProvider
+        || normalizeTranslationProvider(appState.settings?.translation_provider)
+        || 'nemotron',
       pipeline_intent: {
         requested: true,
         mode: appState.selectedMode === 'download_only' ? 'download_only' : appState.selectedMode,
@@ -6100,6 +6127,7 @@
     $('#settingParallelFriendly').textContent = trueValue(settings.ocr_parallel) ? 'Ativo' : 'Automático';
     $('#settingContextFriendly').textContent = 'Ativo';
     $('#settingTranslationMode').textContent = settings.translation_mode || '—';
+    applyProviderDefault(settings.translation_provider);
     $('#settingApiKey').textContent = apiReady ? 'configurada' : 'não configurada';
     $('#settingApiKey').className = `kv-val ${apiReady ? 'ok' : 'warn'}`;
     $('#settingModel').textContent = settings.translation_model || '—';
