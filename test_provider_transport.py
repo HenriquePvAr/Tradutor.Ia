@@ -1,9 +1,13 @@
 import _test_bootstrap  # noqa: F401
 import json
+import socket
+import ssl
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+
+import httpx
 
 import natural_ptbr_refinement as refinement
 from provider_transport import (
@@ -210,6 +214,87 @@ class TransportIntegrationTests(unittest.TestCase):
             ProviderTransportError, "provider_retry_exhausted"
         ):
             translator._request_with_retry([])
+
+    def telemetry_for_failure(self, exc):
+        translator, _clock, _seen = self.translator([exc])
+        translator.transport_retry_limit = 1
+        with self.assertRaises(ProviderTransportError):
+            translator._request_with_retry([])
+        return translator.stats["provider_request_telemetry"][0]
+
+    def test_transport_telemetry_captures_dns_root_safely(self):
+        entry = self.telemetry_for_failure(socket.gaierror(11001, "lookup failed"))
+
+        self.assertIn("socket.gaierror", entry["transport_root_exception_class"])
+        self.assertEqual(entry["transport_phase"], "DNS")
+        self.assertEqual(entry["transport_safe_host"], "integrate.api.nvidia.com")
+        self.assertNotIn("Authorization", json.dumps(entry))
+        self.assertNotIn("fake", json.dumps(entry))
+
+    def test_transport_telemetry_captures_connect_failure_safely(self):
+        entry = self.telemetry_for_failure(ConnectionRefusedError(10061, "refused"))
+
+        self.assertIn("ConnectionRefusedError", entry["transport_root_exception_class"])
+        self.assertEqual(entry["transport_errno"], 10061)
+        self.assertEqual(entry["transport_phase"], "TCP_CONNECT")
+        self.assertEqual(entry["retry_reason"], "provider_connection_error")
+
+    def test_transport_telemetry_captures_tls_failure_safely(self):
+        entry = self.telemetry_for_failure(ssl.SSLError("certificate verify failed"))
+
+        self.assertIn("ssl.SSLError", entry["transport_root_exception_class"])
+        self.assertEqual(entry["transport_phase"], "TLS")
+
+    def test_transport_telemetry_captures_connection_reset_safely(self):
+        entry = self.telemetry_for_failure(ConnectionResetError(10054, "reset"))
+
+        self.assertIn("ConnectionResetError", entry["transport_root_exception_class"])
+        self.assertEqual(entry["transport_errno"], 10054)
+        self.assertEqual(entry["transport_phase"], "CONNECTION_RESET")
+
+    def test_transport_telemetry_keeps_read_timeout_distinct(self):
+        entry = self.telemetry_for_failure(httpx.ReadTimeout("read timeout"))
+
+        self.assertIn("ReadTimeout", entry["transport_exception_class"])
+        self.assertEqual(entry["transport_phase"], "READ")
+        self.assertEqual(entry["retry_reason"], "provider_read_timeout")
+
+    def test_http_statuses_do_not_become_connection_failures(self):
+        for status, expected in (
+            (401, "provider_client_error"),
+            (403, "provider_client_error"),
+            (429, "provider_rate_limited"),
+            (500, "provider_server_error"),
+            (502, "provider_server_error"),
+            (503, "provider_server_error"),
+        ):
+            with self.subTest(status=status):
+                error = RuntimeError(f"http {status}")
+                error.status_code = status
+                entry = self.telemetry_for_failure(error)
+                self.assertEqual(entry["retry_reason"], expected)
+                self.assertNotEqual(entry["retry_reason"], "provider_connection_error")
+
+    def test_failed_attempts_capture_breaker_counter_transition(self):
+        translator, _clock, _seen = self.translator([
+            ConnectionError("x"), ConnectionError("x"), ConnectionError("x")])
+        translator.transport_retry_limit = 3
+
+        with self.assertRaisesRegex(
+            ProviderTransportError, "provider_retry_exhausted"
+        ):
+            translator._request_with_retry([])
+
+        telemetry = translator.stats["provider_request_telemetry"]
+        self.assertEqual(
+            [entry["breaker_failures_before"] for entry in telemetry],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            [entry["breaker_failures_after"] for entry in telemetry],
+            [1, 2, 3],
+        )
+        self.assertEqual(telemetry[-1]["breaker_state_transition"], "closed->open")
 
     def test_backoff_cannot_cross_total_deadline(self):
         translator, clock, _seen = self.translator([ConnectionError("x")])

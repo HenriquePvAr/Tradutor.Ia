@@ -1,6 +1,8 @@
 import json
 import math
 import re
+import socket
+import ssl
 import threading
 import time
 import unicodedata
@@ -8,6 +10,7 @@ from dataclasses import dataclass
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
 import config
 import semantic_fidelity
@@ -1376,6 +1379,7 @@ class TranslatorNvidiaBatch:
             credential = None
             request_id = ""
             request_started = self._clock()
+            breaker_before = self.circuit_breaker.snapshot()
             effective_max_tokens = (
                 int(max_tokens)
                 if max_tokens is not None
@@ -1459,9 +1463,19 @@ class TranslatorNvidiaBatch:
                 status = self._status_code_from_exception(exc)
                 reason = self._transport_reason(exc, status)
                 self.stats["last_transport_reason"] = reason
+                diagnostics = self._transport_exception_diagnostics(exc, reason)
                 if credential is not None:
                     self.credential_pool.release_failure(credential, reason)
                     self._refresh_pool_stats()
+                if reason == "provider_rate_limited":
+                    self._increment_stat("provider_rate_limited_count")
+                elif reason in {"provider_connect_timeout", "provider_read_timeout", "provider_total_deadline_exceeded"}:
+                    self._increment_stat("provider_timeout_count")
+                else:
+                    self._increment_stat("provider_error_count")
+                self.circuit_breaker.record_failure(reason)
+                breaker_after = self.circuit_breaker.snapshot()
+                if credential is not None:
                     self._record_request_telemetry(
                         request_id=locals().get("request_id", self._next_request_id()),
                         logical_batch_id=logical_batch_id,
@@ -1487,14 +1501,10 @@ class TranslatorNvidiaBatch:
                         mapping_success=False,
                         retry_scheduled=False,
                         retry_reason=reason,
+                        transport_diagnostics=diagnostics,
+                        breaker_before=breaker_before,
+                        breaker_after=breaker_after,
                     )
-                if reason == "provider_rate_limited":
-                    self._increment_stat("provider_rate_limited_count")
-                elif reason in {"provider_connect_timeout", "provider_read_timeout", "provider_total_deadline_exceeded"}:
-                    self._increment_stat("provider_timeout_count")
-                else:
-                    self._increment_stat("provider_error_count")
-                self.circuit_breaker.record_failure(reason)
                 retryable = (
                     status in retry_statuses
                     or reason in {
@@ -1569,6 +1579,74 @@ class TranslatorNvidiaBatch:
         if status and 400 <= status < 500:
             return "provider_client_error"
         return "provider_unavailable"
+
+    def _transport_exception_diagnostics(self, exc, reason):
+        chain = self._safe_exception_chain(exc)
+        root = chain[-1] if chain else {}
+        return {
+            "exception_class": chain[0]["class"] if chain else type(exc).__name__,
+            "root_exception_class": root.get("class", ""),
+            "errno": next(
+                (item.get("errno") for item in reversed(chain)
+                 if item.get("errno") is not None),
+                None,
+            ),
+            "transport_phase": self._transport_phase_from_exception(exc, reason, chain),
+            "safe_host": urlparse(str(self.base_url or "")).hostname or "",
+        }
+
+    @classmethod
+    def _safe_exception_chain(cls, exc):
+        chain = []
+        seen = set()
+        current = exc
+        while current is not None and id(current) not in seen and len(chain) < 8:
+            seen.add(id(current))
+            errno = getattr(current, "errno", None)
+            if errno is None:
+                for arg in getattr(current, "args", ()) or ():
+                    if isinstance(arg, OSError):
+                        errno = getattr(arg, "errno", None)
+                        break
+            chain.append({
+                "class": f"{type(current).__module__}.{type(current).__name__}",
+                "errno": errno,
+            })
+            current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        return chain
+
+    @classmethod
+    def _transport_phase_from_exception(cls, exc, reason, chain=None):
+        classes = " ".join(item.get("class", "") for item in (chain or cls._safe_exception_chain(exc)))
+        lowered = classes.casefold()
+        if isinstance(exc, ProviderTransportError):
+            if reason in {"provider_connect_timeout", "provider_connection_error"}:
+                return "UNKNOWN"
+            if reason in {"provider_read_timeout", "provider_total_deadline_exceeded"}:
+                return "TIMEOUT"
+            return "UNKNOWN"
+        if any("gaierror" in item.get("class", "").casefold() for item in (chain or [])):
+            return "DNS"
+        if isinstance(exc, ssl.SSLError) or "ssl" in lowered:
+            return "TLS"
+        if isinstance(exc, ConnectionResetError) or "connectionreseterror" in lowered:
+            return "CONNECTION_RESET"
+        if isinstance(exc, ConnectionRefusedError) or "connectionrefusederror" in lowered:
+            return "TCP_CONNECT"
+        name = type(exc).__name__.casefold()
+        if "connecttimeout" in lowered or "connecttimeout" in name:
+            return "TCP_CONNECT"
+        if "connecterror" in lowered or "connecterror" in name:
+            return "TCP_CONNECT"
+        if "readtimeout" in lowered or "readtimeout" in name:
+            return "READ"
+        if "writetimeout" in lowered or "writeerror" in lowered or "write" in name:
+            return "WRITE"
+        if isinstance(exc, TimeoutError) or "timeout" in lowered or "timeout" in name:
+            return "TIMEOUT"
+        if isinstance(exc, socket.gaierror):
+            return "DNS"
+        return "UNKNOWN"
 
     @staticmethod
     def _retry_after_seconds(exc):
@@ -2157,6 +2235,9 @@ class TranslatorNvidiaBatch:
         mapping_success,
         retry_scheduled,
         retry_reason,
+        transport_diagnostics=None,
+        breaker_before=None,
+        breaker_after=None,
     ):
         input_chars = sum(len(str(message.get("content") or "")) for message in (messages or []))
         logical_meta = dict(self._logical_call_metadata.get(logical_batch_id) or {})
@@ -2204,6 +2285,29 @@ class TranslatorNvidiaBatch:
             "retry_scheduled": bool(retry_scheduled),
             "retry_reason": str(retry_reason or ""),
         }
+        diagnostics = dict(transport_diagnostics or {})
+        if diagnostics:
+            entry.update({
+                "transport_exception_class": str(diagnostics.get("exception_class") or ""),
+                "transport_root_exception_class": str(diagnostics.get("root_exception_class") or ""),
+                "transport_errno": diagnostics.get("errno"),
+                "transport_phase": str(diagnostics.get("transport_phase") or "UNKNOWN"),
+                "transport_safe_host": str(diagnostics.get("safe_host") or ""),
+            })
+        if breaker_before:
+            entry["breaker_failures_before"] = int(
+                breaker_before.get("consecutive_failures") or 0)
+            entry["breaker_state_before"] = str(
+                breaker_before.get("state") or "")
+        if breaker_after:
+            entry["breaker_failures_after"] = int(
+                breaker_after.get("consecutive_failures") or 0)
+            entry["breaker_state_after"] = str(
+                breaker_after.get("state") or "")
+            if entry.get("breaker_state_before") != entry.get("breaker_state_after"):
+                entry["breaker_state_transition"] = (
+                    f"{entry.get('breaker_state_before')}->{entry.get('breaker_state_after')}"
+                )
         with self._stats_lock:
             self.stats["provider_http_attempts"] = (
                 int(self.stats.get("provider_http_attempts") or 0) + 1
