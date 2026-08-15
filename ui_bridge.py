@@ -33,8 +33,10 @@ from community_auth import RequestPrincipal, bind_is_loopback, peer_is_loopback
 from job_store import JobStatus, JobStore
 from output_manifest import MANIFEST_FILENAME, load_verified_run_manifest, sanitize_source_url
 from ui_helpers import (
+    DEFAULT_TRANSLATION_PROVIDER,
     OUTPUT_ROOT,
     REPO_ROOT,
+    TRANSLATION_PROVIDERS,
     build_run_command,
     clean_url,
     env_status,
@@ -4036,8 +4038,8 @@ class UiBridge:
         translation_provider = str(translation_provider or "nemotron").strip().lower()
         if translation_provider in {"", "nvidia"}:
             translation_provider = "nemotron"
-        if translation_provider not in {"nemotron", "riva"}:
-            translation_provider = "nemotron"
+        if translation_provider not in TRANSLATION_PROVIDERS:
+            translation_provider = DEFAULT_TRANSLATION_PROVIDER
         model = os.getenv("NVIDIA_TRANSLATION_MODEL") or values.get(
             "NVIDIA_TRANSLATION_MODEL", "nvidia/nemotron-3-super-120b-a12b"
         )
@@ -5915,8 +5917,8 @@ class UiBridge:
         )
         provider = str(raw or "").strip().lower()
         if provider in {"", "nvidia"}:
-            provider = "nemotron"
-        if provider not in {"nemotron", "riva"}:
+            provider = DEFAULT_TRANSLATION_PROVIDER
+        if provider not in TRANSLATION_PROVIDERS:
             raise ValueError("nvidia_translation_provider_invalid")
         return provider
 

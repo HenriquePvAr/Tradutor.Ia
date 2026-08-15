@@ -87,12 +87,27 @@ def get_translator(choice, *, translation_provider=None):
 
     mode = (config.TRANSLATION_MODE or "google").lower()
 
+    from ui_helpers import normalize_translation_provider
+
+    provider = normalize_translation_provider(translation_provider)
+
+    # An explicitly requested provider identifies its own backend, so DeepL is
+    # resolved before TRANSLATION_MODE (which only ever selected between the
+    # local/Google/NVIDIA families).  Nothing here may fall back to another
+    # provider: a DeepL job that cannot reach DeepL fails, it does not become
+    # a Riva job.
+    if provider == "deepl":
+        from translator_deepl import DeepLTranslator
+
+        print(f"Usando DeepL ({config.DEEPL_MODEL_TYPE}) - Origem: {source_language}")
+        # No naturalizer is attached: DeepL's benchmark output needed none, and
+        # bolting an LLM pass onto a ~2s provider path would silently turn it
+        # into a slow multi-provider pipeline.
+        return DeepLTranslator(source_language=source_language), ocr_code
+
     if mode == "nvidia":
         from translator_nvidia import TranslatorNvidiaBatch
 
-        provider = str(translation_provider or "").strip().lower()
-        if provider and provider not in {"nemotron", "riva"}:
-            raise ValueError("nvidia_translation_provider_invalid")
         model = (
             config.NVIDIA_RIVA_TRANSLATION_MODEL
             if provider == "riva"

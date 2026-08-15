@@ -145,6 +145,22 @@ NVIDIA_RIVA_OUTPUT_TOKEN_PER_ITEM_FLOOR = _env_int("NVIDIA_RIVA_OUTPUT_TOKEN_PER
 NVIDIA_RIVA_LOGICAL_REQUEST_ATTEMPT_LIMIT = _env_int("NVIDIA_RIVA_LOGICAL_REQUEST_ATTEMPT_LIMIT", 3)
 NVIDIA_RIVA_FORMAT_RETRY_LIMIT = _env_int("NVIDIA_RIVA_FORMAT_RETRY_LIMIT", 1)
 NVIDIA_RIVA_LOGICAL_BATCH_TIMEOUT_SECONDS = _env_float("NVIDIA_RIVA_LOGICAL_BATCH_TIMEOUT_SECONDS", 60.0)
+# DeepL API settings (selectable provider; deliberately not the default here).
+# The base URL is used verbatim: there is no automatic promotion from the Free
+# host to the paid one, so an exhausted Free quota fails closed instead of
+# silently starting to bill.
+DEEPL_API_KEY = _env_str("DEEPL_API_KEY", "")
+DEEPL_API_BASE_URL = _env_str("DEEPL_API_BASE_URL", "https://api-free.deepl.com")
+DEEPL_MODEL_TYPE = _env_str("DEEPL_MODEL_TYPE", "quality_optimized").strip().lower()
+# DeepL's documented request maximum is 128 KiB; 120 KiB leaves transport
+# headroom, and chunking measures the serialized body rather than counting items.
+DEEPL_MAX_REQUEST_BYTES = _env_int("DEEPL_MAX_REQUEST_BYTES", 120 * 1024)
+DEEPL_CONNECT_TIMEOUT_SECONDS = _env_float("DEEPL_CONNECT_TIMEOUT_SECONDS", 10.0)
+DEEPL_READ_TIMEOUT_SECONDS = _env_float("DEEPL_READ_TIMEOUT_SECONDS", 120.0)
+DEEPL_WRITE_TIMEOUT_SECONDS = _env_float("DEEPL_WRITE_TIMEOUT_SECONDS", 30.0)
+DEEPL_POOL_TIMEOUT_SECONDS = _env_float("DEEPL_POOL_TIMEOUT_SECONDS", 10.0)
+DEEPL_TOTAL_TIMEOUT_SECONDS = _env_float("DEEPL_TOTAL_TIMEOUT_SECONDS", 150.0)
+
 NVIDIA_MAX_REQUESTS_PER_MINUTE = _env_int("NVIDIA_MAX_REQUESTS_PER_MINUTE", 20)
 NVIDIA_CONNECT_TIMEOUT_SECONDS = _env_float("NVIDIA_CONNECT_TIMEOUT_SECONDS", 10.0)
 NVIDIA_READ_TIMEOUT_SECONDS = _env_float("NVIDIA_READ_TIMEOUT_SECONDS", 120.0)

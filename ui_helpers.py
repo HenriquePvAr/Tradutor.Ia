@@ -23,6 +23,28 @@ REPO_ROOT = Path(__file__).resolve().parent
 OUTPUT_ROOT = REPO_ROOT / "output"
 HISTORY_PATH = REPO_ROOT / ".cache" / "ui_history.json"
 
+# The canonical set of selectable translation providers, in one place.  It used
+# to be a `{"nemotron", "riva"}` literal repeated across six modules, which is
+# exactly the shape that lets a new provider be accepted at one boundary and
+# rejected at the next.  `nemotron` stays the runtime default: DeepL is
+# selectable here, not promoted.
+TRANSLATION_PROVIDERS = frozenset({"nemotron", "riva", "deepl"})
+DEFAULT_TRANSLATION_PROVIDER = "nemotron"
+
+
+def normalize_translation_provider(value: object) -> str:
+    """Canonical provider id, or "" when nothing was asked for.
+
+    Raises for a value that was asked for but is not a provider: an unknown
+    provider must never quietly collapse onto the default.
+    """
+    provider = str(value or "").strip().lower()
+    if not provider:
+        return ""
+    if provider not in TRANSLATION_PROVIDERS:
+        raise ValueError("nvidia_translation_provider_invalid")
+    return provider
+
 _TECHNICAL_OUTPUT_MARKERS = {
     "benchmark",
     "cache",
@@ -233,10 +255,8 @@ def build_run_command(
         command.append("--no-context")
     if download_only:
         command.append("--download-only")
-    provider = str(translation_provider or "").strip().lower()
+    provider = normalize_translation_provider(translation_provider)
     if provider:
-        if provider not in {"nemotron", "riva"}:
-            raise ValueError("nvidia_translation_provider_invalid")
         command.extend(["--translation-provider", provider])
     for candidate_id in source_candidate_ids or []:
         value = str(candidate_id or "").strip()

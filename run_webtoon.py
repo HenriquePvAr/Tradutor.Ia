@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from urllib.parse import urlparse
 
 from output_manifest import sanitize_source_url
+from ui_helpers import TRANSLATION_PROVIDERS
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -88,9 +89,9 @@ def build_parser():
     )
     parser.add_argument(
         "--translation-provider",
-        choices=("nemotron", "riva"),
+        choices=tuple(sorted(TRANSLATION_PROVIDERS)),
         help=(
-            "Provider NVIDIA exigido para esta execucao. "
+            "Provider de traducao exigido para esta execucao. "
             "Quando informado, a execucao falha fechada se outro provider for efetivado."
         ),
     )
@@ -153,7 +154,7 @@ def main(argv=None):
     print(f"Cache: {'ignorado' if args.force else 'ativado'}")
     print(f"Contexto: {'desativado' if args.no_context else context_path}")
     if args.translation_provider:
-        print(f"Provider NVIDIA solicitado: {args.translation_provider}")
+        print(f"Provider de traducao solicitado: {args.translation_provider}")
     print(f"Saida: {output_folder}")
 
     report = _run_benchmark(benchmark_args)

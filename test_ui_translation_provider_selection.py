@@ -156,6 +156,19 @@ class ProviderSelectionFormTests(unittest.TestCase):
         self.assertIn(outcome["payload"]["translation_provider"], {"", "nemotron"})
         self.assertNotEqual(outcome["payload"]["translation_provider"], "foo")
 
+    def test_selecting_deepl_puts_the_canonical_id_in_the_start_payload(self):
+        outcome = self._run(selected="deepl", settings_provider="nemotron")
+        self.assertEqual(outcome["payload"]["translation_provider"], "deepl")
+        self.assertEqual(outcome["sourceForm"]["translationProvider"], "deepl")
+
+    def test_deepl_survives_a_resync_and_the_runtime_default(self):
+        outcome = self._run(selected="deepl", settings_provider="nemotron")
+        self.assertEqual(outcome["payloadAfterResync"]["translation_provider"], "deepl")
+
+    def test_the_deepl_display_label_is_never_the_payload_value(self):
+        outcome = self._run(selected="DeepL (Qualidade)", settings_provider="nemotron")
+        self.assertNotIn("DeepL", outcome["payload"]["translation_provider"])
+
     def test_provider_is_not_part_of_the_source_identity(self):
         # `sourceChanged` gates source re-validation; provider is execution config.
         source = UI_SOURCE.read_text(encoding="utf-8")
@@ -176,9 +189,15 @@ class ProviderControlMarkupTests(unittest.TestCase):
         self.assertIn('Motor de tradução', self.form)
         self.assertIn('<select id="providerSelect"', self.form)
 
-    def test_both_providers_are_selectable(self):
+    def test_all_canonical_providers_are_selectable(self):
         self.assertIn('value="riva"', self.form)
         self.assertIn('value="nemotron"', self.form)
+        self.assertIn('value="deepl"', self.form)
+
+    def test_deepl_is_offered_under_its_product_label_but_not_preselected(self):
+        self.assertIn('<option value="deepl">DeepL (Qualidade)</option>', self.form)
+        self.assertIn('<option value="nemotron" selected>', self.form)
+        self.assertNotIn('<option value="deepl" selected', self.form)
 
     def test_control_never_renders_a_credential(self):
         for secret in ("api_key", "API_KEY", "Authorization", "token"):
@@ -227,6 +246,16 @@ class ProviderPropagationTests(unittest.TestCase):
         self.assertEqual(
             configuration["provider_provenance"]["provider_source"], "ui_payload")
 
+    def test_deepl_selection_is_persisted_with_its_provenance(self):
+        with mock.patch.dict(os.environ, {"NVIDIA_TRANSLATION_PROVIDER": "nemotron"}):
+            result = self._start("deepl")
+        configuration = self._configuration(result["job_id"])
+        self.assertEqual(configuration["translation_provider"], "deepl")
+        self.assertEqual(
+            configuration["provider_provenance"]["provider_requested"], "deepl")
+        self.assertEqual(
+            configuration["provider_provenance"]["provider_source"], "ui_payload")
+
     def test_nemotron_selection_is_persisted(self):
         with mock.patch.dict(os.environ, {"NVIDIA_TRANSLATION_PROVIDER": "riva"}):
             result = self._start("nemotron")
@@ -239,7 +268,7 @@ class ProviderPropagationTests(unittest.TestCase):
         self.assertEqual(self.bridge.store.list_jobs(limit=None), [])
 
     def test_run_command_carries_the_selected_provider(self):
-        for provider in ("riva", "nemotron"):
+        for provider in ("riva", "nemotron", "deepl"):
             with self.subTest(provider=provider):
                 command = build_run_command(
                     url=WEBTOON_URL, mode="fast", output="cap", full=True,

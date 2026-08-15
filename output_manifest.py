@@ -172,6 +172,13 @@ def sanitize_provider_provenance(value: Mapping[str, Any] | None) -> dict[str, A
         result["provider_model"] = model
     if source:
         result["provider_source"] = source
+    # Only ever what the provider itself reported.  ``provider_model_type_used``
+    # is the value the API returned, never a copy of what was requested.
+    for key in ("provider_family", "provider_model_type_requested",
+                "provider_model_type_used"):
+        extra = _safe_source_code(value.get(key), maximum=40)
+        if extra:
+            result[key] = extra
     result["provider_fallback_used"] = value.get("provider_fallback_used") is True
     if fallback_reason:
         result["provider_fallback_reason"] = fallback_reason

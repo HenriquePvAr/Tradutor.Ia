@@ -878,11 +878,13 @@
   }
   $$('.source-type-card').forEach(card => card.addEventListener('click', () => setSourceType(card.dataset.sourceType)));
   setSourceType(appState.selectedSourceType);
-  // Only the two providers the runner accepts are representable in form state; anything
-  // else (tampered <option>, stale stored value) collapses to '' and never reaches a job.
+  // Only the providers the runner accepts are representable in form state; anything else
+  // (tampered <option>, stale stored value) collapses to '' and never reaches a job.
+  // Canonical ids only — the "DeepL (Qualidade)" label never crosses into a payload.
+  // The list is inline because the contract tests extract this function on its own.
   function normalizeTranslationProvider(value) {
     const provider = String(value == null ? '' : value).trim().toLowerCase();
-    return provider === 'riva' || provider === 'nemotron' ? provider : '';
+    return ['riva', 'nemotron', 'deepl'].includes(provider) ? provider : '';
   }
   function syncSourceFormState() {
     const previous = {...appState.sourceForm};

@@ -68,6 +68,22 @@ class CommandRebuildProviderTests(unittest.TestCase):
 
         self.assertEqual(command_translation_provider(command), "nemotron")
 
+    def test_deepl_survives_the_source_analysis_rebuild(self):
+        # TDD #27: a newly selectable provider must inherit the same guarantee,
+        # not re-open the historical "explicit choice lost at rebuild" failure.
+        command = source_analysis_phase.command_with_source_selection(
+            _job("deepl"), {"candidate_ids": ["page-a", "page-b"]})
+
+        self.assertEqual(command_translation_provider(command), "deepl")
+        self.assertEqual(command.count("--source-candidate-id"), 2)
+
+    def test_explicit_deepl_beats_a_nemotron_runtime_default(self):
+        with mock.patch.dict(os.environ, {"NVIDIA_TRANSLATION_PROVIDER": "nemotron"}):
+            command = source_analysis_phase.command_with_source_selection(
+                _job("deepl"), {"candidate_ids": ["page-a"]})
+
+        self.assertEqual(command_translation_provider(command), "deepl")
+
     def test_explicit_riva_beats_a_nemotron_runtime_default(self):
         with mock.patch.dict(os.environ, {"NVIDIA_TRANSLATION_PROVIDER": "nemotron"}):
             command = source_analysis_phase.command_with_source_selection(
@@ -99,6 +115,12 @@ class ProviderInvariantTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "provider_mismatch"):
             assert_command_provider(command, _config("riva"))
+
+    def test_a_deepl_request_answered_by_riva_argv_is_refused(self):
+        command = ["py", "run_webtoon.py", READER_URL, "--translation-provider", "riva"]
+
+        with self.assertRaisesRegex(ValueError, "provider_mismatch"):
+            assert_command_provider(command, _config("deepl"))
 
     def test_matching_provider_passes(self):
         command = ["py", "run_webtoon.py", READER_URL, "--translation-provider", "riva"]
@@ -158,6 +180,14 @@ class UiBridgeRebuildTests(unittest.TestCase):
         rebuilt = self.bridge.store.get_job(job["id"])["command"]
         self.assertEqual(command_translation_provider(rebuilt), "riva")
         self.assertIn("page-b", rebuilt)
+
+    def test_manual_confirmation_preserves_deepl(self):
+        job = self._awaiting_review_job("deepl")
+
+        self._confirm(job["id"], ["page-a"])
+
+        rebuilt = self.bridge.store.get_job(job["id"])["command"]
+        self.assertEqual(command_translation_provider(rebuilt), "deepl")
 
     def test_manual_confirmation_preserves_nemotron(self):
         job = self._awaiting_review_job("nemotron")
@@ -245,6 +275,45 @@ class ExecutionGateTests(unittest.TestCase):
                 self._run(job_id)
 
         self.assertEqual(command_translation_provider(spawned[0]), "riva")
+
+    def test_full_path_from_payload_to_spawn_keeps_deepl(self):
+        """TDD #27: payload -> job -> source analysis rebuild -> final spawn argv."""
+        bridge = _Bridge(self.db)
+        self.addCleanup(bridge.store.close)
+        job = bridge._create_job(
+            {"url": READER_URL, "chapter_name": "Reader 1", "slug": "reader_1",
+             "mode": "fast", "full": True, "use_cache": False, "force": True,
+             "use_context": True, "translation_provider": "deepl"},
+            require_environment=False, initial_status=JobStatus.STAGING)
+        self.assertEqual(command_translation_provider(job["command"]), "deepl")
+        bridge.store.transition(job["id"], JobStatus.QUEUED)
+        bridge.store.claim_next_job("worker-1", os.getpid())
+
+        with mock.patch.dict(os.environ, {"NVIDIA_TRANSLATION_PROVIDER": "nemotron"}):
+            result = source_analysis_phase.apply_source_analysis(
+                bridge.store, bridge.store.get_job(job["id"]),
+                _Analysis(["page-a", "page-b"]), environment_ready=lambda: True)
+        self.assertEqual(result.outcome, source_analysis_phase.SOURCE_READY)
+
+        rebuilt = bridge.store.get_job(job["id"])
+        self.assertEqual(command_translation_provider(rebuilt["command"]), "deepl")
+        provenance = rebuilt["configuration"]["provider_provenance"]
+        self.assertEqual(provenance["provider_requested"], "deepl")
+        self.assertEqual(provenance["provider_command_final"], "deepl")
+
+        bridge.store.transition(job["id"], JobStatus.QUEUED)
+        claimed = bridge.store.claim_next_job("worker-1", os.getpid())
+        spawned: list[list[str]] = []
+
+        def capture(command, **_kwargs):
+            spawned.append(list(command))
+            raise RuntimeError("spawn_reached")
+
+        with mock.patch.object(subprocess, "Popen", side_effect=capture):
+            with self.assertRaisesRegex(RuntimeError, "spawn_reached"):
+                self._run(claimed["id"])
+
+        self.assertEqual(command_translation_provider(spawned[0]), "deepl")
 
     def test_full_path_from_payload_to_spawn_keeps_riva(self):
         """RED #19: payload -> job -> source analysis rebuild -> final spawn argv."""

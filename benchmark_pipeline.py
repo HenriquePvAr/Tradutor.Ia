@@ -197,9 +197,9 @@ def _source_manifest_provenance(download_report):
 
 
 def resolve_provider_provenance(translator, requested_provider=""):
-    requested = str(requested_provider or "").strip().lower()
-    if requested and requested not in {"nemotron", "riva"}:
-        raise ValueError("nvidia_translation_provider_invalid")
+    from ui_helpers import normalize_translation_provider
+
+    requested = normalize_translation_provider(requested_provider)
     stats = getattr(translator, "stats", {})
     effective = str(stats.get("provider_name") or "").strip().lower()
     if requested and effective != requested:
@@ -229,7 +229,7 @@ def report_provider_provenance(translator_stats):
     effective = str(
         stats.get("provider_effective") or stats.get("provider_name") or ""
     ).strip().lower()
-    return {
+    provenance = {
         "provider_requested": requested,
         "provider_effective": effective,
         "provider_model": stats.get("model", config.NVIDIA_TRANSLATION_MODEL),
@@ -238,6 +238,17 @@ def report_provider_provenance(translator_stats):
         "provider_fallback_reason": str(stats.get("provider_fallback_reason", "")),
         "provider_mismatch": bool(requested and effective and requested != effective),
     }
+    # Reported only when the provider actually publishes them, so a run can never
+    # invent a model type it never asked for or was never told about.  DeepL is
+    # the first provider to distinguish the two; the fields stay absent for the
+    # NVIDIA family rather than being back-filled from configuration.
+    for key in ("provider_family", "model_type_requested", "model_type_used"):
+        value = str(stats.get(key) or "").strip()
+        if value:
+            provenance[
+                key if key == "provider_family" else f"provider_{key}"
+            ] = value
+    return provenance
 
 
 def _safe_count(value):
@@ -671,9 +682,10 @@ def run_benchmark(args):
             if str(record.get("index", "")).isdigit()
         }
 
-    requested_provider = str(getattr(args, "translation_provider", "") or "").strip().lower()
-    if requested_provider and requested_provider not in {"nemotron", "riva"}:
-        raise ValueError("nvidia_translation_provider_invalid")
+    from ui_helpers import normalize_translation_provider
+
+    requested_provider = normalize_translation_provider(
+        getattr(args, "translation_provider", ""))
     translator, ocr_lang = get_translator(
         "3", translation_provider=requested_provider or None
     )
