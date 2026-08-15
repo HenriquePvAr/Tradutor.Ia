@@ -98,6 +98,12 @@ TRANSLATION_TERMINAL_STATES = frozenset(
 
 PROPER_NAME_ONLY_REASON = "proper_name_only"
 
+# A source the recogniser never read is still a review item, but it is not a
+# translator failure: reporting it as untranslated dialogue overstates how much
+# ordinary text the translator left behind and hides the real defect, which is the
+# read itself. It carries its own reason so the accounting can tell the two apart.
+OCR_UNINTELLIGIBLE_SOURCE_REASON = "ocr_unintelligible_source_after_retries"
+
 # Terminal reasons that record a proven, specific conclusion about a group. A later
 # stage may still preserve the original pixels for such a group, but it must not
 # replace the proven reason with its own generic one: the accounting keys off the
@@ -1049,6 +1055,84 @@ def group_is_untranslatable_name(group, candidate):
     )
 
 
+def _source_entity_tokens(text):
+    return [
+        _name_token_of(match)
+        for match in re.findall(r"[A-Za-z][A-Za-z']*", clean_ocr_text(text))
+    ]
+
+
+def _ocr_unintelligible_source_text(text):
+    """True when the source was never read properly, so there is nothing to translate.
+
+    Only evidence the recogniser itself left behind is used. Comic lettering is
+    uppercase, so a lone token whose case alternates internally is the recogniser
+    stumbling on glyphs rather than a word or a name. A source title fused to the
+    word after it is the recogniser having lost the space, which is why the fused
+    token is neither dialogue nor an entity. Both belong in review, but neither is
+    dialogue the translator failed to translate, and reporting them as such buries
+    the read defect under a translation metric.
+    """
+    tokens = _source_entity_tokens(text)
+    if len(tokens) != 1 or len(tokens[0]) < MIN_STANDALONE_NAME_LENGTH:
+        return False
+    raw = re.findall(r"[A-Za-z][A-Za-z']*", clean_ocr_text(text))[0]
+    if not (raw.isupper() or raw.islower() or raw.istitle()):
+        return True
+    return _looks_like_title_name_ocr_compound(tokens[0])
+
+
+def _chapter_preserved_entity_tokens(groups):
+    """Tokens the chapter itself proves are entities rather than untranslated words.
+
+    A token the translator kept verbatim inside a region it otherwise turned into
+    valid target-language text is the translator reporting that this token has no
+    translation - the same evidence the session ledger records as a name preserved in
+    translation. Casing, length and spelling are never consulted: a token with no
+    such region behind it has no evidence at all and stays unproven, which is how an
+    ordinary source word that merely looks unusual keeps failing closed.
+    """
+    tokens = set()
+    for group in groups:
+        candidate = clean_ocr_text(getattr(group, "translation", "") or "")
+        if not candidate or _translation_echoes_source(group):
+            continue
+        valid, _ = validate_translation_text(
+            group.text,
+            candidate,
+            group.classification,
+            _group_validation_allowed_proper_names(group),
+            required_name_spans=group_proper_name_spans(group),
+        )
+        if not valid:
+            continue
+        source_tokens = set(_source_entity_tokens(group.text))
+        for token in _source_entity_tokens(candidate):
+            if token in source_tokens and not _token_is_source_vocabulary(token):
+                tokens.add(token)
+    return tokens
+
+
+def _group_is_proven_entity_echo(group, candidate, entity_tokens):
+    """True when every word kept from the source is a token the chapter proved.
+
+    Punctuation and formatting carry no language, so they are ignored, but a single
+    unproven word is enough to hold the group: a name beside ordinary source text is
+    still ordinary source text left untranslated.
+    """
+    if not entity_tokens:
+        return False
+    candidate = clean_ocr_text(candidate)
+    if _normalized_translation_text(candidate) != _normalized_translation_text(
+        group.text
+    ):
+        return False
+    if _ocr_unintelligible_source_text(group.text):
+        return False
+    tokens = _source_entity_tokens(group.text)
+    return bool(tokens) and all(token in entity_tokens for token in tokens)
+
+
 def _group_validation_allowed_proper_names(group):
     names = list(group.detected_proper_names or [])
     names.extend(group_proper_name_spans(group))
@@ -1201,6 +1285,8 @@ def _terminal_translation_failure_reason(group, validation_reason, candidate):
     if _normalized_translation_text(candidate_text) == _normalized_translation_text(
         group.text
     ):
+        if _ocr_unintelligible_source_text(group.text):
+            return OCR_UNINTELLIGIBLE_SOURCE_REASON
         return "untranslated_source_after_retries"
     if str(validation_reason or "").startswith(
         (
@@ -1223,15 +1309,19 @@ def _terminal_translation_failure_reason(group, validation_reason, candidate):
     return "invalid_translation_after_retries"
 
 
-def _finalize_proper_name_only(group, candidate):
+def _finalize_proper_name_only(group, candidate, *, proven=False):
     """Close a name-only group as correctly preserved instead of untranslated.
 
     A balloon holding just a character's name has no sentence to translate: keeping
     the name verbatim is the right output, not a missing translation. Routed through
     the failure path it produced a candidate equal to the source, a retry storm and a
     manual review, so a whole chapter was held back by a name that was already right.
+
+    ``proven`` means the caller already established every kept word is an entity from
+    chapter evidence, which is a stronger answer than the lone-token shape this asks
+    for; without it the shape still has to hold.
     """
-    if not group_is_untranslatable_name(group, candidate):
+    if not proven and not group_is_untranslatable_name(group, candidate):
         return False
     group.translation = group.text
     group.translation_candidate = group.text
@@ -4932,12 +5022,14 @@ def _residual_source_hyphen_fragment(source_text, translation, allowed_names):
         translated_word,
     } & set(allowed_names or []):
         return ""
-    # A well-formed stutter repeats the initial of its OWN word. When the kept
-    # prefix no longer matches the translated word (e.g. "S-STOP" -> "S-PARA"
-    # instead of "P-PARA"), the stutter letter was carried over from the source
-    # regardless of whether the source word is a known English term.
-    malformed_prefix = not translated_word.startswith(translated_prefix)
-    if source_word not in RESIDUAL_TRANSLATION_ENGLISH_WORDS and not malformed_prefix:
+    # A kept stutter letter is speech disfluency, not language. Once the word after
+    # the hyphen has actually been translated, that letter carries no source-language
+    # meaning, and demanding it be re-derived from the translated word ("G-SAIA"
+    # rejected for not being "S-SAIA") sent correct lines to review over one glyph.
+    # A body that was NOT translated is a real residual, and the English-token checks
+    # below catch it whether or not a stutter precedes it. Only a known source word
+    # surviving the hyphen is reported here.
+    if source_word not in RESIDUAL_TRANSLATION_ENGLISH_WORDS:
         return ""
     return source_prefix
 
@@ -5878,6 +5970,15 @@ def validate_and_retry_translations(
 ):
     retry_records = []
     selective_retry_budget_remaining = _selective_translation_retry_budget(groups)
+    # Scanned once, and only if some region actually hands its source back: a chapter
+    # with nothing to explain never pays for the scan.
+    chapter_entities = {}
+
+    def chapter_entity_tokens():
+        if "tokens" not in chapter_entities:
+            chapter_entities["tokens"] = _chapter_preserved_entity_tokens(groups)
+        return chapter_entities["tokens"]
+
     for group in groups:
         if not group.sent_to_translation:
             continue
@@ -6046,6 +6147,15 @@ def validate_and_retry_translations(
         # out-of-vocabulary token that is not a failure to translate: it is the
         # model reporting there is nothing to translate, which is what a name is.
         if names_were_forbidden and _finalize_proper_name_only(group, latest_candidate):
+            continue
+        # A provider that cannot be instructed never produces the answer above, so the
+        # chapter answers instead: every word kept here may already have been proved a
+        # name by a region the translator turned into valid target text while keeping
+        # that word verbatim. One unproven word and the group is still held.
+        if _group_is_proven_entity_echo(
+            group, latest_candidate, chapter_entity_tokens()
+        ):
+            _finalize_proper_name_only(group, latest_candidate, proven=True)
             continue
         if semantic_fidelity.is_fidelity_reason(reason):
             # Both attempts stayed materially unfaithful. The least bad of two

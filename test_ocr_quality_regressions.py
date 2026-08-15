@@ -1522,21 +1522,17 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(quality_report["totals"]["mixed_language_items"], 1)
         self.assertEqual(aggregate["mixed_language_items"], 1)
 
-    def test_stutter_prefix_must_match_its_own_translated_word(self):
-        # A stutter repeats the translated word's own initial. Keeping the
-        # source word's stutter letter ("S-STOP" -> "S-PARA" instead of
-        # "P-PARA") is a residual source-language artifact. This must not depend
-        # on any specific source word.
-        for source, candidate in (
-            ("S-STOP!!", "S-PARA!!"),
-            ("K-KILL!", "K-MATAR!"),
-        ):
-            with self.subTest(candidate=candidate):
-                valid, reason = validate_translation_text(source, candidate, "speech")
-                self.assertFalse(valid, candidate)
-                self.assertTrue(
-                    reason.startswith("multilingual_partial_translation"), reason
-                )
+    def test_kept_stutter_of_a_known_source_word_is_still_residual(self):
+        # The hyphen fragment is reported only when the word it was taken from is a
+        # known source term, which is evidence the kept letter is a truncated source
+        # word rather than a disfluency over a translated body. A stutter whose body
+        # was translated is speech, not language, and is covered by
+        # test_translation_validator_precision.
+        valid, reason = validate_translation_text("S-STOP!!", "S-PARA!!", "speech")
+        self.assertFalse(valid)
+        self.assertTrue(
+            reason.startswith("multilingual_partial_translation"), reason
+        )
 
     def test_wellformed_translated_stutter_is_accepted(self):
         # The stutter letter re-derived from the translated word is valid, and a

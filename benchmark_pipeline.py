@@ -23,6 +23,7 @@ from classification_profiler import (
 from down import download_images, force_remove
 from json_utils import dumps_json
 from ocr_balloon import (
+    OCR_UNINTELLIGIBLE_SOURCE_REASON,
     PROPER_NAME_ONLY_REASON,
     TRANSLATION_TERMINAL_STATES,
     analyze_image_array,
@@ -2362,6 +2363,7 @@ def _translation_quality_accounting(states):
         "missing_candidate": 0,
         "candidate_equals_source": 0,
         "proper_name_preserved": 0,
+        "ocr_unintelligible_source": 0,
         "invalid_candidate": 0,
         "translation_not_applied": 0,
         "missing_terminal_state": 0,
@@ -2420,6 +2422,11 @@ def _translation_quality_accounting(states):
         proper_name_only = reason == PROPER_NAME_ONLY_REASON
         if proper_name_only:
             result["proper_name_preserved"] += 1
+        # An unread source is held for review like any other defect, but it is a read
+        # failure, not dialogue the translator skipped: counting it as untranslated
+        # source overstates the translator's residual and hides the real defect.
+        if reason == OCR_UNINTELLIGIBLE_SOURCE_REASON:
+            result["ocr_unintelligible_source"] += 1
         if not candidate:
             result["missing_candidate"] += 1
         if (
