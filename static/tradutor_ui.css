@@ -3052,3 +3052,11 @@ html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login
   /* Decoration gives up its height before any content does. */
   .auth-login-shell[data-viewport-height="compact"] .auth-login-watermark{opacity:.5;}
 }
+
+/* ---------- SERVICE HEALTH STATES ---------- */
+/* The connection badges must look different when the local backend has not
+   answered yet, or has stopped answering. A green dot is reserved for a recent
+   successful health probe; see static/service_health.js. */
+#railApiStatus[data-state="connecting"] .dot{background:#c8a24a; box-shadow:0 0 6px rgba(200,162,74,.6); animation:none;}
+.auth-login-status-dot[data-state="connecting"] i{background:#c8a24a; box-shadow:0 0 8px rgba(200,162,74,.6);}
+.auth-login-status-dot[data-state="disconnected"] i{background:var(--vermillion); box-shadow:0 0 8px rgba(214,74,58,.7);}

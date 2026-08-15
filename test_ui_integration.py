@@ -837,5 +837,79 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertNotIn("fonts.gstatic.com", source)
 
 
+class ServiceHealthTruthfulnessTests(unittest.TestCase):
+    """The connection badge must never claim CONNECTED without a live probe.
+
+    Root cause covered: `renderSettings` painted the rail badge
+    "servico conectado" from `settings.nvidia_configured` -- a configuration
+    fact -- once, at bootstrap, and the login badge shipped the same claim as
+    static markup. An already-loaded page therefore stayed green after the
+    local backend died and left port 8080 with no listener.
+    """
+
+    def setUp(self) -> None:
+        self.app_ui = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        self.ui_js = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        self.shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        self.health_js = (ROOT / "static" / "service_health.js").read_text(encoding="utf-8")
+
+    def test_local_health_endpoint_exists_and_is_stateless(self):
+        self.assertIn('@app.get("/api/health")', self.app_ui)
+        body = self.app_ui.split('@app.get("/api/health")', 1)[1].split("@app.get", 1)[0]
+        self.assertIn('return {"status": "ok"}', body)
+        # A liveness probe is not a place to expose anything about the user.
+        for leak in ("principal", "AUTH.", "os.getenv", "BRIDGE", "user_id", "token"):
+            self.assertNotIn(leak, body)
+
+    def test_settings_render_no_longer_claims_connectivity(self):
+        render = self.ui_js.split("function renderSettings(", 1)[1].split("\n  }", 1)[0]
+        code = "\n".join(line for line in render.splitlines()
+                         if not line.lstrip().startswith("//"))
+        self.assertNotIn("railApiStatus", code)
+        self.assertIn("tradutorApiConfigured", code)
+        # Only the health module may write the badge.
+        self.assertEqual(self.ui_js.count("railApiStatus"), 0)
+
+    def test_login_badge_does_not_ship_a_connected_claim(self):
+        badge = [line for line in self.shell.splitlines()
+                 if "auth-login-status-dot" in line and "<i>" in line]
+        self.assertEqual(len(badge), 1)
+        self.assertIn('data-state="connecting"', badge[0])
+        self.assertNotIn("auth.service_connected", badge[0])
+
+    def test_shell_loads_the_health_module(self):
+        self.assertIn("SERVICE_HEALTH_ASSET", self.app_ui)
+        self.assertIn("_asset_url(SERVICE_HEALTH_ASSET)", self.app_ui)
+
+    def test_connected_is_only_reachable_from_a_successful_probe(self):
+        self.assertEqual(self.health_js.count("state = CONNECTED"), 1)
+        healthy_branch = self.health_js.split("if (healthy) {", 1)[1].split("}", 1)[0]
+        self.assertIn("state = CONNECTED", healthy_branch)
+        self.assertIn("STALE_AFTER_MS", self.health_js)
+
+    def test_health_state_machine_contract(self):
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        result = subprocess.run(
+            [node, str(ROOT / "test_service_health.mjs")],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_all_catalogs_carry_the_non_connected_states(self):
+        import re
+
+        for lang in ("pt-BR", "en-US", "es-ES", "fr-FR", "ja-JP", "ko-KR"):
+            with self.subTest(lang=lang):
+                text = (ROOT / "static" / "i18n" / f"{lang}.js").read_text(encoding="utf-8")
+                keys = set(re.findall(r"'([^']+)'\s*:", text))
+                self.assertIn("auth.service_checking", keys)
+                self.assertIn("auth.service_disconnected", keys)
+
+
 if __name__ == "__main__":
     unittest.main()

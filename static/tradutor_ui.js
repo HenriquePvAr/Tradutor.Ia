@@ -6287,8 +6287,13 @@
   function trueValue(value) { return String(value).toLowerCase() === 'true'; }
   function renderSettings(settings) {
     const apiReady = Boolean(settings.nvidia_configured);
-    $('#railApiStatus').innerHTML = `<span class="dot"></span>${apiReady ? 'serviço conectado' : 'configuração necessária'}`;
-    $('#railApiStatus').parentElement?.classList.toggle('is-error', !apiReady);
+    // Configuration is not connectivity. This used to paint the rail badge
+    // "serviço conectado" straight from `nvidia_configured`, once, at bootstrap
+    // -- so the badge stayed green after the local backend was gone. It now only
+    // publishes the configuration fact; static/service_health.js owns the badge
+    // and will not claim CONNECTED without a recent successful health probe.
+    document.documentElement.dataset.tradutorApiConfigured = apiReady ? '1' : '0';
+    window.dispatchEvent(new CustomEvent('tradutor:api-configured-changed'));
     $('#settingServiceFriendly').textContent = apiReady ? 'Conectado' : 'Não configurado';
     $('#settingModeFriendly').textContent = 'Rápido';
     $('#settingReadingFriendly').textContent = settings.paddle_available || settings.rapidocr_available ? 'Disponível' : 'Indisponível';

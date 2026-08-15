@@ -66,6 +66,7 @@ LOADING_VIEW_ASSET = ROOT / "static" / "loading_view.js"
 PIPELINE_HARNESS_ASSET = ROOT / "static" / "pipeline_loading_harness.js"
 PROCESSING_SURFACE_ASSET = ROOT / "static" / "processing_surface.js"
 SOCIAL_COMMUNITY_ASSET = ROOT / "static" / "social_community.js"
+SERVICE_HEALTH_ASSET = ROOT / "static" / "service_health.js"
 I18N_ASSETS = [
     ROOT / "static" / "i18n" / "pt-BR.js",
     ROOT / "static" / "i18n" / "en-US.js",
@@ -455,6 +456,17 @@ async def better_auth_proxy(auth_path: str, request: Request) -> Response:
     if query:
         target = f"{target}?{query}"
     return _proxied_auth_response(target, request, await request.body())
+
+
+@app.get("/api/health")
+def api_health() -> dict[str, str]:
+    """Liveness of this local UI server, for the page's connection indicator.
+
+    Deliberately unauthenticated and stateless: the badge has to work before and
+    after sign-in, and a health probe must never be somewhere user state leaks.
+    """
+
+    return {"status": "ok"}
 
 
 @app.get("/api/ui/bootstrap")
@@ -1929,6 +1941,7 @@ def index() -> None:
     ui.add_body_html(f'<script src="{_asset_url(TRADUTOR_UI_ASSET)}" defer></script>')
     if visual_test_enabled:
         ui.add_body_html(f'<script src="{_asset_url(PIPELINE_HARNESS_ASSET)}" defer></script>')
+    ui.add_body_html(f'<script type="module" src="{_asset_url(SERVICE_HEALTH_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(SOCIAL_COMMUNITY_ASSET)}"></script>')
 
