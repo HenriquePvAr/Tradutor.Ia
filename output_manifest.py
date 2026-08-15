@@ -226,6 +226,36 @@ def sanitize_physical_quality(value: Mapping[str, Any] | None) -> dict[str, Any]
     return result
 
 
+_OCR_LINE_PROVENANCE_INT_FIELDS = (
+    "schema_version",
+    "pages",
+    "raw_lines",
+    "group_members",
+    "traceable_group_members",
+    "render_inputs",
+    "traceable_render_inputs",
+    "events",
+    "artifact_bytes",
+)
+
+
+def sanitize_ocr_line_provenance(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Keep a bounded index of the line-provenance artifact, never its contents.
+
+    The manifest stays readable: the per-line evidence lives in its own artifact
+    and only counts plus the filename are echoed here.
+    """
+
+    if not isinstance(value, Mapping) or "schema_version" not in value:
+        return {}
+    result: dict[str, Any] = {
+        field: max(0, int(value.get(field) or 0))
+        for field in _OCR_LINE_PROVENANCE_INT_FIELDS
+    }
+    result["artifact"] = _safe_source_code(value.get("artifact"), maximum=80)
+    return result
+
+
 def sanitize_source_url(url: str) -> str:
     """Keep an auditable origin and opaque path fingerprint in output metadata.
 
@@ -284,6 +314,7 @@ def build_run_manifest(
     source_provenance: Mapping[str, Any] | None = None,
     provider_provenance: Mapping[str, Any] | None = None,
     quality_validation: Mapping[str, Any] | None = None,
+    ocr_line_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     # The descriptive fields are optional so a manifest written before they
     # existed stays valid; readers fall back to the path when they are absent.
@@ -326,6 +357,9 @@ def build_run_manifest(
     physical_quality = sanitize_physical_quality(quality_validation)
     if physical_quality:
         manifest["physical_quality"] = physical_quality
+    line_provenance = sanitize_ocr_line_provenance(ocr_line_provenance)
+    if line_provenance:
+        manifest["ocr_line_provenance"] = line_provenance
     return manifest
 
 
@@ -390,5 +424,12 @@ def load_verified_run_manifest(output_folder: Path) -> dict[str, Any]:
         if not isinstance(physical_quality, dict):
             return {}
         if physical_quality != sanitize_physical_quality(physical_quality):
+            return {}
+    if "ocr_line_provenance" in payload:
+        # Optional: legacy manifests simply omit it and stay valid.
+        line_provenance = payload.get("ocr_line_provenance")
+        if not isinstance(line_provenance, dict):
+            return {}
+        if line_provenance != sanitize_ocr_line_provenance(line_provenance):
             return {}
     return payload

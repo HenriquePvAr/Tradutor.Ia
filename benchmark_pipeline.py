@@ -38,6 +38,7 @@ from ocr_balloon import (
     render_analyzed_image,
     validate_and_retry_translations,
 )
+import ocr_line_provenance
 from ocr_parallel import detect_ocr_jobs
 from ocr_engine import OCREngine
 from fast_ocr_policy import FastOCRBudget
@@ -457,6 +458,7 @@ def _output_run_manifest(output_folder, report, translator):
         source_provenance=report.get("source_provenance"),
         provider_provenance=report.get("provider_provenance"),
         quality_validation=quality,
+        ocr_line_provenance=report.get("ocr_line_provenance"),
     )
 
 
@@ -472,6 +474,9 @@ def _sha256_and_size(path):
 
 def run_benchmark(args):
     started = time.perf_counter()
+    # Line provenance is collected for the whole run: raw OCR lines, every list
+    # replacement between passes, group membership and the exact renderer input.
+    ocr_line_provenance.activate()
     output_folder = Path(getattr(args, "output_folder", OUTPUT_FOLDER)).resolve()
     pages_folder = output_folder / "pages"
     errors_folder = output_folder / "errors"
@@ -1006,6 +1011,12 @@ def run_benchmark(args):
             state["speech_container_reocr"] = reocr_records
             stage_seconds["ocr_selective_fallback"] += reocr_elapsed
             if any(record.get("accepted") for record in reocr_records):
+                with ocr_line_provenance.page(state["index"]):
+                    ocr_line_provenance.record_replacement(
+                        state.get("raw_lines", []),
+                        reocr_lines,
+                        reason="speech_container_reocr",
+                    )
                 state["raw_lines"] = reocr_lines
                 with profile_step(
                     "pipeline.analyze_after_speech_container_reocr",
@@ -1035,6 +1046,12 @@ def run_benchmark(args):
             recovery_elapsed = time.perf_counter() - recovery_started
             stage_seconds["ocr_selective_fallback"] += recovery_elapsed
             if any(record.get("selection") == "attempt_2" for record in recovery_records):
+                with ocr_line_provenance.page(state["index"]):
+                    ocr_line_provenance.record_replacement(
+                        state.get("raw_lines", []),
+                        recovery_lines,
+                        reason="rapidocr_region_recovery",
+                    )
                 state["raw_lines"] = recovery_lines
                 with profile_step(
                     "pipeline.analyze_after_rapidocr_recovery",
@@ -1069,6 +1086,12 @@ def run_benchmark(args):
                 record for record in selective_records if record.get("fallback_used")
             ]
             if used_records:
+                with ocr_line_provenance.page(state["index"]):
+                    ocr_line_provenance.record_replacement(
+                        state.get("raw_lines", []),
+                        fallback_lines,
+                        reason="selective_ocr_fallback",
+                    )
                 state["raw_lines"] = fallback_lines
                 with profile_step(
                     "pipeline.analyze_after_selective_fallback",
@@ -1150,6 +1173,12 @@ def run_benchmark(args):
             )
             stage_seconds["ocr"] += fallback_elapsed
             stage_seconds["ocr_cpu"] += fallback_elapsed
+            with ocr_line_provenance.page(state["index"]):
+                ocr_line_provenance.record_replacement(
+                    state.get("raw_lines", []),
+                    fallback_lines,
+                    reason="full_page_paddle_fallback",
+                )
             state["raw_lines"] = fallback_lines
             state["ocr_metadata"] = {
                 **state.get("ocr_metadata", {}),
@@ -1801,6 +1830,7 @@ def run_benchmark(args):
             "slowest_pages": classification_profile_summary.get("slowest_pages", [])[:10],
             "slowest_groups": classification_profile_summary.get("slowest_groups", [])[:10],
         },
+        "ocr_line_provenance": ocr_line_provenance.write_artifact(output_folder),
         "structural_fingerprint": structural_fingerprint,
         "gpu_diagnostics": gpu_diagnostics,
         "session_context": {

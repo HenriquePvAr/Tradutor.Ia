@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import config
 import font_fidelity
+import ocr_line_provenance
 import semantic_fidelity
 from classification_profiler import profile_step, record_count, record_group
 from json_utils import dump_json
@@ -515,7 +516,15 @@ def process_image_array(
 
 
 def analyze_image_array(original_bgr, raw_lines, page_index=None):
+    with ocr_line_provenance.page(page_index):
+        return _analyze_image_array(original_bgr, raw_lines, page_index=page_index)
+
+
+def _analyze_image_array(original_bgr, raw_lines, page_index=None):
     original = original_bgr
+    # Snapshot the incoming lines *before* ``_candidate_from_line`` rewrites
+    # ``OCRLine.text`` on these very objects.
+    ocr_line_provenance.record_input_lines(raw_lines, origin="analyze_input")
     with profile_step(
         "analyze.assign_visual_white_regions",
         page_index=page_index,
@@ -529,6 +538,12 @@ def analyze_image_array(original_bgr, raw_lines, page_index=None):
     ):
         candidates = [_candidate_from_line(line, original.shape) for line in raw_lines]
     usable_lines = [candidate.line for candidate in candidates if not candidate.ignored]
+    for candidate in candidates:
+        if candidate.ignored:
+            ocr_line_provenance.record_filtered(
+                candidate.line,
+                candidate.ignore_reason or "ignored",
+            )
     record_count("lines.usable", len(usable_lines), page_index=page_index)
     record_count("lines.ignored", len(candidates) - len(usable_lines), page_index=page_index)
     with profile_step(
@@ -585,6 +600,8 @@ def analyze_image_array(original_bgr, raw_lines, page_index=None):
         items=len(groups),
     ):
         _assign_region_metadata(groups)
+    for group in groups:
+        ocr_line_provenance.record_group(group)
     return candidates, groups
 
 
@@ -1477,6 +1494,31 @@ def render_analyzed_image(
     image_path=None,
     stage_timings=None,
 ):
+    with ocr_line_provenance.page(page_index):
+        return _render_analyzed_image(
+            original_bgr,
+            raw_lines,
+            candidates,
+            groups,
+            font_path=font_path,
+            debug_folder=debug_folder,
+            page_index=page_index,
+            image_path=image_path,
+            stage_timings=stage_timings,
+        )
+
+
+def _render_analyzed_image(
+    original_bgr,
+    raw_lines,
+    candidates,
+    groups,
+    font_path=None,
+    debug_folder=None,
+    page_index=1,
+    image_path=None,
+    stage_timings=None,
+):
     original = original_bgr.copy()
     valid_groups = get_translatable_groups(groups)
     final = original.copy()
@@ -1487,6 +1529,13 @@ def render_analyzed_image(
     redraw_seconds = 0.0
 
     for group in valid_groups:
+        # Boundary immediately before inpainting/redraw consume the group: this is
+        # the exact text/geometry the renderer sees, not a later reconstruction.
+        ocr_line_provenance.record_render_input(
+            group,
+            lines=_cleanup_lines_for_group(group),
+            reason="render_analyzed_image",
+        )
         before_group = final.copy()
         group.visual_attempts = []
         group.manual_review_required = False
@@ -1711,6 +1760,9 @@ def _candidate_from_line(line, image_shape):
             "repair_accepted": bool(assessment["accepted"]),
         }
     if repaired != line.text and assessment["accepted"]:
+        # ``line.text`` is about to be rewritten on the shared object; record the
+        # historical value before it is gone.
+        ocr_line_provenance.record_normalization(line, line.text, repaired, reason=reason)
         line.original_text = line.original_text or line.raw_text or line.text
         line.repaired_text = repaired
         line.repair_reason = ";".join(
