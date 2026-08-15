@@ -219,6 +219,30 @@ OCR_LEXICAL_REFERENCE_WORDS = {
     )
 }
 
+# Ordinary English *dialogue* vocabulary, used only to decide classification and
+# translation routing. Deliberately separate from
+# ``RESIDUAL_TRANSLATION_ENGLISH_WORDS``: a word like "NO" is also Portuguese, so
+# it must never count as untranslated English inside a candidate. Sound effects
+# are excluded so an onomatopoeia never reads as ordinary speech. The extra
+# entries are the high-frequency short words the compact OCR repair lexicon never
+# needed, which is why a lone "NO..." carried no lexical evidence at all.
+ORDINARY_DIALOGUE_WORDS = frozenset(
+    OCR_LEXICAL_REFERENCE_WORDS
+    - {re.sub(r"[^A-Z]", "", word.upper()) for word in SFX_WORDS}
+) | frozenset(
+    {
+        "HELP",
+        "HEY",
+        "NO",
+        "OKAY",
+        "PLEASE",
+        "RUN",
+        "SORRY",
+        "WAIT",
+        "YES",
+    }
+)
+
 ENGLISH_INFLECTION_BASE_WORDS = frozenset(
     re.sub(r"[^A-Z]", "", word.upper())
     for word in (
@@ -2541,7 +2565,10 @@ def _refine_classification_with_background(group):
     compact_graphic = (
         len(words) == 1
         and 1 <= len(compact) <= 10
-        and compact not in COMMON_ENGLISH_WORDS
+        # Shape alone never proves a sound effect: a lone bold "NO..." is drawn
+        # exactly like "ACK!". Only the vocabulary separates them, so ordinary
+        # dialogue words are held back from this branch entirely.
+        and compact not in ORDINARY_DIALOGUE_WORDS
         and (
             white_ratio < 0.25
             or group.background_type == "speed_lines"
@@ -2551,6 +2578,7 @@ def _refine_classification_with_background(group):
     )
     embedded_in_art = colored_sign_or_label or compact_graphic
     if not embedded_in_art:
+        _recover_lexical_dialogue_on_plain_field(group, metrics, words, saturation)
         return
 
     letters_only = compact.isalpha()
@@ -2576,6 +2604,37 @@ def _refine_classification_with_background(group):
             "reason": "short_stylized_text_embedded_in_art",
         }
     _apply_classification_policy(group)
+
+
+def _recover_lexical_dialogue_on_plain_field(group, metrics, words, saturation):
+    """Keep a short, ordinary English line that sits on a plain bright field.
+
+    ``weak_unknown_text`` exists to drop text the region evidence cannot place,
+    and it stays that way for anything whose vocabulary is not ordinary English.
+    But shortness and upper case are not evidence of a sound effect: a lone
+    "NO..." lettered on a blank white panel is speech, and the background here
+    proves it is not art. Two independent signals are required - every word is
+    known dialogue vocabulary, and the surrounding field is plain, unsaturated
+    white - so a stylised effect drawn over a panel is never caught by this.
+    """
+    if not (group.ignored and group.ignore_reason == "weak_unknown_text"):
+        return
+    if group.classification != "unknown" or len(group.lines) > 2:
+        return
+    if group.confidence < 0.78 or saturation >= 25.0:
+        return
+    if float(metrics.get("context_white_pixel_ratio") or 0.0) < 0.9:
+        return
+    if not words or not all(
+        re.sub(r"[^A-Z]", "", _ascii_fold(word).upper()) in ORDINARY_DIALOGUE_WORDS
+        for word in words
+    ):
+        return
+    group.ignored = False
+    group.ignore_reason = ""
+    group.classification = "speech"
+    group.region_type = "speech"
+    group.inside_balloon_like_region = True
 
 
 def _apply_classification_policy(group):
@@ -3064,6 +3123,67 @@ RAPIDOCR_WARNING_ONLY_REASONS = frozenset(
 )
 
 
+# Warnings that describe a *damaged word shape* inside an otherwise readable
+# read: lost spaces, a mangled apostrophe, mixed case, a near-miss word. They
+# say the read is ugly, not that the recogniser invented characters. Anything
+# outside this set (non-ASCII glyphs, digits inside words, consonant walls,
+# improbable characters) is evidence of characters that were never on the page,
+# and keeps its hard block.
+OCR_RECOVERABLE_SUSPICION_REASONS = frozenset(
+    {
+        "improbable_apostrophe_pattern",
+        "mixed_case_ocr_artifact",
+        "short_malformed_case_ocr_artifact",
+        "long_token_without_spaces",
+        "compact_word_segmentation_candidate",
+        "cross_line_lexical_confidence_disagreement",
+        "dictionary_near_miss",
+        "adjacent_repeated_word_near_miss",
+        "generic_ocr_repair_available",
+        "unknown_short_token_in_phrase",
+        "short_improbable_caps_token",
+        "medium_low_confidence",
+    }
+)
+
+
+def _ordinary_dialogue_words(text):
+    """Distinct known English dialogue words in ``text``.
+
+    Apostrophes are split rather than stripped so a contraction that lost its
+    space ("I'VETURNED") still yields the pronoun it starts with.
+    """
+    words = set()
+    for token in re.findall(r"[A-Za-z']+", _ascii_fold(str(text or "")).upper()):
+        for part in token.split("'"):
+            part = re.sub(r"[^A-Z]", "", part)
+            if part in ORDINARY_DIALOGUE_WORDS:
+                words.add(part)
+    return words
+
+
+def ocr_suspicious_but_translatable(group):
+    """True when a suspicious read is still worth handing to the translator.
+
+    Source quality and translation-attempt eligibility are different questions.
+    A balloon whose spaces the recogniser dropped is damaged, but it is still
+    ordinary English the translator can work with, and holding it back leaves
+    untouched source text on the page. The source stays flagged: this only
+    decides routing, never that the candidate can be trusted.
+    """
+    if group.classification not in {"speech", "narration"}:
+        return False
+    reasons = set(group.quality_reasons or [])
+    if not reasons or reasons - OCR_RECOVERABLE_SUSPICION_REASONS:
+        return False
+    text = clean_ocr_text(group.text)
+    if not re.search(r"[.?!…,]", text):
+        return False
+    if _has_embedded_digit_corruption(text):
+        return False
+    return len(_ordinary_dialogue_words(text)) >= 2
+
+
 # A rank, a level or a stat is written with the digits at the edge of the token
 # ("B2", "LEVEL 10", "HP 50"). Digits *inside* a run of letters is not how text
 # is written, it is how a recogniser reports glyphs it could not resolve.
@@ -3263,6 +3383,7 @@ def enforce_rapidocr_quality_gate(groups, page_index=None):
         return []
     blocked = []
     warning_accepted = 0
+    recoverable = 0
     for group in groups:
         decision = rapidocr_region_decision(group)
         if group.ocr_quality_blocked or decision == "accept":
@@ -3273,10 +3394,28 @@ def enforce_rapidocr_quality_gate(groups, page_index=None):
             ):
                 warning_accepted += 1
             continue
+        if ocr_suspicious_but_translatable(group):
+            # The read stays suspicious and keeps every warning it earned; only
+            # the routing changes, so the translator sees text it can actually
+            # work with and the candidate still faces the normal validators.
+            group.quality_evidence = {
+                **(group.quality_evidence or {}),
+                "ocr_source_suspicious": True,
+                "ocr_source_quality_reasons": list(group.quality_reasons or []),
+                "ocr_source_quality_score": float(group.quality_score),
+            }
+            recoverable += 1
+            continue
         group.ocr_quality_blocked = True
         group.ocr_quality_block_reason = ";".join(group.quality_reasons) or "low_quality_score"
         group.manual_review_required = True
         blocked.append(group)
+    if recoverable:
+        record_count(
+            "ocr_suspicious_translation_allowed",
+            recoverable,
+            page_index=page_index,
+        )
     if warning_accepted:
         record_count(
             "ocr_quality_warning_accept",

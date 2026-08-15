@@ -4686,5 +4686,89 @@ class ShortEffectLetteringClassificationTests(unittest.TestCase):
         self.assertEqual(received, ["HELP!"])
 
 
+class ShortDialogueVersusSfxTests(unittest.TestCase):
+    """Length and upper case alone must not decide a sound effect.
+
+    Every fixture is driven by background metrics, not by page or group ids: a
+    plain, unsaturated white field plus ordinary dialogue vocabulary is speech,
+    everything else keeps the classification it had.
+    """
+
+    def _refined(self, text, metrics, confidence=0.95):
+        line = _boxed_line(text, (223, 245, 89, 47), confidence=confidence)
+        group = TextGroup(
+            group_id="T",
+            lines=[line],
+            text=text,
+            classification="unknown",
+            source_engine="rapidocr",
+        )
+        group.background_type = "unknown"
+        group.background_metrics = {
+            "image_width": 800,
+            "image_height": 3093,
+            **metrics,
+        }
+        _apply_classification_policy(group)
+        _refine_classification_with_background(group)
+        return group
+
+    def test_short_ordinary_word_on_a_plain_white_field_is_dialogue(self):
+        for text in ("NO...", "YES!", "WAIT!", "HELP..."):
+            with self.subTest(text=text):
+                group = self._refined(
+                    text,
+                    {
+                        "white_pixel_ratio": 0.8607,
+                        "saturation_mean": 0.0,
+                        "edge_density": 0.0706,
+                        "local_texture_mean": 13.73,
+                        "context_white_pixel_ratio": 1.0,
+                    },
+                )
+                self.assertNotEqual(group.classification, "sfx")
+                self.assertFalse(group.ignored, group.ignore_reason)
+                self.assertTrue(_should_translate_group(group))
+
+    def test_genuine_effect_lettering_stays_preserved(self):
+        cases = [
+            ("AH!", 0.7974, 0.0, 0.0906, 20.457, 1.0),
+            ("ACK!", 0.2989, 21.47, 0.1595, 21.457, 0.0),
+            ("HUFF", 0.6341, 12.142, 0.1937, 31.326, 0.5),
+            ("REACH", 0.201, 46.431, 0.1345, 23.653, 0.0),
+        ]
+        for text, white, saturation, edges, texture, context_white in cases:
+            with self.subTest(text=text):
+                with patch.object(config, "TRANSLATE_SFX", False):
+                    group = self._refined(
+                        text,
+                        {
+                            "white_pixel_ratio": white,
+                            "saturation_mean": saturation,
+                            "edge_density": edges,
+                            "local_texture_mean": texture,
+                            "context_white_pixel_ratio": context_white,
+                        },
+                    )
+                self.assertEqual(group.classification, "sfx")
+                self.assertTrue(group.ignored)
+                self.assertFalse(_should_translate_group(group))
+
+    def test_unknown_vocabulary_on_a_plain_field_is_not_rescued(self):
+        plain_field = {
+            "white_pixel_ratio": 0.9,
+            "saturation_mean": 0.0,
+            "edge_density": 0.0,
+            "local_texture_mean": 0.0,
+            "context_white_pixel_ratio": 1.0,
+        }
+        for text in ("BAM!", "PAEHYEOK...", "iHon", "HUNTERHYEON."):
+            with self.subTest(text=text):
+                group = self._refined(text, plain_field)
+                self.assertTrue(group.ignored)
+                self.assertEqual(group.ignore_reason, "weak_unknown_text")
+                self.assertFalse(_should_translate_group(group))
+
+
 if __name__ == "__main__":
     unittest.main()

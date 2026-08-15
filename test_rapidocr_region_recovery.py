@@ -411,5 +411,81 @@ class TranslationHandoffTests(unittest.TestCase):
         self.assertEqual(targets, [])
 
 
+class SuspiciousButTranslatableTests(unittest.TestCase):
+    """A damaged read of ordinary English is still worth translating.
+
+    Morphology is taken from real OCR shapes (dropped spaces around a
+    contraction, mixed case inside a word), never from a specific page.
+    """
+
+    def _multiline_group(self, parts, classification="narration"):
+        lines = [
+            _line(text, (160, 130 + 40 * index, 240, 34), confidence=confidence)
+            for index, (text, confidence) in enumerate(parts)
+        ]
+        group = TextGroup(
+            group_id="T001",
+            lines=lines,
+            text=" ".join(text for text, _ in parts),
+            classification=classification,
+            inside_balloon_like_region=True,
+            source_engine="rapidocr",
+        )
+        group.quality_score, group.quality_reasons = score_group_ocr_quality(group)
+        return group
+
+    def _gate(self, group):
+        with patch.object(config, "OCR_ENGINE", "rapidocr"), patch.object(
+            config, "RAPIDOCR_REGION_RECOVERY", True
+        ):
+            enforce_rapidocr_quality_gate([group])
+        return group
+
+    def test_compacted_dialogue_reaches_the_translator_with_warnings_kept(self):
+        for parts in (
+            [("I'VETURNED INTOABOSS", 0.99), ("MONSTER.", 0.99)],
+            [("THEY'REDOING THEIR BEST", 0.98), ("TO HOLD THEMONSTERSOFF..", 0.97)],
+            [("I'D LIKE TO TAKE MY TIME", 0.91), ("KillIng you...", 0.90)],
+            [("YOU WOULDN'T GET IT", 0.97), ("UNLESS YOu'VE SEEN...", 0.90)],
+        ):
+            with self.subTest(parts=parts):
+                group = self._gate(self._multiline_group(parts))
+                self.assertTrue(group.quality_reasons, "warning must still be raised")
+                self.assertFalse(group.ocr_quality_blocked)
+                self.assertTrue(_should_translate_group(group))
+                self.assertTrue(
+                    group.quality_evidence.get("ocr_source_suspicious"),
+                    "suspicion evidence must survive the routing decision",
+                )
+                self.assertEqual(
+                    group.quality_evidence["ocr_source_quality_reasons"],
+                    group.quality_reasons,
+                )
+
+    def test_invented_characters_stay_blocked(self):
+        for parts in (
+            [("iK3H DON'T SAY THINGS LIKE THAT!", 0.90)],
+            [("Wh4t d0 y0u m3an, my fr1end?", 0.55)],
+            [("### %%% ~~~ ...", 0.40)],
+        ):
+            with self.subTest(parts=parts):
+                group = self._gate(self._multiline_group(parts, "speech"))
+                self.assertTrue(group.ocr_quality_blocked)
+                self.assertTrue(group.manual_review_required)
+                self.assertFalse(_should_translate_group(group))
+
+    def test_single_unknown_token_is_never_recoverable_dialogue(self):
+        for text in ("iHon", "...HUNTERHYEON.", "PAEHYEOK...", "Xqzt..."):
+            with self.subTest(text=text):
+                group = self._multiline_group([(text, 0.76)], "speech")
+                group.quality_reasons = ["mixed_case_ocr_artifact"]
+                self.assertFalse(ocr_balloon.ocr_suspicious_but_translatable(group))
+
+    def test_sfx_classification_is_never_rescued_by_this_route(self):
+        group = self._multiline_group([("THUD, THUD.", 0.95)], "sfx")
+        group.quality_reasons = ["mixed_case_ocr_artifact"]
+        self.assertFalse(ocr_balloon.ocr_suspicious_but_translatable(group))
+
+
 if __name__ == "__main__":
     unittest.main()
