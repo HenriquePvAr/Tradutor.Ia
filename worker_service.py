@@ -97,12 +97,17 @@ class Worker:
         log_dir = Path(getattr(
             self, "log_dir", Path(self.store.db_path).parent / "logs"))
         path = log_dir / f"{job_id}.log"
-        path.parent.mkdir(parents=True, exist_ok=True)
         line = f"{time.strftime('%H:%M:%S')} [{safe_stage}]"
         if safe_message:
             line += f" {safe_message[:500]}"
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError:
+            # An unwritable log location is a diagnostics problem, never a reason to
+            # crash the worker loop out from under a job it still owns.
+            return
         self.store.update_fields(job_id, log_path=str(path))
 
     # Runner script per job type. Only translation is the default; more handlers register
@@ -332,10 +337,35 @@ class Worker:
                 )
             self.store.transition(
                 job_id, JobStatus.FAILED, reason_code=code, stage="source_analysis",
-                error_type="source_analysis", error_message=str(code))
+                error_type="source_analysis", error_message=str(code),
+                **self._record_failure_diagnostic(job_id, exc, code))
         except Exception:  # noqa: BLE001 - a concurrent owner already settled it
             pass
 
+    def _record_failure_diagnostic(
+            self, job_id: str, exc: BaseException, code: str) -> dict[str, str]:
+        """Persist the exception evidence and return the job field pointing at it.
+
+        The worker's stdout/stderr are DEVNULL in production; without this the exception
+        class, its chain and its origin are lost and only the coded reason survives.
+        Recording evidence must never itself fail a job differently, so every error here
+        degrades to "no diagnostic".
+        """
+        from job_failure_diagnostic import build_failure_diagnostic, write_failure_diagnostic
+
+        try:
+            row = self.store.get_job(job_id) or {}
+            payload = build_failure_diagnostic(
+                exc, job_id=job_id, run_id=str(row.get("run_id") or ""),
+                reason_code=code, worker_pid=self.pid)
+            path = write_failure_diagnostic(
+                Path(self.log_dir) / f"{job_id}.failure.json", payload)
+            self._append_job_log(
+                job_id, "source_analysis",
+                f"{code} {payload['exception_class']}: {payload['safe_message']}")
+            return {"error_trace_path": str(path)}
+        except Exception:  # noqa: BLE001 - evidence is best effort, the failure is not
+            return {}
 
     def _run_one(self, job: dict) -> None:
         # A URL job whose source has not been analysed yet is analysed here, in the worker,

@@ -72,9 +72,15 @@ _CHAPTER_OUTPUT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Two-group patterns keep their label and mask only the value; one-group patterns are
+# replaced whole.
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(NVIDIA_API_KEY\s*[=:]\s*)([^\s'\"]+)"),
     re.compile(r"(?i)(Authorization\s*:\s*Bearer\s+)([^\s,;]+)"),
+    re.compile(
+        r"(?i)((?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|"
+        r"password|passwd|pwd)\s*[=:]\s*)([^\s'\";,&]+)"),
+    re.compile(r"(?i)((?:set-)?cookie\s*:\s*)(\S.*)"),
     re.compile(r"\b(nvapi-[A-Za-z0-9_-]{12,})\b"),
     re.compile(r"\b(sk-[A-Za-z0-9_-]{12,})\b"),
 )
@@ -320,11 +326,11 @@ def record_command_provider(configuration: object, command: list[str], field: st
 
 def mask_secrets(text: str) -> str:
     masked = str(text or "")
-    for index, pattern in enumerate(_SECRET_PATTERNS):
-        if index < 2:
-            masked = pattern.sub(r"\1[SEGREDO MASCARADO]", masked)
-        else:
-            masked = pattern.sub("[SEGREDO MASCARADO]", masked)
+    for pattern in _SECRET_PATTERNS:
+        replacement = (
+            r"\1[SEGREDO MASCARADO]" if pattern.groups == 2 else "[SEGREDO MASCARADO]"
+        )
+        masked = pattern.sub(replacement, masked)
     return masked
 
 
