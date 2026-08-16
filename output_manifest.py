@@ -223,6 +223,41 @@ def sanitize_physical_quality(value: Mapping[str, Any] | None) -> dict[str, Any]
         else []
     )
     result["physical_gate_passed"] = bool(source.get("physical_gate_passed"))
+    completeness = sanitize_source_completeness(source.get("source_completeness"))
+    if completeness:
+        # Optional block: a run recorded before the source-completeness contract
+        # omits it and stays schema-valid, rather than reporting zero checked
+        # groups as if the evidence had been looked at.
+        result["source_completeness"] = completeness
+    return result
+
+
+_SOURCE_COMPLETENESS_INT_FIELDS = (
+    "checked",
+    "pass",
+    "review",
+    "fail",
+    "unavailable",
+)
+
+
+def sanitize_source_completeness(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the group source-completeness summary, or nothing at all."""
+
+    if not isinstance(value, Mapping) or "checked" not in value:
+        return {}
+    result: dict[str, Any] = {
+        field: max(0, int(value.get(field) or 0))
+        for field in _SOURCE_COMPLETENESS_INT_FIELDS
+    }
+    group_ids = value.get("group_ids")
+    result["group_ids"] = (
+        [str(item) for item in group_ids[:200]] if isinstance(group_ids, list) else []
+    )
+    tokens = value.get("missing_tokens")
+    result["missing_tokens"] = (
+        [str(item) for item in tokens[:50]] if isinstance(tokens, list) else []
+    )
     return result
 
 

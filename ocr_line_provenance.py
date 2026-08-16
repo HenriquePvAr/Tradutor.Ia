@@ -224,6 +224,16 @@ def _current():
     return None if recorder is None else recorder._current
 
 
+def current_page():
+    """The page being recorded, or ``None`` outside a recorded page.
+
+    Exposed so a consumer can read the evidence while it is still being
+    collected; it is still observation only, nothing here writes back.
+    """
+
+    return _current()
+
+
 def record_event(operation, *, line_id="", parent_ids=(), before=None, after=None, reason="", group_id=""):
     current = _current()
     if current is None:

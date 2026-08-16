@@ -1532,6 +1532,8 @@ def run_benchmark(args):
         "physical_source_residual_group_ids"
     ]
     quality["physical_gate_passed"] = physical_accounting["physical_gate_passed"]
+    if physical_accounting.get("source_completeness"):
+        quality["source_completeness"] = physical_accounting["source_completeness"]
     quality["passed"] = bool(
         quality.get("passed")
         and translation_accounting["quality_passed"]
@@ -2518,7 +2520,18 @@ def _physical_residual_accounting(states):
         "physical_source_residual_group_ids": [],
         "physical_gate_passed": False,
     }
+    # Nested and optional: a manifest written before this contract simply omits
+    # the block and stays schema-valid instead of gaining fabricated zeros.
+    completeness_counts = {
+        "checked": 0,
+        "pass": 0,
+        "review": 0,
+        "fail": 0,
+        "unavailable": 0,
+    }
     residual_ids = []
+    completeness_ids = []
+    missing_tokens = set()
     for state in states:
         page = int(state.get("index") or 0)
         for item in state.get("debug_data", {}).get("items", []):
@@ -2534,6 +2547,25 @@ def _physical_residual_accounting(states):
             redrawn = bool(item.get("redrawn"))
             preserved = bool(item.get("preserved_original"))
             review = bool(item.get("manual_review_required"))
+
+            # Source completeness is a separate guard from the render outcome: a
+            # group whose owned source content went missing upstream cannot be a
+            # fully passing physical region even when the render itself succeeded.
+            completeness = str(item.get("source_completeness_status") or "")
+            if completeness in completeness_counts:
+                completeness_counts["checked"] += 1
+                completeness_counts[completeness] += 1
+            if completeness in {"fail", "review"}:
+                completeness_ids.append(region_id)
+                missing_tokens.update(
+                    (item.get("source_completeness") or {}).get(
+                        "unexplained_missing_tokens"
+                    )
+                    or []
+                )
+                result["physical_regions_review_source_retained"] += 1
+                residual_ids.append(region_id)
+                continue
 
             if final_state == "translated" and translated and valid and redrawn:
                 result["physical_regions_translated"] += 1
@@ -2558,6 +2590,12 @@ def _physical_residual_accounting(states):
 
     result["physical_source_residual_count"] = len(residual_ids)
     result["physical_source_residual_group_ids"] = residual_ids[:200]
+    if completeness_counts["checked"]:
+        result["source_completeness"] = {
+            **completeness_counts,
+            "group_ids": completeness_ids[:200],
+            "missing_tokens": sorted(missing_tokens)[:50],
+        }
     result["physical_gate_passed"] = (
         result["physical_regions_expected"]
         == result["physical_regions_translated"] + result["physical_regions_preserved"]
@@ -2617,6 +2655,7 @@ def _build_quality_report(report, states, translation_retry_records):
             "physical_source_residual_group_ids"
         ],
         "physical_gate_passed": physical_accounting["physical_gate_passed"],
+        "source_completeness": physical_accounting.get("source_completeness", {}),
         "speech_container_reocr": summarize_speech_container_reocr(
             [
                 record

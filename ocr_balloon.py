@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 import config
 import font_fidelity
 import ocr_line_provenance
+import source_completeness
 import semantic_fidelity
 from classification_profiler import profile_step, record_count, record_group
 from json_utils import dump_json
@@ -419,6 +420,7 @@ class TextGroup:
     translation_box: tuple | None = None
     allowed_modification_box: tuple | None = None
     visual_validation: dict = field(default_factory=dict)
+    source_completeness: dict = field(default_factory=dict)
     visual_attempts: list[dict] = field(default_factory=list)
     mask_metrics: dict = field(default_factory=dict)
     manual_review_required: bool = False
@@ -1531,11 +1533,25 @@ def _render_analyzed_image(
     for group in valid_groups:
         # Boundary immediately before inpainting/redraw consume the group: this is
         # the exact text/geometry the renderer sees, not a later reconstruction.
+        render_lines = _cleanup_lines_for_group(group)
         ocr_line_provenance.record_render_input(
             group,
-            lines=_cleanup_lines_for_group(group),
+            lines=render_lines,
             reason="render_analyzed_image",
         )
+        # Pre-render guard: source content the group owns must still be present in
+        # what the renderer was handed.  Detection only - the text is never
+        # rewritten and the provider is never called again, because the provider
+        # never received the lost token in the first place.
+        group.source_completeness = source_completeness.check_live_group(
+            group,
+            render_lines=render_lines,
+        )
+        if group.source_completeness.get("status") in {
+            source_completeness.STATUS_FAIL,
+            source_completeness.STATUS_REVIEW,
+        }:
+            group.manual_review_required = True
         before_group = final.copy()
         group.visual_attempts = []
         group.manual_review_required = False
@@ -8399,15 +8415,41 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
             _ascii_fold(group.translation or "").upper(),
         )
     )
+    # ``group.text`` is the representation that may already have lost part of the
+    # source, so it cannot be the only expectation: a token dropped upstream would
+    # be excused precisely because it went missing.  The immutable OCR provenance
+    # the group owns is the source of truth; the group text only adds to it.
+    provenance_tokens, completeness = source_completeness.expected_physical_tokens(
+        group
+    )
+    # Unreadable source held for manual review is not ordinary English residual and
+    # must keep its own taxonomy, so it never enters the expectation here.
+    if group.translation_final_reason == OCR_UNINTELLIGIBLE_SOURCE_REASON:
+        provenance_tokens = set(_ascii_folded_tokens(group.text))
+    excluded_preserved = sorted(
+        token
+        for token in provenance_tokens
+        if token in preserved_names or token in SFX_WORDS
+    )
     source_tokens = {
         token
-        for token in re.findall(r"[A-Z']+", _ascii_fold(group.text).upper())
+        for token in provenance_tokens
         if len(token) >= 3
         and token not in preserved_names
         and token not in SFX_WORDS
         and token not in intended_translation_tokens
     }
-    x, y, w, h = group.safe_area or group.draw_box or group.box
+    # The source geometry the provenance recorded can extend past a region that was
+    # itself truncated.  Searching only the truncated region is how source pixels
+    # stayed invisible to this pass; the union stays group-owned, so a neighbouring
+    # balloon never widens it.
+    region = source_completeness.union_box(
+        [
+            group.safe_area or group.draw_box or group.box,
+            completeness.get("source_bbox"),
+        ]
+    ) or tuple(group.safe_area or group.draw_box or group.box)
+    x, y, w, h = region
     pad = min(8, config.MAX_MASK_EXPANSION + 2)
     x1 = max(0, int(x) - pad)
     y1 = max(0, int(y) - pad)
@@ -8541,6 +8583,18 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
             forgiven_ocr_noise if rendered_matches_expected else []
         ),
         "target_text_found": bool(target_text_found),
+        # Why each token was expected: the basis, the exact source lines behind it
+        # and the region actually searched.  Without this a residual result cannot
+        # be argued with, only believed.
+        "expected_source_basis": completeness.get(
+            "expected_source_basis", source_completeness.EXPECTED_SOURCE_BASIS
+        ),
+        "source_completeness_status": completeness.get("status", ""),
+        "source_line_ids": completeness.get("source_line_ids", []),
+        "expected_tokens": sorted(source_tokens),
+        "detected_residual_tokens": residual,
+        "excluded_preserved_tokens": excluded_preserved,
+        "searched_region": [int(part) for part in region],
         "page": page_index,
     }
 
@@ -9148,6 +9202,10 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                     list(group.allowed_modification_box)
                     if group.allowed_modification_box
                     else None
+                ),
+                "source_completeness": dict(group.source_completeness),
+                "source_completeness_status": str(
+                    group.source_completeness.get("status", "")
                 ),
                 "visual_validation": group.visual_validation,
                 "visual_attempts": list(group.visual_attempts),
