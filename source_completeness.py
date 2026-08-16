@@ -32,7 +32,7 @@ STATUS_REVIEW = "review"
 STATUS_FAIL = "fail"
 STATUS_UNAVAILABLE = "unavailable"
 
-EXPECTED_SOURCE_BASIS = "ocr_line_provenance"
+EXPECTED_SOURCE_BASIS = "ocr_provenance_ancestry"
 
 # Shorter fragments are dominated by OCR noise and by the articles/particles that
 # normalization legitimately rewrites; the physical validator already uses the
@@ -66,11 +66,17 @@ KNOWN_DISCARD_REASONS = frozenset(
         "sfx_translation_disabled",
         "decorative_text",
         "weak_unknown_text",
+        # reconcile_recovery_lines, when the evidence says the dropped fragment
+        # was recogniser noise rather than text.  Stamped per line, never by the
+        # pass that happened to supersede it.
+        "recovery_noise_removed",
     }
 )
 
-# ``record_replacement`` attributes drops to the pass that superseded them.
-KNOWN_DISCARD_PREFIXES = ("replaced_by_",)
+# ``replaced_by_<pass>`` is deliberately *not* an explanation.  It says another
+# pass took the line's place; it says nothing about whether that pass kept the
+# line's content, and treating it as an excuse is exactly what let a truncating
+# retry validate against the survivor it had just produced.
 
 
 def fold_tokens(text):
@@ -102,10 +108,7 @@ def meaningful_tokens(text):
 
 
 def discard_is_explained(reason):
-    reason = str(reason or "")
-    return bool(reason) and (
-        reason in KNOWN_DISCARD_REASONS or reason.startswith(KNOWN_DISCARD_PREFIXES)
-    )
+    return str(reason or "") in KNOWN_DISCARD_REASONS
 
 
 def _snapshot_text(snapshot):
@@ -180,9 +183,18 @@ def resolve_source_lines(member_snapshots, raw_lines):
 
     resolved = []
     seen_ids = set()
+
+    def _emit(snapshot):
+        line_id = str(snapshot.get("line_id") or "")
+        if line_id and line_id in seen_ids:
+            return
+        seen_ids.add(line_id)
+        resolved.append(snapshot)
+
     for snapshot in member_snapshots or []:
-        current = snapshot
+        current = raw_by_id.get(str(snapshot.get("line_id") or ""), snapshot)
         visited = {str(current.get("line_id") or "")}
+        chain = [current]
         while True:
             parents = [
                 str(parent)
@@ -193,12 +205,14 @@ def resolve_source_lines(member_snapshots, raw_lines):
                 break
             visited.add(parents[0])
             current = raw_by_id[parents[0]]
-        current = raw_by_id.get(str(current.get("line_id") or ""), current)
-        line_id = str(current.get("line_id") or "")
-        if line_id and line_id in seen_ids:
-            continue
-        seen_ids.add(line_id)
-        resolved.append(current)
+            chain.append(current)
+        # The closure, not just its root: a middle generation can carry evidence
+        # neither the root nor the survivor still holds.  The leaf is only kept
+        # when it is the whole chain, so a truncated derivative never stands in
+        # as the source of truth for the line it descends from.
+        _emit(chain[-1])
+        for ancestor in chain[1:-1]:
+            _emit(ancestor)
     return resolved
 
 
@@ -328,6 +342,37 @@ def _page_discards(page):
     return discards
 
 
+# A group's membership is snapshotted again after every pass that rewrites the
+# line list, so the events remember which lines the group held *before* a retry
+# superseded them - the ownership the surviving members alone cannot express.
+_MEMBERSHIP_OPERATIONS = ("group_member", "group_geometry", "render_input")
+
+
+def group_ancestry_snapshots(page, group_id, member_lines=()):
+    """Every source line one group ever owned, resolved to immutable snapshots.
+
+    Scoped to the group on purpose: page-wide raw OCR would make a neighbouring
+    balloon's text an expected residual for the wrong region.
+    """
+
+    raw_by_id = {
+        str(snapshot.get("line_id") or ""): snapshot
+        for snapshot in page.get("raw_lines") or []
+    }
+    owned = list(member_lines or [])
+    group_id = str(group_id or "")
+    for event in page.get("events") or []:
+        if event.get("operation") not in _MEMBERSHIP_OPERATIONS:
+            continue
+        if str(event.get("group_id") or "") != group_id:
+            continue
+        for line_id in event.get("parent_ids") or []:
+            snapshot = raw_by_id.get(str(line_id))
+            if snapshot is not None:
+                owned.append(snapshot)
+    return resolve_source_lines(owned, page.get("raw_lines"))
+
+
 def check_page(page):
     """Run the contract over every group of one recorded page."""
 
@@ -340,7 +385,9 @@ def check_page(page):
     results = []
     for group in page.get("groups") or []:
         group_id = str(group.get("group_id") or "")
-        source_lines = resolve_source_lines(group.get("member_lines"), raw_lines)
+        source_lines = group_ancestry_snapshots(
+            page, group_id, group.get("member_lines")
+        )
         render = render_by_group.get(group_id) or {}
         downstream_text = " ".join(
             part
@@ -467,7 +514,9 @@ def check_live_group(group, render_lines=None, render_bbox=None):
     ]
     boxes = [getattr(group, "box", None), getattr(group, "draw_box", None), render_bbox]
     return check(
-        resolve_source_lines(members, page.get("raw_lines")),
+        group_ancestry_snapshots(
+            page, str(getattr(group, "group_id", "") or ""), members
+        ),
         group_id=str(getattr(group, "group_id", "") or ""),
         downstream_text=str(getattr(group, "text", "") or ""),
         downstream_lines=render_snapshots or members,

@@ -3318,6 +3318,162 @@ def _rapidocr_attempt_record(attempt, strategy, text, score, reasons):
     }
 
 
+# What a region re-read is allowed to do to the lines it was derived from.
+RECOVERY_REPLACE = "replace"
+RECOVERY_RECONCILE = "reconcile"
+RECOVERY_REJECT = "reject"
+
+
+def _compact_index(text):
+    """``(compact letters, index in text of each letter)``.
+
+    Shares its notion of a letter with :func:`source_completeness.compact`, so a
+    fragment located here is the same fragment the completeness contract will
+    later hold the pipeline accountable for.
+    """
+
+    letters = []
+    positions = []
+    for index, char in enumerate(str(text or "")):
+        folded = "".join(
+            part
+            for part in unicodedata.normalize("NFKD", char)
+            if not unicodedata.combining(part)
+        ).upper()
+        if len(folded) == 1 and re.fullmatch(r"[A-Z']", folded):
+            letters.append(folded)
+            positions.append(index)
+    return "".join(letters), positions
+
+
+def _lines_over_box(box, lines):
+    """Candidate lines that re-read the same strip of the page, left to right."""
+
+    x, y, width, height = box
+    hits = []
+    for line in lines:
+        lx, ly, lwidth, lheight = line.box
+        vertical = min(y + height, ly + lheight) - max(y, ly)
+        horizontal = min(x + width, lx + lwidth) - max(x, lx)
+        if vertical >= 0.5 * min(height, lheight) and horizontal > 0:
+            hits.append(line)
+    return sorted(hits, key=lambda line: line.box[0])
+
+
+def _credible_fragment(text):
+    """True when a dropped fragment is text rather than recogniser debris."""
+
+    return bool(source_completeness.meaningful_tokens(text)) and not _looks_like_noise(
+        text
+    )
+
+
+def _union_box(left, right):
+    x0 = min(left[0], right[0])
+    y0 = min(left[1], right[1])
+    x1 = max(left[0] + left[2], right[0] + right[2])
+    y1 = max(left[1] + left[3], right[1] + right[3])
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+def _lines_union_box(lines):
+    box = None
+    for line in lines or []:
+        box = line.box if box is None else _union_box(box, line.box)
+    return box
+
+
+def reconcile_recovery_lines(predecessor_lines, candidate_lines):
+    """Decide what a recovery read may do to its predecessor; return the lines.
+
+    Returns ``(decision, lines, reason)`` where ``decision`` is one of
+    :data:`RECOVERY_REPLACE`, :data:`RECOVERY_RECONCILE`, :data:`RECOVERY_REJECT`.
+
+    A second read is allowed to supersede the first, and usually should: it is
+    the same recogniser at the scale it prefers, and it fixes spacing the page
+    scale destroyed.  What it is not allowed to do is take credible lexical
+    content with it.  Confidence does not decide this - a truncated read is
+    confident precisely because it is reading fewer glyphs - so the comparison
+    is over letters and the geometry they came from.
+
+    The predecessor is only re-attached where the overlap is unambiguous: a
+    shared run of letters with the surviving fragment at one end.  Two reads
+    that disagree in the middle are a conflict, and a conflict keeps the older
+    evidence rather than inventing a sentence neither read produced.
+    """
+
+    predecessor_lines = list(predecessor_lines or [])
+    candidate_lines = list(candidate_lines or [])
+    if not candidate_lines:
+        return RECOVERY_REJECT, predecessor_lines, "recovery_no_candidate_lines"
+    if not predecessor_lines:
+        return RECOVERY_REPLACE, candidate_lines, "recovery_no_predecessor"
+
+    candidate_compact = source_completeness.compact(
+        " ".join(line.text for line in candidate_lines)
+    )
+    decision = RECOVERY_REPLACE
+    reasons = []
+    plans = []  # deferred: a later conflict must not leave half a merge behind.
+    noise_dropped = []
+    for predecessor in predecessor_lines:
+        text = predecessor.text or predecessor.raw_text or ""
+        compact_text, positions = _compact_index(text)
+        overlapping = _lines_over_box(predecessor.box, candidate_lines)
+        covered = "".join(
+            source_completeness.compact(line.text) for line in overlapping
+        )
+        if compact_text and compact_text in covered:
+            continue
+        if not [
+            token
+            for token in source_completeness.meaningful_tokens(text)
+            if token not in candidate_compact
+        ]:
+            # Respaced, re-cased, re-punctuated or split across lines: every
+            # token the predecessor owned is still somewhere in the new read.
+            continue
+        if not (covered and covered in compact_text):
+            decision = RECOVERY_REJECT
+            reasons.append("recovery_lexical_conflict")
+            continue
+        start = compact_text.index(covered)
+        end = start + len(covered)
+        head = text[: positions[start]] if start else ""
+        tail = text[positions[end] :] if end < len(positions) else ""
+        head_ok = _credible_fragment(head)
+        tail_ok = _credible_fragment(tail)
+        if not head_ok and not tail_ok:
+            noise_dropped.append(predecessor)
+            reasons.append("recovery_noise_removed")
+            continue
+        if head_ok:
+            plans.append((overlapping[0], head.strip(), "", predecessor.box))
+        if tail_ok:
+            plans.append((overlapping[-1], "", tail.strip(), predecessor.box))
+        if decision != RECOVERY_REJECT:
+            decision = RECOVERY_RECONCILE
+        reasons.append("recovery_reconciled_predecessor_fragment")
+
+    if decision == RECOVERY_REJECT:
+        return RECOVERY_REJECT, predecessor_lines, ";".join(dict.fromkeys(reasons))
+
+    for line, head, tail, box in plans:
+        line.text = " ".join(part for part in (head, line.text, tail) if part).strip()
+        line.raw_text = line.text
+        line.box = _union_box(line.box, box)
+        line.metadata = {
+            **(line.metadata or {}),
+            "recovery_reconciled_from": head or tail,
+        }
+    for line in noise_dropped:
+        line.metadata = {
+            **(line.metadata or {}),
+            "ocr_discard_reason": "recovery_noise_removed",
+        }
+    return decision, candidate_lines, ";".join(dict.fromkeys(reasons)) or "recovery_safe_replace"
+
+
 def apply_rapidocr_region_recovery(
     original_bgr,
     raw_lines,
@@ -3425,12 +3581,42 @@ def apply_rapidocr_region_recovery(
             record_count("rapidocr_recovery.retry_rejected", page_index=page_index)
             continue
 
+        # Clearing the quality bar is not permission to take the predecessor's
+        # content with it: a truncated read scores well precisely because there
+        # is less of it left to score.
+        predecessors = _cleanup_lines_for_group(group)
+        decision, reconciled, decision_reason = reconcile_recovery_lines(
+            predecessors, _cleanup_lines_for_group(candidate)
+        )
+        record["decision"] = decision
+        record["decision_reason"] = decision_reason
+        record["predecessor_text"] = " ".join(line.text for line in predecessors)[:400]
+        record["predecessor_bbox"] = list(_lines_union_box(predecessors) or ())
+        record["reconciled_text"] = " ".join(line.text for line in reconciled)[:400]
+        record["reconciled_bbox"] = list(_lines_union_box(reconciled) or ())
+        if decision == RECOVERY_REJECT:
+            record["reason"] = decision_reason
+            record_count("rapidocr_recovery.retry_rejected", page_index=page_index)
+            record_count(
+                "rapidocr_recovery.prevented_lexical_loss", page_index=page_index
+            )
+            continue
+        if decision == RECOVERY_RECONCILE:
+            record_count("rapidocr_recovery.reconciled", page_index=page_index)
+            record_count(
+                "rapidocr_recovery.prevented_lexical_loss", page_index=page_index
+            )
+            record_count(
+                "rapidocr_recovery.prevented_geometry_loss", page_index=page_index
+            )
+        else:
+            record_count("rapidocr_recovery.safe_replace", page_index=page_index)
         record["selection"] = "attempt_2"
         record["reason"] = "rapidocr_retry_accepted"
         record_count("rapidocr_recovery.retry_selected", page_index=page_index)
-        replaced = {id(line) for line in [*group.lines, *group.cleanup_lines]}
+        replaced = {id(line) for line in predecessors}
         lines = [line for line in lines if id(line) not in replaced]
-        for line in _cleanup_lines_for_group(candidate):
+        for line in reconciled:
             line.metadata = {
                 **(line.metadata or {}),
                 "rapidocr_recovery_used": True,

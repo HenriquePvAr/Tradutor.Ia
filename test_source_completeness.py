@@ -96,7 +96,7 @@ class SilentLossTest(unittest.TestCase):
         self.assertEqual(result["status"], completeness.STATUS_FAIL)
         self.assertIn("CONTROL", result["unexplained_missing_tokens"])
         self.assertIn("LOST", result["represented_tokens"])
-        self.assertEqual(result["expected_source_basis"], "ocr_line_provenance")
+        self.assertEqual(result["expected_source_basis"], "ocr_provenance_ancestry")
 
     def test_explicitly_filtered_line_is_an_explained_removal(self):
         result = completeness.check(
@@ -130,9 +130,156 @@ class SilentLossTest(unittest.TestCase):
     def test_generic_reason_cannot_be_invented_to_satisfy_the_check(self):
         self.assertFalse(completeness.discard_is_explained("ignored_by_validator"))
         self.assertTrue(completeness.discard_is_explained("low_confidence"))
-        self.assertTrue(
+        self.assertFalse(
+            # "something else took this line's place" is not evidence that the
+            # replacement kept the line's content.  It was the blanket excuse
+            # that let a truncating retry validate against its own survivor.
             completeness.discard_is_explained("replaced_by_speech_container_reocr")
         )
+        self.assertTrue(completeness.discard_is_explained("recovery_noise_removed"))
+
+
+def _full7_shaped_page():
+    """One page in the exact provenance shape a truncating retry produces.
+
+    A wide predecessor line is superseded by a narrower re-read of the same
+    region; the final group holds only the survivor.  Nothing in this fixture is
+    specific to the run it was taken from - it is the general shape of any
+    destructive recovery.
+    """
+
+    predecessor = line("THAT I LOSTCONTROL", (260, 2075, 376, 33), line_id="Lpred")
+    neighbour = line("A DIFFERENT BALLOON", (900, 2075, 300, 33), line_id="Lneigh")
+    survivor = line("THAT I LOST", (260, 2075, 212, 32), line_id="Lnew")
+    return {
+        "page": 2,
+        "raw_lines": [predecessor, neighbour, survivor],
+        "events": [
+            {
+                "operation": "group_member",
+                "group_id": "BALAO_3",
+                "parent_ids": ["Lpred"],
+                "after": {"text": "THAT I LOSTCONTROL", "bbox": [260, 2075, 376, 33]},
+            },
+            {
+                "operation": "group_member",
+                "group_id": "BALAO_9",
+                "parent_ids": ["Lneigh"],
+                "after": {"text": "A DIFFERENT BALLOON", "bbox": [900, 2075, 300, 33]},
+            },
+            {
+                "operation": "line_filtered",
+                "line_id": "Lpred",
+                "reason": "replaced_by_rapidocr_region_recovery",
+            },
+            {
+                "operation": "group_geometry",
+                "group_id": "BALAO_3",
+                "parent_ids": ["Lnew"],
+                "before": {"text": "THAT I LOSTCONTROL", "bbox": [260, 2075, 376, 33]},
+                "after": {"text": "THAT I LOST", "bbox": [260, 2075, 212, 32]},
+                "reason": "regrouped",
+            },
+        ],
+        "groups": [
+            {
+                "group_id": "BALAO_3",
+                "member_line_ids": ["Lnew"],
+                "member_lines": [survivor],
+                "text": "THAT I LOST",
+                "bbox": [260, 2075, 212, 32],
+            },
+            {
+                "group_id": "BALAO_9",
+                "member_line_ids": ["Lneigh"],
+                "member_lines": [neighbour],
+                "text": "A DIFFERENT BALLOON",
+                "bbox": [900, 2075, 300, 33],
+            },
+        ],
+        "render_inputs": [
+            {
+                "group_id": "BALAO_3",
+                "member_line_ids": ["Lnew"],
+                "render_input_lines": [survivor],
+                "render_input_text": "THAT I LOST",
+                "render_input_bbox": [260, 2075, 212, 32],
+                "draw_box": [260, 2075, 212, 32],
+            },
+            {
+                "group_id": "BALAO_9",
+                "member_line_ids": ["Lneigh"],
+                "render_input_lines": [neighbour],
+                "render_input_text": "A DIFFERENT BALLOON",
+                "render_input_bbox": [900, 2075, 300, 33],
+                "draw_box": [900, 2075, 300, 33],
+            },
+        ],
+    }
+
+
+class AncestryOwnershipTest(unittest.TestCase):
+    """TDD #35: expected source is the ancestry closure, not the survivors."""
+
+    def setUp(self):
+        self.page = _full7_shaped_page()
+        self.results = {
+            item["group_id"]: item for item in completeness.check_page(self.page)
+        }
+
+    def test_surviving_member_basis_would_have_passed(self):
+        # The mandatory false-pass regression: scored against only the lines the
+        # recovery left behind, the destroyed content is not even expected, so
+        # the old basis reports a clean group for a group that lost a word.
+        survivor_only = completeness.check(
+            self.page["groups"][0]["member_lines"],
+            group_id="BALAO_3",
+            downstream_text="THAT I LOST",
+            downstream_boxes=[[260, 2075, 212, 32]],
+        )
+        self.assertEqual(survivor_only["status"], completeness.STATUS_PASS)
+        self.assertNotIn("CONTROL", survivor_only["expected_tokens"])
+
+    def test_ancestry_basis_detects_the_destroyed_predecessor_token(self):
+        result = self.results["BALAO_3"]
+        # The predecessor was read without its space, so the token it owns is
+        # the joined one.  What matters is that the destroyed tail is expected
+        # at all and is reported missing, instead of never being asked about.
+        self.assertIn("LOSTCONTROL", result["expected_tokens"])
+        self.assertIn("LOSTCONTROL", result["unexplained_missing_tokens"])
+        self.assertEqual(result["status"], completeness.STATUS_FAIL)
+
+    def test_ancestry_basis_keeps_the_predecessor_geometry(self):
+        result = self.results["BALAO_3"]
+        x, y, width, height = result["source_bbox"]
+        self.assertLessEqual(x, 260)
+        self.assertGreaterEqual(x + width, 260 + 376)
+
+    def test_neighbouring_balloon_is_never_pulled_into_the_ancestry(self):
+        result = self.results["BALAO_3"]
+        self.assertNotIn("Lneigh", result["source_line_ids"])
+        self.assertNotIn("BALLOON", result["expected_tokens"])
+        self.assertEqual(self.results["BALAO_9"]["status"], completeness.STATUS_PASS)
+
+    def test_reported_basis_names_the_ancestry(self):
+        self.assertEqual(
+            self.results["BALAO_3"]["expected_source_basis"],
+            "ocr_provenance_ancestry",
+        )
+
+    def test_a_reconciled_recovery_still_passes(self):
+        page = _full7_shaped_page()
+        for holder in (page["groups"][0], page["render_inputs"][0]):
+            for key in ("text", "render_input_text"):
+                if key in holder:
+                    holder[key] = "THAT I LOST CONTROL"
+            for key in ("bbox", "render_input_bbox", "draw_box"):
+                if key in holder:
+                    holder[key] = [260, 2075, 376, 33]
+        page["groups"][0]["member_lines"][0]["text"] = "THAT I LOST CONTROL"
+        page["groups"][0]["member_lines"][0]["bbox"] = [260, 2075, 376, 33]
+        results = {item["group_id"]: item for item in completeness.check_page(page)}
+        self.assertEqual(results["BALAO_3"]["status"], completeness.STATUS_PASS)
 
 
 class GeometryCompletenessTest(unittest.TestCase):
@@ -260,7 +407,7 @@ class PhysicalExpectationSourceTest(unittest.TestCase):
     def test_expectation_keeps_a_token_the_group_text_lost(self):
         tokens, result = self.build("THAT I LOST CONTROL", "THAT I LOST")
         self.assertIn("CONTROL", tokens)
-        self.assertEqual(result["expected_source_basis"], "ocr_line_provenance")
+        self.assertEqual(result["expected_source_basis"], "ocr_provenance_ancestry")
         self.assertTrue(result["source_line_ids"])
 
     def test_group_text_alone_would_have_missed_it(self):
@@ -431,7 +578,7 @@ class PhysicalSourceTruthTest(unittest.TestCase):
         self.assertIn("CONTROL", summary["expected_tokens"])
         self.assertIn("CONTROL", summary["detected_residual_tokens"])
         self.assertFalse(summary["passed"])
-        self.assertEqual(summary["expected_source_basis"], "ocr_line_provenance")
+        self.assertEqual(summary["expected_source_basis"], "ocr_provenance_ancestry")
         self.assertTrue(summary["source_line_ids"])
 
     def test_group_text_complete_and_pixels_clean_still_passes(self):

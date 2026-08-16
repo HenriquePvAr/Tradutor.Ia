@@ -39,6 +39,7 @@ from ocr_balloon import (
     validate_and_retry_translations,
 )
 import ocr_line_provenance
+import source_completeness
 from ocr_parallel import detect_ocr_jobs
 from ocr_engine import OCREngine
 from fast_ocr_policy import FastOCRBudget
@@ -2593,6 +2594,10 @@ def _physical_residual_accounting(states):
     if completeness_counts["checked"]:
         result["source_completeness"] = {
             **completeness_counts,
+            # Named, not implied: these counts are scored against the group's
+            # provenance ancestry, including predecessors a retry superseded,
+            # not against the lines the last pass happened to leave behind.
+            "basis": source_completeness.EXPECTED_SOURCE_BASIS,
             "group_ids": completeness_ids[:200],
             "missing_tokens": sorted(missing_tokens)[:50],
         }
