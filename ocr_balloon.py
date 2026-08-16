@@ -1867,6 +1867,43 @@ def _looks_like_noise(text):
     return False
 
 
+def reading_order(lines):
+    """Lines of a text region in reading order: rows top to bottom, then left to right.
+
+    A bbox ``y`` is not by itself a reading order.  Two fragments of the same
+    printed row - a predecessor line that a region re-read came back with split
+    in two, say - differ vertically by a few pixels, and a lexicographic
+    ``(y, x)`` sort turns that jitter into a sentence carrying its suffix in
+    front of its prefix.  Rows are therefore resolved by vertical overlap
+    first, and only whole rows are ordered by ``y``; inside a row the page's
+    horizontal direction decides.
+
+    Geometry stays authoritative - a recogniser that emits its lines out of
+    order is corrected, not obeyed - and the sort is stable, so lines the
+    geometry cannot separate keep the order they arrived in.
+    """
+
+    rows = []
+    for line in sorted(lines or [], key=lambda item: (item.box[1], item.box[0])):
+        top = line.box[1]
+        bottom = top + max(1, line.box[3])
+        for row in rows:
+            overlap = min(row[1], bottom) - max(row[0], top)
+            if overlap >= 0.5 * min(bottom - top, row[1] - row[0]):
+                row[0] = min(row[0], top)
+                row[1] = max(row[1], bottom)
+                row[2].append(line)
+                break
+        else:
+            # ponytail: rows grow greedily, so a run of lines each overlapping
+            # the previous by half could chain into one row.  Printed line
+            # pitch is well clear of that; revisit if a real page chains.
+            rows.append([top, bottom, [line]])
+    return [
+        line for row in rows for line in sorted(row[2], key=lambda item: item.box[0])
+    ]
+
+
 def _group_lines(lines, page_index=None):
     groups = []
 
@@ -1885,7 +1922,7 @@ def _group_lines(lines, page_index=None):
             groups.append(target)
 
         target.lines.append(line)
-        target.lines.sort(key=lambda item: (item.box[1], item.box[0]))
+        target.lines = reading_order(target.lines)
         target.text = clean_ocr_text(" ".join(item.text for item in target.lines))
 
     return groups
@@ -4273,7 +4310,7 @@ def _candidate_groups_for_fallback(original_bgr, crop_lines, page_index=None):
 def _split_groups_at_sentence_boundaries(groups):
     result = []
     for group in groups:
-        lines = sorted(group.lines, key=lambda item: (item.box[1], item.box[0]))
+        lines = reading_order(group.lines)
         if len(lines) < 4:
             result.append(group)
             continue
@@ -5031,7 +5068,7 @@ def _reclaim_short_lexical_lines(groups, candidates, image_shape):
         if any(id(existing) == id(line) for existing in target.lines):
             continue
         target.lines.append(line)
-        target.lines.sort(key=lambda item: (item.box[1], item.box[0]))
+        target.lines = reading_order(target.lines)
         target.text = clean_ocr_text(" ".join(item.text for item in target.lines))
         candidate.ignored = False
         candidate.ignore_reason = ""
