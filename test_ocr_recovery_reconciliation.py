@@ -280,6 +280,82 @@ class RecoveryPipelineTests(unittest.TestCase):
         x, _y, width, _height = owner[0].box
         self.assertGreaterEqual(x + width, 260 + 376)
 
+    def _full9_p076_shape(self):
+        """A short speech line the retry never re-read, corrupted to a token
+        that carries no dictionary letters of its own."""
+
+        raw = [
+            _line("iK3H", (379, 2076, 89, 43), 0.5725),
+            _line("DON'T SAY", (325, 2123, 195, 40), 0.9491),
+            _line("THINGS LIKE", (314, 2172, 217, 38), 0.9879),
+            _line("THAT!", (373, 2218, 102, 39), 0.9973),
+        ]
+        crop = [
+            _line("DON'T SAY", (328, 2128, 190, 34), 0.9713),
+            _line("THINGS LIKE", (317, 2175, 213, 33), 0.9955),
+            _line("THAT!", (374, 2220, 99, 35), 0.9976),
+        ]
+        return raw, crop
+
+    def test_uncovered_short_speech_line_is_not_dropped_by_the_retry(self):
+        raw, crop = self._full9_p076_shape()
+        text = " ".join(line.text for line in raw)
+        lines, records = self._run(
+            list(raw), [self._group(raw, text, group_id="p076:BALAO_3")], crop
+        )
+        self.assertTrue(records)
+        self.assertNotEqual(records[0]["decision"], RECOVERY_REPLACE)
+        self.assertIn(raw[0], lines, "the region nothing re-read keeps its owner")
+        self.assertEqual(
+            len([line for line in lines if line.box == raw[0].box]),
+            1,
+            "retention must not duplicate the region",
+        )
+
+    def test_retained_region_keeps_the_group_geometry_over_the_source(self):
+        raw, crop = self._full9_p076_shape()
+        text = " ".join(line.text for line in raw)
+        lines, _records = self._run(
+            list(raw), [self._group(raw, text, group_id="p076:BALAO_3")], crop
+        )
+        _x, y, _width, height = ocr_balloon._lines_union_box(lines)
+        self.assertLessEqual(y, 2076)
+        self.assertGreaterEqual(y + height, 2076 + 43)
+
+
+class UncoveredPredecessorTests(unittest.TestCase):
+    """A predecessor may only be dropped by a read that covered its pixels."""
+
+    def test_unintelligible_uncovered_line_is_retained_not_discarded(self):
+        predecessor = [
+            _line("iK3H", (379, 2076, 89, 43), 0.57),
+            _line("DON'T SAY THAT!", (325, 2123, 195, 40), 0.95),
+        ]
+        candidate = [_line("DON'T SAY THAT!", (328, 2128, 190, 34), 0.97)]
+        decision, lines, reason = _decide(predecessor, candidate)
+        self.assertNotEqual(decision, RECOVERY_REPLACE)
+        self.assertIn(predecessor[0], lines)
+        self.assertIn("uncovered", reason)
+
+    def test_covered_noise_is_still_removable(self):
+        # Same shape, but the retry did read the strip the noise sat in, so the
+        # existing noise policy stays in force and nothing is retained.
+        predecessor = [_line("I WILL GO XQZ@@@", (10, 10, 320, 30))]
+        candidate = [_line("I WILL GO", (10, 10, 200, 30), 0.99)]
+        decision, lines, _reason = _decide(predecessor, candidate)
+        self.assertEqual(decision, RECOVERY_REPLACE)
+        self.assertNotIn("XQZ", compact(_text_of(lines)))
+
+    def test_retention_does_not_invent_text_for_the_retained_region(self):
+        predecessor = [
+            _line("iK3H", (379, 2076, 89, 43), 0.57),
+            _line("DON'T SAY THAT!", (325, 2123, 195, 40), 0.95),
+        ]
+        candidate = [_line("DON'T SAY THAT!", (328, 2128, 190, 34), 0.97)]
+        _decision, lines, _reason = _decide(predecessor, candidate)
+        retained = [line for line in lines if line.box == (379, 2076, 89, 43)]
+        self.assertEqual([line.text for line in retained], ["iK3H"])
+
 
 if __name__ == "__main__":
     unittest.main()

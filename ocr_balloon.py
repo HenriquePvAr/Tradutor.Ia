@@ -3471,10 +3471,24 @@ def reconcile_recovery_lines(predecessor_lines, candidate_lines):
     reasons = []
     plans = []  # deferred: a later conflict must not leave half a merge behind.
     noise_dropped = []
+    retained = []
     for predecessor in predecessor_lines:
         text = predecessor.text or predecessor.raw_text or ""
         compact_text, positions = _compact_index(text)
         overlapping = _lines_over_box(predecessor.box, candidate_lines)
+        if not overlapping:
+            # Nothing in the second read covers these pixels, so nothing
+            # superseded them.  Dropping the line here would leave the source
+            # region with no owner at all - no group, no review, and no mask -
+            # which is how visible dialogue survives into the rendered page.
+            # A token too corrupted to yield letters ("iK3H") is exactly the
+            # case the lexical checks below cannot speak for, so geometry
+            # decides: only a read that saw the region may replace it.
+            retained.append(predecessor)
+            reasons.append("recovery_uncovered_predecessor_retained")
+            if decision != RECOVERY_REJECT:
+                decision = RECOVERY_RECONCILE
+            continue
         covered = "".join(
             source_completeness.compact(line.text) for line in overlapping
         )
@@ -3538,7 +3552,16 @@ def reconcile_recovery_lines(predecessor_lines, candidate_lines):
             **(line.metadata or {}),
             "ocr_discard_reason": "recovery_noise_removed",
         }
-    return decision, candidate_lines, ";".join(dict.fromkeys(reasons)) or "recovery_safe_replace"
+    for line in retained:
+        line.metadata = {
+            **(line.metadata or {}),
+            "recovery_retained_reason": "recovery_uncovered_predecessor_retained",
+        }
+    return (
+        decision,
+        candidate_lines + retained,
+        ";".join(dict.fromkeys(reasons)) or "recovery_safe_replace",
+    )
 
 
 def apply_rapidocr_region_recovery(
