@@ -361,6 +361,14 @@ REJECT_DARK_BLOTCH_ON_TEXTURED_ART = _env_bool(
 MAX_NEW_DARK_COMPONENT_AREA = max(1, _env_int("MAX_NEW_DARK_COMPONENT_AREA", 120))
 MAX_NEW_DARK_PIXEL_RATIO = _env_float("MAX_NEW_DARK_PIXEL_RATIO", 0.04)
 TEXTURED_CAPTION_OVERLAY = _env_bool("TEXTURED_CAPTION_OVERLAY", True)
+# Last-resort cleanup for proven ordinary speech whose broad masks were refused
+# on nonuniform artwork.  It never widens a mask: it only measures art risk
+# against the owned source-line evidence instead of the source text bbox.
+SOURCE_SCOPED_SPEECH_CLEANUP = _env_bool("SOURCE_SCOPED_SPEECH_CLEANUP", True)
+MAX_SOURCE_SCOPED_PAGE_AREA_RATIO = _env_float(
+    "MAX_SOURCE_SCOPED_PAGE_AREA_RATIO",
+    0.08,
+)
 CAPTION_OVERLAY_OPACITY = min(
     0.95,
     max(0.35, _env_float("CAPTION_OVERLAY_OPACITY", 0.94)),

@@ -1584,6 +1584,9 @@ def _render_analyzed_image(
             "conservative",
             "glyph_overlay",
             "caption_overlay",
+            # Last resort: only proven ordinary speech reaches it, and only after
+            # every broad strategy above already refused the region.
+            "source_scoped",
         ):
             inpaint_started = time.perf_counter()
             cleaned, cleanup_mask, mask_metrics = _remove_text_for_group(
@@ -7275,6 +7278,39 @@ def _classify_background_region(img_bgr, group, page_index=None):
     return background_type, metrics
 
 
+def _source_scoped_speech_reason(group):
+    """Empty when the group is proven ordinary speech we may clean narrowly.
+
+    The narrow fallback is only allowed where the source itself is the evidence:
+    an ordinary speech group whose translation candidate is usable, whose source
+    ownership is complete, and whose lines are individually traceable.  Anything
+    unproven - a stylized title, an SFX, a preserved entity, an unreadable OCR
+    result, an incomplete source - keeps the legacy behaviour and fails closed.
+    """
+
+    if not config.SOURCE_SCOPED_SPEECH_CLEANUP:
+        return "source_scoped_disabled"
+    if getattr(group, "classification", "") != "speech":
+        return "source_scoped_requires_speech_class"
+    if getattr(group, "preserve_as_name", False):
+        return "source_scoped_excludes_preserved_entity"
+    candidate = str(group.translation or group.translation_candidate or "").strip()
+    if not candidate:
+        return "source_scoped_requires_translation_candidate"
+    if group.ocr_quality_blocked or _ocr_unintelligible_source_text(group.text):
+        return "source_scoped_requires_intelligible_source"
+    status = str((getattr(group, "source_completeness", None) or {}).get("status") or "")
+    if status != source_completeness.STATUS_PASS:
+        return "source_scoped_requires_source_completeness_pass"
+    lines = _cleanup_lines_for_group(group)
+    if not lines:
+        return "source_scoped_requires_owned_source_lines"
+    for line in lines:
+        if not (getattr(line, "metadata", None) or {}).get("ocr_line_id"):
+            return "source_scoped_requires_line_provenance"
+    return ""
+
+
 def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary"):
     background_type, background_metrics = _classify_background_region(
         original_bgr,
@@ -7298,6 +7334,18 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
             "mask_valid": False,
             "reason": "textured_caption_overlay_disabled",
         }
+    if strategy == "source_scoped":
+        if not tight_background:
+            return current_bgr.copy(), np.zeros(original_bgr.shape[:2], dtype=np.uint8), {
+                "mask_valid": False,
+                "reason": "source_scoped_not_needed_on_uniform_background",
+            }
+        scope_reason = _source_scoped_speech_reason(group)
+        if scope_reason:
+            return current_bgr.copy(), np.zeros(original_bgr.shape[:2], dtype=np.uint8), {
+                "mask_valid": False,
+                "reason": scope_reason,
+            }
     base_mask = _build_text_mask(original_bgr.shape, [group], padding=0)
     if not np.any(base_mask):
         return current_bgr.copy(), base_mask, {
@@ -7392,6 +7440,21 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
             + detached_metrics["detached_text_pixels"]
         )
     component_metrics.update(detached_metrics)
+    source_evidence_mask = None
+    if strategy == "source_scoped":
+        # The owned OCR line polygons expanded by the existing text-scale padding
+        # are the only artwork this strategy is ever allowed to touch.
+        source_evidence_mask = _build_text_mask(original_bgr.shape, [group])
+        component_metrics["source_evidence_pixels"] = int(
+            np.count_nonzero(source_evidence_mask)
+        )
+        component_metrics["mask_pixels_clipped_to_source_evidence"] = int(
+            np.count_nonzero((cleanup_mask > 0) & (source_evidence_mask == 0))
+        )
+        cleanup_mask = cv2.bitwise_and(cleanup_mask, source_evidence_mask)
+        component_metrics["mask_pixels_outside_source_evidence"] = int(
+            np.count_nonzero((cleanup_mask > 0) & (source_evidence_mask == 0))
+        )
     if not np.any(cleanup_mask):
         return current_bgr.copy(), cleanup_mask, {
             **component_metrics,
@@ -7417,13 +7480,34 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
         metrics["reason"] = "mask_too_large_for_detected_characters"
         return current_bgr.copy(), cleanup_mask, metrics
 
+    if strategy == "source_scoped":
+        # ``mask_to_group_area_ratio`` measures the mask against the source text
+        # bbox, so an accurate glyph mask is structurally penalised for filling
+        # the region the glyphs themselves define.  Here the risk that matters is
+        # how much artwork the mask reaches outside the owned source evidence -
+        # which the clip above already pins to zero - plus a bound on how much of
+        # the page that evidence is allowed to be at all.
+        evidence_pixels = max(1, int(np.count_nonzero(source_evidence_mask)))
+        page_area = max(1, int(original_bgr.shape[0] * original_bgr.shape[1]))
+        metrics["source_evidence_to_page_ratio"] = round(
+            float(evidence_pixels / page_area),
+            6,
+        )
+        metrics["mask_to_source_evidence_ratio"] = round(
+            float(mask_area / evidence_pixels),
+            4,
+        )
+        if evidence_pixels / page_area > config.MAX_SOURCE_SCOPED_PAGE_AREA_RATIO:
+            metrics["mask_valid"] = False
+            metrics["reason"] = "source_scoped_region_too_large_for_safe_cleanup"
+            return current_bgr.copy(), cleanup_mask, metrics
     textured_group_ratio_limit = (
         min(0.30, config.MAX_TEXTURED_MASK_GROUP_RATIO + 0.12)
         if strategy in {"glyph_overlay", "caption_overlay"}
         else config.MAX_TEXTURED_MASK_GROUP_RATIO
     )
     textured_component_ratio_limit = config.MAX_TEXTURED_MASK_COMPONENT_RATIO
-    if tight_background and (
+    if strategy != "source_scoped" and tight_background and (
         shape_metrics["mask_to_group_area_ratio"]
         > textured_group_ratio_limit
         or shape_metrics["largest_mask_component_to_group_ratio"]
@@ -7642,8 +7726,17 @@ def _dark_blotch_artifact_metrics(
     pixels = int(np.count_nonzero(new_dark))
     group_area = max(1, int(group.box[2] * group.box[3]))
     ratio = pixels / group_area
+    # Light lettering on a proven dark backdrop turns dark when it is removed,
+    # because the backdrop it exposes is dark.  That is the intended repair, not
+    # an invented island, and only the source-evidence-pinned strategy - whose
+    # mask cannot reach past the owned OCR lines - is trusted with it.
+    dark_backdrop_restored = bool(
+        strategy == "source_scoped"
+        and _proven_uniform_dark_region(getattr(group, "background_metrics", {}) or {})
+    )
     rejected = bool(
         config.REJECT_DARK_BLOTCH_ON_TEXTURED_ART
+        and not dark_backdrop_restored
         and (
             largest > config.MAX_NEW_DARK_COMPONENT_AREA
             or ratio > config.MAX_NEW_DARK_PIXEL_RATIO
@@ -7653,6 +7746,7 @@ def _dark_blotch_artifact_metrics(
         "new_dark_patch_pixels": pixels,
         "largest_new_dark_component_area": int(largest),
         "new_dark_patch_to_group_ratio": round(float(ratio), 6),
+        "dark_backdrop_restored": dark_backdrop_restored,
         "dark_blotch_rejected": rejected,
     }
 
@@ -8099,6 +8193,11 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
             group.background_metrics.get("open_dark_narration")
             or group.background_metrics.get("dark_context")
         )
+    ) or bool(
+        # A proven uniform dark backdrop reconstructs exactly, so the narrow
+        # source-scoped cleanup restores it instead of leaving inpainting ghosts.
+        strategy == "source_scoped"
+        and _proven_uniform_dark_region(group.background_metrics)
     )
     if white_region:
         fill_color = _estimated_white_region_fill_color(
@@ -8115,7 +8214,7 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
         )
         result[cleanup_mask > 0] = fill_color
     else:
-        radius = 1 if strategy == "conservative" else 2
+        radius = 1 if strategy in {"conservative", "source_scoped"} else 2
         local = cv2.inpaint(result, cleanup_mask, radius, cv2.INPAINT_TELEA)
         result[cleanup_mask > 0] = local[cleanup_mask > 0]
     return result
@@ -8938,6 +9037,10 @@ def _enforce_visual_bounds(
         reasons.append("mask_area_exceeds_text_area_limit")
     if (
         metrics.get("broad_rectangular_mask")
+        # ``broad_rectangular_mask`` is measured against the source text bbox, so
+        # a mask pinned to the owned source lines is always "broad" by that
+        # metric.  The collateral-damage reasons above still police this path.
+        and metrics.get("strategy") != "source_scoped"
         and metrics.get("background_type")
         not in {"white_balloon", "dark_balloon", "narration_box"}
     ):
