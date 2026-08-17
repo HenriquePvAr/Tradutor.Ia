@@ -1628,22 +1628,37 @@ def _render_analyzed_image(
                 group=group,
                 mask_metrics=mask_metrics,
             )
-            if (
-                visual_summary.get("visual_validation_passed")
-                and config.POST_RENDER_OCR_VALIDATION
-            ):
-                residual_summary = _post_render_source_text_check(
+            if visual_summary.get("visual_validation_passed"):
+                # Needs no OCR: the cleanup either covered the source text this
+                # group owns or it did not.  A mask that demonstrably left
+                # source glyphs behind can never be accepted, whatever the
+                # post-render OCR stage is configured to do.
+                removal = _uncovered_source_text_evidence(
+                    original,
                     rendered,
                     group,
-                    page_index,
+                    cleanup_mask,
                 )
-                visual_summary["post_render_ocr"] = residual_summary
-                if not residual_summary.get("passed", True):
-                    visual_summary["visual_validation_passed"] = False
-                    visual_summary["reason"] = str(
-                        residual_summary.get("reason")
-                        or "post_render_ocr_validation_failed"
+                visual_summary["source_text_removal"] = removal
+                if config.POST_RENDER_OCR_VALIDATION:
+                    residual_summary = _post_render_source_text_check(
+                        rendered,
+                        group,
+                        page_index,
+                        original_bgr=original,
+                        cleanup_mask=cleanup_mask,
+                        removal=removal,
                     )
+                    visual_summary["post_render_ocr"] = residual_summary
+                    if not residual_summary.get("passed", True):
+                        visual_summary["visual_validation_passed"] = False
+                        visual_summary["reason"] = str(
+                            residual_summary.get("reason")
+                            or "post_render_ocr_validation_failed"
+                        )
+                elif _source_removal_incomplete(group, removal):
+                    visual_summary["visual_validation_passed"] = False
+                    visual_summary["reason"] = "uncovered_source_text_evidence"
             visual_summary["strategy"] = strategy
             group.visual_attempts.append(visual_summary)
             if (
@@ -3488,9 +3503,9 @@ def reconcile_recovery_lines(predecessor_lines, candidate_lines):
             reasons.append("recovery_noise_removed")
             continue
         if head_ok:
-            plans.append((overlapping[0], head.strip(), "", predecessor.box))
+            plans.append((overlapping[0], head.strip(), "", predecessor))
         if tail_ok:
-            plans.append((overlapping[-1], "", tail.strip(), predecessor.box))
+            plans.append((overlapping[-1], "", tail.strip(), predecessor))
         if decision != RECOVERY_REJECT:
             decision = RECOVERY_RECONCILE
         reasons.append("recovery_reconciled_predecessor_fragment")
@@ -3498,10 +3513,22 @@ def reconcile_recovery_lines(predecessor_lines, candidate_lines):
     if decision == RECOVERY_REJECT:
         return RECOVERY_REJECT, predecessor_lines, ";".join(dict.fromkeys(reasons))
 
-    for line, head, tail, box in plans:
+    for line, head, tail, predecessor in plans:
         line.text = " ".join(part for part in (head, line.text, tail) if part).strip()
         line.raw_text = line.text
-        line.box = _union_box(line.box, box)
+        line.box = _union_box(line.box, predecessor.box)
+        # Re-attaching the tail without its geometry is how the tail became
+        # invisible to every cleaning mask: masks are built from ``polygon``,
+        # never from ``box``.  The hull of both reads is the narrowest shape
+        # that still contains the glyphs each of them actually saw.
+        line.polygon = cv2.convexHull(
+            np.vstack(
+                (
+                    np.asarray(line.polygon, dtype=np.int32).reshape(-1, 2),
+                    np.asarray(predecessor.polygon, dtype=np.int32).reshape(-1, 2),
+                )
+            )
+        ).reshape(-1, 2)
         line.metadata = {
             **(line.metadata or {}),
             "recovery_reconciled_from": head or tail,
@@ -8718,12 +8745,152 @@ def _ocr_shape_similarity(observed_joined, reference_joined):
     ).ratio()
 
 
-def _post_render_source_text_check(rendered_bgr, group, page_index=None):
-    """Use lightweight OCR to catch source-language text still visible after cleanup.
+def _uncovered_source_text_evidence(original_bgr, rendered_bgr, group, cleanup_mask):
+    """Source glyph pixels the cleanup never touched and the render left intact.
 
-    The post-render check must not depend exclusively on tokens found by the
-    primary OCR pass.  A missed source fragment is precisely one of the cases
-    this independent pass is expected to catch.
+    This is the positive half of the physical proof.  It reads the *boxes* the
+    group's OCR lines own - not their polygons - because a polygon is exactly
+    what a stale recovery geometry gets wrong, and a gate that trusts the same
+    geometry the mask was built from cannot catch the mask being wrong.
+
+    A pixel counts as surviving source only when all three hold: it looks like
+    source text in the original, the cleaning mask never covered it, and the
+    render left it unchanged.  Anything the mask covered was flattened, so a
+    bright pixel there is the new translation rather than the old source.
+    """
+
+    empty = {
+        "source_text_pixels": 0,
+        "uncovered_source_text_pixels": 0,
+        "largest_uncovered_source_component": 0,
+        "source_text_coverage": 1.0,
+        "uncovered_source_line_ids": [],
+        "measured": False,
+    }
+    if original_bgr is None or cleanup_mask is None:
+        return empty
+    if original_bgr.shape[:2] != rendered_bgr.shape[:2]:
+        return empty
+    if original_bgr.shape[:2] != cleanup_mask.shape[:2]:
+        return empty
+
+    original_gray = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY).astype(np.int16)
+    rendered_gray = cv2.cvtColor(rendered_bgr, cv2.COLOR_BGR2GRAY).astype(np.int16)
+    height, width = original_gray.shape
+    total = 0
+    uncovered_total = 0
+    largest = 0
+    uncovered_lines = []
+    measured = False
+    for line in _cleanup_lines_for_group(group):
+        x, y, w, h = [int(value) for value in line.box]
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(width, x + max(1, w))
+        y2 = min(height, y + max(1, h))
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            continue
+        roi = original_gray[y1:y2, x1:x2]
+        # Same foreground rule the component mask uses, so "source text" means
+        # the same thing to the gate and to the cleanup it is judging.
+        median = float(np.median(roi))
+        contrast = max(
+            8.0,
+            float(np.percentile(roi, 80)) - float(np.percentile(roi, 20)),
+        )
+        if median >= 138:
+            foreground = roi <= max(25.0, min(205.0, median - max(16.0, contrast * 0.28)))
+        elif median <= 118:
+            foreground = roi >= min(235.0, max(48.0, median + max(16.0, contrast * 0.28)))
+        else:
+            continue
+        line_total = int(np.count_nonzero(foreground))
+        if line_total < 24:
+            continue
+        measured = True
+        unchanged = (
+            np.abs(roi - rendered_gray[y1:y2, x1:x2]) <= config.VISUAL_DIFF_THRESHOLD
+        )
+        surviving = (
+            foreground & unchanged & (cleanup_mask[y1:y2, x1:x2] == 0)
+        ).astype(np.uint8) * 255
+        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            surviving, 8
+        )
+        line_largest = max(
+            (int(stats[label, cv2.CC_STAT_AREA]) for label in range(1, count)),
+            default=0,
+        )
+        total += line_total
+        uncovered_total += int(np.count_nonzero(surviving))
+        largest = max(largest, line_largest)
+        if line_largest >= _glyph_scale_component_area(h):
+            uncovered_lines.append(
+                str((getattr(line, "metadata", None) or {}).get("ocr_line_id") or "")
+            )
+    if not measured:
+        return empty
+    return {
+        "source_text_pixels": int(total),
+        "uncovered_source_text_pixels": int(uncovered_total),
+        "largest_uncovered_source_component": int(largest),
+        "source_text_coverage": round(
+            float(1.0 - uncovered_total / max(1, total)), 4
+        ),
+        "uncovered_source_line_ids": uncovered_lines,
+        "measured": True,
+    }
+
+
+def _glyph_scale_component_area(line_height):
+    """Smallest surviving blob that is a glyph rather than anti-alias debris.
+
+    Scaled to the line, because "a letter" is a fraction of the line box on any
+    page.  Below it lives the speckle a correct cleanup always leaves where the
+    new text happens to land on old strokes; above it lives a readable word.
+    """
+
+    return max(24, int(round(max(1.0, float(line_height)) ** 2 * 0.05)))
+
+
+def _source_removal_incomplete(group, removal):
+    """True when owned source glyphs demonstrably survived the cleanup.
+
+    Ordinary source dialogue whose glyphs the cleaning mask never reached is
+    still on the page, whatever any OCR pass managed to read back.  Unreadable
+    source held for manual review keeps its own taxonomy and is not judged here.
+    """
+
+    if not removal.get("measured"):
+        return False
+    if group.translation_final_reason == OCR_UNINTELLIGIBLE_SOURCE_REASON:
+        return False
+    line_height = max(
+        (line.box[3] for line in _cleanup_lines_for_group(group)),
+        default=0,
+    )
+    return removal["largest_uncovered_source_component"] >= _glyph_scale_component_area(
+        line_height
+    )
+
+
+def _post_render_source_text_check(
+    rendered_bgr,
+    group,
+    page_index=None,
+    original_bgr=None,
+    cleanup_mask=None,
+    removal=None,
+):
+    """Decide whether source text is still physically visible after cleanup.
+
+    Two independent kinds of evidence answer that, and only one of them used to
+    exist.  The post-render OCR pass is *positive* evidence: a token it reads
+    back is residual.  Its silence is not proof of absence - it merges glyphs
+    into neighbouring words and misses what it cannot segment - so absence has
+    to be carried by the cleanup itself: the mask covered the source text, so
+    the source text is gone.  When neither holds the answer is inconclusive,
+    and inconclusive is never collapsed into a pass.
     """
 
     preserved_names = {
@@ -8841,8 +9008,17 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
         for token in language_reason.partition(":")[2].split(",")
         if token
     }
+    # Forgiveness needs a positive reason, not just the absence of one.  A token
+    # is OCR noise when the expected translation itself contains those letters -
+    # which is what a mid-word split such as ANDANDO -> "AND ANDO" produces.  A
+    # token the source provenance expected is never noise, however short it is,
+    # however uncertain the read was, and however well the line as a whole
+    # matches the translation.  ``CONTROL`` sits inside ``CONTROLE``; only the
+    # provenance can tell the surviving source word from the rendered one.
     forgiven_ocr_noise = sorted(
-        token for token in flagged_tokens if token not in source_tokens
+        token
+        for token in flagged_tokens
+        if token not in provenance_tokens and token in expected_joined
     )
     if (
         source_language_detected
@@ -8873,7 +9049,21 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
         for token in expected_evidence
     )
 
-    passed = not residual and not source_language_detected and target_text_found
+    if removal is None:
+        removal = _uncovered_source_text_evidence(
+            original_bgr,
+            rendered_bgr,
+            group,
+            cleanup_mask,
+        )
+    removal_incomplete = _source_removal_incomplete(group, removal)
+
+    passed = (
+        not residual
+        and not source_language_detected
+        and target_text_found
+        and not removal_incomplete
+    )
     if passed:
         reason = "ok"
     elif residual or source_language_detected:
@@ -8882,6 +9072,8 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
             if source_language_detected
             else "source_tokens_detected_after_render"
         )
+    elif removal_incomplete:
+        reason = "uncovered_source_text_evidence"
     elif not observed_joined:
         reason = "translated_text_missing_after_render"
     else:
@@ -8889,10 +9081,29 @@ def _post_render_source_text_check(rendered_bgr, group, page_index=None):
         # translation nor the source text.  Fail closed for manual review
         # instead of guessing which of the two it is.
         reason = "post_render_ocr_inconclusive"
+    if residual or source_language_detected:
+        physical_decision = "residual_detected"
+    elif passed:
+        physical_decision = "pass"
+    else:
+        physical_decision = "review"
     return {
         "checked": True,
         "passed": passed,
         "reason": reason,
+        "physical_decision": physical_decision,
+        # Why absence is believed, in the gate's own words: either the cleanup
+        # provably covered the owned source text, or it did not and this is not
+        # a pass.  ``post_render_ocr_only`` is the historical weak state and is
+        # never enough on its own to clear ordinary dialogue.
+        "removal_evidence": (
+            "source_text_coverage_complete"
+            if removal["measured"] and not removal_incomplete
+            else "source_text_coverage_incomplete"
+            if removal["measured"]
+            else "post_render_ocr_only"
+        ),
+        **{key: value for key, value in removal.items() if key != "measured"},
         "validator_reason": language_reason,
         "source_tokens_checked": sorted(source_tokens),
         "detected_text": final_text,
