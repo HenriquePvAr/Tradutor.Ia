@@ -10,11 +10,10 @@ Este guia prepara o ambiente local do Tradutor.IA no cenário atualmente auditad
 | --- | --- | --- |
 | Sistema operacional | Windows 11, 64 bits | É a plataforma validada pelo projeto |
 | Python | 3.11, 64 bits | O ambiente atual foi auditado com Python 3.11.9 |
-| Git | Versão recente | Usado para clonar e atualizar o repositório |
 | Google Chrome | Versão recente | Necessário para a coleta via Selenium |
 | Memória | 16 GB recomendados | PaddleOCR pode elevar bastante o uso de RAM e memória virtual |
 | Disco | Espaço para modelos, caches e outputs | Capítulos completos podem gerar muitos arquivos intermediários |
-| NVIDIA API | Chave válida | Necessária para o provedor de tradução padrão |
+| API | Chave válida | Necessária para o provedor de tradução padrão |
 
 O suporte end-to-end de Linux e macOS ainda não foi validado. O launcher possui um caminho POSIX para grupos de processos, mas isso não equivale a suporte integral do pipeline nessas plataformas.
 
@@ -71,8 +70,7 @@ Abra `.env` e substitua apenas o placeholder da chave:
 ```dotenv
 NVIDIA_API_KEY=sua_chave_real
 ```
-
-Não versione `.env`, não cole a chave em comandos e não a inclua em relatórios. Os demais defaults são documentados em [Configuração](CONFIGURATION.md).
+Os demais defaults são documentados em [Configuração](CONFIGURATION.md).
 
 ## 5. Modelos de OCR
 
@@ -82,9 +80,7 @@ PaddleOCR é instalado pelo arquivo principal de requisitos. Na primeira inicial
 - `PP-OCRv4_mobile_det` e reconhecimento mobile nos fallbacks leves;
 - RapidOCR/ONNX Runtime no modo `fast`.
 
-Planeje a primeira execução com conexão disponível e espaço em disco. O projeto não exige que modelos sejam copiados manualmente para uma pasta interna do repositório.
-
-Tesseract está presente apenas como caminho opcional de compatibilidade. Ele não é o OCR principal e não precisa ser instalado para os modos documentados no README.
+Planeje a primeira execução com conexão disponível e espaço em disco.
 
 ## 6. Chrome e ChromeDriver
 
@@ -101,7 +97,7 @@ o job termina com `chromedriver_unavailable`; defina um caminho genérico no `.e
 CHROMEDRIVER_PATH=C:\ferramentas\chromedriver.exe
 ```
 
-Não copie caminhos pessoais da documentação para sua máquina; use o local real da sua instalação.
+
 
 ## 7. Verificar a instalação
 
