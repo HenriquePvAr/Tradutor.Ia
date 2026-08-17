@@ -348,11 +348,57 @@ def _page_discards(page):
 _MEMBERSHIP_OPERATIONS = ("group_member", "group_geometry", "render_input")
 
 
+def _cover_ratio(inner, outer):
+    """Fraction of ``inner``'s area that falls inside ``outer``."""
+
+    if inner is None or outer is None:
+        return 0.0
+    ix, iy, iw, ih = inner
+    ox, oy, ow, oh = outer
+    overlap_w = max(0, min(ix + iw, ox + ow) - max(ix, ox))
+    overlap_h = max(0, min(iy + ih, oy + oh) - max(iy, oy))
+    area = iw * ih
+    return (overlap_w * overlap_h) / area if area > 0 else 0.0
+
+
+def _current_group_boxes(page):
+    """Where each group's *current* membership sits, latest snapshot wins."""
+
+    raw_by_id = {
+        str(snapshot.get("line_id") or ""): snapshot
+        for snapshot in page.get("raw_lines") or []
+    }
+    latest = {}
+    for event in page.get("events") or []:
+        if event.get("operation") not in _MEMBERSHIP_OPERATIONS:
+            continue
+        group_id = str(event.get("group_id") or "")
+        line_ids = [str(line_id) for line_id in event.get("parent_ids") or []]
+        if group_id and line_ids:
+            latest[group_id] = line_ids
+    return {
+        group_id: union_box(
+            raw_by_id[line_id].get("bbox")
+            for line_id in line_ids
+            if line_id in raw_by_id
+        )
+        for group_id, line_ids in latest.items()
+    }
+
+
 def group_ancestry_snapshots(page, group_id, member_lines=()):
-    """Every source line one group ever owned, resolved to immutable snapshots.
+    """Every source line one group still owns, resolved to immutable snapshots.
 
     Scoped to the group on purpose: page-wide raw OCR would make a neighbouring
-    balloon's text an expected residual for the wrong region.
+    balloon's text an expected residual for the wrong region.  Shared history is
+    not ownership either.  One recovery attempt can split a pre-recovery group
+    into two legitimate final groups, and the half that moved out takes its
+    predecessor lines with it: charging them to the group that stayed behind
+    invents a lexical loss and widens its searched region over a sibling balloon
+    that has not been rendered yet.  A superseded line is therefore kept only
+    while no other group's current geometry claims it better - which leaves the
+    destructive case untouched, because a line re-read over the same region has
+    no sibling claimant.
     """
 
     raw_by_id = {
@@ -361,6 +407,12 @@ def group_ancestry_snapshots(page, group_id, member_lines=()):
     }
     owned = list(member_lines or [])
     group_id = str(group_id or "")
+    current_boxes = _current_group_boxes(page)
+    own_box = union_box(
+        [current_boxes.get(group_id)]
+        + [snapshot.get("bbox") for snapshot in owned]
+    )
+    current_ids = {str(snapshot.get("line_id") or "") for snapshot in owned}
     for event in page.get("events") or []:
         if event.get("operation") not in _MEMBERSHIP_OPERATIONS:
             continue
@@ -368,9 +420,26 @@ def group_ancestry_snapshots(page, group_id, member_lines=()):
             continue
         for line_id in event.get("parent_ids") or []:
             snapshot = raw_by_id.get(str(line_id))
-            if snapshot is not None:
-                owned.append(snapshot)
+            if snapshot is None:
+                continue
+            if str(line_id) not in current_ids and _claimed_by_sibling(
+                snapshot, group_id, own_box, current_boxes
+            ):
+                continue
+            owned.append(snapshot)
     return resolve_source_lines(owned, page.get("raw_lines"))
+
+
+def _claimed_by_sibling(snapshot, group_id, own_box, current_boxes):
+    box = _box(snapshot.get("bbox"))
+    if box is None:
+        return False
+    mine = _cover_ratio(box, own_box)
+    return any(
+        _cover_ratio(box, other) > mine
+        for sibling, other in current_boxes.items()
+        if sibling != group_id
+    )
 
 
 def check_page(page):

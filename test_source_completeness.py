@@ -329,6 +329,140 @@ class NeighbourIsolationTest(unittest.TestCase):
         self.assertNotIn("BARELY", result["expected_tokens"])
 
 
+def _split_recovery_page():
+    """One recovery attempt that legitimately yields two final groups.
+
+    A single pre-recovery group holds a garbled short line stacked above a
+    longer sentence.  The recovery re-reads the region and the regrouping keeps
+    the short line in the original group while the sentence becomes a group of
+    its own.  Both halves are legitimate; neither may be charged with the
+    other's lexical obligations.
+    """
+
+    old_short = line("iK3H", (379, 2076, 89, 43), line_id="Lold_short")
+    old_a = line("SHOUT AT", (325, 2123, 195, 40), line_id="Lold_a")
+    old_b = line("THE MOUNTAIN", (314, 2172, 217, 38), line_id="Lold_b")
+    new_short = line("HEY!", (382, 2079, 80, 36), line_id="Lnew_short")
+    new_a = line("SHOUT AT", (328, 2128, 190, 34), line_id="Lnew_a")
+    new_b = line("THE MOUNTAIN", (317, 2175, 213, 33), line_id="Lnew_b")
+    return {
+        "page": 76,
+        "raw_lines": [old_short, old_a, old_b, new_short, new_a, new_b],
+        "events": [
+            {
+                "operation": "group_member",
+                "group_id": "BALAO_3",
+                "parent_ids": ["Lold_short", "Lold_a", "Lold_b"],
+            },
+            {
+                "operation": "line_filtered",
+                "line_id": "Lold_short",
+                "reason": "replaced_by_rapidocr_region_recovery",
+            },
+            {
+                "operation": "line_filtered",
+                "line_id": "Lold_a",
+                "reason": "replaced_by_rapidocr_region_recovery",
+            },
+            {
+                "operation": "line_filtered",
+                "line_id": "Lold_b",
+                "reason": "replaced_by_rapidocr_region_recovery",
+            },
+            {
+                "operation": "group_geometry",
+                "group_id": "BALAO_3",
+                "parent_ids": ["Lnew_short"],
+                "reason": "regrouped",
+            },
+            {
+                "operation": "group_member",
+                "group_id": "BALAO_4",
+                "parent_ids": ["Lnew_a", "Lnew_b"],
+            },
+        ],
+        "groups": [
+            {
+                "group_id": "BALAO_3",
+                "member_line_ids": ["Lnew_short"],
+                "member_lines": [new_short],
+                "text": "HEY!",
+                "bbox": [382, 2079, 80, 36],
+            },
+            {
+                "group_id": "BALAO_4",
+                "member_line_ids": ["Lnew_a", "Lnew_b"],
+                "member_lines": [new_a, new_b],
+                "text": "SHOUT AT THE MOUNTAIN",
+                "bbox": [317, 2128, 213, 80],
+            },
+        ],
+        "render_inputs": [
+            {
+                "group_id": "BALAO_3",
+                "render_input_lines": [new_short],
+                "render_input_text": "HEY!",
+                "render_input_bbox": [382, 2079, 80, 36],
+                "draw_box": [382, 2079, 80, 36],
+            },
+            {
+                "group_id": "BALAO_4",
+                "render_input_lines": [new_a, new_b],
+                "render_input_text": "SHOUT AT THE MOUNTAIN",
+                "render_input_bbox": [317, 2128, 213, 80],
+                "draw_box": [317, 2128, 213, 80],
+            },
+        ],
+    }
+
+
+class SiblingOwnershipTest(unittest.TestCase):
+    """TDD #41: ancestry is scoped by ownership, not by shared history.
+
+    One recovery event produced two legitimate groups.  The predecessor lines of
+    the half that moved out belong to the group that now owns that geometry, so
+    charging them to the group that kept only the short line is a false failure -
+    and it widens that group's searched region over its neighbour's still
+    untranslated balloon.
+    """
+
+    def setUp(self):
+        self.results = {
+            item["group_id"]: item
+            for item in completeness.check_page(_split_recovery_page())
+        }
+
+    def test_predecessor_of_the_sibling_half_is_not_charged_here(self):
+        result = self.results["BALAO_3"]
+        self.assertNotIn("MOUNTAIN", result["expected_tokens"])
+        self.assertNotIn("SHOUT", result["expected_tokens"])
+        self.assertEqual(result["unexplained_missing_tokens"], [])
+        self.assertEqual(result["status"], completeness.STATUS_PASS)
+
+    def test_owned_predecessor_of_the_short_line_is_still_charged(self):
+        self.assertIn("Lold_short", self.results["BALAO_3"]["source_line_ids"])
+
+    def test_the_contaminated_region_no_longer_reaches_the_sibling(self):
+        source_box = self.results["BALAO_3"]["source_bbox"]
+        self.assertLess(source_box[1] + source_box[3], 2128)
+
+    def test_the_sibling_group_keeps_its_own_obligations(self):
+        result = self.results["BALAO_4"]
+        self.assertIn("MOUNTAIN", result["expected_tokens"])
+        self.assertEqual(result["status"], completeness.STATUS_PASS)
+
+    def test_a_narrowing_retry_in_place_is_still_a_loss(self):
+        # The destructive-recovery regression must survive the scoping: the
+        # predecessor that was re-read over the *same* geometry has no sibling
+        # owner, so it stays this group's obligation.
+        results = {
+            item["group_id"]: item
+            for item in completeness.check_page(_full7_shaped_page())
+        }
+        self.assertEqual(results["BALAO_3"]["status"], completeness.STATUS_FAIL)
+        self.assertIn("LOSTCONTROL", results["BALAO_3"]["unexplained_missing_tokens"])
+
+
 class RecordedPageTest(unittest.TestCase):
     """The contract over a real recorder page, live and replayed."""
 

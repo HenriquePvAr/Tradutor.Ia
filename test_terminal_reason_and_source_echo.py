@@ -16,6 +16,7 @@ import _test_bootstrap  # noqa: F401
 import unittest
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 
 import config
@@ -110,6 +111,61 @@ class TerminalReasonPrecedenceTests(unittest.TestCase):
         self.assertTrue(grp.preserved_original)
         self.assertFalse(grp.redrawn)
         self.assertTrue(grp.visual_validation.get("render_preserved_source_echo"))
+
+
+class CandidateBearingTerminalTests(unittest.TestCase):
+    """TDD #41: a valid ordinary candidate reaches a render or an explicit review.
+
+    The optional textured-art strategies answer ``not_needed`` on a plain balloon.
+    That is not a safety rejection and must not become the group's terminal state:
+    a broad strategy still has to render it, and if every strategy refuses, the
+    group leaves render as a review, never as a quiet preserved original.
+    """
+
+    def _uniform_balloon_group(self):
+        image = np.full((900, 400, 3), 255, dtype=np.uint8)
+        cv2.ellipse(image, (200, 420), (140, 60), 0, 0, 360, (0, 0, 0), 6)
+        cv2.putText(image, "WAIT", (140, 435), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0, (0, 0, 0), 3, cv2.LINE_AA)
+        grp = _group("WAIT", box=(136, 400, 130, 46))
+        grp.translation = "ESPERE"
+        grp.translation_candidate = "ESPERE"
+        grp.translation_valid = True
+        grp.sent_to_translation = True
+        return image, grp
+
+    def test_ordinary_dialogue_on_a_uniform_balloon_is_rendered(self):
+        image, grp = self._uniform_balloon_group()
+        render_analyzed_image(image, [], [], [grp], page_index=1)
+        attempted = [item.get("strategy") for item in grp.visual_attempts]
+        self.assertTrue(grp.redrawn, grp.visual_attempts)
+        self.assertEqual(grp.translation_final_state, "translated")
+        self.assertFalse(grp.preserved_original)
+        self.assertFalse(grp.manual_review_required)
+        # The strategy that answered "not needed" is never the one that decided.
+        self.assertNotIn(
+            "not_needed_on_uniform_background",
+            str(grp.visual_validation.get("reason") or ""),
+        )
+        self.assertIn(attempted[0], {"primary", "conservative"})
+
+    def test_every_strategy_refusing_is_an_explicit_review_not_a_silent_preserve(self):
+        image, grp = self._uniform_balloon_group()
+        with patch("ocr_balloon._remove_text_for_group") as remove:
+            remove.side_effect = lambda current, original, group, strategy="primary": (
+                current.copy(),
+                np.zeros(original.shape[:2], dtype=np.uint8),
+                {"mask_valid": False, "reason": f"{strategy}_not_needed_on_uniform_background"},
+            )
+            render_analyzed_image(image, [], [], [grp], page_index=1)
+        self.assertFalse(grp.redrawn)
+        self.assertTrue(grp.manual_review_required)
+        self.assertEqual(grp.translation_final_state, "manual_review")
+        self.assertEqual(
+            grp.translation_final_reason,
+            "translation_not_rendered_after_validation",
+        )
+        self.assertEqual(grp.translation_quality_impact, "review_required")
 
 
 class MixedCaseNoiseTests(unittest.TestCase):
