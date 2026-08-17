@@ -1,3 +1,4 @@
+import importlib.util
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -35,6 +36,58 @@ TESSERACT_LANG_BY_CHOICE = {
     "en": "eng",
     "eng": "eng",
 }
+
+
+# Import-name only: availability is a dependency question, never a filesystem or
+# credential one, so nothing here reads paths, env values or secrets.
+ENGINE_IMPORT_NAMES = {
+    "paddle": ("paddleocr",),
+    "paddle_mobile": ("paddleocr",),
+    "paddle_no_upscale": ("paddleocr",),
+    "rapidocr": ("rapidocr_onnxruntime", "rapidocr"),
+    "tesseract": ("pytesseract",),
+}
+
+
+class OCREngineUnavailableError(RuntimeError):
+    """The selected OCR engine cannot run, so no chapter work should start."""
+
+    def __init__(self, engine, reason_class):
+        self.engine = str(engine or "")
+        self.reason_class = reason_class
+        super().__init__(
+            f"OCR engine indisponivel: engine={self.engine or '(vazio)'} "
+            f"disponivel=false motivo={reason_class}"
+        )
+
+
+def engine_availability(engine):
+    """Report whether ``engine`` can run, as ``(available, reason_class)``.
+
+    An unrecognised name is never resolved to a default: it fails closed with
+    its own reason class so a typo cannot silently select another engine.
+    """
+
+    name = str(engine or "").strip().lower()
+    modules = ENGINE_IMPORT_NAMES.get(name)
+    if not modules:
+        return False, "unknown_engine"
+    for module in modules:
+        try:
+            if importlib.util.find_spec(module) is not None:
+                return True, ""
+        except (ImportError, ValueError):
+            continue
+    return False, "dependency_unavailable"
+
+
+def require_available_engine(engine):
+    """Fail closed before any expensive work when the engine cannot run."""
+
+    available, reason_class = engine_availability(engine)
+    if not available:
+        raise OCREngineUnavailableError(engine, reason_class)
+    return str(engine).strip().lower()
 
 
 @dataclass

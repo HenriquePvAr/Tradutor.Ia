@@ -421,6 +421,14 @@ def _configure_mode(mode):
     engine = override if override in {"rapidocr", "paddle", "paddle_mobile"} else (
         "rapidocr" if mode == "fast" else "paddle"
     )
+    # Engine selection is the last point before download and OCR, so it is where
+    # a missing engine has to stop the run.  Otherwise an unavailable engine only
+    # surfaces as one OCR error per page, after the whole chapter was fetched,
+    # and still produces a PDF with nothing translated.  No silent substitution:
+    # a different engine is a user decision, not a recovery.
+    from ocr_engine import require_available_engine
+
+    require_available_engine(engine)
     os.environ["OCR_ENGINE"] = engine
     os.environ["OCR_FALLBACK_ENGINE"] = "paddle"
     os.environ["OCR_HYBRID_FALLBACK"] = "True"

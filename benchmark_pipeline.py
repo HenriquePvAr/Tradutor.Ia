@@ -2521,6 +2521,17 @@ def _physical_residual_accounting(states):
         "physical_source_residual_group_ids": [],
         "physical_gate_passed": False,
     }
+    # A denominator is only evidence if the text analysis that produces it ran.
+    # Counting pages by upstream outcome is what lets a zero expected-region
+    # count be read as "no source text" or as "the text stage never worked",
+    # instead of collapsing both into a vacuous pass.
+    population = {
+        "pages_total": 0,
+        "pages_no_text_proven": 0,
+        "pages_text_analyzed": 0,
+        "pages_upstream_failed": 0,
+        "pages_unresolved": 0,
+    }
     # Nested and optional: a manifest written before this contract simply omits
     # the block and stays schema-valid instead of gaining fabricated zeros.
     completeness_counts = {
@@ -2535,6 +2546,15 @@ def _physical_residual_accounting(states):
     missing_tokens = set()
     for state in states:
         page = int(state.get("index") or 0)
+        population["pages_total"] += 1
+        if state.get("ocr_error") or state.get("status") == "completed_with_error":
+            population["pages_upstream_failed"] += 1
+        elif (state.get("precheck") or {}).get("skip"):
+            population["pages_no_text_proven"] += 1
+        elif state.get("status") == "completed":
+            population["pages_text_analyzed"] += 1
+        else:
+            population["pages_unresolved"] += 1
         for item in state.get("debug_data", {}).get("items", []):
             if item.get("classification") not in {"speech", "narration"}:
                 continue
@@ -2601,11 +2621,42 @@ def _physical_residual_accounting(states):
             "group_ids": completeness_ids[:200],
             "missing_tokens": sorted(missing_tokens)[:50],
         }
-    result["physical_gate_passed"] = (
+    regions_accounted = (
         result["physical_regions_expected"]
         == result["physical_regions_translated"] + result["physical_regions_preserved"]
         and result["physical_source_residual_count"] == 0
     )
+    # A recorded upstream failure means the chapter was only partially examined:
+    # whatever regions survived describe the pages that worked, never the whole
+    # chapter. This is a population invariant above the per-region residual and
+    # source-completeness checks, which stay exactly as they were.
+    coverage_complete = population["pages_upstream_failed"] == 0
+    # Zero expected regions is a positive claim about the source, so it needs
+    # positive evidence: every page either proved it had no text or was actually
+    # analysed. Pages with no recorded outcome prove nothing, so 0/0 stops being
+    # a pass by default and becomes a question the run has to answer.
+    zero_denominator_proven = bool(population["pages_total"]) and (
+        population["pages_unresolved"] == 0
+    )
+    result["physical_population"] = population
+    result["physical_population_status"] = (
+        "complete" if coverage_complete else "incomplete"
+    )
+    if result["physical_regions_expected"] == 0:
+        if not coverage_complete:
+            reason = "upstream_text_analysis_incomplete"
+        elif not zero_denominator_proven:
+            reason = "source_text_evidence_missing"
+        else:
+            reason = "no_translatable_source_text"
+        result["zero_denominator_reason"] = reason
+        decision = "pass" if reason == "no_translatable_source_text" else "review"
+    elif not coverage_complete or not regions_accounted:
+        decision = "review"
+    else:
+        decision = "pass"
+    result["physical_decision"] = decision
+    result["physical_gate_passed"] = decision == "pass"
     return result
 
 
@@ -2660,6 +2711,14 @@ def _build_quality_report(report, states, translation_retry_records):
             "physical_source_residual_group_ids"
         ],
         "physical_gate_passed": physical_accounting["physical_gate_passed"],
+        "physical_decision": physical_accounting["physical_decision"],
+        "physical_population_status": physical_accounting[
+            "physical_population_status"
+        ],
+        "physical_population": physical_accounting["physical_population"],
+        "zero_denominator_reason": physical_accounting.get(
+            "zero_denominator_reason", ""
+        ),
         "source_completeness": physical_accounting.get("source_completeness", {}),
         "speech_container_reocr": summarize_speech_container_reocr(
             [

@@ -198,6 +198,14 @@ _PHYSICAL_QUALITY_INT_FIELDS = (
     "physical_source_residual_count",
 )
 
+_PHYSICAL_POPULATION_INT_FIELDS = (
+    "pages_total",
+    "pages_no_text_proven",
+    "pages_text_analyzed",
+    "pages_upstream_failed",
+    "pages_unresolved",
+)
+
 
 def sanitize_physical_quality(value: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return canonical physical residual evidence without manufacturing PASS."""
@@ -223,6 +231,23 @@ def sanitize_physical_quality(value: Mapping[str, Any] | None) -> dict[str, Any]
         else []
     )
     result["physical_gate_passed"] = bool(source.get("physical_gate_passed"))
+    # Terminal decision and its population evidence travel together: a report
+    # that says zero regions were expected has to say why zero is the truth.
+    decision = str(source.get("physical_decision") or "")
+    if decision in {"pass", "review", "fail"}:
+        result["physical_decision"] = decision
+    status = str(source.get("physical_population_status") or "")
+    if status in {"complete", "incomplete"}:
+        result["physical_population_status"] = status
+    population = source.get("physical_population")
+    if isinstance(population, Mapping):
+        result["physical_population"] = {
+            field: max(0, int(population.get(field) or 0))
+            for field in _PHYSICAL_POPULATION_INT_FIELDS
+        }
+    reason = str(source.get("zero_denominator_reason") or "")
+    if reason:
+        result["zero_denominator_reason"] = reason[:80]
     completeness = sanitize_source_completeness(source.get("source_completeness"))
     if completeness:
         # Optional block: a run recorded before the source-completeness contract
