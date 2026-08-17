@@ -234,7 +234,9 @@ def prepare_smart_webtoon_pages(
             remainder = buffer.crop((0, split_y, buffer.width, buffer.height))
             buffer.close()
             page_path = folder / f"page_{len(page_paths) + 1:03}.png"
-            page.save(page_path, "PNG", optimize=True)
+            # Plain lossless PNG: Pillow's optimizer costs a multiple of the encode
+            # time for ~1% fewer bytes, and the decoded pixels are identical.
+            page.save(page_path, "PNG")
             page.close()
             page_paths.append(str(page_path))
             split_records.append(
@@ -249,7 +251,7 @@ def prepare_smart_webtoon_pages(
 
     if buffer is not None and buffer.height:
         page_path = folder / f"page_{len(page_paths) + 1:03}.png"
-        buffer.save(page_path, "PNG", optimize=True)
+        buffer.save(page_path, "PNG")
         split_records.append(
             {
                 "page": len(page_paths) + 1,

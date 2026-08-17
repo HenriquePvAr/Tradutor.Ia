@@ -496,6 +496,71 @@ class SmartSplitProtectedRegionTests(unittest.TestCase):
             self.assertEqual(rendered, 9000)
 
 
+class SmartSplitPngEncodingTests(unittest.TestCase):
+    """Logical pages are lossless PNG, but never pay for Pillow's optimizer.
+
+    ``optimize=True`` runs an exhaustive filter/Huffman search that cost ~32s on a
+    real chapter to save ~1.3% of the bytes. PNG is lossless either way, so the
+    decoded pixels - the only thing OCR and the PDF see - are unaffected.
+    """
+
+    def _split(self, root, **kwargs):
+        options = {"target_height": 1800, "min_height": 1050, "max_height": 2400}
+        options.update(kwargs)
+        canvas = _noise_art(6000)
+        _paint_balloon(canvas, 1700, 2100)
+        return prepare_smart_webtoon_pages(
+            _slice_stream(canvas, root), root / "logical", **options
+        )
+
+    def test_logical_pages_are_written_without_the_expensive_optimizer(self):
+        saves = []
+        original = Image.Image.save
+
+        def record(image, target, *args, **kwargs):
+            saves.append((args, kwargs))
+            return original(image, target, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(Image.Image, "save", record):
+                pages, _ = self._split(Path(temporary))
+
+        page_saves = [item for item in saves if item[0][:1] == ("PNG",)]
+        self.assertEqual(len(page_saves), len(pages))
+        for _, kwargs in page_saves:
+            self.assertFalse(kwargs.get("optimize"), kwargs)
+
+    def test_encoding_preserves_decoded_pixels_dimensions_and_mode(self):
+        import io
+
+        with tempfile.TemporaryDirectory() as temporary:
+            pages, report = self._split(Path(temporary))
+            self.assertEqual(len(pages), len(report["splits"]))
+            for page, record in zip(pages, report["splits"]):
+                with Image.open(page) as image:
+                    image.load()
+                    reference = image.copy()
+                buffer = io.BytesIO()
+                reference.save(buffer, "PNG", optimize=True)
+                buffer.seek(0)
+                with Image.open(buffer) as optimized:
+                    self.assertEqual(optimized.size, reference.size)
+                    self.assertEqual(optimized.mode, reference.mode)
+                    self.assertEqual(optimized.tobytes(), reference.tobytes())
+                self.assertEqual(reference.height, int(record["height"]))
+                reference.close()
+
+    def test_encoded_output_is_deterministic_across_runs(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            pages_a, _ = self._split(Path(first))
+            pages_b, _ = self._split(Path(second))
+
+            self.assertEqual(len(pages_a), len(pages_b))
+            for left, right in zip(pages_a, pages_b):
+                self.assertEqual(Path(left).name, Path(right).name)
+                self.assertEqual(Path(left).read_bytes(), Path(right).read_bytes())
+
+
 class BalloonDetectorRecallTests(unittest.TestCase):
     """A balloon is protected because it is a balloon, not because it is flat.
 
