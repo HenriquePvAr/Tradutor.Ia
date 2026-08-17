@@ -1284,7 +1284,9 @@ def run_benchmark(args):
         translation_targets.extend(state["translatable_groups"])
 
     resource_monitor.set_stage("translation")
-    print("Tradução NVIDIA: iniciando", flush=True)
+    # Stage identity is provider-neutral: which provider actually ran is recorded
+    # in provenance, not baked into a label the UI mirrors.
+    print("Tradução: iniciando", flush=True)
     translation_started = time.perf_counter()
     if session_context is not None:
         session_context.prepare(all_analyzed_groups)
@@ -3896,12 +3898,12 @@ def _timing_report_text(report):
         f"Retries de traducao: {report.get('translation_retries', 0)}",
         f"Traducoes rejeitadas: {report.get('translation_rejections', 0)}",
         (
-            "Retries por JSON NVIDIA invalido: "
+            "Retries por JSON invalido do provedor: "
             f"{report.get('translation_invalid_json_retries', 0)}"
         ),
         f"Itens com texto misturado: {report.get('mixed_language_items', 0)}",
         f"Falhas de validacao visual: {report.get('visual_validation_failures', 0)}",
-        f"Textos enviados a NVIDIA: {report['translation_api_texts']}",
+        f"Textos enviados ao provedor: {report['translation_api_texts']}",
         f"Traducoes do cache: {report['translation_cache_hits']}",
         "",
         f"Tempo total: {report['total_seconds']:.2f}s",
@@ -3916,7 +3918,7 @@ def _timing_report_text(report):
             "Classificacao/filtro/agrupamento: "
             f"{stage['classification_grouping']:.2f}s"
         ),
-        f"Traducao NVIDIA: {stage['translation']:.2f}s",
+        f"Traducao: {stage['translation']:.2f}s",
         f"Inpainting: {stage['inpainting']:.2f}s",
         f"Redesenho: {stage['redraw']:.2f}s",
         f"Salvamento: {stage['image_save']:.2f}s",

@@ -1189,7 +1189,9 @@
       create_source_profile: !local && $('#sourceProfileToggle').checked,
       translation_provider: form.translationProvider
         || normalizeTranslationProvider(appState.settings?.translation_provider)
-        || 'nemotron',
+        // Mirrors ui_helpers.DEFAULT_TRANSLATION_PROVIDER; the backend re-resolves
+        // an omitted provider anyway, so the two can never silently disagree.
+        || 'deepl',
       pipeline_intent: {
         requested: true,
         mode: appState.selectedMode === 'download_only' ? 'download_only' : appState.selectedMode,
@@ -1708,6 +1710,8 @@
     'classificação': 'ocr',
     reading_text: 'ocr',
     classification: 'ocr',
+    'tradução': 'translate',
+    // Kept for jobs persisted before the stage label became provider-neutral.
     'tradução nvidia': 'translate',
     translating: 'translate',
     translate: 'translate',

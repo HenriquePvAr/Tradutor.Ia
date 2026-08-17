@@ -55,7 +55,10 @@ class RuntimePtBrNaturalizationWiringTests(unittest.TestCase):
         with mock.patch.object(config, "TRANSLATION_MODE", "nvidia"), \
              mock.patch.object(config, "PTBR_NATURALIZATION_MODE", "selective"), \
              mock.patch.object(config, "NVIDIA_API_KEY", "test-key"):
-            translator, ocr_code = translator_nllb.get_translator("3")
+            # Explicit provider: DeepL is the global default since TDD #43, and this
+            # test is about the NVIDIA family's naturalizer wiring.
+            translator, ocr_code = translator_nllb.get_translator(
+                "3", translation_provider="nemotron")
 
         self.assertEqual(ocr_code, "eng")
         self.assertIsInstance(translator, TranslatorNvidiaBatch)
@@ -68,8 +71,10 @@ class RuntimePtBrNaturalizationWiringTests(unittest.TestCase):
         with mock.patch.object(config, "TRANSLATION_MODE", "nvidia"), \
              mock.patch.object(config, "PTBR_NATURALIZATION_MODE", "off"), \
              mock.patch.object(config, "NVIDIA_API_KEY", "test-key"):
-            translator, _ocr_code = translator_nllb.get_translator("3")
+            translator, _ocr_code = translator_nllb.get_translator(
+                "3", translation_provider="nemotron")
 
+        self.assertIsInstance(translator, TranslatorNvidiaBatch)
         self.assertIsNone(translator.ptbr_naturalizer)
         self.assertEqual(translator.stats["naturalization_mode"], "off")
         self.assertFalse(translator.stats["naturalization_enabled"])

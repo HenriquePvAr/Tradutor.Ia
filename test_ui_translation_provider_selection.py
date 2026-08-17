@@ -194,10 +194,10 @@ class ProviderControlMarkupTests(unittest.TestCase):
         self.assertIn('value="nemotron"', self.form)
         self.assertIn('value="deepl"', self.form)
 
-    def test_deepl_is_offered_under_its_product_label_but_not_preselected(self):
-        self.assertIn('<option value="deepl">DeepL (Qualidade)</option>', self.form)
-        self.assertIn('<option value="nemotron" selected>', self.form)
-        self.assertNotIn('<option value="deepl" selected', self.form)
+    def test_deepl_is_offered_under_its_product_label_and_preselected(self):
+        self.assertIn('<option value="deepl" selected>DeepL (Qualidade)</option>', self.form)
+        self.assertIn('<option value="nemotron">', self.form)
+        self.assertNotIn('<option value="nemotron" selected', self.form)
 
     def test_control_never_renders_a_credential(self):
         for secret in ("api_key", "API_KEY", "Authorization", "token"):

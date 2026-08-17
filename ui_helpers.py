@@ -26,10 +26,12 @@ HISTORY_PATH = REPO_ROOT / ".cache" / "ui_history.json"
 # The canonical set of selectable translation providers, in one place.  It used
 # to be a `{"nemotron", "riva"}` literal repeated across six modules, which is
 # exactly the shape that lets a new provider be accepted at one boundary and
-# rejected at the next.  `nemotron` stays the runtime default: DeepL is
-# selectable here, not promoted.
+# rejected at the next.  `deepl` is the beta default since Full E2E #11 cleared
+# its quality_optimized output; Nemotron and Riva remain first-class explicit
+# choices.  This constant is the single source of truth: UI, job creation and
+# the runner read it instead of repeating a provider literal.
 TRANSLATION_PROVIDERS = frozenset({"nemotron", "riva", "deepl"})
-DEFAULT_TRANSLATION_PROVIDER = "nemotron"
+DEFAULT_TRANSLATION_PROVIDER = "deepl"
 
 
 def normalize_translation_provider(value: object) -> str:
@@ -425,7 +427,7 @@ class ProgressSnapshot:
     stage: str = "Preparando"
     # The stage the current/total counter was actually read from. The stage label advances
     # monotonically on keyword matches, so without this a counter emitted by an earlier
-    # stage (99/99 downloads) would be displayed under a later label (Tradução NVIDIA).
+    # stage (99/99 downloads) would be displayed under a later label (Tradução).
     counter_stage: str = ""
     current: int = 0
     total: int = 0
@@ -442,12 +444,15 @@ _STAGES = (
     (("validando", "validação", "validacao"), "Validando imagens", 0.18),
     ((" ocr", "ocr ", "ocr:", "ocr -"), "OCR", 0.28),
     (("classifica", "agrup"), "Classificação", 0.48),
-    # Provider/configuration lines such as "Usando NVIDIA API" are emitted while
-    # OCR is still running. Translation has an explicit phase marker.
-    # ``NVIDIA:`` is the stable ASCII suffix of the explicit phase marker. It also
-    # survives a Windows child console that corrupts only the accented word before it.
-    # Provider setup lines say ``NVIDIA API`` and therefore do not match.
-    (("tradução nvidia:", "traducao nvidia:", " nvidia:", "traduzindo"), "Tradução NVIDIA", 0.58),
+    # The stage is provider-neutral: the runner now emits "Tradução:", and the
+    # NVIDIA-suffixed needles are kept only so historical logs and persisted job
+    # progress from Nemotron/Riva runs still resolve to the same stage.
+    # Provider/configuration lines such as "Usando NVIDIA API"/"Usando DeepL" are
+    # emitted while OCR is still running and carry no ``:`` marker, so they do not
+    # match. ``NVIDIA:`` is the stable ASCII suffix that survives a Windows child
+    # console corrupting only the accented word before it.
+    (("tradução:", "traducao:", "tradução nvidia:", "traducao nvidia:", " nvidia:",
+      "traduzindo"), "Tradução", 0.58),
     (("inpaint", "render", "redesen", "salvando página"), "Renderização", 0.78),
     (("gerando pdf", "pdf:"), "Geração de PDF", 0.9),
     (("relatório", "relatorio", "quality_report", "compare sheet"), "Relatórios", 0.95),
@@ -480,7 +485,7 @@ def parse_progress_line(line: str, snapshot: ProgressSnapshot) -> ProgressSnapsh
         local = min(1.0, current / total)
         if snapshot.stage == "Baixando imagens":
             snapshot.percent = max(snapshot.percent, 0.08 + local * 0.1)
-        elif snapshot.stage in {"OCR", "Classificação", "Tradução NVIDIA", "Renderização"}:
+        elif snapshot.stage in {"OCR", "Classificação", "Tradução", "Renderização"}:
             snapshot.percent = max(snapshot.percent, 0.25 + local * 0.58)
         else:
             snapshot.percent = max(snapshot.percent, local * 0.85)

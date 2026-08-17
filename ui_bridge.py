@@ -4033,11 +4033,17 @@ class UiBridge:
         env = env_status()
         translation_provider = (
             os.getenv("NVIDIA_TRANSLATION_PROVIDER")
-            or values.get("NVIDIA_TRANSLATION_PROVIDER", "nemotron")
+            or values.get("NVIDIA_TRANSLATION_PROVIDER", DEFAULT_TRANSLATION_PROVIDER)
         )
-        translation_provider = str(translation_provider or "nemotron").strip().lower()
-        if translation_provider in {"", "nvidia"}:
+        translation_provider = str(
+            translation_provider or DEFAULT_TRANSLATION_PROVIDER).strip().lower()
+        # A bare "nvidia" is the legacy family name, and naming it is still an
+        # explicit choice: it resolves to that family's provider, not to the
+        # global default, which is no longer an NVIDIA one.
+        if translation_provider == "nvidia":
             translation_provider = "nemotron"
+        if not translation_provider:
+            translation_provider = DEFAULT_TRANSLATION_PROVIDER
         if translation_provider not in TRANSLATION_PROVIDERS:
             translation_provider = DEFAULT_TRANSLATION_PROVIDER
         model = os.getenv("NVIDIA_TRANSLATION_MODEL") or values.get(
@@ -5913,10 +5919,14 @@ class UiBridge:
             payload.get("translation_provider")
             or payload.get("provider_requested")
             or os.getenv("NVIDIA_TRANSLATION_PROVIDER")
-            or "nemotron"
+            or DEFAULT_TRANSLATION_PROVIDER
         )
         provider = str(raw or "").strip().lower()
-        if provider in {"", "nvidia"}:
+        # "nvidia" is the legacy family name: naming it is still an explicit
+        # choice and must not collapse onto a default from another family.
+        if provider == "nvidia":
+            provider = "nemotron"
+        if not provider:
             provider = DEFAULT_TRANSLATION_PROVIDER
         if provider not in TRANSLATION_PROVIDERS:
             raise ValueError("nvidia_translation_provider_invalid")

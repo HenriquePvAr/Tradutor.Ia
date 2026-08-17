@@ -87,9 +87,15 @@ def get_translator(choice, *, translation_provider=None):
 
     mode = (config.TRANSLATION_MODE or "google").lower()
 
-    from ui_helpers import normalize_translation_provider
+    from ui_helpers import DEFAULT_TRANSLATION_PROVIDER, normalize_translation_provider
 
     provider = normalize_translation_provider(translation_provider)
+    # A job that named no provider gets the canonical beta default.  Scoped to the
+    # NVIDIA family because TRANSLATION_MODE is the older, orthogonal axis: an
+    # install that deliberately runs google/huggingface must not be seized by a
+    # provider default it never opted into.
+    if not provider and mode == "nvidia":
+        provider = DEFAULT_TRANSLATION_PROVIDER
 
     # An explicitly requested provider identifies its own backend, so DeepL is
     # resolved before TRANSLATION_MODE (which only ever selected between the

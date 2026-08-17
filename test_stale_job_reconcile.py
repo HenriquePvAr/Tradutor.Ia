@@ -76,19 +76,19 @@ class ProgressBindingTests(unittest.TestCase):
         snap = parse_progress_line("Usando NVIDIA API (nemotron) - Origem: ingles", snap)
         self.assertEqual(snap.stage, "Baixando imagens")
         self.assertEqual(snap.counter_stage, "Baixando imagens")   # counter did NOT follow
-        snap = parse_progress_line("Tradução NVIDIA: iniciando", snap)
-        self.assertEqual(snap.stage, "Tradução NVIDIA")
+        snap = parse_progress_line("Tradução: iniciando", snap)
+        self.assertEqual(snap.stage, "Tradução")
 
     def test_new_counter_rebinds_to_the_new_stage(self):
         snap = parse_progress_line("Baixando imagens 99/99", ProgressSnapshot())
-        snap = parse_progress_line("Tradução NVIDIA: 5/40", snap)
-        self.assertEqual(snap.counter_stage, "Tradução NVIDIA")
+        snap = parse_progress_line("Tradução: 5/40", snap)
+        self.assertEqual(snap.counter_stage, "Tradução")
         self.assertEqual((snap.current, snap.total), (5, 40))
 
     def test_corrupted_explicit_translation_marker_still_advances_stage(self):
         snap = parse_progress_line("OCR: 87/87", ProgressSnapshot())
         snap = parse_progress_line("Traduï¿½ï¿½o NVIDIA: iniciando", snap)
-        self.assertEqual(snap.stage, "Tradução NVIDIA")
+        self.assertEqual(snap.stage, "Tradução")
         self.assertEqual(snap.counter_stage, "OCR")
 
 

@@ -21,7 +21,7 @@ STAGES = [
     ("Baixando imagens", "download"),
     ("Reconstrução/smart split", "smart_split"),
     ("OCR", "ocr"),
-    ("Tradução NVIDIA", "translate"),
+    ("Tradução", "translate"),
     ("Renderização", "render"),
     ("Geração de PDF", "pdf"),
 ]

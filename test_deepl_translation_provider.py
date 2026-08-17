@@ -395,8 +395,10 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(ui_helpers.TRANSLATION_PROVIDERS,
                          frozenset({"nemotron", "riva", "deepl"}))
 
-    def test_the_runtime_default_is_still_nemotron(self):
-        self.assertEqual(ui_helpers.DEFAULT_TRANSLATION_PROVIDER, "nemotron")
+    def test_the_runtime_default_is_deepl_and_the_nvidia_selector_is_scoped(self):
+        # TDD #43: DeepL is the beta default; NVIDIA_TRANSLATION_PROVIDER now only
+        # picks nemotron vs riva *inside* the NVIDIA family.
+        self.assertEqual(ui_helpers.DEFAULT_TRANSLATION_PROVIDER, "deepl")
         self.assertEqual(config.NVIDIA_TRANSLATION_PROVIDER, "nemotron")
 
     def test_normalize_rejects_unknown_and_passes_known(self):
@@ -520,13 +522,14 @@ class UiSelectionTests(unittest.TestCase):
 
     def test_the_shell_offers_deepl_with_the_canonical_value(self):
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-        self.assertIn('<option value="deepl">DeepL (Qualidade)</option>', shell)
+        self.assertIn('<option value="deepl" selected>DeepL (Qualidade)</option>', shell)
         self.assertIn('<option value="riva">', shell)
-        self.assertIn('<option value="nemotron" selected>', shell)
+        self.assertIn('<option value="nemotron">', shell)
 
-    def test_deepl_is_not_preselected(self):
+    def test_deepl_is_the_preselected_default(self):
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-        self.assertNotIn('<option value="deepl" selected', shell)
+        self.assertIn('<option value="deepl" selected', shell)
+        self.assertNotIn('<option value="nemotron" selected', shell)
 
     def test_the_frontend_normalizer_accepts_deepl_and_rejects_labels(self):
         script = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
@@ -549,7 +552,7 @@ class UiSelectionTests(unittest.TestCase):
             ui_bridge.UiBridge._normalize_translation_provider(
                 {"translation_provider": "DeepL (Qualidade)"})
 
-    def test_an_absent_selection_still_defaults_to_nemotron(self):
+    def test_an_absent_selection_defaults_to_deepl(self):
         import ui_bridge
 
         with mock.patch.dict("os.environ", {}, clear=False):
@@ -557,7 +560,7 @@ class UiSelectionTests(unittest.TestCase):
 
             os.environ.pop("NVIDIA_TRANSLATION_PROVIDER", None)
             self.assertEqual(
-                ui_bridge.UiBridge._normalize_translation_provider({}), "nemotron")
+                ui_bridge.UiBridge._normalize_translation_provider({}), "deepl")
 
 
 class OtherProvidersUnchangedTests(unittest.TestCase):
