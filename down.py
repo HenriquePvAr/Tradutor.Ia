@@ -56,6 +56,12 @@ MAX_PAGINATED_READER_FOLLOWS = 24
 MAX_PAGINATED_READER_SECONDS = 45.0
 MAX_PAGINATED_READER_SCROLL_ROUNDS = 18
 PAGINATED_READER_SETTLE_SECONDS = 0.35
+# Why the lazy-reader scroll walk stopped.  A healthy reader ends on a stability reason; the
+# round cap ending a run is the anomaly a performance report should be able to see.
+SCROLL_STOP_SOURCE_STABLE = "source_stable_at_bottom"
+SCROLL_STOP_NO_PROGRESS = "no_scroll_progress_source_stable"
+SCROLL_STOP_HARD_CAP = "hard_round_cap"
+
 _PAGINATION_QUERY_KEYS = frozenset({
     "page", "p", "pg", "page_no", "page_num", "page_number", "pageindex", "page_index",
 })
@@ -168,7 +174,7 @@ def download_images(
         report["viewer_unique_urls"] = len(viewer_snapshot["urls"])
         report["viewer_urls"] = [_sanitized_url(value) for value in viewer_snapshot["urls"]]
         report["viewer_manifest_complete"] = bool(viewer_snapshot["complete_manifest"])
-        scroll_diagnostics = _scroll_incrementally(driver)
+        scroll_diagnostics = _scroll_incrementally(driver, adapter=adapter)
         report["scroll_diagnostics"] = scroll_diagnostics
         viewer_snapshot_after_scroll = _viewer_image_snapshot(driver, adapter)
         report["viewer_image_count_after_scroll"] = viewer_snapshot_after_scroll["image_count"]
@@ -375,7 +381,7 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
         # before scrolling or inspecting its DOM.
         adapter.validate_redirect(final_url)
         time.sleep(4)
-        scroll_diagnostics = _scroll_incrementally(driver, cancel_check=cancel_check)
+        scroll_diagnostics = _scroll_incrementally(driver, adapter=adapter, cancel_check=cancel_check)
         if cancel_check and cancel_check():
             raise SourceError("cancelled", "during_source_analysis")
         # Registered adapters do not get a weaker completeness policy than the universal
@@ -1226,6 +1232,7 @@ def _maybe_collect_paginated_reader(
                 driver,
                 max_rounds=MAX_PAGINATED_READER_SCROLL_ROUNDS,
                 stable_rounds=3,
+                adapter=adapter,
                 cancel_check=stop_for_budget,
             )
         except SourceError:
@@ -1805,11 +1812,37 @@ def _collect_owned_processes(ownership, process_api):
     return matched, descendant_pids, skipped
 
 
-def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5, cancel_check=None):
+def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5, cancel_check=None,
+                          adapter=None, settle_seconds=1.0, sleep=None, clock=None):
+    """Walk the lazy reader until its source population is provably exhausted.
+
+    A long reader is taller than the round budget: walking it a viewport at a time never
+    reaches the document end, so waiting for "at the bottom and nothing changed" meant every
+    healthy chapter paid the full round cap and its per-round settle sleep.
+
+    The stop is therefore built from converging signals instead: the canonical source
+    population (the reader's own image manifest, not the raw DOM node count, so a virtualized
+    reader that recycles nodes still counts new pages as progress), the document height, and
+    real scroll progress. Once the population holds still for ``stable_rounds`` consecutive
+    rounds the walk jumps to the reader end once to *prove* exhaustion; anything new resets
+    the streak and the walk resumes where it left off, so a reader that pauses mid-chapter is
+    never mistaken for a finished one. The round cap stays as the safety net it was meant to
+    be, not the normal way out.
+    """
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    started = clock()
     stable = 0
     last_height = 0
     last_image_count = 0
+    last_y = -1
+    walk_y = 0
     rounds = 0
+    rounds_with_new_source = 0
+    slept_seconds = 0.0
+    probing = False
+    stop_reason = SCROLL_STOP_HARD_CAP
+    seen_sources = set()
     initial_height = int(driver.execute_script("return document.body.scrollHeight || 0") or 0)
     initial_image_count = int(
         driver.execute_script("return document.images ? document.images.length : 0") or 0
@@ -1827,27 +1860,48 @@ def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5, cancel_check=N
         )
         viewport = int(driver.execute_script("return window.innerHeight || 900") or 900)
         current_y = int(driver.execute_script("return window.scrollY || 0") or 0)
+        observed = _viewer_image_snapshot(driver, adapter)["urls"]
+        discovered = [url for url in observed if url not in seen_sources]
+        seen_sources.update(discovered)
+        if discovered:
+            rounds_with_new_source += 1
 
-        if height <= last_height and image_count <= last_image_count:
-            stable += 1
-        else:
+        if discovered or height > last_height or image_count > last_image_count:
             stable = 0
+        else:
+            stable += 1
 
-        if stable >= stable_rounds and current_y + viewport >= height - 8:
+        at_bottom = current_y + viewport >= height - 8
+        # A probe round legitimately teleports, so it is never evidence of a stuck viewport.
+        stuck = round_index > 0 and not probing and current_y <= last_y
+        if stable >= stable_rounds and (at_bottom or stuck):
+            stop_reason = SCROLL_STOP_SOURCE_STABLE if at_bottom else SCROLL_STOP_NO_PROGRESS
             break
 
         last_height = max(last_height, height)
         last_image_count = max(last_image_count, image_count)
-        next_y = min(current_y + int(viewport * 0.82), max(height - viewport, 0))
+        last_y = current_y
+        max_y = max(height - viewport, 0)
+        if round_index == 0:
+            walk_y = current_y
+        if stable >= stable_rounds and not at_bottom:
+            next_y = max_y
+            probing = True
+        else:
+            walk_y = min(walk_y + int(viewport * 0.82), max_y)
+            next_y = walk_y
+            probing = False
         driver.execute_script("window.scrollTo(0, arguments[0]);", next_y)
-        time.sleep(1.0)
+        sleep(settle_seconds)
+        slept_seconds += float(settle_seconds)
 
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
     if cancel_check and cancel_check():
         from chapter_source import SourceError
 
         raise SourceError("cancelled", "during_source_analysis")
-    time.sleep(2.0)
+    sleep(2.0)
+    slept_seconds += 2.0
     final_height = int(driver.execute_script("return document.body.scrollHeight || 0") or 0)
     final_image_count = int(
         driver.execute_script("return document.images ? document.images.length : 0") or 0
@@ -1867,6 +1921,11 @@ def _scroll_incrementally(driver, max_rounds=90, stable_rounds=5, cancel_check=N
         "viewport_height": int(final_viewport),
         "reached_document_end": bool(final_y + final_viewport >= final_height - 8),
         "stabilized": bool(stable >= stable_rounds),
+        "stop_reason": str(stop_reason),
+        "rounds_with_new_source": int(rounds_with_new_source),
+        "final_source_count": int(len(seen_sources)),
+        "sleep_seconds": round(float(slept_seconds), 3),
+        "wall_seconds": round(float(clock() - started), 3),
     }
 
 
