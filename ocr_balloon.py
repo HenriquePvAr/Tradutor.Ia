@@ -3438,6 +3438,43 @@ def _lines_union_box(lines):
     return box
 
 
+def _adoptable_region_groups(candidate_groups, winner, group):
+    """The other groups of a region re-read that the region genuinely owns.
+
+    Two guards decide, and both are geometric:
+
+    * containment - a group reaching outside the predecessor region is a
+      neighbour the crop padding happened to touch (another balloon, an SFX, a
+      title), and is never adopted however well it scored;
+    * one owner per source line - if a source line is covered by both the
+      winner and another group, the retry split *one* line in two rather than
+      finding a second one.  ``reconcile_recovery_lines`` already owns that
+      case and re-attaches the fragment to the line it belongs to, so adopting
+      it here as well would strand half a sentence in a group of its own.
+
+    What survives both is what Full #9 p076 needs: a whole utterance the crop
+    split off at its sentence boundary, sitting on source lines the winner
+    never covered.
+    """
+    winner_lines = _cleanup_lines_for_group(winner)
+    predecessors = _cleanup_lines_for_group(group)
+    adopted = []
+    for other in candidate_groups:
+        if other is winner or not _box_inside(other.box, group.box):
+            continue
+        if rapidocr_region_decision(other) != "accept":
+            continue
+        other_lines = _cleanup_lines_for_group(other)
+        if any(
+            _lines_over_box(predecessor.box, winner_lines)
+            and _lines_over_box(predecessor.box, other_lines)
+            for predecessor in predecessors
+        ):
+            continue
+        adopted.append(other)
+    return adopted
+
+
 def reconcile_recovery_lines(predecessor_lines, candidate_lines):
     """Decide what a recovery read may do to its predecessor; return the lines.
 
@@ -3643,23 +3680,36 @@ def apply_rapidocr_region_recovery(
             _offset_line(line, x, y, "rapidocr", group.group_id)
             for line in (crop_lines or [])
         ]
-        candidate = _best_candidate_group(
-            _candidate_groups_for_fallback(
-                original_bgr, crop_lines, page_index=page_index
-            ),
-            group.box,
+        candidate_groups = _candidate_groups_for_fallback(
+            original_bgr, crop_lines, page_index=page_index
         )
+        candidate = _best_candidate_group(candidate_groups, group.box)
         if candidate is None:
             record["reason"] = "rapidocr_retry_no_candidate"
             record_count("rapidocr_recovery.retry_failed", page_index=page_index)
             continue
 
-        candidate.source_engine = "rapidocr"
+        # One region can legitimately re-read as more than one group: a sentence
+        # boundary inside the same speech container splits the crop, and only one
+        # of the pieces can win the overlap. Keeping only the winner discards the
+        # rest of the region's own text however well it was read - Full #9 p076
+        # read "HEY!" at 0.96 and dropped it for the longer group below it.
+        # Ownership decides what may join: see ``_adoptable_region_groups``.
+        region_groups = [candidate] + _adoptable_region_groups(
+            candidate_groups, candidate, group
+        )
+        region_groups.sort(key=lambda item: (item.box[1], item.box[0]))
+        for item in region_groups:
+            item.source_engine = "rapidocr"
+        record["region_groups"] = [
+            {"text": item.text, "box": [int(value) for value in item.box]}
+            for item in region_groups
+        ]
         record["attempts"].append(
             _rapidocr_attempt_record(
                 2,
                 "rapidocr_region_crop_upscaled",
-                candidate.text,
+                " ".join(item.text for item in region_groups),
                 candidate.quality_score,
                 candidate.quality_reasons,
             )
@@ -3675,8 +3725,17 @@ def apply_rapidocr_region_recovery(
         # content with it: a truncated read scores well precisely because there
         # is less of it left to score.
         predecessors = _cleanup_lines_for_group(group)
+        candidate_lines = []
+        seen_candidate_lines = set()
+        for item in region_groups:
+            for line in _cleanup_lines_for_group(item):
+                if id(line) in seen_candidate_lines:
+                    continue
+                seen_candidate_lines.add(id(line))
+                candidate_lines.append(line)
+        candidate_lines.sort(key=lambda line: (line.box[1], line.box[0]))
         decision, reconciled, decision_reason = reconcile_recovery_lines(
-            predecessors, _cleanup_lines_for_group(candidate)
+            predecessors, candidate_lines
         )
         record["decision"] = decision
         record["decision_reason"] = decision_reason
@@ -5303,6 +5362,26 @@ def _center_inside(inner, outer):
     cx = ix + iw / 2
     cy = iy + ih / 2
     return ox <= cx <= ox + ow and oy <= cy <= oy + oh
+
+
+def _box_inside(inner, outer):
+    """True when ``inner`` lies within ``outer``, allowing for re-read jitter.
+
+    A region re-read at the recogniser's preferred scale returns boxes a couple
+    of pixels off the ones the page scale produced, so exact containment would
+    reject a line the region plainly owns.  The tolerance is a fraction of the
+    inner box's own height - always less than one text line - so it can absorb
+    that jitter and still never reach into a neighbouring container.
+    """
+    ix, iy, iw, ih = inner
+    ox, oy, ow, oh = outer
+    slack = max(2.0, ih * 0.25)
+    return (
+        ix >= ox - slack
+        and iy >= oy - slack
+        and ix + iw <= ox + ow + slack
+        and iy + ih <= oy + oh + slack
+    )
 
 
 PORTUGUESE_ACCENTED_FOLD_TOKENS = {"SO"}

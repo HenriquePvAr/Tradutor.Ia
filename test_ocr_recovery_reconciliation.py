@@ -357,5 +357,136 @@ class UncoveredPredecessorTests(unittest.TestCase):
         self.assertEqual([line.text for line in retained], ["iK3H"])
 
 
+class RegionOwnedCandidateTests(unittest.TestCase):
+    """A retry owns its whole region, not only the best group inside it.
+
+    ``_best_candidate_group`` returns one winner.  A retry that legitimately
+    splits the predecessor region into more than one group - a sentence boundary
+    inside the same speech container - therefore threw the rest of the region's
+    own text away, however well it was read.  Full #9 p076 is the case: the
+    region crop reads ``HEY!`` at 0.96, the crop splits after the ``!``, the
+    longer ``DON'T SAY THINGS LIKE THAT!`` group wins the overlap, and the
+    recovered short line never reaches the line list.
+    """
+
+    def _group(self, lines, group_id="p076:BALAO_3"):
+        group = TextGroup(
+            group_id=group_id,
+            lines=list(lines),
+            text=" ".join(line.text for line in lines),
+            classification="speech",
+            inside_balloon_like_region=True,
+            source_engine="rapidocr",
+        )
+        group.quality_score, group.quality_reasons = score_group_ocr_quality(group)
+        return group
+
+    def _run(self, raw_lines, groups, crop_lines):
+        """Same stub engine, but the *real* candidate-group selection."""
+
+        class _Stub:
+            def __call__(self, lang, engine=None, fallback_engine=None):
+                return self
+
+            def detect_lines(self, crop, page=None, **kwargs):
+                return [
+                    OCRLine(
+                        text=line.text,
+                        confidence=line.confidence,
+                        polygon=line.polygon.copy(),
+                        box=line.box,
+                        raw_text=line.raw_text,
+                        engine="rapidocr",
+                        page=page,
+                    )
+                    for line in crop_lines
+                ]
+
+        image = np.zeros((2418, 800, 3), dtype=np.uint8)
+        image[:] = 255
+        with patch.object(config, "OCR_ENGINE", "rapidocr"), patch.object(
+            config, "RAPIDOCR_REGION_RECOVERY", True
+        ), patch.object(ocr_balloon, "OCREngine", _Stub()), patch.object(
+            ocr_balloon,
+            "_offset_line",
+            lambda line, dx, dy, engine, group_id: line,
+        ):
+            return apply_rapidocr_region_recovery(image, raw_lines, groups, "eng", 76)
+
+    def _p076(self):
+        raw = [
+            _line("iK3H", (379, 2076, 89, 43), 0.5725),
+            _line("DON'T SAY", (325, 2123, 195, 40), 0.9491),
+            _line("THINGS LIKE", (314, 2172, 217, 38), 0.9879),
+            _line("THAT!", (373, 2218, 102, 39), 0.9973),
+        ]
+        # What the production region crop actually returns for these pixels.
+        crop = [
+            _line("HEY!", (382, 2079, 80, 36), 0.9611),
+            _line("DON'T SAY", (328, 2128, 190, 34), 0.9713),
+            _line("THINGS LIKE", (317, 2175, 213, 33), 0.9955),
+            _line("THAT!", (374, 2220, 99, 35), 0.9976),
+        ]
+        return raw, crop
+
+    def test_short_line_split_off_by_the_retry_still_reaches_the_line_list(self):
+        raw, crop = self._p076()
+        lines, records = self._run(list(raw), [self._group(raw)], crop)
+        joined = compact(_text_of(lines))
+        self.assertIn("HEY", joined, "the recovered short dialogue must be kept")
+        self.assertNotIn("IK3H", joined, "the corruption it replaced must be gone")
+        self.assertEqual(len(records[0].get("region_groups") or []), 2)
+
+    def test_region_owned_recovery_does_not_duplicate_lines(self):
+        raw, crop = self._p076()
+        lines, _records = self._run(list(raw), [self._group(raw)], crop)
+        joined = compact(_text_of(lines))
+        self.assertEqual(joined.count("HEY"), 1)
+        self.assertEqual(joined.count("THINGSLIKE"), 1)
+
+    def test_region_owned_recovery_preserves_reading_order(self):
+        raw, crop = self._p076()
+        lines, _records = self._run(list(raw), [self._group(raw)], crop)
+        texts = [line.text for line in lines]
+        self.assertEqual(texts, sorted(texts, key=lambda t: dict(
+            (line.text, line.box[1]) for line in lines
+        )[t]))
+        self.assertEqual(texts[0], "HEY!")
+
+    def test_a_split_source_line_keeps_one_owner(self):
+        """Full #9 p002: the retry split one source line, it did not find a new one.
+
+        ``CONTROL`` sits on the same source line as ``THAT I LOST``.  Adopting it
+        as a group of its own would strand it outside the sentence it belongs to,
+        so the reconciliation contract keeps it - and keeps it once.
+        """
+        raw = [
+            _line("IT'SNOT JUST", (325, 228, 244, 37), 0.9636),
+            _line("THAT I LOSTCONTROL", (260, 275, 376, 33), 0.9676),
+            _line("AGAINANDALMOST", (282, 321, 333, 33), 0.9931),
+        ]
+        crop = [
+            _line("IT'S NOT JUST", (328, 230, 240, 34), 0.9722),
+            _line("THAT I LOST", (260, 275, 212, 32), 0.9778),
+            _line("CONTROL", (474, 275, 160, 32), 0.9810),
+            _line("AGAIN AND ALMOST", (282, 320, 332, 32), 0.9977),
+        ]
+        lines, records = self._run(list(raw), [self._group(raw)], crop)
+        self.assertEqual(
+            len(records[0].get("region_groups") or []),
+            1,
+            "a fragment of an existing source line is not a second region group",
+        )
+        self.assertEqual(compact(_text_of(lines)).count("CONTROL"), 1)
+
+    def test_text_outside_the_predecessor_region_is_never_adopted(self):
+        """The crop padding can reach a neighbour; the region cannot own it."""
+        raw, crop = self._p076()
+        neighbour = _line("ANOTHER BALLOON", (60, 2300, 240, 38), 0.99)
+        lines, _records = self._run(list(raw), [self._group(raw)], crop + [neighbour])
+        joined = compact(_text_of(lines))
+        self.assertNotIn("ANOTHERBALLOON", joined)
+
+
 if __name__ == "__main__":
     unittest.main()
