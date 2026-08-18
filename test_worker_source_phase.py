@@ -9,6 +9,7 @@ Hermetic: fake analyses, no browser, no network, no child process.
 
 import _test_bootstrap  # noqa: F401
 
+import os
 import tempfile
 import threading
 import time
@@ -16,6 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import process_tree
 from job_store import JobStatus, JobStore
 from source_readiness import PIPELINE_OPERATIONS, SourceReadinessStore, default_workspace_id
 from source_analysis_phase import (
@@ -364,7 +366,12 @@ class WorkerPhaseTests(unittest.TestCase):
 
     def test_source_analysis_keeps_the_worker_lease_alive(self):
         job = self.queued_url_job()
-        self.store.register_worker("w-test", 4321, create_time=1.0)
+        # The lease must name a real, live process instance: a worker whose process is
+        # gone is no longer healthy, so a made-up pid/start time would not model a
+        # heartbeating worker at all.
+        self.store.register_worker(
+            "w-test", os.getpid(),
+            create_time=(process_tree.snapshot(os.getpid()) or {}).get("create_time"))
         started = threading.Event()
         release = threading.Event()
 

@@ -51,6 +51,34 @@ class JobStatus:
     IN_FLIGHT = frozenset({CLAIMING, STARTING, RUNNING, CANCELLING})
 
 
+def worker_lease_process_alive(lease: dict[str, Any] | None) -> bool:
+    """Whether the worker instance that took ``lease`` is still the live process.
+
+    A worker that dies by ``os._exit``, a forced termination, a native crash or an OOM
+    kill never runs its own shutdown path, so its lease row outlives it with a heartbeat
+    that was fresh a moment ago.  Heartbeat freshness alone therefore cannot see a hard
+    crash, and treating the corpse as healthy is what makes health lie, blocks a
+    replacement worker from starting and leaves the job it owned falsely running.
+
+    The evidence used is the one the rest of the repository already trusts for process
+    ownership: the PID plus the recorded process start time.  A bare PID is unsafe because
+    PIDs are reused; the start time pins the identity to this worker instance.  A lease
+    that never recorded a start time carries no identity to verify and keeps the
+    heartbeat-only contract instead of failing closed on a worker that may well be alive.
+    """
+    if not lease:
+        return False
+    pid = lease.get("pid")
+    create_time = lease.get("create_time")
+    if not pid or create_time is None:
+        return True
+    try:
+        import process_tree
+    except Exception:  # noqa: BLE001 - without psutil there is no evidence to check
+        return True
+    return process_tree.matches(int(pid), create_time=float(create_time))
+
+
 _DEFAULT_TERMINAL_REASONS = {
     JobStatus.CANCELLED: "cancelled",
     JobStatus.FAILED: "pipeline_failed",
@@ -1179,21 +1207,35 @@ class JobStore:
         (a stuck pipeline keeps heartbeating), so staleness of the job heartbeat is the
         wrong signal. A job is orphaned when the worker that owns it is no longer a live,
         heartbeating worker - then its runner, however lively, has nobody supervising it.
+        A hard-crashed worker leaves a lease whose heartbeat is still fresh, so waiting out
+        the stale window before reconciling would keep the job falsely running while a
+        replacement worker sits right next to it.  Liveness therefore uses the same
+        contract as the rest of the store: a fresh heartbeat *and* a surviving worker
+        process instance.
         This does not transition anything; the caller checks the runner process first.
         """
         cutoff = time.time() - worker_stale_seconds
         placeholders = ",".join("?" for _ in JobStatus.IN_FLIGHT)
         rows = self._conn.execute(
-            f"""
-            SELECT j.* FROM jobs j
-            LEFT JOIN workers w ON j.worker_id = w.worker_id
-            WHERE j.status IN ({placeholders})
-              AND (j.worker_id IS NULL OR j.worker_id != ?
-                   AND (w.worker_id IS NULL OR w.heartbeat_at IS NULL OR w.heartbeat_at < ?))
-            """,
-            (*JobStatus.IN_FLIGHT, exclude_worker or "", cutoff),
+            f"SELECT * FROM jobs WHERE status IN ({placeholders})",
+            tuple(JobStatus.IN_FLIGHT),
         ).fetchall()
-        return [self._row_to_dict(row) for row in rows]  # type: ignore[misc]
+        orphans: list[dict[str, Any]] = []
+        for row in rows:
+            job: dict[str, Any] = self._row_to_dict(row)  # type: ignore[assignment]
+            owner = str(job.get("worker_id") or "")
+            if not owner:
+                orphans.append(job)          # claimed by nobody: never supervised
+                continue
+            if owner == exclude_worker:
+                continue                     # a worker never orphans its own job
+            lease = self.get_worker(owner)
+            heartbeat = (lease or {}).get("heartbeat_at")
+            if lease is None or heartbeat is None or heartbeat < cutoff:
+                orphans.append(job)
+            elif not worker_lease_process_alive(lease):
+                orphans.append(job)
+        return orphans
 
     def mark_resumable(self, job_id: str, *, resume_from_stage: str = "") -> dict[str, Any]:
         return self.transition(
@@ -1323,14 +1365,25 @@ class JobStore:
         self._conn.execute("DELETE FROM workers WHERE worker_id=?", (worker_id,))
 
     def healthy_worker(self, *, stale_seconds: float = 15.0) -> dict[str, Any] | None:
+        """The live worker instance, or None. Fails closed on a hard-crashed worker.
+
+        A fresh heartbeat is necessary but not sufficient: a worker killed without a
+        shutdown path leaves its lease row behind, and reporting that corpse as healthy is
+        what made the health surface lie, made ``ensure_worker``/``start_worker`` refuse to
+        start a replacement, and made a replacement worker exit on ``another_worker_alive``.
+        Every fresh lease is checked, not only the newest, so a dead lease registered after
+        a live one cannot hide the worker that is actually running.
+        """
         cutoff = time.time() - stale_seconds
-        row = self._conn.execute(
-            "SELECT * FROM workers WHERE heartbeat_at >= ? ORDER BY heartbeat_at DESC LIMIT 1",
+        rows = self._conn.execute(
+            "SELECT * FROM workers WHERE heartbeat_at >= ? ORDER BY heartbeat_at DESC",
             (cutoff,),
-        ).fetchone()
-        if row is None:
-            return None
-        return {key: row[key] for key in row.keys()}
+        ).fetchall()
+        for row in rows:
+            lease = {key: row[key] for key in row.keys()}
+            if worker_lease_process_alive(lease):
+                return lease
+        return None
 
     def get_worker(self, worker_id: str) -> dict[str, Any] | None:
         """Return one worker lease without exposing it outside the trusted bridge."""
