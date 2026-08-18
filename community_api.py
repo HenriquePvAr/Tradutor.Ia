@@ -295,11 +295,16 @@ def build_read_provider():
 class CommunityApi:
     def __init__(self, job_store, *, community_db_path: Path = COMMUNITY_DB_PATH,
                  output_root: Path = OUTPUT_ROOT,
-                 storage_root: Path = COMMUNITY_STORAGE_ROOT,
+                 storage_root: Path | None = None,
                  read_provider_factory: Callable[[], Any] | None = None,
                  profile_sync: Callable[[RequestPrincipal], Any] | None = None,
                  publication_metadata_config: dict[str, Any] | None = None,
                  canonical_identity_materializer: Any | None = None):
+        # Resolved on call, not bound as a default at import: a default argument froze the
+        # real runtime path into the signature, so a caller that redirected
+        # COMMUNITY_STORAGE_ROOT still wrote into the project's real .cache/runtime.
+        if storage_root is None:
+            storage_root = COMMUNITY_STORAGE_ROOT
         if storage_provider_name() == "local_test":
             storage_root = Path(os.environ["LOCAL_TEST_STORAGE_ROOT"]).resolve()
         else:

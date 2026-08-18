@@ -36,6 +36,10 @@ def _is_test_invocation(
 
 
 if _is_test_invocation():
+    from hermetic_runtime import install_runtime_isolation_guard
     from offline_test_guard import install_offline_network_guard
 
     install_offline_network_guard()
+    # A guarded child inherits TRADUTOR_TEST_RUNTIME_ROOT, so it reuses the parent suite's
+    # isolated runtime instead of allocating (and leaking) another temporary directory.
+    install_runtime_isolation_guard()

@@ -340,12 +340,20 @@ class UiBridge:
 
     def __init__(self) -> None:
         requested_root = str(os.getenv("TRADUTOR_TEST_RUNTIME_ROOT") or "").strip()
-        test_override_allowed = (
+        # Set only by hermetic_runtime.install_runtime_isolation_guard, which runs from the
+        # test bootstrap (_test_bootstrap/conftest/sitecustomize) and never from a production
+        # entrypoint, so the production resolution below is untouched.
+        hermetic_tests = os.getenv("TRADUTOR_IA_RUNTIME_ISOLATION_GUARD") == "1"
+        test_override_allowed = hermetic_tests or (
             os.getenv("APP_ENV") == "test"
             and os.getenv("ALLOW_LOCAL_TEST_IDENTITIES") == "1"
         )
         if requested_root and not test_override_allowed:
             raise RuntimeError("test_runtime_root_not_allowed")
+        if hermetic_tests and not requested_root:
+            # Fail closed: a test that drops the isolated root must not silently inherit the
+            # project's real queue, worker leases and artifacts.
+            raise RuntimeError("hermetic_test_runtime_root_required")
         self.runtime_root = (
             Path(requested_root).expanduser().resolve()
             if requested_root else (REPO_ROOT / ".cache" / "runtime").resolve()

@@ -2,6 +2,7 @@
 
 import _test_bootstrap  # noqa: F401
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,7 +38,8 @@ class UiPersistentQueueTests(unittest.TestCase):
                 },
             )
         self._patches = [
-            patch.object(ui_bridge, "JOBS_DB_PATH", self.db),
+            # Explicit isolated runtime root instead of the project's real .cache/runtime.
+            patch.dict(os.environ, {"TRADUTOR_TEST_RUNTIME_ROOT": str(self.tmp)}),
             patch.object(ui_bridge, "env_status", lambda *a, **k: {"env_exists": True, "nvidia_configured": True}),
             patch.object(ui_bridge, "_current_commit", lambda: "deadbeef"),
             patch.object(ui_bridge, "_current_branch", lambda: "main"),

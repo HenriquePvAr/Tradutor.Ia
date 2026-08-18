@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import _test_bootstrap  # noqa: F401
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +18,9 @@ from job_store import JobStore, TransitionError
 
 def _bridge(tmp_path: Path) -> ui_bridge.UiBridge:
     patches = (
-        patch.object(ui_bridge, "JOBS_DB_PATH", tmp_path / "jobs.sqlite3"),
+        # Explicit isolated runtime root: jobs.sqlite3, artifacts, profiles and history all
+        # land under tmp_path instead of the project's real .cache/runtime.
+        patch.dict(os.environ, {"TRADUTOR_TEST_RUNTIME_ROOT": str(tmp_path)}),
         patch.object(ui_bridge, "env_status", lambda *a, **k: {
             "env_exists": True, "nvidia_configured": True,
         }),
