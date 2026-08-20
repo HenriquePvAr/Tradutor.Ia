@@ -386,3 +386,23 @@ run_manifest.commit_hash`) antes de concluir qualquer coisa sobre qualidade pós
 sem Drive e sem push. A execução foi válida para provenance, mas o produto não está pronto:
 o PDF permaneceu `review_required` e a auditoria visual confirmou story text comum em
 inglês, incluindo sentinelas p002, p005, p006, p025, p030, p044, p062 e p068.
+
+### TDD #70 — P68 geometry-first physical proof subgate (2026-08-20, base `4d182fb`)
+
+**Gatilho:** o #69 provou que p068 ainda continha `IT'LL` visualmente, mas a evidência
+estruturada lia a linha filha como `77,!!`. Isso mostrou que OCR pós-render não pode ser a
+única prova de remoção física.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra ownership de cleanup para narração aberta e `source_owned_geometry_coverage`. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Explica que máscara parcial continua review mesmo quando OCR vira ruído, e que OCR é sinal secundário. |
+| `docs/DOCUMENTATION_AUDIT.md` | **Atualizado** | Este registro. |
+| `README.md` e `docs/README.md` | **Não requer mudança** | O status macro permanece qualidade aberta aguardando E2E pós-#70 completo. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Sem alteração visível de fluxo de usuário. |
+| Capturas de tela | **Não requer** | A mudança é contrato hermético de máscara/geometria, coberto por testes offline. |
+
+**Honestidade #70 parcial:** este registro fecha apenas o subgate P68 de ownership e prova
+geometry-first. Ele não classifica o TDD #70 completo como A/B e não autoriza por si só
+fechamento de qualidade; rejected/validated-not-rendered de #69 permanecem para auditoria
+ou E2E controlado posterior conforme orçamento explícito.

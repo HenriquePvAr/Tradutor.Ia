@@ -146,6 +146,51 @@ def _p002_shaped_case(uncovered_word=True):
     return original, rendered, group, cleanup_mask
 
 
+def _p68_shaped_case(complete_cleanup=False):
+    """Open narration parent with a corrupted child source line, like #69 p068."""
+
+    original = _dark_panel(shape=(460, 640))
+    parent_box = (110, 220, 420, 44)
+    child_box = (250, 150, 130, 42)
+    _write_light_text(
+        original,
+        "TAKE A FEW HOURS",
+        (parent_box[0] + 6, parent_box[1] + parent_box[3] - 10),
+        scale=0.65,
+    )
+    _write_light_text(
+        original,
+        "IT'LL",
+        (child_box[0] + 6, child_box[1] + child_box[3] - 10),
+        scale=0.9,
+    )
+    parent = _line(
+        "TAKE A FEW HOURS FOR THE NEAREST AWAKENED TO GET HERE.",
+        parent_box,
+    )
+    parent.metadata = {"ocr_line_id": "p068:BALAO_2:L0"}
+    child = _line("77,!!", child_box)
+    child.metadata = {"ocr_line_id": "p068:LINE_004"}
+    group = _speech_group(
+        [parent],
+        "TAKE A FEW HOURS FOR THE NEAREST AWAKENED TO GET HERE.",
+        "LEVE ALGUMAS HORAS PARA O DESPERTO MAIS PRÓXIMO CHEGAR AQUI.",
+    )
+    group.group_id = "p068:BALAO_2"
+    group.classification = "narration"
+    group.cleanup_lines = [child]
+    cleanup_mask = np.zeros(original.shape[:2], dtype=np.uint8)
+    px, py, pw, ph = parent_box
+    cleanup_mask[py - 2 : py + ph + 2, px - 2 : px + pw + 2] = 255
+    cx, cy, cw, ch = child_box
+    child_x2 = cx + cw + 2 if complete_cleanup else cx + max(12, cw // 3)
+    cleanup_mask[cy - 2 : cy + ch + 2, cx - 2 : child_x2] = 255
+    rendered = original.copy()
+    rendered[cleanup_mask > 0] = (14, 14, 14)
+    _write_light_text(rendered, group.translation, (92, 260), scale=0.42)
+    return original, rendered, group, cleanup_mask
+
+
 def _check(rendered, group, original=None, cleanup_mask=None, observed=""):
     _StubEngine.observed = observed
     with patch.object(ocr_balloon, "OCREngine", _StubEngine):
@@ -293,6 +338,10 @@ class RemovalEvidenceGuardTests(unittest.TestCase):
         )
 
         self.assertTrue(removal["measured"])
+        self.assertIn("source_owned_geometry_coverage", removal)
+        self.assertLess(removal["source_owned_geometry_coverage"], 1.0)
+        self.assertGreater(removal["source_owned_geometry_uncovered_pixels"], 0)
+        self.assertGreater(removal["largest_unmasked_source_component"], 0)
         self.assertTrue(ocr_balloon._source_removal_incomplete(group, removal))
 
     def test_complete_coverage_is_accepted(self):
@@ -301,7 +350,42 @@ class RemovalEvidenceGuardTests(unittest.TestCase):
             original, rendered, group, mask
         )
 
+        self.assertEqual(removal["source_owned_geometry_coverage"], 1.0)
+        self.assertEqual(removal["largest_unmasked_source_component"], 0)
         self.assertFalse(ocr_balloon._source_removal_incomplete(group, removal))
+
+    def test_p68_partial_child_mask_is_not_clean_even_when_ocr_is_noise(self):
+        original, rendered, group, mask = _p68_shaped_case(complete_cleanup=False)
+
+        result = _check(
+            rendered,
+            group,
+            original,
+            mask,
+            observed="LEVE ALGUMAS HORAS 77,!!",
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["physical_decision"], REVIEW)
+        self.assertEqual(result["reason"], "uncovered_source_text_evidence")
+        self.assertLess(result["source_owned_geometry_coverage"], 1.0)
+        self.assertIn("p068:LINE_004", result["source_geometry_uncovered_line_ids"])
+
+    def test_p68_complete_child_mask_is_clean_without_exact_source_ocr(self):
+        original, rendered, group, mask = _p68_shaped_case(complete_cleanup=True)
+
+        result = _check(
+            rendered,
+            group,
+            original,
+            mask,
+            observed="LEVE ALGUMAS HORAS PARA O DESPERTO MAIS PROXIMO CHEGAR AQUI",
+        )
+
+        self.assertTrue(result["passed"], result.get("reason"))
+        self.assertEqual(result["physical_decision"], PASS)
+        self.assertEqual(result["source_owned_geometry_coverage"], 1.0)
+        self.assertEqual(result["largest_unmasked_source_component"], 0)
 
     def test_unmeasurable_evidence_never_invents_a_failure(self):
         _original, rendered, group, _mask = _p002_shaped_case()

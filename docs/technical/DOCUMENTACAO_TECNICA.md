@@ -859,6 +859,14 @@ de produção, mas não fecha qualidade: o PDF final continuou `review_required`
 reportados e story text comum visivelmente restante em páginas sentinela como p002, p005,
 p006, p025, p030, p044, p062 e p068.
 
+No TDD #70, a trilha P68 foi reforçada offline sem novo job/provider: linhas OCR curtas e
+corrompidas podem entrar em `cleanup_lines` também quando pertencem a uma narração aberta
+(`narration_box`) com evidência visual de container, não apenas a balões fechados. A prova
+física também passou a expor `source_owned_geometry_coverage` e a reprovar quando a máscara
+não cobre um componente de glyph fonte em escala de linha, mesmo que o OCR pós-render leia
+o resto como ruído (`77,!!`) ou não reconheça a palavra original. OCR continua sinal
+secundário; a cobertura de geometria/máscara fonte é parte do contrato fail-closed.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`

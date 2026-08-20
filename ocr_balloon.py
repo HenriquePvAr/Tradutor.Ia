@@ -5367,6 +5367,30 @@ def _group_has_enclosed_container(group):
     return False
 
 
+def _group_accepts_ignored_cleanup_attachment(group):
+    """Whether ignored child-line geometry may be cleaned by this story group.
+
+    Cleanup ownership is stricter than translation ownership but broader than a
+    closed-contour balloon: real narration boxes can be visually open/merged with
+    the page background while still being the obvious owner of a short corrupted
+    child line.  The child text is not merged into provider input here; only its
+    source glyph geometry joins the cleanup mask.
+    """
+
+    if _group_has_enclosed_container(group):
+        return True
+    background_type = str(getattr(group, "background_type", "") or "")
+    metrics = getattr(group, "background_metrics", None) or {}
+    if background_type == "narration_box" and (
+        metrics.get("open_white_narration")
+        or metrics.get("open_dark_narration")
+        or metrics.get("dominant_white_enclosure")
+        or metrics.get("stylized_white_enclosure")
+    ):
+        return True
+    return bool(getattr(group, "inside_narration_box_like_region", False))
+
+
 def _reclaim_short_lexical_lines(groups, candidates, image_shape):
     """Reclaim short speech lines filtered as noise into their speech group.
 
@@ -5459,7 +5483,7 @@ def _associate_ignored_cleanup_lines(groups, candidates, image_shape, page_index
                 record_count("associate_ignored.story_block_checks", 1, page_index=page_index)
                 if group.ignored or not _text_has_lexical_word(group.text):
                     continue
-                if not _group_has_enclosed_container(group):
+                if not _group_accepts_ignored_cleanup_attachment(group):
                     continue
                 if str(getattr(group, "classification", "") or "") in {
                     "decorative",
@@ -9162,6 +9186,10 @@ def _uncovered_source_text_evidence(original_bgr, rendered_bgr, group, cleanup_m
 
     empty = {
         "source_text_pixels": 0,
+        "source_owned_geometry_uncovered_pixels": 0,
+        "largest_unmasked_source_component": 0,
+        "source_owned_geometry_coverage": 1.0,
+        "source_geometry_uncovered_line_ids": [],
         "uncovered_source_text_pixels": 0,
         "largest_uncovered_source_component": 0,
         "source_text_coverage": 1.0,
@@ -9179,8 +9207,11 @@ def _uncovered_source_text_evidence(original_bgr, rendered_bgr, group, cleanup_m
     rendered_gray = cv2.cvtColor(rendered_bgr, cv2.COLOR_BGR2GRAY).astype(np.int16)
     height, width = original_gray.shape
     total = 0
+    unmasked_total = 0
     uncovered_total = 0
+    largest_unmasked = 0
     largest = 0
+    unmasked_lines = []
     uncovered_lines = []
     measured = False
     for line in _cleanup_lines_for_group(group):
@@ -9212,6 +9243,17 @@ def _uncovered_source_text_evidence(original_bgr, rendered_bgr, group, cleanup_m
         unchanged = (
             np.abs(roi - rendered_gray[y1:y2, x1:x2]) <= config.VISUAL_DIFF_THRESHOLD
         )
+        unmasked = (foreground & (cleanup_mask[y1:y2, x1:x2] == 0)).astype(np.uint8) * 255
+        unmasked_count, _unmasked_labels, unmasked_stats, _unmasked_centroids = (
+            cv2.connectedComponentsWithStats(unmasked, 8)
+        )
+        line_largest_unmasked = max(
+            (
+                int(unmasked_stats[label, cv2.CC_STAT_AREA])
+                for label in range(1, unmasked_count)
+            ),
+            default=0,
+        )
         surviving = (
             foreground & unchanged & (cleanup_mask[y1:y2, x1:x2] == 0)
         ).astype(np.uint8) * 255
@@ -9223,16 +9265,27 @@ def _uncovered_source_text_evidence(original_bgr, rendered_bgr, group, cleanup_m
             default=0,
         )
         total += line_total
+        unmasked_total += int(np.count_nonzero(unmasked))
         uncovered_total += int(np.count_nonzero(surviving))
+        largest_unmasked = max(largest_unmasked, line_largest_unmasked)
         largest = max(largest, line_largest)
+        line_id = str((getattr(line, "metadata", None) or {}).get("ocr_line_id") or "")
+        if line_largest_unmasked >= _glyph_scale_component_area(h):
+            unmasked_lines.append(line_id)
         if line_largest >= _glyph_scale_component_area(h):
             uncovered_lines.append(
-                str((getattr(line, "metadata", None) or {}).get("ocr_line_id") or "")
+                line_id
             )
     if not measured:
         return empty
     return {
         "source_text_pixels": int(total),
+        "source_owned_geometry_uncovered_pixels": int(unmasked_total),
+        "largest_unmasked_source_component": int(largest_unmasked),
+        "source_owned_geometry_coverage": round(
+            float(1.0 - unmasked_total / max(1, total)), 4
+        ),
+        "source_geometry_uncovered_line_ids": unmasked_lines,
         "uncovered_source_text_pixels": int(uncovered_total),
         "largest_uncovered_source_component": int(largest),
         "source_text_coverage": round(
@@ -9270,8 +9323,10 @@ def _source_removal_incomplete(group, removal):
         (line.box[3] for line in _cleanup_lines_for_group(group)),
         default=0,
     )
-    return removal["largest_uncovered_source_component"] >= _glyph_scale_component_area(
-        line_height
+    threshold = _glyph_scale_component_area(line_height)
+    return (
+        removal.get("largest_uncovered_source_component", 0) >= threshold
+        or removal.get("largest_unmasked_source_component", 0) >= threshold
     )
 
 

@@ -180,6 +180,14 @@ terminou `review_required`, `physical_gate_passed=false`, 104 regiões físicas 
 visual também confirmou story text comum ainda em inglês, incluindo p002, p005, p006,
 p025, p030, p044, p062 e o sentinela p068 com `IT'LL` ainda visível.
 
+O recorte P68 do TDD #70 fortalece a prova física sem rerun: a linha filha corrompida
+entra na máscara do grupo pai por ownership geométrico de narração aberta, e o gate registra
+`source_owned_geometry_coverage`. Uma máscara parcial que transforma `IT'LL` em ruído OCR
+como `77,!!` continua `review`, porque a geometria fonte não foi coberta; uma máscara
+completa sobre as linhas owned pode passar mesmo sem OCR exato da palavra original. Isso
+fecha o falso-clean por OCR como prova única, mas não fecha sozinho os demais resíduos
+ordinary-story de #69.
+
 ## Quality gate final
 
 `_validate_quality()` aprova a execução apenas quando todas estas condições são verdadeiras:

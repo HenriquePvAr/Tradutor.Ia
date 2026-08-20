@@ -2136,6 +2136,49 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertNotIn("77", group.text)
         self.assertEqual(group.cleanup_lines, [child])
 
+    def test_corrupted_child_line_attaches_to_open_narration_cleanup_without_translation(self):
+        # #69 / p068:LINE_004.  The real residual lived in an open white narration
+        # region, so there was no enclosed-contour signal even though the corrupted
+        # child glyphs shared the narration geometry.  Attach only the physical
+        # cleanup line; do not merge the OCR text into the translation contract.
+        parent = _boxed_line(
+            "TAKE A FEW HOURS FOR THE NEAREST AWAKENED TO GET HERE.",
+            (166, 1841, 504, 76),
+            confidence=0.97,
+        )
+        parent.metadata = {
+            "visual_white_region_id": 22,
+            "visual_white_region_enclosed": False,
+            "visual_white_region_coverage": 0.544,
+        }
+        child = _boxed_line("77,!!", (346, 1771, 134, 58), confidence=0.91)
+        child.metadata = {
+            "visual_white_region_id": 22,
+            "visual_white_region_enclosed": False,
+            "visual_white_region_coverage": 0.7234,
+        }
+        group = _group_lines([parent])[0]
+        group.classification = "narration"
+        group.background_type = "narration_box"
+        group.background_metrics = {
+            "open_white_narration": True,
+            "dominant_white_enclosure": True,
+            "stylized_white_enclosure": True,
+        }
+        group.translation = "LEVE ALGUMAS HORAS PARA O DESPERTO MAIS PRÓXIMO CHEGAR AQUI."
+        group.translation_candidate = group.translation
+        candidate = TextCandidate(
+            line=child,
+            ignored=True,
+            ignore_reason="too_few_useful_chars",
+        )
+
+        _associate_ignored_cleanup_lines([group], [candidate], (2600, 800, 3))
+
+        self.assertTrue(candidate.ignored)
+        self.assertNotIn("77", group.text)
+        self.assertEqual(group.cleanup_lines, [child])
+
     def test_corrupted_child_line_on_open_art_does_not_attach_to_sfx_cleanup(self):
         parent = _boxed_line("STAGGER", (484, 3334, 280, 231), confidence=0.97)
         parent.metadata = {
