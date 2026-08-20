@@ -286,7 +286,10 @@ class SubmitTests(unittest.TestCase):
                                      worker_id="remote-worker")
         self.bridge.store.transition(original["id"], JobStatus.STARTING, expected_worker="remote-worker")
         self.bridge.store.transition(original["id"], JobStatus.RUNNING, expected_worker="remote-worker")
-        self.bridge.store.transition(original["id"], JobStatus.INTERRUPTED, expected_worker="remote-worker")
+        # The runtime never records a bare interruption: a genuine one is flagged
+        # recoverable, and that flag is what makes it resumable.
+        self.bridge.store.transition(original["id"], JobStatus.INTERRUPTED,
+                                     expected_worker="remote-worker", recoverable=1)
 
         resumed = self.bridge.resume(original["id"])
         retry = self.bridge.store.get_job(resumed["job_id"])
@@ -497,7 +500,8 @@ class LocalFolderSubmitTests(unittest.TestCase):
         self.bridge.store.claim_next_job("local-worker", 999999)
         self.bridge.store.transition(original["id"], JobStatus.STARTING, expected_worker="local-worker")
         self.bridge.store.transition(original["id"], JobStatus.RUNNING, expected_worker="local-worker")
-        self.bridge.store.transition(original["id"], JobStatus.INTERRUPTED, expected_worker="local-worker")
+        self.bridge.store.transition(original["id"], JobStatus.INTERRUPTED,
+                                     expected_worker="local-worker", recoverable=1)
         resumed = self.bridge.resume(original["id"])
         retry = self.bridge.store.get_job(resumed["job_id"])
         self.assertEqual(retry["source_type"], "local_folder")

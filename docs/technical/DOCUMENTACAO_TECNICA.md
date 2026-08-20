@@ -421,16 +421,43 @@ Garantias verificadas:
 - Nunca há dois attempts ativos para o mesmo capítulo.
 - O supervisor **não toca em estado de job**. Reconciliação é do `JobStore` + worker novo.
 
-### Retomada — PARCIAL
+### Retomada — EXPOSTA NA UI
 
-`POST /api/ui/resume` e `UiBridge.resume()` existem e criam um novo attempt
-(`attempt+1`, com `previous_job_id`) reusando o mesmo diretório de saída, reaproveitando
-checkpoints válidos. A retomada é bloqueada enquanto o runner do attempt anterior estiver
-vivo (`previous_attempt_still_running`).
+`POST /api/ui/resume` (`app_ui.api_resume` → `UiBridge.resume()`) cria um novo attempt
+(`attempt+1`, com `previous_job_id`) reusando o mesmo diretório de saída e
+`resume_from_stage`, reaproveitando checkpoints válidos. A linha original permanece como o
+attempt anterior preservado e **nunca volta para a fila**.
 
-> **Lacuna verificada no commit base:** nenhum arquivo em `static/` ou `ui/` chama
-> `/api/ui/resume`. **Não existe botão "Retomar" na interface atual.** Documentação de
-> usuário não pode instruir o uso desse recurso até que o controle exista.
+**Autoridade de recuperabilidade.** `UiBridge.resume_block_reason(job)` é a única fonte de
+verdade e é usada tanto pela operação quanto pela apresentação:
+
+| Código | Significado |
+| --- | --- |
+| `job_not_found` | Job inexistente |
+| `job_type_not_resumable` | Não é job de tradução (publicação de comunidade recupera no worker) |
+| `status_not_resumable` | Status fora de `interrupted`/`resumable` |
+| `no_recovery_state` | `recoverable=0` — interrupção sem estado continuável (ex.: filho que nunca cruzou o start gate) |
+| `already_resumed` | Já existe attempt sucessor (`JobStore.retry_for_job`) |
+| `previous_attempt_still_running` | Runner do attempt anterior ainda vivo (`_runner_still_alive`) |
+
+`_job_record()` publica o resultado como a capability booleana **`can_resume`**, presente
+em cada entrada de `runtime_state()["resumable"]`. `already_resumed` não é erro: `resume()`
+devolve `{"ok": true, "job_id": <sucessor>, "already_resumed": true}` — a operação é
+idempotente e um duplo clique nunca enfileira o capítulo duas vezes.
+
+**Frontend.** `renderResumableJobs()` em `static/tradutor_ui.js` renderiza
+`#interruptedJobsPanel` (`ui/ui_shell.html`) a partir de `runtime.resumable`, filtrando por
+`can_resume === true` — nunca por comparação de status em JavaScript. Cada linha tem um
+`<button>` real com `aria-label`, `dataset.jobId` com o identificador canônico vindo do
+backend, e estado ocupado (`Retomando…`, `disabled`) via `appState.resumeBusyJobId`, que
+garante **uma requisição por ativação**. `resumeInterruptedJob()` usa o helper autenticado
+`api()` e, em sucesso ou falha, chama `pollState()` para reconciliar com o estado
+autoritativo — nenhum estado é assumido otimisticamente. A UI não inicia worker algum: o
+job volta à fila canônica e o supervisor do launcher continua responsável pelo worker.
+
+Cobertura: `test_interrupted_job_resume_ui.py` (capability, transição, checkpoint,
+idempotência, reinício da aplicação) e `test_interrupted_job_resume_ui.mjs` (DOM real,
+clique real, duplo clique, rejeição do backend, exclusão mútua com **Cancelar**).
 
 ## 10. Job store (SQLite) e sistema de arquivos de runtime
 
@@ -1190,7 +1217,7 @@ npm run typecheck; npm test; npm run build
 | `configuration_error:` na saída do launcher | `.env` malformado | Validar a sintaxe do `.env` — o erro nunca imprime conteúdo |
 | Worker some repetidamente e para de voltar | Supervisor em `degraded` (3 reinícios gastos) | Ler os eventos JSON no `stderr` do launcher; investigar a causa antes de reiniciar |
 | Job preso em `awaiting_source_review` | Análise de confiança média | Confirmar as páginas na UI; o OCR ainda não começou |
-| Job em `interrupted` | Crash/parada do worker ou runner | Artefatos preservados; API `resume` existe, mas **não há botão na UI** |
+| Job em `interrupted` | Crash/parada do worker ou runner | Artefatos preservados; botão **Retomar** na UI quando `can_resume` é verdadeiro |
 | `ownership_mismatch` | PID reutilizado por outro processo | Comportamento fail-closed correto; nada foi encerrado |
 | Porta 8080 ocupada | Outra UI rodando | `_assert_startup_port_available` falha no startup |
 | Banco bloqueado | Operação concorrente momentânea | WAL + `busy_timeout` resolvem; **não apagar o banco** |
@@ -1206,7 +1233,6 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 
 | ID | Severidade | Descrição | Evidência | Encaminhamento sugerido |
 | --- | --- | --- | --- | --- |
-| `UI-RESUME-NOT-EXPOSED` | Média | `POST /api/ui/resume` + `UiBridge.resume()` existem, mas nenhum arquivo de `static/` ou `ui/` os chama. Um job `interrupted` não tem caminho de recuperação pela interface. `docs/WORKER_QUEUE.md` afirmava o contrário. | Ausência de `ui/resume` em `static/`, `ui/` | TDD futuro: expor controle "Retomar" para jobs `interrupted`/`resumable` |
 | `UI-COPY-NAMES-NVIDIA` | Baixa | A mensagem `environment_not_configured` no frontend diz "Configure o arquivo .env e a `NVIDIA_API_KEY`", mas o provider padrão é DeepL. Copy desatualizada visível ao usuário. | `static/tradutor_ui.js` (`reasonMessages`) | TDD futuro: mensagem neutra de provider |
 | `PROVIDER-HTTP-TELEMETRY-GAP` | Baixa | Não há telemetria HTTP unificada entre providers (latência, taxa de erro, retries) — cada provider mantém suas próprias `stats`. | `translator_deepl.py`, `translator_nvidia.py` | TDD futuro, se a Beta exigir observabilidade de provider |
 | `PACKAGING-PENDING` | Alta (bloqueia Beta externa) | Não existe nenhum artefato de empacotamento (PyInstaller, Inno Setup, NSIS, spec). | Busca por `setup/installer/pyinstaller/inno/nsis` no índice do Git: nada | Missão dedicada de empacotamento |

@@ -95,19 +95,26 @@ capítulo.
 
 ## Retomada
 
-> ⚠️ **Estado verificado no commit `c81c798`:** `POST /api/ui/resume` e `UiBridge.resume()`
-> existem, mas **nenhum arquivo de `static/` ou `ui/` os chama** — não há controle
-> "Retomar" na interface atual. O parágrafo abaixo descreve o contrato do backend, não um
-> caminho disponível ao usuário. O botão **Tentar novamente** da UI cobre apenas jobs
-> `failed`/`cancelled` marcados como recuperáveis. Registrado como dívida
-> `UI-RESUME-NOT-EXPOSED` em
-> [Documentação Técnica §29](technical/DOCUMENTACAO_TECNICA.md#29-dívida-técnica-conhecida).
+Um job `interrupted`/`resumable` recuperável é retomado por `POST /api/ui/resume`: cria um
+novo attempt (`attempt+1`, com `previous_job_id`) reusando o mesmo diretório de saída;
+checkpoints válidos de estágios já concluídos são reaproveitados. A linha original **não é
+recolocada na fila** — ela permanece como o attempt anterior preservado.
 
-Um job `interrupted`/`resumable` pode ser retomado pela API: cria um novo attempt
-(`attempt+1`, com `previous_job_id`) reusando o mesmo diretório de saída; checkpoints
-válidos de estágios já concluídos são reaproveitados. A retomada é **bloqueada**
-enquanto o runner do attempt anterior ainda estiver vivo
-(`previous_attempt_still_running`).
+A retomada é recusada quando:
+
+| Recusa | Motivo |
+| --- | --- |
+| `job_type_not_resumable_from_ui` | Não é um job de tradução (publicação de comunidade tem recuperação própria no worker) |
+| `Somente jobs interrompidos podem ser retomados.` | Status fora de `interrupted`/`resumable` |
+| `job_not_recoverable` | Interrupção marcada `recoverable=0` — não há estado válido a continuar |
+| `previous_attempt_still_running` | O runner do attempt anterior ainda está vivo |
+
+Um segundo pedido para o mesmo job é **idempotente**: devolve o attempt já criado
+(`already_resumed: true`) em vez de enfileirar o capítulo duas vezes.
+
+A UI expõe isso como o botão **Retomar** (`#interruptedJobsPanel`), habilitado apenas pela
+capability `can_resume` que o backend calcula — o frontend nunca deduz recuperabilidade a
+partir do status.
 
 ## Concorrência
 
@@ -126,9 +133,9 @@ de `output/`. Nada é migrado automaticamente.
 - **Job preso em `queued`** → confirme o worker com `status`.
 - **Job em `awaiting_source_review`** → revise e confirme as páginas encontradas; o OCR
   ainda não foi iniciado.
-- **Job `interrupted`** → não há botão de retomada na UI atual; reenviar o capítulo é o
-  caminho prático (os artefatos anteriores e o cache são preservados). O contrato de
-  retomada existe em `POST /api/ui/resume`.
+- **Job `interrupted`** → se o backend marcou o job como recuperável, a UI mostra
+  **Retomar**; caso contrário (`recoverable=0`) reenviar o capítulo é o caminho prático —
+  os artefatos anteriores e o cache são preservados.
 - **Worker duplicado** → o segundo sai limpo; verifique com `status`.
 - **Porta 8080 ocupada** → outra UI já está rodando.
 - **Banco bloqueado** → operação concorrente momentânea; o WAL + busy_timeout resolvem;

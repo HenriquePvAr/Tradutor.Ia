@@ -145,9 +145,18 @@ Esta missão é somente de documentação. Nenhum bug foi corrigido; todos foram
 
 | ID | Severidade | Achado | Evidência | TDD futuro recomendado |
 | --- | --- | --- | --- | --- |
-| `UI-RESUME-NOT-EXPOSED` | Média | `POST /api/ui/resume` implementado, mas nenhum controle na UI o chama. Um job `interrupted` não tem caminho de recuperação pela interface. | Ausência de `ui/resume` em `static/` e `ui/`; `app_ui.py:1792`; `ui_bridge.py:5460` | Expor "Retomar" para `interrupted`/`resumable` |
 | `UI-COPY-NAMES-NVIDIA` | Baixa | A mensagem `environment_not_configured` do frontend diz "Configure o arquivo .env e a `NVIDIA_API_KEY`", mas o provider padrão é DeepL. Copy desatualizada visível ao usuário. | `static/tradutor_ui.js`, mapa `reasonMessages` | Mensagem neutra de provider |
 | `PROVIDER-HTTP-TELEMETRY-GAP` | Baixa | Não há telemetria HTTP unificada entre providers; cada um mantém suas próprias `stats`. | `translator_deepl.py`, `translator_nvidia.py` | Se a Beta exigir observabilidade de provider |
+
+> **Fechado no TDD #56:** `UI-RESUME-NOT-EXPOSED`. O frontend agora chama
+> `POST /api/ui/resume` a partir do painel **Retomar** (`#interruptedJobsPanel`), habilitado
+> apenas pela capability `can_resume` derivada de `UiBridge.resume_block_reason()` — a
+> recuperabilidade continua sendo decidida pelo backend. `resume()` passou a ser idempotente
+> (`already_resumed`) e deixou de recolocar a linha original na fila. Cobertura em
+> `test_interrupted_job_resume_ui.py` e `test_interrupted_job_resume_ui.mjs`.
+> **Capturas:** não atualizadas — a lacuna de captura autenticada descrita no TDD #54
+> permanece; a tela "capítulo interrompido com o botão Retomar" foi adicionada à lista de
+> capturas previstas em `docs/user/GUIA_DO_USUARIO.md`.
 
 > **Fechados no TDD #55:** `HERMETIC-SQLITE-URI-GUARD-GAP` (normalização de URI SQLite em
 > `hermetic_runtime.sqlite_uri_path`), `UI-HISTORY-REAL-OUTPUT-READ` (`output_root`

@@ -726,6 +726,9 @@ class UiBridge:
             "quality_report_path": job.get("quality_report_path") or "",
             "attempt": job.get("attempt") or 1,
             "recoverable": bool(job.get("recoverable")),
+            # Backend-derived capability. The browser shows "Retomar" only for this,
+            # never for a status it recognised on its own.
+            "can_resume": self.resume_block_reason(job) == "",
             "interrupted_reason": job.get("interrupted_reason") or "",
             "reason_code": job.get("reason_code") or "",
             "stage": str(job.get("stage") or "created"),
@@ -5458,18 +5461,51 @@ class UiBridge:
             raise ValueError("job_not_retryable")
         return self.retry_job(job_id)
 
-    def resume(self, job_id: str) -> dict[str, Any]:
-        job = self.store.get_job(job_id)
+    # Why a job may not be resumed, as the single source of truth for both the operation
+    # and the capability handed to the browser. The frontend must never re-derive this
+    # from a status string: "interrupted" alone does not mean the state is continuable.
+    _RESUME_REFUSALS = {
+        "job_not_found": "Job não encontrado.",
+        "job_type_not_resumable": "job_type_not_resumable_from_ui",
+        "status_not_resumable": "Somente jobs interrompidos podem ser retomados.",
+        "no_recovery_state": "job_not_recoverable",
+        "previous_attempt_still_running": "previous_attempt_still_running",
+    }
+
+    def resume_block_reason(self, job: dict[str, Any] | None) -> str:
+        """Empty when this exact job may be resumed now; a stable reason code otherwise.
+
+        The order is deliberate: the cheap row checks run before the successor lookup and
+        the process-liveness probe, so rendering unrelated history pays for neither.
+        """
         if not job:
-            raise ValueError("Job não encontrado.")
+            return "job_not_found"
         if not self._is_translation_job(job):
-            raise ValueError("job_type_not_resumable_from_ui")
-        if job["status"] not in {JobStatus.INTERRUPTED, JobStatus.RESUMABLE}:
-            raise ValueError("Somente jobs interrompidos podem ser retomados.")
+            return "job_type_not_resumable"
+        if job.get("status") not in {JobStatus.INTERRUPTED, JobStatus.RESUMABLE}:
+            return "status_not_resumable"
+        # An interruption the runtime marked non-recoverable - a child that never crossed
+        # its own start boundary, a cancelled claim - has no state worth continuing from.
+        if not job.get("recoverable"):
+            return "no_recovery_state"
+        if self.store.retry_for_job(str(job.get("id") or "")) is not None:
+            return "already_resumed"
         # Mutual exclusion: never start a new attempt while the previous attempt's runner
         # is still alive, or two trees would process the same chapter at once.
         if _runner_still_alive(job):
-            raise ValueError("previous_attempt_still_running")
+            return "previous_attempt_still_running"
+        return ""
+
+    def resume(self, job_id: str) -> dict[str, Any]:
+        job = self.store.get_job(job_id)
+        reason = self.resume_block_reason(job)
+        if reason == "already_resumed":
+            # Idempotent: a repeated activation returns the attempt that already exists
+            # instead of queueing the same chapter a second time.
+            existing = self.store.retry_for_job(str(job_id)) or {}
+            return {"ok": True, "job_id": existing.get("id", ""), "already_resumed": True}
+        if reason:
+            raise ValueError(self._RESUME_REFUSALS.get(reason, reason))
         if job["status"] == JobStatus.INTERRUPTED:
             self.store.mark_resumable(job_id, resume_from_stage=job.get("resume_from_stage") or "")
         # A resume is a fresh attempt that reuses the same output dir and command; the
@@ -5506,7 +5542,8 @@ class UiBridge:
         provenance["source_selection_json"] = json.dumps(
             job.get("source_selection") or {}, ensure_ascii=False)
         self.store.update_fields(new_id, **provenance)
-        self.store.transition(job_id, JobStatus.QUEUED) if job["status"] == JobStatus.RESUMABLE else None
+        # The original row is never requeued: it stays as the preserved previous attempt.
+        # Queueing it beside its successor would process the same chapter twice.
         self.history_revision += 1
         return {"ok": True, "job_id": new_id}
 

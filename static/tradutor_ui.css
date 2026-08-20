@@ -2059,6 +2059,10 @@ html[data-visual-reduced-motion="1"] .auth-login-page *{animation:none!important
     display:flex; flex-direction:column; gap:6px; color:var(--muted); font-size:12px; line-height:1.45;}
   .run-status-card strong{font-family:'Space Grotesk',sans-serif; color:var(--paper); font-size:15px;}
   .run-status-card button{align-self:flex-start; margin-top:6px;}
+  .interrupted-job-list{display:flex; flex-direction:column; gap:8px; margin-top:6px; align-self:stretch;}
+  .interrupted-job{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;}
+  .interrupted-job-name{color:var(--paper);}
+  .interrupted-job button{margin-top:0;}
   .quality-review{margin-top:16px; padding-top:14px; border-top:1px solid var(--line);}
   .quality-review-meta{font-size:12px; color:var(--muted); margin:8px 0 12px;}
   .quality-review-filters{display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;}

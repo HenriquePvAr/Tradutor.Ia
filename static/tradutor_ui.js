@@ -60,6 +60,7 @@
     qualityRevisionPoll: null,
     currentPipelineState: null,
     cancelBusy: false,
+    resumeBusyJobId: '',
     lastStartDisabledReasons: [],
     expandedFolders: new Set(),
     seriesQuery: '',
@@ -1932,6 +1933,7 @@
     else if (runtime.source_ready) {
       $('#runStatusCard') && ($('#runStatusCard').hidden = true);
     } else renderRunStatus({...runtime, status: presentationStatus, progress: visibleProgress});
+    renderResumableJobs(runtime.resumable);
     renderQueue();
     appendLogs(runtime.logs || []);
     if (awaitingReview && runtime.source_review && shouldRenderSourceReview(runtime.source_review)) {
@@ -2028,6 +2030,67 @@
     }
     const cancel = $('#runCancelAction');
     if (cancel && !appState.cancelBusy) cancel.hidden = !active;
+  }
+
+  // ---------- interrupted job recovery ----------
+  // A job that stopped without finishing is neither active nor terminal, so it never
+  // reaches the run status card. The backend lists it under runtime.resumable and marks
+  // each entry with can_resume; that flag - not the status string - is what decides
+  // whether the user is offered the action, because "interrupted" alone does not mean the
+  // saved state can be continued.
+  async function resumeInterruptedJob(jobId, button) {
+    if (appState.resumeBusyJobId) return;           // one activation, one request
+    const id = String(jobId || '');
+    if (!/^[0-9a-f]{32}$/i.test(id)) {
+      showToast('Não foi possível identificar o trabalho interrompido.', 'error');
+      return;
+    }
+    appState.resumeBusyJobId = id;
+    if (button) { button.disabled = true; button.textContent = 'Retomando…'; }
+    try {
+      await api('/api/ui/resume', {method: 'POST', body: JSON.stringify({job_id: id})});
+      showToast('Retomando o processamento a partir do ponto seguro salvo.', 'ok');
+    } catch (error) {
+      showToast(error.message || 'Não foi possível retomar este trabalho.', 'error');
+    } finally {
+      appState.resumeBusyJobId = '';
+      if (button) { button.disabled = false; button.textContent = 'Retomar'; }
+      // Never assume the outcome: the next authoritative state decides what is shown,
+      // including a backend that rejected the request because the job already moved on.
+      pollState();
+    }
+  }
+
+  function renderResumableJobs(records) {
+    const panel = $('#interruptedJobsPanel');
+    const list = $('#interruptedJobsList');
+    if (!panel || !list) return;
+    const items = (Array.isArray(records) ? records : []).filter(record =>
+      record && record.can_resume === true
+      && /^[0-9a-f]{32}$/i.test(String(record.id || record.job_id || '')));
+    panel.hidden = items.length === 0;
+    list.replaceChildren(...items.map(record => {
+      const jobId = String(record.id || record.job_id || '');
+      const row = document.createElement('div');
+      row.className = 'interrupted-job';
+      row.dataset.jobId = jobId;
+      const label = document.createElement('span');
+      label.className = 'interrupted-job-name';
+      label.textContent = String(record.chapter_name || record.slug || 'Tradução de capítulo');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn-primary';
+      button.dataset.jobId = jobId;
+      button.textContent = 'Retomar';
+      button.setAttribute('aria-label', `Retomar ${label.textContent}`);
+      if (appState.resumeBusyJobId === jobId) {
+        button.disabled = true;
+        button.textContent = 'Retomando…';
+      }
+      button.addEventListener('click', () => resumeInterruptedJob(jobId, button));
+      row.append(label, button);
+      return row;
+    }));
   }
 
   // Short labels for the summary line and filter chips.

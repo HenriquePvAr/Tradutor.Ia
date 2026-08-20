@@ -305,11 +305,40 @@ de que existe um problema real que precisa ser investigado, e não de que basta 
 **Se o computador desligar no meio:** o capítulo fica marcado como **interrompido** e os
 arquivos já produzidos continuam na pasta de saída.
 
-> ⚠️ **Limitação desta versão:** um capítulo marcado como **interrompido** ainda **não tem
-> um botão de "Retomar" na interface**. Nesta Beta, a forma prática de seguir em frente é
-> iniciar o capítulo novamente. Os arquivos anteriores não são apagados, e o
-> reaproveitamento de cache faz a nova execução ser mais rápida. Um capítulo com estado
-> **erro** ou **cancelado** que seja recuperável tem, sim, o botão **Tentar novamente**.
+### Retomar um capítulo interrompido
+
+Quando um capítulo é interrompido e o programa consegue confirmar que o estado salvo pode
+continuar, aparece o aviso **"Processamento interrompido"** com o botão **Retomar**.
+
+Ao clicar em **Retomar**:
+
+- o programa continua o mesmo capítulo, **sem pedir o endereço de novo** e sem criar uma
+  tradução duplicada;
+- o Tradutor IA **reaproveita o progresso válido que estiver salvo** e continua a partir do
+  ponto seguro de recuperação — não é uma promessa de retomar exatamente no último passo,
+  e sim de não jogar fora o que já estava confirmado;
+- o capítulo volta para a **fila normal** e começa quando chegar a vez dele. Se o serviço
+  de processamento estiver fora do ar, ele fica aguardando; assim que o serviço voltar, o
+  trabalho segue sozinho.
+
+O botão só aparece quando o **programa** confirma que a retomada é segura — não basta o
+capítulo estar marcado como interrompido. Um capítulo interrompido antes de o trabalho
+realmente começar, por exemplo, não tem o que retomar e **não** mostra o botão. Nesse caso
+inicie o capítulo novamente: os arquivos anteriores não são apagados e o reaproveitamento
+de cache deixa a nova execução mais rápida.
+
+Clicar duas vezes não cria dois trabalhos: enquanto o pedido está em andamento o botão fica
+como **Retomando…** e desabilitado, e o programa recusa um segundo pedido para o mesmo
+capítulo.
+
+Se o capítulo já tiver mudado de estado (por exemplo, se ele já voltou a rodar), a
+retomada é recusada com uma mensagem clara e a tela se atualiza sozinha com a situação
+real. O botão continua disponível depois de um erro; nada é dado como retomado sem o
+programa confirmar.
+
+Um capítulo com estado **erro** ou **cancelado** que seja recuperável continua tendo o
+botão **Tentar novamente**, que é outra coisa: ele começa uma nova tentativa em vez de
+continuar de um ponto salvo.
 
 ## 14. "Revisão necessária": o que significa
 
@@ -523,8 +552,8 @@ O que a versão atual **não** promete:
 - Sites com login, verificação anti-robô ou conteúdo protegido **não são contornados**;
 - Um capítulo por vez;
 - Efeitos sonoros são **preservados**, não traduzidos, por padrão;
-- Não existe botão de **Retomar** para capítulos interrompidos (ver
-  [seção 13](#13-se-o-programa-fechar-ou-travar-no-meio));
+- **Retomar** só aparece para capítulos interrompidos que o programa confirmou como
+  recuperáveis (ver [seção 13](#13-se-o-programa-fechar-ou-travar-no-meio));
 - Não existe instalador, atualização automática nem controle de licença de testador.
 
 ## 24. Perguntas frequentes
@@ -534,6 +563,9 @@ Pode. O processamento continua. Reabra `http://127.0.0.1:8080` para acompanhar.
 
 **Posso desligar o computador no meio?**
 Pode, mas o capítulo ficará interrompido. Os arquivos produzidos até ali são preservados.
+Ao reabrir o programa, se a retomada for possível o botão **Retomar** aparece para esse
+capítulo — inclusive depois de atualizar a página, porque essa informação vem do programa,
+e não da tela.
 
 **Quanto tempo leva um capítulo?**
 Depende do tamanho, da conexão e do computador. Um capítulo completo típico leva vários
@@ -593,5 +625,5 @@ dados de conta. Nenhuma imagem foi inventada ou simulada.
 
 As capturas serão adicionadas em `docs/assets/user/` quando puderem ser feitas com uma
 conta de demonstração segura. As telas previstas são: acesso, nova tradução, origem
-validada, progresso do pipeline, revisão de páginas, revisão de qualidade, biblioteca e
-resultado final.
+validada, progresso do pipeline, revisão de páginas, revisão de qualidade, biblioteca,
+resultado final e **capítulo interrompido com o botão Retomar**.
