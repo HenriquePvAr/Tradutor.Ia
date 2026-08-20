@@ -86,7 +86,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Detecção de crash duro do worker (TDD #52) | **IMPLEMENTADO** |
 | Supervisão do worker pelo launcher (TDD #53) | **IMPLEMENTADO** |
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
-| Qualidade / gates fail-closed | **IMPLEMENTADO** |
+| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text e resíduo físico reforçados no TDD #59 |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
@@ -587,6 +587,12 @@ relatório das fronteiras escolhidas. Ocorre **antes** do OCR quando
 `SMART_WEBTOON_PDF_SPLIT=True`. Para pasta local (arquivos já são páginas lógicas
 completas) o smart split faz passthrough.
 
+O relatório `smart_split_report.json` preserva a soma das alturas de origem, a contagem de
+páginas lógicas, a altura de cada corte e os motivos (`white_gutter`, corte semântico,
+etc.). Uma página lógica visualmente vazia ou majoritariamente branca só é aceitável quando
+mantém ancestry contínua de pixels da fonte; ela não pode ser removida por nome, número de
+página ou aparência isolada.
+
 **Otimização fechada (commit `2638844`):** a gravação de cada página lógica deixou de usar
 `optimize=True` do Pillow (busca exaustiva de filtro/Huffman). Num capítulo real de 171
 fatias isso custava ~32,2s dos ~52s do estágio para economizar ~1,3% de bytes. PNG é
@@ -761,6 +767,14 @@ a própria proveniência diz que o grupo possui, e verifica se a representação
 `MAX_TEXT_OVERFLOW_RATIO`), manchas escuras novas em arte texturizada e patch branco fora
 do balão.
 
+Desde o TDD #59, texto claro aberto sobre arte/fumaça não herda automaticamente a limpeza de
+“balão branco” só por uma pista fraca de container. Quando o contexto ao redor não prova uma
+superfície branca uniforme, a região é tratada como overlay/arte texturizada e deve usar
+remoção baseada em glyph/inpainting ou falhar para revisão. A validação física também anexa
+resíduos OCR não atribuídos que estejam geometricamente grudados a uma região story já
+traduzida; mesmo quando o OCR lê o resíduo como dígitos/pontuação, isso vira
+`review_required` em vez de desaparecer do relatório físico.
+
 ### Auditoria linguística e taxonomia semântica
 
 `region_taxonomy.py`, `linguistic_audit.py`, `linguistic_triage.py` e `semantic_fidelity.py`
@@ -770,6 +784,19 @@ tradução. `audit_registry.py` resolve artefatos por **identidade** (diretório
 `revision_id`), nunca por glob, mtime, título ou heurística de "mais recente"; o hash do
 relatório carregado é verificado contra o registro, então arquivo velho ou trocado falha
 fechado. Detalhes em [`SEMANTIC_CLASSIFICATION_AUDIT.md`](../../SEMANTIC_CLASSIFICATION_AUDIT.md).
+
+O denominador de qualidade segue a taxonomia semântica, não apenas o rótulo visual legado.
+`speech`, `narration`, `unknown` e `decorative` podem ser story text quando o conteúdo é
+fala, narração ou texto de sistema da história; scan credits, promos, URLs, logos e SFX
+continuam excluídos por política explícita. Assim, uma frase story em fonte estilizada não
+escapa por ter sido classificada como decorativa, e uma página de crédito/promo não passa a
+ser traduzida só por conter inglês.
+
+Nomes próprios declarados pela própria fala — por exemplo padrões equivalentes a “people
+call me …” ou “that’s a strange name” — viram autoridade de preservação de entidade. O
+validator rejeita literalização do nome declarado, fragmentos OCR soltos injetados na frase
+traduzida e construções PT-BR estruturalmente inválidas como `VOCÊ + infinitivo` em contexto
+que exige modo verbal natural.
 
 ### Manifest autodescritivo
 
@@ -1530,7 +1557,7 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Item | Estado |
 | --- | --- |
 | Pipeline ponta a ponta estável | ✅ |
-| Fase de qualidade | ✅ fechada |
+| Fase de qualidade | ✅ fechada novamente (TDD #59: story-text + resíduo físico) |
 | Fase de performance | ✅ fechada |
 | Isolamento de runtime de testes | ✅ fechado |
 | Detecção de crash duro do worker | ✅ fechada |

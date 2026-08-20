@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 import config
+import region_taxonomy
 import font_fidelity
 import ocr_line_provenance
 import source_completeness
@@ -988,6 +989,32 @@ def _has_strong_name_context(matches, index):
     return index > 0 and _name_token_of(matches[index - 1].group(0)) in NAME_TITLE_TOKENS
 
 
+def _declared_name_tokens(text):
+    """Names proven by the sentence itself, not by capitalization.
+
+    Webtoon dialogue often introduces an alias explicitly ("X... but people call
+    me Y") or asks about a just-heard name ("X? That's a strange name").  That
+    context is stronger than suffix heuristics such as ``-LESS`` because the
+    source is literally talking about a name.
+    """
+    cleaned = clean_ocr_text(text)
+    result = []
+    for pattern in (
+        r"\b([A-Za-z][A-Za-z’-]{2,})\b\s*(?:[.…。]{2,}|,)?\s*BUT\s+PEOPLE\s+CALL\s+ME\s+([A-Za-z][A-Za-z’-]{2,})\b",
+        r"^\s*([A-Za-z][A-Za-z’-]{2,})\s*\?\s+THAT'?S\s+A\s+STRANGE\s+NAME\b",
+    ):
+        for match in re.finditer(pattern, cleaned, flags=re.I):
+            for group in match.groups():
+                token = _name_token_of(group)
+                if (
+                    len(token) >= MIN_PROPER_NAME_LENGTH
+                    and token not in ENGLISH_FUNCTION_TOKENS
+                    and group not in result
+                ):
+                    result.append(group)
+    return result
+
+
 def detect_proper_name_spans(text, known_names=()):
     """Return the tokens of ``text`` that are confidently proper names.
 
@@ -1002,6 +1029,7 @@ def detect_proper_name_spans(text, known_names=()):
     matches = list(re.finditer(r"[A-Za-z][A-Za-z’-]*", cleaned))
     if not matches:
         return []
+    declared = _declared_name_tokens(cleaned)
     known = {
         _name_token_of(part)
         for name in (known_names or ())
@@ -1009,6 +1037,9 @@ def detect_proper_name_spans(text, known_names=()):
         if _name_token_of(part)
     }
     spans = []
+    for raw in declared:
+        if raw not in spans:
+            spans.append(raw)
     for index, match in enumerate(matches):
         raw = match.group(0)
         token = _name_token_of(raw)
@@ -2764,6 +2795,47 @@ def _apply_classification_policy(group):
     if group.classification == "sfx" and not config.TRANSLATE_SFX:
         group.ignored = True
         group.ignore_reason = "sfx_translation_disabled"
+        return
+    policy = region_taxonomy.resolve_region_policy(
+        original_classification=group.classification,
+        source_text=group.text,
+        preserve_as_name=bool(group.preserve_as_name),
+        evidence={"confidence": group.confidence},
+    )
+    weak_promotion_allowed = region_taxonomy.weak_label_semantic_promotion_allowed(
+        group.classification,
+        group.text,
+    )
+    if (
+        group.classification == "decorative"
+        and getattr(group, "background_type", "") in {
+            "textured_art",
+            "speed_lines",
+            "sfx_area",
+        }
+        and not (
+            (group.background_metrics or {}).get("open_white_narration")
+            or (group.background_metrics or {}).get("open_dark_narration")
+        )
+    ):
+        weak_promotion_allowed = False
+
+    if region_taxonomy.is_preservable(policy["normalized_classification"]):
+        group.ignored = True
+        group.ignore_reason = policy["semantic_role"]
+    elif region_taxonomy.is_translatable(policy["normalized_classification"]):
+        if weak_promotion_allowed:
+            group.ignored = False
+            group.ignore_reason = ""
+        elif group.classification == "decorative":
+            group.ignored = True
+            group.ignore_reason = "decorative_text"
+        elif group.classification == "unknown":
+            group.ignored = True
+            group.ignore_reason = "weak_unknown_text"
+        else:
+            group.ignored = False
+            group.ignore_reason = ""
     elif group.classification == "decorative":
         group.ignored = True
         group.ignore_reason = "decorative_text"
@@ -2801,6 +2873,8 @@ def _should_translate_group(group):
         return False
     if group.preserve_as_name:
         return False
+    if group.classification == "sfx" and not config.TRANSLATE_SFX:
+        return False
     # OCR corruption is an OCR problem. A region the recogniser could not read
     # twice is held back for review instead of being handed to the translator,
     # which has no way to recover the characters that were never read.
@@ -2811,13 +2885,35 @@ def _should_translate_group(group):
     # and drawing broken/mixed text back onto the page.
     if group.sent_to_translation and not group.translation_valid:
         return False
-    if group.classification in ("speech", "narration"):
-        return True
-    if group.classification == "sfx":
-        return bool(config.TRANSLATE_SFX)
-    if group.classification != "unknown":
+    policy = region_taxonomy.resolve_region_policy(
+        original_classification=group.classification,
+        source_text=group.text,
+        preserve_as_name=bool(group.preserve_as_name),
+        evidence={"confidence": group.confidence},
+    )
+    if region_taxonomy.is_preservable(policy["normalized_classification"]):
         return False
-    return not group.ignored
+    if not region_taxonomy.is_translatable(policy["normalized_classification"]):
+        return False
+    if not region_taxonomy.weak_label_semantic_promotion_allowed(
+        group.classification,
+        group.text,
+    ):
+        return False
+    if (
+        group.classification == "decorative"
+        and getattr(group, "background_type", "") in {
+            "textured_art",
+            "speed_lines",
+            "sfx_area",
+        }
+        and not (
+            (group.background_metrics or {}).get("open_white_narration")
+            or (group.background_metrics or {}).get("open_dark_narration")
+        )
+    ):
+        return False
+    return True
 
 
 def _score_group_quality(groups):
@@ -5747,6 +5843,9 @@ def validate_translation_text(
         "narration",
         "unknown",
     }
+    declared_name_authority = {
+        _name_token_of(span) for span in _declared_name_tokens(source_text)
+    }
     altered_names = sorted(
         {
             token
@@ -5754,7 +5853,10 @@ def validate_translation_text(
             for token in [_name_token_of(span)]
             if token in source_tokens
             and token not in translated_tokens
-            and _required_name_span_is_hard_authority(span)
+            and (
+                _required_name_span_is_hard_authority(span)
+                or token in declared_name_authority
+            )
         }
     )
     if translatable_context_for_names and altered_names:
@@ -5947,6 +6049,15 @@ def validate_translation_text(
             "residual_inflected_english:"
             + ",".join(residual_inflected_english[:6]),
         )
+
+    folded_translation = _ascii_fold(translated).upper()
+    folded_source = _ascii_fold(source_text).upper()
+    if translatable_context and target_language_signal:
+        if re.search(r"\bVOCE\s+(FAZER|SER|ESTAR|TER|IR)\b", folded_translation):
+            return False, "unnatural_ptbr_verb_mood:voce_infinitive"
+        stray_parenthetical = re.search(r"\b([A-Z])\)", folded_translation)
+        if stray_parenthetical and stray_parenthetical.group(0) not in folded_source:
+            return False, "stray_ocr_fragment:" + stray_parenthetical.group(0)
 
     source_english_tokens = [
         token
@@ -7366,8 +7477,23 @@ def _classify_background_region(img_bgr, group, page_index=None):
         or edge_density >= 0.14
         or gradient_strength >= 58
     )
+    open_light_art_caption = bool(
+        group.classification in {"speech", "narration", "unknown"}
+        and enclosure_like
+        and not strongly_uniform_white
+        and not open_white_narration
+        and brightness >= 170.0
+        and white_ratio < 0.96
+        and dark_ratio <= 0.08
+        and context_white_ratio < 0.86
+        and context_brightness < 238.0
+        and long_lines <= 1
+        and diagonal_lines <= 1
+    )
 
-    if open_white_narration or open_dark_narration:
+    if open_light_art_caption:
+        background_type = "textured_art"
+    elif open_white_narration or open_dark_narration:
         background_type = "narration_box"
     elif strongly_uniform_white:
         background_type = (
@@ -7395,6 +7521,7 @@ def _classify_background_region(img_bgr, group, page_index=None):
     metrics["stylized_white_enclosure"] = bool(stylized_white_enclosure)
     metrics["open_white_narration"] = bool(open_white_narration)
     metrics["open_dark_narration"] = bool(open_dark_narration)
+    metrics["open_light_art_caption"] = bool(open_light_art_caption)
     metrics["dark_context"] = bool(dark_context)
     metrics["uniform_dark_interior"] = bool(uniform_dark_interior)
     metrics["interior_dark_std"] = round(interior_dark_std, 3)

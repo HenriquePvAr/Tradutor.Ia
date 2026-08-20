@@ -72,6 +72,7 @@ from benchmark_pipeline import (
     _build_quality_report,
     _grouping_fallback_reason,
     _incomplete_speech_region_coverage,
+    _physical_residual_accounting,
     _preserve_selected_regional_ocr,
     _retry_layout_overflow_translations,
     _translation_quality_accounting,
@@ -1584,7 +1585,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
         }]
 
     @staticmethod
-    def _rendered_speech(id_, box, text="TRANSLATED LINE"):
+    def _rendered_speech(id_, box, text="RENDERED LINE"):
         return {"id": id_, "classification": "speech", "translation_final_state":
                 "translated", "redrawn": True, "bounding_box": list(box),
                 "clean_text": text, "translation": text}
@@ -1649,6 +1650,41 @@ class OCRQualityRegressionTests(unittest.TestCase):
         acc = _translation_quality_accounting(self._coverage_state(items))
         self.assertTrue(acc["requires_review"])
 
+    def test_unassigned_garbled_residue_attached_to_story_block_forces_review(self):
+        # Page 68's physical residue was OCR-read back as digits/punctuation
+        # rather than the source word.  It is still visible text attached to a
+        # translated story box, so the physical gate must fail closed for review
+        # instead of requiring the residue itself to be recognizable English.
+        items = [
+            {
+                "id": "BALAO_2",
+                "classification": "narration",
+                "translation_final_state": "translated",
+                "redrawn": True,
+                "bounding_box": [166, 1841, 504, 248],
+                "clean_text": "TAKEAFEWHOURS FORTHENEAREST AWAKENEDTO GET HERE.",
+                "translation": "LEVOU ALGUMAS HORAS PARA CHEGAR AQUI.",
+            },
+            {
+                "id": "LINE_004",
+                "classification": "unknown",
+                "translation_final_state": None,
+                "redrawn": False,
+                "bounding_box": [346, 1771, 134, 58],
+                "clean_text": "77,!!",
+            },
+        ]
+
+        violations = _incomplete_speech_region_coverage(self._coverage_state(items))
+        self.assertEqual(len(violations), 1, violations)
+        acc = _translation_quality_accounting(self._coverage_state(items))
+        self.assertEqual(acc["incomplete_region_coverage"], 1)
+        self.assertTrue(acc["requires_review"])
+        physical = _physical_residual_accounting(self._coverage_state(items))
+        self.assertEqual(physical["physical_incomplete_region_coverage_count"], 1)
+        self.assertIn("p001:LINE_004", physical["physical_source_residual_group_ids"])
+        self.assertFalse(physical["physical_gate_passed"])
+
     def test_low_confidence_phantom_read_does_not_force_review(self):
         # Noise picked up from a balloon border comes back with low confidence.
         # It is not evidence of unread text and must not force a review.
@@ -1694,6 +1730,129 @@ class OCRQualityRegressionTests(unittest.TestCase):
         ]
         violations = _incomplete_speech_region_coverage(self._coverage_state(items))
         self.assertEqual(violations, [])
+
+    @staticmethod
+    def _policy_group(classification, text, **overrides):
+        group = types.SimpleNamespace(
+            classification=classification,
+            text=text,
+            preserve_as_name=False,
+            confidence=0.96,
+            ignored=False,
+            ignore_reason="",
+            ocr_quality_blocked=False,
+            sent_to_translation=False,
+            translation_valid=True,
+            angle_degrees=0.0,
+            alignment_score=1.0,
+            main_text_score=1.0,
+            lines=[object(), object()],
+        )
+        for key, value in overrides.items():
+            setattr(group, key, value)
+        return group
+
+    def test_decorative_story_sentence_is_not_silently_preserved(self):
+        # Page 6's "IT BETTER BE WORTH IT." came through the visual classifier as
+        # decorative, but it is ordinary narration/dialogue.  The policy must
+        # route semantic decorative text to translation instead of preserving it
+        # as artwork.
+        group = self._policy_group("decorative", "IT BETTER BE WORTH IT.")
+
+        _apply_classification_policy(group)
+
+        self.assertFalse(group.ignored)
+        self.assertEqual(group.ignore_reason, "")
+        self.assertTrue(_should_translate_group(group))
+
+    def test_compact_scan_promo_is_preserved_even_if_legacy_label_says_speech(self):
+        # Credit/promo pages can be OCR-grouped as speech/narration.  The semantic
+        # policy must win so a fix for story text does not translate scan promos.
+        group = self._policy_group("speech", "READTHISSERIESFIRSTAT:")
+
+        _apply_classification_policy(group)
+
+        self.assertTrue(group.ignored)
+        self.assertEqual(group.ignore_reason, "credit")
+        self.assertFalse(_should_translate_group(group))
+
+    def test_unknown_story_system_text_enters_quality_and_physical_denominators(self):
+        # Page 70's story-critical system overlay was labelled unknown.  Unknown
+        # semantic text is still story text and must not disappear from either
+        # denominator.
+        items = [
+            {
+                "id": "BALAO_1",
+                "classification": "unknown",
+                "clean_text": "Aspirant! Welcome to the Nightmare Spell.",
+                "translation": "",
+                "translation_final_state": "manual_review",
+                "translation_final_reason": "translation_not_rendered_after_validation",
+                "manual_review_required": True,
+                "redrawn": False,
+                "bounding_box": [200, 2863, 405, 224],
+                "confidence": 0.98,
+            }
+        ]
+        states = self._coverage_state(items)
+        states[0]["status"] = "completed"
+
+        logical = _translation_quality_accounting(states)
+        physical = _physical_residual_accounting(states)
+
+        self.assertEqual(logical["detected_translatable"], 1)
+        self.assertEqual(logical["manual_review"], 1)
+        self.assertTrue(logical["requires_review"])
+        self.assertEqual(physical["physical_regions_expected"], 1)
+        self.assertEqual(physical["physical_source_residual_count"], 1)
+        self.assertFalse(physical["physical_gate_passed"])
+
+    def test_scan_promo_is_not_story_denominator(self):
+        items = [
+            {
+                "id": "BALAO_1",
+                "classification": "speech",
+                "clean_text": "DEARREADERS DIVEDEEPERINTOTHESTORYAND UNLOCKUPTOTHELATESTCHAPTER EXCLUSIVELYONVORTEXSCANS.ORG HAPPY-READING,",
+                "translation": "",
+                "translation_final_state": "skipped_with_reason",
+                "translation_final_reason": "credit",
+                "redrawn": False,
+                "bounding_box": [209, 178, 402, 271],
+                "confidence": 0.98,
+            }
+        ]
+        states = self._coverage_state(items)
+        states[0]["status"] = "completed"
+
+        logical = _translation_quality_accounting(states)
+        physical = _physical_residual_accounting(states)
+
+        self.assertEqual(logical["detected_translatable"], 0)
+        self.assertEqual(physical["physical_regions_expected"], 0)
+        self.assertTrue(physical["physical_gate_passed"])
+
+    def test_credit_name_roll_is_not_story_denominator(self):
+        items = [
+            {
+                "id": "BALAO_1",
+                "classification": "narration",
+                "clean_text": "Ali Zaghlul, Marika, Simple but Fire, KP Comics, Yumiitsu, Jordan Guirado, Carisame, Primo, Griffin Walsh, Tevagah, Actus",
+                "translation": "",
+                "translation_final_state": "skipped_with_reason",
+                "translation_final_reason": "credit",
+                "redrawn": False,
+                "bounding_box": [44, 585, 712, 115],
+                "confidence": 0.98,
+            }
+        ]
+        states = self._coverage_state(items)
+        states[0]["status"] = "completed"
+
+        logical = _translation_quality_accounting(states)
+        physical = _physical_residual_accounting(states)
+
+        self.assertEqual(logical["detected_translatable"], 0)
+        self.assertEqual(physical["physical_regions_expected"], 0)
 
     # ---- RC1: short lines retained inside speech containers ----
 
@@ -4398,6 +4557,38 @@ class UniformDarkOpenRegionTests(unittest.TestCase):
         self.assertEqual(background_type, "narration_box")
         self.assertTrue(metrics["open_white_narration"])
         self.assertFalse(metrics["uniform_dark_interior"])
+
+    def test_open_light_caption_over_art_is_not_treated_as_white_balloon(self):
+        # A real UI artifact showed large white story lettering over pale fog/art
+        # being cleaned as if it lived inside a plain white bubble.  The source
+        # glyph silhouette survived as a conspicuous patch underneath the target
+        # text.  A weak container hint is not enough evidence for white-fill
+        # cleanup when the surrounding context is visibly artwork.
+        image = np.full((700, 700, 3), (222, 224, 228), dtype=np.uint8)
+        for row in range(image.shape[0]):
+            image[row, :, :] = np.clip(
+                image[row, :, :].astype(np.int16) - int(abs(row - 350) / 35),
+                0,
+                255,
+            )
+        image[:, :120] = (110, 116, 124)
+        group = TextGroup(
+            group_id="BALAO_1",
+            lines=[
+                _boxed_line("BY THE", (190, 230, 190, 60)),
+                _boxed_line("NIGHTMARE SPELL", (110, 305, 505, 65)),
+            ],
+            text="BY THE NIGHTMARE SPELL",
+            classification="speech",
+            inside_balloon_like_region=True,
+        )
+        group.draw_box = group.box
+        group.safe_area = group.box
+
+        background_type, metrics = _classify_background_region(image, group)
+
+        self.assertEqual(background_type, "textured_art")
+        self.assertTrue(metrics["open_light_art_caption"])
 
     def test_uniform_dark_line_mask_accepts_proven_interior(self):
         image = np.full((700, 700, 3), 235, dtype=np.uint8)

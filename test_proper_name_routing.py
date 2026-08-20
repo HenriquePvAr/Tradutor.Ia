@@ -142,6 +142,18 @@ class ProperNameDetectionTests(unittest.TestCase):
             ["ARSKAN"],
         )
 
+    def test_name_declaration_context_proves_aliases(self):
+        self.assertEqual(
+            detect_proper_name_spans("SuNLEsS... BUT PEOPLE CALL Me Sunny."),
+            ["SuNLEsS", "Sunny"],
+        )
+
+    def test_strange_name_context_proves_the_named_token(self):
+        self.assertEqual(
+            detect_proper_name_spans("SUNLESS? THAT'S A STRANGE NAME."),
+            ["SUNLESS"],
+        )
+
 
 class FailClosedAmbiguityTests(unittest.TestCase):
     """A bare vocative proves nothing without a lexicon, so nothing is claimed.
@@ -339,6 +351,36 @@ class ProperNameAuthorityValidationTests(unittest.TestCase):
             "speech",
         )
         self.assertTrue(valid, reason)
+
+    def test_declared_sunless_must_not_be_translated_literally(self):
+        required = detect_proper_name_spans("SuNLEsS... BUT PEOPLE CALL Me Sunny.")
+        valid, reason = validate_translation_text(
+            "SuNLEsS... BUT PEOPLE CALL Me Sunny.",
+            "Sem sol... MAS AS PESSOAS ME CHAMAM DE Sunny.",
+            "narration",
+            allowed_proper_names=["SUNLESS", "SUNNY"],
+            required_name_spans=required,
+        )
+        self.assertFalse(valid)
+        self.assertTrue(reason.startswith("proper_name_altered"), reason)
+
+    def test_ptbr_voce_infinitive_is_not_accepted_as_natural(self):
+        valid, reason = validate_translation_text(
+            "WHAT YOU DO DURING THE TRIAL WILL DETERMINE THE REWARDS.",
+            "O QUE VOCÊ FAZER DURANTE A PROVA DETERMINARÁ AS RECOMPENSAS.",
+            "speech",
+        )
+        self.assertFalse(valid)
+        self.assertEqual(reason, "unnatural_ptbr_verb_mood:voce_infinitive")
+
+    def test_stray_single_letter_parenthesis_from_ocr_is_rejected(self):
+        valid, reason = validate_translation_text(
+            "SO DO Y YOURSELF A FAVOR AND ) JUST THINK ABOUT THEM AS ILLUSIONS.",
+            "ENTÃO, FAÇA UM FAVOR A SI MESMO E) APENAS PENSE NELAS COMO ILUSÕES.",
+            "narration",
+        )
+        self.assertFalse(valid)
+        self.assertEqual(reason, "stray_ocr_fragment:E)")
 
 
 class ProperNameOnlyTerminalStateTests(unittest.TestCase):

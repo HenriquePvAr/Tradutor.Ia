@@ -257,3 +257,20 @@ sincronização do `CLAUDE.md`, itens 3 e 6.
 **Honestidade verificada:** o produto ainda não promete auto-atualização para usuário final.
 O #58 fecha a ponte técnica remota/hermética e mantém a raiz de confiança de produção vazia
 até existir chave pública real de release.
+
+### TDD #59 — Regressão real de qualidade em artifact UI Shadow Slave (2026-08-20, base `4d18e92`)
+
+**Gatilho:** regressão de qualidade observada em PDF real gerado pela UI, afetando
+story-text, resíduo físico, proper nouns e naturalização. Contrato de sincronização do
+`CLAUDE.md`, itens 3, 4 e 6.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | §2 registra gates de qualidade reforçados; §13 documenta ancestry contínua de páginas lógicas/Smart Split; §16 documenta limpeza de texto claro aberto sobre arte/fumaça e resíduo OCR não atribuído grudado a story; §17 documenta denominador semântico story-text vs crédito/promo/SFX, texto de sistema, nomes declarados, fragmentos OCR e naturalização PT-BR; checklist final marca qualidade fechada novamente pelo TDD #59. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Nenhuma UI mudou. `review_required` já é estado terminal conhecido; a alteração é contrato interno de qualidade/fail-closed. |
+| `docs/README.md` | **Atualizado** | Estado resumido de qualidade passa a citar reforço story-text/resíduo físico. |
+| Capturas de tela | **Não requer** | Não houve alteração visual de UI nem nova tela. |
+
+**Honestidade verificada:** o PDF histórico continua evidência forense e não foi editado.
+A correção é sistêmica para próximas gerações; nenhum provider, job real ou rede foi
+consumido neste TDD.

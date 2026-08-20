@@ -15,6 +15,7 @@ import cv2
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import config
+import region_taxonomy
 from classification_profiler import (
     ClassificationProfiler,
     profile_step,
@@ -2288,6 +2289,40 @@ def _item_is_partially_recognized(item):
     return width > height * 1.15 * glyphs
 
 
+def _item_is_unassigned_residue_candidate(item):
+    """Visible OCR residue with no terminal outcome near rendered story text.
+
+    Some physical leftovers are no longer readable English by the time OCR sees
+    them again (for example a word edge read as digits/punctuation).  They still
+    cannot disappear from the quality ledger when they sit in the same story
+    block as translated text.  This predicate does not make them translatable; it
+    only makes the surrounding block require review.
+    """
+    if str(item.get("translation_final_state") or ""):
+        return False
+    text = str(item.get("clean_text") or item.get("raw_text") or "").strip()
+    if len(re.sub(r"\s", "", text)) < 2:
+        return False
+    if item.get("confidence") is not None:
+        try:
+            confidence = float(item.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < _PARTIAL_RECOGNITION_MIN_CONFIDENCE:
+            return False
+    if str(item.get("classification") or "") not in {"unknown", "decorative"}:
+        return False
+    policy = region_taxonomy.resolve_region_policy(
+        original_classification=str(item.get("classification") or ""),
+        source_text=text,
+        preserve_as_name=bool(item.get("preserve_as_name")),
+        evidence={"confidence": item.get("confidence") or 0.0},
+    )
+    if policy["semantic_role"] in {"credit", "promo", "logo", "sfx"}:
+        return False
+    return bool(re.search(r"[A-Za-z0-9!?',.]", text))
+
+
 def _item_is_rendered(item):
     return (
         str(item.get("translation_final_state") or "") == "translated"
@@ -2295,7 +2330,7 @@ def _item_is_rendered(item):
     )
 
 
-def _boxes_form_one_speech_block(a, b):
+def _boxes_form_one_speech_block(a, b, *, allow_small_residual=False):
     """True when two boxes read as one balloon block (stacked or same line).
 
     Uses only generic geometry: comparable text height, strong overlap on one
@@ -2309,7 +2344,14 @@ def _boxes_form_one_speech_block(a, b):
         return False
     if min(aw, ah, bw, bh) <= 0:
         return False
-    if min(ah, bh) / max(ah, bh) < 0.4:  # very different font scale -> not siblings
+    height_ratio = min(ah, bh) / max(ah, bh)
+    if height_ratio < 0.4 and not (
+        allow_small_residual and height_ratio >= 0.18
+    ):
+        # Very different font scale is normally not a sibling.  The exception is
+        # a small OCR-partial residue directly attached to a rendered story block:
+        # this is exactly how a leftover word/fragment can survive at the edge of
+        # a translated balloon while the main region looks complete.
         return False
     avg_height = (ah + bh) / 2.0
     horizontal_overlap = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
@@ -2340,7 +2382,7 @@ def _incomplete_speech_region_coverage(states):
         rendered = [
             item
             for item in items
-            if item.get("classification") in {"speech", "narration"}
+            if _story_translation_required(item)
             and _item_is_rendered(item)
         ]
         residual = [
@@ -2350,6 +2392,7 @@ def _incomplete_speech_region_coverage(states):
             and (
                 _region_source_lexical_words(item)
                 or _item_is_partially_recognized(item)
+                or _item_is_unassigned_residue_candidate(item)
             )
         ]
         for line in rendered:
@@ -2357,7 +2400,12 @@ def _incomplete_speech_region_coverage(states):
                 if other is line:
                     continue
                 if _boxes_form_one_speech_block(
-                    line["bounding_box"], other["bounding_box"]
+                    line["bounding_box"],
+                    other["bounding_box"],
+                    allow_small_residual=(
+                        _item_is_partially_recognized(other)
+                        or _item_is_unassigned_residue_candidate(other)
+                    ),
                 ):
                     violations.append(
                         {
@@ -2373,6 +2421,36 @@ def _incomplete_speech_region_coverage(states):
                     )
                     break
     return violations
+
+
+def _item_source_text(item):
+    return str(item.get("clean_text") or item.get("raw_text") or "").strip()
+
+
+def _story_translation_required(item):
+    """Whether this visible text is story-bearing and must reach a terminal outcome.
+
+    Legacy labels are too coarse: real dialogue/system text can arrive as
+    ``unknown`` or ``decorative`` when the font/container is unusual, while scan
+    credits and promo pages can arrive as ``speech``/``narration``.  The
+    denominator therefore follows the semantic taxonomy, not the old visual
+    bucket alone.
+    """
+    classification = str(item.get("classification") or "")
+    if classification == "sfx" and not config.TRANSLATE_SFX:
+        return False
+    policy = region_taxonomy.resolve_region_policy(
+        original_classification=classification,
+        source_text=_item_source_text(item),
+        preserve_as_name=bool(item.get("preserve_as_name")),
+        evidence={"confidence": item.get("confidence") or 0.0},
+    )
+    if not region_taxonomy.is_translatable(policy["normalized_classification"]):
+        return False
+    return region_taxonomy.weak_label_semantic_promotion_allowed(
+        classification,
+        _item_source_text(item),
+    )
 
 
 def _translation_quality_accounting(states):
@@ -2415,7 +2493,7 @@ def _translation_quality_accounting(states):
         item
         for state in states
         for item in state.get("debug_data", {}).get("items", [])
-        if item.get("classification") in {"speech", "narration"}
+        if _story_translation_required(item)
     ]
     result["detected_translatable"] = len(translatable_items)
     for item in translatable_items:
@@ -2558,7 +2636,7 @@ def _physical_residual_accounting(states):
         else:
             population["pages_unresolved"] += 1
         for item in state.get("debug_data", {}).get("items", []):
-            if item.get("classification") not in {"speech", "narration"}:
+            if not _story_translation_required(item):
                 continue
             result["physical_regions_expected"] += 1
             group_id = str(item.get("id") or "")
@@ -2610,6 +2688,21 @@ def _physical_residual_accounting(states):
             else:
                 result["physical_regions_other_explicit"] += 1
             residual_ids.append(region_id)
+
+    incomplete_coverage = _incomplete_speech_region_coverage(states)
+    if incomplete_coverage:
+        result["physical_incomplete_region_coverage_count"] = len(incomplete_coverage)
+        result["physical_incomplete_region_coverage_details"] = incomplete_coverage[:50]
+        for violation in incomplete_coverage:
+            page = int(violation.get("page") or 0)
+            residual_id = str(violation.get("residual_id") or "")
+            region_id = (
+                f"p{page:03}:{residual_id}"
+                if page and residual_id
+                else residual_id or f"p{page:03}"
+            )
+            if region_id and region_id not in residual_ids:
+                residual_ids.append(region_id)
 
     result["physical_source_residual_count"] = len(residual_ids)
     result["physical_source_residual_group_ids"] = residual_ids[:200]
@@ -2883,7 +2976,7 @@ def _build_quality_report(report, states, translation_retry_records):
                 "translation_terminal_items": [
                     _quality_item_summary(item)
                     for item in items
-                    if item.get("classification") in {"speech", "narration"}
+                    if _story_translation_required(item)
                 ],
                 "mixed_language_items": [_quality_item_summary(item) for item in mixed],
                 "text_overflow_items": [_quality_item_summary(item) for item in overflow],

@@ -86,8 +86,34 @@ _URL_RE = re.compile(r"(https?://|www\.|\b[a-z0-9][a-z0-9-]*\.(com|net|org|io|br
 _CREDIT_RE = re.compile(
     r"\b(scan(lation|s)?|translat(ed|or|ion|ions)|traduz(ido|ao|ção)|edit(ed|or|ing)?|"
     r"typeset(ter|ting)?|redraw(er)?|clean(er|ing)?|proofread(er)?|raw\s?provider|uploader|"
-    r"team|subs?|staff|credits?)\b", re.I)
+    r"produced|producer|"
+    r"team|subs?|staff|credits?|thanks?|producers?|assistants?|original\s+story|web\s?comic)\b", re.I)
 _WATERMARK_HINT_RE = re.compile(r"\b(read|scans?|toon|manga|manhwa|webtoon|comic|\.(com|net))\b", re.I)
+_PROMO_COMPACT_HINTS = (
+    "readthisseriesfirstat",
+    "readfirstat",
+    "unlockuptothelatestchapter",
+    "exclusivelyon",
+    "happyreading",
+    "dearreaders",
+    "specialthanks",
+    "productionteam",
+    "postproduction",
+    "originalstory",
+    "thewebcomic",
+)
+_WEAK_LABELS = frozenset({"unknown", "decorative", ""})
+_STORY_CLAUSE_MARKERS = frozenset({
+    "I", "ME", "MY", "WE", "US", "YOU", "YOUR", "HE", "SHE", "IT", "THEY",
+    "THE", "A", "AN", "TO", "OF", "IN", "ON", "FOR", "WITH", "FROM",
+    "IS", "ARE", "WAS", "WERE", "BE", "BEEN", "AM", "DO", "DID", "DONE",
+    "HAVE", "HAS", "HAD", "WILL", "WOULD", "CAN", "COULD", "SHOULD",
+    "DON'T", "DONT", "DIDN'T", "DIDNT", "CAN'T", "CANT",
+})
+
+
+def _compact_alnum(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
 
 
 def _words(text: str) -> list[str]:
@@ -111,7 +137,17 @@ def looks_like_url(text: str) -> bool:
 
 
 def looks_like_credit(text: str) -> bool:
-    return bool(_CREDIT_RE.search(str(text or "")))
+    body = str(text or "")
+    compact = _compact_alnum(body)
+    words = _words(body)
+    comma_credit_roll = (
+        body.count(",") >= 4
+        and len(words) >= 8
+        and not re.search(r"[!?]", body)
+    )
+    return bool(_CREDIT_RE.search(body)) or any(
+        hint in compact for hint in _PROMO_COMPACT_HINTS
+    ) or comma_credit_roll
 
 
 def looks_like_watermark(text: str) -> bool:
@@ -206,7 +242,9 @@ def normalize(legacy_label: str, *, text: str = "", preserve_as_name: bool = Fal
     # classifier was unsure"), so it is judged by evidence, not fail-closed blind.
     if label in _EVIDENCE_LEGACY:
         if looks_like_sfx(body):
-            return SFX_PRESERVE, "onomatopoeia_shape"
+            if label in {"sfx", "decorative", "editorial"}:
+                return SFX_PRESERVE, "onomatopoeia_shape"
+            return UNKNOWN_REVIEW_REQUIRED, f"legacy_{label or 'blank'}_sfx_shape_unconfirmed"
         if has_semantic_content(body):
             # Styled/out-of-balloon text that carries meaning is translatable,
             # not a preserved graphic effect. Human confirms the exact subtype.
@@ -225,6 +263,30 @@ def suggested_action(category: str) -> str:
     if is_unreadable(category):
         return "targeted_ocr"
     return "human_review"
+
+
+def weak_label_semantic_promotion_allowed(legacy_label: str, text: str) -> bool:
+    """Whether an uncertain/decorative legacy label has enough story evidence.
+
+    This is deliberately stricter than ``has_semantic_content``.  A single label
+    or title-like phrase can contain real words and still be environmental art,
+    while the real regression was ordinary prose/speech/system text hidden in a
+    weak visual bucket.  Promotion therefore requires sentence/prose shape: either
+    several real words, or a shorter punctuated clause with source-language
+    function markers.
+    """
+    label = str(legacy_label or "").strip().lower()
+    if label not in _WEAK_LABELS:
+        return True
+    body = str(text or "")
+    words = _words(body)
+    real_words = [word for word in words if _is_real_word(word)]
+    if len(real_words) >= 4:
+        return True
+    folded = [re.sub(r"[^A-Z']", "", word.upper()) for word in words]
+    has_clause_marker = any(word in _STORY_CLAUSE_MARKERS for word in folded)
+    has_sentence_punctuation = bool(re.search(r"[.!?…]", body))
+    return bool(len(real_words) >= 2 and has_clause_marker and has_sentence_punctuation)
 
 
 # --- canonical policy -------------------------------------------------------

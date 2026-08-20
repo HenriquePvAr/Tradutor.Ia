@@ -1,6 +1,6 @@
 # Documentação do Tradutor IA
 
-> **Base verificada:** commit `c81c798` · **Revisado em:** 2026-08-19
+> **Base verificada:** branch `fix/main-e2e-findings` · **Revisado em:** 2026-08-20
 
 Esta é a página inicial da documentação. Comece pelo documento certo para o seu papel.
 
@@ -92,6 +92,7 @@ em que foram escritos e **não** substituem os documentos primários:
 | Detecção de crash duro e reconciliação | ✅ implementado |
 | Supervisão do worker pelo launcher | ✅ implementado |
 | Isolamento hermético dos testes | ✅ implementado |
+| Qualidade / story-text / resíduo físico | ✅ implementado, reforçado no TDD #59 |
 | Comunidade (Supabase + Drive) | ✅ implementado, fail-closed se não configurado |
 | Retomada de job interrompido pela UI | ⚠️ parcial — API existe, controle na interface não |
 | Instalador para usuário final | ⏳ em desenvolvimento |
