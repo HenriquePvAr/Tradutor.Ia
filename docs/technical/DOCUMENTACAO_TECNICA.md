@@ -972,7 +972,7 @@ markers =
 
 Testes de rede e smokes manuais são **excluídos por padrão** e exigem opt-in explícito.
 
-### Isolamento hermético (TDD #51, `hermetic_runtime.py`)
+### Isolamento hermético (TDD #51, ampliado no TDD #55, `hermetic_runtime.py`)
 
 O estado real do projeto vive em `<repo>/.cache/runtime`. Antes do guard, código de teste
 que construísse um componente de runtime sem raiz explícita caía exatamente nesse
@@ -981,8 +981,31 @@ reais e lançar o worker real.
 
 O guard dá ao processo de teste **uma raiz temporária única por processo** e transforma
 todo caminho restante para a raiz real em falha imediata (`RealRuntimeAccess`), **antes** do
-efeito colateral. Ele intercepta `sqlite3.connect`, `open`, `mkdir`, `unlink`, `rename` e
-spawn de processo.
+efeito colateral. Ele intercepta `sqlite3.connect`, `open`, `mkdir`, `unlink`, `rename`,
+`scandir`/`listdir` e spawn de processo.
+
+**Escopo protegido:**
+
+| Alvo real | Verbos bloqueados | Constante |
+| --- | --- | --- |
+| `<repo>/.cache/runtime/**` (fila, leases, logs) | `sqlite3.connect`, `open`, `mkdir`, `unlink`, `rename`, spawn | `REAL_RUNTIME_ROOT` |
+| `<repo>/output/**` (capítulos traduzidos do usuário) | `open`, `mkdir`, `unlink`, `rename`, `scandir`/`listdir` | `REAL_OUTPUT_ROOT` |
+| `<repo>/.cache/ui_history.json`, `ui_hidden_history.json` | `open`, `unlink`, `rename` | `REAL_UI_HISTORY_PATHS` |
+
+**Normalização de caminho.** A comparação é canônica: caminhos relativos, separadores
+mistos, maiúsculas/minúsculas de volume Windows e junções normalizam para a mesma forma.
+Desde o TDD #55 a normalização cobre também **URIs SQLite** (`sqlite_uri_path`): um
+`sqlite3.connect("file:.../jobs.sqlite3?mode=ro", uri=True)` é reduzido ao caminho de
+sistema de arquivos que nomeia — parâmetros de query (`mode`, `cache`, `vfs`, `immutable`),
+autoridade `file://localhost/`, forma `file:///C:/…` e percent-encoding não escapam mais do
+guard. `:memory:` e `file::memory:?cache=shared` continuam permitidos, assim como qualquer
+URI apontando a um banco temporário isolado.
+
+**Isolamento do histórico da UI.** `UIHistoryStore(path, hidden_path, output_root=…)`
+resolve `ui_helpers.OUTPUT_ROOT` por default (produção inalterada) e recebe a raiz isolada
+do `UiBridge` quando `TRADUTOR_TEST_RUNTIME_ROOT` está definido, de modo que
+`discover_outputs()` nunca enumera o `output/` real dentro da suíte. A coleta do pytest
+também não desce em `output/` nem `.cache/` (`norecursedirs` em `pytest.ini`).
 
 Nada disso roda em produção: o guard é instalado apenas por `_test_bootstrap`, `conftest` e
 o branch de entrypoint de teste do `sitecustomize`.
@@ -1183,10 +1206,7 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 
 | ID | Severidade | Descrição | Evidência | Encaminhamento sugerido |
 | --- | --- | --- | --- | --- |
-| `HERMETIC-SQLITE-URI-GUARD-GAP` | Média | `hermetic_runtime.is_real_runtime_path` normaliza caminhos de sistema de arquivos. Um `sqlite3.connect("file:...?mode=rw", uri=True)` apontando ao runtime real não normaliza para a forma canônica e escapa do guard. Nenhum código atual usa a forma URI, então a exposição hoje é latente. | `hermetic_runtime.py:78-111` | TDD futuro: normalizar a forma URI antes da comparação e cobrir com teste |
-| `UI-HISTORY-REAL-OUTPUT-READ` | Média | `UIHistoryStore` usa como default `ui_helpers.OUTPUT_ROOT` (`<repo>/output`) e `HISTORY_PATH` (`<repo>/.cache/ui_history.json`). O guard hermético cobre apenas `.cache/runtime`, então um teste que construa a store sem raiz explícita lê o `output/` real e escreve o `ui_history.json` real. | `ui_helpers.py:22-24`, `hermetic_runtime.py:30` | TDD futuro: estender o guard a `output/` e `.cache/ui_history.json`, ou exigir raiz explícita |
 | `UI-RESUME-NOT-EXPOSED` | Média | `POST /api/ui/resume` + `UiBridge.resume()` existem, mas nenhum arquivo de `static/` ou `ui/` os chama. Um job `interrupted` não tem caminho de recuperação pela interface. `docs/WORKER_QUEUE.md` afirmava o contrário. | Ausência de `ui/resume` em `static/`, `ui/` | TDD futuro: expor controle "Retomar" para jobs `interrupted`/`resumable` |
-| `STALE-RECONCILE-CLOCK-EQUALITY` | Baixa | `test_stale_job_reconcile.py::test_ghost_job_does_not_report_thousands_of_minutes` monta o job com **duas** chamadas a `time.time()` e depois compara `_duration(job)` a `120.0` por igualdade exata. Qualquer deriva entre as duas chamadas quebra o teste. Ainda aberto no commit base. | `test_stale_job_reconcile.py:61-65` | TDD futuro: fixar uma única base de tempo ou usar `assertAlmostEqual` |
 | `UI-COPY-NAMES-NVIDIA` | Baixa | A mensagem `environment_not_configured` no frontend diz "Configure o arquivo .env e a `NVIDIA_API_KEY`", mas o provider padrão é DeepL. Copy desatualizada visível ao usuário. | `static/tradutor_ui.js` (`reasonMessages`) | TDD futuro: mensagem neutra de provider |
 | `PROVIDER-HTTP-TELEMETRY-GAP` | Baixa | Não há telemetria HTTP unificada entre providers (latência, taxa de erro, retries) — cada provider mantém suas próprias `stats`. | `translator_deepl.py`, `translator_nvidia.py` | TDD futuro, se a Beta exigir observabilidade de provider |
 | `PACKAGING-PENDING` | Alta (bloqueia Beta externa) | Não existe nenhum artefato de empacotamento (PyInstaller, Inno Setup, NSIS, spec). | Busca por `setup/installer/pyinstaller/inno/nsis` no índice do Git: nada | Missão dedicada de empacotamento |

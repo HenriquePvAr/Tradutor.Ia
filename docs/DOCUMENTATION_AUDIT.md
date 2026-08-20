@@ -146,11 +146,15 @@ Esta missão é somente de documentação. Nenhum bug foi corrigido; todos foram
 | ID | Severidade | Achado | Evidência | TDD futuro recomendado |
 | --- | --- | --- | --- | --- |
 | `UI-RESUME-NOT-EXPOSED` | Média | `POST /api/ui/resume` implementado, mas nenhum controle na UI o chama. Um job `interrupted` não tem caminho de recuperação pela interface. | Ausência de `ui/resume` em `static/` e `ui/`; `app_ui.py:1792`; `ui_bridge.py:5460` | Expor "Retomar" para `interrupted`/`resumable` |
-| `HERMETIC-SQLITE-URI-GUARD-GAP` | Média | `is_real_runtime_path` normaliza caminhos de filesystem; a forma URI (`file:...?mode=rw`) escapa do guard. Exposição hoje é latente (nenhum código usa a forma URI). | `hermetic_runtime.py:78-111` | Normalizar a forma URI antes da comparação + teste |
-| `UI-HISTORY-REAL-OUTPUT-READ` | Média | `UIHistoryStore` usa por default `<repo>/output` e `<repo>/.cache/ui_history.json`. O guard hermético cobre só `.cache/runtime`, então um teste sem raiz explícita lê/escreve o real. | `ui_helpers.py:22-24`; `hermetic_runtime.py:30` | Estender o guard ou exigir raiz explícita |
-| `STALE-RECONCILE-CLOCK-EQUALITY` | Baixa | `test_ghost_job_does_not_report_thousands_of_minutes` monta o job com duas chamadas a `time.time()` e compara `_duration` a `120.0` por igualdade exata. **Ainda aberto** no commit base. | `test_stale_job_reconcile.py:61-65` | Base de tempo única ou `assertAlmostEqual` |
 | `UI-COPY-NAMES-NVIDIA` | Baixa | A mensagem `environment_not_configured` do frontend diz "Configure o arquivo .env e a `NVIDIA_API_KEY`", mas o provider padrão é DeepL. Copy desatualizada visível ao usuário. | `static/tradutor_ui.js`, mapa `reasonMessages` | Mensagem neutra de provider |
 | `PROVIDER-HTTP-TELEMETRY-GAP` | Baixa | Não há telemetria HTTP unificada entre providers; cada um mantém suas próprias `stats`. | `translator_deepl.py`, `translator_nvidia.py` | Se a Beta exigir observabilidade de provider |
+
+> **Fechados no TDD #55:** `HERMETIC-SQLITE-URI-GUARD-GAP` (normalização de URI SQLite em
+> `hermetic_runtime.sqlite_uri_path`), `UI-HISTORY-REAL-OUTPUT-READ` (`output_root`
+> injetável em `UIHistoryStore` + guard de `scandir`/`listdir` sobre `output/` e
+> `ui_history.json`) e `STALE-RECONCILE-CLOCK-EQUALITY` (base de tempo única, com prova
+> determinística do flake). Cobertura em `test_runtime_isolation_contract.py` e
+> `test_stale_job_reconcile.py`.
 
 > A mensagem `UI-COPY-NAMES-NVIDIA` foi **documentada como está** no guia do usuário, com
 > nota explicativa. Alterar o texto seria mudança de comportamento de produção, fora do

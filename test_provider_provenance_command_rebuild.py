@@ -132,6 +132,9 @@ class _Bridge(ui_bridge.UiBridge):
     def __init__(self, db_path):
         self.store = JobStore(db_path)
         self.history_revision = 1
+        # _create_job derives output_dir from output_root; without it the job (and the
+        # runner's mkdir) landed in the developer's real <repo>/output.
+        self.output_root = Path(db_path).parent / "output"
 
     def _refresh_history(self):
         pass

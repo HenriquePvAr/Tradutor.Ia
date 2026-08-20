@@ -60,9 +60,38 @@ class DurationTests(unittest.TestCase):
 
     def test_ghost_job_does_not_report_thousands_of_minutes(self):
         # The real bug: started 45h ago, no finished_at, process long gone.
-        job = {"started_at": time.time() - 45 * 3600, "heartbeat_at": time.time() - 45 * 3600 + 120}
+        # One authoritative clock read: two time.time() calls made the 120.0 gap
+        # 120.0 + delta between them, so assertEqual failed on the rare slow schedule.
+        now = time.time()
+        job = {"started_at": now - 45 * 3600, "heartbeat_at": now - 45 * 3600 + 120}
         self.assertEqual(_duration(job), 120.0)
         self.assertEqual(_format_seconds(_duration(job)), "2min 00s")
+
+    def test_ghost_job_duration_is_independent_of_clock_drift_between_reads(self):
+        """Deterministic proof of the old flake and of the repair.
+
+        The previous fixture read ``time.time()`` twice; whenever the scheduler moved the
+        clock between them the 120.0 gap became 120.0 + drift and ``assertEqual`` failed
+        even though ``_duration`` was correct. Freezing the drift makes that visible
+        without a 200k-run loop.
+        """
+        base = 1_700_000_000.0
+        drift = 0.031                      # a plausible scheduler hiccup, forced here
+        reads = iter([base, base + drift])
+
+        with mock.patch.object(time, "time", lambda: next(reads)):
+            two_reads = {
+                "started_at": time.time() - 45 * 3600,
+                "heartbeat_at": time.time() - 45 * 3600 + 120,
+            }
+        self.assertAlmostEqual(_duration(two_reads), 120.0 + drift, places=5)  # old flake
+        self.assertNotEqual(_duration(two_reads), 120.0)
+
+        with mock.patch.object(time, "time", lambda: base):
+            now = time.time()
+            one_read = {"started_at": now - 45 * 3600, "heartbeat_at": now - 45 * 3600 + 120}
+        self.assertEqual(_duration(one_read), 120.0)                   # the repair
+        self.assertEqual(_format_seconds(_duration(one_read)), "2min 00s")
 
 
 class ProgressBindingTests(unittest.TestCase):

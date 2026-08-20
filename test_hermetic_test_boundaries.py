@@ -209,11 +209,19 @@ class HermeticTestBoundaryTests(unittest.TestCase):
 
     def test_every_discoverable_test_installs_the_offline_guard_for_unittest_too(self):
         root = Path(__file__).resolve().parent
-        candidates = set(root.rglob("test_*.py")) | set(root.rglob("*_test.py"))
-        tests = sorted(
-            path for path in candidates
-            if ".venv" not in path.parts and "__pycache__" not in path.parts
-        )
+        # Walk source directories only. Descending into ``output`` or ``.cache`` would read
+        # the user's real run artifacts, which the runtime guard refuses (TDD #55).
+        skipped = {".venv", "__pycache__", "__pypackages__", ".git", "output", ".cache",
+                   "node_modules", "tmp"}
+        candidates: set[Path] = set()
+        for folder, subfolders, files in os.walk(root):
+            subfolders[:] = [name for name in subfolders if name not in skipped]
+            candidates.update(
+                Path(folder) / name for name in files
+                if name.startswith("test_") and name.endswith(".py")
+                or name.endswith("_test.py")
+            )
+        tests = sorted(candidates)
         missing = [str(path.relative_to(root)) for path in tests if not self._has_early_unittest_guard(path)]
         self.assertEqual(missing, [], f"testes sem guard offline cedo: {missing}")
 

@@ -24,10 +24,19 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent
 REAL_RUNTIME_ROOT = (REPO_ROOT / ".cache" / "runtime").resolve()
 REAL_JOBS_DB = REAL_RUNTIME_ROOT / "jobs.sqlite3"
+#: The user's real translated chapters and the UI history that indexes them. Reading these
+#: is not destructive, but a test that discovers real runs is not hermetic: its result
+#: depends on the developer's machine. Writing ui_history.json *is* destructive.
+REAL_OUTPUT_ROOT = (REPO_ROOT / "output").resolve()
+REAL_UI_HISTORY_PATHS = (
+    (REPO_ROOT / ".cache" / "ui_history.json").resolve(),
+    (REPO_ROOT / ".cache" / "ui_hidden_history.json").resolve(),
+)
 TEST_RUNTIME_ROOT_ENV = "TRADUTOR_TEST_RUNTIME_ROOT"
 # Deliberately distinct from TRADUTOR_IA_HERMETIC_TEST_ENV, which governs .env loading and
 # which individual tests strip from child processes on purpose. Runtime isolation must stay
@@ -52,10 +61,13 @@ _ORIGINAL_UNLINK = os.unlink
 _ORIGINAL_RENAME = os.rename
 _ORIGINAL_REPLACE = os.replace
 _ORIGINAL_POPEN_INIT = subprocess.Popen.__init__
+_ORIGINAL_SCANDIR = os.scandir
+_ORIGINAL_LISTDIR = os.listdir
 
 #: Counters the tripwire suite asserts on. Every entry is an attempt that was refused.
 ATTEMPTS: dict[str, list[str]] = {
     "sqlite": [], "open": [], "mkdir": [], "unlink": [], "rename": [], "spawn": [],
+    "listdir": [],
 }
 
 
@@ -73,28 +85,82 @@ def _canonical_forms(value: str) -> tuple[str, ...]:
 
 
 _REAL_FORMS = _canonical_forms(str(REAL_RUNTIME_ROOT))
+_REAL_USER_STATE_FORMS = _canonical_forms(str(REAL_OUTPUT_ROOT)) + tuple(
+    form for path in REAL_UI_HISTORY_PATHS for form in _canonical_forms(str(path))
+)
+
+
+def sqlite_uri_path(text: str) -> str | None:
+    """Filesystem path named by a sqlite3 ``file:`` URI, or ``None`` for anything else.
+
+    ``sqlite3.connect(..., uri=True)`` accepts ``file:jobs.sqlite3?mode=ro``,
+    ``file:C:/x/jobs.sqlite3`` and ``file:///C:/x/jobs.sqlite3``. Only the path component
+    names a file: query parameters (``mode``, ``cache``, ``vfs``) never do, and
+    ``file::memory:`` names no file at all.
+    """
+
+    if not text[:5].casefold() == "file:":
+        return None
+    parts = urlsplit(text)
+    if parts.netloc and parts.netloc.casefold() != "localhost":
+        return None  # a remote authority is not a path on this filesystem
+    path = unquote(parts.path)
+    if path.startswith(":"):
+        return None  # file::memory: and friends are not filesystem paths
+    # file:///C:/x -> /C:/x; strip the URI's root slash ahead of the drive letter.
+    if len(path) > 2 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    return path or None
+
+
+def _matches(text: str, forms: tuple[str, ...]) -> bool:
+    for candidate in _canonical_forms(text):
+        for real in forms:
+            if candidate == real or candidate.startswith(real + os.sep):
+                return True
+    return False
+
+
+def _as_text(value: object) -> str | None:
+    try:
+        text = os.fspath(value)  # type: ignore[arg-type]
+    except TypeError:
+        return None  # a file descriptor or a stream can never name a new runtime path
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "ignore")
+    if text[:5].casefold() == "file:":
+        # sqlite3 URIs must be compared as the path they resolve to, not as raw text.
+        return sqlite_uri_path(text)
+    return text
 
 
 def is_real_runtime_path(value: object) -> bool:
     """True when ``value`` names the real runtime root or anything under it.
 
     Comparison is canonical: relative paths, mixed separators, case-insensitive Windows
-    volumes and junctions all normalize to the same form.
+    volumes, junctions and sqlite ``file:`` URIs all normalize to the same form.
     """
 
-    try:
-        text = os.fspath(value)  # type: ignore[arg-type]
-    except TypeError:
-        return False  # a file descriptor or a stream can never name a new runtime path
-    if isinstance(text, bytes):
-        text = text.decode("utf-8", "ignore")
-    if ".cache" not in text.casefold():
+    text = _as_text(value)
+    if text is None or ".cache" not in text.casefold():
         return False  # cheap reject keeps the guard off the hot path of ordinary file I/O
-    for candidate in _canonical_forms(text):
-        for real in _REAL_FORMS:
-            if candidate == real or candidate.startswith(real + os.sep):
-                return True
-    return False
+    return _matches(text, _REAL_FORMS)
+
+
+def is_real_user_state_path(value: object) -> bool:
+    """True for the user's real ``output/`` tree or the real UI history files."""
+
+    text = _as_text(value)
+    if text is None:
+        return False
+    lowered = text.casefold()
+    if "output" not in lowered and "ui_history" not in lowered and "ui_hidden_history" not in lowered:
+        return False
+    return _matches(text, _REAL_USER_STATE_FORMS)
+
+
+def _is_forbidden(value: object) -> bool:
+    return is_real_runtime_path(value) or is_real_user_state_path(value)
 
 
 def _refuse(kind: str, target: str) -> None:
@@ -112,15 +178,24 @@ def _guarded_connect(database, *args, **kwargs):
 
 
 def _guarded_open(file, mode="r", *args, **kwargs):
-    if is_real_runtime_path(file):
+    if _is_forbidden(file):
         _refuse("open", f"{file} (mode={mode})")
     return _ORIGINAL_OPEN(file, mode, *args, **kwargs)
 
 
 def _guard_path(kind: str, original):
     def guarded(path, *args, **kwargs):
-        if is_real_runtime_path(path):
+        if _is_forbidden(path):
             _refuse(kind, str(path))
+        return original(path, *args, **kwargs)
+
+    return guarded
+
+
+def _guard_listing(original):
+    def guarded(path=".", *args, **kwargs):
+        if is_real_user_state_path(path):
+            _refuse("listdir", str(path))
         return original(path, *args, **kwargs)
 
     return guarded
@@ -129,7 +204,7 @@ def _guard_path(kind: str, original):
 def _guard_two_paths(kind: str, original):
     def guarded(src, dst, *args, **kwargs):
         for candidate in (src, dst):
-            if is_real_runtime_path(candidate):
+            if _is_forbidden(candidate):
                 _refuse(kind, str(candidate))
         return original(src, dst, *args, **kwargs)
 
@@ -217,6 +292,11 @@ def install_runtime_isolation_guard() -> Path:
     os.unlink = _guard_path("unlink", _ORIGINAL_UNLINK)
     os.rename = _guard_two_paths("rename", _ORIGINAL_RENAME)
     os.replace = _guard_two_paths("rename", _ORIGINAL_REPLACE)
+    # Path.iterdir/glob resolve through os.scandir; discover_outputs() enumerates a root.
+    # Only user state is listed-guarded: the runtime root's hazard is open/connect/write,
+    # already refused above, and repo-wide source scans legitimately walk past it.
+    os.scandir = _guard_listing(_ORIGINAL_SCANDIR)
+    os.listdir = _guard_listing(_ORIGINAL_LISTDIR)
     subprocess.Popen.__init__ = _guarded_popen_init
     sqlite3._tradutor_ia_runtime_guard = True
     return root

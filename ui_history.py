@@ -33,9 +33,25 @@ def utc_now() -> str:
 
 
 class UIHistoryStore:
-    def __init__(self, path: Path = HISTORY_PATH, hidden_path: Path | None = None):
+    def __init__(
+        self,
+        path: Path = HISTORY_PATH,
+        hidden_path: Path | None = None,
+        output_root: Path | None = None,
+    ):
         self.path = Path(path).resolve()
         self.hidden_path = Path(hidden_path).resolve() if hidden_path else self.path.with_name("ui_hidden_history.json")
+        self._output_root = Path(output_root).resolve() if output_root else None
+
+    @property
+    def output_root(self) -> Path:
+        """Where ``discover_outputs`` looks for runs.
+
+        Resolved per call so the production default follows ``ui_helpers.OUTPUT_ROOT``
+        while an isolated caller (tests, an isolated UiBridge) injects its own root.
+        """
+
+        return self._output_root or OUTPUT_ROOT
 
     def load(self) -> list[dict[str, Any]]:
         try:
@@ -68,12 +84,13 @@ class UIHistoryStore:
         ]
         records = [record for record in records if not self._is_hidden(record, hidden)]
         known = {str(Path(item.get("output_folder") or "").resolve()) for item in records}
-        if not OUTPUT_ROOT.is_dir():
+        output_root = self.output_root
+        if not output_root.is_dir():
             return records
         # A canonical run manifest is sufficient discovery evidence.  Older outputs still
         # need a timing report, but a valid newer run must not disappear just because a
         # diagnostic timing file is absent or was retained elsewhere.
-        for candidate in OUTPUT_ROOT.iterdir():
+        for candidate in output_root.iterdir():
             if not candidate.is_dir():
                 continue
             folder = candidate.resolve()

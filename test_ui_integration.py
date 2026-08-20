@@ -441,7 +441,7 @@ class UiIntegrationTests(unittest.TestCase):
             fixture = output_root / "fixture_chapter"
             fixture.mkdir(parents=True)
             (fixture / "chapter.pdf").write_bytes(b"%PDF-1.4\nx\n%%EOF\n")
-            history = UIHistoryStore(root / "ui_history.json")
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
             history._write([{
                 "id": "fixture",
                 "chapter_name": "Fixture",
@@ -471,7 +471,7 @@ class UiIntegrationTests(unittest.TestCase):
             output_root = root / "output"
             fixture = output_root / "fixture_chapter"
             fixture.mkdir(parents=True)
-            history = UIHistoryStore(root / "ui_history.json")
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
             history._write([{
                 "id": "history-id",
                 "job_id": "job-123",
@@ -510,7 +510,7 @@ class UiIntegrationTests(unittest.TestCase):
             output_root = root / "output"
             fixture = output_root / "published_chapter"
             fixture.mkdir(parents=True)
-            history = UIHistoryStore(root / "ui_history.json")
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
             history._write([{
                 "id": "published",
                 "chapter_name": "Published",
@@ -547,7 +547,7 @@ class UiIntegrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (fixture / "chapter.pdf").write_bytes(b"%PDF-1.4\nx\n%%EOF\n")
-            history = UIHistoryStore(root / "ui_history.json")
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
             with patch("ui_history.OUTPUT_ROOT", output_root):
                 discovered = history.discover_outputs()
                 self.assertEqual([item["id"] for item in discovered], ["discovered-manifest_like_chapter"])

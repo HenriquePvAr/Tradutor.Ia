@@ -29,11 +29,16 @@ import hermetic_runtime
 import ui_bridge
 from hermetic_runtime import (
     REAL_JOBS_DB,
+    REAL_OUTPUT_ROOT,
     REAL_RUNTIME_ROOT,
+    REAL_UI_HISTORY_PATHS,
     RealRuntimeAccess,
     is_real_runtime_path,
+    is_real_user_state_path,
+    sqlite_uri_path,
 )
 from job_store import JobStatus, JobStore
+from ui_history import UIHistoryStore
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -96,6 +101,126 @@ class RealJobsDatabaseTripwireTests(unittest.TestCase):
         """Production semantics are unchanged; only the test process refuses the path."""
         self.assertEqual(ui_bridge.JOBS_DB_PATH, REAL_JOBS_DB)
         self.assertTrue(is_real_runtime_path(ui_bridge.JOBS_DB_PATH))
+
+
+class SqliteUriTripwireTests(unittest.TestCase):
+    """A ``file:`` URI names the same database as a plain path and must be refused too.
+
+    Root cause: ``is_real_runtime_path`` normalised through ``os.path.abspath``, which sees
+    ``file:C:/...`` as a *relative* name and resolves it under the cwd, so no URI form of
+    the real queue ever matched. Nothing below opens a database: the guard refuses on the
+    name, ahead of ``sqlite3.connect``.
+    """
+
+    @staticmethod
+    def _uri(path: Path, query: str = "") -> str:
+        return "file:" + str(path).replace("\\", "/") + query
+
+    def _real_uris(self) -> tuple[str, ...]:
+        posix = str(REAL_JOBS_DB).replace("\\", "/")
+        return (
+            self._uri(REAL_JOBS_DB),
+            self._uri(REAL_JOBS_DB, "?mode=ro"),
+            self._uri(REAL_JOBS_DB, "?mode=rw&cache=shared"),
+            self._uri(REAL_JOBS_DB, "?mode=ro&vfs=win32&immutable=1"),
+            f"file:///{posix}",
+            f"file:///{posix}?mode=ro",
+            f"file://localhost/{posix}?mode=ro",
+            "file:" + posix.replace(".cache", ".%63ache") + "?mode=ro",   # percent-encoded
+        )
+
+    def test_every_uri_spelling_of_the_real_queue_is_recognised(self):
+        for uri in self._real_uris():
+            self.assertTrue(is_real_runtime_path(uri), uri)
+
+    def test_sqlite_connect_refuses_every_uri_spelling_before_connecting(self):
+        for uri in self._real_uris():
+            with self.assertRaises(RealRuntimeAccess, msg=uri):
+                sqlite3.connect(uri, uri=True)
+
+    def test_isolated_and_non_file_databases_stay_connectable(self):
+        """False positives would make the suite untestable, so prove the allowed cases."""
+        self.assertFalse(is_real_runtime_path(":memory:"))
+        self.assertFalse(is_real_runtime_path("file::memory:?cache=shared"))
+        self.assertFalse(is_real_runtime_path("file:isolated.db?mode=ro"))
+        sqlite3.connect(":memory:").close()
+        sqlite3.connect("file::memory:?cache=shared", uri=True).close()
+        with tempfile.TemporaryDirectory(prefix="tradutor-uri-") as folder:
+            db = Path(folder) / "jobs.sqlite3"
+            db.write_bytes(b"")
+            uri = self._uri(db, "?mode=ro")
+            self.assertFalse(is_real_runtime_path(uri), uri)
+            sqlite3.connect(uri, uri=True).close()
+
+    def test_uri_parsing_keeps_query_parameters_out_of_the_path(self):
+        self.assertEqual(sqlite_uri_path("file:jobs.sqlite3?mode=ro"), "jobs.sqlite3")
+        self.assertEqual(sqlite_uri_path("file:///C:/x/jobs.db"), "C:/x/jobs.db")
+        self.assertIsNone(sqlite_uri_path("file::memory:"))
+        self.assertIsNone(sqlite_uri_path("file://remote.invalid/share/jobs.db"))
+        self.assertIsNone(sqlite_uri_path("C:/x/jobs.db"))
+
+    def test_the_real_queue_was_never_opened(self):
+        self.assertEqual(REAL_JOBS_DB.stat().st_size, self.size_before)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.size_before = REAL_JOBS_DB.stat().st_size if REAL_JOBS_DB.exists() else -1
+
+
+class RealOutputTripwireTests(unittest.TestCase):
+    """A test must never discover the developer's real translated chapters.
+
+    Root cause: ``UIHistoryStore.discover_outputs`` enumerated the module-level
+    ``ui_helpers.OUTPUT_ROOT`` (``<repo>/output``), which the runtime guard did not cover,
+    so a store built without an explicit root produced machine-dependent history.
+    """
+
+    def test_the_real_output_root_and_history_files_are_recognised(self):
+        self.assertTrue(is_real_user_state_path(REAL_OUTPUT_ROOT))
+        self.assertTrue(is_real_user_state_path(REAL_OUTPUT_ROOT / "any_chapter"))
+        for path in REAL_UI_HISTORY_PATHS:
+            self.assertTrue(is_real_user_state_path(path))
+        self.assertFalse(is_real_user_state_path(REPO_ROOT / "output_manifest.py"))
+        self.assertFalse(is_real_user_state_path(Path(tempfile.gettempdir()) / "output"))
+
+    def test_enumerating_and_reading_the_real_output_root_is_refused(self):
+        with self.assertRaises(RealRuntimeAccess):
+            os.listdir(REAL_OUTPUT_ROOT)
+        with self.assertRaises(RealRuntimeAccess):
+            list(REAL_OUTPUT_ROOT.iterdir())
+        with self.assertRaises(RealRuntimeAccess):
+            open(REAL_OUTPUT_ROOT / "any_chapter" / "timing_report.json", "rb")
+        with self.assertRaises(RealRuntimeAccess):
+            REAL_UI_HISTORY_PATHS[0].write_text("[]", encoding="utf-8")
+
+    def test_a_default_history_store_cannot_discover_real_runs(self):
+        with tempfile.TemporaryDirectory(prefix="tradutor-history-") as folder:
+            store = UIHistoryStore(Path(folder) / "ui_history.json")
+            with self.assertRaises(RealRuntimeAccess):
+                store.discover_outputs()
+
+    def test_an_isolated_output_root_discovers_its_own_runs_and_only_those(self):
+        """Real discovery semantics, isolated data — not a mocked-away history."""
+        with tempfile.TemporaryDirectory(prefix="tradutor-history-") as folder:
+            output_root = Path(folder) / "output"
+            run = output_root / "isolated_chapter_01"
+            run.mkdir(parents=True)
+            (run / "timing_report.json").write_text(
+                '{"total_seconds": 12, "processed_images": 3}', encoding="utf-8")
+            store = UIHistoryStore(
+                Path(folder) / "ui_history.json", output_root=output_root)
+            slugs = [record["slug"] for record in store.discover_outputs()]
+        self.assertEqual(slugs, ["isolated_chapter_01"])
+
+    def test_production_construction_still_resolves_the_canonical_output_root(self):
+        """Name only — resolving the root does not enumerate it."""
+        self.assertEqual(
+            UIHistoryStore(Path(tempfile.gettempdir()) / "ui_history.json").output_root,
+            REAL_OUTPUT_ROOT,
+        )
+
+    def test_the_real_output_root_was_never_read_or_modified(self):
+        self.assertFalse((REAL_OUTPUT_ROOT / "tripwire").exists())
 
 
 class RealWorkerSpawnTripwireTests(unittest.TestCase):

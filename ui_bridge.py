@@ -373,7 +373,8 @@ class UiBridge:
         self.legacy_profile_path = PROFILE_PATH
         db_path = self.runtime_root / "jobs.sqlite3" if requested_root else JOBS_DB_PATH
         self.history_store = (
-            UIHistoryStore(self.runtime_root / "ui_history.json")
+            UIHistoryStore(
+                self.runtime_root / "ui_history.json", output_root=self.output_root)
             if requested_root else UIHistoryStore()
         )
         self.history = self.history_store.discover_outputs()
