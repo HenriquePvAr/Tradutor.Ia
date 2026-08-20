@@ -25,7 +25,21 @@ python start_tradutor.py status     # saúde do worker e da fila
 python start_tradutor.py stop-worker [--force]   # parada graciosa do worker
 ```
 
-No Windows há também `start_tradutor.bat`.
+No Windows há também `start_tradutor.bat`. `stop` e `stop-worker` são o mesmo comando.
+
+## Supervisão do worker
+
+`all` **supervisiona** o worker que ele mesmo iniciou (`worker_supervisor.py`): se aquele
+processo morre inesperadamente, um substituto é criado sob política limitada — backoff de
+`2s`, `5s`, `15s`, no máximo `3` reinícios, e depois o launcher fica `degraded` em vez de
+respawnar indefinidamente. Um worker que fica de pé por `120s` recupera o orçamento de
+reinícios. A supervisão vive e morre com o processo do launcher e **nunca adota** um worker
+que ele não criou — por isso `worker`, que sai imediatamente, inicia sem supervisionar.
+
+O supervisor cuida apenas de **disponibilidade de processo**: nunca marca job como
+interrompido, nunca retoma um job e nunca reordena a fila. Isso continua sendo do
+`JobStore` e do worker substituto. Detalhes em
+[Documentação Técnica §5](technical/DOCUMENTACAO_TECNICA.md#5-ciclo-de-vida-do-launcher-e-supervisão-do-worker).
 
 ## Estados do job
 
@@ -36,6 +50,11 @@ das páginas encontradas e o job então segue para `queued`; também pode ser ca
 Depois da confirmação, o fluxo é `queued → claiming → starting → running → finished |
 review_required`, com `cancelling → cancelled`, `running → interrupted → resumable →
 queued` (retomada) e `failed`. Transições inválidas são rejeitadas (fail-closed).
+
+A taxonomia completa tem 14 estados — os acima mais `staging` (job sendo montado antes de
+entrar na fila) e `source_analysis_ready` (fonte analisada, pendente de política de
+workspace). Tabela e diagrama em
+[Documentação Técnica §8](technical/DOCUMENTACAO_TECNICA.md#8-máquina-de-estados-do-job).
 
 `review_required` é diferente de `awaiting_source_review`: o primeiro é terminal e só
 existe após uma execução que gerou artefatos com revisão de qualidade pendente. O segundo
@@ -76,7 +95,15 @@ capítulo.
 
 ## Retomada
 
-Um job `interrupted`/`resumable` pode ser retomado pela UI: cria um novo attempt
+> ⚠️ **Estado verificado no commit `c81c798`:** `POST /api/ui/resume` e `UiBridge.resume()`
+> existem, mas **nenhum arquivo de `static/` ou `ui/` os chama** — não há controle
+> "Retomar" na interface atual. O parágrafo abaixo descreve o contrato do backend, não um
+> caminho disponível ao usuário. O botão **Tentar novamente** da UI cobre apenas jobs
+> `failed`/`cancelled` marcados como recuperáveis. Registrado como dívida
+> `UI-RESUME-NOT-EXPOSED` em
+> [Documentação Técnica §29](technical/DOCUMENTACAO_TECNICA.md#29-dívida-técnica-conhecida).
+
+Um job `interrupted`/`resumable` pode ser retomado pela API: cria um novo attempt
 (`attempt+1`, com `previous_job_id`) reusando o mesmo diretório de saída; checkpoints
 válidos de estágios já concluídos são reaproveitados. A retomada é **bloqueada**
 enquanto o runner do attempt anterior ainda estiver vivo
@@ -99,7 +126,9 @@ de `output/`. Nada é migrado automaticamente.
 - **Job preso em `queued`** → confirme o worker com `status`.
 - **Job em `awaiting_source_review`** → revise e confirme as páginas encontradas; o OCR
   ainda não foi iniciado.
-- **Job `interrupted`** → use “Retomar” na UI (cria `attempt 2`).
+- **Job `interrupted`** → não há botão de retomada na UI atual; reenviar o capítulo é o
+  caminho prático (os artefatos anteriores e o cache são preservados). O contrato de
+  retomada existe em `POST /api/ui/resume`.
 - **Worker duplicado** → o segundo sai limpo; verifique com `status`.
 - **Porta 8080 ocupada** → outra UI já está rodando.
 - **Banco bloqueado** → operação concorrente momentânea; o WAL + busy_timeout resolvem;

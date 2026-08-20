@@ -1,0 +1,1274 @@
+# Tradutor IA — Documentação Técnica
+
+> **Base verificada:** commit `c81c798` (branch `fix/main-e2e-findings`)
+> **Última revisão:** 2026-08-19
+> **Público:** desenvolvedores, mantenedores, suporte técnico e agentes automatizados.
+
+Documentos irmãos: [Guia do Usuário](../user/GUIA_DO_USUARIO.md) ·
+[Política de Documentação](../DOCUMENTATION_POLICY.md) · [Índice da documentação](../README.md)
+
+---
+
+## Como ler este documento
+
+Cada afirmação aqui foi conferida contra o código, os testes e a configuração do commit
+base. Recursos que ainda não existem aparecem marcados explicitamente:
+
+| Marcador | Significado |
+| --- | --- |
+| **IMPLEMENTADO** | Existe no código do commit base e é alcançável em execução normal. |
+| **PARCIAL** | Existe no backend/núcleo, mas não está completo ou não está exposto ao usuário. |
+| **PLANEJADO** | Não existe no repositório. Não documentar como disponível. |
+| **DEPRECIADO** | Existe por compatibilidade, mas não é o caminho recomendado. |
+
+---
+
+## Sumário
+
+1. [Visão geral do projeto](#1-visão-geral-do-projeto)
+2. [Escopo atual do produto](#2-escopo-atual-do-produto)
+3. [Arquitetura de repositório e mapa de componentes](#3-arquitetura-de-repositório-e-mapa-de-componentes)
+4. [Arquitetura de execução](#4-arquitetura-de-execução)
+5. [Ciclo de vida do launcher e supervisão do worker](#5-ciclo-de-vida-do-launcher-e-supervisão-do-worker)
+6. [Ciclo de vida da UI](#6-ciclo-de-vida-da-ui)
+7. [Ciclo de vida do worker e do runner](#7-ciclo-de-vida-do-worker-e-do-runner)
+8. [Máquina de estados do job](#8-máquina-de-estados-do-job)
+9. [Crash, reconciliação e recuperação](#9-crash-reconciliação-e-recuperação)
+10. [Job store (SQLite) e sistema de arquivos de runtime](#10-job-store-sqlite-e-sistema-de-arquivos-de-runtime)
+11. [Análise de fonte e descoberta de páginas](#11-análise-de-fonte-e-descoberta-de-páginas)
+12. [Download de imagens](#12-download-de-imagens)
+13. [Smart Split e páginas lógicas](#13-smart-split-e-páginas-lógicas)
+14. [Pipeline de OCR](#14-pipeline-de-ocr)
+15. [Tradução: abstração de provider](#15-tradução-abstração-de-provider)
+16. [Limpeza, inpainting e renderização](#16-limpeza-inpainting-e-renderização)
+17. [Qualidade, validação física e proveniência](#17-qualidade-validação-física-e-proveniência)
+18. [PDF e histórico](#18-pdf-e-histórico)
+19. [Autenticação e autorização](#19-autenticação-e-autorização)
+20. [Comunidade e armazenamento](#20-comunidade-e-armazenamento)
+21. [Caches](#21-caches)
+22. [Configuração e variáveis de ambiente](#22-configuração-e-variáveis-de-ambiente)
+23. [Modelo de segurança](#23-modelo-de-segurança)
+24. [Arquitetura de testes](#24-arquitetura-de-testes)
+25. [Performance](#25-performance)
+26. [Logs, saúde e diagnóstico](#26-logs-saúde-e-diagnóstico)
+27. [Ambiente de desenvolvimento e comandos](#27-ambiente-de-desenvolvimento-e-comandos)
+28. [Troubleshooting técnico](#28-troubleshooting-técnico)
+29. [Dívida técnica conhecida](#29-dívida-técnica-conhecida)
+30. [Empacotamento, updater e prontidão para Beta](#30-empacotamento-updater-e-prontidão-para-beta)
+31. [Glossário](#31-glossário)
+
+---
+
+## 1. Visão geral do projeto
+
+O Tradutor IA é uma **aplicação local** que transforma um capítulo ilustrado
+(webtoon/manhwa/mangá em inglês) numa versão traduzida para português do Brasil, com PDF
+final e relatórios de qualidade.
+
+Não é um serviço hospedado. Todo o pipeline — download, OCR, tradução, reconstrução
+visual e geração de PDF — roda na máquina do usuário. As únicas saídas de rede em
+operação normal são: o site de origem do capítulo, o provedor de tradução, o serviço de
+autenticação (Supabase) e, quando o usuário publica explicitamente, o armazenamento da
+comunidade.
+
+Ambiente auditado: **Windows 64 bits, Python 3.11**. Outros sistemas operacionais não
+fazem parte do contrato validado.
+
+## 2. Escopo atual do produto
+
+O produto caminha para a **primeira beta externa com Scans**. Estado por área:
+
+| Área | Estado |
+| --- | --- |
+| Pipeline ponta a ponta (URL → PDF) | **IMPLEMENTADO** |
+| Entrada por pasta local | **IMPLEMENTADO** |
+| Fila persistente + worker independente | **IMPLEMENTADO** |
+| Detecção de crash duro do worker (TDD #52) | **IMPLEMENTADO** |
+| Supervisão do worker pelo launcher (TDD #53) | **IMPLEMENTADO** |
+| Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
+| Qualidade / gates fail-closed | **IMPLEMENTADO** |
+| Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
+| Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
+| Instalador para usuário final (Setup) | **PLANEJADO** |
+| Atualizador automático assinado | **PLANEJADO** |
+| Licenciamento / expiração de tester | **PLANEJADO** |
+| Validação em VM Windows limpa | **PLANEJADO** |
+
+> **Aviso.** Nada em `PLANEJADO` deve ser descrito como disponível em nenhum documento,
+> release note ou mensagem de UI.
+
+## 3. Arquitetura de repositório e mapa de componentes
+
+O repositório é **flat**: quase todos os módulos Python vivem na raiz (≈310 arquivos
+versionados, dos quais 178 são `test_*.py`). Não há pacote instalável; os entrypoints são
+executados diretamente a partir da raiz.
+
+```text
+<repo>/
+├── start_tradutor.py         # launcher canônico (worker + UI + supervisão)
+├── start_tradutor.bat        # atalho Windows para o launcher
+├── app_ui.py                 # servidor NiceGUI/FastAPI + rotas HTTP
+├── ui_bridge.py              # camada de aplicação da UI (estado, jobs, revisão)
+├── ui/                       # ui_shell.html, auth_callback.html
+├── static/                   # JS/CSS do frontend + catálogos i18n
+├── worker_service.py         # worker independente que drena a fila
+├── worker_supervisor.py      # política de reinício limitado do worker
+├── job_runner.py             # executa exatamente um job, em subprocesso isolado
+├── job_store.py              # SQLite: jobs, leases, transições
+├── benchmark_pipeline.py     # orquestrador do pipeline ponta a ponta
+├── run_webtoon.py            # entrada CLI simplificada
+├── docs/                     # documentação
+├── apps/auth-service/        # serviço Better Auth (TypeScript, opcional)
+├── supabase/                 # migrations SQL + testes de banco
+└── scripts/                  # smokes manuais e migração de auth
+```
+
+### Mapa de componentes por domínio
+
+| Domínio | Módulos principais |
+| --- | --- |
+| Launcher / processos | `start_tradutor.py`, `worker_supervisor.py`, `process_launcher.py`, `process_tree.py`, `process_options.py` |
+| UI | `app_ui.py`, `ui_bridge.py`, `ui_helpers.py`, `ui_history.py`, `ui/`, `static/` |
+| Fila e jobs | `job_store.py`, `worker_service.py`, `job_runner.py`, `runner_start_gate.py`, `job_failure_diagnostic.py` |
+| Fonte de capítulo | `chapter_source.py`, `universal_chapter_adapter.py`, `source_analysis_phase.py`, `source_profile.py`, `source_readiness.py`, `canonical_source_identity.py`, `webtoons_reader_bridge.py`, `lazy_slot_resolver.py`, `local_folder_*.py` |
+| Download | `down.py`, `download_transport.py`, `browser_runtime.py`, `image_validation.py`, `google_drive_transport.py` |
+| OCR | `ocr_engine.py`, `ocr_balloon.py`, `ocr_parallel.py`, `ocr_memory_policy.py`, `fast_ocr_policy.py`, `ocr_line_provenance.py` |
+| Tradução | `translator_deepl.py`, `translator_nvidia.py`, `translator_nllb.py`, `provider_execution.py`, `provider_transport.py`, `session_context.py`, `natural_ptbr_refinement.py` |
+| Reconstrução | `art_text_inpainting.py`, `multiscale_patch_synthesis.py`, `reference_guided_reconstruction.py`, `selective_artifact_reconstruction.py`, `font_fidelity.py` |
+| Qualidade | `chapter_quality_revision.py`, `preview_gates.py`, `source_completeness.py`, `source_glyph_envelope.py`, `residual_*.py`, `semantic_fidelity.py`, `linguistic_audit.py`, `region_taxonomy.py` |
+| Saída | `pdf.py`, `pdf_naming.py`, `output_manifest.py`, `chapter_asset_repository.py` |
+| Comunidade | `community_*.py`, `social_*.py`, `supabase_social.py`, `publish_authorization.py`, `canonical_social_identity.py` |
+| Auth | `community_auth.py`, `supabase_auth.py`, `local_test_auth.py`, `apps/auth-service/` |
+| Armazenamento legado | `google_drive_*.py`, `legacy_publication_*.py`, `legacy_storage_upload_reservation.py` |
+| Infra de testes | `hermetic_runtime.py`, `offline_test_guard.py`, `conftest.py`, `_test_bootstrap.py`, `sitecustomize.py` |
+
+## 4. Arquitetura de execução
+
+Três processos independentes, mais um subprocesso por capítulo:
+
+```mermaid
+flowchart TD
+    U([Usuário]) --> L[start_tradutor.py<br/>launcher]
+    L -->|spawn detached| W[worker_service.py]
+    L -->|spawn| UI[app_ui.py<br/>NiceGUI + FastAPI]
+    L -. supervisiona .-> W
+    U -->|navegador<br/>127.0.0.1:8080| UI
+    UI --> B[ui_bridge.py]
+    B --> DB[(.cache/runtime/jobs.sqlite3)]
+    W --> DB
+    W -->|spawn 1 por job| R[job_runner.py]
+    R --> P[benchmark_pipeline.py]
+    P --> O[(output/&lt;slug&gt;/)]
+    R --> DB
+```
+
+Pontos de contrato:
+
+- **A UI nunca executa o pipeline.** Ela cria linhas no banco; o worker as consome. Fechar
+  o navegador ou reiniciar `app_ui.py` não interrompe um capítulo.
+- **O worker é destacado do launcher** (`DETACHED_PROCESS` + `CREATE_NEW_PROCESS_GROUP` +
+  `CREATE_NO_WINDOW` no Windows; `start_new_session` no POSIX).
+- **Concorrência de jobs = 1.** O worker reivindica um job por vez com claim atômico.
+- **Banco é a única fonte de verdade** do estado dos jobs e do lease do worker.
+- **Comunicação entre processos é sempre pelo banco**, nunca por sinais de console — é
+  isso que permite parar um worker destacado sem console compartilhado.
+
+## 5. Ciclo de vida do launcher e supervisão do worker
+
+`start_tradutor.py` aceita cinco comandos (verificados no código):
+
+| Comando | Efeito |
+| --- | --- |
+| `all` (padrão) | Inicia o worker (se não houver um saudável), **supervisiona-o**, e roda a UI em primeiro plano |
+| `worker` | Inicia apenas o worker, destacado, e sai — **sem supervisão** |
+| `ui` | Inicia apenas a UI |
+| `status` | Imprime saúde do worker e da fila (`worker_service.py --status`) |
+| `stop` / `stop-worker` | Pede parada graciosa pelo banco; `--force` derruba a árvore validada |
+
+Antes de qualquer comando, o launcher carrega `.env` (e `.env.local` como override) via
+`local_environment.load_local_environment_for_entrypoint()`. Um `.env` malformado faz o
+launcher sair com código `2` e mensagem `configuration_error:` **sem imprimir valores**.
+
+### Supervisão (`worker_supervisor.py`, TDD #53) — IMPLEMENTADO
+
+A supervisão é deliberadamente estreita: seu único escopo é **disponibilidade do
+processo**. Ela nunca marca job como interrompido, nunca retoma job, nunca reordena fila.
+
+| Parâmetro | Valor no código |
+| --- | --- |
+| Backoff entre reinícios | `2s, 5s, 15s` (`BACKOFF_SECONDS`) |
+| Máximo de reinícios do orçamento | `3` (`MAX_RESTARTS`) |
+| Tempo de uptime que devolve o orçamento | `120s` (`STABILITY_SECONDS`) |
+| Estados | `starting`, `running`, `backoff`, `stopping`, `degraded` |
+
+Regras verificadas:
+
+- O supervisor **bloqueia em `Popen.wait()`** — não há polling nem health probe.
+- Ele só dirige o processo que **este launcher** criou. Um launcher que encontra um worker
+  saudável pré-existente não o adota (`start_worker` retorna `None`).
+- `request_stop()` marca a intenção **antes** de qualquer terminação. Exit code jamais é
+  usado para inferir intenção: um worker pode sumir inesperadamente com código 0.
+- Esgotado o orçamento, o estado vira `degraded` e **não há mais respawn** — o usuário vê
+  um worker offline honesto em vez de uma tempestade de processos.
+- Uptime `>= 120s` zera `restarts`, então um crash hoje e outro na semana que vem não
+  esgotam ninguém.
+- A thread do supervisor é **daemon**: a supervisão vive e morre com o launcher.
+
+```mermaid
+stateDiagram-v2
+    [*] --> starting
+    starting --> running: processo adotado/criado
+    running --> stopping: request_stop() antes da saída
+    running --> backoff: saída inesperada
+    backoff --> running: novo worker criado
+    backoff --> degraded: orçamento (3) esgotado
+    backoff --> stopping: stop pedido durante o backoff
+    stopping --> [*]
+    degraded --> [*]
+```
+
+Eventos são emitidos como uma linha JSON em `stderr` (`worker_spawned`,
+`worker_process_exited`, `worker_restart_scheduled`, `worker_restart_exhausted`,
+`worker_expected_stop`, ...).
+
+### Launcher supervisionado de execução única (`process_launcher.py`)
+
+Componente separado e independente do anterior: executa **um** processo filho e persiste o
+exit code real. No Windows o filho nasce suspenso, é associado a um Job Object com
+`KILL_ON_JOB_CLOSE` e só então é retomado; no POSIX usa nova sessão e grupo de processos.
+Grava `exit_code.txt`, `launcher_events.jsonl`, stdout e stderr no diretório de runtime
+indicado. É usado para execuções CLI supervisionadas fora da UI; **não** é o launcher da
+aplicação.
+
+## 6. Ciclo de vida da UI
+
+`app_ui.py` sobe um app FastAPI/NiceGUI:
+
+- Porta: `TRADUTOR_UI_PORT` (padrão `8080`); host: `configured_bind_host()`.
+- Bind externo exige o opt-in explícito `TRADUTOR_ALLOW_EXTERNAL_BIND=1` **e** um provider
+  de auth que declare `supports_external_bind`. O provider local nunca satisfaz isso.
+- A porta é verificada antes do `ui.run` (`_assert_startup_port_available`).
+- Página única em `/`, servindo `ui/ui_shell.html` + `static/`.
+- `GET /auth/callback` serve uma página estática fixa (sem echo de query/hash → sem open
+  redirect).
+
+### Superfície HTTP
+
+Todas as rotas de aplicação estão sob `/api/ui/*`, `/api/community/*` e `/api/auth/*`.
+Duas exceções deliberadamente não autenticadas:
+
+| Rota | Motivo |
+| --- | --- |
+| `GET /api/health` | Indicador de conexão do frontend; precisa funcionar antes do login. Não expõe estado de usuário. |
+| `GET /api/ui/bootstrap` | Read-only; devolve payload vazio para credencial ausente/expirada em vez de quebrar o carregamento. |
+
+Todo o resto passa por `_ui_principal()`, que exige principal autenticado
+(`401 authentication_required`) e, para mutações, CSRF (`403 csrf_rejected`). Rotas
+ligadas a um job usam `_owned_ui_job()`, que devolve `404 not_found` — deliberadamente
+indistinguível de recurso inexistente — quando o job não pertence ao owner.
+
+Famílias de rotas: estado/bootstrap, submissão e cancelamento, revisão de fonte, revisão
+de qualidade, revisão de página, rerun de revisão, auditoria linguística, tradução humana
+assistida, máscara humana, fila, perfil, histórico, comunidade.
+
+## 7. Ciclo de vida do worker e do runner
+
+`worker_service.py` roda um laço:
+
+| Constante | Valor |
+| --- | --- |
+| `POLL_SECONDS` | `1.5` |
+| `WORKER_HEARTBEAT_SECONDS` | `3.0` |
+| `STALE_SECONDS` | `30.0` |
+| `STAGING_GRACE_SECONDS` | `5.0` |
+| `COMMUNITY_RUNNER_MAX_ATTEMPTS` | `3` |
+
+Sequência por ciclo:
+
+1. Registra/renova o próprio lease (`worker_id` UUID + PID + `create_time` do processo).
+2. Reconcilia jobs deixados por um worker morto (`_reconcile_stale`) e publicações de
+   comunidade interrompidas (`_recover_interrupted_community_publishes`).
+3. Reivindica **um** job `queued` com UPDATE guardado por `status='queued'`.
+4. Para fonte por URL, roda a fase de análise (`_prepare_source` →
+   `source_analysis_phase`) enquanto segura o claim.
+5. Cria o runner: `python -u job_runner.py --job-id ... --db ... --worker-id ... --log ...`.
+6. Acompanha o runner, honra cancelamento cooperativo e reconcilia a saída
+   (`_reconcile_runner_exit`).
+
+`job_runner.py` executa **um** capítulo: escreve o manifest inicial imediatamente (para que
+uma execução interrompida ainda deixe registro), marca `running`, lança o comando do
+pipeline com stdout redirecionado para `.cache/runtime/logs/<job_id>.log`, atualiza
+progresso e heartbeat, e deriva o status terminal a partir dos artefatos produzidos. Um
+crash no runner fica contido em um job — o worker continua.
+
+Modos: `worker_service.py --once` processa no máximo um job e sai; `--status` imprime saúde
+e sai; `--db` aponta para outro banco (usado por testes e manutenção — nesse caso os logs
+vão para o diretório do banco, nunca para o cache de produção).
+
+## 8. Máquina de estados do job
+
+`job_store.JobStatus` define **14 estados**. Transições não listadas em
+`ALLOWED_TRANSITIONS` são rejeitadas com `TransitionError` (fail-closed).
+
+| Estado | Classe | Significado |
+| --- | --- | --- |
+| `staging` | preparação | Job sendo montado pela UI, antes de entrar na fila |
+| `queued` | fila | Aguardando um worker |
+| `claiming` | em voo | Worker reivindicou; pode estar analisando a fonte |
+| `starting` | em voo | Runner sendo criado |
+| `running` | em voo | Pipeline em execução |
+| `cancelling` | em voo | Cancelamento pedido; runner derrubando a árvore |
+| `awaiting_source_review` | pausa | Análise de confiança média: usuário precisa confirmar as páginas |
+| `source_analysis_ready` | pausa | Fonte analisada; pendência de política de workspace |
+| `interrupted` | recuperação | Execução perdida (crash/parada); artefatos preservados |
+| `resumable` | recuperação | Interrompido e elegível para novo attempt |
+| `cancelled` | **terminal** | Cancelamento explícito |
+| `failed` | **terminal** | Falha técnica ou artefato essencial ausente |
+| `finished` | **terminal** | Execução concluída e quality gate aprovado |
+| `review_required` | **terminal** | Concluído, PDF existe, há revisão de qualidade pendente |
+
+`TERMINAL = {cancelled, failed, finished, review_required}`.
+`IN_FLIGHT = {claiming, starting, running, cancelling}` — apenas estes exigem heartbeat.
+
+```mermaid
+stateDiagram-v2
+    [*] --> staging
+    staging --> queued
+    staging --> awaiting_source_review
+    staging --> cancelled
+    staging --> failed
+    queued --> claiming
+    queued --> cancelled
+    claiming --> starting
+    claiming --> queued
+    claiming --> awaiting_source_review
+    claiming --> source_analysis_ready
+    claiming --> interrupted
+    claiming --> cancelling
+    claiming --> failed
+    awaiting_source_review --> queued: usuário confirma páginas
+    awaiting_source_review --> cancelled
+    awaiting_source_review --> failed
+    source_analysis_ready --> queued
+    source_analysis_ready --> cancelled
+    source_analysis_ready --> failed
+    starting --> running
+    starting --> interrupted
+    starting --> cancelling
+    starting --> failed
+    running --> finished
+    running --> review_required
+    running --> interrupted
+    running --> cancelling
+    running --> failed
+    cancelling --> cancelled
+    cancelling --> interrupted
+    cancelling --> failed
+    interrupted --> resumable
+    interrupted --> cancelled
+    interrupted --> failed
+    resumable --> queued: novo attempt
+    resumable --> cancelled
+    finished --> [*]
+    review_required --> [*]
+    failed --> [*]
+    cancelled --> [*]
+```
+
+> **Distinção importante.** `awaiting_source_review` é uma revisão **de seleção de
+> páginas, antes do OCR**. `review_required` é **terminal**, após uma execução que já
+> gerou artefatos. Nunca confundir os dois em mensagens ao usuário.
+
+## 9. Crash, reconciliação e recuperação
+
+### Liveness que não mente (TDD #52)
+
+Um worker que morre por `os._exit`, terminação forçada, crash nativo ou OOM **não roda seu
+shutdown**: a linha de lease sobrevive com um heartbeat que estava fresco há um instante.
+Frescor de heartbeat, portanto, não enxerga crash duro.
+
+`job_store.worker_lease_process_alive()` usa a evidência que o resto do repositório já
+confia para posse de processo: **PID + `create_time` do processo**. PID sozinho é inseguro
+(PIDs são reutilizados); o `create_time` fixa a identidade daquela instância. Um lease sem
+`create_time` registrado não carrega identidade verificável e mantém o contrato antigo de
+heartbeat, em vez de declarar morto um worker possivelmente vivo.
+
+### Fluxo de crash
+
+```mermaid
+flowchart TD
+    A[Worker A rodando o job X] --> B{Processo desaparece}
+    B --> C[Linha de lease sobrevive<br/>heartbeat ainda fresco]
+    C --> D[healthy_worker: PID + create_time<br/>não conferem → não saudável]
+    D --> E1[Launcher supervisiona?]
+    E1 -->|sim, orçamento disponível| F[backoff 2s/5s/15s → novo worker]
+    E1 -->|sim, orçamento esgotado| G[estado DEGRADED<br/>sem respawn]
+    E1 -->|não supervisionado| H[usuário inicia worker manualmente]
+    F --> I[Worker B: _reconcile_stale]
+    H --> I
+    I --> J{Árvore do runner validada<br/>PID + create_time + cmdline}
+    J -->|confere| K[Encerra a árvore → job X = interrupted]
+    J -->|PID reutilizado| L[ownership_mismatch<br/>nada é encerrado]
+    K --> M[Job X elegível a resumable]
+```
+
+Garantias verificadas:
+
+- Nenhum processo é encerrado **por nome**. Toda terminação valida PID + `create_time` +
+  substring de linha de comando (`process_tree.matches`).
+- PID reutilizado por outro processo nunca é encerrado; o job falha fechado como
+  `ownership_mismatch`.
+- Nunca há dois attempts ativos para o mesmo capítulo.
+- O supervisor **não toca em estado de job**. Reconciliação é do `JobStore` + worker novo.
+
+### Retomada — PARCIAL
+
+`POST /api/ui/resume` e `UiBridge.resume()` existem e criam um novo attempt
+(`attempt+1`, com `previous_job_id`) reusando o mesmo diretório de saída, reaproveitando
+checkpoints válidos. A retomada é bloqueada enquanto o runner do attempt anterior estiver
+vivo (`previous_attempt_still_running`).
+
+> **Lacuna verificada no commit base:** nenhum arquivo em `static/` ou `ui/` chama
+> `/api/ui/resume`. **Não existe botão "Retomar" na interface atual.** Documentação de
+> usuário não pode instruir o uso desse recurso até que o controle exista.
+
+## 10. Job store (SQLite) e sistema de arquivos de runtime
+
+`job_store.py` — `SCHEMA_VERSION = 9`, SQLite em modo WAL com `busy_timeout`.
+
+Tabelas: `jobs`, `workers`, `meta`, `quality_review_item_revisions` e tabelas auxiliares
+de revisão. Timestamps são epoch em segundos (`REAL`); `NULL` significa "ainda não".
+
+A linha de job (~70 colunas explícitas em `_JOB_COLUMNS`) agrupa:
+
+- **identidade**: `id`, `owner_id`, `run_id`, `operation_kind`, `parent_job_id`, `attempt`,
+  `previous_job_id`, `commit_hash`, `branch`;
+- **fonte**: `source_url`, `source_type`, `adapter_name`, `adapter_version`,
+  `transport_name`, `source_score`, `candidate_count`, `snapshot_ref`,
+  `input_root_fingerprint`, `source_analysis_json`, `source_selection_json`;
+- **progresso**: `stage`, `progress_current`, `progress_total`, `progress_message`,
+  `progress_counter_stage`, `stage_started_at`;
+- **posse de processo**: `worker_id`, `worker_pid`, `worker_create_time`, `runner_pid`,
+  `runner_create_time`, `exit_code`;
+- **artefatos**: `manifest_path`, `progress_path`, `quality_report_path`, `pdf_path`,
+  `log_path`;
+- **erro**: `error_type`, `error_message`, `error_trace_path`, `reason_code`.
+
+`reason_code` é validado por regex (`^[a-z][a-z0-9_]{0,79}$`) — nunca texto livre.
+
+O registro **não deve** guardar URL completa de recurso, query string, cookie ou pixel de
+canvas. Análise de fonte é sanitizada antes de persistir.
+
+### Estrutura de runtime
+
+```text
+<repo>/.cache/
+├── runtime/
+│   ├── jobs.sqlite3          # fila e leases (WAL)
+│   ├── logs/<job_id>.log     # log por job
+│   └── ui.log                # stdout/stderr da UI
+├── ui_history.json           # histórico local da UI
+└── ...                       # caches de pipeline
+
+<repo>/output/<slug>/
+├── input/                    # imagens de origem ativas
+├── pages/                    # páginas finais renderizadas
+├── run_manifest.json         # manifest autodescritivo da execução
+├── progress.json             # progresso + run_signature
+├── downloaded_images.json    # manifest ativo do download
+├── download_report.json|html
+├── timing_report.json|txt
+├── quality_report.json|html
+├── resource_report.json|html # só com monitoramento habilitado
+└── <obra>_capitulo_<n>.pdf
+```
+
+Ambos são ignorados pelo Git.
+
+## 11. Análise de fonte e descoberta de páginas
+
+`chapter_source.py` sempre tenta primeiro um **adapter específico**. Sem adapter
+registrado, uma URL HTTP(S) pública pode passar pelo `UniversalChapterAdapter` — isso é
+uma análise controlada, **não** uma declaração de suporte ao site.
+
+Decisão por score, verificada em `docs/UNIVERSAL_CHAPTER_ADAPTER.md` e no código:
+
+| Score | Resultado |
+| --- | --- |
+| `>= 0,85` | Seleção automática; segue para download |
+| `0,60 – 0,84` | Job vai para `awaiting_source_review` — o usuário confirma as páginas |
+| `< 0,60` | Falha fechada |
+
+Falham fechados, antes de qualquer OCR: cobertura incompleta (`incomplete_download`),
+autenticação exigida, challenge interativo, conteúdo protegido, leitor não observável,
+mais de 400 páginas, paginação ambígua (`pagination_incomplete`).
+
+`source_analysis_phase.py` isola a decisão que segue à análise (cobertura incompleta,
+revisão manual, resultado não suportado, ambiente ausente, pronto para rodar). Depende
+apenas de um `JobStore` e de callables explícitos — não importa a UI nem framework web,
+por isso o worker a alcança sem importar a camada de request.
+
+### Leitores lazy (`lazy_slot_resolver.py`) — IMPLEMENTADO
+
+Um leitor lazy entrega placeholders primeiro. Ler o DOM uma vez enxerga uma fração do
+capítulo, e tratar o resto como rejeitado encolhe o capítulo silenciosamente.
+
+O resolvedor revisita regiões pendentes, relê os mesmos índices do DOM e atualiza apenas os
+slots pendentes, até nada estar pendente ou o orçamento acabar. Ele **nunca busca bytes de
+imagem** — observa apenas estado de elemento. Toda operação de browser é injetada, então o
+algoritmo é testável sem browser e sem rede.
+
+Para Webtoons, `webtoons_reader_bridge.py` adapta o driver Selenium já aberto e rola apenas
+dentro dos bounds do container do reader. Placeholders 1x1 permanecem pendentes, nunca
+autorizam host de CDN e nunca entram no manifesto. Resolução incompleta termina a fase como
+`incomplete_source_coverage`, sem iniciar runner.
+
+**Otimização fechada (commit `5fce936`):** a parada da descoberta passou a usar evidência
+convergente (manifesto canônico do leitor, altura do documento, progresso real de scroll)
+com uma sonda final de exaustão, em vez de esgotar sempre as 90 rodadas. Medido no episódio
+51: 90 rodadas / 92s de sleep → 10 rodadas / 11s, com as mesmas 171 páginas.
+
+### Pasta local
+
+`LocalFolderChapterAdapter` percorre uma fronteira separada: valida uma raiz permitida
+(`LOCAL_INPUT_ROOTS`), arquivos diretos e bytes de imagem, cria snapshot interno com nomes
+gerados e entrega ao job apenas uma referência opaca. Não usa browser, `file://` nem
+downloader HTTP. Submissão de pasta local pela UI só é aceita quando o servidor está ligado
+a loopback (`_local_folder_submit_allowed`).
+
+## 12. Download de imagens
+
+`down.py` usa Selenium + Chrome headless. O downloader deduplica URLs preservando a ordem
+observada, valida os bytes das imagens (`image_validation.py`), compara o conjunto esperado
+com o disponível, produz um **download gate** com motivos de falha e executa teardown
+limitado do navegador registrando o mecanismo usado.
+
+`download_transport.py` abstrai o transporte; todos compartilham limites por capítulo de
+redirects, tamanho, quantidade, bytes e duração. A sessão com cookies do navegador é
+temporária e opcional. Challenges, autenticação e canvas inacessível **não são
+contornados**.
+
+Detalhes em [`docs/DOWNLOAD_TRANSPORTS.md`](../DOWNLOAD_TRANSPORTS.md).
+
+## 13. Smart Split e páginas lógicas
+
+Webtoons entregam fatias muito altas ou com divisões inadequadas para OCR e PDF. `pdf.py`
+implementa o **smart split**, que reconstrói páginas lógicas com limites configuráveis
+(`SMART_PDF_TARGET_HEIGHT`, `SMART_PDF_MIN_HEIGHT`, `SMART_PDF_MAX_HEIGHT`) e preserva um
+relatório das fronteiras escolhidas. Ocorre **antes** do OCR quando
+`SMART_WEBTOON_PDF_SPLIT=True`. Para pasta local (arquivos já são páginas lógicas
+completas) o smart split faz passthrough.
+
+**Otimização fechada (commit `2638844`):** a gravação de cada página lógica deixou de usar
+`optimize=True` do Pillow (busca exaustiva de filtro/Huffman). Num capítulo real de 171
+fatias isso custava ~32,2s dos ~52s do estágio para economizar ~1,3% de bytes. PNG é
+lossless nos dois casos — as 100/100 páginas ficaram pixel-idênticas. Estágio 51,98s →
+28,52s; encode 32,22s → 8,40s; saída +1,32% em bytes.
+
+## 14. Pipeline de OCR
+
+`ocr_engine.py` oferece interface comum para **RapidOCR** (ONNX Runtime), **PaddleOCR
+completo**, **PaddleOCR Mobile** e o caminho opcional de Tesseract.
+
+Modo `fast` (padrão):
+
+1. RapidOCR processa a página.
+2. Reparos conservadores normalizam problemas estruturais **sem traduzir**.
+3. Sinais de suspeita podem acionar fallback de página para Paddle Mobile.
+4. Grupos individuais recebem score em `ocr_balloon.py` (`score_group_ocr_quality`).
+5. Regiões suspeitas são recortadas e comparadas com Paddle Mobile.
+6. Paddle completo só entra quando a comparação ainda não resolve o contrato.
+7. Vence o candidato com melhor combinação de qualidade, confidence e coerência.
+
+Modo `quality`: PaddleOCR como engine inicial.
+
+O fallback **solicita comparação**; ele não fabrica a leitura correta. Os metadados
+registram engine original, engine final, confidences, motivos de fallback, reparos e
+scores.
+
+### Ciclo de vida e memória
+
+As engines são nativas e backed por modelo: uma contagem de workers inofensiva para um
+backend leve pode dobrar o resident set do runner. `ocr_memory_policy.py` mantém a política
+de dimensionamento **pura e injetável**, para que os testes a exercitem sem depender da RAM
+real do host. `ocr_parallel.py` coordena os workers; `adaptive_scheduler.py` pode ajustar
+concorrência a partir de memória e CPU observadas (opt-in por `.env`).
+
+### Agrupamento e classificação
+
+`ocr_balloon.py` agrupa linhas visualmente relacionadas e classifica o grupo com evidências
+textuais e de container. Classes: `speech`, `narration`, `sfx`, `decorative` e `unknown`
+(evidência insuficiente para decisão segura). SFX são preservados por padrão
+(`TRANSLATE_SFX=False`). A classificação também informa a estratégia de máscara e redraw.
+
+### Proveniência e recuperação de OCR
+
+`ocr_line_provenance.py` copia a evidência sempre que uma fronteira é cruzada — o pipeline
+reescreve objetos de linha in-place e substitui listas inteiras entre passes (re-OCR de
+container de fala, recuperação de região do RapidOCR, fallbacks seletivos, fallback de
+página inteira). Sem isso, um grupo que perdesse silenciosamente parte de uma linha de
+origem não poderia ser reconstruído depois. O módulo **apenas observa**.
+
+## 15. Tradução: abstração de provider
+
+### Resolução do provider
+
+Dois eixos ortogonais, deliberadamente:
+
+- `TRANSLATION_MODE` (padrão `nvidia`) — eixo **antigo**, seleciona a família
+  local/Google/NVIDIA.
+- `ui_helpers.DEFAULT_TRANSLATION_PROVIDER` (**`deepl`**) — o resolvedor único que a UI, a
+  criação de job e o runner leem.
+
+`TRANSLATION_PROVIDERS = {"deepl", "nemotron", "riva"}`.
+
+Regra em `translator_nllb.get_translator()`:
+
+1. Provider explícito no job vence sempre.
+2. Provider ausente **e** `TRANSLATION_MODE == "nvidia"` → `DEFAULT_TRANSLATION_PROVIDER`
+   (**DeepL**). O escopo é a família NVIDIA de propósito: uma instalação que roda
+   deliberadamente `TRANSLATION_MODE=google` não é sequestrada por um default no qual nunca
+   optou.
+3. `deepl` é resolvido **antes** de `TRANSLATION_MODE`.
+
+> **O default efetivo do produto hoje é DeepL.** Um job DeepL que não alcança a DeepL
+> **falha**; ele não vira job Riva. Nunca há fallback silencioso entre providers.
+
+### DeepL (`translator_deepl.py`) — provider padrão da Beta
+
+Provider de primeira classe, não variante dos outros: possui todo o contrato HTTP
+(construção de request, validação de resposta, normalização de erro, telemetria de
+caracteres cobrados) e expõe só a interface que o pipeline já fala
+(`translate_many` / `translate` / `stats` / `model`).
+
+Ausências deliberadas, cada uma um contrato:
+
+- **Sem `translate_strict`** → o quality gate nunca pede à DeepL para re-traduzir uma
+  região.
+- **Sem naturalizador anexado** → a saída de benchmark não precisou de um, e acoplar um
+  passe de LLM a um caminho de ~2s transformaria silenciosamente o provider num pipeline
+  multi-provider lento.
+- **Sem fallback** → chave ausente produz nenhuma tradução e nenhum provider substituto.
+
+Variáveis: `DEEPL_API_KEY`, `DEEPL_API_BASE_URL`, `DEEPL_MODEL_TYPE`.
+
+### NVIDIA (`translator_nvidia.py`)
+
+Duas variantes selecionáveis: `nemotron` (API compatível com OpenAI) e `riva` (contrato de
+prompt nativo de tradução). Opera em lotes, respeita `NVIDIA_MAX_REQUESTS_PER_MINUTE`, usa
+retry/backoff para falhas temporárias e grava cache por entrada e configuração.
+
+### Google / NLLB — DEPRECIADO
+
+`translator_nllb.py` mantém caminhos Google Translate e NLLB local por compatibilidade. Não
+são o fluxo recomendado da UI nem da CLI atuais.
+
+### Contexto de capítulo
+
+Com contexto habilitado, `session_context.py` mantém informações do capítulo em
+`session_context.json` para manter nomes e termos consistentes entre balões. `--no-context`
+desativa; `--delete-context-after` remove o arquivo somente após a geração bem-sucedida do
+PDF.
+
+### Proveniência de provider
+
+`provider_execution.py` e `provider_transport.py` registram qual provider realmente
+executou. Os rótulos genéricos de estágio e timing **não nomeiam mais NVIDIA** — o provider
+efetivo é registrado, não presumido.
+
+## 16. Limpeza, inpainting e renderização
+
+Antes do redraw, o texto traduzido passa por validação lexical e multilíngue (resíduo em
+inglês/espanhol, fragmento parcialmente traduzido, mistura de idiomas). Candidatos
+inválidos recebem retries controlados; persistindo inválidos, o **texto-fonte é preservado**
+e o grupo é marcado para revisão. O validator nunca reescreve a resposta do modelo.
+
+A reconstrução usa:
+
+- **máscara restrita** (`TEXT_MASK_PADDING`, `MAX_MASK_EXPANSION`, `STRICT_MASK_BOUNDS`,
+  `MASK_COMPONENT_BASED`);
+- **análise de background** — balão branco liso, envelope branco, envelope estilizado e
+  arte texturizada têm limiares separados;
+- **inpainting** (`art_text_inpainting.py`, `multiscale_patch_synthesis.py`,
+  `reference_guided_reconstruction.py`) ou preenchimento compatível;
+- **tipografia** com quebra de linha automática e redução de fonte
+  (`MIN_FONT_SIZE`, `MAX_FONT_SIZE`, `AUTO_LINE_WRAP`, `AUTO_FONT_SHRINK`,
+  `font_fidelity.py`).
+
+`preview_gates.py` é medição, não julgamento por inspeção: um rascunho só é aprovado por
+números que um humano pode conferir. As mesmas funções servem a qualquer rascunho — não
+dependem de página, região, frase ou capítulo.
+
+## 17. Qualidade, validação física e proveniência
+
+O sistema separa **sucesso técnico** de **aprovação de qualidade**. Um PDF pode existir e a
+execução terminar como `review_required`.
+
+Gates independentes: download, OCR, tradução, reconstrução e PDF.
+
+### Validação de resíduo físico
+
+`source_glyph_envelope.py` produz envelopes visuais determinísticos e fail-closed para
+glifos rasterizados de origem. O modelo é **agnóstico de página**: uma semente de texto
+confirmada autoriza uma busca local, mas nunca autoriza um pixel por si só. Evidência de
+camada, conectividade, geometria de traço observada e evidência de arte protegida decidem;
+discordâncias permanecem incertas.
+
+`residual_analysis_artifacts.py` armazena os pixels residuais exatos e cada entrada do
+detector que afeta identidade, de forma endereçada por conteúdo. Não conhece capítulos,
+números de página, frases, coordenadas, usuários nem ordinais históricos de componente.
+
+### Completude de origem
+
+`source_completeness.py` implementa o contrato: **conteúdo de origem atribuído a um grupo
+não pode desaparecer silenciosamente.** Ele deriva, para um grupo, a evidência lexical que
+a própria proveniência diz que o grupo possui, e verifica se a representação downstream
+(texto do grupo, entrada de render, geometria de render) ainda dá conta dela.
+
+### Validação visual
+
+`VISUAL_DIFF_VALIDATION` mede alteração fora da máscara
+(`MAX_OUTSIDE_CHANGE_RATIO`, `MAX_OUTSIDE_COMPONENT_AREA`), dano de borda de balão
+(`REJECT_BALLOON_BORDER_DAMAGE`), overflow de texto (`REJECT_TEXT_OVERFLOW`,
+`MAX_TEXT_OVERFLOW_RATIO`), manchas escuras novas em arte texturizada e patch branco fora
+do balão.
+
+### Auditoria linguística e taxonomia semântica
+
+`region_taxonomy.py`, `linguistic_audit.py`, `linguistic_triage.py` e `semantic_fidelity.py`
+implementam a taxonomia semântica de regiões e a auditoria linguística offline. Nenhuma
+delas modifica PDFs, páginas finais, revisões ou publicações, e nenhuma chama provider de
+tradução. `audit_registry.py` resolve artefatos por **identidade** (diretório de saída +
+`revision_id`), nunca por glob, mtime, título ou heurística de "mais recente"; o hash do
+relatório carregado é verificado contra o registro, então arquivo velho ou trocado falha
+fechado. Detalhes em [`SEMANTIC_CLASSIFICATION_AUDIT.md`](../../SEMANTIC_CLASSIFICATION_AUDIT.md).
+
+### Manifest autodescritivo
+
+`output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`
+é o caminho verificado — o histórico da UI classifica registros por
+`manifest_verified` > `e2e_evidence` > `legacy_unverified`.
+
+Contrato completo em [`docs/QUALITY_AND_VALIDATION.md`](../QUALITY_AND_VALIDATION.md).
+
+## 18. PDF e histórico
+
+`pdf.py` reúne as páginas finais válidas; a contagem do PDF é comparada com a esperada pelo
+quality gate.
+
+`pdf_naming.py` é a **única** fonte do nome:
+
+```text
+<obra>_capitulo_<numero>.pdf
+```
+
+A obra vem do título da série quando o pipeline o conhece e, senão, do slug da série na
+URL — o segmento do episódio nunca vira nome de obra. O número vem da metadata do capítulo,
+depois da URL, e só recorre ao identificador da execução quando o capítulo não tem número.
+O nome é sanitizado para Windows: minúsculas, sem acentos, sem caracteres inválidos, sem
+travessia de caminho, sem nomes reservados e com tamanho limitado.
+
+A execução registra `pdf_path` e `pdf_filename` no `run_manifest.json`; a UI abre o arquivo
+por esse caminho em vez de remontar o nome. Saídas antigas continuam funcionando (nome
+genérico, descoberto pelo caminho persistido ou pelo PDF presente na pasta). **Nenhum PDF
+existente é renomeado.**
+
+`ui_history.py` (`UIHistoryStore`) mantém o histórico local em `.cache/ui_history.json` e
+descobre saídas antigas em `output/` que não têm registro no banco. Nada é migrado
+automaticamente.
+
+## 19. Autenticação e autorização
+
+`community_auth.build_auth_provider()` — **o default é `supabase`**. Providers suportados:
+
+| Valor de `COMMUNITY_AUTH_PROVIDER` | Descrição |
+| --- | --- |
+| `supabase` (**padrão**) | JWT de usuário verificado criptograficamente contra o JWKS do projeto |
+| `local` | Sessão de operador em loopback, sem dependência de rede |
+| `better_auth` | Serviço Better Auth em `apps/auth-service/`, atrás de proxy same-origin |
+| `local_test` | Provider exclusivo de teste |
+
+Configuração incompleta **falha fechada**: nunca há queda silenciosa para o provider local.
+
+Trocar de provider não altera nenhuma regra de autorização — o boundary em
+`community_authorization.py` continua decidindo acesso a partir de um `RequestPrincipal`.
+
+### Verificação do token Supabase (`supabase_auth.py`)
+
+1. Parsing estrito do header (um único Bearer, JWS compacto, tamanho limitado).
+2. `alg` na allow-list (`ES256`/`RS256`) e `kid` obrigatório.
+3. Chave pública selecionada **apenas por `kid`** no JWKS do projeto — `jku`/`x5u` do token
+   são ignorados.
+4. Assinatura, `iss`, `aud`, `exp`, `nbf` (com tolerância pequena de relógio) e `sub`.
+5. Só então cria `RequestPrincipal(authenticated=True, auth_source="supabase")` com
+   `user_id = sub` e **role comum** — nunca admin/moderator vindos de metadata editável.
+
+O JWKS é buscado sob demanda (nunca no import), com timeout, cache com TTL, limite de
+tamanho e no máximo um refresh por rotação de `kid`. Qualquer falha de JWKS **falha
+fechado**.
+
+A **secret key nunca** é lida por esse provider: verificação de token precisa apenas do
+documento público JWKS.
+
+### Login é obrigatório
+
+`_ui_principal()` protege todas as rotas de aplicação. Sem sessão válida não é possível
+criar tradução, ver histórico ou acessar a comunidade.
+
+## 20. Comunidade e armazenamento
+
+**IMPLEMENTADO**, montado de forma fail-closed: se `build_social_repository()` levantar
+`SocialConfigError`, o router social simplesmente não é montado e `_SOCIAL_STATUS` reporta
+um `reason_code` de um conjunto fechado — nunca a `SUPABASE_URL`, chave ou exceção crua.
+
+Princípio central: **todo conteúdo do tradutor permanece somente local por padrão.** Nada é
+publicado ao concluir tradução, exportar, salvar ou reiniciar. O único caminho para um
+arquivo sair da máquina é a ação explícita e autenticada "Publicar na comunidade".
+
+Camadas:
+
+- `social_repository.py` / `supabase_social.py` — o navegador **nunca** fala com a Supabase
+  Data API diretamente; chama endpoints do backend, que encaminham o **JWT do próprio
+  usuário** ao PostgREST, onde a **RLS** revalida cada linha.
+- `community_service.py` — o navegador nunca envia caminho de arquivo; envia
+  identificadores, e o backend resolve o PDF server-side no diretório de saída autorizado e
+  valida antes de subir. A publicação cria um job `community_publish` que o worker executa;
+  o post só fica visível **após o upload ser verificado**.
+- `community_storage.py` — providers: `fake`, `memory`, `filesystem`, `local_test`,
+  `google_drive` (padrão de fábrica: `fake`, quando nada é configurado).
+- Google Drive (`google_drive_*.py`, `COMMUNITY_STORAGE_PROVIDER=google_drive`): segredos
+  vêm do ambiente/arquivo de token, **nunca** do config persistido junto ao job.
+- `social_asset_retention.py` — um PDF que deixa de ser o arquivo ativo não é apagado:
+  vira asset retido com prazo, restaurável pelo owner. Só depois disso uma varredura manual
+  pode movê-lo para a lixeira do Drive. Nada nessa fase apaga permanentemente.
+
+Migrations do banco social em `supabase/migrations/` (puramente aditivas, sem
+`DROP`/`TRUNCATE`) e testes em `supabase/tests/database/`.
+
+Docs específicas: [`COMMUNITY_AUTHORIZATION.md`](../COMMUNITY_AUTHORIZATION.md),
+[`COMMUNITY_STORAGE.md`](../COMMUNITY_STORAGE.md),
+[`SUPABASE_SOCIAL_BACKEND.md`](../SUPABASE_SOCIAL_BACKEND.md),
+[`SUPABASE_SOCIAL_SCHEMA.md`](../SUPABASE_SOCIAL_SCHEMA.md),
+[`SOCIAL_COMMUNITY_UI.md`](../SOCIAL_COMMUNITY_UI.md),
+[`EXPLICIT_SOCIAL_PDF_PUBLISHING.md`](../EXPLICIT_SOCIAL_PDF_PUBLISHING.md),
+[`SOCIAL_ASSET_RETENTION_RECONCILIATION.md`](../SOCIAL_ASSET_RETENTION_RECONCILIATION.md).
+
+## 21. Caches
+
+`pipeline_cache.py` separa caches de **download**, **precheck sem texto**, **OCR**,
+**tradução** e **página renderizada**. As chaves incorporam hash de imagem, engine,
+configuração relevante e versões internas do formato — mudar configuração relevante
+invalida a entrada, não a reaproveita erradamente.
+
+Flags: `ENABLE_DOWNLOAD_CACHE`, `ENABLE_OCR_CACHE`, `ENABLE_TRANSLATION_CACHE`,
+`ENABLE_IMAGE_PROCESS_CACHE`.
+
+Os JSONs críticos usam **escrita atômica**. O `run_signature` em `progress.json` permite
+reutilizar páginas concluídas só quando a execução é compatível. `--force` ignora os caches
+de download, OCR, tradução e renderização; **não apaga** o cache global.
+
+## 22. Configuração e variáveis de ambiente
+
+`.env` (não versionado) na raiz; `.env.local` (também ignorado) refina toggles de
+desenvolvimento local. `local_environment.py` carrega ambos de forma determinística:
+
+- O `.env` base é conservador e **nunca substitui** valores já presentes no processo.
+- O `.env.local` pode sobrescrever, mas valores que existiam antes do loader rodar
+  permanecem autoritativos.
+- Arquivo malformado **falha fechado**, com erro que nunca inclui conteúdo nem caminho
+  absoluto.
+- `TRADUTOR_IA_HERMETIC_TEST_ENV=1` impede o carregamento — usado pelo runtime de testes.
+
+`.env.example` documenta ~150 variáveis. As categorias principais:
+
+| Grupo | Exemplos | Obrigatório? |
+| --- | --- | --- |
+| Tradução DeepL | `DEEPL_API_KEY`, `DEEPL_API_BASE_URL`, `DEEPL_MODEL_TYPE` | `DEEPL_API_KEY` obrigatório no default atual |
+| Tradução NVIDIA | `NVIDIA_API_KEY`, `NVIDIA_BASE_URL`, `NVIDIA_TRANSLATION_MODEL`, `NVIDIA_TRANSLATION_BATCH_SIZE`, `NVIDIA_MAX_REQUESTS_PER_MINUTE`, `NVIDIA_TRANSLATION_PROVIDER` | Só se usar `nemotron`/`riva` |
+| Modo de tradução | `TRANSLATION_MODE`, `TRANSLATE_SFX`, `PRIORITIZE_ENCLOSED_TEXT` | Opcional |
+| OCR | `OCR_ENGINE`, `OCR_FALLBACK_ENGINE`, `OCR_HYBRID_FALLBACK`, `RAPIDOCR_*`, `FAST_OCR_*`, `OCR_TEXT_REPAIR*`, `OCR_QUALITY_CONTROL`, `OCR_GROUP_*` | Opcional |
+| Máscara / render | `TEXT_MASK_PADDING`, `MAX_MASK_EXPANSION`, `STRICT_MASK_BOUNDS`, `MIN_FONT_SIZE`, `MAX_FONT_SIZE`, `AUTO_LINE_WRAP`, `AUTO_FONT_SHRINK` | Opcional |
+| Validação visual | `VISUAL_DIFF_VALIDATION`, `VISUAL_QA_STRICT`, `MAX_OUTSIDE_CHANGE_RATIO`, `REJECT_*`, `WHITE_*` | Opcional |
+| Caches | `ENABLE_*_CACHE`, `FULL_FAST_MODE` | Opcional |
+| Recursos | `OCR_PARALLEL`, `OCR_WORKERS`, `ADAPTIVE_PARALLELISM`, `RESOURCE_MONITORING`, `MIN/MAX_OCR_WORKERS`, `MEMORY_*`, `CPU_PRESSURE_HIGH_PERCENT` | Opcional |
+| PDF | `SMART_WEBTOON_PDF_SPLIT`, `SMART_PDF_TARGET_HEIGHT`, `SMART_PDF_MIN_HEIGHT`, `SMART_PDF_MAX_HEIGHT` | Opcional |
+| Auth | `COMMUNITY_AUTH_PROVIDER`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL`, `SUPABASE_EXPECTED_ISSUER`, `SUPABASE_EXPECTED_AUDIENCE`, `SUPABASE_SITE_URL`, `SUPABASE_REDIRECT_URL` | Obrigatório para login |
+| Comunidade | `COMMUNITY_SOCIAL_PROVIDER`, `COMMUNITY_STORAGE_PROVIDER`, `COMMUNITY_DRIVE_ROOT_FOLDER_ID`, `COMMUNITY_LOCAL_*` | Só para comunidade |
+| Google Drive | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_TOKEN_PATH`, `GOOGLE_OAUTH_SCOPES` | Só com storage Drive |
+| Rede / UI | `TRADUTOR_UI_HOST`, `TRADUTOR_UI_PORT`, `TRADUTOR_ALLOW_EXTERNAL_BIND` | Opcional |
+| Navegador | `SOURCE_BROWSER_ENGINE`, `SOURCE_BROWSER_EXECUTABLE`, `SOURCE_BROWSER_HEADLESS`, `SOURCE_BROWSER_STARTUP_TIMEOUT`, `SOURCE_BROWSER_NAVIGATION_TIMEOUT`, `SOURCE_BROWSER_PROFILE_MODE`, `TRADUTOR_ALLOW_DRIVER_DOWNLOAD` | Opcional |
+| Selenium | `SELENIUM_QUIT_TIMEOUT_SECONDS`, `SELENIUM_CLEANUP_TIMEOUT_SECONDS` | Opcional |
+| Debug | `DEBUG_VISUAL`, `SAVE_FULL_DEBUG`, `SAVE_COMPARE_SAMPLES`, `SAVE_DEBUG_ONLY_ERRORS`, `CLASSIFICATION_PROFILING`, `POST_RENDER_OCR_VALIDATION` | Opcional |
+
+Formato seguro para exemplos em documentação:
+
+```dotenv
+DEEPL_API_KEY=<sua-chave-deepl>
+SUPABASE_URL=<url-do-seu-projeto-supabase>
+SUPABASE_PUBLISHABLE_KEY=<sua-publishable-key>
+```
+
+> **Nunca** registrar valor real de chave, token, senha, service-role key ou conteúdo de
+> token do Drive em documentação, commit, log, issue ou screenshot.
+
+Referência completa por variável: [`docs/CONFIGURATION.md`](../CONFIGURATION.md).
+
+## 23. Modelo de segurança
+
+Fronteiras implementadas — e o que elas **não** garantem
+([`docs/SECURITY.md`](../SECURITY.md)).
+
+### Segredos
+
+- Nenhuma **service-role / secret key** chega ao frontend, é retornada por endpoint,
+  autoriza um PDF ou fabrica um `RequestPrincipal`. A `SUPABASE_SECRET_KEY` serve apenas a
+  operações administrativas locais server-side; recomenda-se removê-la do `.env` após o
+  uso.
+- `SUPABASE_URL` e `SUPABASE_PUBLISHABLE_KEY` são públicas por design e expostas em
+  `GET /api/community/auth/config` só para o browser construir o cliente do SDK.
+- Chaves de provider de tradução (`DEEPL_API_KEY`, `NVIDIA_API_KEY`) vivem no `.env`, são
+  lidas em processo e **mascaradas antes de qualquer log chegar à interface**
+  (`ui_helpers.sanitize_diagnostic_text`).
+- Token OAuth do Drive fica no caminho indicado por `GOOGLE_OAUTH_TOKEN_PATH`, fora do Git.
+  Nunca é enviado ao browser nem persistido no banco de jobs.
+- Diagnósticos persistidos em `jobs.sqlite3` são sanitizados: sem URL completa, query
+  string, cookie ou pixel de canvas.
+
+### Rede
+
+- O servidor liga em loopback por padrão. Bind externo exige `TRADUTOR_ALLOW_EXTERNAL_BIND=1`
+  **e** um provider de auth que suporte, e é validado no startup (`validate_bind_security`).
+- Submissão de pasta local pela UI só é aceita em servidor loopback.
+- A validação protege a navegação e as imagens selecionadas, mas **não é um sandbox** de
+  todos os subrecursos que o navegador pode carregar, nem fixa o IP final de `requests`.
+  Para URLs não confiáveis, um deploy precisaria de política de egress adicional.
+
+### Processos
+
+- Nenhuma terminação por nome de processo. Sempre PID + `create_time` + linha de comando.
+- Job Object com `KILL_ON_JOB_CLOSE` no `process_launcher.py` (Windows) impede descendentes
+  órfãos.
+
+### Updater assinado
+
+**PLANEJADO.** Não existe verificação de assinatura, manifest de update, verificação de
+SHA, versão mínima, substituição atômica nem rollback no commit base. Não há canal de
+atualização automática.
+
+## 24. Arquitetura de testes
+
+178 arquivos `test_*.py` versionados + 12 arquivos `test_*.mjs` de frontend
+(`node --check` e testes Node) + testes SQL em `supabase/tests/database/` + a suíte
+TypeScript de `apps/auth-service/`.
+
+`pytest.ini`:
+
+```ini
+[pytest]
+addopts = -m "not network and not manual"
+markers =
+    unit / integration / network / manual / slow
+```
+
+Testes de rede e smokes manuais são **excluídos por padrão** e exigem opt-in explícito.
+
+### Isolamento hermético (TDD #51, `hermetic_runtime.py`)
+
+O estado real do projeto vive em `<repo>/.cache/runtime`. Antes do guard, código de teste
+que construísse um componente de runtime sem raiz explícita caía exatamente nesse
+diretório — um `python -m unittest discover` podia abrir a fila real, mutar linhas de job
+reais e lançar o worker real.
+
+O guard dá ao processo de teste **uma raiz temporária única por processo** e transforma
+todo caminho restante para a raiz real em falha imediata (`RealRuntimeAccess`), **antes** do
+efeito colateral. Ele intercepta `sqlite3.connect`, `open`, `mkdir`, `unlink`, `rename` e
+spawn de processo.
+
+Nada disso roda em produção: o guard é instalado apenas por `_test_bootstrap`, `conftest` e
+o branch de entrypoint de teste do `sitecustomize`.
+
+### Guard de rede (`offline_test_guard.py`)
+
+Bloqueia conexões de socket antes de qualquer request. O padrão da suíte é **offline**;
+usa-se fakes e artefatos temporários.
+
+### Contrato dos testes
+
+Um teste **não pode**:
+
+- tocar o banco de jobs de produção (`.cache/runtime/jobs.sqlite3`);
+- lançar o worker de produção;
+- chamar provider de tradução real;
+- alcançar Drive ou Supabase remoto de forma inesperada.
+
+Testes de crash duro (`test_worker_process_loss.py`, `test_worker_supervision.py`) usam
+**processos reais**, nunca booleanos mockados: um filho registra o lease com sua identidade
+real, faz heartbeat e sai por `os._exit`, exatamente como um segfault, um OOM kill ou uma
+terminação forçada parecem para o banco.
+
+> **Cuidado de ambiente.** Esses testes comparam `Popen.pid` com o PID que o filho reporta.
+> Um interpretador cujo `python.exe` seja um *trampoline* que re-executa o interpretador
+> real (observado em alguns venvs gerados por ferramentas de terceiros) faz esses testes
+> falharem por artefato de ambiente, não por regressão. Use o Python 3.11 do venv do
+> projeto.
+
+### CI (`.github/workflows/tests.yml`)
+
+`windows-latest`, Python 3.11 + Node 24. Etapas: instalar `requirements.txt` +
+`requirements-dev.txt`, **confirmar que os opt-ins de smoke de rede estão desligados**
+(`ALLOW_NETWORK_TESTS`, `ALLOW_WEBTOON_SMOKE`, `ALLOW_NVIDIA_SMOKE`), coletar e rodar
+pytest, `node --check` em cada JS, typecheck/test/build do serviço Better Auth, e
+`py_compile` dos módulos centrais.
+
+Detalhes em [`docs/TESTING.md`](../TESTING.md).
+
+## 25. Performance
+
+Referência de engenharia, não diário de benchmark.
+
+Otimizações fechadas e verificáveis no repositório:
+
+| Item | Commit | Medição registrada |
+| --- | --- | --- |
+| Parada da descoberta de leitor lazy em completude estável | `5fce936` | Episódio 51: 90 rodadas / 92s de sleep → 10 rodadas / 11s, mesmas 171 páginas |
+| Remoção do `optimize=True` do PNG no Smart Split | `2638844` | Estágio 51,98s → 28,52s; encode 32,22s → 8,40s; saída +1,32% bytes; 100/100 páginas pixel-idênticas |
+
+Classe **Full** ponta a ponta, conforme as missões de performance que precederam este
+commit: **~405,82s (~6min46s)** contra a classe histórica de **~489,73s** — melhoria de
+**~17,1%**.
+
+> Estes dois números de classe Full não são reproduzíveis a partir do repositório (dependem
+> de capítulo real, rede e provider). Estão registrados como referência histórica de
+> engenharia, não como contrato verificável.
+
+Achado dominante restante: a inferência nativa do OCR domina o tempo. Ganhos futuros
+relevantes tendem a vir daí, não da orquestração Python.
+
+## 26. Logs, saúde e diagnóstico
+
+| Superfície | Local |
+| --- | --- |
+| Log por job | `.cache/runtime/logs/<job_id>.log` |
+| Log da UI | `.cache/runtime/ui.log` |
+| Eventos do supervisor | linha JSON em `stderr` do launcher |
+| Eventos do `process_launcher` | `<runtime>/launcher_events.jsonl` + `exit_code.txt` |
+| Saúde do worker/fila | `python start_tradutor.py status` |
+| Liveness da UI | `GET /api/health` |
+| Diagnóstico na UI | `GET /api/ui/diagnostics`, aba **Logs** |
+| Relatórios por execução | `output/<slug>/*_report.json|html` |
+
+Todo texto que chega à interface passa por `sanitize_diagnostic_text`. `request_observability.py`
+e `job_failure_diagnostic.py` normalizam diagnóstico de falha em códigos fechados.
+
+## 27. Ambiente de desenvolvimento e comandos
+
+Todos os comandos abaixo foram executados ou validados contra o commit base.
+
+### Pré-requisitos
+
+- Windows 64 bits
+- Python 3.11
+- Git
+- Google Chrome (para fontes por URL)
+- Chave do provider de tradução em uso (DeepL no default atual)
+
+### Instalação
+
+```powershell
+git clone https://github.com/HenriquePvAr/Tradutor.Ia.git
+cd Tradutor.Ia
+
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install -r requirements-rapidocr.txt
+pip install -r requirements-ui.txt
+
+Copy-Item .env.example .env
+```
+
+Depois edite `.env` e preencha, no mínimo, `DEEPL_API_KEY` e as variáveis do Supabase.
+
+Arquivos de dependências:
+
+| Arquivo | Conteúdo |
+| --- | --- |
+| `requirements.txt` | Núcleo: numpy, Pillow, opencv-python, selenium, paddleocr/paddlepaddle, torch/transformers, psutil, nicegui, psycopg, PyJWT, google-auth |
+| `requirements-rapidocr.txt` | `rapidocr-onnxruntime==1.4.4`, `onnxruntime==1.27.0` |
+| `requirements-ui.txt` | `nicegui` |
+| `requirements-dev.txt` | `pytest>=9,<10`, `fastapi`, `httpx` |
+| `requirements-optional.txt` | `cloudscraper` (transporte opcional, desligado por padrão) |
+
+### Executar a aplicação
+
+```powershell
+python start_tradutor.py            # worker (com supervisão) + UI  ← canônico
+python start_tradutor.py worker     # só o worker, destacado, sem supervisão
+python start_tradutor.py ui         # só a UI
+python start_tradutor.py status     # saúde do worker e da fila
+python start_tradutor.py stop       # parada graciosa do worker
+python start_tradutor.py stop --force
+```
+
+No Windows há também `start_tradutor.bat`, que prefere `.venv\Scripts\python.exe`.
+
+A UI escuta em `http://127.0.0.1:8080` por padrão.
+
+### CLI direta
+
+```powershell
+python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast
+python run_webtoon.py "<URL_DO_CAPITULO>" --mode quality --output "meu_capitulo"
+python run_webtoon.py "<URL_DO_CAPITULO>" --download-only
+python run_webtoon.py --local-folder "<PASTA_PERMITIDA>" --mode fast
+python run_webtoon.py --help
+```
+
+Flags reais: `--local-folder`, `--mode {fast,quality}`, `--cache | --force`, `--output`,
+`--no-context`, `--keep-context`, `--delete-context-after`, `--open-output`,
+`--max-images`, `--download-only`, `--source-candidate-id`,
+`--translation-provider {deepl,nemotron,riva}`.
+
+### Worker direto
+
+```powershell
+python worker_service.py            # roda até ser parado
+python worker_service.py --once     # processa no máximo um job e sai
+python worker_service.py --status   # imprime saúde e sai
+python worker_service.py --db <caminho>
+```
+
+### Testes
+
+```powershell
+python -m pytest -q                       # suíte hermética completa
+python -m pytest --collect-only -q        # apenas coleta
+python -m pytest -q test_worker_supervision.py test_launcher.py
+python -m pytest -q test_deepl_translation_provider.py
+node --check static/tradutor_ui.js
+```
+
+```powershell
+# serviço Better Auth
+cd apps\auth-service
+npm ci
+npm run typecheck; npm test; npm run build
+```
+
+> `python -m unittest discover` também funciona graças ao `sitecustomize`, mas `pytest` é o
+> caminho usado pela CI.
+
+## 28. Troubleshooting técnico
+
+| Sintoma | Causa provável | Diagnóstico não destrutivo |
+| --- | --- | --- |
+| UI abre, job fica em `queued` | Nenhum worker saudável | `python start_tradutor.py status`; depois `worker` |
+| `configuration_error:` na saída do launcher | `.env` malformado | Validar a sintaxe do `.env` — o erro nunca imprime conteúdo |
+| Worker some repetidamente e para de voltar | Supervisor em `degraded` (3 reinícios gastos) | Ler os eventos JSON no `stderr` do launcher; investigar a causa antes de reiniciar |
+| Job preso em `awaiting_source_review` | Análise de confiança média | Confirmar as páginas na UI; o OCR ainda não começou |
+| Job em `interrupted` | Crash/parada do worker ou runner | Artefatos preservados; API `resume` existe, mas **não há botão na UI** |
+| `ownership_mismatch` | PID reutilizado por outro processo | Comportamento fail-closed correto; nada foi encerrado |
+| Porta 8080 ocupada | Outra UI rodando | `_assert_startup_port_available` falha no startup |
+| Banco bloqueado | Operação concorrente momentânea | WAL + `busy_timeout` resolvem; **não apagar o banco** |
+| Processo órfão após crash | Runner sobreviveu ao worker | Iniciar um worker; ele reconcilia e encerra a árvore validada |
+| Falha em `test_worker_process_loss` | Interpretador *trampoline* | Usar o Python do venv do projeto (ver §24) |
+| `ModuleNotFoundError: psycopg` na coleta | Venv sem `requirements.txt` completo | `pip install -r requirements.txt` |
+
+Guia mais amplo: [`docs/TROUBLESHOOTING.md`](../TROUBLESHOOTING.md).
+
+## 29. Dívida técnica conhecida
+
+Auditada contra o commit base. Itens já fechados foram removidos desta lista.
+
+| ID | Severidade | Descrição | Evidência | Encaminhamento sugerido |
+| --- | --- | --- | --- | --- |
+| `HERMETIC-SQLITE-URI-GUARD-GAP` | Média | `hermetic_runtime.is_real_runtime_path` normaliza caminhos de sistema de arquivos. Um `sqlite3.connect("file:...?mode=rw", uri=True)` apontando ao runtime real não normaliza para a forma canônica e escapa do guard. Nenhum código atual usa a forma URI, então a exposição hoje é latente. | `hermetic_runtime.py:78-111` | TDD futuro: normalizar a forma URI antes da comparação e cobrir com teste |
+| `UI-HISTORY-REAL-OUTPUT-READ` | Média | `UIHistoryStore` usa como default `ui_helpers.OUTPUT_ROOT` (`<repo>/output`) e `HISTORY_PATH` (`<repo>/.cache/ui_history.json`). O guard hermético cobre apenas `.cache/runtime`, então um teste que construa a store sem raiz explícita lê o `output/` real e escreve o `ui_history.json` real. | `ui_helpers.py:22-24`, `hermetic_runtime.py:30` | TDD futuro: estender o guard a `output/` e `.cache/ui_history.json`, ou exigir raiz explícita |
+| `UI-RESUME-NOT-EXPOSED` | Média | `POST /api/ui/resume` + `UiBridge.resume()` existem, mas nenhum arquivo de `static/` ou `ui/` os chama. Um job `interrupted` não tem caminho de recuperação pela interface. `docs/WORKER_QUEUE.md` afirmava o contrário. | Ausência de `ui/resume` em `static/`, `ui/` | TDD futuro: expor controle "Retomar" para jobs `interrupted`/`resumable` |
+| `STALE-RECONCILE-CLOCK-EQUALITY` | Baixa | `test_stale_job_reconcile.py::test_ghost_job_does_not_report_thousands_of_minutes` monta o job com **duas** chamadas a `time.time()` e depois compara `_duration(job)` a `120.0` por igualdade exata. Qualquer deriva entre as duas chamadas quebra o teste. Ainda aberto no commit base. | `test_stale_job_reconcile.py:61-65` | TDD futuro: fixar uma única base de tempo ou usar `assertAlmostEqual` |
+| `UI-COPY-NAMES-NVIDIA` | Baixa | A mensagem `environment_not_configured` no frontend diz "Configure o arquivo .env e a `NVIDIA_API_KEY`", mas o provider padrão é DeepL. Copy desatualizada visível ao usuário. | `static/tradutor_ui.js` (`reasonMessages`) | TDD futuro: mensagem neutra de provider |
+| `PROVIDER-HTTP-TELEMETRY-GAP` | Baixa | Não há telemetria HTTP unificada entre providers (latência, taxa de erro, retries) — cada provider mantém suas próprias `stats`. | `translator_deepl.py`, `translator_nvidia.py` | TDD futuro, se a Beta exigir observabilidade de provider |
+| `PACKAGING-PENDING` | Alta (bloqueia Beta externa) | Não existe nenhum artefato de empacotamento (PyInstaller, Inno Setup, NSIS, spec). | Busca por `setup/installer/pyinstaller/inno/nsis` no índice do Git: nada | Missão dedicada de empacotamento |
+| `UPDATER-PENDING` | Alta (bloqueia Beta externa) | Não existe updater, manifest de update, verificação de assinatura/SHA ou rollback. | Nenhum módulo correspondente | Missão dedicada de updater assinado |
+| `TESTER-LICENSE-PENDING` | Média | Não existe licenciamento/expiração de tester. Acesso é apenas conta Supabase. | Nenhum módulo correspondente | Missão dedicada de licenciamento |
+| `CLEAN-VM-VALIDATION-PENDING` | Alta (bloqueia Beta externa) | Nenhuma evidência de validação em VM Windows limpa. | — | Executar após o empacotamento existir |
+
+### Limitações conhecidas do produto
+
+- Idioma-fonte suportado no pipeline atual: **inglês** (`get_translator("3")`). Japonês e
+  coreano existem no código, mas não são o caminho validado.
+- Windows é o único sistema com contrato validado ponta a ponta.
+- SFX com tipografia complexa, texto decorativo, fontes incomuns e páginas visualmente
+  densas continuam exigindo revisão humana.
+- Um site sem adapter específico pode passar pela análise universal, mas isso **não**
+  significa que ele é suportado.
+
+## 30. Empacotamento, updater e prontidão para Beta
+
+### Empacotamento — PLANEJADO
+
+Não há artefato de build. Distribuição atual = clone do repositório + venv + `.env`.
+
+### Updater — PLANEJADO
+
+Quando existir, a documentação técnica **deve ganhar**: formato do manifest, verificação de
+assinatura, verificação de SHA, tratamento de versão, versão mínima, substituição atômica,
+rollback e estados de falha. O Guia do Usuário recebe **apenas**: como a atualização
+aparece, o que clicar e o que acontece se falhar.
+
+### Licenciamento de tester — PLANEJADO
+
+Quando existir: documentação técnica ganha arquitetura, fronteira de confiança
+servidor/cliente e comportamento de expiração/revogação/dispositivo. O Guia do Usuário
+ganha login, status de licença, expiração, mensagem de renovação/revogação e comportamento
+de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
+
+### Checklist de release da Beta externa
+
+| Item | Estado |
+| --- | --- |
+| Pipeline ponta a ponta estável | ✅ |
+| Fase de qualidade | ✅ fechada |
+| Fase de performance | ✅ fechada |
+| Isolamento de runtime de testes | ✅ fechado |
+| Detecção de crash duro do worker | ✅ fechada |
+| Supervisão do launcher | ✅ fechada |
+| Documentação técnica + guia do usuário | ✅ (este documento) |
+| Instalador para usuário final | ⬜ pendente |
+| Updater assinado | ⬜ pendente |
+| Licenciamento de tester | ⬜ pendente |
+| Validação em VM Windows limpa | ⬜ pendente |
+| Screenshots reais no guia do usuário | ⬜ pendente |
+
+## 31. Glossário
+
+| Termo | Significado |
+| --- | --- |
+| **Job / Trabalho** | Uma unidade de trabalho persistida no banco: um capítulo (ou uma publicação de comunidade) do início ao estado terminal |
+| **Worker** | Processo independente que drena a fila; um por instalação, concorrência 1 |
+| **Runner** | Subprocesso criado pelo worker para executar exatamente um job |
+| **Launcher** | `start_tradutor.py`; inicia worker + UI e supervisiona o worker que criou |
+| **Supervisor** | `worker_supervisor.WorkerSupervisor`; reinicia o worker sob política limitada |
+| **Lease** | Linha em `workers` com `worker_id`, PID e `create_time`, provando posse do processo |
+| **Attempt** | Nova tentativa de um job interrompido, reusando o mesmo diretório de saída |
+| **Stage / Etapa** | Fase corrente do pipeline reportada ao usuário |
+| **Reason code** | Código fechado (`^[a-z][a-z0-9_]{0,79}$`) que explica um estado ou falha |
+| **Quality gate** | Conjunto de verificações que decide entre `finished` e `review_required` |
+| **`review_required`** | Terminal: PDF existe, mas há itens pendentes de revisão |
+| **`awaiting_source_review`** | Pausa antes do OCR: usuário confirma as páginas encontradas |
+| **Smart Split** | Reconstrução de páginas lógicas a partir das fatias do webtoon |
+| **Proveniência** | Cadeia de evidência que liga o pixel de origem ao texto final renderizado |
+| **Fail-closed** | Diante de evidência insuficiente, recusar em vez de prosseguir |
+| **Hermético** | Teste isolado do runtime real, sem rede e com raiz temporária própria |
+| **Adapter** | Componente que sabe analisar um leitor específico de capítulo |
+| **Adapter universal** | Fallback controlado para URL pública sem adapter específico |
+
+---
+
+## Ver também
+
+- [Guia do Usuário](../user/GUIA_DO_USUARIO.md) — como usar o Tradutor IA
+- [Política de Documentação](../DOCUMENTATION_POLICY.md) — quando e como atualizar estes documentos
+- [Auditoria de Documentação](../DOCUMENTATION_AUDIT.md) — o que foi verificado e o que ficou em aberto
+- [Índice completo da documentação](../README.md)

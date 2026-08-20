@@ -20,11 +20,12 @@ O fluxo principal atual é voltado a capítulos web com texto-fonte em inglês e
 - **Análise de fonte controlada:** adapters específicos têm prioridade; uma URL pública sem adapter pode ser analisada por evidências e, conforme o score, seguir, pedir confirmação das páginas ou falhar fechada.
 - **OCR híbrido:** o modo rápido combina RapidOCR com análise de qualidade e fallbacks seletivos para PaddleOCR Mobile e PaddleOCR completo.
 - **Classificação contextual:** diferencia fala, narração, SFX e elementos decorativos antes de decidir o que deve ser traduzido.
-- **Tradução em lote:** usa por padrão uma API compatível com OpenAI hospedada pela NVIDIA, com cache, controle de requisições e retries.
+- **Tradução em lote:** o provedor padrão é o **DeepL**; Riva e Nemotron (NVIDIA) continuam selecionáveis por capítulo. Cache, controle de requisições e retries em todos, e nenhum fallback silencioso entre providers.
 - **Validação multilíngue:** procura texto-fonte residual, traduções parciais e outros sinais de mistura de idiomas sem reescrever a resposta do modelo.
 - **Reconstrução protegida:** aplica máscaras, inpainting, ajuste de fonte e verificações visuais para limitar alterações fora da área de texto.
 - **Artefatos de revisão:** produz PDF, relatórios JSON/HTML, progresso persistido, métricas e um quality gate com estados explícitos.
-- **Execução supervisionada:** inclui um launcher que persiste o exit code real e controla a árvore de processos no Windows.
+- **Fila persistente:** o pipeline roda num worker independente da UI; fechar o navegador não interrompe um capítulo.
+- **Execução supervisionada:** o launcher canônico reinicia o worker que ele criou sob política limitada (2s/5s/15s, 3 tentativas, depois degradado) e persiste o exit code real controlando a árvore de processos no Windows.
 
 ## Como funciona
 
@@ -46,7 +47,7 @@ O pipeline mantém o texto reconhecido, os candidatos de OCR, as decisões de fa
 
 ## Início rápido
 
-O ambiente auditado usa **Windows 64 bits e Python 3.11**. É necessário ter Git, Google Chrome e uma chave da NVIDIA para o provedor de tradução padrão.
+O ambiente auditado usa **Windows 64 bits e Python 3.11**. É necessário ter Git, Google Chrome e uma chave do DeepL para o provedor de tradução padrão.
 
 ```powershell
 git clone https://github.com/HenriquePvAr/Tradutor.Ia.git
@@ -62,15 +63,19 @@ pip install -r requirements-ui.txt
 Copy-Item .env.example .env
 ```
 
-Edite `.env` e substitua o valor de `NVIDIA_API_KEY`. As demais opções possuem defaults conservadores e podem ser ajustadas depois.
+Edite `.env` e preencha `DEEPL_API_KEY` (provedor padrão) e as variáveis do Supabase, que o login exige. As demais opções possuem defaults conservadores e podem ser ajustadas depois. Nunca versione valores reais de chave.
 
-Para abrir a interface local:
+Para iniciar o sistema local (worker supervisionado + interface):
 
 ```powershell
-python app_ui.py
+python start_tradutor.py            # canônico: worker + UI
+python start_tradutor.py status     # saúde do worker e da fila
+python start_tradutor.py stop       # parada graciosa do worker
 ```
 
-A aplicação escuta por padrão em `http://127.0.0.1:8080`.
+No Windows há também `start_tradutor.bat`. A aplicação escuta por padrão em `http://127.0.0.1:8080`.
+
+> `python app_ui.py` sobe apenas a interface, sem worker; nesse caso os capítulos ficam `queued` até que um worker seja iniciado.
 
 Para executar pela CLI:
 
@@ -114,17 +119,19 @@ A referência completa das flags está disponível em `python run_webtoon.py --h
 
 | Área | Responsabilidade principal |
 | --- | --- |
-| `app_ui.py` e `ui_bridge.py` | Interface local, fila, progresso e histórico |
+| `start_tradutor.py`, `worker_supervisor.py` | Launcher canônico e supervisão limitada do worker |
+| `app_ui.py` e `ui_bridge.py` | Interface local, progresso, revisão e histórico (não executa o pipeline) |
+| `worker_service.py`, `job_runner.py`, `job_store.py` | Fila persistente, worker independente e execução isolada por capítulo |
 | `run_webtoon.py` | Entrada simplificada da CLI e seleção de modo |
 | `benchmark_pipeline.py` | Orquestração do fluxo ponta a ponta e relatórios |
 | `down.py` | Coleta, validação e teardown do navegador |
 | `ocr_engine.py` e `ocr_balloon.py` | OCR, fallback, agrupamento, classificação, validação e reconstrução |
-| `translator_nvidia.py` | Tradução em lote, rate limit, retries e cache |
+| `translator_deepl.py`, `translator_nvidia.py` | Tradução em lote, rate limit, retries e cache |
 | `pipeline_cache.py`, `resource_monitor.py` | Cache versionado, persistência atômica e métricas de recursos |
 | `pdf.py` | Divisão em páginas lógicas e geração do PDF |
-| `process_launcher.py` | Supervisão de processos e persistência do exit code |
+| `process_launcher.py` | Execução supervisionada de um processo e persistência do exit code |
 
-O desenho completo, inclusive os fluxos separados da UI, CLI e launcher, está em [Arquitetura](docs/ARCHITECTURE.md).
+O desenho completo está em [Documentação Técnica](docs/technical/DOCUMENTACAO_TECNICA.md); a visão por módulos do pipeline continua em [Arquitetura](docs/ARCHITECTURE.md).
 
 ## Qualidade e execução segura
 
@@ -144,8 +151,10 @@ Os estados terminais têm significados distintos:
 | --- | --- |
 | `finished` | Execução técnica concluída e quality gate aprovado |
 | `review_required` | Execução concluída, com PDF disponível, mas há revisão de qualidade pendente |
-| `error` | Falha técnica ou artefato essencial ausente |
+| `failed` | Falha técnica ou artefato essencial ausente (exibido como "erro" na interface) |
 | `cancelled` | Cancelamento explícito |
+
+A taxonomia completa (14 estados, incluindo `staging`, `awaiting_source_review`, `interrupted` e `resumable`) está em [Documentação Técnica §8](docs/technical/DOCUMENTACAO_TECNICA.md#8-máquina-de-estados-do-job).
 
 Esses mecanismos reduzem falsos positivos, mas não garantem tradução perfeita. Veja [Qualidade e validação](docs/QUALITY_AND_VALIDATION.md) para o contrato completo.
 
@@ -157,12 +166,12 @@ Ainda assim, a revisão humana continua importante. SFX com tipografia complexa,
 
 ## Documentação
 
-- [Instalação](docs/INSTALLATION.md) — ambiente, dependências, modelos e primeiro teste.
-- [Configuração](docs/CONFIGURATION.md) — variáveis do `.env.example`, defaults e ajustes avançados.
-- [Arquitetura](docs/ARCHITECTURE.md) — módulos, fluxos, cache, launcher e artefatos.
-- [Adaptador universal de capítulos](docs/UNIVERSAL_CHAPTER_ADAPTER.md) — fallback controlado, revisão de páginas, limites e restrições.
-- [Qualidade e validação](docs/QUALITY_AND_VALIDATION.md) — fallbacks, retries, quality gate e estados.
-- [Troubleshooting](docs/TROUBLESHOOTING.md) — diagnóstico seguro para falhas conhecidas.
+Página inicial da documentação: **[docs/README.md](docs/README.md)**.
+
+- [Guia do Usuário](docs/user/GUIA_DO_USUARIO.md) — para Scans, tradutores e testadores da Beta.
+- [Documentação Técnica](docs/technical/DOCUMENTACAO_TECNICA.md) — arquitetura, processos, estados, segurança, testes e dívida técnica.
+- [Política de Documentação](docs/DOCUMENTATION_POLICY.md) — regras de sincronização entre código e documentação.
+- [Instalação](docs/INSTALLATION.md) · [Configuração](docs/CONFIGURATION.md) · [Arquitetura](docs/ARCHITECTURE.md) · [Qualidade e validação](docs/QUALITY_AND_VALIDATION.md) · [Adaptador universal](docs/UNIVERSAL_CHAPTER_ADAPTER.md) · [Troubleshooting](docs/TROUBLESHOOTING.md).
 
 ## Testes
 
@@ -171,6 +180,10 @@ exigem opt-in explícito e estão documentados em [Testes](docs/TESTING.md).
 
 ## Roadmap
 
+> Esta seção descreve **intenções**, não comportamento disponível. Nada aqui deve ser lido como recurso existente. Empacotamento (`Setup.exe`), atualizador assinado e licenciamento de tester **não existem** nesta versão.
+
+- entregar instalador para usuário final, atualizador assinado e licenciamento de tester;
+- expor a retomada de capítulo interrompido na interface;
 - aprimorar a classificação de SFX e elementos decorativos;
 - melhorar naturalidade e consistência da tradução PT-BR;
 - ampliar a validação visual e os relatórios de revisão;

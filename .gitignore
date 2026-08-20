@@ -29,6 +29,9 @@ models/
 !static/assets/
 !static/assets/reference-ui/
 !static/assets/reference-ui/*.jpg
+# Documentation assets: screenshots for docs/user/GUIA_DO_USUARIO.md must be versionable.
+!docs/assets/
+!docs/assets/**
 *.log
 
 .pytest_cache/

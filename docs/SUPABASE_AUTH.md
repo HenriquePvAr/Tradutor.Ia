@@ -1,10 +1,14 @@
 # Autenticação Supabase (community)
 
-Este projeto suporta dois provedores de autenticação, selecionados por
-`COMMUNITY_AUTH_PROVIDER`:
+Os provedores de autenticação são selecionados por `COMMUNITY_AUTH_PROVIDER`
+(resolvido em `community_auth.build_auth_provider`):
 
-- `local` — sessão de operador em loopback (padrão, sem dependência de rede);
-- `supabase` — JWT de usuário verificado criptograficamente por JWKS.
+- `supabase` — **padrão**; JWT de usuário verificado criptograficamente por JWKS;
+- `local` — sessão de operador em loopback, sem dependência de rede;
+- `better_auth` — serviço em `apps/auth-service/`, atrás de proxy same-origin;
+- `local_test` — provedor exclusivo de teste.
+
+Configuração incompleta **falha fechada**: nunca há queda silenciosa para o provedor local.
 
 A troca de provedor não altera nenhuma regra de autorização: o
 [boundary de autorização](COMMUNITY_AUTHORIZATION.md) continua decidindo acesso a partir

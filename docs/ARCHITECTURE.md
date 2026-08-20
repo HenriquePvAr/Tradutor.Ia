@@ -29,7 +29,7 @@ flowchart LR
     Download --> Split[pdf.py: smart split]
     Split --> OCR[ocr_engine.py]
     OCR --> Groups[ocr_balloon.py]
-    Groups --> Translation[translator_nvidia.py]
+    Groups --> Translation[translator_deepl.py / translator_nvidia.py]
     Translation --> Validation[Validação e retries]
     Validation --> Render[Máscara, inpainting e redraw]
     Render --> PDF[PDF e relatórios]
@@ -43,11 +43,16 @@ flowchart LR
 `app_ui.py` inicia uma aplicação NiceGUI na porta `8080` por padrão. O frontend conversa com `ui_bridge.py`, que:
 
 - valida URLs, modos e nomes de saída;
-- mantém uma fila local e executa um item por vez;
-- cria o comando de `run_webtoon.py` como lista de argumentos;
-- inicia o subprocesso sem shell;
-- acompanha stdout, progresso, histórico e cancelamento;
+- cria o job persistido no `job_store` e monta o comando de `run_webtoon.py` como lista de argumentos;
+- acompanha progresso, histórico, revisão e cancelamento lendo o banco;
 - mascara segredos antes de expor logs à interface.
+
+> **A UI não executa o pipeline.** Ela cria linhas em `.cache/runtime/jobs.sqlite3`; quem
+> reivindica e executa é o `worker_service.py`, num processo independente, que por sua vez
+> cria um `job_runner.py` isolado por capítulo. Fechar o navegador ou reiniciar `app_ui.py`
+> não interrompe um capítulo em andamento. Veja
+> [Fila de worker persistente](WORKER_QUEUE.md) e
+> [Documentação Técnica §4–§9](technical/DOCUMENTACAO_TECNICA.md#4-arquitetura-de-execução).
 
 A UI tem seu próprio bridge assíncrono. Ela não usa automaticamente `process_launcher.py`.
 
@@ -202,9 +207,11 @@ SFX são preservados por padrão (`TRANSLATE_SFX=False`). Elementos decorativos 
 
 ## Tradução e contexto
 
-O pipeline atual chama `get_translator("3")`, correspondente a texto-fonte em inglês. Com o default `TRANSLATION_MODE=nvidia`, `translator_nvidia.py` usa uma API compatível com OpenAI no endpoint configurado da NVIDIA.
+O pipeline atual chama `get_translator("3")`, correspondente a texto-fonte em inglês.
 
-O tradutor opera em lotes, respeita limite de requisições, usa retry/backoff para falhas temporárias e grava cache por entrada e configuração. Modos Google e NLLB permanecem como caminhos de compatibilidade no código, mas não são o fluxo recomendado da UI e da CLI atuais.
+O provider padrão do produto é o **DeepL** (`ui_helpers.DEFAULT_TRANSLATION_PROVIDER = "deepl"`), resolvido por `translator_deepl.py`. `TRANSLATION_MODE` (default `nvidia`) é um eixo mais antigo e ortogonal: ele seleciona a *família* local/Google/NVIDIA, e um job sem provider explícito só recebe o default DeepL quando `TRANSLATION_MODE == "nvidia"` — assim uma instalação que roda deliberadamente `google` não é sequestrada por um default no qual nunca optou. Um provider pedido explicitamente sempre vence, e não há fallback silencioso entre providers: um job DeepL que não alcança a DeepL falha, não vira job Riva.
+
+`translator_nvidia.py` atende `nemotron` (API compatível com OpenAI) e `riva` (contrato de prompt nativo). Os tradutores operam em lotes, respeitam limite de requisições, usam retry/backoff para falhas temporárias e gravam cache por entrada e configuração. Modos Google e NLLB permanecem como caminhos de compatibilidade no código, mas não são o fluxo recomendado da UI e da CLI atuais.
 
 Quando o contexto está habilitado, `session_context.py` mantém informações do capítulo em `session_context.json`. `--no-context` desativa esse comportamento; `--delete-context-after` remove o arquivo somente após a geração bem-sucedida do PDF.
 
