@@ -218,3 +218,26 @@ tornaria **impossível versionar** as futuras capturas de tela do guia do usuár
 acrescentadas duas linhas de negação (`!docs/assets/`, `!docs/assets/**`), verificadas com
 uma imagem de teste. É uma mudança de configuração de suporte à documentação; **não altera
 nenhum comportamento de aplicação**.
+
+---
+
+## 10. Atualizações posteriores da documentação viva
+
+### TDD #57 — Arquitetura de confiança do update assinado (2026-08-20, base `7ab0ea3`)
+
+**Gatilho:** mudança de arquitetura técnica (segurança, empacotamento/updater). Contrato de
+sincronização do `CLAUDE.md`, itens 3 e 6.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | §3 mapa de componentes (`update_manifest.py`, `update_installer.py`, `scripts/sign_release.py`); §23 › "Updater assinado" reescrito de **PLANEJADO** para **PARCIAL** com modelo de confiança, diagrama Mermaid, schema do manifest, canonicalização, ordem de verificação, política de versão, extração segura, staging, ativação atômica, rollback, rotação de chave, modelo de ameaça e trabalho restante; §29 dívida técnica reclassificada; §30 e checklist de Beta atualizados; metadados de verificação. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Já classifica "Atualização automática do programa" como **Em desenvolvimento** e responde "Não nesta versão" à pergunta direta. Nenhum recurso de atualização ficou visível ao usuário neste TDD, então dizer qualquer outra coisa seria documentar comportamento planejado como implementado. |
+| `README.md` | **Não requer mudança** | Não descreve updater; o status de empacotamento/Beta continua correto. |
+| Capturas de tela | **Não requer** | Não existe UI de atualização. Fabricar uma tela seria violação direta da política. |
+
+**Honestidade verificada:** nenhuma afirmação de que o programa se atualiza sozinho foi
+introduzida em documento algum. O núcleo está fechado; o produto de atualização, não.
+
+**Novos bloqueadores registrados** (§29): `APP-VERSION-SOURCE-MISSING` (o repositório não tem
+versão autoritativa do produto) e `LAUNCHER-SELF-UPDATE-BLOCKER` (um launcher em execução não
+pode se sobrescrever com segurança no Windows).

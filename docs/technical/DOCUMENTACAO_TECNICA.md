@@ -1,7 +1,7 @@
 # Tradutor IA — Documentação Técnica
 
-> **Base verificada:** commit `c81c798` (branch `fix/main-e2e-findings`)
-> **Última revisão:** 2026-08-19
+> **Base verificada:** commit `7ab0ea3` (branch `fix/main-e2e-findings`)
+> **Última revisão:** 2026-08-20
 > **Público:** desenvolvedores, mantenedores, suporte técnico e agentes automatizados.
 
 Documentos irmãos: [Guia do Usuário](../user/GUIA_DO_USUARIO.md) ·
@@ -140,6 +140,7 @@ executados diretamente a partir da raiz.
 | Comunidade | `community_*.py`, `social_*.py`, `supabase_social.py`, `publish_authorization.py`, `canonical_social_identity.py` |
 | Auth | `community_auth.py`, `supabase_auth.py`, `local_test_auth.py`, `apps/auth-service/` |
 | Armazenamento legado | `google_drive_*.py`, `legacy_publication_*.py`, `legacy_storage_upload_reservation.py` |
+| Updater assinado | `update_manifest.py`, `update_installer.py`, `scripts/sign_release.py` |
 | Infra de testes | `hermetic_runtime.py`, `offline_test_guard.py`, `conftest.py`, `_test_bootstrap.py`, `sitecustomize.py` |
 
 ## 4. Arquitetura de execução
@@ -976,11 +977,229 @@ Fronteiras implementadas — e o que elas **não** garantem
 - Job Object com `KILL_ON_JOB_CLOSE` no `process_launcher.py` (Windows) impede descendentes
   órfãos.
 
-### Updater assinado
+### Updater assinado — PARCIAL (TDD #57)
 
-**PLANEJADO.** Não existe verificação de assinatura, manifest de update, verificação de
-SHA, versão mínima, substituição atômica nem rollback no commit base. Não há canal de
-atualização automática.
+**O que existe:** o núcleo de confiança e instalação, totalmente offline e testado
+(`test_signed_update.py`, 66 testes). **O que não existe:** qualquer busca remota de manifest
+ou de pacote, qualquer integração com o launcher e qualquer UI de atualização. Nenhuma chave
+de release de produção existe ainda, e por isso a raiz de confiança embutida está
+**deliberadamente vazia** — o updater falha fechado em vez de confiar numa chave inventada.
+
+#### Fronteira de confiança
+
+A chave privada de assinatura **nunca** entra no cliente: nem no repositório, nem no `.env`,
+nem no instalador, nem no pacote distribuído. O cliente carrega apenas material **público**.
+Um segredo compartilhado (HMAC, token de API, service-role key) seria inútil aqui: qualquer
+tester poderia extraí-lo do programa e assinar uma atualização maliciosa. Daí a escolha de
+assinatura **assimétrica**.
+
+```mermaid
+flowchart TD
+    signer["Processo de release confiável<br/>scripts/sign_release.py"]
+    key["Chave privada Ed25519<br/>FORA do repositório"]
+    manifest["Manifest assinado<br/>payload canônico + assinatura + key_id"]
+    pkg["Pacote .zip + SHA-256"]
+    host["Hospedagem HTTPS<br/>(Supabase / GitHub Releases / R2 — a decidir)"]
+    client["Cliente instalado"]
+    pub["Chaves públicas confiáveis<br/>update_manifest.TRUSTED_PUBLIC_KEYS"]
+    verify["verify_manifest → verify_package"]
+    stage["staging/ isolado + validação de layout"]
+    activate["activate: troca atômica de current.json"]
+    rollback["rollback: versão anterior local"]
+
+    key --> signer
+    signer --> manifest
+    signer --> pkg
+    manifest --> host
+    pkg --> host
+    host --> client
+    pub --> verify
+    client --> verify
+    verify --> stage --> activate
+    activate -->|falha de validação| rollback
+```
+
+#### Algoritmo
+
+**Ed25519**, via `cryptography` (`cryptography>=42,<50`), dependência **já existente** usada
+pela fronteira de autenticação. Nenhuma dependência nova foi adicionada e nenhuma
+criptografia caseira foi escrita. Chave pública de 32 bytes e assinatura de 64 bytes cabem
+confortavelmente num manifest JSON.
+
+#### Schema do manifest (`schema_version: 1`)
+
+A assinatura fica **fora** do payload assinado, para que os bytes assinados sejam bem
+definidos e o formato não seja circular:
+
+```json
+{
+  "payload": {
+    "schema_version": 1,
+    "app_id": "tradutor-ia",
+    "version": "1.1.0",
+    "minimum_version": "1.0.0",
+    "published_at": "2026-08-20T12:00:00+00:00",
+    "package": {
+      "filename": "tradutor-ia-1.1.0.zip",
+      "url": "https://<host>/tradutor-ia-1.1.0.zip",
+      "sha256": "<64 hex minúsculos>",
+      "size": 41234567
+    }
+  },
+  "key_id": "beta-2026",
+  "signature": "<base64 da assinatura Ed25519>"
+}
+```
+
+Não há campo de canal: a Beta tem exatamente um canal (Scan Beta). Adicionar `channel` antes
+de existir um segundo canal seria complexidade sem uso.
+
+#### Bytes assinados (canonicalização)
+
+`canonical_payload_bytes` serializa o payload com `sort_keys=True` e sem espaços
+(`separators=(",",":")`, `ensure_ascii=True`). O mesmo manifest semântico produz sempre os
+mesmos bytes, independentemente da ordem de inserção do dicionário ou de como o JSON foi
+formatado em trânsito. Valores `float` são recusados: é o único tipo JSON cuja forma textual
+não faz round-trip previsível. Campos desconhecidos dentro do payload **entram** nos bytes
+assinados — logo, não podem ser injetados sem invalidar a assinatura.
+
+#### Ordem de verificação (fail-closed)
+
+1. envelope (`payload` objeto, `key_id` bem formado, assinatura base64 de 64 bytes);
+2. raiz de confiança presente (senão `UpdateTrustNotConfigured`);
+3. `key_id` conhecido e **assinatura válida** sobre os bytes canônicos;
+4. `schema_version` suportado (desconhecido ⇒ recusa, nunca interpretação por adivinhação);
+5. `app_id` igual a `tradutor-ia`;
+6. versões válidas e `minimum_version <= version`;
+7. `published_at` ISO-8601 válido; `package.url` HTTPS; `sha256` com 64 hex; `size > 0`;
+8. só então a política de versão e, depois, o pacote.
+
+**SHA-256 sozinho não é autenticidade.** Quem controla a hospedagem pode trocar o pacote *e* o
+hash publicado ao lado dele. O hash só vale porque chega dentro de um payload assinado offline.
+Por isso a assinatura é verificada **antes** de qualquer byte de pacote ser considerado, e
+`update_installer.stage_release` só aceita um `UpdateManifest` já verificado.
+
+A URL usada é **a URL assinada**. Nenhuma URL recebida fora do payload assinado é seguida.
+HTTPS será obrigatório no transporte futuro, mas HTTPS não substitui a assinatura.
+
+#### Política de versão
+
+Formato: `MAJOR.MINOR.PATCH` estrito, convertido para tupla de inteiros — `1.10.0 > 1.9.0`
+(comparação de string diria o contrário). `decide_update(current, manifest)` retorna:
+
+| Situação | Estado | Instala? |
+| --- | --- | --- |
+| `version < current` | `downgrade_rejected` | não |
+| `version == current` | `up_to_date` | não (sem loop de reinstalação) |
+| `version > current` e `current >= minimum_version` | `update_available` | sim |
+| `version > current` e `current < minimum_version` | `mandatory_update` | sim, obrigatório |
+
+Downgrade remoto ≠ rollback local: o rollback opera sobre uma release **já instalada e já
+verificada** localmente, nunca sobre uma versão antiga rebaixada.
+
+#### Integridade e segurança do pacote
+
+`verify_package` confere o tamanho exato (barato, pega download truncado) e então calcula o
+SHA-256 **uma única vez**. Formato do pacote: ZIP (stdlib `zipfile`). `extract_package` valida
+**todas** as entradas antes de escrever qualquer byte e recusa: caminho absoluto POSIX,
+caminho com letra de unidade (`C:/...`), UNC (`//servidor/...`), `..` em qualquer posição,
+barra invertida como travessia e entradas de link/reparse. Cada destino resolvido é ainda
+comparado com a raiz de staging como defesa em profundidade.
+
+#### Layout de instalação, ativação atômica e rollback
+
+```
+<install_root>/
+    versions/1.0.0/     # imutável
+    versions/1.1.0/
+    staging/            # descartável
+    current.json        # ponteiro atômico
+    data/               # dados do usuário: jobs DB, histórico, config, logs, saída
+```
+
+No Windows não se pode sobrescrever os arquivos de um aplicativo em execução. Por isso
+**nenhuma** ativação sobrescreve arquivos: diretórios de versão são imutáveis e ativar troca
+apenas algumas dezenas de bytes de `current.json` via `os.replace` (atômico em NTFS), com
+`fsync` antes. Não se usa symlink — permissões e empacotamento no Windows não garantem isso
+sem prova.
+
+- `stage_release` — verifica o pacote, extrai para `staging/`, valida o layout (metadados
+  `release.json` com `app_id`/`version` batendo com o manifest + entrypoint
+  `start_tradutor.py`) e só então promove para `versions/<versão>`. Um ZIP vazio com hash
+  correto **não** vira versão ativa. Qualquer falha remove a árvore de staging e deixa a
+  instalação ativa intocada.
+- `activate` — `current` passa a ser a nova versão e `previous` guarda a anterior.
+- `rollback` — volta para `previous` (que continua no disco) e zera `previous`, para que uma
+  versão quebrada não possa ser reativada por uma segunda falha.
+- `read_install_state` — falha fechado quando o ponteiro está corrompido ou aponta para uma
+  versão ausente. **Nunca** varre diretórios procurando algo plausível para executar. Resíduo
+  de crash (`current.json.*.tmp`, árvore de `staging/` sobrando) é ignorado, não interpretado:
+  a instalação continua resolvendo exatamente uma versão corrente.
+- `data/` está fora de `versions/` por construção: atualização, rollback e limpeza de staging
+  não alcançam banco de jobs, histórico, configuração nem saída do usuário.
+
+#### Rotação de chave
+
+`key_id` diz **qual** chave pública embutida verifica aquele manifest. O cliente confia num
+conjunto pequeno e explícito de chaves públicas locais. Uma chave nova nunca é aceita vinda do
+mesmo canal remoto não assinado — a confiança tem raiz local, e uma rotação chega por uma
+release já assinada com a chave antiga. Se a chave privada vazar, a confiança do updater está
+comprometida: a resposta é operacional (revogar, rotacionar via release ainda assinada pela
+chave antiga, e no pior caso reinstalação manual), não criptográfica.
+
+#### Modelo de ameaça
+
+| Ameaça | Resposta |
+| --- | --- |
+| Manifest adulterado | Assinatura não verifica ⇒ `SignatureInvalid` |
+| Pacote adulterado | SHA-256 assinado não bate ⇒ `PackageHashMismatch` |
+| Pacote errado / de outra release | `sha256` + `release.json` conferidos ⇒ recusa |
+| Update de outro aplicativo | `app_id` ⇒ `WrongApplication` |
+| Downgrade remoto | política de versão ⇒ `downgrade_rejected` |
+| Travessia de caminho no ZIP | validação de entradas ⇒ `UnsafeArchive` |
+| Download parcial | tamanho exato ⇒ `PackageSizeMismatch` |
+| Ativação interrompida | `os.replace` atômico + resíduo ignorado |
+| **Hospedagem comprometida, chave privada intacta** | **o atacante não consegue produzir uma atualização aceita** — é a propriedade central deste desenho |
+| Chave privada roubada | confiança comprometida; resposta operacional (rotação), não criptográfica |
+| Estado local corrompido | `InstallStateCorrupt`, falha fechado |
+
+#### Sem bypass
+
+Não existe flag, variável de ambiente ou modo de desenvolvimento que pule a verificação de
+assinatura. `update_manifest.py` e `update_installer.py` não leem `os.environ` (há teste que
+prova isso). Os testes injetam uma chave efêmera explícita via parâmetro `trusted_keys`, em
+vez de enfraquecer o gate de produção.
+
+#### O que ainda falta (TDD #58 em diante)
+
+- **Transporte**: `fetch_manifest` / `fetch_package` sobre HTTPS. Deliberadamente ausente aqui
+  para manter toda a lógica de confiança testável offline.
+- **Seam do launcher**: o ponto natural de checagem é `start_tradutor.py::main`, no comando
+  `all`, **antes** de `start_worker()` — o Windows trava os arquivos de runtime em uso, então
+  atualizar antes de subir worker e UI evita hot-swap. Nada foi integrado no launcher neste
+  TDD, e a supervisão do TDD #53 permanece exatamente como estava. Recomendação de produto
+  para a primeira Beta: checar na inicialização (ou baixar em segundo plano e ativar no próximo
+  arranque), **sem** atualização a quente durante a sessão.
+- **Fonte autoritativa de versão do aplicativo**: o repositório **não tem nenhuma**
+  (sem `pyproject.toml`, sem `setup.py`, sem `__version__`; os vários `SCHEMA_VERSION` são de
+  formato de dados, não do produto). O updater não inventou uma: `decide_update` recebe a
+  versão corrente como entrada explícita, e a fonte local de verdade é `current.json`. Definir
+  a versão do produto é pré-requisito do Setup/#58.
+- **Auto-atualização do próprio launcher**: um launcher em execução não pode se sobrescrever
+  com segurança no Windows. Resolver isso exige um bootstrapper estável ou um helper externo de
+  atualização, e depende do formato de empacotamento escolhido. **Bloqueador registrado para o
+  TDD de Setup/#58.**
+- **Diretório de instalação final e permissões**: depende do instalador. O updater não exige
+  privilégios de administrador desde que o local escolhido não exija.
+- **Espaço em disco e limite de tamanho de pacote**: adiados de propósito — sem o tamanho real
+  do bundle de runtime, qualquer limite seria arbitrário.
+- **UI de atualização**: inexistente. Quando existir, mapeia as classes de erro para mensagens
+  como *"Não foi possível verificar a atualização."*, sem expor detalhe criptográfico.
+
+Eventos estruturados já emitidos (nunca com chave, token ou URL com segredo):
+`update_manifest_verified`, `update_available`, `update_package_verified`, `update_staged`,
+`update_activation_started`, `update_activation_succeeded`, `update_activation_failed`,
+`update_rollback_succeeded`.
 
 ## 24. Arquitetura de testes
 
@@ -1236,7 +1455,10 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 | `UI-COPY-NAMES-NVIDIA` | Baixa | A mensagem `environment_not_configured` no frontend diz "Configure o arquivo .env e a `NVIDIA_API_KEY`", mas o provider padrão é DeepL. Copy desatualizada visível ao usuário. | `static/tradutor_ui.js` (`reasonMessages`) | TDD futuro: mensagem neutra de provider |
 | `PROVIDER-HTTP-TELEMETRY-GAP` | Baixa | Não há telemetria HTTP unificada entre providers (latência, taxa de erro, retries) — cada provider mantém suas próprias `stats`. | `translator_deepl.py`, `translator_nvidia.py` | TDD futuro, se a Beta exigir observabilidade de provider |
 | `PACKAGING-PENDING` | Alta (bloqueia Beta externa) | Não existe nenhum artefato de empacotamento (PyInstaller, Inno Setup, NSIS, spec). | Busca por `setup/installer/pyinstaller/inno/nsis` no índice do Git: nada | Missão dedicada de empacotamento |
-| `UPDATER-PENDING` | Alta (bloqueia Beta externa) | Não existe updater, manifest de update, verificação de assinatura/SHA ou rollback. | Nenhum módulo correspondente | Missão dedicada de updater assinado |
+| `UPDATER-REMOTE-PENDING` | Alta (bloqueia Beta externa) | O núcleo de confiança do updater existe e está testado (TDD #57), mas não há transporte HTTPS, integração no launcher, hospedagem escolhida nem UI. | `update_manifest.py`, `update_installer.py`, `test_signed_update.py` | TDD #58 — integração remota do update |
+| `APP-VERSION-SOURCE-MISSING` | Alta (bloqueia updater real) | O repositório não tem **nenhuma** versão autoritativa do produto: sem `pyproject.toml`, sem `setup.py`, sem `__version__`. Os vários `SCHEMA_VERSION` são de formato de dados. O updater não inventou uma; recebe a versão corrente como entrada explícita. | Busca por `__version__`/`pyproject`/`setup.py` no índice do Git: nada | Definir junto com o Setup/#58 |
+| `LAUNCHER-SELF-UPDATE-BLOCKER` | Alta (bloqueia auto-atualização) | Um launcher em execução não pode se sobrescrever com segurança no Windows; exige bootstrapper estável ou helper externo de atualização. | `start_tradutor.py` | Decidir junto com o formato do Setup |
+| `UPDATE-TRUST-ROOT-EMPTY` | Média | `update_manifest.TRUSTED_PUBLIC_KEYS` está vazio de propósito (não existe chave de release de produção); o updater falha fechado. | `update_manifest.py` | Preencher quando a chave de release existir, fora do repositório |
 | `TESTER-LICENSE-PENDING` | Média | Não existe licenciamento/expiração de tester. Acesso é apenas conta Supabase. | Nenhum módulo correspondente | Missão dedicada de licenciamento |
 | `CLEAN-VM-VALIDATION-PENDING` | Alta (bloqueia Beta externa) | Nenhuma evidência de validação em VM Windows limpa. | — | Executar após o empacotamento existir |
 
@@ -1256,12 +1478,21 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 
 Não há artefato de build. Distribuição atual = clone do repositório + venv + `.env`.
 
-### Updater — PLANEJADO
+### Updater — PARCIAL
 
-Quando existir, a documentação técnica **deve ganhar**: formato do manifest, verificação de
-assinatura, verificação de SHA, tratamento de versão, versão mínima, substituição atômica,
-rollback e estados de falha. O Guia do Usuário recebe **apenas**: como a atualização
-aparece, o que clicar e o que acontece se falhar.
+O núcleo de confiança está fechado e documentado em
+[§23 › Updater assinado](#updater-assinado--parcial-tdd-57): manifest assinado, verificação
+Ed25519, SHA-256 do pacote, política de versão/versão mínima, extração segura, staging,
+ativação atômica e rollback — tudo offline e testado.
+
+Falta para uma atualização real: transporte HTTPS (`fetch_manifest`/`fetch_package`),
+integração no launcher, hospedagem escolhida, chave de release de produção, versão autoritativa
+do produto e UI. **Enquanto isso, o Guia do Usuário continua dizendo que a atualização
+automática está em desenvolvimento** — nada de "o programa se atualiza sozinho".
+
+**Bloqueador de empacotamento:** um launcher em execução não pode se sobrescrever com segurança
+no Windows. A auto-atualização do próprio launcher exige bootstrapper estável ou helper externo
+e só pode ser decidida junto com o formato do Setup.
 
 ### Licenciamento de tester — PLANEJADO
 
@@ -1282,7 +1513,8 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Supervisão do launcher | ✅ fechada |
 | Documentação técnica + guia do usuário | ✅ (este documento) |
 | Instalador para usuário final | ⬜ pendente |
-| Updater assinado | ⬜ pendente |
+| Updater assinado — núcleo de confiança (manifest, assinatura, SHA, staging, ativação, rollback) | ✅ fechado (TDD #57) |
+| Updater assinado — transporte remoto, seam do launcher e UI | ⬜ pendente |
 | Licenciamento de tester | ⬜ pendente |
 | Validação em VM Windows limpa | ⬜ pendente |
 | Screenshots reais no guia do usuário | ⬜ pendente |

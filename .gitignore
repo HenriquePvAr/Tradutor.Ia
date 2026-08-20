@@ -37,3 +37,9 @@ models/
 .pytest_cache/
 .mypy_cache/
 .playwright-cli/
+
+# Private key material must never reach a commit. The release signing key lives OUTSIDE this
+# repository (see scripts/sign_release.py); this is only a guard against an accidental copy.
+*.pem
+*.key
+*.pk8
