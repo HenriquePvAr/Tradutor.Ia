@@ -95,7 +95,7 @@ em que foram escritos e **não** substituem os documentos primários:
 | Comunidade (Supabase + Drive) | ✅ implementado, fail-closed se não configurado |
 | Retomada de job interrompido pela UI | ⚠️ parcial — API existe, controle na interface não |
 | Instalador para usuário final | ⏳ em desenvolvimento |
-| Atualizador assinado | ⏳ em desenvolvimento |
+| Atualizador assinado | ⚠️ parcial — canal/chave/UI pendentes |
 | Licenciamento de tester | ⏳ em desenvolvimento |
 | Validação em VM Windows limpa | ⏳ em desenvolvimento |
 

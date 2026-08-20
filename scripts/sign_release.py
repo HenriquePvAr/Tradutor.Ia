@@ -72,12 +72,20 @@ def sign_manifest(payload: dict, private_key: Ed25519PrivateKey, *, key_id: str)
 
 
 def build_payload(
-    *, version: str, minimum_version: str, package_path: Path, url: str, app_id: str = APP_ID
+    *, version: str, minimum_version: str, package_path: Path, url: str, app_id: str = APP_ID,
+    minimum_bootstrap_version: str | None = None,
 ) -> dict:
     parse_version(version)
     parse_version(minimum_version)
     package_path = Path(package_path)
+    extra = {}
+    if minimum_bootstrap_version:
+        parse_version(minimum_bootstrap_version)
+        # Only emitted when a release genuinely needs a newer launcher, so ordinary manifests
+        # stay byte-identical to the shape #57 signed.
+        extra["minimum_bootstrap_version"] = minimum_bootstrap_version
     return {
+        **extra,
         "schema_version": SUPPORTED_SCHEMA_VERSION,
         "app_id": app_id,
         "version": version,
@@ -112,6 +120,10 @@ def main(argv: list[str] | None = None) -> int:
     signer.add_argument("--key-id", required=True)
     signer.add_argument("--version", required=True)
     signer.add_argument("--minimum-version", required=True)
+    signer.add_argument(
+        "--minimum-bootstrap-version",
+        help="oldest launcher that may host this payload (omit unless a release needs one)",
+    )
     signer.add_argument("--package", required=True, type=Path)
     signer.add_argument("--url", required=True)
     signer.add_argument("--app-id", default=APP_ID)
@@ -132,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         package_path=args.package,
         url=args.url,
         app_id=args.app_id,
+        minimum_bootstrap_version=args.minimum_bootstrap_version,
     )
     args.out.write_text(json.dumps(sign_manifest(payload, private_key, key_id=args.key_id), indent=2))
     print(f"signed manifest written: {args.out} ({args.app_id} {args.version})")

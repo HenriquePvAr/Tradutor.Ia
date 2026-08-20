@@ -90,7 +90,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
-| Atualizador automático assinado | **PLANEJADO** |
+| Atualizador automático assinado | **PARCIAL** — integração remota/launcher implementada, sem canal/chave/UI de produção |
 | Licenciamento / expiração de tester | **PLANEJADO** |
 | Validação em VM Windows limpa | **PLANEJADO** |
 
@@ -140,7 +140,7 @@ executados diretamente a partir da raiz.
 | Comunidade | `community_*.py`, `social_*.py`, `supabase_social.py`, `publish_authorization.py`, `canonical_social_identity.py` |
 | Auth | `community_auth.py`, `supabase_auth.py`, `local_test_auth.py`, `apps/auth-service/` |
 | Armazenamento legado | `google_drive_*.py`, `legacy_publication_*.py`, `legacy_storage_upload_reservation.py` |
-| Updater assinado | `update_manifest.py`, `update_installer.py`, `scripts/sign_release.py` |
+| Updater assinado | `app_version.py`, `update_manifest.py`, `update_installer.py`, `update_transport.py`, `update_bootstrap.py`, `scripts/sign_release.py` |
 | Infra de testes | `hermetic_runtime.py`, `offline_test_guard.py`, `conftest.py`, `_test_bootstrap.py`, `sitecustomize.py` |
 
 ## 4. Arquitetura de execução
@@ -977,13 +977,16 @@ Fronteiras implementadas — e o que elas **não** garantem
 - Job Object com `KILL_ON_JOB_CLOSE` no `process_launcher.py` (Windows) impede descendentes
   órfãos.
 
-### Updater assinado — PARCIAL (TDD #57)
+### Updater assinado — PARCIAL (TDD #57/#58)
 
-**O que existe:** o núcleo de confiança e instalação, totalmente offline e testado
-(`test_signed_update.py`, 66 testes). **O que não existe:** qualquer busca remota de manifest
-ou de pacote, qualquer integração com o launcher e qualquer UI de atualização. Nenhuma chave
-de release de produção existe ainda, e por isso a raiz de confiança embutida está
-**deliberadamente vazia** — o updater falha fechado em vez de confiar numa chave inventada.
+**O que existe:** o núcleo de confiança e instalação (`test_signed_update.py`) e a integração
+remota de startup (`test_remote_update.py`): versão canônica do produto, transporte HTTPS
+delimitado, fetch de manifest, download de pacote, verificação por assinatura/SHA, staging,
+ativação atômica, health-check do payload, rollback e handoff pelo launcher antes de worker/UI.
+**O que ainda não existe:** canal de release de produção, chave pública de release embutida,
+UI de atualização e empacotamento final. Nenhuma chave de release de produção existe ainda, e
+por isso a raiz de confiança embutida está **deliberadamente vazia** — o updater falha fechado
+em vez de confiar numa chave inventada.
 
 #### Fronteira de confiança
 
@@ -1000,6 +1003,8 @@ flowchart TD
     manifest["Manifest assinado<br/>payload canônico + assinatura + key_id"]
     pkg["Pacote .zip + SHA-256"]
     host["Hospedagem HTTPS<br/>(Supabase / GitHub Releases / R2 — a decidir)"]
+    transport["update_transport.py<br/>HTTPS + limites + redirects validados"]
+    bootstrap["update_bootstrap.py<br/>startup check + handoff"]
     client["Cliente instalado"]
     pub["Chaves públicas confiáveis<br/>update_manifest.TRUSTED_PUBLIC_KEYS"]
     verify["verify_manifest → verify_package"]
@@ -1012,7 +1017,7 @@ flowchart TD
     signer --> pkg
     manifest --> host
     pkg --> host
-    host --> client
+    host --> transport --> bootstrap --> client
     pub --> verify
     client --> verify
     verify --> stage --> activate
@@ -1080,7 +1085,9 @@ Por isso a assinatura é verificada **antes** de qualquer byte de pacote ser con
 `update_installer.stage_release` só aceita um `UpdateManifest` já verificado.
 
 A URL usada é **a URL assinada**. Nenhuma URL recebida fora do payload assinado é seguida.
-HTTPS será obrigatório no transporte futuro, mas HTTPS não substitui a assinatura.
+HTTPS é obrigatório no transporte de produção, mas HTTPS não substitui a assinatura. Os testes
+usam um transporte local injetado para loopback; não existe flag de produção para aceitar HTTP
+ou desabilitar verificação TLS.
 
 #### Política de versão
 
@@ -1096,6 +1103,11 @@ Formato: `MAJOR.MINOR.PATCH` estrito, convertido para tupla de inteiros — `1.1
 
 Downgrade remoto ≠ rollback local: o rollback opera sobre uma release **já instalada e já
 verificada** localmente, nunca sobre uma versão antiga rebaixada.
+
+A versão autoritativa do payload local é `app_version.PRODUCT_VERSION` (`MAJOR.MINOR.PATCH`).
+Constantes `*_SCHEMA_VERSION` continuam sendo versões de formatos de dados, não do produto.
+O campo opcional assinado `minimum_bootstrap_version` permite que uma release recuse launchers
+antigos sem tentar uma auto-substituição insegura.
 
 #### Integridade e segurança do pacote
 
@@ -1138,6 +1150,30 @@ sem prova.
 - `data/` está fora de `versions/` por construção: atualização, rollback e limpeza de staging
   não alcançam banco de jobs, histórico, configuração nem saída do usuário.
 
+#### Transporte e bootstrap de startup (TDD #58)
+
+`update_transport.UpdateTransport` move bytes e nada mais: exige HTTPS em produção, desliga
+proxies/CA herdados do ambiente (`trust_env=False`), valida cada redirect contra downgrade,
+aplica timeouts de conexão/leitura, orçamento de redirects, teto de manifest e retry limitado
+somente para falha transitória de rede. O pacote é escrito em arquivo `.part` no diretório de
+destino e só é promovido por `os.replace` depois de tamanho e SHA-256 baterem com o manifest
+assinado. Corpo curto, corpo maior que o declarado, hash errado, HTTP não-200, host offline e
+redirect inseguro falham sem deixar pacote parcial promovido.
+
+`start_tradutor.py all` chama `update_bootstrap.check_before_start()` antes de iniciar worker
+ou UI. Em clone de desenvolvimento ou sem canal configurado, o check retorna
+`not_configured` e o launcher segue; em instalação real (`<root>/versions/<version>` +
+`current.json`), um manifest assinado pode instalar uma release nova antes da sessão começar.
+Após ativação, o bootstrap executa `start_tradutor.py selftest` dentro do payload novo para
+provar que a release importa o runtime básico sem iniciar worker, UI, jobs ou banco real. Se o
+selftest falhar, faz rollback para a versão anterior. Se passar, o launcher antigo faz handoff
+para o `start_tradutor.py` da nova versão com `TRADUTOR_IA_UPDATE_CHECKED=1`, evitando loop e
+mantendo exatamente um dono da supervisão do worker.
+
+O launcher em execução **não** se sobrescreve. Auto-substituição do bootstrap/binário está
+adiada para a fase de Setup; até lá, o updater atualiza payloads versionados e bloqueia
+releases que exigem um bootstrap mais novo (`bootstrap_too_old`).
+
 #### Rotação de chave
 
 `key_id` diz **qual** chave pública embutida verifica aquele manifest. O cliente confia num
@@ -1170,25 +1206,13 @@ assinatura. `update_manifest.py` e `update_installer.py` não leem `os.environ` 
 prova isso). Os testes injetam uma chave efêmera explícita via parâmetro `trusted_keys`, em
 vez de enfraquecer o gate de produção.
 
-#### O que ainda falta (TDD #58 em diante)
+#### O que ainda falta
 
-- **Transporte**: `fetch_manifest` / `fetch_package` sobre HTTPS. Deliberadamente ausente aqui
-  para manter toda a lógica de confiança testável offline.
-- **Seam do launcher**: o ponto natural de checagem é `start_tradutor.py::main`, no comando
-  `all`, **antes** de `start_worker()` — o Windows trava os arquivos de runtime em uso, então
-  atualizar antes de subir worker e UI evita hot-swap. Nada foi integrado no launcher neste
-  TDD, e a supervisão do TDD #53 permanece exatamente como estava. Recomendação de produto
-  para a primeira Beta: checar na inicialização (ou baixar em segundo plano e ativar no próximo
-  arranque), **sem** atualização a quente durante a sessão.
-- **Fonte autoritativa de versão do aplicativo**: o repositório **não tem nenhuma**
-  (sem `pyproject.toml`, sem `setup.py`, sem `__version__`; os vários `SCHEMA_VERSION` são de
-  formato de dados, não do produto). O updater não inventou uma: `decide_update` recebe a
-  versão corrente como entrada explícita, e a fonte local de verdade é `current.json`. Definir
-  a versão do produto é pré-requisito do Setup/#58.
-- **Auto-atualização do próprio launcher**: um launcher em execução não pode se sobrescrever
-  com segurança no Windows. Resolver isso exige um bootstrapper estável ou um helper externo de
-  atualização, e depende do formato de empacotamento escolhido. **Bloqueador registrado para o
-  TDD de Setup/#58.**
+- **Canal e chave de produção**: `TRUSTED_PUBLIC_KEYS` continua vazio até existir uma chave
+  pública de release real; sem ela, o updater reporta `trust_not_configured` e não confia em
+  nenhum manifest.
+- **Empacotamento/Setup**: o layout de instalação final, permissões e bootstrap estável
+  dependem do instalador. O código atual não finge auto-substituição do launcher em execução.
 - **Diretório de instalação final e permissões**: depende do instalador. O updater não exige
   privilégios de administrador desde que o local escolhido não exija.
 - **Espaço em disco e limite de tamanho de pacote**: adiados de propósito — sem o tamanho real
@@ -1197,9 +1221,10 @@ vez de enfraquecer o gate de produção.
   como *"Não foi possível verificar a atualização."*, sem expor detalhe criptográfico.
 
 Eventos estruturados já emitidos (nunca com chave, token ou URL com segredo):
-`update_manifest_verified`, `update_available`, `update_package_verified`, `update_staged`,
+`update_manifest_fetched`, `update_manifest_verified`, `update_available`,
+`update_package_downloaded`, `update_package_verified`, `update_staged`,
 `update_activation_started`, `update_activation_succeeded`, `update_activation_failed`,
-`update_rollback_succeeded`.
+`update_startup_unhealthy`, `update_rollback_succeeded`, `update_applied`.
 
 ## 24. Arquitetura de testes
 
@@ -1455,9 +1480,8 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 | `UI-COPY-NAMES-NVIDIA` | Baixa | A mensagem `environment_not_configured` no frontend diz "Configure o arquivo .env e a `NVIDIA_API_KEY`", mas o provider padrão é DeepL. Copy desatualizada visível ao usuário. | `static/tradutor_ui.js` (`reasonMessages`) | TDD futuro: mensagem neutra de provider |
 | `PROVIDER-HTTP-TELEMETRY-GAP` | Baixa | Não há telemetria HTTP unificada entre providers (latência, taxa de erro, retries) — cada provider mantém suas próprias `stats`. | `translator_deepl.py`, `translator_nvidia.py` | TDD futuro, se a Beta exigir observabilidade de provider |
 | `PACKAGING-PENDING` | Alta (bloqueia Beta externa) | Não existe nenhum artefato de empacotamento (PyInstaller, Inno Setup, NSIS, spec). | Busca por `setup/installer/pyinstaller/inno/nsis` no índice do Git: nada | Missão dedicada de empacotamento |
-| `UPDATER-REMOTE-PENDING` | Alta (bloqueia Beta externa) | O núcleo de confiança do updater existe e está testado (TDD #57), mas não há transporte HTTPS, integração no launcher, hospedagem escolhida nem UI. | `update_manifest.py`, `update_installer.py`, `test_signed_update.py` | TDD #58 — integração remota do update |
-| `APP-VERSION-SOURCE-MISSING` | Alta (bloqueia updater real) | O repositório não tem **nenhuma** versão autoritativa do produto: sem `pyproject.toml`, sem `setup.py`, sem `__version__`. Os vários `SCHEMA_VERSION` são de formato de dados. O updater não inventou uma; recebe a versão corrente como entrada explícita. | Busca por `__version__`/`pyproject`/`setup.py` no índice do Git: nada | Definir junto com o Setup/#58 |
-| `LAUNCHER-SELF-UPDATE-BLOCKER` | Alta (bloqueia auto-atualização) | Um launcher em execução não pode se sobrescrever com segurança no Windows; exige bootstrapper estável ou helper externo de atualização. | `start_tradutor.py` | Decidir junto com o formato do Setup |
+| `UPDATER-RELEASE-CHANNEL-PENDING` | Alta (bloqueia Beta externa) | Transporte HTTPS, verificação remota e seam do launcher existem, mas ainda não há hospedagem/canal de release, chave pública de produção embutida nem UI. | `update_transport.py`, `update_bootstrap.py`, `start_tradutor.py`, `update_manifest.py` | Definir junto com Setup/release operacional |
+| `LAUNCHER-SELF-UPDATE-DEFERRED` | Média | Um launcher em execução não se sobrescreve; o update atual faz handoff entre payloads versionados e bloqueia payload que exige bootstrap mais novo. Self-update do bootstrap depende do formato do Setup. | `update_bootstrap.py`, `start_tradutor.py` | Resolver na missão de Setup/bootstrapper |
 | `UPDATE-TRUST-ROOT-EMPTY` | Média | `update_manifest.TRUSTED_PUBLIC_KEYS` está vazio de propósito (não existe chave de release de produção); o updater falha fechado. | `update_manifest.py` | Preencher quando a chave de release existir, fora do repositório |
 | `TESTER-LICENSE-PENDING` | Média | Não existe licenciamento/expiração de tester. Acesso é apenas conta Supabase. | Nenhum módulo correspondente | Missão dedicada de licenciamento |
 | `CLEAN-VM-VALIDATION-PENDING` | Alta (bloqueia Beta externa) | Nenhuma evidência de validação em VM Windows limpa. | — | Executar após o empacotamento existir |
@@ -1481,14 +1505,14 @@ Não há artefato de build. Distribuição atual = clone do repositório + venv 
 ### Updater — PARCIAL
 
 O núcleo de confiança está fechado e documentado em
-[§23 › Updater assinado](#updater-assinado--parcial-tdd-57): manifest assinado, verificação
-Ed25519, SHA-256 do pacote, política de versão/versão mínima, extração segura, staging,
-ativação atômica e rollback — tudo offline e testado.
+[§23 › Updater assinado](#updater-assinado--parcial-tdd-5758): manifest assinado, verificação
+Ed25519, SHA-256 do pacote, política de versão/versão mínima, versão canônica do produto,
+transporte HTTPS, extração segura, staging, ativação atômica, selftest, handoff pelo launcher e
+rollback — hermético e testado.
 
-Falta para uma atualização real: transporte HTTPS (`fetch_manifest`/`fetch_package`),
-integração no launcher, hospedagem escolhida, chave de release de produção, versão autoritativa
-do produto e UI. **Enquanto isso, o Guia do Usuário continua dizendo que a atualização
-automática está em desenvolvimento** — nada de "o programa se atualiza sozinho".
+Falta para uma atualização real de Beta: hospedagem escolhida, chave pública de release de
+produção, pacote/Setup final e UI. **Enquanto isso, o Guia do Usuário continua dizendo que a
+atualização automática está em desenvolvimento** — nada de "o programa se atualiza sozinho".
 
 **Bloqueador de empacotamento:** um launcher em execução não pode se sobrescrever com segurança
 no Windows. A auto-atualização do próprio launcher exige bootstrapper estável ou helper externo
@@ -1514,7 +1538,8 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Documentação técnica + guia do usuário | ✅ (este documento) |
 | Instalador para usuário final | ⬜ pendente |
 | Updater assinado — núcleo de confiança (manifest, assinatura, SHA, staging, ativação, rollback) | ✅ fechado (TDD #57) |
-| Updater assinado — transporte remoto, seam do launcher e UI | ⬜ pendente |
+| Updater assinado — transporte remoto + seam do launcher | ✅ fechado (TDD #58) |
+| Updater assinado — canal/chave de produção + UI | ⬜ pendente |
 | Licenciamento de tester | ⬜ pendente |
 | Validação em VM Windows limpa | ⬜ pendente |
 | Screenshots reais no guia do usuário | ⬜ pendente |

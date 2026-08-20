@@ -58,6 +58,13 @@ APP_ID = "tradutor-ia"
 #: interpreted with guessed semantics.
 SUPPORTED_SCHEMA_VERSION = 1
 
+#: ``minimum_bootstrap_version`` is optional and defaults to "any bootstrap". It is an
+#: *additive* field inside ``schema_version: 1`` rather than a schema bump because no signed
+#: manifest has ever been published: there is no deployed client whose interpretation could
+#: change. Once a release channel exists, changing the meaning of an existing field would
+#: require a bump; adding an ignorable-by-default one before the first release does not.
+_BOOTSTRAP_VERSION_DEFAULT = "0.0.0"
+
 SIGNATURE_ALGORITHM = "ed25519"
 _SIGNATURE_LENGTH = 64
 _KEY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -177,6 +184,9 @@ class UpdateManifest:
     published_at: datetime
     package: UpdatePackage
     key_id: str
+    #: Oldest bootstrap/launcher that may host this payload. Optional in the schema and
+    #: defaulting to ``0.0.0`` (see ``_BOOTSTRAP_VERSION_DEFAULT``).
+    minimum_bootstrap_version: tuple[int, int, int] = (0, 0, 0)
 
     @property
     def version_text(self) -> str:
@@ -315,6 +325,9 @@ def verify_manifest(
         published_at=published_at,
         package=_parse_package(payload.get("package")),
         key_id=key_id,
+        minimum_bootstrap_version=parse_version(
+            payload.get("minimum_bootstrap_version", _BOOTSTRAP_VERSION_DEFAULT)
+        ),
     )
     log.info(
         "update_manifest_verified",

@@ -9,10 +9,16 @@ spent the launcher stays degraded instead of respawning forever. Supervision liv
 with this launcher process, and never adopts a worker this launcher did not start - so
 ``worker``, which exits immediately, spawns without supervising.
 
-    python start_tradutor.py            # start the worker (if none) and the UI
+``all`` also checks for a signed update *before* anything starts, because Windows locks the
+files of a running application: see ``update_bootstrap``. In a plain repository clone (the
+current developer setup) there is no install layout, so the check reports "not configured" and
+the launcher proceeds exactly as it always did.
+
+    python start_tradutor.py            # check updates, then start the worker (if none) and UI
     python start_tradutor.py worker     # start only the worker (detached)
     python start_tradutor.py ui         # start only the UI (foreground)
     python start_tradutor.py status     # print worker/queue health
+    python start_tradutor.py selftest   # prove this payload can start (used by the updater)
     python start_tradutor.py stop       # ask the running worker to stop gracefully
 """
 
@@ -24,6 +30,8 @@ import sys
 import time
 from pathlib import Path
 
+import app_version
+import update_bootstrap
 import worker_supervisor
 from local_environment import load_local_environment_for_entrypoint
 from process_options import background_python_executable, build_background_process_options
@@ -190,6 +198,45 @@ def stop_worker(*, force: bool = False, timeout: float = 30.0) -> int:
     return 0
 
 
+def selftest() -> int:
+    """Prove this payload is runnable: import the runtime and open the job store, nothing else.
+
+    This is the evidence ``update_bootstrap`` requires from a freshly activated version before
+    it is allowed to stay current. Importing the UI, the worker service and the job store pulls
+    in essentially the whole runtime dependency graph, so a payload that is incomplete, built
+    against a missing dependency or syntactically broken fails here — while nothing is started:
+    no worker, no UI, no translation job, and no database is opened.
+    """
+    import app_ui  # noqa: F401  - the UI entrypoint must at least import
+    import job_store  # noqa: F401
+    import worker_service  # noqa: F401
+
+    print(f"selftest ok: {app_version.PRODUCT_VERSION}")
+    return 0
+
+
+def run_update_check() -> update_bootstrap.UpdateStatus:
+    """Check for a signed update before any part of the application is running."""
+    status = update_bootstrap.check_before_start(REPO_ROOT)
+    if status.user_message:
+        print(status.user_message)
+    return status
+
+
+def handoff(payload_dir: Path) -> int:
+    """Start the newly activated release and wait for it, so it owns the worker supervisor.
+
+    Nothing is overwritten: the updated payload is a different immutable directory, and this
+    launcher keeps running only as the parent that waits for it.
+    """
+    env = os.environ.copy()
+    env[update_bootstrap.HANDOFF_ENV] = "1"
+    return subprocess.run(
+        [sys.executable, str(Path(payload_dir) / "start_tradutor.py"), "all"],
+        cwd=str(payload_dir), env=env,
+    ).returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     if not load_local_environment_for_entrypoint():
         return 2
@@ -205,7 +252,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if command in {"stop", "stop-worker"}:
         return stop_worker(force="--force" in args)
+    if command == "selftest":
+        return selftest()
     if command == "all":
+        status = run_update_check()
+        if not status.can_launch:
+            print(f"update_required: {status.state}", file=sys.stderr)
+            return 3
+        if status.payload_dir is not None:
+            return handoff(status.payload_dir)
         started = start_worker()
         if started is not None:
             supervise_worker(started)

@@ -45,6 +45,11 @@ RUNTIME_GUARD_ENV = "TRADUTOR_IA_RUNTIME_ISOLATION_GUARD"
 # start_tradutor pins itself to the production queue and worker regardless of arguments or
 # environment, so a test can never launch it.
 FORBIDDEN_ENTRYPOINTS = ("start_tradutor.py", "start_tradutor.bat")
+# ...with one command excepted: ``start_tradutor.py selftest`` (TDD #58) only imports the
+# runtime to prove a payload is runnable — it starts no worker, no UI and no job, and opens no
+# database. The updater's startup health gate spawns exactly this, so an updater test must be
+# able to as well; every other start_tradutor invocation stays refused.
+SPAWNABLE_LAUNCHER_COMMANDS = ("selftest",)
 # The worker may run as a test subprocess, but only when the caller states which database it
 # drains. Without ``--db`` it falls back to worker_service.DEFAULT_DB, the real queue.
 ISOLATED_DB_REQUIRED_ENTRYPOINTS = ("worker_service.py",)
@@ -216,8 +221,9 @@ def _guarded_popen_init(self, args, *rest, **kwargs):
     parts = [str(part) for part in command]
     text = " ".join(parts)
     lowered = text.casefold()
+    launcher_selftest = bool(parts) and parts[-1] in SPAWNABLE_LAUNCHER_COMMANDS
     for entrypoint in FORBIDDEN_ENTRYPOINTS:
-        if entrypoint in lowered:
+        if entrypoint in lowered and not launcher_selftest:
             _refuse("spawn", text)
     for part in command:
         if is_real_runtime_path(part):

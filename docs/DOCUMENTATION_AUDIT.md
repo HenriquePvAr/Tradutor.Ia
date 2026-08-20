@@ -241,3 +241,19 @@ introduzida em documento algum. O núcleo está fechado; o produto de atualizaç
 **Novos bloqueadores registrados** (§29): `APP-VERSION-SOURCE-MISSING` (o repositório não tem
 versão autoritativa do produto) e `LAUNCHER-SELF-UPDATE-BLOCKER` (um launcher em execução não
 pode se sobrescrever com segurança no Windows).
+
+### TDD #58 — Integração remota do updater assinado (2026-08-20, base `c1c6b89`)
+
+**Gatilho:** mudança de arquitetura técnica (segurança, empacotamento/updater). Contrato de
+sincronização do `CLAUDE.md`, itens 3 e 6.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | §2 passa o updater assinado para **PARCIAL** com integração remota/launcher; §3 mapa de componentes inclui `app_version.py`, `update_transport.py` e `update_bootstrap.py`; §23 reclassificado para TDD #57/#58, documentando versão canônica, transporte HTTPS, bootstrap de startup, handoff, rollback pós-selftest e limite explícito de self-update; §29 remove dívidas fechadas de versão/transporte e registra `UPDATER-RELEASE-CHANNEL-PENDING` e `LAUNCHER-SELF-UPDATE-DEFERRED`; §30/checklist de Beta atualizados. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Ainda não há canal/chave/UI de produção nem Setup. O usuário final continua não tendo atualização automática disponível nesta versão. |
+| `docs/README.md` | **Atualizado** | Status resumido muda de “em desenvolvimento” para “parcial — canal/UI pendentes”. |
+| Capturas de tela | **Não requer** | Nenhuma UI foi adicionada. |
+
+**Honestidade verificada:** o produto ainda não promete auto-atualização para usuário final.
+O #58 fecha a ponte técnica remota/hermética e mantém a raiz de confiança de produção vazia
+até existir chave pública real de release.
