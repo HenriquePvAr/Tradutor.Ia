@@ -236,14 +236,16 @@ class SubmitTests(unittest.TestCase):
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.QUEUED)
 
-    def test_submit_uses_slug_for_output_directory(self):
+    def test_submit_uses_slug_and_run_id_for_immutable_output_directory(self):
         result = self.start(slug="daytime_in_the_bunker_episode_17_smoke_9")
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(
-            Path(job["output_dir"]).name,
+            Path(job["output_dir"]).parent.name,
             "daytime_in_the_bunker_episode_17_smoke_9",
         )
-        self.assertIn("daytime_in_the_bunker_episode_17_smoke_9", job["command"])
+        self.assertEqual(Path(job["output_dir"]).name, job["run_id"])
+        output_arg = job["command"][job["command"].index("--output") + 1]
+        self.assertEqual(output_arg, f"daytime_in_the_bunker_episode_17_smoke_9/{job['run_id']}")
 
     def test_legacy_output_field_does_not_replace_slug(self):
         result = self.start(
@@ -252,7 +254,7 @@ class SubmitTests(unittest.TestCase):
         )
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(
-            Path(job["output_dir"]).name,
+            Path(job["output_dir"]).parent.name,
             "daytime_in_the_bunker_episode_17_smoke_9",
         )
         self.assertNotIn("wrong_output_field", job["command"])
@@ -443,6 +445,10 @@ class LocalFolderSubmitTests(unittest.TestCase):
         self.assertEqual(job["source_url"], "")
         self.assertIn("run_local_folder.py", " ".join(job["command"]))
         self.assertIn("--snapshot-ref", job["command"])
+        output_arg = job["command"][job["command"].index("--output") + 1]
+        self.assertEqual(output_arg, f"capitulo_local_teste/{job['run_id']}")
+        self.assertEqual(Path(job["output_dir"]).parent.name, "capitulo_local_teste")
+        self.assertEqual(Path(job["output_dir"]).name, job["run_id"])
         self.assertNotIn(self.raw_folder, str(job))
         browser_record = self.bridge._job_record(job)
         self.assertEqual(browser_record["source_type"], "local_folder")

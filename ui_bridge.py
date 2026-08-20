@@ -41,6 +41,7 @@ from ui_helpers import (
     clean_url,
     env_status,
     record_command_provider,
+    resolve_run_output_folder,
     sanitize_diagnostic_text,
     sanitize_output_name,
     suggest_chapter_details,
@@ -641,6 +642,16 @@ class UiBridge:
         }
 
     # ---- job <-> UI record mapping -----------------------------------------
+    @staticmethod
+    def _chapter_slug_from_job(job: dict[str, Any]) -> str:
+        config = job.get("configuration") or {}
+        if isinstance(config, dict) and str(config.get("chapter_slug") or "").strip():
+            return sanitize_output_name(str(config.get("chapter_slug") or ""))
+        output = Path(str(job.get("output_dir") or "chapter"))
+        if output.parent.name.lower() == "output":
+            return sanitize_output_name(output.name)
+        return sanitize_output_name(output.parent.name or output.name or "chapter")
+
     def _job_record(self, job: dict[str, Any] | None) -> dict[str, Any] | None:
         if not job:
             return None
@@ -700,7 +711,7 @@ class UiBridge:
             ),
             "community_ownership": ownership,
             "chapter_name": config.get("chapter_name") or job.get("series_title") or job.get("series_slug") or "",
-            "slug": Path(job.get("output_dir") or "").name,
+            "slug": self._chapter_slug_from_job(job),
             # The queue retains the raw URL only to execute a remote job. The browser-facing
             # record is diagnostic data and must not echo signed query material. Local jobs
             # carry no source path in their row; their snapshot reference stays opaque.
@@ -4571,7 +4582,7 @@ class UiBridge:
 
         command = build_local_job_command(
             snapshot_ref=snapshot_ref,
-            output=normalized["slug"],
+            output=f"{normalized['slug']}/{normalized['id']}",
             mode=normalized["mode"],
             logical_pages=True,
             use_cache=normalized["use_cache"],
@@ -4648,9 +4659,11 @@ class UiBridge:
             raise TypeError("principal must be a RequestPrincipal")
         from local_folder_job import SOURCE_TYPE_LOCAL_FOLDER
 
-        output_folder = (
-            getattr(self, "output_root", OUTPUT_ROOT) / normalized["slug"]
-        ).resolve()
+        output_folder = resolve_run_output_folder(
+            getattr(self, "output_root", OUTPUT_ROOT),
+            normalized["slug"],
+            normalized["id"],
+        )
         configuration: dict[str, Any] = {
             "job_type": "translation",
             "source_type": SOURCE_TYPE_LOCAL_FOLDER,
@@ -4664,6 +4677,7 @@ class UiBridge:
             "chapter_name": normalized["chapter_name"],
             "open_output": normalized["open_output"],
             "create_source_profile": False,
+            "chapter_slug": normalized["slug"],
             "source_analysis": {},
             "source_selection": {},
         }
@@ -4779,7 +4793,7 @@ class UiBridge:
         for job in pending:
             if not self._is_translation_job(job):
                 continue
-            same_slug = slug and Path(str(job.get("output_dir") or "")).name == slug
+            same_slug = bool(slug and self._chapter_slug_from_job(job) == slug)
             same_url = job.get("source_url") == url
             if same_slug or (same_url and not slug):
                 return job
@@ -4992,7 +5006,7 @@ class UiBridge:
         command = build_run_command(
             url=normalized["url"],
             mode=normalized["mode"],
-            output=normalized["slug"],
+            output=f"{normalized['slug']}/{normalized['id']}",
             full=normalized["full"],
             max_images=normalized.get("max_images"),
             use_cache=normalized["use_cache"],
@@ -5004,9 +5018,11 @@ class UiBridge:
             translation_provider=normalized["translation_provider"],
             python_executable=sys.executable,
         )
-        output_folder = (
-            getattr(self, "output_root", OUTPUT_ROOT) / normalized["slug"]
-        ).resolve()
+        output_folder = resolve_run_output_folder(
+            getattr(self, "output_root", OUTPUT_ROOT),
+            normalized["slug"],
+            normalized["id"],
+        )
         details = suggest_chapter_details(normalized["url"])
         configuration = {
             "job_type": "translation",
@@ -5035,6 +5051,7 @@ class UiBridge:
             "translation_provider": normalized["translation_provider"],
             "source_analysis": source_analysis or {},
             "source_selection": source_selection or {},
+            "chapter_slug": normalized["slug"],
         }
         validated_analysis_id = str(payload.get("source_analysis_result_id") or "")
         if validated_analysis_id:
@@ -5357,7 +5374,7 @@ class UiBridge:
             "source_type": "url",
             "url": source_url,
             "chapter_name": config.get("chapter_name") or job.get("series_title") or "",
-            "slug": Path(str(job.get("output_dir") or "chapter")).name,
+            "slug": self._chapter_slug_from_job(job),
             "mode": config.get("mode") or "fast",
             "download_only": bool(config.get("download_only", False)),
             "full": bool(config.get("full", True)),
@@ -5388,8 +5405,7 @@ class UiBridge:
             return self._job_record(existing) or {}
         config = dict(job.get("configuration") or {})
         attempt = int(job.get("attempt") or 1) + 1
-        old_output = Path(str(job.get("output_dir") or "chapter"))
-        base_slug = sanitize_output_name(old_output.name or "chapter")
+        base_slug = self._chapter_slug_from_job(job)
         slug = sanitize_output_name(f"{base_slug}_retry_{attempt}")
         payload = {
             "url": str(job.get("source_url") or ""),

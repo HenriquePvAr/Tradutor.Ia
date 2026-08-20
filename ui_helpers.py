@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from output_manifest import MANIFEST_FILENAME, sanitize_source_url
+from output_manifest import MANIFEST_FILENAME, sanitize_run_slug, sanitize_source_url
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -101,6 +101,37 @@ def sanitize_output_name(value: str) -> str:
     value = re.sub(r"[^a-z0-9]+", "_", value)
     value = re.sub(r"_+", "_", value).strip("_")
     return value[:80] or "webtoon_chapter"
+
+
+def build_run_output_slug(chapter_slug: object, run_id: object) -> str:
+    """Return the only nested output path shape accepted for new UI runs.
+
+    The runner accepts ``--output`` as either a folder name under ``output/`` or a path.
+    New UI jobs need one extra directory level to keep repeated real runs immutable, but
+    that must not reopen arbitrary path handling.  Therefore this helper emits exactly
+    ``<safe_chapter>/<safe_run>`` and nothing user-path-shaped.
+    """
+
+    chapter = sanitize_output_name(str(chapter_slug or "webtoon_chapter"))
+    run = sanitize_run_slug(run_id)
+    if not run:
+        raise ValueError("invalid_run_id")
+    return f"{chapter}/{run}"
+
+
+def resolve_run_output_folder(output_root: Path, chapter_slug: object, run_id: object) -> Path:
+    """Resolve the immutable run folder and prove it remains under ``output_root``."""
+
+    root = Path(output_root).resolve()
+    relative = Path(build_run_output_slug(chapter_slug, run_id))
+    if relative.is_absolute() or len(relative.parts) != 2:
+        raise ValueError("invalid_output_path")
+    folder = (root / relative).resolve()
+    try:
+        folder.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("invalid_output_path") from exc
+    return folder
 
 
 def suggest_chapter_details(url: str) -> dict[str, str]:
@@ -251,7 +282,9 @@ def build_run_command(
         "--mode",
         mode,
         "--output",
-        sanitize_output_name(output),
+        build_run_output_slug(*str(output).split("/", 1))
+        if "/" in str(output)
+        else sanitize_output_name(output),
     ]
     if force:
         command.append("--force")

@@ -159,7 +159,7 @@ flowchart TD
     W --> DB
     W -->|spawn 1 por job| R[job_runner.py]
     R --> P[benchmark_pipeline.py]
-    P --> O[(output/&lt;slug&gt;/)]
+    P --> O[(output/&lt;slug&gt;/&lt;run_id&gt;/)]
     R --> DB
 ```
 
@@ -498,7 +498,7 @@ canvas. Análise de fonte é sanitizada antes de persistir.
 ├── ui_history.json           # histórico local da UI
 └── ...                       # caches de pipeline
 
-<repo>/output/<slug>/
+<repo>/output/<slug>/<run_id>/
 ├── input/                    # imagens de origem ativas
 ├── pages/                    # páginas finais renderizadas
 ├── run_manifest.json         # manifest autodescritivo da execução
@@ -512,6 +512,11 @@ canvas. Análise de fonte é sanitizada antes de persistir.
 ```
 
 Ambos são ignorados pelo Git.
+
+Novos jobs criados pela UI usam uma pasta endereçada por execução
+(`output/<chapter_slug>/<run_id>/`). Isso preserva dois reprocessamentos do mesmo capítulo
+como artefatos separados. Saídas legadas em `output/<slug>/` continuam leitura-compatíveis,
+mas não são o destino de novos jobs da UI.
 
 ## 11. Análise de fonte e descoberta de páginas
 
@@ -828,9 +833,15 @@ por esse caminho em vez de remontar o nome. Saídas antigas continuam funcionand
 genérico, descoberto pelo caminho persistido ou pelo PDF presente na pasta). **Nenhum PDF
 existente é renomeado.**
 
+Dentro de uma pasta de run, o PDF final é promovido de um arquivo temporário por uma etapa
+imutável: se o destino não existe, ele é criado; se já existe com os mesmos bytes, a operação
+é idempotente; se já existe com bytes diferentes, o pipeline falha fechado e não sobrescreve
+o artefato anterior. Isso evita que um run concluído ou em `review_required` perca evidência
+física por replay acidental.
+
 `ui_history.py` (`UIHistoryStore`) mantém o histórico local em `.cache/ui_history.json` e
-descobre saídas antigas em `output/` que não têm registro no banco. Nada é migrado
-automaticamente.
+descobre tanto saídas novas em `output/<slug>/<run_id>/` quanto saídas antigas em
+`output/<slug>/` que não têm registro no banco. Nada é migrado automaticamente.
 
 ## 19. Autenticação e autorização
 
@@ -1376,7 +1387,7 @@ relevantes tendem a vir daí, não da orquestração Python.
 | Saúde do worker/fila | `python start_tradutor.py status` |
 | Liveness da UI | `GET /api/health` |
 | Diagnóstico na UI | `GET /api/ui/diagnostics`, aba **Logs** |
-| Relatórios por execução | `output/<slug>/*_report.json|html` |
+| Relatórios por execução | `output/<slug>/<run_id>/*_report.json|html` para novos jobs; `output/<slug>/*_report.json|html` em legados |
 
 Todo texto que chega à interface passa por `sanitize_diagnostic_text`. `request_observability.py`
 e `job_failure_diagnostic.py` normalizam diagnóstico de falha em códigos fechados.

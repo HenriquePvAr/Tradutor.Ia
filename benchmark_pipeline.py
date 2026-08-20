@@ -474,6 +474,42 @@ def _sha256_and_size(path):
     return digest.hexdigest(), size
 
 
+class ImmutableArtifactConflict(RuntimeError):
+    """Raised when a terminal artifact path already contains different bytes."""
+
+
+def _finalize_immutable_file(temp_path, final_path):
+    """Promote ``temp_path`` to ``final_path`` without overwriting different bytes.
+
+    Re-running the same logical run with byte-identical output is idempotent.  Producing
+    different bytes for an existing terminal artifact fails closed because overwriting it
+    would erase the previous run's audit evidence.
+    """
+
+    temp = Path(temp_path).resolve()
+    final = Path(final_path).resolve()
+    final.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        temp.relative_to(final.parent)
+    except ValueError as exc:
+        raise ImmutableArtifactConflict("temporary_artifact_outside_run_folder") from exc
+    if final.exists():
+        if not final.is_file():
+            raise ImmutableArtifactConflict("artifact_path_not_file")
+        temp_hash, temp_size = _sha256_and_size(temp)
+        final_hash, final_size = _sha256_and_size(final)
+        if temp_hash == final_hash and temp_size == final_size:
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+            return {"status": "idempotent", "sha256": final_hash, "size": final_size}
+        raise ImmutableArtifactConflict("artifact_already_exists_with_different_bytes")
+    temp.replace(final)
+    final_hash, final_size = _sha256_and_size(final)
+    return {"status": "created", "sha256": final_hash, "size": final_size}
+
+
 def run_benchmark(args):
     started = time.perf_counter()
     # Line provenance is collected for the whole run: raw OCR lines, every list
@@ -1479,11 +1515,21 @@ def run_benchmark(args):
         )
     )
     pdf_path = output_folder / pdf_filename
+    pdf_temp_path = output_folder / f".{pdf_filename}.{os.getpid()}.{time.time_ns()}.tmp"
     resource_monitor.set_stage("pdf")
     pdf_started = time.perf_counter()
-    generate_pdf([state["output_path"] for state in completed_states], str(pdf_path))
+    try:
+        generate_pdf([state["output_path"] for state in completed_states], str(pdf_temp_path))
+        artifact = _finalize_immutable_file(pdf_temp_path, pdf_path)
+    finally:
+        try:
+            if pdf_temp_path.exists():
+                pdf_temp_path.unlink()
+        except OSError:
+            pass
     stage_seconds["pdf"] = time.perf_counter() - pdf_started
-    artifact_sha256, artifact_size_bytes = _sha256_and_size(pdf_path)
+    artifact_sha256 = artifact["sha256"]
+    artifact_size_bytes = artifact["size"]
 
     resource_monitor.set_stage("reports")
     preview_started = time.perf_counter()

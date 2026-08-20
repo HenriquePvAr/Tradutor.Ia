@@ -234,7 +234,7 @@ Os JSONs críticos usam escrita atômica. O `run_signature` em `progress.json` p
 Uma execução completa cria, conforme a configuração:
 
 ```text
-output/<slug>/
+output/<slug>/<run_id>/
 ├── input/                       # imagens de origem ativas
 ├── pages/                       # páginas finais
 ├── progress.json                # progresso, status e run signature
@@ -246,6 +246,9 @@ output/<slug>/
 ├── classification_profile.*     # somente com profiling habilitado
 └── *.pdf                        # documento final
 ```
+
+Novos jobs da UI usam o nível `<run_id>` para manter reprocessamentos do mesmo capítulo
+separados. Saídas legadas em `output/<slug>/` permanecem aceitas pelo histórico.
 
 Contact sheets e diretórios de debug podem ser produzidos conforme as flags. Eles são artefatos locais e não devem ser tratados como assets públicos do projeto.
 

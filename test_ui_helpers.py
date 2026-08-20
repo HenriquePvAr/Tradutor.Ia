@@ -14,6 +14,7 @@ from chapter_source import SourceError
 from ui_helpers import (
     ProgressSnapshot,
     build_run_command,
+    build_run_output_slug,
     derive_final_run_status,
     find_output_artifacts,
     infer_series_details,
@@ -64,6 +65,24 @@ class UIHelpersTests(unittest.TestCase):
         self.assertIn("--force", command)
         self.assertEqual(command[-2:], ["--max-images", "3"])
         self.assertIn("lookism_ep_50", command)
+
+    def test_command_accepts_only_normalized_two_segment_run_output(self):
+        command = build_run_command(
+            url=LOOKISM_URL,
+            mode="fast",
+            output="Lookism EP 50/RUN:01",
+            full=True,
+            max_images=None,
+            use_cache=False,
+            force=True,
+            use_context=True,
+            python_executable="python.exe",
+        )
+        self.assertEqual(command[command.index("--output") + 1], "lookism_ep_50/run_01")
+        self.assertEqual(
+            build_run_output_slug("../Lookism", "..\\evil/run"),
+            "lookism/evil_run",
+        )
 
     def test_cache_and_force_cannot_be_combined(self):
         with self.assertRaises(ValueError):
@@ -323,6 +342,53 @@ class UIHelpersTests(unittest.TestCase):
             self.assertEqual(records[0]["status"], "review_required")
             self.assertFalse(records[0]["quality_gate"])
             self.assertEqual(records[0]["pdf_path"], str(pdf_path.resolve()))
+
+    def test_nested_run_outputs_are_discovered_without_collapsing_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            chapter = output_root / "shadow_slave_chapter_1_5"
+            run_a = chapter / "run_a"
+            run_b = chapter / "run_b"
+            legacy = output_root / "legacy_chapter"
+            for directory, status, passed in (
+                (run_a, "review_required", False),
+                (run_b, "finished", True),
+                (legacy, "finished", True),
+            ):
+                directory.mkdir(parents=True)
+                pdf_path = directory / "chapter.pdf"
+                pdf_path.write_bytes(f"%PDF-1.4 {directory.name}\n".encode("utf-8"))
+                (directory / "run_manifest.json").write_text(
+                    json.dumps(build_run_manifest(
+                        run_id=directory.name,
+                        created_at=f"2026-01-01T00:00:0{len(directory.name)}+00:00",
+                        source_url=LOOKISM_URL,
+                        commit_hash="abc123",
+                        branch="feature",
+                        pipeline_version="pipeline-v1",
+                        model="fake",
+                        final_status=status,
+                        quality_passed=passed,
+                        manual_review_count=0 if passed else 1,
+                        rejected_count=0,
+                        pdf_path=str(pdf_path),
+                        slug="shadow_slave_chapter_1_5" if directory != legacy else "legacy_chapter",
+                    )),
+                    encoding="utf-8",
+                )
+
+            store = UIHistoryStore(root / "history.json")
+            with patch("ui_history.OUTPUT_ROOT", output_root):
+                records = store.discover_outputs()
+
+            folders = {Path(record["output_folder"]).name: record for record in records}
+            self.assertIn("run_a", folders)
+            self.assertIn("run_b", folders)
+            self.assertIn("legacy_chapter", folders)
+            self.assertNotEqual(folders["run_a"]["pdf_path"], folders["run_b"]["pdf_path"])
+            self.assertEqual(folders["run_a"]["status"], "review_required")
+            self.assertEqual(folders["run_b"]["status"], "finished")
 
     def test_verified_manifest_is_authoritative_over_a_stale_timing_report(self):
         with tempfile.TemporaryDirectory() as folder:

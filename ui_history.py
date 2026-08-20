@@ -89,14 +89,13 @@ class UIHistoryStore:
             return records
         # A canonical run manifest is sufficient discovery evidence.  Older outputs still
         # need a timing report, but a valid newer run must not disappear just because a
-        # diagnostic timing file is absent or was retained elsewhere.
-        for candidate in output_root.iterdir():
-            if not candidate.is_dir():
-                continue
-            folder = candidate.resolve()
+        # diagnostic timing file is absent or was retained elsewhere.  New jobs write to
+        # output/<chapter_slug>/<run_id>/; keep direct-child legacy discovery too.
+        for folder in self._candidate_output_folders(output_root):
             if str(folder) in known:
                 continue
-            if self._is_hidden({"id": f"discovered-{folder.name}", "output_folder": str(folder)}, hidden):
+            record_id = self._discovered_record_id(output_root, folder)
+            if self._is_hidden({"id": record_id, "output_folder": str(folder)}, hidden):
                 continue
             timing_path = folder / "timing_report.json"
             report = load_json(timing_path) if timing_path.is_file() else {}
@@ -106,7 +105,7 @@ class UIHistoryStore:
             artifacts = find_output_artifacts(folder)
             if manifest:
                 record = self._record_from_verified_manifest(
-                    folder, manifest, report, artifacts, timing_path)
+                    folder, manifest, report, artifacts, timing_path, record_id=record_id)
             else:
                 quality = report.get("quality_validation") or {}
                 status = derive_final_run_status(
@@ -114,7 +113,7 @@ class UIHistoryStore:
                     quality_validation=quality,
                 )
                 record = {
-                    "id": f"discovered-{folder.name}",
+                    "id": record_id,
                     "chapter_name": folder.name.replace("_", " ").title(),
                     "slug": folder.name,
                     "url": report.get("url", ""),
@@ -139,6 +138,35 @@ class UIHistoryStore:
                 self._enrich_record(record)
             )
         return self._sort_records(records)
+
+    @staticmethod
+    def _candidate_output_folders(output_root: Path) -> list[Path]:
+        """Return legacy run folders and one-level nested immutable run folders."""
+
+        root = Path(output_root).resolve()
+        folders: list[Path] = []
+        for candidate in root.iterdir():
+            if not candidate.is_dir():
+                continue
+            folder = candidate.resolve()
+            folders.append(folder)
+            try:
+                children = sorted(candidate.iterdir(), key=lambda item: item.name)
+            except OSError:
+                continue
+            for nested in children:
+                if nested.is_dir():
+                    folders.append(nested.resolve())
+        return folders
+
+    @staticmethod
+    def _discovered_record_id(output_root: Path, folder: Path) -> str:
+        try:
+            parts = Path(folder).resolve().relative_to(Path(output_root).resolve()).parts
+        except (OSError, ValueError):
+            parts = (Path(folder).name,)
+        safe = "-".join(str(part) for part in parts if str(part))
+        return f"discovered-{safe or Path(folder).name}"
 
     def hide_record(self, record: dict[str, Any]) -> None:
         """Hide a local history card without deleting its output artifacts."""
@@ -257,6 +285,8 @@ class UIHistoryStore:
         report: dict[str, Any],
         artifacts: dict[str, str],
         timing_path: Path,
+        *,
+        record_id: str | None = None,
     ) -> dict[str, Any]:
         """Make the canonical manifest the terminal source of truth for a run card."""
 
@@ -270,7 +300,7 @@ class UIHistoryStore:
         identity = cls._job_identity_from_manifest(folder)
         pdf_path = cls._manifest_pdf_path(folder, manifest)
         return {
-            "id": f"discovered-{folder.name}",
+            "id": record_id or f"discovered-{folder.name}",
             "chapter_name": slug.replace("_", " ").title(),
             "slug": slug,
             "url": manifest.get("source_url", ""),

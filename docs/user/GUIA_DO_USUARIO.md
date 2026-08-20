@@ -365,7 +365,16 @@ aceitar todos, desfazer a última ação em massa ou **Reprocessar pendências**
 
 ## 15. Onde ficam o PDF e os arquivos
 
-Tudo fica dentro da pasta do programa, em `output/`, numa subpasta com o nome do capítulo:
+Tudo fica dentro da pasta do programa, em `output/`. Em versões atuais, cada execução fica
+numa subpasta do capítulo com um identificador próprio:
+
+```text
+output/<nome_do_capitulo>/<id_da_execucao>/
+```
+
+Isso permite repetir o mesmo capítulo sem apagar o PDF ou os relatórios da execução
+anterior. Capítulos gerados por versões antigas podem continuar aparecendo diretamente em
+`output/<nome_do_capitulo>/`.
 
 | Arquivo | O que é |
 | --- | --- |
