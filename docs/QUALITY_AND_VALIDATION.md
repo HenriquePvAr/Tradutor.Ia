@@ -162,8 +162,12 @@ caixas renderizadas em `cleanup_line_boxes` contam para fechar o resíduo físic
 Nos artefatos reais #60/#63/#65, essa camada é apenas forense/offline: os PDFs históricos
 continuam intactos. O #65 terminou `review_required` com 15 resíduos físicos observados:
 14 source-retained e um filho de linha órfã. O TDD #66 audita esses 15 caminhos e fecha
-offline a contabilidade/ownership local, mas a qualidade do produto continua aberta até um
-novo E2E real pós-#66.
+offline a contabilidade/ownership local.
+
+O E2E real #67 validou o caminho de runtime pós-#66, mas não fechou qualidade do produto:
+o novo artifact continuou `review_required`, com `physical_gate_passed=false` e os mesmos
+15 IDs físicos residuais. Isso é evidência para o próximo TDD offline; não autoriza
+promover `QUALITY` a fechado.
 
 ## Quality gate final
 

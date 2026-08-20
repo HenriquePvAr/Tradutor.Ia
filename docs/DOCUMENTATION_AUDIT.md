@@ -329,3 +329,20 @@ que story text com candidato válido desapareça do plano de render sem motivo e
 **Honestidade verificada:** os artefatos reais #60/#63/#65 não foram reescritos nem
 promovidos a limpos. O #66 fecha caminhos locais offline e melhora a explicabilidade do
 gate; a qualidade do produto permanece **OPEN — REAL POST-#66 E2E REQUIRED**.
+
+### TDD #67 — Real post-#66 quality closure E2E (2026-08-20, base `c7795dd`)
+
+**Gatilho:** execução real única autorizada pela UI visível para provar se os contratos
+offline do #66 fechavam qualidade de produto em Shadow Slave chapter 1.5.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra que o #67 preservou runtime/binding/manifest, mas continuou `review_required` com resíduos físicos; tabela de status inicial e checklist deixam de sugerir que falta apenas executar E2E limpo. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Acrescenta o resultado real #67: `physical_gate_passed=false`, 15 resíduos físicos persistentes e `QUALITY` ainda aberto. |
+| `README.md` e `docs/README.md` | **Atualizados** | Status resumido passa a dizer que o #67 real foi executado e falhou o fechamento de qualidade. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | O fluxo de usuário não mudou; `review_required` segue como terminal conhecido. |
+| Capturas de tela | **Não requer** | A evidência está nos artefatos e relatórios locais; nenhuma tela nova foi introduzida. |
+
+**Honestidade verificada:** o #67 criou exatamente um job real, sem rerun, Community ou
+Drive. A falha é de qualidade/produto, não de binding nem de ambiente. O próximo trabalho
+deve usar os artefatos #67 como entrada offline.

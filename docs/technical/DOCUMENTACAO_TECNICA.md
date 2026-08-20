@@ -86,7 +86,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Detecção de crash duro do worker (TDD #52) | **IMPLEMENTADO** |
 | Supervisão do worker pelo launcher (TDD #53) | **IMPLEMENTADO** |
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
-| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text, resíduo físico e identidade de artifact reforçados; TDD #64 fecha lacunas offline, validação real limpa ainda pendente |
+| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text, resíduo físico e identidade de artifact reforçados; TDD #66 fecha lacunas offline/forenses, mas o E2E real #67 manteve qualidade do produto aberta |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
@@ -840,8 +840,11 @@ local do resíduo de linha órfã sem criar regra por página ou frase.
 
 Estado de qualidade: as correções offline até o #66 fecham contabilidade, razão estruturada
 e ownership local de linha órfã observados nos artefatos #60/#63/#65, mas não reclassificam
-PDFs históricos como limpos. A aprovação A de produto depende de um novo E2E real controlado
-que regenere o artefato sem resíduos físicos.
+PDFs históricos como limpos. O E2E real #67 executou o caminho visível UI → Vortex →
+RapidOCR → DeepL → render → PDF em `c7795dd`, preservou binding/manifest/run-id, mas ainda
+terminou `review_required` com os mesmos 15 resíduos físicos de story observados no #65.
+Portanto a aprovação A de produto continua pendente de novo TDD offline sobre os resíduos
+reais #67 e posterior E2E limpo.
 
 ### Manifest autodescritivo
 
@@ -1614,7 +1617,7 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Item | Estado |
 | --- | --- |
 | Pipeline ponta a ponta estável | ✅ |
-| Fase de qualidade | ⚠️ correções offline/forenses fechadas até TDD #66; novo E2E real limpo pendente |
+| Fase de qualidade | ⚠️ correções offline/forenses fechadas até TDD #66; E2E real #67 executado e ainda `review_required` com resíduos físicos |
 | Fase de performance | ✅ fechada |
 | Isolamento de runtime de testes | ✅ fechado |
 | Detecção de crash duro do worker | ✅ fechada |
