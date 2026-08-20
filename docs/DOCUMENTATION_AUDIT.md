@@ -366,3 +366,23 @@ stale.
 
 **Honestidade #68:** nenhum job real, provider, rede, Supabase, Community ou Drive foi
 acionado. A qualidade do produto permanece **OPEN — REAL POST-#68 E2E REQUIRED**.
+
+### TDD #69 — First valid real post-#66/#68 quality E2E (2026-08-20, base `3ded288`)
+
+**Gatilho:** após o guard #68, era necessário executar um único E2E real de Shadow Slave
+chapter 1.5 com provenance autoritativa (`CURRENT_HEAD == job.commit_hash ==
+run_manifest.commit_hash`) antes de concluir qualquer coisa sobre qualidade pós-#66.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra que #69 validou runtime/binding pós-guard, mas manteve qualidade aberta por resíduos ordinary-story. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Acrescenta os números do #69: 104 regiões físicas esperadas, 91 traduzidas, 13 retidas para revisão, 14 resíduos físicos e `physical_gate_passed=false`. |
+| `docs/DOCUMENTATION_AUDIT.md` | **Atualizado** | Este registro. |
+| `README.md` e `docs/README.md` | **Atualizados** | Status resumido deixa de pedir “novo E2E pós-guard” e passa a refletir que ele rodou, mas qualidade continua aberta. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | O comportamento visível de usuário não mudou; a alteração é evidência de validação/qualidade. |
+| Capturas de tela | **Não requer** | A evidência canônica está no DB, manifests, PDF, quality report e audit visual local. |
+
+**Honestidade #69:** houve exatamente um job real e um runner, sem rerun, sem Community,
+sem Drive e sem push. A execução foi válida para provenance, mas o produto não está pronto:
+o PDF permaneceu `review_required` e a auditoria visual confirmou story text comum em
+inglês, incluindo sentinelas p002, p005, p006, p025, p030, p044, p062 e p068.

@@ -169,8 +169,16 @@ mesmos 15 IDs físicos residuais. A perícia #68, porém, mostrou que ele foi pr
 `c7795dd`, não pelo commit pós-#66 que a UI pretendia validar. Esse é o blocker Beta
 `OFFLINE-PRODUCTION-PARITY-001`: o job e o manifest físico precisam declarar o mesmo
 commit, ou a execução falha com `pipeline_commit_mismatch`. Assim, #67 é útil para provar
-runtime stale, mas não fecha nem reprova a qualidade pós-#66. `QUALITY` segue aberto até um
-novo E2E real pós-guard.
+runtime stale, mas não fecha nem reprova a qualidade pós-#66.
+
+O TDD #69 executou o primeiro E2E real pós-guard com provenance válido
+(`CURRENT_HEAD == job.commit_hash == run_manifest.commit_hash`). A execução usou DeepL em
+configuração `quality_optimized`, `force=true`, `use_cache=false`, 35 source items e 72
+páginas finais. O runtime/binding ficou fechado, mas `QUALITY` permanece aberto: o PDF
+terminou `review_required`, `physical_gate_passed=false`, 104 regiões físicas esperadas,
+91 traduzidas, 13 `review_source_retained` e 14 resíduos físicos reportados. A auditoria
+visual também confirmou story text comum ainda em inglês, incluindo p002, p005, p006,
+p025, p030, p044, p062 e o sentinela p068 com `IT'LL` ainda visível.
 
 ## Quality gate final
 

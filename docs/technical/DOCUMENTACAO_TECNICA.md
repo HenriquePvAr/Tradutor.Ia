@@ -86,7 +86,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Detecção de crash duro do worker (TDD #52) | **IMPLEMENTADO** |
 | Supervisão do worker pelo launcher (TDD #53) | **IMPLEMENTADO** |
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
-| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text, resíduo físico e identidade de artifact reforçados; TDD #66 fecha lacunas offline/forenses, mas o E2E real #67 manteve qualidade do produto aberta |
+| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text, resíduo físico e identidade de artifact reforçados; TDD #66 fecha lacunas offline/forenses, #68 fecha guard de paridade, e #69 prova execução pós-guard válida, mas mantém qualidade do produto aberta |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
@@ -850,8 +850,14 @@ e ownership local de linha órfã observados nos artefatos #60/#63/#65, mas não
 PDFs históricos como limpos. A perícia #68 mostrou que o artifact #67 foi produzido
 fisicamente por `c7795dd`, isto é, por runner/processo anterior ao caminho pós-#66.
 Portanto o #67 é evidência de `OFFLINE-PRODUCTION-PARITY-001` (runtime stale), não prova
-válida contra a qualidade pós-#66. A aprovação A de produto continua pendente de novo E2E
-real após o guard de paridade.
+válida contra a qualidade pós-#66.
+
+O #69 é a primeira prova real pós-guard com `CURRENT_HEAD == job.commit_hash ==
+run_manifest.commit_hash`. Ele fecha runtime provenance e binding de artifact no caminho
+de produção, mas não fecha qualidade: o PDF final continuou `review_required` com
+`physical_gate_passed=false`, 13 regiões story retidas para revisão, 14 resíduos físicos
+reportados e story text comum visivelmente restante em páginas sentinela como p002, p005,
+p006, p025, p030, p044, p062 e p068.
 
 ### Manifest autodescritivo
 
@@ -1624,7 +1630,7 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Item | Estado |
 | --- | --- |
 | Pipeline ponta a ponta estável | ✅ |
-| Fase de qualidade | ⚠️ correções offline/forenses fechadas até TDD #66; #68 provou que o #67 rodou commit antigo (`pipeline_commit_mismatch`), então falta novo E2E real pós-guard |
+| Fase de qualidade | ⚠️ correções offline/forenses fechadas até TDD #66; #68 provou runtime antigo em #67; #69 rodou pós-guard com provenance válido, mas qualidade segue aberta |
 | Fase de performance | ✅ fechada |
 | Isolamento de runtime de testes | ✅ fechado |
 | Detecção de crash duro do worker | ✅ fechada |
