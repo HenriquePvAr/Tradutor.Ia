@@ -1,6 +1,6 @@
 # Tradutor IA — Documentação Técnica
 
-> **Base verificada:** commit `7ab0ea3` (branch `fix/main-e2e-findings`)
+> **Base verificada:** commit deste TDD (branch `fix/main-e2e-findings`)
 > **Última revisão:** 2026-08-20
 > **Público:** desenvolvedores, mantenedores, suporte técnico e agentes automatizados.
 
@@ -86,7 +86,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Detecção de crash duro do worker (TDD #52) | **IMPLEMENTADO** |
 | Supervisão do worker pelo launcher (TDD #53) | **IMPLEMENTADO** |
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
-| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text e resíduo físico reforçados no TDD #59 |
+| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text e resíduo físico reforçados; TDD #62 fecha lacunas offline, validação real limpa ainda pendente |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
@@ -775,10 +775,15 @@ do balão.
 Desde o TDD #59, texto claro aberto sobre arte/fumaça não herda automaticamente a limpeza de
 “balão branco” só por uma pista fraca de container. Quando o contexto ao redor não prova uma
 superfície branca uniforme, a região é tratada como overlay/arte texturizada e deve usar
-remoção baseada em glyph/inpainting ou falhar para revisão. A validação física também anexa
-resíduos OCR não atribuídos que estejam geometricamente grudados a uma região story já
-traduzida; mesmo quando o OCR lê o resíduo como dígitos/pontuação, isso vira
-`review_required` em vez de desaparecer do relatório físico.
+remoção baseada em glyph/inpainting ou falhar para revisão. A limpeza source-scoped deixou
+de ser presa ao rótulo visual legado `speech`: a autorização agora vem do contrato de
+story text da taxonomia semântica. Isso permite limpar narração, texto de sistema e
+`unknown` semântico quando há tradução válida, completude de origem e proveniência de linha,
+mas continua excluindo SFX, logos, decorative preservado, entidades preservadas e OCR
+ininteligível. A validação física também anexa resíduos OCR não atribuídos que estejam
+geometricamente grudados a uma região story já traduzida; mesmo quando o OCR lê o resíduo
+como dígitos/pontuação, isso vira `review_required` em vez de desaparecer do relatório
+físico.
 
 ### Auditoria linguística e taxonomia semântica
 
@@ -802,6 +807,18 @@ call me …” ou “that’s a strange name” — viram autoridade de preserva
 validator rejeita literalização do nome declarado, fragmentos OCR soltos injetados na frase
 traduzida e construções PT-BR estruturalmente inválidas como `VOCÊ + infinitivo` em contexto
 que exige modo verbal natural.
+
+O TDD #62 adiciona reparos locais estreitos antes da validação final: restaura nomes
+declarados que foram literalizados pelo provider, remove fragmentos OCR de uma letra presos
+à pontuação quando o source não os contém e corrige o caso gramatical limitado
+`você fazer` → `você fizer` em frases equivalentes a “what you do”. Esses reparos não
+traduzem regiões novas, não chamam provider e não rebaixam os validadores; se a correção
+estreita não tornar o candidate válido, o grupo continua fail-closed/manual review.
+
+Estado de qualidade: a correção offline do #62 fecha os achados locais de
+story-review-to-render observados no artefato #60, mas não reclassifica o PDF histórico como
+limpo. A aprovação A de produto depende de um novo E2E real controlado que regenere o
+artefato sem os resíduos físicos.
 
 ### Manifest autodescritivo
 
@@ -1568,7 +1585,7 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Item | Estado |
 | --- | --- |
 | Pipeline ponta a ponta estável | ✅ |
-| Fase de qualidade | ✅ fechada novamente (TDD #59: story-text + resíduo físico) |
+| Fase de qualidade | ⚠️ correções offline fechadas até TDD #62; novo E2E real limpo pendente |
 | Fase de performance | ✅ fechada |
 | Isolamento de runtime de testes | ✅ fechado |
 | Detecção de crash duro do worker | ✅ fechada |

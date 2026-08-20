@@ -1215,6 +1215,82 @@ def _group_validation_allowed_proper_names(group):
     return names
 
 
+def _repair_translation_candidate_before_validation(
+    source_text,
+    candidate,
+    classification="speech",
+    *,
+    required_name_spans=None,
+):
+    """Deterministic, narrow repairs before the safety validator runs.
+
+    This is not a translation authority.  It only fixes candidate shapes whose intent is
+    already explicit and locally provable: declared names must remain verbatim, one OCR
+    debris parenthesis may be removed, and the common ``o que você fazer`` bad mood is
+    converted to subjunctive when the source says ``what you do``.
+    """
+
+    text = clean_ocr_text(candidate)
+    if not text:
+        return ""
+    text = _repair_declared_name_tokens(source_text, text, required_name_spans or ())
+    text = _repair_stray_ocr_fragment_candidate(source_text, text)
+    text = _repair_narrow_ptbr_verb_mood(source_text, text, classification)
+    return clean_ocr_text(text)
+
+
+def _repair_declared_name_tokens(source_text, candidate, required_name_spans):
+    repaired = str(candidate or "")
+    source = clean_ocr_text(source_text)
+    for raw_name in required_name_spans or ():
+        name = clean_ocr_text(raw_name)
+        token = _name_token_of(name)
+        if not name or token in {_name_token_of(info["raw"]) for info in _translation_token_infos(repaired)}:
+            continue
+        if re.search(rf"^\s*{re.escape(name)}\b", source, flags=re.I):
+            repaired = re.sub(
+                r"^\s*[A-Za-zÀ-ÖØ-öø-ÿ]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]+){0,2}",
+                name,
+                repaired,
+                count=1,
+            )
+            continue
+        if re.search(rf"\b(?:MY\s+NAME\s+IS|I\s+AM|I'M)\s+{re.escape(name)}\b", source, flags=re.I):
+            repaired = re.sub(
+                r"(\b(?:MEU\s+NOME\s+(?:É|E)|EU\s+(?:SOU|ME\s+CHAMO))\s+)"
+                r"[A-Za-zÀ-ÖØ-öø-ÿ]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]+){0,2}",
+                lambda match, replacement=name: match.group(1) + replacement,
+                repaired,
+                count=1,
+                flags=re.I,
+            )
+    return repaired
+
+
+def _repair_stray_ocr_fragment_candidate(source_text, candidate):
+    folded_source = _ascii_fold(source_text).upper()
+
+    def replace(match):
+        folded_match = _ascii_fold(match.group(0)).upper()
+        return match.group(0) if folded_match in folded_source else match.group(1)
+
+    return re.sub(r"\b([A-Z])\)", replace, str(candidate or ""), flags=re.I)
+
+
+def _repair_narrow_ptbr_verb_mood(source_text, candidate, classification):
+    if classification not in {"speech", "thought", "narration", "unknown"}:
+        return candidate
+    folded_source = _ascii_fold(source_text).upper()
+    if not re.search(r"\bWHAT\s+YOU\s+DO\b", folded_source):
+        return candidate
+    return re.sub(
+        r"\b(VO[CÇ]Ê|VOCE)\s+FAZER\b",
+        lambda match: f"{match.group(1)} FIZER",
+        str(candidate or ""),
+        flags=re.I,
+    )
+
+
 def apply_group_translations(groups, translations):
     translations = list(translations or [])
     for index, group in enumerate(groups):
@@ -1246,6 +1322,12 @@ def apply_group_translations(groups, translations):
             )
             continue
 
+        translated = _repair_translation_candidate_before_validation(
+            group.text,
+            translated,
+            group.classification,
+            required_name_spans=group_proper_name_spans(group),
+        )
         group.translation_candidate = _match_source_case(group.text, translated)
         group.translation = group.translation_candidate
         valid, reason = validate_translation_text(
@@ -2885,20 +2967,7 @@ def _should_translate_group(group):
     # and drawing broken/mixed text back onto the page.
     if group.sent_to_translation and not group.translation_valid:
         return False
-    policy = region_taxonomy.resolve_region_policy(
-        original_classification=group.classification,
-        source_text=group.text,
-        preserve_as_name=bool(group.preserve_as_name),
-        evidence={"confidence": group.confidence},
-    )
-    if region_taxonomy.is_preservable(policy["normalized_classification"]):
-        return False
-    if not region_taxonomy.is_translatable(policy["normalized_classification"]):
-        return False
-    if not region_taxonomy.weak_label_semantic_promotion_allowed(
-        group.classification,
-        group.text,
-    ):
+    if not _group_has_story_translation_authority(group):
         return False
     if (
         group.classification == "decorative"
@@ -2914,6 +2983,31 @@ def _should_translate_group(group):
     ):
         return False
     return True
+
+
+def _group_has_story_translation_authority(group):
+    """Single local authority for story text that may enter translation/render.
+
+    Region taxonomy decides preserve/translate.  Legacy weak labels still require
+    sentence-level semantic evidence, so increasing story recall does not send SFX,
+    credits, promos, logos or URL/watermark text to the provider.
+    """
+
+    policy = region_taxonomy.resolve_region_policy(
+        original_classification=getattr(group, "classification", ""),
+        source_text=getattr(group, "text", ""),
+        preserve_as_name=bool(getattr(group, "preserve_as_name", False)),
+        evidence={"confidence": getattr(group, "confidence", 0.0)},
+    )
+    category = policy["normalized_classification"]
+    if region_taxonomy.is_preservable(category):
+        return False
+    if not region_taxonomy.is_translatable(category):
+        return False
+    return region_taxonomy.weak_label_semantic_promotion_allowed(
+        getattr(group, "classification", ""),
+        getattr(group, "text", ""),
+    )
 
 
 def _score_group_quality(groups):
@@ -5916,7 +6010,7 @@ def validate_translation_text(
             return False, "candidate_equals_source"
     forbidden = []
     for index, token in enumerate(translated_tokens):
-        if token in {"A", "O", "E"}:
+        if token in {"A", "O", "E", "DO", "DA", "DOS", "DAS"}:
             continue
         if (
             token in COMMON_ENGLISH_WORDS
@@ -6750,7 +6844,13 @@ def validate_and_retry_translations(
                     if isolated_first
                     else f"strict_retry_error:{type(exc).__name__}"
                 )
-            candidate = _match_source_case(group.text, clean_ocr_text(candidate))
+            candidate = _repair_translation_candidate_before_validation(
+                group.text,
+                clean_ocr_text(candidate),
+                group.classification,
+                required_name_spans=name_spans,
+            )
+            candidate = _match_source_case(group.text, candidate)
             group.retry_candidate = candidate
             group.retry_candidate_class = _candidate_forensic_class(
                 group.text,
@@ -7546,10 +7646,16 @@ def _source_scoped_speech_reason(group):
 
     if not config.SOURCE_SCOPED_SPEECH_CLEANUP:
         return "source_scoped_disabled"
-    if getattr(group, "classification", "") != "speech":
-        return "source_scoped_requires_speech_class"
+    if str(getattr(group, "classification", "") or "").strip().lower() in {
+        "decorative",
+        "logo",
+        "sfx",
+    }:
+        return "source_scoped_requires_story_translation_authority"
     if getattr(group, "preserve_as_name", False):
         return "source_scoped_excludes_preserved_entity"
+    if not _group_has_story_translation_authority(group):
+        return "source_scoped_requires_story_translation_authority"
     candidate = str(group.translation or group.translation_candidate or "").strip()
     if not candidate:
         return "source_scoped_requires_translation_candidate"

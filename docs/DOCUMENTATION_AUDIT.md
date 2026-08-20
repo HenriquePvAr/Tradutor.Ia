@@ -274,3 +274,21 @@ story-text, resíduo físico, proper nouns e naturalização. Contrato de sincro
 **Honestidade verificada:** o PDF histórico continua evidência forense e não foi editado.
 A correção é sistêmica para próximas gerações; nenhum provider, job real ou rede foi
 consumido neste TDD.
+
+### TDD #62 — Story review → clean render closure offline (2026-08-20, base `baede2c5`)
+
+**Gatilho:** achados persistidos do E2E #60 indicavam 24 regiões story preservadas no PDF
+real e um resíduo físico extra não atribuído. Contrato de sincronização do `CLAUDE.md`,
+itens 3, 4 e 6.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | §2 registra que os contratos estão implementados, mas a validação real limpa ainda está pendente; §17 documenta story authority para limpeza source-scoped, reparos estreitos pré-validação e o estado honesto do #62. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Documenta que a elegibilidade de tradução segue autoridade semântica de story text e que os reparos locais estreitos não substituem o validator nem provider. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Nenhuma UI mudou. `review_required` continua com o mesmo significado para o usuário; a alteração é interna e fail-closed. |
+| `docs/README.md` | **Atualizado** | O resumo de status deixa de sugerir qualidade completamente fechada pelo #59 e registra pendência de validação real limpa após o #62. |
+| Capturas de tela | **Não requer** | Não houve alteração visual de UI nem nova tela. |
+
+**Honestidade verificada:** o artefato real #60 não foi reescrito nem promovido a limpo. O
+TDD #62 só fecha contratos locais offline; a qualidade do produto permanece dependente de
+novo E2E real controlado.

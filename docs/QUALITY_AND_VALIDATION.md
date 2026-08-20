@@ -83,7 +83,9 @@ Os grupos recebem classe, confidence, motivo e evidências. As classes principai
 
 A decisão usa texto, geometria, proximidade, orientação e características do container. Isso evita regras simplistas como “todo texto curto é SFX”. Com o default `TRANSLATE_SFX=False`, SFX confirmados são preservados e não enviados ao provedor de tradução.
 
-Elementos decorativos também podem ser ignorados. Fala e narração elegíveis seguem para tradução.
+Elementos decorativos também podem ser ignorados. Fala, narração, texto de sistema e
+`unknown` com evidência semântica de história seguem para tradução; SFX, logos, créditos,
+promos, URLs e entidades preservadas continuam excluídos por política.
 
 ## Validator de tradução
 
@@ -100,6 +102,10 @@ Elementos decorativos também podem ser ignorados. Fala e narração elegíveis 
 Palavras válidas em português, nomes próprios e tokens ambíguos não são rejeitados apenas por capitalização ou sufixo. Da mesma forma, permitir um token ambíguo não esconde outras palavras inglesas reais na mesma frase.
 
 O validator não reescreve espaços, hífens ou a tradução final. Ele retorna um booleano e um motivo observável.
+Antes dessa validação, o pipeline pode aplicar reparos locais estreitos a erros mecânicos
+conhecidos: preservação de nomes próprios declarados, remoção de fragmentos OCR isolados que
+não existem no source e correção PT-BR limitada de `você fazer` em contexto “what you do”.
+Esses reparos não substituem tradução, não chamam provider e não escondem falhas restantes.
 
 ## Retries e rejeição
 

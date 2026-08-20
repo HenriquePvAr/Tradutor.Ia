@@ -257,15 +257,18 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
         self.assertFalse(metrics.get("mask_valid"))
         self.assertEqual(metrics.get("reason"), "source_scoped_requires_line_provenance")
 
-    # 30 / 31 / 33 - title, SFX and preserved entities never enter the path.
-    def test_non_speech_classes_are_not_routed_through_the_fallback(self):
+    # 30 / 31 / 33 - preservable classes and preserved entities never enter the path.
+    def test_non_story_classes_are_not_routed_through_the_fallback(self):
         _image, group = self._p002_shaped_case()
-        for classification in ("sfx", "decorative", "narration", "unknown"):
+        for classification in ("sfx", "decorative"):
             group.classification = classification
             self.assertEqual(
                 _source_scoped_speech_reason(group),
-                "source_scoped_requires_speech_class",
+                "source_scoped_requires_story_translation_authority",
             )
+        for classification in ("narration", "unknown"):
+            group.classification = classification
+            self.assertEqual(_source_scoped_speech_reason(group), "")
         group.classification = "speech"
         group.preserve_as_name = True
         self.assertEqual(
