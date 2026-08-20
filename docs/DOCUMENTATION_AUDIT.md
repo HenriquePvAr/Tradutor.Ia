@@ -343,6 +343,26 @@ offline do #66 fechavam qualidade de produto em Shadow Slave chapter 1.5.
 | `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | O fluxo de usuário não mudou; `review_required` segue como terminal conhecido. |
 | Capturas de tela | **Não requer** | A evidência está nos artefatos e relatórios locais; nenhuma tela nova foi introduzida. |
 
-**Honestidade verificada:** o #67 criou exatamente um job real, sem rerun, Community ou
-Drive. A falha é de qualidade/produto, não de binding nem de ambiente. O próximo trabalho
-deve usar os artefatos #67 como entrada offline.
+**Honestidade verificada no fechamento #67:** o #67 criou exatamente um job real, sem
+rerun, Community ou Drive. Na leitura inicial, os resíduos pareciam reprovar o caminho
+pós-#66.
+
+### TDD #68 — Production-path parity guard / `OFFLINE-PRODUCTION-PARITY-001` (2026-08-20, base `feb4a38`)
+
+**Gatilho:** a perícia local dos artefatos #67 mostrou que o `run_manifest.json` físico
+declara `commit_hash=c7795dd`, enquanto a missão atual parte de `feb4a38` preservando o
+commit docs-only. Portanto o zero-delta #65 → #67 não prova que as correções offline #66
+falharam no caminho de produção; prova que o artifact foi produzido por runtime/runner
+stale.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Documenta o guard de paridade `job.commit_hash` ↔ `run_manifest.commit_hash` no `job_runner.py` e a falha `pipeline_commit_mismatch`. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Registra `OFFLINE-PRODUCTION-PARITY-001` como blocker Beta e reclassifica #67 como evidência de runtime stale, não como prova de qualidade pós-#66. |
+| `docs/DOCUMENTATION_AUDIT.md` | **Atualizado** | Este registro. |
+| `README.md` e `docs/README.md` | **Atualizados** | Status resumido passa a exigir novo E2E real pós-guard. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | O comportamento visível de usuário não mudou; a alteração é de fail-closed runtime/diagnóstico. |
+| Capturas de tela | **Não requer** | Evidência é textual nos manifests e testes herméticos. |
+
+**Honestidade #68:** nenhum job real, provider, rede, Supabase, Community ou Drive foi
+acionado. A qualidade do produto permanece **OPEN — REAL POST-#68 E2E REQUIRED**.

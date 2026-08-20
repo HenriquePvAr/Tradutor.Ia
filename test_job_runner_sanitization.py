@@ -27,6 +27,7 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         url="https://reader.test/chapter?token=secret-value",
         configuration_updates=None,
         output_name="chapter",
+        commit_hash="expected-commit",
     ):
         configuration = {
             "mode": "fast", "unknown_url": url,
@@ -36,12 +37,28 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         output = self.tmp / output_name
         job_id = self.store.create_job(
             source_url=url, output_dir=str(output), command=["fake"],
-            configuration=configuration,
+            configuration=configuration, commit_hash=commit_hash,
         )
         self.store.claim_next_job("worker", 1)
         self.store.transition(job_id, JobStatus.STARTING, expected_worker="worker")
         self.store.transition(job_id, JobStatus.RUNNING, expected_worker="worker")
         return self.store.get_job(job_id), output
+
+    def _write_success_artifacts(self, output, *, manifest_commit=None):
+        output.mkdir(parents=True, exist_ok=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        (output / "timing_report.json").write_text(
+            json.dumps({"pdf_path": str(pdf), "quality_validation": {"passed": True}}),
+            encoding="utf-8",
+        )
+        (output / "downloaded_images.json").write_text("{}", encoding="utf-8")
+        if manifest_commit is not None:
+            (output / "run_manifest.json").write_text(
+                json.dumps({"pdf_path": str(pdf), "commit_hash": manifest_commit}),
+                encoding="utf-8",
+            )
+        return pdf
 
     def _write_successful_generic_download(self, output, selection):
         output.mkdir(parents=True)
@@ -107,20 +124,29 @@ class JobRunnerSanitizationTests(unittest.TestCase):
 
     def test_success_without_fresh_generic_analysis_does_not_record_profile(self):
         job, output = self._running_job()
-        output.mkdir(parents=True)
-        pdf = output / "chapter.pdf"
-        pdf.write_bytes(b"%PDF-1.4\n")
-        (output / "timing_report.json").write_text(
-            json.dumps({"pdf_path": str(pdf), "quality_validation": {"passed": True}}),
-            encoding="utf-8",
-        )
-        (output / "downloaded_images.json").write_text("{}", encoding="utf-8")
+        self._write_success_artifacts(output)
         with mock.patch("source_profile.SourceProfileStore.record_success") as record:
             _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
         terminal = self.store.get_job(job["id"])
         self.assertEqual(terminal["status"], JobStatus.FINISHED)
         self.assertEqual(terminal["reason_code"], "completed")
         record.assert_not_called()
+
+    def test_pipeline_commit_mismatch_fails_closed_before_quality_status(self):
+        job, output = self._running_job(commit_hash="new-ui-commit")
+        self._write_success_artifacts(output, manifest_commit="old-runner-commit")
+
+        rc = _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
+
+        terminal = self.store.get_job(job["id"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(terminal["status"], JobStatus.FAILED)
+        self.assertEqual(terminal["reason_code"], "pipeline_commit_mismatch")
+        self.assertEqual(terminal["error_type"], "runtime")
+        manifest = json.loads((output / "job_manifest.json").read_text(encoding="utf-8"))
+        trace = manifest["runtime_commit_mismatch"]
+        self.assertEqual(trace["expected_commit_hash"], "new-ui-commit")
+        self.assertEqual(trace["actual_commit_hash"], "old-runner-commit")
 
     def test_profile_uses_fresh_manual_analysis_after_explicit_opt_in(self):
         job, output = self._running_job(

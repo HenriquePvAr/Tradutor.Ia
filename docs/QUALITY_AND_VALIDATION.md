@@ -164,10 +164,13 @@ continuam intactos. O #65 terminou `review_required` com 15 resíduos físicos o
 14 source-retained e um filho de linha órfã. O TDD #66 audita esses 15 caminhos e fecha
 offline a contabilidade/ownership local.
 
-O E2E real #67 validou o caminho de runtime pós-#66, mas não fechou qualidade do produto:
-o novo artifact continuou `review_required`, com `physical_gate_passed=false` e os mesmos
-15 IDs físicos residuais. Isso é evidência para o próximo TDD offline; não autoriza
-promover `QUALITY` a fechado.
+O artifact real #67 continuou `review_required`, com `physical_gate_passed=false` e os
+mesmos 15 IDs físicos residuais. A perícia #68, porém, mostrou que ele foi produzido por
+`c7795dd`, não pelo commit pós-#66 que a UI pretendia validar. Esse é o blocker Beta
+`OFFLINE-PRODUCTION-PARITY-001`: o job e o manifest físico precisam declarar o mesmo
+commit, ou a execução falha com `pipeline_commit_mismatch`. Assim, #67 é útil para provar
+runtime stale, mas não fecha nem reprova a qualidade pós-#66. `QUALITY` segue aberto até um
+novo E2E real pós-guard.
 
 ## Quality gate final
 

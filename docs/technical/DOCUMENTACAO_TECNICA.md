@@ -302,6 +302,13 @@ pipeline com stdout redirecionado para `.cache/runtime/logs/<job_id>.log`, atual
 progresso e heartbeat, e deriva o status terminal a partir dos artefatos produzidos. Um
 crash no runner fica contido em um job — o worker continua.
 
+Desde o TDD #68, a finalização também compara o `commit_hash` do job criado pela UI com o
+`commit_hash` gravado pelo `run_manifest.json` físico do pipeline. Se ambos existem e
+divergem, o job falha com `reason_code=pipeline_commit_mismatch` e registra
+`runtime_commit_mismatch` no `job_manifest.json`. Esse guard é fail-closed: um PDF gerado
+por runner/processo antigo pode continuar preservado como artifact, mas não pode mais ser
+classificado como evidência de qualidade do commit atual.
+
 Modos: `worker_service.py --once` processa no máximo um job e sai; `--status` imprime saúde
 e sai; `--db` aponta para outro banco (usado por testes e manutenção — nesse caso os logs
 vão para o diretório do banco, nunca para o cache de produção).
@@ -840,11 +847,11 @@ local do resíduo de linha órfã sem criar regra por página ou frase.
 
 Estado de qualidade: as correções offline até o #66 fecham contabilidade, razão estruturada
 e ownership local de linha órfã observados nos artefatos #60/#63/#65, mas não reclassificam
-PDFs históricos como limpos. O E2E real #67 executou o caminho visível UI → Vortex →
-RapidOCR → DeepL → render → PDF em `c7795dd`, preservou binding/manifest/run-id, mas ainda
-terminou `review_required` com os mesmos 15 resíduos físicos de story observados no #65.
-Portanto a aprovação A de produto continua pendente de novo TDD offline sobre os resíduos
-reais #67 e posterior E2E limpo.
+PDFs históricos como limpos. A perícia #68 mostrou que o artifact #67 foi produzido
+fisicamente por `c7795dd`, isto é, por runner/processo anterior ao caminho pós-#66.
+Portanto o #67 é evidência de `OFFLINE-PRODUCTION-PARITY-001` (runtime stale), não prova
+válida contra a qualidade pós-#66. A aprovação A de produto continua pendente de novo E2E
+real após o guard de paridade.
 
 ### Manifest autodescritivo
 
@@ -1617,7 +1624,7 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Item | Estado |
 | --- | --- |
 | Pipeline ponta a ponta estável | ✅ |
-| Fase de qualidade | ⚠️ correções offline/forenses fechadas até TDD #66; E2E real #67 executado e ainda `review_required` com resíduos físicos |
+| Fase de qualidade | ⚠️ correções offline/forenses fechadas até TDD #66; #68 provou que o #67 rodou commit antigo (`pipeline_commit_mismatch`), então falta novo E2E real pós-guard |
 | Fase de performance | ✅ fechada |
 | Isolamento de runtime de testes | ✅ fechado |
 | Detecção de crash duro do worker | ✅ fechada |

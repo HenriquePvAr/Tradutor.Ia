@@ -165,6 +165,27 @@ def _safe_job_provenance(job: object) -> dict[str, object]:
     }
 
 
+def _pipeline_commit_mismatch(job: object, artifacts: object) -> dict[str, str]:
+    """Return expected/actual commit hashes when a completed artifact is stale.
+
+    A queued job records the commit visible to the UI at submission time, while
+    the pipeline run manifest records the commit that physically produced the
+    artifact.  If those differ, the PDF may be technically valid but it is not
+    evidence for the requested code path.  Missing legacy values remain neutral
+    so old fixtures without a run manifest are still readable.
+    """
+
+    expected = str((job or {}).get("commit_hash") or "").strip()
+    manifest_path = str((artifacts or {}).get("manifest_path") or "").strip()
+    if not expected or not manifest_path:
+        return {}
+    manifest = load_json(Path(manifest_path))
+    actual = str(manifest.get("commit_hash") or "").strip()
+    if not actual or actual == expected:
+        return {}
+    return {"expected": expected, "actual": actual}
+
+
 def _write_manifest(output_dir: Path, job: dict, **updates) -> None:
     manifest = {
         "job_manifest_version": 1,
@@ -424,11 +445,18 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
     report = load_json(output_dir / "timing_report.json")
     download_report = load_json(output_dir / "downloaded_images.json")
     quality = report.get("quality_validation") or {}
+    commit_mismatch = (
+        {}
+        if cancelled or interrupted
+        else _pipeline_commit_mismatch(job, artifacts)
+    )
     technical_ok = (
         return_code == 0 and bool(artifacts.get("pdf_path"))
-        and not cancelled and not interrupted
+        and not cancelled and not interrupted and not commit_mismatch
     )
-    if cancelled:
+    if commit_mismatch:
+        target = JobStatus.FAILED
+    elif cancelled:
         target = JobStatus.CANCELLED
     elif interrupted:
         # An operational stop is not a failure: the chapter can be resumed. RUNNING
@@ -447,7 +475,9 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
     failure = download_report.get("failure") if isinstance(download_report, dict) else {}
     source_reason = _safe_reason_code(
         failure.get("code") if isinstance(failure, dict) else "", "pipeline_failed")
-    if cancelled:
+    if commit_mismatch:
+        reason_code = "pipeline_commit_mismatch"
+    elif cancelled:
         reason_code = "user_cancelled"
     elif interrupted:
         reason_code = "worker_stop"
@@ -477,7 +507,13 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         fields["source_selection_json"] = json.dumps(fresh_selection, ensure_ascii=False)
     fields.update(_fresh_source_provenance(download_report, fresh_analysis))
     if target == JobStatus.FAILED:
-        fields["error_type"] = "source" if source_reason != "pipeline_failed" else "pipeline"
+        fields["error_type"] = (
+            "runtime"
+            if commit_mismatch
+            else "source"
+            if source_reason != "pipeline_failed"
+            else "pipeline"
+        )
         fields["error_message"] = reason_code
     if target == JobStatus.INTERRUPTED:
         fields["interrupted_reason"] = "worker_stop"
@@ -487,9 +523,15 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
     except TransitionError as exc:
         print(f"finalize transition failed: {exc}", file=sys.stderr)
         return 1
+    manifest_updates = {}
+    if commit_mismatch:
+        manifest_updates["runtime_commit_mismatch"] = {
+            "expected_commit_hash": commit_mismatch["expected"],
+            "actual_commit_hash": commit_mismatch["actual"],
+        }
     _write_manifest(output_dir, job, status=target,
                     pdf_path=artifacts.get("pdf_path") or "", exit_code=effective_return_code,
-                    reason_code=reason_code)
+                    reason_code=reason_code, **manifest_updates)
     if (
         target == JobStatus.FINISHED
         and isinstance(fresh_analysis, dict)
