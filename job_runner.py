@@ -351,6 +351,8 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env["TRADUTOR_JOB_ID"] = str(job.get("id") or "")
+        env["TRADUTOR_JOB_RUN_ID"] = str(job.get("run_id") or "")
 
         with log_file.open("a", encoding="utf-8") as handle:
             # The command contains the submitted URL and can contain signed query values.

@@ -13,9 +13,12 @@ import unittest
 
 import numpy as np
 
+import config
 import source_completeness
 from ocr_balloon import (
     TextGroup,
+    enforce_rapidocr_quality_gate,
+    score_group_ocr_quality,
     _should_translate_group,
     _source_scoped_speech_reason,
     apply_group_translations,
@@ -100,6 +103,23 @@ class StoryReviewToRenderClosureTests(unittest.TestCase):
         self.assertIn("Sunny", group.translation)
         self.assertNotIn("Sem sol", group.translation)
 
+    def test_declared_proper_name_repair_normalizes_ocr_mixed_case_surface(self):
+        group = _story_group(
+            "SuNLEsS... BUT PEOPLE CALL Me Sunny.",
+            classification="narration",
+        )
+
+        apply_group_translations(
+            [group],
+            [{"translation": "Sem sol... mas as pessoas me chamam de Sunny."}],
+        )
+
+        self.assertTrue(group.translation_valid, group.translation_validation_reason)
+        self.assertIn("Sunless", group.translation)
+        self.assertIn("Sunny", group.translation)
+        self.assertNotIn("SuNLEsS", group.translation)
+        self.assertNotIn("Sem sol", group.translation)
+
     def test_bad_voce_infinitive_candidate_is_repaired_narrowly(self):
         group = _story_group(
             "WHAT YOU DO DURING THE TRIAL WILL DETERMINE THE REWARDS.",
@@ -137,6 +157,50 @@ class StoryReviewToRenderClosureTests(unittest.TestCase):
         )
 
         self.assertTrue(valid, reason)
+
+    def test_long_damaged_story_sentences_are_routed_to_translation_not_retained(self):
+        samples = [
+            (
+                "BUTWHENITSVICTIMS BEGANFALLINGINTOAN ENDLESS SLLMBER, THE WORLD TOOK NOTICE.",
+                "speech",
+            ),
+            (
+                "FLRTHERMORE, CHILDREN BORN INTO POWERFLL AWAKENED FAMILIES..",
+                "narration",
+            ),
+            (
+                "SOWEWOULD REALLYAPPRECIATEIT IFYOUDIDN'TMAKEUS FIGHTTHATTHING OURSELVES...",
+                "narration",
+            ),
+        ]
+        original_engine = config.OCR_ENGINE
+        try:
+            config.OCR_ENGINE = "rapidocr"
+            for text, classification in samples:
+                with self.subTest(text=text):
+                    group = _story_group(text, classification=classification)
+                    group.source_engine = "rapidocr"
+                    for line in group.lines:
+                        line.confidence = 0.55
+                    group.quality_score, group.quality_reasons = score_group_ocr_quality(group)
+
+                    blocked = enforce_rapidocr_quality_gate([group])
+
+                    self.assertEqual(blocked, [])
+                    self.assertFalse(group.ocr_quality_blocked)
+                    self.assertTrue(_should_translate_group(group))
+                    self.assertTrue(group.quality_evidence.get("ocr_source_suspicious"))
+        finally:
+            config.OCR_ENGINE = original_engine
+
+    def test_short_unintelligible_token_still_fails_closed(self):
+        group = _story_group("TRNDGE", classification="speech")
+        group.source_engine = "rapidocr"
+        group.quality_score, group.quality_reasons = score_group_ocr_quality(group)
+
+        enforce_rapidocr_quality_gate([group])
+
+        self.assertFalse(_should_translate_group(group))
 
 
 if __name__ == "__main__":

@@ -843,6 +843,9 @@ class SourceReviewTests(unittest.TestCase):
         self.assertIn("page-b", job["command"])
         self.assertIn("--open-output", job["command"])
         self.assertFalse(job["source_selection"]["automatic"])
+        output_arg = job["command"][job["command"].index("--output") + 1]
+        self.assertEqual(output_arg, f"reader_1/{job['run_id']}")
+        self.assertEqual(Path(job["output_dir"]).name, job["run_id"])
 
     def test_confirmation_records_explicit_manual_page_order(self):
         result = drive(self.bridge.start(self.payload()))

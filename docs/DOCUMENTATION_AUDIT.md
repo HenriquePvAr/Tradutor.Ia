@@ -292,3 +292,21 @@ itens 3, 4 e 6.
 **Honestidade verificada:** o artefato real #60 não foi reescrito nem promovido a limpo. O
 TDD #62 só fecha contratos locais offline; a qualidade do produto permanece dependente de
 novo E2E real controlado.
+
+### TDD #64 — Pós-#63: identidade de artefato e fechamento offline de resíduos (2026-08-20, base `6ee5cd8`)
+
+**Gatilho:** o E2E real #63 gerou PDF fisicamente útil, mas o job terminou `failed`
+porque o comando reconstruído após source selection escreveu em `output/<run_id_slug>` em
+vez do `output/<chapter_slug>/<run_id>` persistido no SQLite. O mesmo artefato ainda
+registrou resíduos físicos/review em story text.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra o contrato canônico `chapter_slug/run_id`, preservação de `run_id` no `run_manifest.json` e o fechamento offline pós-#63 sem promover qualidade real. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Documenta que OCR suspeito longo pode ser roteado ao tradutor com evidência, mantendo validadores/render gates como autoridade final. |
+| `docs/README.md` e `README.md` | **Atualizados** | Status passa de “até #62” para “até #64”, mantendo validação real limpa pendente. |
+| Capturas de tela | **Não requer** | Não houve alteração de UI; somente contratos internos e testes offline. |
+
+**Honestidade verificada:** os PDFs reais #60 e #63 permaneceram byte-for-byte intactos.
+O TDD #64 fecha causas locais offline; a qualidade do produto continua aberta até novo E2E
+real controlado.

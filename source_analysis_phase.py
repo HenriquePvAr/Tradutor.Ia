@@ -147,15 +147,21 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
     import sys
 
     from ui_helpers import (
-        assert_command_provider, build_run_command, requested_translation_provider,
+        assert_command_provider,
+        build_run_command,
+        build_run_output_slug,
+        requested_translation_provider,
     )
 
     config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
     command_selection = _bounded_command_selection(config, selection)
+    output_dir = Path(str(job.get("output_dir") or "chapter"))
+    chapter_slug = str(config.get("chapter_slug") or output_dir.parent.name or "chapter")
+    output_identity = build_run_output_slug(chapter_slug, str(job.get("run_id") or output_dir.name))
     return assert_command_provider(build_run_command(
         url=str(job.get("source_url") or ""),
         mode=str(config.get("mode") or "fast"),
-        output=Path(str(job.get("output_dir") or "chapter")).name,
+        output=output_identity,
         full=bool(config.get("full", True)),
         max_images=config.get("max_images"),
         use_cache=bool(config.get("use_cache")),

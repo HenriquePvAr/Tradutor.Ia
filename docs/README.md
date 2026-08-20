@@ -92,7 +92,7 @@ em que foram escritos e **não** substituem os documentos primários:
 | Detecção de crash duro e reconciliação | ✅ implementado |
 | Supervisão do worker pelo launcher | ✅ implementado |
 | Isolamento hermético dos testes | ✅ implementado |
-| Qualidade / story-text / resíduo físico | ⚠️ implementado com correções offline até o TDD #62; validação real limpa pendente |
+| Qualidade / story-text / resíduo físico | ⚠️ implementado com correções offline até o TDD #64; validação real limpa pendente |
 | Comunidade (Supabase + Drive) | ✅ implementado, fail-closed se não configurado |
 | Retomada de job interrompido pela UI | ⚠️ parcial — API existe, controle na interface não |
 | Instalador para usuário final | ⏳ em desenvolvimento |

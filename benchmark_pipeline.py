@@ -423,13 +423,15 @@ def _group_count_trace(page_states):
 def _output_run_manifest(output_folder, report, translator):
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     git = _git_metadata()
-    run_id = stable_hash(
-        {
-            "run_signature": report.get("run_signature"),
-            "output_folder": str(output_folder),
-            "created_at": created_at,
-        }
-    )[:24]
+    run_id = str(report.get("job_run_id") or "").strip()
+    if not run_id:
+        run_id = stable_hash(
+            {
+                "run_signature": report.get("run_signature"),
+                "output_folder": str(output_folder),
+                "created_at": created_at,
+            }
+        )[:24]
     quality = report.get("quality_validation") or {}
     source_url = str(report.get("url") or "")
     source_type = str(report.get("source_type") or "url")
@@ -1664,6 +1666,7 @@ def run_benchmark(args):
         "mode": "full" if args.full else "controlled",
         "force": bool(args.force),
         "fast": bool(args.fast),
+        "job_run_id": str(getattr(args, "job_run_id", "") or ""),
         "fast_ocr_budget": fast_ocr_budget.report(),
         "run_signature": run_signature,
         "total_dom_images": download_report.get("total_dom_images", 0),

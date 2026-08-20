@@ -67,6 +67,12 @@ No modo `fast`, há dois níveis de fallback:
 
 A seleção considera score de qualidade, confidence, coerência lexical e penalidades do candidato. Confidence alta isolada não garante vitória. O sinal de discordância lexical entre linhas, por exemplo, combina contexto confiável e queda relativa de confidence para pedir comparação entre engines.
 
+Quando uma frase longa de fala/narração tem OCR suspeito, mas ainda preserva forma de
+story text com pontuação, o pipeline pode roteá-la ao tradutor em vez de preservá-la crua.
+Isso não declara a região limpa: a evidência `ocr_source_suspicious` segue com o grupo, e
+o candidate ainda precisa passar por validator, fidelidade e render gate. Tokens curtos
+uninteligíveis ou sem autoridade semântica continuam fail-closed/manual review.
+
 ### Reparo de OCR
 
 O reparo em modo `conservative` trata padrões estruturais limitados, como junções evidentes. Ele:
@@ -106,6 +112,9 @@ Antes dessa validação, o pipeline pode aplicar reparos locais estreitos a erro
 conhecidos: preservação de nomes próprios declarados, remoção de fragmentos OCR isolados que
 não existem no source e correção PT-BR limitada de `você fazer` em contexto “what you do”.
 Esses reparos não substituem tradução, não chamam provider e não escondem falhas restantes.
+Desde o TDD #64, a preservação de nome declarado também corrige casing OCR misto quando a
+declaração já provou o nome; isso evita literalização ou casing corrompido sem criar um
+detector novo de nomes.
 
 ## Retries e rejeição
 

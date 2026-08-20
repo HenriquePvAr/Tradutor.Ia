@@ -1153,7 +1153,14 @@ def _ocr_unintelligible_source_text(text):
     raw = re.findall(r"[A-Za-z][A-Za-z']*", clean_ocr_text(text))[0]
     if not (raw.isupper() or raw.islower() or raw.istitle()):
         return True
-    return _looks_like_title_name_ocr_compound(tokens[0])
+    if _looks_like_title_name_ocr_compound(tokens[0]):
+        return True
+    if raw.isupper() and len(tokens[0]) >= 5 and (
+        not re.search(r"[AEIOUY]", tokens[0])
+        or re.search(r"[BCDFGHJKLMNPQRSTVWXYZ]{5,}", tokens[0])
+    ):
+        return True
+    return False
 
 
 def _chapter_preserved_entity_tokens(groups):
@@ -1244,13 +1251,14 @@ def _repair_declared_name_tokens(source_text, candidate, required_name_spans):
     source = clean_ocr_text(source_text)
     for raw_name in required_name_spans or ():
         name = clean_ocr_text(raw_name)
+        replacement_name = _canonical_declared_name_surface(name)
         token = _name_token_of(name)
         if not name or token in {_name_token_of(info["raw"]) for info in _translation_token_infos(repaired)}:
             continue
         if re.search(rf"^\s*{re.escape(name)}\b", source, flags=re.I):
             repaired = re.sub(
                 r"^\s*[A-Za-zÀ-ÖØ-öø-ÿ]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]+){0,2}",
-                name,
+                replacement_name,
                 repaired,
                 count=1,
             )
@@ -1259,12 +1267,30 @@ def _repair_declared_name_tokens(source_text, candidate, required_name_spans):
             repaired = re.sub(
                 r"(\b(?:MEU\s+NOME\s+(?:É|E)|EU\s+(?:SOU|ME\s+CHAMO))\s+)"
                 r"[A-Za-zÀ-ÖØ-öø-ÿ]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]+){0,2}",
-                lambda match, replacement=name: match.group(1) + replacement,
+                lambda match, replacement=replacement_name: match.group(1) + replacement,
                 repaired,
                 count=1,
                 flags=re.I,
             )
     return repaired
+
+
+def _canonical_declared_name_surface(name):
+    """Normalize OCR casing only for spans already proven by declaration syntax."""
+
+    text = clean_ocr_text(name)
+    if not text:
+        return ""
+    if text.isupper() or text.islower() or text.istitle():
+        return text
+    parts = re.split(r"([’'\-])", text)
+    repaired = []
+    for part in parts:
+        if re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", part):
+            repaired.append(part[:1].upper() + part[1:].lower())
+        else:
+            repaired.append(part)
+    return "".join(repaired)
 
 
 def _repair_stray_ocr_fragment_candidate(source_text, candidate):
@@ -2960,7 +2986,7 @@ def _should_translate_group(group):
     # OCR corruption is an OCR problem. A region the recogniser could not read
     # twice is held back for review instead of being handed to the translator,
     # which has no way to recover the characters that were never read.
-    if group.ocr_quality_blocked:
+    if group.ocr_quality_blocked or _ocr_unintelligible_source_text(group.text):
         return False
     # Translation validation runs after the initial target list is built. If a
     # retry still fails, keep the untouched source region instead of erasing it
@@ -3437,16 +3463,17 @@ RAPIDOCR_WARNING_ONLY_REASONS = frozenset(
 
 
 # Warnings that describe a *damaged word shape* inside an otherwise readable
-# read: lost spaces, a mangled apostrophe, mixed case, a near-miss word. They
-# say the read is ugly, not that the recogniser invented characters. Anything
-# outside this set (non-ASCII glyphs, digits inside words, consonant walls,
-# improbable characters) is evidence of characters that were never on the page,
-# and keeps its hard block.
+# read: lost spaces, a mangled apostrophe, mixed case, a near-miss word, or a
+# consonant wall inside a long punctuated story sentence. They say the read is
+# ugly, not that the recogniser invented characters. Anything outside this set
+# (non-ASCII glyphs, digits inside words, improbable characters) is evidence of
+# characters that were never on the page, and keeps its hard block.
 OCR_RECOVERABLE_SUSPICION_REASONS = frozenset(
     {
         "improbable_apostrophe_pattern",
         "mixed_case_ocr_artifact",
         "short_malformed_case_ocr_artifact",
+        "long_consonant_run",
         "long_token_without_spaces",
         "compact_word_segmentation_candidate",
         "cross_line_lexical_confidence_disagreement",
@@ -3494,7 +3521,16 @@ def ocr_suspicious_but_translatable(group):
         return False
     if _has_embedded_digit_corruption(text):
         return False
-    return len(_ordinary_dialogue_words(text)) >= 2
+    if len(_ordinary_dialogue_words(text)) >= 2:
+        return True
+    if "long_consonant_run" in reasons:
+        compact_letters = re.sub(r"[^A-Za-z]", "", text)
+        return bool(
+            len(compact_letters) >= 36
+            and re.search(r"\s", text)
+            and re.search(r"[.?!…]", text)
+        )
+    return False
 
 
 # A rank, a level or a stat is written with the digits at the edge of the token

@@ -147,6 +147,7 @@ def main(argv=None):
         source_candidate_ids=list(args.source_candidate_id or []),
         translation_provider=args.translation_provider,
         local_manifest_path=str(getattr(args, "local_manifest_path", "") or ""),
+        job_run_id=str(os.getenv("TRADUTOR_JOB_RUN_ID", "") or ""),
     )
 
     print(f"Capitulo: {sanitize_source_url(args.url)}")

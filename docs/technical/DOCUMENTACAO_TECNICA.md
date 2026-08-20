@@ -86,7 +86,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Detecção de crash duro do worker (TDD #52) | **IMPLEMENTADO** |
 | Supervisão do worker pelo launcher (TDD #53) | **IMPLEMENTADO** |
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
-| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text e resíduo físico reforçados; TDD #62 fecha lacunas offline, validação real limpa ainda pendente |
+| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text, resíduo físico e identidade de artifact reforçados; TDD #64 fecha lacunas offline, validação real limpa ainda pendente |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
@@ -815,16 +815,28 @@ declarados que foram literalizados pelo provider, remove fragmentos OCR de uma l
 traduzem regiões novas, não chamam provider e não rebaixam os validadores; se a correção
 estreita não tornar o candidate válido, o grupo continua fail-closed/manual review.
 
-Estado de qualidade: a correção offline do #62 fecha os achados locais de
-story-review-to-render observados no artefato #60, mas não reclassifica o PDF histórico como
-limpo. A aprovação A de produto depende de um novo E2E real controlado que regenere o
-artefato sem os resíduos físicos.
+O TDD #64 estende essa camada offline sem chamar provider: nomes declarados com casing de
+OCR corrompido (`SuNLEsS`) são normalizados apenas quando a sintaxe da fala já provou que
+o span é nome próprio; frases longas de story text com OCR suspeito e pontuação podem ser
+roteadas ao tradutor em vez de ficarem retidas cruas, mas carregam evidência
+`ocr_source_suspicious` e continuam sujeitas ao validator, fidelidade e render gate. Tokens
+curtos uninteligíveis continuam fora da tradução.
+
+Estado de qualidade: as correções offline até o #64 fecham os achados locais observados
+nos artefatos #60/#63, mas não reclassificam PDFs históricos como limpos. A aprovação A de
+produto depende de um novo E2E real controlado que regenere o artefato sem resíduos físicos.
 
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`
 é o caminho verificado — o histórico da UI classifica registros por
 `manifest_verified` > `e2e_evidence` > `legacy_unverified`.
+
+Para execuções iniciadas pela UI, a identidade canônica da saída é
+`output/<chapter_slug>/<run_id>`. O rebuild de comando após source selection preserva essa
+forma, e o runner exporta o `run_id` do job para que o `run_manifest.json` não gere um
+identificador paralelo. Assim `output_dir`, `command_json`, `job_manifest.json`,
+`run_manifest.json`, `pdf_path` e histórico apontam para o mesmo artifact.
 
 Contrato completo em [`docs/QUALITY_AND_VALIDATION.md`](../QUALITY_AND_VALIDATION.md).
 
@@ -1585,7 +1597,7 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Item | Estado |
 | --- | --- |
 | Pipeline ponta a ponta estável | ✅ |
-| Fase de qualidade | ⚠️ correções offline fechadas até TDD #62; novo E2E real limpo pendente |
+| Fase de qualidade | ⚠️ correções offline fechadas até TDD #64; novo E2E real limpo pendente |
 | Fase de performance | ✅ fechada |
 | Isolamento de runtime de testes | ✅ fechado |
 | Detecção de crash duro do worker | ✅ fechada |
