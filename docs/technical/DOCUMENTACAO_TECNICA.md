@@ -822,9 +822,26 @@ roteadas ao tradutor em vez de ficarem retidas cruas, mas carregam evidência
 `ocr_source_suspicious` e continuam sujeitas ao validator, fidelidade e render gate. Tokens
 curtos uninteligíveis continuam fora da tradução.
 
-Estado de qualidade: as correções offline até o #64 fecham os achados locais observados
-nos artefatos #60/#63, mas não reclassificam PDFs históricos como limpos. A aprovação A de
-produto depende de um novo E2E real controlado que regenere o artefato sem resíduos físicos.
+O TDD #66 acrescenta contabilidade explícita de plano de render no `quality_report.json`.
+`render_plan_accounting` separa story text esperado, candidatos válidos, itens escolhidos
+para render, itens pulados com razão estruturada, regiões renderizadas limpas, regiões
+renderizadas com resíduo físico, revisão estruturada, preservação de nomes próprios e
+qualquer story text sem desfecho. O contrato de qualidade é fail-closed: story text com
+candidato válido não pode simplesmente sumir do plano de render; se não for renderizado,
+precisa de razão estruturada ou aparece em `unaccounted`/`skipped_without_reason`.
+
+Também desde o TDD #66, linhas OCR curtas e corrompidas que não têm palavra lexical — por
+exemplo um filho lido como dígitos/pontuação — podem ser associadas apenas como
+`cleanup_lines` de um grupo story pai quando a geometria prova que estão dentro do mesmo
+container fechado e o grupo pai tem autoridade de tradução. Elas continuam fora do texto
+enviado ao provider e não são anexadas a SFX/open art. A validação física reconhece
+`cleanup_line_boxes` renderizadas como cobertura legítima desses filhos, fechando o caminho
+local do resíduo de linha órfã sem criar regra por página ou frase.
+
+Estado de qualidade: as correções offline até o #66 fecham contabilidade, razão estruturada
+e ownership local de linha órfã observados nos artefatos #60/#63/#65, mas não reclassificam
+PDFs históricos como limpos. A aprovação A de produto depende de um novo E2E real controlado
+que regenere o artefato sem resíduos físicos.
 
 ### Manifest autodescritivo
 
@@ -1597,7 +1614,7 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Item | Estado |
 | --- | --- |
 | Pipeline ponta a ponta estável | ✅ |
-| Fase de qualidade | ⚠️ correções offline fechadas até TDD #64; novo E2E real limpo pendente |
+| Fase de qualidade | ⚠️ correções offline/forenses fechadas até TDD #66; novo E2E real limpo pendente |
 | Fase de performance | ✅ fechada |
 | Isolamento de runtime de testes | ✅ fechado |
 | Detecção de crash duro do worker | ✅ fechada |

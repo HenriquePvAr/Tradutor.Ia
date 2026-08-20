@@ -49,6 +49,7 @@ from ocr_balloon import (
     _uniform_container_evidence,
     _uniform_light_line_text_mask,
     _apply_textured_caption_overlay,
+    _associate_ignored_cleanup_lines,
     _reclaim_short_lexical_lines,
     _refine_classification_with_background,
     _score_group_quality,
@@ -74,6 +75,7 @@ from benchmark_pipeline import (
     _incomplete_speech_region_coverage,
     _physical_residual_accounting,
     _preserve_selected_regional_ocr,
+    _render_plan_accounting,
     _retry_layout_overflow_translations,
     _translation_quality_accounting,
 )
@@ -1664,6 +1666,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
                 "bounding_box": [166, 1841, 504, 248],
                 "clean_text": "TAKEAFEWHOURS FORTHENEAREST AWAKENEDTO GET HERE.",
                 "translation": "LEVOU ALGUMAS HORAS PARA CHEGAR AQUI.",
+                "translation_valid": True,
             },
             {
                 "id": "LINE_004",
@@ -1684,6 +1687,95 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(physical["physical_incomplete_region_coverage_count"], 1)
         self.assertIn("p001:LINE_004", physical["physical_source_residual_group_ids"])
         self.assertFalse(physical["physical_gate_passed"])
+        plan = _render_plan_accounting(self._coverage_state(items))
+        self.assertEqual(plan["counts"]["rendered_with_residual"], 1)
+        self.assertIn("p001:BALAO_2", plan["rendered_with_residual_ids"])
+        self.assertIn("p001:LINE_004", plan["coverage_residual_ids"])
+
+    def test_cleanup_owned_garbled_child_line_closes_physical_residual(self):
+        items = [
+            {
+                "id": "BALAO_2",
+                "classification": "narration",
+                "translation_final_state": "translated",
+                "translation_valid": True,
+                "redrawn": True,
+                "bounding_box": [166, 1841, 504, 248],
+                "clean_text": "TAKEAFEWHOURS FORTHENEAREST AWAKENEDTO GET HERE.",
+                "translation": "LEVOU ALGUMAS HORAS PARA CHEGAR AQUI.",
+                "cleanup_line_boxes": [[346, 1771, 134, 58]],
+            },
+            {
+                "id": "LINE_004",
+                "classification": "unknown",
+                "translation_final_state": None,
+                "redrawn": False,
+                "bounding_box": [346, 1771, 134, 58],
+                "clean_text": "77,!!",
+            },
+        ]
+
+        states = self._coverage_state(items)
+
+        self.assertEqual(_incomplete_speech_region_coverage(states), [])
+        physical = _physical_residual_accounting(states)
+        self.assertEqual(physical["physical_source_residual_count"], 0)
+        self.assertTrue(physical["physical_gate_passed"])
+        plan = _render_plan_accounting(states)
+        self.assertEqual(plan["counts"]["rendered_with_residual"], 0)
+        self.assertEqual(plan["counts"]["rendered_clean"], 1)
+
+    def test_render_plan_requires_structured_reason_for_skipped_story(self):
+        items = [
+            {
+                "id": "BALAO_1",
+                "classification": "speech",
+                "clean_text": "ORDINARY STORY TEXT.",
+                "translation": "",
+                "translation_candidate": "TEXTO COMUM DA HISTÓRIA.",
+                "translation_valid": True,
+                "redrawn": False,
+                "bounding_box": [100, 100, 300, 80],
+                "confidence": 0.98,
+            }
+        ]
+
+        plan = _render_plan_accounting(self._coverage_state(items))
+
+        self.assertEqual(plan["counts"]["story_expected"], 1)
+        self.assertEqual(plan["counts"]["valid_candidate"], 1)
+        self.assertEqual(plan["counts"]["render_skipped"], 1)
+        self.assertEqual(plan["counts"]["skipped_without_reason"], 1)
+        self.assertEqual(plan["unaccounted_ids"], ["p001:BALAO_1"])
+        self.assertEqual(
+            plan["render_skipped_reasons"]["p001:BALAO_1"],
+            "missing_render_skipped_reason",
+        )
+
+    def test_render_plan_accepts_structured_review_for_skipped_story(self):
+        items = [
+            {
+                "id": "BALAO_1",
+                "classification": "speech",
+                "clean_text": "ORDINARY STORY TEXT.",
+                "translation": "",
+                "translation_candidate": "TEXTO COMUM DA HISTÓRIA.",
+                "translation_valid": True,
+                "translation_final_state": "manual_review",
+                "translation_final_reason": "cleanup_unsafe",
+                "manual_review_required": True,
+                "redrawn": False,
+                "bounding_box": [100, 100, 300, 80],
+                "confidence": 0.98,
+            }
+        ]
+
+        plan = _render_plan_accounting(self._coverage_state(items))
+
+        self.assertEqual(plan["counts"]["render_skipped"], 1)
+        self.assertEqual(plan["counts"]["skipped_without_reason"], 0)
+        self.assertEqual(plan["structured_review_ids"], ["p001:BALAO_1"])
+        self.assertEqual(plan["unaccounted_ids"], [])
 
     def test_low_confidence_phantom_read_does_not_force_review(self):
         # Noise picked up from a balloon border comes back with low confidence.
@@ -2006,6 +2098,68 @@ class OCRQualityRegressionTests(unittest.TestCase):
                                   ignore_reason="too_few_useful_chars")
         _reclaim_short_lexical_lines([group], [candidate], (1500, 690, 3))
         self.assertEqual(len(group.lines), 1)
+        self.assertTrue(candidate.ignored)
+
+    def test_corrupted_child_line_attaches_to_story_cleanup_without_translation(self):
+        # #66 / p068:LINE_004.  A child line can be visibly attached to a story
+        # balloon yet OCR back as punctuation/digits.  Its text must not be merged
+        # into the provider input, but the owned glyph geometry must enter the
+        # group's cleanup lines so the original source pixels are removed with the
+        # translated parent.
+        parent = _boxed_line(
+            "TAKE A FEW HOURS FOR THE NEAREST AWAKENED TO GET HERE.",
+            (166, 1841, 504, 76),
+            confidence=0.97,
+        )
+        parent.metadata = {
+            "visual_white_region_id": 1,
+            "visual_white_region_enclosed": True,
+        }
+        child = _boxed_line("77,!!", (346, 1771, 134, 58), confidence=0.91)
+        child.metadata = {
+            "visual_white_region_id": 1,
+            "visual_white_region_enclosed": True,
+        }
+        group = _group_lines([parent])[0]
+        group.classification = "narration"
+        group.translation = "LEVE ALGUMAS HORAS PARA CHEGAR AQUI."
+        group.translation_candidate = group.translation
+        candidate = TextCandidate(
+            line=child,
+            ignored=True,
+            ignore_reason="too_few_useful_chars",
+        )
+
+        _associate_ignored_cleanup_lines([group], [candidate], (2600, 800, 3))
+
+        self.assertTrue(candidate.ignored)
+        self.assertNotIn("77", group.text)
+        self.assertEqual(group.cleanup_lines, [child])
+
+    def test_corrupted_child_line_on_open_art_does_not_attach_to_sfx_cleanup(self):
+        parent = _boxed_line("STAGGER", (484, 3334, 280, 231), confidence=0.97)
+        parent.metadata = {
+            "visual_white_region_id": 1,
+            "visual_white_region_enclosed": False,
+            "visual_white_region_coverage": 0.70,
+        }
+        child = _boxed_line("77,!!", (500, 3570, 120, 50), confidence=0.91)
+        child.metadata = {
+            "visual_white_region_id": 1,
+            "visual_white_region_enclosed": False,
+            "visual_white_region_coverage": 0.70,
+        }
+        group = _group_lines([parent])[0]
+        group.classification = "sfx"
+        candidate = TextCandidate(
+            line=child,
+            ignored=True,
+            ignore_reason="too_few_useful_chars",
+        )
+
+        _associate_ignored_cleanup_lines([group], [candidate], (3900, 800, 3))
+
+        self.assertEqual(group.cleanup_lines, [])
         self.assertTrue(candidate.ignored)
 
     def test_reclaim_respects_distinct_enclosed_container(self):

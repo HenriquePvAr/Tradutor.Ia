@@ -310,3 +310,22 @@ registrou resíduos físicos/review em story text.
 **Honestidade verificada:** os PDFs reais #60 e #63 permaneceram byte-for-byte intactos.
 O TDD #64 fecha causas locais offline; a qualidade do produto continua aberta até novo E2E
 real controlado.
+
+### TDD #66 — Contabilidade de render e ownership físico residual offline (2026-08-20, base `6eadfeb`)
+
+**Gatilho:** o E2E real #65 provou que binding de runtime, provider e artifact estavam
+corretos, mas ainda terminou `review_required` com 15 resíduos físicos. A missão #66 foi
+perícia/TDD offline: auditar os resíduos persistidos, fechar contabilidade local e impedir
+que story text com candidato válido desapareça do plano de render sem motivo estruturado.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | §17 documenta `render_plan_accounting`, desfechos obrigatórios de story text, razão estruturada para render skipped e ownership de linhas OCR filhas via `cleanup_lines`/`cleanup_line_boxes`; checklist de Beta passa de #64 para #66 sem promover qualidade real. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Registra a separação entre render limpo, revisão estruturada e ausência de desfecho; documenta que os 15 resíduos do #65 foram auditados offline e que PDFs históricos permanecem intactos. |
+| `README.md` e `docs/README.md` | **Atualizados** | Status resumido passa a citar correções offline/forenses até o TDD #66, mantendo novo E2E real limpo como pendência. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Nenhuma UI ou semântica visível mudou. `review_required` segue sendo o mesmo terminal para usuário. |
+| Capturas de tela | **Não requer** | A mudança é de contrato interno/relatório, sem tela nova. |
+
+**Honestidade verificada:** os artefatos reais #60/#63/#65 não foram reescritos nem
+promovidos a limpos. O #66 fecha caminhos locais offline e melhora a explicabilidade do
+gate; a qualidade do produto permanece **OPEN — REAL POST-#66 E2E REQUIRED**.

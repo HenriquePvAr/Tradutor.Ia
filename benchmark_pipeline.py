@@ -2414,6 +2414,32 @@ def _boxes_form_one_speech_block(a, b, *, allow_small_residual=False):
     return stacked or same_line
 
 
+def _box_covers_with_tolerance(outer, inner, *, tolerance=6):
+    try:
+        ox, oy, ow, oh = (float(v) for v in outer)
+        ix, iy, iw, ih = (float(v) for v in inner)
+    except (TypeError, ValueError):
+        return False
+    if min(ow, oh, iw, ih) <= 0:
+        return False
+    return (
+        ix >= ox - tolerance
+        and iy >= oy - tolerance
+        and ix + iw <= ox + ow + tolerance
+        and iy + ih <= oy + oh + tolerance
+    )
+
+
+def _residual_is_covered_by_render_cleanup(rendered_item, residual_item):
+    residual_box = residual_item.get("bounding_box")
+    if not residual_box:
+        return False
+    for cleanup_box in rendered_item.get("cleanup_line_boxes") or []:
+        if _box_covers_with_tolerance(cleanup_box, residual_box):
+            return True
+    return False
+
+
 def _incomplete_speech_region_coverage(states):
     """Rendered speech/narration lines whose balloon still shows source text.
 
@@ -2456,6 +2482,8 @@ def _incomplete_speech_region_coverage(states):
                         or _item_is_unassigned_residue_candidate(other)
                     ),
                 ):
+                    if _residual_is_covered_by_render_cleanup(line, other):
+                        continue
                     violations.append(
                         {
                             "page": state.get("index"),
@@ -2636,6 +2664,132 @@ def _translation_quality_accounting(states):
     return result
 
 
+def _item_region_id(state, item):
+    page = int(state.get("index") or item.get("page") or 0)
+    group_id = str(item.get("id") or "")
+    return f"p{page:03}:{group_id}" if group_id else f"p{page:03}"
+
+
+def _render_plan_accounting(states):
+    """Reconcile story regions through render-plan terminal output paths.
+
+    This is deliberately an accounting layer, not a new renderer.  The renderer can
+    keep failing closed, but every story-bearing region must now be explainable as
+    exactly one of: clean render, rendered-with-residual, structured review,
+    proper-name preservation, or unaccounted defect.  That prevents the split-brain
+    state where translation/physical validation expect a story region while the
+    render path silently never selects it.
+    """
+
+    coverage = _incomplete_speech_region_coverage(states)
+    residual_by_rendered = {
+        f"p{int(item.get('page') or 0):03}:{item.get('rendered_id')}"
+        for item in coverage
+        if item.get("page") and item.get("rendered_id")
+    }
+    residual_ids = {
+        f"p{int(item.get('page') or 0):03}:{item.get('residual_id')}"
+        for item in coverage
+        if item.get("page") and item.get("residual_id")
+    }
+    result = {
+        "story_expected_ids": [],
+        "story_with_valid_candidate_ids": [],
+        "render_selected_ids": [],
+        "render_skipped_ids": [],
+        "rendered_clean_ids": [],
+        "rendered_with_residual_ids": [],
+        "structured_review_ids": [],
+        "proper_noun_preserved_ids": [],
+        "unaccounted_ids": [],
+        "render_skipped_reasons": {},
+        "skipped_without_reason": 0,
+        "coverage_residual_ids": sorted(residual_ids),
+    }
+    for state in states:
+        for item in state.get("debug_data", {}).get("items", []):
+            if not _story_translation_required(item):
+                continue
+            region_id = _item_region_id(state, item)
+            result["story_expected_ids"].append(region_id)
+            candidate = re.sub(
+                r"\s+",
+                " ",
+                str(
+                    item.get("translation_candidate")
+                    or item.get("translation")
+                    or item.get("raw_provider_candidate")
+                    or item.get("rejected_translation")
+                    or ""
+                ),
+            ).strip()
+            final_state = str(item.get("translation_final_state") or "")
+            final_reason = str(
+                item.get("translation_final_reason")
+                or item.get("translation_validation_reason")
+                or item.get("ignore_reason")
+                or ""
+            )
+            translated = bool(str(item.get("translation") or "").strip())
+            valid = bool(item.get("translation_valid"))
+            redrawn = bool(item.get("redrawn"))
+            if candidate and valid:
+                result["story_with_valid_candidate_ids"].append(region_id)
+            render_selected = bool(
+                redrawn
+                or item.get("visual_attempts")
+                or item.get("visual_validation")
+                or item.get("mask_metrics")
+            )
+            if render_selected:
+                result["render_selected_ids"].append(region_id)
+            else:
+                result["render_skipped_ids"].append(region_id)
+                result["render_skipped_reasons"][region_id] = (
+                    final_reason or "missing_render_skipped_reason"
+                )
+                if not final_reason:
+                    result["skipped_without_reason"] += 1
+
+            if final_state == "translated" and translated and valid and redrawn:
+                if region_id in residual_by_rendered:
+                    result["rendered_with_residual_ids"].append(region_id)
+                else:
+                    result["rendered_clean_ids"].append(region_id)
+            elif final_reason == PROPER_NAME_ONLY_REASON:
+                result["proper_noun_preserved_ids"].append(region_id)
+            elif final_reason or item.get("manual_review_required"):
+                result["structured_review_ids"].append(region_id)
+            else:
+                result["unaccounted_ids"].append(region_id)
+
+    for key in (
+        "story_expected_ids",
+        "story_with_valid_candidate_ids",
+        "render_selected_ids",
+        "render_skipped_ids",
+        "rendered_clean_ids",
+        "rendered_with_residual_ids",
+        "structured_review_ids",
+        "proper_noun_preserved_ids",
+        "unaccounted_ids",
+    ):
+        result[key] = sorted(dict.fromkeys(result[key]))
+    result["counts"] = {
+        "story_expected": len(result["story_expected_ids"]),
+        "valid_candidate": len(result["story_with_valid_candidate_ids"]),
+        "render_selected": len(result["render_selected_ids"]),
+        "render_skipped": len(result["render_skipped_ids"]),
+        "rendered_clean": len(result["rendered_clean_ids"]),
+        "rendered_with_residual": len(result["rendered_with_residual_ids"]),
+        "structured_review": len(result["structured_review_ids"]),
+        "proper_noun_preserved": len(result["proper_noun_preserved_ids"]),
+        "unaccounted": len(result["unaccounted_ids"]),
+        "skipped_without_reason": int(result["skipped_without_reason"]),
+    }
+    return result
+
+
 def _physical_residual_accounting(states):
     """Account final-render source retention separately from logical quality."""
 
@@ -2808,6 +2962,7 @@ def _build_quality_report(report, states, translation_retry_records):
     pages = []
     translation_accounting = _translation_quality_accounting(states)
     physical_accounting = _physical_residual_accounting(states)
+    render_plan_accounting = _render_plan_accounting(states)
     totals = {
         "groups_detected": 0,
         "groups_suspicious": 0,
@@ -2838,6 +2993,7 @@ def _build_quality_report(report, states, translation_retry_records):
         "broad_mask_rejections": 0,
         "background_type_counts": {},
         "translation_accounting": translation_accounting,
+        "render_plan_accounting": render_plan_accounting,
         "physical_quality": physical_accounting,
         "physical_regions_expected": physical_accounting["physical_regions_expected"],
         "physical_regions_translated": physical_accounting["physical_regions_translated"],

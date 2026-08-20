@@ -146,6 +146,25 @@ Depois da tradução, o redraw precisa caber na região segura e não degradar a
 
 Quando uma tentativa visual é insegura, o grupo pode ser revertido e marcado para revisão. O sistema não deve preservar uma tradução à custa de corromper a página.
 
+O relatório de qualidade também registra `render_plan_accounting`. Essa seção existe para
+separar três coisas que antes podiam parecer iguais:
+
+- story text com candidato válido que foi renderizado limpo;
+- story text com candidato válido que foi revertido ou pulado com razão estruturada;
+- story text que ficou sem desfecho observável no plano de render.
+
+Um item pulado sem razão estruturada entra em `unaccounted`/`skipped_without_reason`. Um
+item revertido por risco visual entra em revisão estruturada, não em sucesso. Linhas OCR
+filhas sem palavra lexical podem pertencer à limpeza física de um grupo story pai quando a
+geometria prova o mesmo container; nesse caso, elas ficam fora do texto de tradução, mas as
+caixas renderizadas em `cleanup_line_boxes` contam para fechar o resíduo físico.
+
+Nos artefatos reais #60/#63/#65, essa camada é apenas forense/offline: os PDFs históricos
+continuam intactos. O #65 terminou `review_required` com 15 resíduos físicos observados:
+14 source-retained e um filho de linha órfã. O TDD #66 audita esses 15 caminhos e fecha
+offline a contabilidade/ownership local, mas a qualidade do produto continua aberta até um
+novo E2E real pós-#66.
+
 ## Quality gate final
 
 `_validate_quality()` aprova a execução apenas quando todas estas condições são verdadeiras:
@@ -200,6 +219,8 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
 - SFX estilizados e texto integrado à arte continuam difíceis de classificar e reconstruir.
 - Uma tradução gramaticalmente válida pode ainda soar pouco natural.
 - Fontes incomuns, texto curvo e backgrounds detalhados elevam o risco visual.
+- Revisões estruturadas por risco visual continuam exigindo novo E2E real para provar que o
+  PDF gerado ficou fisicamente limpo.
 - O comportamento do provedor pode variar entre execuções.
 - O contrato end-to-end atual foi auditado no Windows.
 

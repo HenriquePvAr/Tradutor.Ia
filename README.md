@@ -160,7 +160,7 @@ Esses mecanismos reduzem falsos positivos, mas não garantem tradução perfeita
 
 ## Estado atual
 
-O Tradutor.IA está em **beta técnica e desenvolvimento ativo**. O pipeline ponta a ponta, a UI local, a CLI, o PDF, os caches, os relatórios e o quality gate são funcionais e cobertos por suítes de regressão locais. As correções offline de qualidade/artifact estão fechadas até o TDD #64, mas a validação real limpa ainda depende de novo E2E controlado.
+O Tradutor.IA está em **beta técnica e desenvolvimento ativo**. O pipeline ponta a ponta, a UI local, a CLI, o PDF, os caches, os relatórios e o quality gate são funcionais e cobertos por suítes de regressão locais. As correções offline/forenses de qualidade/artifact estão fechadas até o TDD #66, mas a validação real limpa ainda depende de novo E2E controlado.
 
 Ainda assim, a revisão humana continua importante. SFX com tipografia complexa, texto decorativo, naturalidade do PT-BR, fontes incomuns e páginas visualmente densas podem exigir ajuste ou inspeção. O suporte end-to-end foi auditado no Windows; outros sistemas não fazem parte do contrato validado atual. Use apenas conteúdo que você tenha autorização para processar.
 

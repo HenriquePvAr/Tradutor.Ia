@@ -5442,6 +5442,36 @@ def _associate_ignored_cleanup_lines(groups, candidates, image_shape, page_index
                 continue
             center_gap = abs((gy + gh / 2) - (ly + lh / 2))
             possible.append((center_gap, group))
+            continue
+        # A real #65 residual can be a high-confidence but text-corrupted OCR line
+        # ("IT'LL" read back as punctuation/digits) directly attached to a translated
+        # story box.  Its text is intentionally not reclaimed into the provider input,
+        # but its source glyph geometry still belongs to the story render unit and
+        # must be cleaned with that unit.  Use the same structural join as short-line
+        # reclamation, guarded by story authority and an enclosed/near-total container,
+        # so open-art SFX, credits and unrelated fragments stay untouched.
+        if (
+            not possible
+            and candidate.ignore_reason in _RECLAIMABLE_IGNORE_REASONS
+            and not _text_has_lexical_word(line.text)
+        ):
+            for group in groups:
+                record_count("associate_ignored.story_block_checks", 1, page_index=page_index)
+                if group.ignored or not _text_has_lexical_word(group.text):
+                    continue
+                if not _group_has_enclosed_container(group):
+                    continue
+                if str(getattr(group, "classification", "") or "") in {
+                    "decorative",
+                    "logo",
+                    "sfx",
+                }:
+                    continue
+                if not _group_has_story_translation_authority(group):
+                    continue
+                if _short_line_joins_group(line, group):
+                    possible.append((0.0, group))
+                    break
         if not possible:
             continue
         _, target = min(possible, key=lambda item: item[0])
