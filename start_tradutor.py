@@ -3,6 +3,12 @@
 The UI does not own the worker. The worker is started as a detached process so it keeps
 draining the queue when the UI (or the shell that launched it) is closed.
 
+``all`` also supervises the worker it started: if that process dies unexpectedly it is
+replaced under a bounded restart policy (see ``worker_supervisor``), and after the budget is
+spent the launcher stays degraded instead of respawning forever. Supervision lives and dies
+with this launcher process, and never adopts a worker this launcher did not start - so
+``worker``, which exits immediately, spawns without supervising.
+
     python start_tradutor.py            # start the worker (if none) and the UI
     python start_tradutor.py worker     # start only the worker (detached)
     python start_tradutor.py ui         # start only the UI (foreground)
@@ -18,11 +24,17 @@ import sys
 import time
 from pathlib import Path
 
+import worker_supervisor
 from local_environment import load_local_environment_for_entrypoint
 from process_options import background_python_executable, build_background_process_options
 
 REPO_ROOT = Path(__file__).resolve().parent
 DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
+
+#: Supervision belongs to the launcher instance that started the worker, so it lives for
+#: exactly as long as this process. A launcher that finds a healthy worker it did not start
+#: never becomes its supervisor.
+_SUPERVISOR: worker_supervisor.WorkerSupervisor | None = None
 
 
 def _detached_flags() -> int:
@@ -36,18 +48,15 @@ def _detached_flags() -> int:
     )
 
 
-def start_worker(*, force: bool = False) -> bool:
-    """Start the worker detached unless a healthy one is already registered."""
-    from job_store import JobStore
+def spawn_worker_process() -> subprocess.Popen:
+    """Start one detached worker child and return its handle.
 
-    store = JobStore(DB_PATH)
-    try:
-        healthy = store.healthy_worker(stale_seconds=15)
-    finally:
-        store.close()
-    if healthy and not force:
-        print(f"worker already online: {healthy['worker_id']} (pid {healthy['pid']})")
-        return False
+    DEVNULL on every stream (no unread PIPE can ever block the launcher) and the same
+    detached/console-free flags as before: those keep the worker independent of the UI and
+    of the launching console, and none of them prevent the parent from waiting on the
+    handle, so supervision costs the child nothing.
+    """
+
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     kwargs: dict = build_background_process_options(
@@ -58,14 +67,41 @@ def start_worker(*, force: bool = False) -> bool:
         kwargs["creationflags"] = _detached_flags() | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen(
+    return subprocess.Popen(
         [background_python_executable(), "-u", str(REPO_ROOT / "worker_service.py"), "--db", str(DB_PATH)],
         **kwargs,
     )
+
+
+def start_worker(*, force: bool = False) -> subprocess.Popen | None:
+    """Start the worker detached unless a healthy one is already registered.
+
+    Returns the process handle when *this* launcher created the worker, ``None`` when a
+    healthy worker already existed. Only the former may be supervised.
+    """
+    from job_store import JobStore
+
+    store = JobStore(DB_PATH)
+    try:
+        healthy = store.healthy_worker(stale_seconds=15)
+    finally:
+        store.close()
+    if healthy and not force:
+        print(f"worker already online: {healthy['worker_id']} (pid {healthy['pid']})")
+        return None
+    process = spawn_worker_process()
     # Give it a moment to register its lease so status is accurate.
     time.sleep(1.5)
     print("worker started (detached)")
-    return True
+    return process
+
+
+def supervise_worker(process: subprocess.Popen) -> worker_supervisor.WorkerSupervisor:
+    """Keep replacing this launcher's worker, within the bounded restart policy."""
+
+    global _SUPERVISOR
+    _SUPERVISOR = worker_supervisor.supervise(spawn_worker_process, process)
+    return _SUPERVISOR
 
 
 def start_ui() -> int:
@@ -105,6 +141,11 @@ def stop_worker(*, force: bool = False, timeout: float = 30.0) -> int:
     """
     import process_tree
     from job_store import JobStore
+
+    # Intent first: a worker that disappears after this point is an expected stop, never a
+    # crash, whatever exit status it ends up with.
+    if _SUPERVISOR is not None:
+        _SUPERVISOR.request_stop()
 
     store = JobStore(DB_PATH)
     try:
@@ -165,7 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     if command in {"stop", "stop-worker"}:
         return stop_worker(force="--force" in args)
     if command == "all":
-        start_worker()
+        started = start_worker()
+        if started is not None:
+            supervise_worker(started)
         return start_ui()
     print(f"unknown command: {command}", file=sys.stderr)
     return 2
