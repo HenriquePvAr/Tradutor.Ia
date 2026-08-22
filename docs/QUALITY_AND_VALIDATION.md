@@ -188,6 +188,13 @@ completa sobre as linhas owned pode passar mesmo sem OCR exato da palavra origin
 fecha o falso-clean por OCR como prova única, mas não fecha sozinho os demais resíduos
 ordinary-story de #69.
 
+Ainda em #70, dois falsos bloqueios locais de story text foram estreitados: o pós-render OCR
+pode perdoar `SO` somente quando ele é a dobra sem acento da tradução esperada (`SÓ`) e não
+vem da provenance fonte; e a seleção de tradução aceita frases longas/pontuadas de speech
+com alto `main_text_score` mesmo quando RapidOCR sinaliza `improbable_apostrophe_pattern`.
+Essas exceções não promovem promo/crédito/SFX nem tokens curtos ininteligíveis. `QUALITY`
+permanece aberta até um E2E real pós-#70.
+
 ## Quality gate final
 
 `_validate_quality()` aprova a execução apenas quando todas estas condições são verdadeiras:

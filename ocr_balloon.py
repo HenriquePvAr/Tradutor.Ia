@@ -3523,6 +3523,16 @@ def ocr_suspicious_but_translatable(group):
         return False
     if len(_ordinary_dialogue_words(text)) >= 2:
         return True
+    if (
+        reasons == {"improbable_apostrophe_pattern"}
+        and len(text) >= 40
+        and getattr(group, "main_text_score", 0.0) >= 0.75
+        and (
+            getattr(group, "inside_balloon_like_region", False)
+            or getattr(group, "inside_narration_box_like_region", False)
+        )
+    ):
+        return True
     if "long_consonant_run" in reasons:
         compact_letters = re.sub(r"[^A-Za-z]", "", text)
         return bool(
@@ -9454,11 +9464,6 @@ def _post_render_source_text_check(
     # The observed output as a whole reads as the expected translation, and
     # reads less like the source than like the translation.  That is what makes
     # the flagged tokens OCR noise rather than surviving source text.
-    rendered_matches_expected = bool(
-        len(expected_joined) >= 4
-        and expected_similarity >= 0.90
-        and expected_similarity > source_similarity
-    )
     flagged_tokens = {
         token
         for token in language_reason.partition(":")[2].split(",")
@@ -9475,6 +9480,19 @@ def _post_render_source_text_check(
         token
         for token in flagged_tokens
         if token not in provenance_tokens and token in expected_joined
+    )
+    rendered_matches_expected = bool(
+        expected_joined
+        and expected_similarity >= (0.95 if len(expected_joined) < 4 else 0.90)
+        and expected_similarity > source_similarity
+        and (
+            len(expected_joined) >= 4
+            or (
+                forgiven_ocr_noise
+                and len(forgiven_ocr_noise) == len(flagged_tokens)
+                and observed_joined == expected_joined
+            )
+        )
     )
     if (
         source_language_detected

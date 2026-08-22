@@ -867,6 +867,14 @@ não cobre um componente de glyph fonte em escala de linha, mesmo que o OCR pós
 o resto como ruído (`77,!!`) ou não reconheça a palavra original. OCR continua sinal
 secundário; a cobertura de geometria/máscara fonte é parte do contrato fail-closed.
 
+O mesmo TDD #70 também fechou dois subcasos locais derivados do ledger #69: `JUST... →
+SÓ...` não pode virar revisão só porque o OCR pós-render perdeu o acento e leu `SO.`, desde
+que a provenance fonte não contenha `SO` e o observado corresponda exatamente à tradução
+esperada; e uma frase story longa dentro de balão, com `main_text_score` alto, não fica
+retida apenas por `improbable_apostrophe_pattern` quando o defeito é compactação de OCR
+(`IFYOURECEIVEANASPECT`, `DON'TDESPAIR`). Promo/crédito/SFX/garbage curto continuam
+fail-closed.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`

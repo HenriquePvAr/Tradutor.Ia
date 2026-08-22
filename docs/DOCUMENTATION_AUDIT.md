@@ -395,14 +395,15 @@ estruturada lia a linha filha como `77,!!`. Isso mostrou que OCR pós-render nã
 
 | Documento | Ação | Motivo |
 | --- | --- | --- |
-| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra ownership de cleanup para narração aberta e `source_owned_geometry_coverage`. |
-| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Explica que máscara parcial continua review mesmo quando OCR vira ruído, e que OCR é sinal secundário. |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra ownership de cleanup para narração aberta, `source_owned_geometry_coverage`, perdão PT-BR curto provenance-bound e roteamento de frase story OCR-suspeita. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Explica que máscara parcial continua review mesmo quando OCR vira ruído, que OCR é sinal secundário, e que p015/p062 têm contratos locais estreitos. |
 | `docs/DOCUMENTATION_AUDIT.md` | **Atualizado** | Este registro. |
 | `README.md` e `docs/README.md` | **Não requer mudança** | O status macro permanece qualidade aberta aguardando E2E pós-#70 completo. |
 | `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Sem alteração visível de fluxo de usuário. |
 | Capturas de tela | **Não requer** | A mudança é contrato hermético de máscara/geometria, coberto por testes offline. |
 
-**Honestidade #70 parcial:** este registro fecha apenas o subgate P68 de ownership e prova
-geometry-first. Ele não classifica o TDD #70 completo como A/B e não autoriza por si só
-fechamento de qualidade; rejected/validated-not-rendered de #69 permanecem para auditoria
-ou E2E controlado posterior conforme orçamento explícito.
+**Honestidade #70 parcial:** este registro fecha os subgates locais P68, p015 (`SÓ` lido
+como `SO`) e p062 (speech longo compactado por OCR). Ele não classifica o TDD #70 completo
+como A/B e não autoriza por si só fechamento de qualidade; os demais
+rejected/validated-not-rendered de #69 permanecem para auditoria ou E2E controlado
+posterior conforme orçamento explícito.

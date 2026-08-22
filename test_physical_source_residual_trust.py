@@ -423,6 +423,17 @@ class NoiseForgivenessPolicyTests(unittest.TestCase):
         self.assertTrue(result["passed"], result.get("reason"))
         self.assertIn("SO", result["forgiven_ocr_noise_tokens"])
 
+    def test_short_accent_folded_ptbr_token_may_be_forgiven_when_source_differs(self):
+        # #69 p015:BALAO_4: source JUST... rendered as SÓ..., and post-render OCR
+        # reported SO.  That is the expected PT-BR token with accent loss, not a
+        # surviving source word.  The exception stays provenance-bound: source
+        # JUST cannot explain SO, the expected translation can.
+        result = self._case("JUST...", "SÓ...", "SO.")
+
+        self.assertTrue(result["passed"], result.get("reason"))
+        self.assertIn("SO", result["forgiven_ocr_noise_tokens"])
+        self.assertEqual(result["physical_decision"], PASS)
+
     def test_expected_source_word_is_never_forgiven_as_noise(self):
         # Same token, opposite provenance: here "SO" is an English word the
         # source owned and the translation never produced.  Shortness, OCR

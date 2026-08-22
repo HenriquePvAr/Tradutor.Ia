@@ -193,6 +193,29 @@ class StoryReviewToRenderClosureTests(unittest.TestCase):
         finally:
             config.OCR_ENGINE = original_engine
 
+    def test_high_story_score_compact_apostrophe_sentence_is_routed_to_translation(self):
+        group = _story_group(
+            "BUT EVEN IFYOURECEIVEANASPECT UNRELATEDTOCOMBAT, DON'TDESPAIR.",
+            classification="speech",
+        )
+        group.source_engine = "rapidocr"
+        group.inside_balloon_like_region = True
+        group.main_text_score = 0.94
+        group.quality_score, group.quality_reasons = score_group_ocr_quality(group)
+
+        original_engine = config.OCR_ENGINE
+        try:
+            config.OCR_ENGINE = "rapidocr"
+            blocked = enforce_rapidocr_quality_gate([group])
+
+            self.assertEqual(blocked, [])
+            self.assertFalse(group.ocr_quality_blocked)
+            self.assertTrue(_should_translate_group(group))
+            self.assertTrue(group.quality_evidence.get("ocr_source_suspicious"))
+            self.assertIn("improbable_apostrophe_pattern", group.quality_reasons)
+        finally:
+            config.OCR_ENGINE = original_engine
+
     def test_short_unintelligible_token_still_fails_closed(self):
         group = _story_group("TRNDGE", classification="speech")
         group.source_engine = "rapidocr"
@@ -201,6 +224,25 @@ class StoryReviewToRenderClosureTests(unittest.TestCase):
         enforce_rapidocr_quality_gate([group])
 
         self.assertFalse(_should_translate_group(group))
+
+    def test_compact_promo_without_story_score_still_fails_closed(self):
+        group = _story_group("READTHISSERIESFIRSTAT:", classification="speech")
+        group.source_engine = "rapidocr"
+        group.inside_balloon_like_region = True
+        group.main_text_score = 0.0
+        group.quality_score, group.quality_reasons = score_group_ocr_quality(group)
+
+        original_engine = config.OCR_ENGINE
+        try:
+            config.OCR_ENGINE = "rapidocr"
+            enforce_rapidocr_quality_gate([group])
+
+            self.assertFalse(_should_translate_group(group))
+            self.assertTrue(
+                group.ocr_quality_blocked or not group.quality_evidence.get("ocr_source_suspicious")
+            )
+        finally:
+            config.OCR_ENGINE = original_engine
 
 
 if __name__ == "__main__":
