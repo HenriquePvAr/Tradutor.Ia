@@ -192,8 +192,10 @@ Ainda em #70, dois falsos bloqueios locais de story text foram estreitados: o p�
 pode perdoar `SO` somente quando ele é a dobra sem acento da tradução esperada (`SÓ`) e não
 vem da provenance fonte; e a seleção de tradução aceita frases longas/pontuadas de speech
 com alto `main_text_score` mesmo quando RapidOCR sinaliza `improbable_apostrophe_pattern`.
-Essas exceções não promovem promo/crédito/SFX nem tokens curtos ininteligíveis. `QUALITY`
-permanece aberta até um E2E real pós-#70.
+Além disso, p025-like não é reprovado como white patch quando a própria região prova fundo
+claro uniforme/enclosed, mesmo se o classificador coarse marcou `textured_art`. Essas
+exceções não promovem promo/crédito/SFX, tokens curtos ininteligíveis nem patches brancos
+sem prova positiva. `QUALITY` permanece aberta até um E2E real pós-#70.
 
 ## Quality gate final
 

@@ -232,6 +232,55 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
             "source_scoped_region_too_large_for_safe_cleanup",
         )
 
+    def test_proven_light_enclosure_is_not_rejected_as_white_patch(self):
+        image = np.full((180, 260, 3), 238, dtype=np.uint8)
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        mask[70:105, 60:200] = 255
+        image[mask > 0] = (20, 20, 20)
+        cleaned = image.copy()
+        cleaned[mask > 0] = (248, 248, 248)
+        group = _speech_group(
+            [_line("BY THE NIGHTMARE SPELL", (60, 70, 140, 35))],
+            "BY THE NIGHTMARE SPELL",
+        )
+        group.background_metrics = {
+            "strict_uniform_light": True,
+            "uniform_light": True,
+            "dominant_white_enclosure": True,
+        }
+
+        metrics = ocr_balloon._white_patch_artifact_metrics(
+            image,
+            cleaned,
+            group,
+            mask,
+            "textured_art",
+        )
+
+        self.assertFalse(metrics["white_patch_rejected"])
+
+    def test_unproven_textured_white_patch_is_still_rejected(self):
+        image = np.full((180, 260, 3), 120, dtype=np.uint8)
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        mask[70:105, 60:200] = 255
+        cleaned = image.copy()
+        cleaned[mask > 0] = (248, 248, 248)
+        group = _speech_group(
+            [_line("BY THE NIGHTMARE SPELL", (60, 70, 140, 35))],
+            "BY THE NIGHTMARE SPELL",
+        )
+        group.background_metrics = {}
+
+        metrics = ocr_balloon._white_patch_artifact_metrics(
+            image,
+            cleaned,
+            group,
+            mask,
+            "textured_art",
+        )
+
+        self.assertTrue(metrics["white_patch_rejected"])
+
     # 28 - source completeness must gate the new path.
     def test_source_completeness_failure_fails_closed(self):
         _image, group = self._p002_shaped_case()

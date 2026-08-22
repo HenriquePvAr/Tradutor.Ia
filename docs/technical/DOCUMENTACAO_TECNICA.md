@@ -873,7 +873,10 @@ que a provenance fonte não contenha `SO` e o observado corresponda exatamente �
 esperada; e uma frase story longa dentro de balão, com `main_text_score` alto, não fica
 retida apenas por `improbable_apostrophe_pattern` quando o defeito é compactação de OCR
 (`IFYOURECEIVEANASPECT`, `DON'TDESPAIR`). Promo/crédito/SFX/garbage curto continuam
-fail-closed.
+fail-closed. Para p025-like, uma região clara comprovada por `strict_uniform_light` +
+`dominant_white_enclosure`/`stylized_white_enclosure` também não é rejeitada como
+`large_white_patch_on_nonwhite_background` só porque o tipo coarse ficou `textured_art`;
+sem essa prova positiva, o guard de patch branco permanece ativo.
 
 ### Manifest autodescritivo
 

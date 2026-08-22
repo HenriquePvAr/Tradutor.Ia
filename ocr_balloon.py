@@ -8120,7 +8120,9 @@ def _white_patch_artifact_metrics(
     cleanup_mask,
     background_type,
 ):
-    if background_type in {"white_balloon", "narration_box"}:
+    if background_type in {"white_balloon", "narration_box"} or _proven_uniform_light_region(
+        getattr(group, "background_metrics", {}) or {}
+    ):
         return {
             "new_white_patch_pixels": 0,
             "largest_new_white_component_area": 0,
@@ -8447,6 +8449,28 @@ def _proven_uniform_dark_region(metrics):
     )
 
 
+def _proven_uniform_light_region(metrics):
+    """Uniform light backdrop proven by the region metrics, even if conservatively typed.
+
+    Some real speech regions sit in a white/enclosed panel whose surrounding art
+    keeps the coarse background type at ``textured_art``.  A source-scoped mask
+    pinned to owned OCR geometry may safely restore that proven light backdrop;
+    the white-patch guard remains active for speed-lines/textured art without
+    this positive evidence.
+    """
+
+    metrics = metrics or {}
+    return bool(
+        metrics.get("strict_uniform_light")
+        and metrics.get("uniform_light")
+        and (
+            metrics.get("dominant_white_enclosure")
+            or metrics.get("stylized_white_enclosure")
+            or metrics.get("strongly_uniform_white")
+        )
+    )
+
+
 def _detached_light_text_components_mask(img_bgr, group, source_mask):
     """Recover isolated bright glyphs beside OCR lines on a uniform dark region."""
     metrics = getattr(group, "background_metrics", {}) or {}
@@ -8646,8 +8670,16 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
     draw_box = _safe_draw_box(group.box, original_bgr.shape, group)
     white_region = (
         config.WHITE_BALLOON_FLAT_FILL
-        and group.background_type in {"white_balloon", "narration_box"}
-        and bool(group.background_metrics.get("uniform_light"))
+        and (
+            (
+                group.background_type in {"white_balloon", "narration_box"}
+                and bool(group.background_metrics.get("uniform_light"))
+            )
+            or (
+                strategy == "source_scoped"
+                and _proven_uniform_light_region(group.background_metrics)
+            )
+        )
     )
     dark_region = bool(
         group.background_type in {"dark_balloon", "narration_box"}
