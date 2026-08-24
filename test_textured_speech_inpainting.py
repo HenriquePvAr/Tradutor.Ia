@@ -342,6 +342,47 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
 
         self.assertFalse(metrics["white_patch_rejected"])
 
+    def test_proven_light_enclosure_recovers_full_owned_line_mask(self):
+        image = np.full((180, 260, 3), 238, dtype=np.uint8)
+        group = _speech_group(
+            [_line("BY THE NIGHTMARE SPELL", (45, 70, 170, 42))],
+            "BY THE NIGHTMARE SPELL",
+        )
+        group.background_type = "textured_art"
+        group.background_metrics = {
+            "strict_uniform_light": True,
+            "uniform_light": True,
+            "dominant_white_enclosure": True,
+        }
+
+        mask, metrics = ocr_balloon._uniform_light_line_text_mask(image, group)
+
+        self.assertEqual(metrics["uniform_light_line_count"], 1)
+        self.assertGreater(metrics["uniform_light_line_pixels"], 170 * 42)
+        self.assertGreater(int(np.count_nonzero(mask)), 0)
+
+    def test_unproven_speed_lines_do_not_get_full_owned_line_mask(self):
+        image = np.full((180, 260, 3), 150, dtype=np.uint8)
+        group = _speech_group(
+            [_line("NATIONAL MILITARIES", (45, 70, 170, 42))],
+            "NATIONAL MILITARIES",
+            classification="narration",
+        )
+        group.background_type = "speed_lines"
+        group.background_metrics = {
+            "strict_uniform_light": False,
+            "uniform_light": False,
+            "dominant_white_enclosure": False,
+            "stylized_white_enclosure": False,
+            "open_light_art_caption": False,
+        }
+
+        mask, metrics = ocr_balloon._uniform_light_line_text_mask(image, group)
+
+        self.assertEqual(metrics["uniform_light_line_count"], 0)
+        self.assertEqual(metrics["uniform_light_line_pixels"], 0)
+        self.assertEqual(int(np.count_nonzero(mask)), 0)
+
     def test_saturated_uniform_dark_backdrop_is_not_rejected_as_dark_blotch(self):
         image = np.full((180, 260, 3), (18, 12, 28), dtype=np.uint8)
         mask = np.zeros(image.shape[:2], dtype=np.uint8)

@@ -395,8 +395,8 @@ estruturada lia a linha filha como `77,!!`. Isso mostrou que OCR pós-render nã
 
 | Documento | Ação | Motivo |
 | --- | --- | --- |
-| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra ownership de cleanup para narração aberta, `source_owned_geometry_coverage`, perdão PT-BR curto provenance-bound, roteamento de frase story OCR-suspeita, white/dark-patch guards calibrados, area gate por máscara efetiva e passiva preservada no fidelity gate. |
-| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Explica que máscara parcial continua review mesmo quando OCR vira ruído, que OCR é sinal secundário, e que p015/p062/p025/p002/p044-like têm contratos locais estreitos. |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra ownership de cleanup para narração aberta, `source_owned_geometry_coverage`, perdão PT-BR curto provenance-bound, roteamento de frase story OCR-suspeita, white/dark-patch guards calibrados, split de outlier story/SFX, area gate por máscara efetiva e passiva preservada no fidelity gate. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Explica que máscara parcial continua review mesmo quando OCR vira ruído, que OCR é sinal secundário, e que p015/p062/p025/p030/p002/p044-like têm contratos locais estreitos. |
 | `docs/DOCUMENTATION_AUDIT.md` | **Atualizado** | Este registro. |
 | `README.md` e `docs/README.md` | **Não requer mudança** | O status macro permanece qualidade aberta aguardando E2E pós-#70 completo. |
 | `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Sem alteração visível de fluxo de usuário. |
@@ -404,7 +404,8 @@ estruturada lia a linha filha como `77,!!`. Isso mostrou que OCR pós-render nã
 
 **Honestidade #70 parcial:** este registro fecha os subgates locais P68, p015 (`SÓ` lido
 como `SO`), p062 (speech longo compactado por OCR) e p025-like (fundo claro comprovado
-não vira falso white-patch), além do blocker p002-like em que o source-scoped area gate
+não vira falso white-patch e tem linha owned completamente mascarada), p030-like (seed
+curto/SFX destacado é separado do bloco story), além do blocker p002-like em que o source-scoped area gate
 precisa medir a máscara efetiva, não a caixa fonte inteira, e em que fundo saturado mas
 uniformemente escuro não vira falso dark-blotch; p044-like em que passiva
 preservada não deve ser roteada como `state_action_changed`. Ele não classifica o TDD #70 completo como A/B e não autoriza

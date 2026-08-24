@@ -562,6 +562,12 @@ def _analyze_image_array(original_bgr, raw_lines, page_index=None):
     ):
         groups = _split_groups_at_sentence_boundaries(groups)
     with profile_step(
+        "analyze.split_detached_story_outliers",
+        page_index=page_index,
+        items=len(groups),
+    ):
+        groups = _split_detached_story_outlier_lines(groups)
+    with profile_step(
         "analyze.reclaim_short_lexical_lines",
         page_index=page_index,
         items=len(candidates),
@@ -4640,6 +4646,8 @@ def _candidate_groups_for_fallback(original_bgr, crop_lines, page_index=None):
         groups = _group_lines(usable_lines, page_index=page_index)
     with profile_step("fallback_candidate_groups.split_sentence_boundaries", page_index=page_index, items=len(groups)):
         groups = _split_groups_at_sentence_boundaries(groups)
+    with profile_step("fallback_candidate_groups.split_detached_story_outliers", page_index=page_index, items=len(groups)):
+        groups = _split_detached_story_outlier_lines(groups)
     with profile_step("fallback_candidate_groups.associate_ignored_cleanup_lines", page_index=page_index, items=len(candidates)):
         _associate_ignored_cleanup_lines(groups, candidates, original_bgr.shape, page_index=page_index)
     with profile_step("fallback_candidate_groups.repair_group_texts", page_index=page_index, items=len(groups)):
@@ -4701,6 +4709,108 @@ def _split_groups_at_sentence_boundaries(groups):
     for index, group in enumerate(result, start=1):
         group.group_id = f"BALAO_{index}"
     return result
+
+
+def _split_detached_story_outlier_lines(groups):
+    """Split a short visual/SFX seed away from a coherent story block.
+
+    OCR can read a large effect drawn above a narration panel before the real
+    narration lines.  If that short effect becomes the seed group, the following
+    story lines are merged into an over-tall box; the renderer then tries to
+    clean both the effect and the narration with one Portuguese candidate.  This
+    pass keeps the coherent story cluster translatable and leaves the detached
+    short line preserved/reviewable as its own ignored group.
+    """
+
+    result = []
+    for group in groups:
+        lines = reading_order(group.lines)
+        if len(lines) < 4:
+            result.append(group)
+            continue
+
+        split = None
+        for index in (0, len(lines) - 1):
+            candidate = lines[index]
+            core = lines[1:] if index == 0 else lines[:-1]
+            if _line_is_detached_story_outlier(candidate, core):
+                split = (candidate, core)
+                break
+
+        if split is None:
+            result.append(group)
+            continue
+
+        outlier, core = split
+        story_group = TextGroup(
+            group_id=group.group_id,
+            lines=reading_order(core),
+            text=clean_ocr_text(" ".join(line.text for line in core)),
+        )
+        outlier_group = TextGroup(
+            group_id=f"{group.group_id}_DETACHED",
+            lines=[outlier],
+            text=clean_ocr_text(outlier.text),
+            ignored=True,
+            ignore_reason="detached_story_outlier_line",
+        )
+        # Preserve the story unit first so its BALAO_N identity remains stable
+        # after the final renumbering; the detached short effect is not a
+        # translation target.
+        result.extend([story_group, outlier_group])
+
+    for index, group in enumerate(result, start=1):
+        group.group_id = f"BALAO_{index}"
+    return result
+
+
+def _line_is_detached_story_outlier(line, core_lines):
+    if len(core_lines) < 3:
+        return False
+
+    compact = re.sub(r"[^A-Z]", "", _ascii_fold(line.text or "").upper())
+    if not compact or len(compact) > 4 or compact in COMMON_ENGLISH_WORDS:
+        return False
+
+    core_text = clean_ocr_text(" ".join(item.text for item in core_lines))
+    core_words = re.findall(r"[A-Za-zÀ-ÿ]{2,}", core_text)
+    if len(core_words) < 3:
+        return False
+
+    core = reading_order(core_lines)
+    core_heights = [max(1, item.box[3]) for item in core]
+    median_height = float(np.median(core_heights))
+    if median_height <= 0:
+        return False
+    core_areas = [max(1, item.box[2] * item.box[3]) for item in core]
+    median_area = float(np.median(core_areas))
+    lx, ly, lw, lh = line.box
+    if not (
+        lh >= median_height * 2.4
+        or lw * lh >= median_area * 4.0
+        or float(getattr(line, "confidence", 1.0)) <= 0.85
+    ):
+        return False
+
+    core_box = _union_boxes([item.box for item in core])
+    cx, cy, cw, ch = core_box
+    vertical_gap = max(cy - (ly + lh), ly - (cy + ch))
+    if vertical_gap < max(72.0, median_height * 2.2):
+        return False
+    horizontal_overlap = max(0, min(cx + cw, lx + lw) - max(cx, lx))
+    if horizontal_overlap / max(1, min(cw, lw)) < 0.30:
+        return False
+
+    core_gaps = [
+        following.box[1] - (current.box[1] + current.box[3])
+        for current, following in zip(core, core[1:])
+    ]
+    if core_gaps and max(core_gaps) > max(32.0, median_height * 0.85):
+        return False
+    core_widths = [max(1, item.box[2]) for item in core]
+    if min(core_widths) / max(core_widths) < 0.35:
+        return False
+    return True
 
 
 def _assign_visual_white_regions(image_bgr, lines):
@@ -8586,8 +8696,10 @@ def _uniform_dark_line_text_mask(img_bgr, group):
 def _uniform_light_line_text_mask(img_bgr, group):
     """Cover each OCR line polygon only on a proven uniform light region."""
     metrics = getattr(group, "background_metrics", {}) or {}
+    proven_light = _proven_light_cleanup_region(metrics)
     uniform_light = bool(
         metrics.get("strongly_uniform_white")
+        or proven_light
         or (
             metrics.get("uniform_light")
             and float(metrics.get("white_pixel_ratio", 0.0)) >= 0.88
@@ -8597,8 +8709,11 @@ def _uniform_light_line_text_mask(img_bgr, group):
     result = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
     if (
         not uniform_light
-        or getattr(group, "background_type", "")
-        not in {"white_balloon", "narration_box"}
+        or (
+            getattr(group, "background_type", "")
+            not in {"white_balloon", "narration_box"}
+            and not proven_light
+        )
     ):
         return result, {
             "uniform_light_line_pixels": 0,
@@ -8624,7 +8739,10 @@ def _uniform_light_line_text_mask(img_bgr, group):
 def _detached_dark_text_components_mask(img_bgr, group, source_mask):
     """Recover dark glyph edges omitted by OCR polygons on uniform white regions."""
     metrics = getattr(group, "background_metrics", {}) or {}
-    uniform_light = bool(metrics.get("strongly_uniform_white"))
+    uniform_light = bool(
+        metrics.get("strongly_uniform_white")
+        or _proven_light_cleanup_region(metrics)
+    )
     empty = np.zeros(source_mask.shape, dtype=np.uint8)
     if not uniform_light or not np.any(source_mask):
         return empty, {

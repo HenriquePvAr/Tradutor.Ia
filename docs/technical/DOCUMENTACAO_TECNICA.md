@@ -876,7 +876,10 @@ retida apenas por `improbable_apostrophe_pattern` quando o defeito é compactaç
 fail-closed. Para p025-like, uma região clara comprovada por `strict_uniform_light` +
 `dominant_white_enclosure`/`stylized_white_enclosure` também não é rejeitada como
 `large_white_patch_on_nonwhite_background` só porque o tipo coarse ficou `textured_art`;
-sem essa prova positiva, o guard de patch branco permanece ativo.
+sem essa prova positiva, o guard de patch branco permanece ativo. A mesma prova positiva
+também permite cobrir a geometria completa das linhas OCR owned em fundo claro comprovado,
+evitando que uma máscara por componentes remova apenas o miolo das letras e deixe bordas
+grossas de fonte original.
 
 Ainda no caminho `source_scoped`, o limite `MAX_SOURCE_SCOPED_PAGE_AREA_RATIO` mede a área
 da máscara efetivamente escrita (`source_scoped_mask_to_page_ratio`), não a área da
@@ -893,6 +896,13 @@ Para p044-like, o gate de fidelidade semântica não roteia mais passiva preserv
 `state_action_changed`: `being chosen` pode ser fielmente traduzido como `ser escolhido`.
 O caso severo original — uma decisão/ação progressiva virando atributo estático — continua
 roteado para adjudicação.
+
+Para p030-like, o agrupamento separa uma linha curta visual/SFX usada como seed quando ela
+fica destacada de um bloco story coeso. A linha destacada permanece preservada/revisável
+como grupo ignorado explícito (`detached_story_outlier_line`); o bloco narrativo principal
+mantém o `BALAO_N` estável, recupera sua caixa real e pode usar o caminho normal de
+limpeza/redesenho. Isso impede que um efeito como `ATa` contamine a caixa de
+`NATIONALMILITARIES WEREQLICKLY OVERWHELMED.` e gere falso `speed_lines`/white-patch.
 
 ### Manifest autodescritivo
 

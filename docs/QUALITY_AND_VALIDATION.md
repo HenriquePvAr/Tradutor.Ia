@@ -199,6 +199,11 @@ sem prova positiva. O source-scoped area gate agora registra e decide por
 `source_scoped_mask_to_page_ratio`, mantendo `source_evidence_to_page_ratio` como
 telemetria; assim uma caixa fonte grande não bloqueia uma máscara owned pequena, e uma
 máscara grande continua falhando. `QUALITY` permanece aberta até um E2E real pós-#70.
+O p025-like também exige cobertura completa das linhas owned quando o fundo claro já foi
+comprovado, fechando o caso em que a limpeza por componentes deixava bordas da fonte. Para
+p030-like, uma linha curta/SFX destacada que virou seed de grupo é separada antes da
+classificação: o story-core fica translatável e o outlier permanece preservado com motivo
+explícito, sem ser apagado por uma tradução que não o representa.
 Para o mesmo perfil p002-like, o dark-blotch guard também diferencia fundo narrativo
 extremamente escuro e uniforme de arte escura irregular: alta saturação sozinha não bloqueia
 a limpeza quando brilho, razão de pixels escuros e textura interna provam backdrop uniforme,

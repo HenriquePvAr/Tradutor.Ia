@@ -54,6 +54,7 @@ from ocr_balloon import (
     _refine_classification_with_background,
     _score_group_quality,
     _should_translate_group,
+    _split_detached_story_outlier_lines,
     _split_groups_at_sentence_boundaries,
     _mask_shape_metrics,
     _white_patch_artifact_metrics,
@@ -2285,6 +2286,44 @@ class OCRQualityRegressionTests(unittest.TestCase):
         groups = _group_lines(lines)
         self.assertEqual(len(groups), 1, [g.text for g in groups])
         self.assertEqual(len(groups[0].lines), 4)
+
+    def test_detached_sfx_seed_splits_from_coherent_story_block(self):
+        lines = [
+            self._region_line("ATa", (536, 880, 225, 265), 0, False),
+            self._region_line("NATIONALMILITARIES", (223, 1421, 498, 48), 0, False),
+            self._region_line("WEREQLICKLY", (309, 1478, 329, 41), 0, False),
+            self._region_line("OVERWHELMED.", (288, 1530, 369, 40), 0, False),
+        ]
+
+        grouped = _group_lines(lines)
+        self.assertEqual(len(grouped), 1, [group.text for group in grouped])
+
+        split = _split_detached_story_outlier_lines(grouped)
+
+        self.assertEqual(len(split), 2, [group.text for group in split])
+        self.assertEqual(
+            split[0].text,
+            "NATIONALMILITARIES WEREQLICKLY OVERWHELMED.",
+        )
+        self.assertFalse(split[0].ignored)
+        self.assertEqual(split[0].group_id, "BALAO_1")
+        self.assertEqual(split[1].text, "ATa")
+        self.assertTrue(split[1].ignored)
+        self.assertEqual(split[1].ignore_reason, "detached_story_outlier_line")
+
+    def test_story_opening_line_is_not_split_as_detached_outlier(self):
+        lines = [
+            self._region_line("WHEN THE GATE OPENED", (210, 880, 380, 48), 0, False),
+            self._region_line("NATIONAL MILITARIES", (205, 942, 410, 48), 0, False),
+            self._region_line("WERE QUICKLY", (245, 1000, 320, 44), 0, False),
+            self._region_line("OVERWHELMED.", (230, 1054, 350, 44), 0, False),
+        ]
+
+        grouped = _group_lines(lines)
+        split = _split_detached_story_outlier_lines(grouped)
+
+        self.assertEqual(len(split), 1, [group.text for group in split])
+        self.assertFalse(split[0].ignored)
 
     def test_distinct_enclosed_regions_stay_separate(self):
         # Two confirmed enclosed balloons that happen to be stacked must not be
