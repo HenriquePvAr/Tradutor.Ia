@@ -417,3 +417,12 @@ passiva preservada não deve ser roteada como `state_action_changed`. Ele não c
 TDD #70 completo como A/B e não autoriza por si só fechamento de qualidade; os demais
 rejected/validated-not-rendered de #69 permanecem para auditoria ou E2E controlado
 posterior conforme orçamento explícito.
+
+**Auditoria #71:** o ledger #69 foi reconciliado offline/read-only como evidência canônica:
+os 14 resíduos físicos, 13 structured-review e os motivos `translation_not_rendered`,
+`translation_not_selected`, `untranslated_source_after_retries` e
+`semantic_fidelity_failed_after_retries` têm IDs explícitos e sem unexplained local. A matriz
+atual fecha os roots ordinários com candidato real persistido e conserva P68 como prova de
+geometria/máscara, não OCR-string-only. A classificação documental esperada é **B**, porque
+P005/P062 não têm candidato DeepL real no #69; o downstream está provado com sintético, mas a
+qualidade real dessas traduções exige o próximo provider run autorizado.

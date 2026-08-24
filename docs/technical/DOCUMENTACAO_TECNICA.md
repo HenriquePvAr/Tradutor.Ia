@@ -926,6 +926,16 @@ máscara source-owned inclui o halo claro dentro da geometria OCR da linha quand
 mas não aplica fallback retangular em fundo escuro uniforme comprovado, preservando o caso
 p002-like de máscara pequena sobre evidência grande.
 
+O fechamento forense #71 usa o artifact #69 somente como evidência read-only. A matriz de
+produção/paridade roda a análise atual sobre a provenance persistida: P002, P015, P025,
+P030, P044, P063 e P068 chegam a `translated` com cobertura física de fonte `1.0`, enquanto
+P005, P006_2 e P062 só podem usar saída sintética para provar seleção/cleanup/render porque
+o #69 não contém candidato real para essas regiões. Esse é o limite técnico entre defeito
+local fechado e dependência de provider: synthetic downstream proof nunca é tratado como
+qualidade de tradução real. A prova P68 continua geométrica: máscara parcial sobre
+`LINE_004` fica bloqueada mesmo quando OCR degrada `IT'LL` para ruído; máscara completa no
+child geometry permite residual zero.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`

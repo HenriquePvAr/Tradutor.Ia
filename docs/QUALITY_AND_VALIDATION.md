@@ -234,6 +234,18 @@ owned da fonte. Assim a região não falha como white-patch quando a alteração
 à geometria OCR e ao orçamento de área por página; fundos escuros uniformes continuam usando
 a máscara pequena, sem transformar uma evidência grande em retângulo de limpeza.
 
+O TDD #71 congelou o ledger real #69 sem novo job/provider: 14 resíduos físicos, 13
+structured-review retidos e 26 revisões manuais foram reconciliados contra os motivos
+persistidos. O replay offline com a lógica atual fecha os roots locais ordinários
+P002/P015/P025/P030/P044/P063/P068 e mantém P006 como sentinela verde. P030 é fechado pela
+separação do outlier `ATa` antes do render; P44 é fechado pela correção estreita da passiva
+preservada no gate de fidelidade; P68 é fechado por geometria/máscara owned, não por
+desaparecimento textual em OCR. P005 e P062 permanecem como dependência de provider real,
+porque o artifact #69 não possui candidato DeepL persistido para essas regiões; o caminho
+downstream foi provado apenas com candidato sintético rotulado, sem fabricar qualidade real.
+Por isso o próximo E2E real continua autorizado somente após budget explícito e deve medir
+qualidade de produto, não reabrir os gates locais já reconciliados.
+
 ## Quality gate final
 
 `_validate_quality()` aprova a execução apenas quando todas estas condições são verdadeiras:
