@@ -160,7 +160,7 @@ Esses mecanismos reduzem falsos positivos, mas não garantem tradução perfeita
 
 ## Estado atual
 
-O Tradutor.IA está em **beta técnica e desenvolvimento ativo**. O pipeline ponta a ponta, a UI local, a CLI, o PDF, os caches, os relatórios e o quality gate são funcionais e cobertos por suítes de regressão locais. O TDD #76 executou um E2E real pós-#75 pela UI visível com `CURRENT_HEAD == job.commit_hash == run_manifest.commit_hash`, DeepL `quality_optimized`, RapidOCR, 35 source items e 72 páginas finais. A qualidade Beta de story text está **fechada**: `ordinary_story_physical_residual_count=0`, P068 recebeu candidato real do provider e foi renderizado limpo. O job ainda pode terminar `review_required` para preservar revisão humana de SFX, crédito, URL e OCR ambíguo não-story.
+O Tradutor.IA está em **beta técnica e desenvolvimento ativo**. O pipeline ponta a ponta, a UI local, a CLI, o PDF, os caches, os relatórios e o quality gate são funcionais e cobertos por suítes de regressão locais. O TDD #76 executou um E2E real pós-#75 pela UI visível com `CURRENT_HEAD == job.commit_hash == run_manifest.commit_hash`, DeepL `quality_optimized`, RapidOCR, 35 source items e 72 páginas finais. A qualidade Beta de story text está **fechada**: `ordinary_story_physical_residual_count=0`, P068 recebeu candidato real do provider e foi renderizado limpo. O job ainda pode terminar `review_required` para preservar revisão humana de SFX, crédito, URL e OCR ambíguo não-story. O TDD #77 adicionou a fundação local/offline de licenciamento de tester: autenticação Supabase continua separada da autorização Beta, o start/resume de tradução tem gate fail-closed injetável, e o modelo de expiração/revogação/dispositivo está coberto por testes herméticos. A integração remota desse licenciamento ainda está pendente.
 
 Ainda assim, a revisão humana continua importante. SFX com tipografia complexa, texto decorativo, naturalidade do PT-BR, fontes incomuns e páginas visualmente densas podem exigir ajuste ou inspeção. O suporte end-to-end foi auditado no Windows; outros sistemas não fazem parte do contrato validado atual. Use apenas conteúdo que você tenha autorização para processar.
 
@@ -180,9 +180,10 @@ exigem opt-in explícito e estão documentados em [Testes](docs/TESTING.md).
 
 ## Roadmap
 
-> Esta seção descreve **intenções**, não comportamento disponível. Nada aqui deve ser lido como recurso existente. Empacotamento (`Setup.exe`), atualizador assinado e licenciamento de tester **não existem** nesta versão.
+> Esta seção descreve **intenções**, não comportamento disponível. Nada aqui deve ser lido como recurso existente. Empacotamento (`Setup.exe`) e distribuição externa ainda **não existem** nesta versão. O licenciamento de tester existe apenas como fundação local/offline; ainda falta integração Supabase controlada.
 
-- entregar instalador para usuário final, atualizador assinado e licenciamento de tester;
+- integrar remotamente o licenciamento de tester antes de liberar Setup/Beta externa;
+- entregar instalador para usuário final e canal de atualização assinado;
 - expor a retomada de capítulo interrompido na interface;
 - aprimorar a classificação de SFX e elementos decorativos;
 - melhorar naturalidade e consistência da tradução PT-BR;

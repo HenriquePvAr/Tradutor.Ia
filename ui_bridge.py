@@ -49,6 +49,7 @@ from ui_helpers import (
 from ui_history import UIHistoryStore, utc_now
 from chapter_quality_revision import (REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision,
                                       read_json, write_json)
+from beta_license import BetaAccessDecision, LicenseState, LocalDevelopmentBetaAuthorizer
 from review_rerun import build_pending_region_plan
 import audit_registry
 import human_translation_decisions
@@ -393,6 +394,7 @@ class UiBridge:
                 db_path))
         self.visual_reviews = visual_review_decisions.VisualReviewDecisionStore(db_path)
         self.history_revision = 1
+        self.beta_access_authorizer = LocalDevelopmentBetaAuthorizer()
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
         self.store.reconcile_confirmed_reviews()
@@ -4281,6 +4283,8 @@ class UiBridge:
     ) -> dict[str, Any]:
         self.store.reconcile_confirmed_reviews()
         self.reconcile_orphans()
+        beta_decision = self._require_beta_access(
+            principal=principal, operation="start_translation")
         source_type = self._requested_source_type(payload)
         if source_type == "local_folder":
             # The HTTP boundary calculates this from both the bind address and the peer.
@@ -4288,7 +4292,8 @@ class UiBridge:
             # accidentally turn a local path into a remotely reachable capability.
             if local_folder_allowed is not True:
                 raise ValueError("local_folder_requires_loopback_ui")
-            return await self._start_local_folder(payload, principal=principal)
+            return await self._start_local_folder(
+                payload, principal=principal, beta_decision=beta_decision)
         self._require_validated_source(payload)
         stale_resolution = (
             None
@@ -4319,6 +4324,7 @@ class UiBridge:
             {**payload, "source_candidate_ids": []}, principal=principal,
             require_environment=False, initial_status=JobStatus.QUEUED,
             source_analysis={"adapter": "", "outcome": "source_analysis_pending", "accepted": []},
+            beta_decision=beta_decision,
         )
         self.store.update_fields(
             job["id"], source_type="url", stage="queued", reason_code="",
@@ -4512,6 +4518,7 @@ class UiBridge:
         payload: dict[str, Any],
         *,
         principal: RequestPrincipal | None,
+        beta_decision: BetaAccessDecision | None = None,
     ) -> dict[str, Any]:
         """Snapshot a loopback-only folder selection and queue its opaque reference.
 
@@ -4521,7 +4528,8 @@ class UiBridge:
         """
 
         normalized = self._normalize_local_payload(payload)
-        job = self._create_local_folder_staging_job(normalized, principal=principal)
+        job = self._create_local_folder_staging_job(
+            normalized, principal=principal, beta_decision=beta_decision)
         self.store.update_fields(
             job["id"], stage="validating_local_source", reason_code="",
             started_at=time.time(), heartbeat_at=time.time(),
@@ -4654,6 +4662,7 @@ class UiBridge:
         normalized: dict[str, Any],
         *,
         principal: RequestPrincipal | None,
+        beta_decision: BetaAccessDecision | None = None,
     ) -> dict[str, Any]:
         if principal is not None and not isinstance(principal, RequestPrincipal):
             raise TypeError("principal must be a RequestPrincipal")
@@ -4681,6 +4690,8 @@ class UiBridge:
             "source_analysis": {},
             "source_selection": {},
         }
+        if beta_decision is not None:
+            configuration["beta_license_authorization"] = beta_decision.to_safe_job_metadata()
         if principal is not None and principal.authenticated:
             configuration["community_owner_id"] = principal.user_id
         staging_owner_pid = os.getpid()
@@ -4986,6 +4997,7 @@ class UiBridge:
         initial_status: str = JobStatus.QUEUED,
         source_analysis: dict[str, Any] | None = None,
         source_selection: dict[str, Any] | None = None,
+        beta_decision: BetaAccessDecision | None = None,
     ) -> dict[str, Any]:
         if principal is not None and not isinstance(principal, RequestPrincipal):
             raise TypeError("principal must be a RequestPrincipal")
@@ -5053,6 +5065,8 @@ class UiBridge:
             "source_selection": source_selection or {},
             "chapter_slug": normalized["slug"],
         }
+        if beta_decision is not None:
+            configuration["beta_license_authorization"] = beta_decision.to_safe_job_metadata()
         validated_analysis_id = str(payload.get("source_analysis_result_id") or "")
         if validated_analysis_id:
             configuration["preflight_source_analysis_result_id"] = validated_analysis_id
@@ -5522,6 +5536,8 @@ class UiBridge:
             return {"ok": True, "job_id": existing.get("id", ""), "already_resumed": True}
         if reason:
             raise ValueError(self._RESUME_REFUSALS.get(reason, reason))
+        beta_decision = self._require_beta_access(
+            principal=None, operation="resume_translation")
         if job["status"] == JobStatus.INTERRUPTED:
             self.store.mark_resumable(job_id, resume_from_stage=job.get("resume_from_stage") or "")
         # A resume is a fresh attempt that reuses the same output dir and command; the
@@ -5530,7 +5546,10 @@ class UiBridge:
             source_url=job["source_url"],
             output_dir=job["output_dir"],
             command=job.get("command") or [],
-            configuration=job.get("configuration") or {},
+            configuration={
+                **(job.get("configuration") or {}),
+                "beta_license_authorization": beta_decision.to_safe_job_metadata(),
+            },
             series_title=job.get("series_title") or "",
             series_slug=job.get("series_slug") or "",
             episode_number=job.get("episode_number") or "",
@@ -5562,6 +5581,29 @@ class UiBridge:
         # Queueing it beside its successor would process the same chapter twice.
         self.history_revision += 1
         return {"ok": True, "job_id": new_id}
+
+    def _require_beta_access(
+        self,
+        *,
+        principal: RequestPrincipal | None,
+        operation: str,
+    ) -> BetaAccessDecision:
+        """Authoritative protected-operation gate before runner/provider work exists."""
+
+        authorizer = getattr(self, "beta_access_authorizer", None)
+        if authorizer is None:
+            authorizer = LocalDevelopmentBetaAuthorizer()
+        try:
+            decision = authorizer.authorize(principal=principal, operation=operation)
+        except Exception as exc:  # noqa: BLE001 - license service errors fail closed
+            raise ValueError("license_service_unavailable") from exc
+        if not isinstance(decision, BetaAccessDecision):
+            raise ValueError("malformed_license_response")
+        if not decision.allowed:
+            if decision.state is LicenseState.LICENSE_UNAVAILABLE:
+                raise ValueError("license_service_unavailable")
+            raise ValueError(decision.reason_code or decision.state.value)
+        return decision
 
     def add_queue_item(
         self,

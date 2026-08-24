@@ -29,6 +29,7 @@ import process_tree
 from job_store import JobStatus, JobStore, TransitionError
 from process_options import build_background_process_options
 from output_manifest import sanitize_source_url
+from beta_license import LicenseState
 from runner_start_gate import wait_for_start_gate
 from ui_helpers import (
     ProgressSnapshot,
@@ -163,6 +164,27 @@ def _safe_job_provenance(job: object) -> dict[str, object]:
         "accepted_page_count": _safe_provenance_count(row.get("accepted_count")) or 0,
         "rejected_page_count": _safe_provenance_count(row.get("rejected_count")) or 0,
     }
+
+
+def _assert_beta_authorization_metadata(job: dict) -> str:
+    """Defense-in-depth: protected Beta jobs must carry an allow decision."""
+
+    configuration = job.get("configuration") if isinstance(job, dict) else {}
+    authorization = (
+        configuration.get("beta_license_authorization")
+        if isinstance(configuration, dict)
+        else None
+    )
+    if not isinstance(authorization, dict) or authorization.get("required") is not True:
+        return ""
+    if authorization.get("allowed") is not True:
+        return "beta_license_not_authorized"
+    if str(authorization.get("state") or "") != LicenseState.ACTIVE.value:
+        return "beta_license_not_active"
+    for field in ("user_id", "device_fingerprint_hash", "checked_at"):
+        if not str(authorization.get(field) or "").strip():
+            return f"beta_license_missing_{field}"
+    return ""
 
 
 def _pipeline_commit_mismatch(job: object, artifacts: object) -> dict[str, str]:
@@ -340,6 +362,11 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
             store.transition(job_id, JobStatus.FAILED, error_type="config",
                              error_message="invalid_job_command",
                              reason_code="invalid_job_command")
+            return 2
+        beta_error = _assert_beta_authorization_metadata(job)
+        if beta_error:
+            store.transition(job_id, JobStatus.FAILED, error_type="authorization",
+                             error_message=beta_error, reason_code=beta_error)
             return 2
 
         # The FINAL argv, after every rebuild, is the only command that can execute. A job

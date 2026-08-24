@@ -94,10 +94,10 @@ em que foram escritos e **não** substituem os documentos primários:
 | Isolamento hermético dos testes | ✅ implementado |
 | Qualidade / story-text / resíduo físico | ✅ **QUALITY CLOSED — REAL POST-#75 E2E VALIDATED** no TDD #76: `ordinary_story_physical_residual_count=0`, 100 story regions renderizadas limpas, 4 reviews preservados como SFX/OCR ambíguo não-story |
 | Comunidade (Supabase + Drive) | ✅ implementado, fail-closed se não configurado |
+| Licenciamento de tester | ✅ fundação local/offline implementada no TDD #77; integração Supabase remota pendente |
 | Retomada de job interrompido pela UI | ⚠️ parcial — API existe, controle na interface não |
 | Instalador para usuário final | ⏳ em desenvolvimento |
 | Atualizador assinado | ⚠️ parcial — canal/chave/UI pendentes |
-| Licenciamento de tester | ⏳ em desenvolvimento |
 | Validação em VM Windows limpa | ⏳ em desenvolvimento |
 
 Detalhamento em [Documentação Técnica §2](technical/DOCUMENTACAO_TECNICA.md#2-escopo-atual-do-produto)

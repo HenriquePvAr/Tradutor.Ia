@@ -88,10 +88,10 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
 | Qualidade / gates fail-closed | **IMPLEMENTADO** — **QUALITY CLOSED — REAL POST-#75 E2E VALIDATED** no TDD #76 para story-text Beta; reviews não-story/SFX/OCR ambíguo continuam fail-closed |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
+| Licenciamento / expiração de tester | **FUNDAÇÃO LOCAL IMPLEMENTADA** — TDD #77 cobre estado de licença, expiração, revogação, limite de dispositivos, concorrência e gate fail-closed; integração remota Supabase ainda pendente |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
 | Atualizador automático assinado | **PARCIAL** — integração remota/launcher implementada, sem canal/chave/UI de produção |
-| Licenciamento / expiração de tester | **PLANEJADO** |
 | Validação em VM Windows limpa | **PLANEJADO** |
 
 > **Aviso.** Nada em `PLANEJADO` deve ser descrito como disponível em nenhum documento,
@@ -1081,6 +1081,44 @@ documento público JWKS.
 `_ui_principal()` protege todas as rotas de aplicação. Sem sessão válida não é possível
 criar tradução, ver histórico ou acessar a comunidade.
 
+### Licenciamento Scan Beta (`beta_license.py`)
+
+O TDD #77 adiciona a fundação local/offline do licenciamento de tester. Autenticação e
+autorização são conceitos separados: um usuário autenticado pelo Supabase não recebe acesso
+Beta implicitamente. O contrato canônico usa `BetaAccessDecision`, com `allowed`, estado,
+motivo, `user_id`, hash de dispositivo, expiração, horário verificado, origem da decisão e
+flag `retryable`. Tokens, refresh tokens, senhas e service-role nunca entram nesse metadado.
+
+Estados suportados: `ACTIVE`, `EXPIRED`, `REVOKED`, `DEVICE_LIMIT_REACHED`,
+`DEVICE_REVOKED`, `NOT_ENTITLED`, `LICENSE_UNAVAILABLE`, `MALFORMED_LICENSE`,
+`NOT_STARTED`, `AUTH_REQUIRED` e `AUTH_INVALID`. Qualquer ausência, expiração, revogação,
+limite, resposta malformada ou indisponibilidade da autoridade de licença falha fechado para
+operações protegidas.
+
+Política inicial do Beta: **check online no início da sessão/operação protegida e antes de
+novo job de tradução; sem graça offline ilimitada**. O cache local, quando existir, é apenas
+informativo e não converte falha de validação em acesso. A semântica de expiração é UTC e
+exclusiva: `now < expires_at` permite; `now >= expires_at` expira. O relógio local do
+cliente não é autoridade única.
+
+Identidade de dispositivo é minimizada: `stable_install_fingerprint_hash()` deriva um hash
+irreversível de um identificador de instalação e, opcionalmente, um sinal limitado. O modelo
+não coleta serial de disco, MAC address, chave do Windows ou inventário amplo de hardware. Na
+política atual, reinstalar pode consumir novo slot se a identidade de instalação mudar.
+
+O gate autoritativo local fica antes da criação/retomada de jobs em `UiBridge.start()` e
+`UiBridge.resume()`. A UI é apenas camada de experiência; segurança não depende de botão
+desabilitado. O runner tem defesa em profundidade:
+`job_runner._assert_beta_authorization_metadata()` recusa jobs protegidos cujo metadado de
+autorização não seja `ACTIVE` e completo, sem fazer lookup privilegiado nem ler segredo.
+
+O contrato de persistência para a próxima integração Supabase está em
+`supabase/migrations/20260824120000_beta_tester_licensing_foundation.sql`, com
+`beta_tester_entitlements`, `beta_tester_devices` e `beta_tester_license_events`, RLS ligada
+e políticas somente de leitura para o próprio usuário. Mutação administrativa continua fora
+do cliente. A integração remota, Edge Function/RPC transacional e caminho admin confiável
+são fase posterior.
+
 ## 20. Comunidade e armazenamento
 
 **IMPLEMENTADO**, montado de forma fail-closed: se `build_social_repository()` levantar
@@ -1721,7 +1759,7 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 | `UPDATER-RELEASE-CHANNEL-PENDING` | Alta (bloqueia Beta externa) | Transporte HTTPS, verificação remota e seam do launcher existem, mas ainda não há hospedagem/canal de release, chave pública de produção embutida nem UI. | `update_transport.py`, `update_bootstrap.py`, `start_tradutor.py`, `update_manifest.py` | Definir junto com Setup/release operacional |
 | `LAUNCHER-SELF-UPDATE-DEFERRED` | Média | Um launcher em execução não se sobrescreve; o update atual faz handoff entre payloads versionados e bloqueia payload que exige bootstrap mais novo. Self-update do bootstrap depende do formato do Setup. | `update_bootstrap.py`, `start_tradutor.py` | Resolver na missão de Setup/bootstrapper |
 | `UPDATE-TRUST-ROOT-EMPTY` | Média | `update_manifest.TRUSTED_PUBLIC_KEYS` está vazio de propósito (não existe chave de release de produção); o updater falha fechado. | `update_manifest.py` | Preencher quando a chave de release existir, fora do repositório |
-| `TESTER-LICENSE-PENDING` | Média | Não existe licenciamento/expiração de tester. Acesso é apenas conta Supabase. | Nenhum módulo correspondente | Missão dedicada de licenciamento |
+| `TESTER-LICENSE-REMOTE-INTEGRATION-PENDING` | Alta (bloqueia Beta externa) | A fundação local de licenciamento existe, mas ainda falta integrar a autoridade remota Supabase/transação de dispositivo e caminho admin confiável. | `beta_license.py`, `supabase/migrations/20260824120000_beta_tester_licensing_foundation.sql`, `test_beta_tester_licensing.py` | Missão controlada de integração Supabase, sem Setup ainda |
 | `CLEAN-VM-VALIDATION-PENDING` | Alta (bloqueia Beta externa) | Nenhuma evidência de validação em VM Windows limpa. | — | Executar após o empacotamento existir |
 
 ### Limitações conhecidas do produto

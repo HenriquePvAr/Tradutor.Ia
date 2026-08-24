@@ -507,3 +507,28 @@ job `3979b3f3482b41fc8ce481a7050b4c8e`, run
 resíduos físicos restantes (`p011:BALAO_1`, `p011:BALAO_2`, `p013:BALAO_3`, `p015:BALAO_8`)
 foram reconciliados como SFX/OCR ambíguo não-story. Community, Drive, Supabase remoto, push e
 segundo job não foram usados.
+
+### TDD #77 — Scan Beta tester licensing foundation (2026-08-24, base `113b0da`)
+
+**Gatilho:** com a qualidade Beta de story text fechada no #76, o próximo bloqueio para
+Scan Beta externa passou a ser autorização de tester antes de Setup/VM limpa.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `README.md` | **Atualizado** | Estado atual registra licenciamento apenas como fundação local/offline e mantém integração Supabase/Setup como pendentes. |
+| `docs/README.md` | **Atualizado** | Tabela de status separa fundação local de integração remota. |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Documenta autenticação vs autorização, estados, expiração UTC, device model, fail-closed, gate de job, RLS/migration local e limites da fase. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Não requer mudança estrutural** | O #77 não reabre qualidade de tradução; apenas mantém o status do #76. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Ainda não há UX final de licença para tester externo. |
+| Capturas de tela | **Não requer** | A missão foi 100% local/offline e sem tela nova obrigatória. |
+
+**Resultado #77:** foi criada a fundação local fail-closed de licenciamento em
+`beta_license.py`, com estado canônico, expiração/revogação, limite de dispositivos,
+revogação por dispositivo, fingerprint minimizado e teste de concorrência do último slot.
+`UiBridge.start()` e `UiBridge.resume()` agora têm fronteira de autorização antes de criar
+novos jobs protegidos; o runner valida o metadado seguro como defesa em profundidade.
+
+**Honestidade #77:** não houve job real, DeepL, Vortex, Supabase remoto, Community, Drive,
+publicação de update, Setup, push ou mutation remota. A migration
+`20260824120000_beta_tester_licensing_foundation.sql` é contrato local para a próxima fase e
+não foi aplicada remotamente.
