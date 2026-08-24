@@ -1075,7 +1075,7 @@ class FrontendContractTests(unittest.TestCase):
         # This assertion inverted with the architecture. Flipping first was a workaround for
         # a submit that held the request for 93-101s while it analysed; the submit now
         # enqueues and returns a job to poll, so the response is what flips the controls.
-        start = self.js[self.js.index("async function startTranslation"):]
+        start = self.js[self.js.index("async function runStartTranslation"):]
         body = start[:start.index("\n  async function cancelTranslation")]
         self.assertLess(body.index("await api('/api/ui/run'"), body.index("setRunControls(true"))
 
@@ -1092,7 +1092,7 @@ class FrontendContractTests(unittest.TestCase):
 
     def test_error_panel_never_prints_secrets_or_tracebacks(self):
         panel = self.js[self.js.index("function showStartError"):]
-        panel = panel[:panel.index("async function startTranslation")]
+        panel = panel[:panel.index("// Single flight, same shape as refreshBootstrap")]
         for bad in ("traceback", "stack", "NVIDIA_API_KEY", "Authorization", "token", ".env"):
             self.assertNotIn(bad, panel, bad)
 

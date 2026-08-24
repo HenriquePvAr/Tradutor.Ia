@@ -275,6 +275,56 @@ Famílias de rotas: estado/bootstrap, submissão e cancelamento, revisão de fon
 de qualidade, revisão de página, rerun de revisão, auditoria linguística, tradução humana
 assistida, máscara humana, fila, perfil, histórico, comunidade.
 
+### Início de tradução: camadas de proteção
+
+Todos os pontos de entrada — o botão `#startBtn`, `Enter` no campo de URL, `Enter` no campo
+de nome e o botão de repetir — chamam a mesma função `startTranslation()`. Não existe
+caminho paralelo. As camadas, da mais superficial para a autoritativa:
+
+| Camada | Onde | O que garante |
+| --- | --- | --- |
+| Rótulo/`disabled` do botão | `setRunControls`, `dataset.busy` | UX: o usuário vê que já clicou |
+| Single-flight | `startInFlight` em `tradutor_ui.js` | uma rajada de cliques compartilha **uma** operação |
+| Dedupe de fila | `_pending_duplicate()` em `ui_bridge.py` | resposta amigável `duplicate: true` para reenvio sequencial |
+| Índice único parcial | `uq_jobs_active_owner_chapter` | **a garantia real**: o banco recusa a segunda linha |
+
+`startTranslation()` é um wrapper síncrono sobre `runStartTranslation()`, no mesmo formato
+já usado por `refreshBootstrap`/`bootstrapInFlight`: o lock é tomado **antes de qualquer
+`await`**, então um segundo clique no mesmo tick reaproveita a promise em vez de abrir uma
+nova cadeia de análise de fonte, checagem de licença e criação de job.
+
+Desabilitar o botão é UX, não contrato de concorrência. `_pending_duplicate()` sozinho
+também não bastava: ele lê a fila e só depois cria o job, sem nada segurando o intervalo —
+duas submissões simultâneas viam "sem duplicata" e ambas criavam linha (`START-SPAM-001`).
+Quem resolve uma submissão genuinamente simultânea é o banco.
+
+O índice é parcial e tem como chave o **slug do capítulo** (lido de
+`configuration_json.$.chapter_slug`, a mesma chave que o bridge usa), nunca `series_slug` —
+uma série tem legitimamente vários capítulos e vários outputs de retry em voo ao mesmo
+tempo. Status terminais ficam fora do predicado: isso barra submissão duplicada, jamais uma
+retradução deliberada mais tarde.
+
+### Tela de prontidão e painel Pipeline
+
+`#loadingSurface` fica **dentro da coluna de "Nova tradução"**, logo acima do painel
+Pipeline. `renderBootstrapSurface()` só desenha enquanto o boot está de fato acontecendo:
+`closeBoot()` trava `bootHasClosed` e, a partir daí, nenhum `refreshBootstrap()` posterior
+repinta a tela de prontidão.
+
+Sem essa trava, qualquer `refreshBootstrap()` — que roda durante toda a vida do aplicativo —
+re-percorria `setBootStage(1..7)` e, como `setBootStage` avança por catraca
+(`bootHighestStage`), pintava direto o estado final ("Tradutor.IA pronto", "8 de 8 etapas")
+sobre a aplicação em uso, deslocando o Pipeline real para fora da tela
+(`PIPELINE-UI-REGRESSION-001`).
+
+As verificações de startup (Sessão, Ambiente, Interface) continuam existindo; apenas a
+superfície visual deixou de invadir a aplicação já iniciada. Uma falha real de startup
+ainda chega a `setBootFailed()` e ao overlay `#boot`, com ação de recuperação.
+
+O painel Pipeline em si é dirigido por estado real (`renderProgress`), com as etapas de
+produção atuais — `source_analysis`, `awaiting_source_review`, `download`, `validation`,
+`ocr`, `translate`, `render`, `pdf`, `quality_review` — e nunca por animação sintética.
+
 ## 7. Ciclo de vida do worker e do runner
 
 `worker_service.py` roda um laço:
@@ -472,7 +522,16 @@ clique real, duplo clique, rejeição do backend, exclusão mútua com **Cancela
 
 ## 10. Job store (SQLite) e sistema de arquivos de runtime
 
-`job_store.py` — `SCHEMA_VERSION = 9`, SQLite em modo WAL com `busy_timeout`.
+`job_store.py` — `SCHEMA_VERSION = 10`, SQLite em modo WAL com `busy_timeout`.
+
+Índices únicos parciais impõem, no próprio banco, invariantes que código de aplicação não
+consegue garantir sob concorrência:
+
+| Índice | Invariante |
+| --- | --- |
+| `uq_jobs_active_review_rerun_parent` | um rerun de revisão ativo por job pai |
+| `uq_jobs_retry_parent` | um retry por job anterior |
+| `uq_jobs_active_owner_chapter` | uma tradução ativa por owner e capítulo (v10) |
 
 Tabelas: `jobs`, `workers`, `meta`, `quality_review_item_revisions` e tabelas auxiliares
 de revisão. Timestamps são epoch em segundos (`REAL`); `NULL` significa "ainda não".
@@ -1045,6 +1104,37 @@ física por replay acidental.
 `ui_history.py` (`UIHistoryStore`) mantém o histórico local em `.cache/ui_history.json` e
 descobre tanto saídas novas em `output/<slug>/<run_id>/` quanto saídas antigas em
 `output/<slug>/` que não têm registro no banco. Nada é migrado automaticamente.
+
+### Contrato de atualização do Histórico
+
+O histórico de um usuário autenticado vem do banco
+(`_history_payload_for_owner` → `list_jobs_for_owner` com status terminais), **não** da
+varredura do sistema de arquivos. A descoberta por diretório permanece apenas como
+superfície de recuperação de artefatos legados.
+
+O navegador só refaz o bootstrap — e portanto só redesenha o Histórico — quando o
+`history_revision` publicado muda entre dois polls. Esse número é a soma de duas parcelas:
+
+| Parcela | Origem | Cobre |
+| --- | --- | --- |
+| `UiBridge.history_revision` | contador em memória do processo da UI | mutações feitas pela própria UI (cancelar, confirmar revisão, apagar) |
+| `JobStore.terminal_revision(owner_id)` | `COUNT(*) + MAX(updated_at)` sobre jobs terminais | a transição terminal escrita pelo **worker**, em outro processo |
+
+A segunda parcela existe porque a primeira é cega ao worker: a finalização de um capítulo
+é gravada direto no SQLite por outro processo, então o contador em memória nunca se movia e
+o capítulo pronto ficava fora do Histórico até que alguma ação não relacionada da UI
+incrementasse o contador. Era essa a demora de vários minutos observada no Chapter 2
+(`HISTORY-REVISION-CROSS-PROCESS-001`).
+
+Ambas as parcelas são monotônicas — a contagem só cresce e `MAX(updated_at)` só avança —
+logo a soma nunca retorna a um valor já visto e a comparação `!==` no cliente não pode
+perder uma atualização.
+
+**Ordem de finalização.** A perícia do Chapter 2 confirmou que os artefatos são publicados
+*antes* do estado terminal no banco: PDF em 20:04:25.68, `run_manifest.json` em 20:04:29.84,
+linha do job terminal em 20:04:31.077, com `pdf_path` e `manifest_path` já vinculados. Não
+houve corrida de finalização; `review_required` é um estado **com** artefato completo, nunca
+"sem PDF".
 
 ## 19. Autenticação e autorização
 

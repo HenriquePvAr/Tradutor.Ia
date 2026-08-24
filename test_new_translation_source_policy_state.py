@@ -444,7 +444,7 @@ class FrontendSourceStateContracts(unittest.TestCase):
         self.assertIn("enter</b> inicia a análise", shell)
         self.assertIn("async function validateSource", UI)
         self.assertIn("await api('/api/ui/source/analyze'", UI)
-        start = UI[UI.index("async function startTranslation"):]
+        start = UI[UI.index("async function runStartTranslation"):]
         start = start[:start.index("\n  async function cancelTranslation")]
         self.assertIn("await api('/api/ui/source/analyze'", start)
         self.assertIn("source_analysis_result_id", start)
@@ -463,7 +463,7 @@ class FrontendSourceStateContracts(unittest.TestCase):
         self.assertNotIn("source_analysis_result_missing", reasons)
 
     def test_auto_analysis_failure_releases_start_busy_lock(self):
-        start = UI[UI.index("async function startTranslation"):]
+        start = UI[UI.index("async function runStartTranslation"):]
         start = start[:start.index("\n  async function cancelTranslation")]
         self.assertGreaterEqual(start.count("delete button.dataset.busy"), 3)
         self.assertIn("updateTranslationStartControls();\n        return;", start)

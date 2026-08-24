@@ -92,7 +92,7 @@ class MainE2eUiFindingContracts(unittest.TestCase):
 
     def test_successful_source_analysis_adopts_the_draft_and_exposes_start_reasons(self):
         validate = self.js[self.js.index("async function validateSource"):]
-        validate = validate[:validate.index("\n  async function startTranslation")]
+        validate = validate[:validate.index("\n  // Single flight, same shape as refreshBootstrap")]
         self.assertIn("appState.newTranslationDraft = false", validate)
         self.assertIn("result?.policy", validate)
         self.assertIn("workspace_source_policy", validate)

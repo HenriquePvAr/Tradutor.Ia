@@ -294,6 +294,11 @@
     return {kind: 'stage', index: stage - 1, reducedMotion: params.get('visual_reduced_motion') === '1'};
   })();
   let bootHighestStage = 0;
+  // Latched once boot is over. refreshBootstrap() runs for the whole life of
+  // the app and re-walks setBootStage(1..7) every time, so without this the
+  // finished readiness view repainted into #loadingSurface -- which sits in
+  // the Nova tradução column, right above the real Pipeline panel.
+  let bootHasClosed = false;
   const bootStages = [
     'loading.stage.init', 'loading.stage.local', 'loading.stage.auth', 'loading.stage.session',
     'loading.stage.profile', 'loading.stage.settings', 'loading.stage.community', 'loading.stage.ready',
@@ -385,6 +390,10 @@
     const surface = window.TradutorProcessingSurface;
     const root = $('#loadingSurface');
     if (!view || !surface || !root) return;
+    // Boot is over: this surface describes startup, and startup is not what
+    // the user is looking at any more. A real startup failure still reaches
+    // setBootFailed/#boot, so nothing is hidden by refusing to paint here.
+    if (bootHasClosed) return;
     const failed = bootEl?.dataset.bootState === 'failed';
     // Bootstrap groups are session, environment and interface. The boot sequence
     // has more steps than that, so the index is mapped by proportion rather than
@@ -426,6 +435,7 @@
     $('#bootFooterLabel') && ($('#bootFooterLabel').textContent = 'ação necessária');
   }
   function closeBoot() {
+    bootHasClosed = true;
     if (bootEl) bootEl.classList.add('hide');
     // The bootstrap surface described the boot, which is over. Leaving it up
     // would show a finished bootstrap behind the panel.
@@ -1577,7 +1587,19 @@
     }
   }
 
-  async function startTranslation() {
+  // Single flight, same shape as refreshBootstrap below. Every start
+  // entrypoint -- the button, Enter on the URL or name field, the retry
+  // button -- lands here, and the lock is taken synchronously, before any
+  // await, so a burst of clicks cannot open a second chain. Disabling the
+  // button is UX; this is the concurrency contract. The database settles what
+  // survives a genuinely simultaneous submission.
+  let startInFlight = null;
+  function startTranslation() {
+    if (startInFlight) return startInFlight;
+    startInFlight = runStartTranslation().finally(() => { startInFlight = null; });
+    return startInFlight;
+  }
+  async function runStartTranslation() {
     if (!validateForm()) return;
     if (appState.selectedSourceType === 'url' && !workspacePolicyAllowsProcessing()) {
       updateTranslationStartControls();

@@ -594,3 +594,51 @@ motivo são idempotentes.
 (texto fantasma/contraste ruim em região texturizada), `ART-RECON-002` (patch claro/plano
 sobre textura), `TRANSLATION-SEMANTIC-001` (português semântico/natural ruim) e leitor PDF
 integrado permanecem abertos para #80/#81/#82.
+
+### TDD #80 — Confiabilidade de finalização, UI de pipeline e idempotência de start (2026-08-24, base `a132533`)
+
+**Gatilho:** uso manual real após o #79 expôs três defeitos de aplicação — não de qualidade
+de tradução. O Chapter 2 concluiu mas só apareceu em "Capítulos traduzidos" minutos depois;
+uma tela azul de prontidão cobria a interface normal; cliques rápidos em Iniciar produziam
+várias submissões com a resposta "esse processo já está na fila".
+
+**Perícia (somente leitura, sem rerun).** Job `9d213d4b…`, run `da736270-…`,
+`review_required` / `quality_review_required`, 42 itens de fonte aceitos (43 candidatos, 1
+rejeitado) → Smart Split → 84 páginas lógicas → 84 páginas de PDF. A linha do tempo em disco:
+
+| Evento | Instante |
+| --- | --- |
+| PDF gravado (13.395.572 bytes) | 20:04:25.68 |
+| `run_manifest.json` | 20:04:29.84 |
+| `job_manifest.json` | 20:04:31.08 |
+| Linha do job terminal, com `pdf_path` e `manifest_path` vinculados | 20:04:31.077 |
+
+| Defeito | Estado |
+| --- | --- |
+| `FINALIZATION-RACE-001` | **NÃO registrado — não comprovado.** Os artefatos foram publicados *antes* do estado terminal; a ordem estava correta. |
+| `HISTORY-REVISION-CROSS-PROCESS-001` | Registrado. `history_revision` era contador em memória do processo da UI; a transição terminal é escrita pelo worker, em outro processo, então o sinal de refresh nunca se movia. |
+| `PIPELINE-UI-REGRESSION-001` | Registrado. `renderBootstrapSurface()` repintava a tela de prontidão em `#loadingSurface`, dentro da coluna de "Nova tradução", a cada `refreshBootstrap()`. |
+| `START-SPAM-001` | Registrado. `_pending_duplicate()` lê a fila e só depois cria o job, sem nada segurando o intervalo (TOCTOU). |
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | §6 ganha camadas de proteção do start e comportamento da tela de prontidão/Pipeline; §10 documenta `SCHEMA_VERSION = 10` e os índices únicos parciais; §18 ganha o contrato de atualização do Histórico e a ordem de finalização comprovada. |
+| `docs/DOCUMENTATION_AUDIT.md` | **Atualizado** | Este registro. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Nenhuma descrição de comportamento visível estava errada: o guia não prometia atualização imediata do histórico nem descrevia a tela de prontidão. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Não requer mudança estrutural** | O #80 não executa tradução nem altera gates de qualidade. |
+
+**Resultado #80:** o sinal de refresh do Histórico passa a somar uma parcela derivada do
+banco (`JobStore.terminal_revision`), tornando-o cross-process; `closeBoot()` trava
+`bootHasClosed` e nenhum refresh posterior repinta a tela de prontidão sobre a aplicação; e
+o start ganha single-flight no cliente mais o índice único parcial
+`uq_jobs_active_owner_chapter`, que é a garantia real contra submissão simultânea. O painel
+Pipeline compacto e as etapas de produção já existiam e foram preservados — estavam sendo
+deslocados, não removidos.
+
+**Honestidade #80:** nenhum job real, nenhuma chamada de provider, nenhuma mutação remota,
+nenhum push. O run do Chapter 2 não foi reexecutado nem alterado; toda a perícia foi leitura
+do banco local e do diretório de saída. `review_required` permanece um estado **com**
+artefato completo — o PDF do Chapter 2 existe e está vinculado.
+
+**Roadmap pós-#80:** `ART-RECON-001`/`ART-RECON-002` (#81),
+`TRANSLATION-SEMANTIC-001` (#82) e leitor PDF integrado (#83) seguem abertos.

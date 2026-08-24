@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
@@ -177,6 +177,32 @@ class JobStore:
     def close(self) -> None:
         self._conn.close()
 
+    def terminal_revision(self, owner_id: str = "") -> float:
+        """A number that moves whenever any terminal job changes.
+
+        The History list refreshes only when the revision the backend publishes
+        differs from the one the browser holds.  That revision used to be an
+        in-memory counter in the UI process, but the terminal transition is
+        written by the *worker* process straight to this database, so the
+        counter never moved and a finished chapter stayed invisible for
+        minutes.  Deriving it here makes the signal cross-process.
+
+        Both terms are monotonic -- a row count only grows, ``MAX(updated_at)``
+        only advances -- so the sum only ever moves forward and cannot land
+        back on a value it already had.
+        """
+        placeholders = ",".join("?" for _ in JobStatus.TERMINAL)
+        sql = (
+            f"SELECT COUNT(*) AS rows_seen, COALESCE(MAX(updated_at),0) AS latest "
+            f"FROM jobs WHERE status IN ({placeholders})"
+        )
+        params: list[Any] = list(JobStatus.TERMINAL)
+        if owner_id:
+            sql += " AND owner_id=?"
+            params.append(owner_id)
+        row = self._conn.execute(sql, params).fetchone()
+        return float(row["rows_seen"]) + float(row["latest"])
+
     # ---- schema -------------------------------------------------------------
     def _migrate(self) -> None:
         cur = self._conn.execute(
@@ -205,6 +231,8 @@ class JobStore:
             self._migrate_v8()
         if version < 9:
             self._migrate_v9()
+        if version < 10:
+            self._migrate_v10()
         self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
@@ -230,6 +258,48 @@ class JobStore:
         self._migrate_v7()
         self._migrate_v8()
         self._migrate_v9()
+        self._migrate_v10()
+
+    def _migrate_v10(self) -> None:
+        """At most one active translation per owner and *chapter*.
+
+        ``_pending_duplicate()`` in the UI bridge reads the queue and then
+        creates a job, with nothing holding the gap: two submissions from one
+        rapid burst both saw "no duplicate" and both created a row.  The
+        database is the only place that can settle that race, so the guarantee
+        lives here as a partial unique index -- the same shape already used by
+        ``uq_jobs_active_review_rerun_parent`` and ``uq_jobs_retry_parent``.
+
+        The key is the chapter slug the bridge itself dedupes on, read out of
+        the configuration where it is stored.  It is deliberately NOT
+        ``series_slug``: one series legitimately has many chapters and many
+        retry outputs in flight at once, and keying on it would refuse honest
+        submissions.
+
+        Terminal statuses are outside the predicate, so this stops a double
+        submission and never a deliberate re-translation later.
+        """
+        active = (
+            JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
+            JobStatus.SOURCE_ANALYSIS_READY, JobStatus.CLAIMING, JobStatus.STARTING,
+            JobStatus.RUNNING, JobStatus.CANCELLING,
+        )
+        statuses = ",".join(f"'{status}'" for status in active)
+        slug = "json_extract(configuration_json,'$.chapter_slug')"
+        try:
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_active_owner_chapter "
+                f"ON jobs(owner_id,{slug}) WHERE operation_kind='chapter' "
+                f"AND {slug} IS NOT NULL AND {slug} != '' "
+                f"AND status IN ({statuses})"
+            )
+        except sqlite3.IntegrityError:
+            # ponytail: a database that already holds duplicate active rows
+            # cannot take the index yet. _backfill_additive_columns re-runs
+            # this on every open, so it self-heals once the reconcilers settle
+            # those rows. Escalate to an explicit repair only if that is ever
+            # observed to persist.
+            pass
 
     def _migrate_v9(self) -> None:
         """Persist child operations without turning them into chapter attempts."""

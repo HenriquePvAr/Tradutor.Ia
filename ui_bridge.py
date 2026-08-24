@@ -3947,7 +3947,15 @@ class UiBridge:
                 "worker_id": (worker or {}).get("worker_id", ""),
                 "pid": (worker or {}).get("pid", 0),
             },
-            "history_revision": self.history_revision,
+            # The in-memory counter covers this process's own mutations; the
+            # DB-derived term covers the worker's terminal write, which this
+            # process never sees.  Without it a finished chapter stayed out of
+            # History until some unrelated UI action happened to bump the
+            # counter -- the multi-minute delay reported for Chapter 2.
+            "history_revision": (
+                self.history_revision
+                + self.store.terminal_revision(owner_id or "")
+            ),
         }
 
     @staticmethod

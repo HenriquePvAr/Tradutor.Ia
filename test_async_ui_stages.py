@@ -58,15 +58,15 @@ class StageLabelTests(unittest.TestCase):
 
 class SubmitFlowTests(unittest.TestCase):
     def test_pipeline_panel_is_rendered_before_the_submit_response(self):
-        body = JS[JS.index("async function startTranslation"):]
+        body = JS[JS.index("async function runStartTranslation"):]
         body = body[:body.index("\n  async function cancelTranslation")]
         self.assertLess(body.index("renderLocalPipelineState("), body.index("await api('/api/ui/run'"))
 
     def test_source_validation_is_separate_from_real_pipeline_start(self):
-        body = JS[JS.index("async function startTranslation"):]
+        body = JS[JS.index("async function runStartTranslation"):]
         body = body[:body.index("\n  async function cancelTranslation")]
         validation = JS[JS.index("async function validateSource"):]
-        validation = validation[:validation.index("\n  async function startTranslation")]
+        validation = validation[:validation.index("\n  // Single flight, same shape as refreshBootstrap")]
         self.assertIn("source_validation_started", validation)
         self.assertIn("/api/ui/source/analyze", validation)
         self.assertNotIn("/api/ui/run", validation)
@@ -125,7 +125,7 @@ class ReasonMessageTests(unittest.TestCase):
 
     def test_no_traceback_or_secret_reaches_the_panel(self):
         panel = JS[JS.index("function showStartError"):]
-        panel = panel[:panel.index("async function startTranslation")]
+        panel = panel[:panel.index("// Single flight, same shape as refreshBootstrap")]
         for bad in ("traceback", "stack", "NVIDIA_API_KEY", "Authorization", ".env"):
             self.assertNotIn(bad, panel, bad)
 
