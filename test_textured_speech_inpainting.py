@@ -342,6 +342,68 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
 
         self.assertFalse(metrics["white_patch_rejected"])
 
+    def test_saturated_uniform_dark_backdrop_is_not_rejected_as_dark_blotch(self):
+        image = np.full((180, 260, 3), (18, 12, 28), dtype=np.uint8)
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        mask[70:105, 60:200] = 255
+        cleaned = image.copy()
+        cleaned[mask > 0] = (18, 12, 28)
+        group = _speech_group(
+            [_line("BEFORE OUR NIGHTMARES", (60, 70, 140, 35))],
+            "BEFORE OUR NIGHTMARES",
+        )
+        group.background_metrics = {
+            "brightness_mean": 20.0,
+            "dark_pixel_ratio": 0.98,
+            "interior_dark_std": 12.0,
+            "interior_value_span": 39.0,
+            "interior_dark_texture": 1.1,
+            "interior_dark_gradient": 12.0,
+        }
+
+        metrics = ocr_balloon._dark_blotch_artifact_metrics(
+            image,
+            cleaned,
+            group,
+            mask,
+            "unknown",
+            FALLBACK,
+        )
+
+        self.assertTrue(metrics["dark_backdrop_restored"])
+        self.assertFalse(metrics["dark_blotch_rejected"])
+
+    def test_nonuniform_dark_art_still_rejects_dark_blotch(self):
+        image = np.full((180, 260, 3), 120, dtype=np.uint8)
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        mask[70:105, 60:200] = 255
+        cleaned = image.copy()
+        cleaned[mask > 0] = (10, 10, 10)
+        group = _speech_group(
+            [_line("BEFORE OUR NIGHTMARES", (60, 70, 140, 35))],
+            "BEFORE OUR NIGHTMARES",
+        )
+        group.background_metrics = {
+            "brightness_mean": 80.0,
+            "dark_pixel_ratio": 0.4,
+            "interior_dark_std": 60.0,
+            "interior_value_span": 160.0,
+            "interior_dark_texture": 20.0,
+            "interior_dark_gradient": 80.0,
+        }
+
+        metrics = ocr_balloon._dark_blotch_artifact_metrics(
+            image,
+            cleaned,
+            group,
+            mask,
+            "unknown",
+            FALLBACK,
+        )
+
+        self.assertFalse(metrics["dark_backdrop_restored"])
+        self.assertTrue(metrics["dark_blotch_rejected"])
+
     def test_unproven_textured_white_patch_is_still_rejected(self):
         image = np.full((180, 260, 3), 120, dtype=np.uint8)
         mask = np.zeros(image.shape[:2], dtype=np.uint8)

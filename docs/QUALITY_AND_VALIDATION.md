@@ -199,6 +199,10 @@ sem prova positiva. O source-scoped area gate agora registra e decide por
 `source_scoped_mask_to_page_ratio`, mantendo `source_evidence_to_page_ratio` como
 telemetria; assim uma caixa fonte grande não bloqueia uma máscara owned pequena, e uma
 máscara grande continua falhando. `QUALITY` permanece aberta até um E2E real pós-#70.
+Para o mesmo perfil p002-like, o dark-blotch guard também diferencia fundo narrativo
+extremamente escuro e uniforme de arte escura irregular: alta saturação sozinha não bloqueia
+a limpeza quando brilho, razão de pixels escuros e textura interna provam backdrop uniforme,
+mas regiões escuras não-uniformes seguem fail-closed.
 O gate de fidelidade também trata passiva preservada (`being chosen` → `ser escolhido`)
 como faithful em vez de `state_action_changed`, preservando o roteamento para mudanças reais
 de ação/intenção.

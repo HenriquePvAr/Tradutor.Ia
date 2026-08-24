@@ -884,6 +884,10 @@ evidência/box fonte inteira. A evidência grande continua persistida para audit
 o gate físico; o risco visual que decide se a tentativa pode prosseguir é a área real que
 será alterada. Isso fecha o blocker p002-like em que a caixa fonte era grande, mas a máscara
 owned era menor e ainda fail-closed pelo gate físico se deixar glyph fonte descoberto.
+O mesmo caso p002-like também provou que fundos extremamente escuros e uniformes podem ter
+saturação alta sem serem artefato de blotch: o guard agora aceita somente a combinação
+estreita de brilho muito baixo, alta razão de pixels escuros e interior uniforme; arte
+escura não-uniforme continua reprovada como `dark_blotch_created_on_textured_art`.
 
 Para p044-like, o gate de fidelidade semântica não roteia mais passiva preservada como
 `state_action_changed`: `being chosen` pode ser fielmente traduzido como `ser escolhido`.

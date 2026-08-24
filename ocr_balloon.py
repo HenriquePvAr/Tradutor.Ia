@@ -8447,6 +8447,14 @@ def _proven_uniform_dark_region(metrics):
         metrics.get("dark_context")
         or metrics.get("uniform_dark_interior")
         or (
+            float(metrics.get("brightness_mean", 255.0)) <= 35.0
+            and float(metrics.get("dark_pixel_ratio", 0.0)) >= 0.95
+            and float(metrics.get("interior_dark_std", 255.0)) <= 18.0
+            and float(metrics.get("interior_value_span", 255.0)) <= 45.0
+            and float(metrics.get("interior_dark_texture", 255.0)) <= 6.0
+            and float(metrics.get("interior_dark_gradient", 255.0)) <= 30.0
+        )
+        or (
             float(metrics.get("context_dark_pixel_ratio", 0.0)) >= 0.90
             and float(metrics.get("context_saturation_mean", 255.0)) <= 18.0
         )
