@@ -195,7 +195,10 @@ com alto `main_text_score` mesmo quando RapidOCR sinaliza `improbable_apostrophe
 Além disso, p025-like não é reprovado como white patch quando a própria região prova fundo
 claro uniforme/enclosed, mesmo se o classificador coarse marcou `textured_art`. Essas
 exceções não promovem promo/crédito/SFX, tokens curtos ininteligíveis nem patches brancos
-sem prova positiva. `QUALITY` permanece aberta até um E2E real pós-#70.
+sem prova positiva. O source-scoped area gate agora registra e decide por
+`source_scoped_mask_to_page_ratio`, mantendo `source_evidence_to_page_ratio` como
+telemetria; assim uma caixa fonte grande não bloqueia uma máscara owned pequena, e uma
+máscara grande continua falhando. `QUALITY` permanece aberta até um E2E real pós-#70.
 
 ## Quality gate final
 

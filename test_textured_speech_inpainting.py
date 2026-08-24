@@ -11,6 +11,7 @@ from offline_test_guard import install_offline_network_guard
 install_offline_network_guard()
 
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -232,6 +233,61 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
             "source_scoped_region_too_large_for_safe_cleanup",
         )
 
+    def test_large_source_evidence_with_small_mask_is_measured_by_mask_risk(self):
+        image = _textured_dark_panel(shape=(1000, 1000))
+        box = (80, 260, 360, 260)
+        _write_light_text(image, "SMALL STORY TEXT", (95, 320), scale=0.8)
+        group = _speech_group(
+            [_line("SMALL STORY TEXT", box)],
+            "SMALL STORY TEXT",
+        )
+        component_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        component_mask[300:340, 100:320] = 255
+        component_metrics = {
+            "text_component_pixels": int(np.count_nonzero(component_mask)),
+            "accepted_text_components": 1,
+            "component_based": True,
+        }
+
+        empty_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        with patch.object(
+            ocr_balloon,
+            "_component_text_mask",
+            return_value=(component_mask, dict(component_metrics)),
+        ), patch.object(
+            ocr_balloon,
+            "_uniform_dark_line_text_mask",
+            return_value=(empty_mask, {"uniform_dark_line_pixels": 0, "uniform_dark_line_count": 0}),
+        ), patch.object(
+            ocr_balloon,
+            "_uniform_light_line_text_mask",
+            return_value=(empty_mask, {"uniform_light_line_pixels": 0, "uniform_light_line_count": 0}),
+        ), patch.object(
+            ocr_balloon,
+            "_detached_dark_text_components_mask",
+            return_value=(empty_mask, {"detached_dark_text_components": 0, "detached_dark_text_pixels": 0}),
+        ), patch.object(
+            ocr_balloon,
+            "_detached_light_text_components_mask",
+            return_value=(empty_mask, {"detached_text_components": 0, "detached_text_pixels": 0}),
+        ):
+            _cleaned, _mask, metrics = _remove_text_for_group(
+                image,
+                image,
+                group,
+                strategy=FALLBACK,
+            )
+
+        self.assertGreater(
+            metrics["source_evidence_to_page_ratio"],
+            config.MAX_SOURCE_SCOPED_PAGE_AREA_RATIO,
+        )
+        self.assertLessEqual(
+            metrics["source_scoped_mask_to_page_ratio"],
+            config.MAX_SOURCE_SCOPED_PAGE_AREA_RATIO,
+        )
+        self.assertTrue(metrics["mask_valid"], metrics.get("reason"))
+
     def test_proven_light_enclosure_is_not_rejected_as_white_patch(self):
         image = np.full((180, 260, 3), 238, dtype=np.uint8)
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
@@ -247,6 +303,33 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
             "strict_uniform_light": True,
             "uniform_light": True,
             "dominant_white_enclosure": True,
+        }
+
+        metrics = ocr_balloon._white_patch_artifact_metrics(
+            image,
+            cleaned,
+            group,
+            mask,
+            "textured_art",
+        )
+
+        self.assertFalse(metrics["white_patch_rejected"])
+
+    def test_open_light_art_caption_is_not_rejected_as_white_patch(self):
+        image = np.full((180, 260, 3), 205, dtype=np.uint8)
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        mask[70:105, 60:200] = 255
+        image[mask > 0] = (48, 48, 48)
+        cleaned = image.copy()
+        cleaned[mask > 0] = (248, 248, 248)
+        group = _speech_group(
+            [_line("SINCE IT COST ME EVERYTHING", (60, 70, 140, 35))],
+            "SINCE IT COST ME EVERYTHING",
+        )
+        group.background_metrics = {
+            "open_light_art_caption": True,
+            "brightness_mean": 216.0,
+            "dark_pixel_ratio": 0.0,
         }
 
         metrics = ocr_balloon._white_patch_artifact_metrics(

@@ -7955,11 +7955,15 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
             float(evidence_pixels / page_area),
             6,
         )
+        metrics["source_scoped_mask_to_page_ratio"] = round(
+            float(mask_area / page_area),
+            6,
+        )
         metrics["mask_to_source_evidence_ratio"] = round(
             float(mask_area / evidence_pixels),
             4,
         )
-        if evidence_pixels / page_area > config.MAX_SOURCE_SCOPED_PAGE_AREA_RATIO:
+        if mask_area / page_area > config.MAX_SOURCE_SCOPED_PAGE_AREA_RATIO:
             metrics["mask_valid"] = False
             metrics["reason"] = "source_scoped_region_too_large_for_safe_cleanup"
             return current_bgr.copy(), cleanup_mask, metrics
@@ -8120,7 +8124,7 @@ def _white_patch_artifact_metrics(
     cleanup_mask,
     background_type,
 ):
-    if background_type in {"white_balloon", "narration_box"} or _proven_uniform_light_region(
+    if background_type in {"white_balloon", "narration_box"} or _proven_light_cleanup_region(
         getattr(group, "background_metrics", {}) or {}
     ):
         return {
@@ -8449,8 +8453,8 @@ def _proven_uniform_dark_region(metrics):
     )
 
 
-def _proven_uniform_light_region(metrics):
-    """Uniform light backdrop proven by the region metrics, even if conservatively typed.
+def _proven_light_cleanup_region(metrics):
+    """Light backdrop proven by region metrics, even if conservatively typed.
 
     Some real speech regions sit in a white/enclosed panel whose surrounding art
     keeps the coarse background type at ``textured_art``.  A source-scoped mask
@@ -8461,12 +8465,19 @@ def _proven_uniform_light_region(metrics):
 
     metrics = metrics or {}
     return bool(
-        metrics.get("strict_uniform_light")
-        and metrics.get("uniform_light")
-        and (
-            metrics.get("dominant_white_enclosure")
-            or metrics.get("stylized_white_enclosure")
-            or metrics.get("strongly_uniform_white")
+        (
+            metrics.get("strict_uniform_light")
+            and metrics.get("uniform_light")
+            and (
+                metrics.get("dominant_white_enclosure")
+                or metrics.get("stylized_white_enclosure")
+                or metrics.get("strongly_uniform_white")
+            )
+        )
+        or (
+            metrics.get("open_light_art_caption")
+            and float(metrics.get("brightness_mean", 0.0)) >= 170.0
+            and float(metrics.get("dark_pixel_ratio", 1.0)) <= 0.08
         )
     )
 
@@ -8677,7 +8688,7 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
             )
             or (
                 strategy == "source_scoped"
-                and _proven_uniform_light_region(group.background_metrics)
+                and _proven_light_cleanup_region(group.background_metrics)
             )
         )
     )

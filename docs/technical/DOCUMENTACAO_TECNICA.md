@@ -878,6 +878,13 @@ fail-closed. Para p025-like, uma região clara comprovada por `strict_uniform_li
 `large_white_patch_on_nonwhite_background` só porque o tipo coarse ficou `textured_art`;
 sem essa prova positiva, o guard de patch branco permanece ativo.
 
+Ainda no caminho `source_scoped`, o limite `MAX_SOURCE_SCOPED_PAGE_AREA_RATIO` mede a área
+da máscara efetivamente escrita (`source_scoped_mask_to_page_ratio`), não a área da
+evidência/box fonte inteira. A evidência grande continua persistida para auditoria e para
+o gate físico; o risco visual que decide se a tentativa pode prosseguir é a área real que
+será alterada. Isso fecha o blocker p002-like em que a caixa fonte era grande, mas a máscara
+owned era menor e ainda fail-closed pelo gate físico se deixar glyph fonte descoberto.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`
