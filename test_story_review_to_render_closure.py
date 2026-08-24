@@ -87,6 +87,33 @@ class StoryReviewToRenderClosureTests(unittest.TestCase):
         self.assertFalse(_should_translate_group(promo))
         self.assertFalse(_should_translate_group(logo))
 
+    def test_textured_decorative_story_sentence_can_use_source_scoped_cleanup(self):
+        group = _story_group(
+            "IT BETTER BE WORTH IT.",
+            classification="decorative",
+        )
+        group.background_type = "textured_art"
+        group.main_text_score = 1.0
+        group.quality_reasons = []
+
+        self.assertTrue(_should_translate_group(group))
+        self.assertEqual(_source_scoped_speech_reason(group), "")
+
+    def test_short_textured_decorative_label_cannot_use_source_scoped_cleanup(self):
+        group = _story_group(
+            "A BRIGHT MESSAGE!",
+            classification="decorative",
+        )
+        group.background_type = "textured_art"
+        group.main_text_score = 1.0
+        group.quality_reasons = []
+
+        self.assertFalse(_should_translate_group(group))
+        self.assertEqual(
+            _source_scoped_speech_reason(group),
+            "source_scoped_requires_story_translation_authority",
+        )
+
     def test_declared_proper_name_repair_preserves_token_without_rejecting_region(self):
         group = _story_group(
             "Sunless... but people call me Sunny.",
@@ -213,6 +240,27 @@ class StoryReviewToRenderClosureTests(unittest.TestCase):
             self.assertTrue(_should_translate_group(group))
             self.assertTrue(group.quality_evidence.get("ocr_source_suspicious"))
             self.assertIn("improbable_apostrophe_pattern", group.quality_reasons)
+        finally:
+            config.OCR_ENGINE = original_engine
+
+    def test_damaged_open_story_phrase_is_routed_to_translation(self):
+        group = _story_group(
+            "NOT TH ECHEAP SYNTHETIC STUFF I'M USED TO GETTING INT HE SLUMS.",
+            classification="unknown",
+        )
+        group.source_engine = "rapidocr"
+        group.main_text_score = 0.62
+        group.quality_score, group.quality_reasons = score_group_ocr_quality(group)
+
+        original_engine = config.OCR_ENGINE
+        try:
+            config.OCR_ENGINE = "rapidocr"
+            blocked = enforce_rapidocr_quality_gate([group])
+
+            self.assertEqual(blocked, [])
+            self.assertFalse(group.ocr_quality_blocked)
+            self.assertTrue(_should_translate_group(group))
+            self.assertIn("long_consonant_run", group.quality_reasons)
         finally:
             config.OCR_ENGINE = original_engine
 

@@ -342,6 +342,63 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
 
         self.assertFalse(metrics["white_patch_rejected"])
 
+    def test_plain_light_art_caption_can_use_source_scoped_cleanup(self):
+        image = np.full((1100, 800, 3), 224, dtype=np.uint8)
+        cv2.fillPoly(
+            image,
+            [np.array([[0, 0], [170, 0], [65, 220], [0, 220]], dtype=np.int32)],
+            (198, 198, 198),
+        )
+        cv2.fillPoly(
+            image,
+            [np.array([[360, 0], [800, 0], [800, 220], [430, 220]], dtype=np.int32)],
+            (204, 204, 204),
+        )
+        cv2.putText(
+            image,
+            "IT COST ME",
+            (92, 92),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.05,
+            (0, 0, 0),
+            5,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            "EVERYTHING",
+            (60, 155),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.05,
+            (0, 0, 0),
+            5,
+            cv2.LINE_AA,
+        )
+        group = _speech_group(
+            [
+                _line("IT COST ME", (88, 55, 300, 48), line_id="L1"),
+                _line("EVERYTHING", (56, 118, 360, 48), line_id="L2"),
+            ],
+            "IT COST ME EVERYTHING",
+        )
+
+        background_type, metrics = ocr_balloon._classify_background_region(
+            image,
+            group,
+        )
+        self.assertEqual(background_type, "textured_art")
+        self.assertTrue(metrics["open_light_art_caption"])
+
+        _cleaned, _mask, cleanup = _remove_text_for_group(
+            image,
+            image,
+            group,
+            strategy=FALLBACK,
+        )
+
+        self.assertTrue(cleanup.get("mask_valid"), cleanup.get("reason"))
+        self.assertFalse(cleanup.get("white_patch_rejected"))
+
     def test_proven_light_enclosure_recovers_full_owned_line_mask(self):
         image = np.full((180, 260, 3), 238, dtype=np.uint8)
         group = _speech_group(

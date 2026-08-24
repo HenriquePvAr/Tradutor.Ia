@@ -1858,6 +1858,43 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(group.ignore_reason, "")
         self.assertTrue(_should_translate_group(group))
 
+    def test_textured_decorative_story_sentence_is_not_silently_preserved(self):
+        # The #69 production path had the same semantic sentence in a textured
+        # visual bucket; the coarse background veto must not override strong
+        # ordinary-clause evidence.
+        group = self._policy_group(
+            "decorative",
+            "IT BETTER BE WORTH IT.",
+            background_type="textured_art",
+            background_metrics={},
+            main_text_score=1.0,
+            quality_reasons=[],
+            confidence=0.894,
+        )
+
+        _apply_classification_policy(group)
+
+        self.assertFalse(group.ignored)
+        self.assertEqual(group.ignore_reason, "")
+        self.assertTrue(_should_translate_group(group))
+
+    def test_short_textured_decorative_label_still_fails_closed(self):
+        group = self._policy_group(
+            "decorative",
+            "A BRIGHT MESSAGE!",
+            background_type="textured_art",
+            background_metrics={},
+            main_text_score=1.0,
+            quality_reasons=[],
+            confidence=0.95,
+        )
+
+        _apply_classification_policy(group)
+
+        self.assertTrue(group.ignored)
+        self.assertEqual(group.ignore_reason, "decorative_text")
+        self.assertFalse(_should_translate_group(group))
+
     def test_compact_scan_promo_is_preserved_even_if_legacy_label_says_speech(self):
         # Credit/promo pages can be OCR-grouped as speech/narration.  The semantic
         # policy must win so a fix for story text does not translate scan promos.
@@ -3749,6 +3786,63 @@ class OCRQualityRegressionTests(unittest.TestCase):
         }
         _refine_classification_with_background(group)
         self.assertEqual(group.classification, "decorative")
+
+    def test_single_word_effect_over_false_light_enclosure_is_sfx(self):
+        line = _boxed_line("STAGGER", (484, 3334, 280, 231), confidence=0.73)
+        group = TextGroup(
+            group_id="T",
+            lines=[line],
+            text="STAGGER",
+            classification="speech",
+        )
+        group.background_type = "white_balloon"
+        group.inside_balloon_like_region = True
+        group.main_text_score = 0.06
+        group.near_image_edge = True
+        group.background_metrics = {
+            "image_width": 800,
+            "image_height": 3585,
+            "dark_pixel_ratio": 0.18,
+            "edge_density": 0.043,
+            "local_texture_mean": 8.131,
+        }
+
+        _refine_classification_with_background(group)
+
+        self.assertEqual(group.classification, "sfx")
+        self.assertTrue(group.ignored)
+        self.assertEqual(group.ignore_reason, "sfx_translation_disabled")
+        self.assertEqual(
+            group.classification_reason,
+            "single_word_effect_over_false_light_enclosure",
+        )
+
+    def test_plain_dialogue_word_over_light_enclosure_remains_speech(self):
+        for text in ("HELP", "WAIT", "RUN"):
+            with self.subTest(text=text):
+                line = _boxed_line(text, (120, 220, 140, 50), confidence=0.95)
+                group = TextGroup(
+                    group_id="T",
+                    lines=[line],
+                    text=text,
+                    classification="speech",
+                )
+                group.background_type = "white_balloon"
+                group.inside_balloon_like_region = True
+                group.main_text_score = 0.08
+                group.near_image_edge = True
+                group.background_metrics = {
+                    "image_width": 800,
+                    "image_height": 2400,
+                    "dark_pixel_ratio": 0.18,
+                    "edge_density": 0.043,
+                    "local_texture_mean": 8.131,
+                }
+
+                _refine_classification_with_background(group)
+
+                self.assertEqual(group.classification, "speech")
+                self.assertFalse(group.ignored)
 
     def test_large_white_patch_on_textured_art_is_rejected(self):
         original = np.full((180, 240, 3), 135, dtype=np.uint8)

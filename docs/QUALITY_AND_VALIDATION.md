@@ -212,6 +212,28 @@ O gate de fidelidade também trata passiva preservada (`being chosen` → `ser e
 como faithful em vez de `state_action_changed`, preservando o roteamento para mudanças reais
 de ação/intenção.
 
+O subgate local também diferencia dois resíduos de seleção do #69 sem fabricar candidato
+histórico: P005-like, apesar de OCR danificado (`NOT TH ECHEAP...`) e avisos
+`long_consonant_run`/`short_improbable_caps_token`, é story text translatável quando há
+autoridade story, pontuação e `main_text_score >= 0.58`; P062-like permanece translatável
+como speech longo compactado por OCR. Em sentido contrário, `STAGGER`-like passa a ser SFX
+quando a aparente região clara é apenas o contorno/efeito do lettering, preservando o mesmo
+comportamento de `TAK`, `TUR` e `TRNDGE`. Esses ajustes são prova local de routing: como o
+#69 não gerou candidatos reais para P005/P062, o quality gate real continua aberto até novo
+E2E autorizado.
+P006-like também fica explícito: texto `decorative` em `textured_art` só entra no fluxo de
+tradução quando tem formato de cláusula ordinária forte (`IT BETTER BE WORTH IT.`), com
+pontuação, confiança alta, `main_text_score` suficiente e OCR limpo. Rótulos curtos como
+placa/efeito continuam retidos como `decorative_text`, então o ajuste fecha a perda de
+story sem transformar arte ambiental em tradução automática. A mesma autoridade alimenta o
+gate `source_scoped`, evitando que a seleção aceite a região e o renderer a rejeite por
+uma leitura duplicada do rótulo legacy.
+Para o lado físico de P006-like, captions claros abertos recebem prova positiva de fundo
+claro (`open_light_art_caption`) e o cleanup source-scoped cobre também o contorno claro
+owned da fonte. Assim a região não falha como white-patch quando a alteração está limitada
+à geometria OCR e ao orçamento de área por página; fundos escuros uniformes continuam usando
+a máscara pequena, sem transformar uma evidência grande em retângulo de limpeza.
+
 ## Quality gate final
 
 `_validate_quality()` aprova a execução apenas quando todas estas condições são verdadeiras:

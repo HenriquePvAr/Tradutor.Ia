@@ -904,6 +904,28 @@ mantém o `BALAO_N` estável, recupera sua caixa real e pode usar o caminho norm
 limpeza/redesenho. Isso impede que um efeito como `ATa` contamine a caixa de
 `NATIONALMILITARIES WEREQLICKLY OVERWHELMED.` e gere falso `speed_lines`/white-patch.
 
+Ainda nesse ledger, texto story aberto com forte autoridade visual e pontuação normal pode
+prosseguir mesmo se o OCR produzir defeitos recuperáveis como `long_consonant_run` e
+`short_improbable_caps_token` (`NOT TH ECHEAP SYNTHETIC STUFF...`), desde que
+`main_text_score >= 0.58` e os validadores estruturais continuem satisfeitos. A exceção não
+promove promo/crédito/SFX nem garbage sem autoridade story. No sentido oposto, palavra única
+sobre falsa região clara, com caixa pequena, baixa confiança textual e textura/traço escuro
+compatível com lettering de efeito, é preservada como SFX por
+`single_word_effect_over_false_light_enclosure`; isso mantém `STAGGER` fora da tradução como
+`TAK`, `TUR` e `TRNDGE`, sem afetar palavras comuns de diálogo nem nomes detectados.
+Para P006-like, uma região `decorative` sobre `textured_art` não é automaticamente
+preservada se o texto for uma frase comum forte, pontuada, de alta confiança e sem avisos
+de OCR: a mesma exceção precisa vencer tanto a política de classificação quanto
+`_should_translate_group()` e o gate `source_scoped`. O veto de textura continua ativo
+para labels curtos, SFX, créditos/promos, nomes e OCR danificado.
+O mesmo perfil de caption claro aberto também é reconhecido quando o fundo é claro,
+pouco saturado, quase sem textura/arestas e não forma balão branco puro; nesse caso o
+`source_scoped` pode restaurar o fundo claro sem cair no falso
+`large_white_patch_on_nonwhite_background`. Para lettering com contorno claro sobre arte, a
+máscara source-owned inclui o halo claro dentro da geometria OCR da linha quando necessário,
+mas não aplica fallback retangular em fundo escuro uniforme comprovado, preservando o caso
+p002-like de máscara pequena sobre evidência grande.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`

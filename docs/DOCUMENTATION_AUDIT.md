@@ -403,12 +403,17 @@ estruturada lia a linha filha como `77,!!`. Isso mostrou que OCR pós-render nã
 | Capturas de tela | **Não requer** | A mudança é contrato hermético de máscara/geometria, coberto por testes offline. |
 
 **Honestidade #70 parcial:** este registro fecha os subgates locais P68, p015 (`SÓ` lido
-como `SO`), p062 (speech longo compactado por OCR) e p025-like (fundo claro comprovado
-não vira falso white-patch e tem linha owned completamente mascarada), p030-like (seed
-curto/SFX destacado é separado do bloco story), além do blocker p002-like em que o source-scoped area gate
-precisa medir a máscara efetiva, não a caixa fonte inteira, e em que fundo saturado mas
-uniformemente escuro não vira falso dark-blotch; p044-like em que passiva
-preservada não deve ser roteada como `state_action_changed`. Ele não classifica o TDD #70 completo como A/B e não autoriza
-por si só fechamento de qualidade; os demais
+como `SO`), p062 (speech longo compactado por OCR), P005-like (story text degradado mas
+translatável quando há autoridade story e `main_text_score` suficiente), p025-like (fundo
+claro comprovado não vira falso white-patch e tem linha owned completamente mascarada),
+p030-like (seed curto/SFX destacado é separado do bloco story), P006-like (`decorative` em
+`textured_art` só é traduzido e aceito pelo `source_scoped` quando a frase comum é forte e
+limpa, e caption claro aberto não vira falso white-patch), STAGGER-like (palavra única em
+falsa caixa clara é preservada como SFX), além do
+blocker p002-like em que o
+source-scoped area gate precisa medir a máscara efetiva, não a caixa fonte inteira, e em
+que fundo saturado mas uniformemente escuro não vira falso dark-blotch; p044-like em que
+passiva preservada não deve ser roteada como `state_action_changed`. Ele não classifica o
+TDD #70 completo como A/B e não autoriza por si só fechamento de qualidade; os demais
 rejected/validated-not-rendered de #69 permanecem para auditoria ou E2E controlado
 posterior conforme orçamento explícito.

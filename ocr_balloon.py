@@ -2673,6 +2673,14 @@ def _lettering_is_saturated_effect_art(metrics):
 
 def _refine_classification_with_background(group):
     metrics = group.background_metrics or {}
+    folded = _ascii_fold(group.text).upper()
+    words = re.findall(r"[A-Z0-9']+", folded)
+    compact = re.sub(r"[^A-Z0-9]", "", folded)
+    group_area_ratio = (group.box[2] * group.box[3]) / max(
+        1,
+        int(metrics.get("image_width") or group.box[2])
+        * int(metrics.get("image_height") or group.box[3]),
+    )
     if (
         group.classification == "speech"
         and group.classification_reason == "container_over_weak_double_character_repeat"
@@ -2712,6 +2720,56 @@ def _refine_classification_with_background(group):
         _apply_classification_policy(group)
         return
 
+    false_light_enclosure_effect = bool(
+        group.classification == "speech"
+        and group.background_type in {"white_balloon", "narration_box"}
+        and len(words) == 1
+        and 5 <= len(compact) <= 12
+        and compact not in ORDINARY_DIALOGUE_WORDS
+        and compact not in COMMON_ENGLISH_WORDS
+        and not bool(getattr(group, "preserve_as_name", False))
+        and not bool(getattr(group, "detected_proper_names", []) or [])
+        and len(group.lines) == 1
+        and float(getattr(group, "main_text_score", 0.0) or 0.0) <= 0.12
+        and bool(getattr(group, "near_image_edge", False))
+        and group_area_ratio <= 0.045
+        and (
+            float(metrics.get("dark_pixel_ratio") or 0.0) >= 0.12
+            or float(metrics.get("edge_density") or 0.0) >= 0.04
+            or float(metrics.get("local_texture_mean") or 0.0) >= 6.0
+        )
+    )
+    if false_light_enclosure_effect:
+        group.inside_balloon_like_region = False
+        group.inside_narration_box_like_region = False
+        group.parent_balloon_id = ""
+        group.region_type = "sfx"
+        group.background_type = "sfx_area"
+        group.background_metrics = {
+            **metrics,
+            "background_type": "sfx_area",
+            "reason": "single_word_effect_over_false_light_enclosure",
+        }
+        _set_group_classification(
+            group,
+            "sfx",
+            "single_word_effect_over_false_light_enclosure",
+            confidence=float(getattr(group, "main_text_score", 0.0) or 0.0),
+            evidence={
+                "conflict_resolved": "single_word_effect",
+                "main_text_score": round(
+                    float(getattr(group, "main_text_score", 0.0) or 0.0),
+                    4,
+                ),
+                "group_area_ratio": round(float(group_area_ratio), 6),
+                "dark_pixel_ratio": metrics.get("dark_pixel_ratio"),
+                "edge_density": metrics.get("edge_density"),
+                "local_texture_mean": metrics.get("local_texture_mean"),
+            },
+        )
+        _apply_classification_policy(group)
+        return
+
     if (
         group.background_type == "narration_box"
         and (
@@ -2720,7 +2778,6 @@ def _refine_classification_with_background(group):
         )
         and group.classification in {"speech", "narration", "unknown"}
     ):
-        words = re.findall(r"[A-Z0-9']+", _ascii_fold(group.text).upper())
         short_spoken_phrase = len(group.lines) <= 2 and len(words) <= 3
         group.classification = "speech" if short_spoken_phrase else "narration"
         group.region_type = group.classification
@@ -2739,14 +2796,6 @@ def _refine_classification_with_background(group):
     saturation = float(metrics.get("saturation_mean", 0.0))
     edge_density = float(metrics.get("edge_density", 0.0))
     local_texture = float(metrics.get("local_texture_mean", 0.0))
-    folded = _ascii_fold(group.text).upper()
-    words = re.findall(r"[A-Z0-9']+", folded)
-    compact = re.sub(r"[^A-Z0-9]", "", folded)
-    group_area_ratio = (group.box[2] * group.box[3]) / max(
-        1,
-        int(metrics.get("image_width") or group.box[2])
-        * int(metrics.get("image_height") or group.box[3]),
-    )
     dialogue_markers = {
         "I",
         "I'M",
@@ -2905,6 +2954,99 @@ def _recover_lexical_dialogue_on_plain_field(group, metrics, words, saturation):
     group.inside_balloon_like_region = True
 
 
+def _decorative_textured_story_promotion_allowed(group):
+    """Allow strong ordinary prose mislabelled as decorative art to translate.
+
+    The textured-art veto protects real SFX/environmental lettering.  It must
+    not, however, retain a full sentence such as page-6's ordinary story line
+    simply because the coarse background bucket is ``textured_art``.  Require a
+    high-confidence, punctuated multi-word clause with clean OCR so short labels,
+    credits, SFX and damaged garbage remain fail-closed.
+    """
+    if group.classification != "decorative":
+        return False
+    if getattr(group, "background_type", "") not in {"textured_art", "speed_lines"}:
+        return False
+    if bool(getattr(group, "preserve_as_name", False)):
+        return False
+    if bool(getattr(group, "quality_reasons", []) or []):
+        return False
+    try:
+        confidence = float(getattr(group, "confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < 0.84:
+        return False
+    try:
+        main_score = float(getattr(group, "main_text_score", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        main_score = 0.0
+    if main_score < 0.55:
+        return False
+    body = str(getattr(group, "text", "") or "")
+    if not re.search(r"[.!?…]", body):
+        return False
+    folded_words = [
+        re.sub(r"[^A-Z']", "", _ascii_fold(word).upper())
+        for word in re.findall(r"[A-Za-zÀ-ÿ']+", body)
+    ]
+    semantic_words = [
+        word
+        for word in folded_words
+        if len(word.strip("'")) >= 2 and any(ch in "AEIOUY" for ch in word)
+    ]
+    if len(semantic_words) < 4:
+        return False
+    dialogue_markers = {
+        "I",
+        "ME",
+        "MY",
+        "WE",
+        "US",
+        "YOU",
+        "YOUR",
+        "HE",
+        "SHE",
+        "IT",
+        "THEY",
+        "THE",
+        "A",
+        "AN",
+        "TO",
+        "OF",
+        "IN",
+        "ON",
+        "FOR",
+        "WITH",
+        "FROM",
+        "IS",
+        "ARE",
+        "WAS",
+        "WERE",
+        "BE",
+        "BEEN",
+        "AM",
+        "DO",
+        "DID",
+        "DONE",
+        "HAVE",
+        "HAS",
+        "HAD",
+        "WILL",
+        "WOULD",
+        "CAN",
+        "COULD",
+        "SHOULD",
+        "DON'T",
+        "DONT",
+        "DIDN'T",
+        "DIDNT",
+        "CAN'T",
+        "CANT",
+    }
+    return any(word in dialogue_markers for word in folded_words)
+
+
 def _apply_classification_policy(group):
     if group.classification == "sfx" and not config.TRANSLATE_SFX:
         group.ignored = True
@@ -2927,6 +3069,7 @@ def _apply_classification_policy(group):
             "speed_lines",
             "sfx_area",
         }
+        and not _decorative_textured_story_promotion_allowed(group)
         and not (
             (group.background_metrics or {}).get("open_white_narration")
             or (group.background_metrics or {}).get("open_dark_narration")
@@ -3008,6 +3151,7 @@ def _should_translate_group(group):
             "speed_lines",
             "sfx_area",
         }
+        and not _decorative_textured_story_promotion_allowed(group)
         and not (
             (group.background_metrics or {}).get("open_white_narration")
             or (group.background_metrics or {}).get("open_dark_narration")
@@ -3517,7 +3661,11 @@ def ocr_suspicious_but_translatable(group):
     untouched source text on the page. The source stays flagged: this only
     decides routing, never that the candidate can be trusted.
     """
-    if group.classification not in {"speech", "narration"}:
+    if group.classification not in {"speech", "narration"} and not (
+        group.classification == "unknown"
+        and _group_has_story_translation_authority(group)
+        and float(getattr(group, "main_text_score", 0.0) or 0.0) >= 0.58
+    ):
         return False
     reasons = set(group.quality_reasons or [])
     if not reasons or reasons - OCR_RECOVERABLE_SUSPICION_REASONS:
@@ -7789,7 +7937,23 @@ def _classify_background_region(img_bgr, group, page_index=None):
     )
     open_light_art_caption = bool(
         group.classification in {"speech", "narration", "unknown"}
-        and enclosure_like
+        and (
+            enclosure_like
+            or (
+                brightness >= 205.0
+                and saturation_mean <= 30.0
+                and white_ratio >= 0.40
+                and dark_ratio <= 0.03
+                and context_brightness >= 180.0
+                and context_brightness < 238.0
+                and 0.35 <= context_white_ratio < 0.86
+                and context_dark_ratio <= 0.04
+                and context_saturation_mean <= 30.0
+                and local_texture_mean <= 2.0
+                and edge_density <= 0.02
+                and gradient_strength <= 28.0
+            )
+        )
         and not strongly_uniform_white
         and not open_white_narration
         and brightness >= 170.0
@@ -7856,11 +8020,11 @@ def _source_scoped_speech_reason(group):
 
     if not config.SOURCE_SCOPED_SPEECH_CLEANUP:
         return "source_scoped_disabled"
-    if str(getattr(group, "classification", "") or "").strip().lower() in {
-        "decorative",
-        "logo",
-        "sfx",
-    }:
+    classification = str(getattr(group, "classification", "") or "").strip().lower()
+    if classification in {"logo", "sfx"} or (
+        classification == "decorative"
+        and not _decorative_textured_story_promotion_allowed(group)
+    ):
         return "source_scoped_requires_story_translation_authority"
     if getattr(group, "preserve_as_name", False):
         return "source_scoped_excludes_preserved_entity"
@@ -7960,6 +8124,48 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
             strategy=mask_strategy,
         )
     cleanup_mask = component_mask
+    if strategy == "source_scoped" and tight_background:
+        outline_mask, outline_metrics = _outlined_light_text_mask(
+            original_bgr,
+            group,
+            maximum_mask=maximum_mask,
+        )
+        if np.any(outline_mask):
+            new_outline_pixels = int(
+                np.count_nonzero((outline_mask > 0) & (cleanup_mask == 0))
+            )
+            cleanup_mask = cv2.bitwise_or(cleanup_mask, outline_mask)
+            component_metrics["text_component_pixels"] = int(
+                component_metrics.get("text_component_pixels", 0)
+                + new_outline_pixels
+            )
+            component_metrics["source_scoped_outline_light_pixels"] = new_outline_pixels
+            component_metrics["source_scoped_outline_light_components"] = int(
+                outline_metrics.get("accepted_text_components", 0)
+            )
+            owned_geometry_pixels = int(np.count_nonzero(base_mask))
+            current_coverage = float(
+                np.count_nonzero((cleanup_mask > 0) & (base_mask > 0))
+                / max(1, owned_geometry_pixels)
+            )
+            if current_coverage < 0.75 and not _proven_uniform_dark_region(
+                background_metrics
+            ):
+                geometry_pixels = int(
+                    np.count_nonzero((base_mask > 0) & (cleanup_mask == 0))
+                )
+                cleanup_mask = cv2.bitwise_or(cleanup_mask, base_mask)
+                component_metrics["text_component_pixels"] = int(
+                    component_metrics.get("text_component_pixels", 0)
+                    + geometry_pixels
+                )
+                component_metrics["source_scoped_owned_geometry_fallback"] = True
+                component_metrics["source_scoped_owned_geometry_pixels"] = (
+                    owned_geometry_pixels
+                )
+                component_metrics["source_scoped_owned_geometry_coverage_before"] = (
+                    round(current_coverage, 4)
+                )
     dark_line_mask, dark_line_metrics = _uniform_dark_line_text_mask(
         original_bgr,
         group,
@@ -8844,6 +9050,8 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
             draw_box,
         )
         result[cleanup_mask > 0] = fill_color
+    elif strategy == "source_scoped":
+        return _apply_textured_caption_overlay(result, cleanup_mask)
     else:
         radius = 1 if strategy in {"conservative", "source_scoped"} else 2
         local = cv2.inpaint(result, cleanup_mask, radius, cv2.INPAINT_TELEA)
