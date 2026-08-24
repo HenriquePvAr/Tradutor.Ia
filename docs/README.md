@@ -92,7 +92,7 @@ em que foram escritos e **não** substituem os documentos primários:
 | Detecção de crash duro e reconciliação | ✅ implementado |
 | Supervisão do worker pelo launcher | ✅ implementado |
 | Isolamento hermético dos testes | ✅ implementado |
-| Qualidade / story-text / resíduo físico | ⚠️ implementado com correções offline/forenses até o TDD #66; #68 detectou runtime antigo em #67 (`pipeline_commit_mismatch`); #69 validou provenance pós-guard, mas qualidade segue aberta com resíduos ordinary-story |
+| Qualidade / story-text / resíduo físico | ✅ **QUALITY CLOSED — REAL POST-#75 E2E VALIDATED** no TDD #76: `ordinary_story_physical_residual_count=0`, 100 story regions renderizadas limpas, 4 reviews preservados como SFX/OCR ambíguo não-story |
 | Comunidade (Supabase + Drive) | ✅ implementado, fail-closed se não configurado |
 | Retomada de job interrompido pela UI | ⚠️ parcial — API existe, controle na interface não |
 | Instalador para usuário final | ⏳ em desenvolvimento |

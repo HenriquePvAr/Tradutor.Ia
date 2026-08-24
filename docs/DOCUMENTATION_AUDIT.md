@@ -481,3 +481,29 @@ real, mas P068 permaneceu visível em inglês porque `p068:BALAO_2` não foi tra
 push foi usado. O #74 não tinha candidato DeepL persistido para `p068:BALAO_2`; por isso o
 fechamento local é de routing/render/cleanup, não de qualidade real do provider. PDFs #72/#74
 permanecem imutáveis e a qualidade de produto continua **OPEN — REAL POST-#75 E2E REQUIRED**.
+
+### TDD #76 — Real post-#75 final quality proof (2026-08-24, base `594f7f0`)
+
+**Gatilho:** o #75 fechou P068 offline, mas faltava provar o caminho real provider → render →
+cleanup para `p068:BALAO_2`.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `README.md` | **Atualizado** | Estado atual passa a registrar que a qualidade Beta de story text está fechada pelo E2E real #76. |
+| `docs/README.md` | **Atualizado** | Tabela de status muda o item de qualidade para `QUALITY CLOSED — REAL POST-#75 E2E VALIDATED`. |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra os números canônicos do #76, o fechamento real de P068 e a preservação fail-closed dos quatro resíduos não-story. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Registra provenance, P068 real provider, render-plan, gate ordinário zero e limite de `review_required` não-story. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Nenhuma mudança de UX foi introduzida. |
+| Capturas de tela | **Não requer** | Evidência canônica está no DB, manifests, PDF, quality report, pages finais e auditoria visual local. |
+
+**Resultado #76:** houve exatamente um job real pela UI visível, sem rerun e sem hotfix:
+job `3979b3f3482b41fc8ce481a7050b4c8e`, run
+`05a77bb8-487c-46a6-98cd-c1f23ff7e233`, DeepL `quality_optimized`, RapidOCR, `force=true`,
+`use_cache=false`, 35 source items e 72 páginas finais. O PDF novo ficou com SHA256
+`415056E61F24A2AE8CCB923BE58119A911BF98C4A6C7322CF84F953C083897B4`.
+
+**Honestidade #76:** o job terminou `review_required`, mas o subgate ordinário fechou:
+`ordinary_story_physical_residual_count=0`, P068 passou com candidato DeepL real e os quatro
+resíduos físicos restantes (`p011:BALAO_1`, `p011:BALAO_2`, `p013:BALAO_3`, `p015:BALAO_8`)
+foram reconciliados como SFX/OCR ambíguo não-story. Community, Drive, Supabase remoto, push e
+segundo job não foram usados.

@@ -278,6 +278,19 @@ semântica fortes. Como #74 não possui candidato real para esse grupo, a prova 
 produção-paritária local com candidato sintético apenas para routing/render/cleanup; qualidade
 continua **OPEN — REAL POST-#75 E2E REQUIRED**.
 
+O E2E real #76 fechou essa pendência no caminho de produto. O run
+`05a77bb8-487c-46a6-98cd-c1f23ff7e233` foi criado pela UI visível com um único job, sem
+rerun, em `594f7f0139f27d7d4e274c46d9a006af352bd31a`; `CURRENT_HEAD`, `jobs.commit_hash` e
+`run_manifest.commit_hash` coincidiram. P068 `BALAO_2` chegou ao DeepL `quality_optimized`,
+obteve candidato real (`LEVE ALGUMAS HORAS PARA CHEGAR AQUI, DEPOIS QUE ACORDAR.`), foi
+validado e renderizado. A linha corrompida `LINE_004` permaneceu cleanup-only, não virou
+request independente ao provider, e sua geometria foi limpa pelo parent. O gate final ficou
+`story_expected=104`, `valid_candidate=100`, `render_selected=100`, `rendered_clean=100`,
+`render_skipped=4`, `structured_review=4`, `unaccounted=0`,
+`skipped_without_reason=0` e `ordinary_story_physical_residual_count=0`. Status:
+**QUALITY CLOSED — REAL POST-#75 E2E VALIDATED** para story-text Beta; os quatro resíduos
+globais restantes são SFX/OCR ambíguo não-story preservados para revisão humana.
+
 ## Quality gate final
 
 `_validate_quality()` aprova a execução apenas quando todas estas condições são verdadeiras:

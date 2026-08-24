@@ -86,7 +86,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Detecção de crash duro do worker (TDD #52) | **IMPLEMENTADO** |
 | Supervisão do worker pelo launcher (TDD #53) | **IMPLEMENTADO** |
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
-| Qualidade / gates fail-closed | **IMPLEMENTADO** — contratos de story-text, resíduo físico e identidade de artifact reforçados; TDD #66 fecha lacunas offline/forenses, #68 fecha guard de paridade, e #69 prova execução pós-guard válida, mas mantém qualidade do produto aberta |
+| Qualidade / gates fail-closed | **IMPLEMENTADO** — **QUALITY CLOSED — REAL POST-#75 E2E VALIDATED** no TDD #76 para story-text Beta; reviews não-story/SFX/OCR ambíguo continuam fail-closed |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
@@ -981,9 +981,21 @@ tornar inelegível um parent story forte. `ignored_line_inside_text_region` entr
 de warning recuperável somente sob as travas já existentes de `ocr_suspicious_but_translatable`:
 classe/autoridade story, pontuação, ausência de dígitos embutidos e pelo menos duas palavras
 ordinárias reconhecíveis. SFX/open art e OCR ambíguo curto continuam fail-closed. Como #74
-não persistiu candidato DeepL para P068, o #75 prova apenas routing/render/cleanup offline
-com candidato sintético; o próximo E2E real deve obter a primeira saída real do provider para
-esse parent.
+não persistiu candidato DeepL para P068, o #75 provava apenas routing/render/cleanup offline
+com candidato sintético.
+
+O TDD #76 executou exatamente um E2E real pós-#75 pela UI visível e validou o contrato de
+produto: commit corrente, `jobs.commit_hash` e `run_manifest.commit_hash` bateram em
+`594f7f0139f27d7d4e274c46d9a006af352bd31a`; o provider efetivo foi DeepL
+`quality_optimized`, OCR RapidOCR, `force=true` e `use_cache=false`. P068 `BALAO_2` foi
+roteado ao provider real, recebeu candidato PT-BR, foi validado, renderizado e limpou a
+geometria child `LINE_004` sem enviar a child separadamente. O relatório final ficou
+`story_expected=104`, `valid_candidate=100`, `render_selected=100`, `rendered_clean=100`,
+`render_skipped=4`, `structured_review=4`, `unaccounted=0` e
+`ordinary_story_physical_residual_count=0`. Os quatro resíduos físicos restantes
+(`p011:BALAO_1`, `p011:BALAO_2`, `p013:BALAO_3`, `p015:BALAO_8`) são revisão preservada de
+SFX/OCR ambíguo não-story, então o job pode continuar `review_required` sem reabrir o gate
+Beta de história comum.
 
 ### Manifest autodescritivo
 
