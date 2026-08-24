@@ -16,6 +16,8 @@ from lazy_slot_resolver import ResolverLimits
 
 
 PAGE = "https://vortexscans.org/series/demo-series/chapter-42"
+SHADOW_SLAVE_CHAPTER_2 = "https://vortexscans.org/series/shadow-slave/chapter-2"
+SHADOW_SLAVE_CHAPTER_15 = "https://vortexscans.org/series/shadow-slave/chapter-1.5"
 RESOURCE_HOST = "storage.vortexscans.org"
 
 
@@ -80,6 +82,16 @@ class VortexReaderDriver:
         return result
 
 
+class VortexChapter2Driver(VortexReaderDriver):
+    """Chapter-2 fixture: reader pages exist while the chapter-list widget is empty."""
+
+    def execute_script(self, script, *args):
+        text = str(script)
+        if "document.body && document.body.innerText" in text:
+            return {"pageText": "Shadow Slave Chapter 2\nNo chapters found"}
+        return super().execute_script(script, *args)
+
+
 class VortexReaderPipelineTests(unittest.TestCase):
     def test_selectors_match_current_public_reader_contract(self):
         adapter = select_adapter(PAGE)
@@ -119,6 +131,38 @@ class VortexReaderPipelineTests(unittest.TestCase):
         self.assertEqual(analysis.reader_diagnostics["slots_total"], 3)
         self.assertEqual(analysis.reader_diagnostics["slots_pending"], 0)
         self.assertTrue(driver.scrolls)
+
+    def test_shadow_slave_chapter2_reader_is_authoritative_even_with_empty_chapter_list(self):
+        adapter = select_adapter(SHADOW_SLAVE_CHAPTER_2)
+        driver = VortexChapter2Driver(total=43, resolved=7)
+        resolver = down._webtoons_lazy_resolver(
+            limits=ResolverLimits(max_rounds=5, stable_rounds=1, settle_seconds=0),
+            sleep=lambda _seconds: None,
+        )
+
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            adapter.validate_path(SHADOW_SLAVE_CHAPTER_2)
+            analysis = adapter.analyze(
+                {"driver": driver, "page_url": SHADOW_SLAVE_CHAPTER_2,
+                 "lazy_slot_resolver": resolver},
+            )
+
+        self.assertEqual(adapter.name, "vortexscans")
+        self.assertEqual(analysis.outcome, chapter_source.SUPPORTED_SPECIFIC_ADAPTER)
+        self.assertEqual(len(analysis.accepted), 43)
+        self.assertEqual([item.order for item in analysis.accepted], list(range(43)))
+        self.assertEqual(len({item.id for item in analysis.accepted}), 43)
+        self.assertEqual(analysis.reader_diagnostics["slots_total"], 43)
+        self.assertEqual(analysis.reader_diagnostics["slots_pending"], 0)
+
+    def test_shadow_slave_chapter15_remains_a_valid_vortex_chapter(self):
+        adapter = select_adapter(SHADOW_SLAVE_CHAPTER_15)
+
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            adapter.validate_path(SHADOW_SLAVE_CHAPTER_15)
+            adapter.validate_navigation_url(SHADOW_SLAVE_CHAPTER_15)
+
+        self.assertEqual(adapter.name, "vortexscans")
 
 
 if __name__ == "__main__":

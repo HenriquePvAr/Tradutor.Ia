@@ -584,6 +584,28 @@ async def api_source_analyze(
         }) from exc
 
 
+@app.post("/api/ui/source/report")
+def api_source_report(
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
+    """Queue a sanitized, user-consented unsupported-source report locally."""
+    from source_support_report import (
+        LocalOutboxSourceSupportReporter,
+        build_source_support_report,
+    )
+
+    try:
+        report = build_source_support_report(payload or {})
+        reporter = LocalOutboxSourceSupportReporter(
+            ROOT / ".cache" / "runtime" / "source_support_reports.jsonl")
+        return reporter.submit(report).public()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": str(exc),
+            "message": "Não foi possível registrar esta fonte com segurança.",
+        }) from exc
+
+
 @app.post("/api/ui/run")
 async def api_run(
     request: Request,
@@ -606,8 +628,8 @@ async def api_run(
             })
         guarded_payload = dict(payload)
         if not requests_local_folder:
-            # Browser submissions may create a pipeline job only after the separate,
-            # jobless source-validation endpoint produced a matching result.
+            # The normal UI now obtains this analysis inside the Start click. Direct URL
+            # submissions without that fresh result still fail before job creation.
             guarded_payload["source_validation_required"] = True
         return await BRIDGE.start(
             guarded_payload,
@@ -619,14 +641,17 @@ async def api_run(
         # Source diagnostics are coded and deliberately generic: URL fragments, headers,
         # cookies and provider responses never reach the browser.
         messages = {
-            "unsupported_source": ("Esta URL não pode ser aberta com segurança.", "Use uma URL pública HTTP(S) de capítulo."),
+            "unsupported_source": ("Esta fonte ainda não é compatível com o Tradutor IA.", "Você pode enviá-la ao desenvolvedor para análise."),
             "challenge_required": ("O site exige uma verificação interativa.", "Conclua a verificação no site ou use uma fonte sem desafio."),
             "authentication_required": ("Esta fonte exige autenticação.", "Use uma página pública, sem login."),
             "source_access_denied": ("A fonte recusou o acesso público.", "Verifique a URL ou tente novamente mais tarde."),
-            "source_rate_limited": ("A fonte limitou temporariamente o acesso.", "Aguarde antes de tentar novamente."),
-            "no_chapter_images": ("Nenhuma página de capítulo foi encontrada.", "Confirme que a URL abre o leitor do capítulo."),
-            "unsupported_low_confidence": ("Não foi possível reconhecer o leitor com segurança.", "Use uma fonte com leitor visível ou um adapter específico."),
-            "unsupported_canvas_reader": ("O leitor em canvas não pôde ser capturado com integridade.", "Use uma fonte que exponha páginas visíveis sem proteção interativa."),
+            "source_rate_limited": ("Não foi possível acessar essa fonte agora.", "Aguarde antes de tentar novamente."),
+            "source_transport_failed": ("Não foi possível acessar essa fonte agora.", "Tente novamente em alguns minutos."),
+            "source_navigation_timeout": ("Não foi possível acessar essa fonte agora.", "Tente novamente em alguns minutos."),
+            "source_unavailable": ("Não foi possível acessar essa fonte agora.", "Tente novamente em alguns minutos."),
+            "no_chapter_images": ("A página informada não foi encontrada.", "Confirme que a URL abre o leitor do capítulo."),
+            "unsupported_low_confidence": ("Esta fonte ainda não é compatível com o Tradutor IA.", "Você pode enviá-la ao desenvolvedor para análise."),
+            "unsupported_canvas_reader": ("Esta fonte ainda não é compatível com o Tradutor IA.", "Você pode enviá-la ao desenvolvedor para análise."),
             "incomplete_source_coverage": ("Não foi possível ler o capítulo inteiro na página.", "Abra o capítulo completo no navegador e tente novamente."),
             "incomplete_download": ("As páginas não puderam ser baixadas por completo.", "Revise a fonte e tente novamente mais tarde."),
         }

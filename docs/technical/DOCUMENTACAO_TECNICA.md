@@ -86,7 +86,10 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Detecção de crash duro do worker (TDD #52) | **IMPLEMENTADO** |
 | Supervisão do worker pelo launcher (TDD #53) | **IMPLEMENTADO** |
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
-| Qualidade / gates fail-closed | **IMPLEMENTADO** — **QUALITY CLOSED — REAL POST-#75 E2E VALIDATED** no TDD #76 para story-text Beta; reviews não-story/SFX/OCR ambíguo continuam fail-closed |
+| Cobertura story-text / gates fail-closed | **IMPLEMENTADO** — **CLOSED** no TDD #76 para story-text Beta; reviews não-story/SFX/OCR ambíguo continuam fail-closed |
+| Reconstrução visual de arte | **ABERTO** — ghost text e patches planos sobre arte texturizada ainda bloqueiam Beta externa |
+| Qualidade semântica/natural PT-BR | **ABERTO** — frases traduzidas podem estar em português mas semanticamente erradas |
+| Leitor PDF integrado | **PLANEJADO** — Histórico ainda abre artefatos por ações externas |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Licenciamento / expiração de tester | **SCHEMA/RPC REMOTOS IMPLEMENTADOS** — TDD #78 aplica Supabase schema/RLS/RPC atômica, nega usuário sem entitlement e mantém primeiro grant real pendente |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
@@ -130,7 +133,7 @@ executados diretamente a partir da raiz.
 | Launcher / processos | `start_tradutor.py`, `worker_supervisor.py`, `process_launcher.py`, `process_tree.py`, `process_options.py` |
 | UI | `app_ui.py`, `ui_bridge.py`, `ui_helpers.py`, `ui_history.py`, `ui/`, `static/` |
 | Fila e jobs | `job_store.py`, `worker_service.py`, `job_runner.py`, `runner_start_gate.py`, `job_failure_diagnostic.py` |
-| Fonte de capítulo | `chapter_source.py`, `universal_chapter_adapter.py`, `source_analysis_phase.py`, `source_profile.py`, `source_readiness.py`, `canonical_source_identity.py`, `webtoons_reader_bridge.py`, `lazy_slot_resolver.py`, `local_folder_*.py` |
+| Fonte de capítulo | `chapter_source.py`, `universal_chapter_adapter.py`, `source_analysis_phase.py`, `source_profile.py`, `source_readiness.py`, `source_support_report.py`, `canonical_source_identity.py`, `webtoons_reader_bridge.py`, `lazy_slot_resolver.py`, `local_folder_*.py` |
 | Download | `down.py`, `download_transport.py`, `browser_runtime.py`, `image_validation.py`, `google_drive_transport.py` |
 | OCR | `ocr_engine.py`, `ocr_balloon.py`, `ocr_parallel.py`, `ocr_memory_policy.py`, `fast_ocr_policy.py`, `ocr_line_provenance.py` |
 | Tradução | `translator_deepl.py`, `translator_nvidia.py`, `translator_nllb.py`, `provider_execution.py`, `provider_transport.py`, `session_context.py`, `natural_ptbr_refinement.py` |
@@ -1140,6 +1143,29 @@ device ou evento. Um smoke via sessão autenticada real do produto ainda deve pr
 primeiro grant.
 Mutação administrativa continua fora do cliente. O primeiro grant real de tester é fase
 posterior e ainda não foi criado.
+
+### Fluxo de fonte pós-TDD #79
+
+A UX normal de nova tradução é `colar URL → Iniciar tradução`. O botão separado
+“Validar origem” foi removido do happy path. No clique em Iniciar, o frontend chama a análise
+segura de fonte, persiste um resultado sanitizado e só então submete o start com
+`source_validation_required=true` e o `source_analysis_result_id` recém-gerado. O backend
+continua recusando start de URL sem análise compatível; validação interna, política de fonte
+e licença Beta seguem fail-closed antes de um job protegido.
+
+Estados de erro são separados para UI e auditoria:
+
+- URL malformada: “Informe um link válido.”
+- fonte não compatível: oferece envio consentido ao desenvolvedor;
+- página não encontrada: informa que a página não foi encontrada;
+- indisponibilidade temporária/timeout/rate-limit: pede nova tentativa;
+- extração falhou: não cria job e não inicia runner.
+
+`source_support_report.py` define `SourceSupportReporter`, `InMemorySourceSupportReporter`
+e `LocalOutboxSourceSupportReporter`. O relatório contém apenas URL normalizada, domínio,
+adapter detectado, razão, versão do app, timestamp e nota opcional sanitizada. Não inclui
+cookies, JWT, refresh token, Authorization header, storage do navegador, páginas baixadas ou
+imagens do capítulo.
 
 ## 20. Comunidade e armazenamento
 

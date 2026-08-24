@@ -400,12 +400,22 @@
           </div>
 
           <div class="cta-row">
-            <button class="btn-ghost show" type="button" id="validateSourceBtn">Validar origem</button>
             <button class="btn-primary" type="button" id="startBtn" disabled>Iniciar tradução</button>
             <div class="field-error" id="startError" hidden></div>
             <button class="btn-ghost" type="button" id="cancelBtn">Cancelar</button>
           </div>
-          <div class="community-notice">atalhos: <b style="color:var(--paper)">enter</b> valida a URL · <b style="color:var(--paper)">1–8</b> troca de aba</div>
+          <div class="community-notice">atalhos: <b style="color:var(--paper)">enter</b> inicia a análise · <b style="color:var(--paper)">1–8</b> troca de aba</div>
+
+          <dialog class="audit-confirm source-report-dialog" id="sourceReportDialog" hidden aria-label="Fonte ainda não suportada">
+            <strong>Fonte ainda não suportada</strong>
+            <p>Esse site ainda não é compatível com o Tradutor IA. Quer enviar o link ao desenvolvedor? Assim ele poderá ser analisado para uma próxima atualização.</p>
+            <p class="source-report-details" id="sourceReportDetails" hidden></p>
+            <textarea id="sourceReportNote" maxlength="500" placeholder="Observação opcional, sem dados sensíveis"></textarea>
+            <div class="audit-confirm-actions">
+              <button type="button" class="btn-primary" id="sourceReportSend">Enviar ao desenvolvedor</button>
+              <button type="button" class="btn-ghost" id="sourceReportDismiss">Agora não</button>
+            </div>
+          </dialog>
         </div>
 
         <!-- pipeline preview -->

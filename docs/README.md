@@ -92,7 +92,10 @@ em que foram escritos e **não** substituem os documentos primários:
 | Detecção de crash duro e reconciliação | ✅ implementado |
 | Supervisão do worker pelo launcher | ✅ implementado |
 | Isolamento hermético dos testes | ✅ implementado |
-| Qualidade / story-text / resíduo físico | ✅ **QUALITY CLOSED — REAL POST-#75 E2E VALIDATED** no TDD #76: `ordinary_story_physical_residual_count=0`, 100 story regions renderizadas limpas, 4 reviews preservados como SFX/OCR ambíguo não-story |
+| Cobertura story-text / resíduo físico | ✅ **CLOSED** no TDD #76: `ordinary_story_physical_residual_count=0`, 100 story regions renderizadas limpas, 4 reviews preservados como SFX/OCR ambíguo não-story |
+| Reconstrução visual de arte | ⚠️ aberta — ghost text e patches planos sobre textura viram alvo do TDD #80 |
+| Qualidade semântica/natural PT-BR | ⚠️ aberta — tradução em português ainda pode perder sentido; alvo do TDD #81 |
+| Leitor PDF integrado | ⏳ pendente — alvo do TDD #82 |
 | Comunidade (Supabase + Drive) | ✅ implementado, fail-closed se não configurado |
 | Licenciamento de tester | ✅ schema/RLS/RPC remotos aplicados no TDD #78; primeiro tester real ainda não criado |
 | Retomada de job interrompido pela UI | ⚠️ parcial — API existe, controle na interface não |

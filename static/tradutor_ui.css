@@ -2242,6 +2242,8 @@ html[data-review-mode="1"] .nt-grid{grid-template-columns:minmax(0,1fr)}
   .audit-confirm{border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--fg);
     max-width:min(520px,92vw); padding:14px; font-size:12px;}
   .audit-confirm::backdrop{background:rgba(0,0,0,.55);}
+  .source-report-dialog textarea{width:100%; min-height:80px; margin:8px 0 12px;}
+  .source-report-details{font-size:11px; color:var(--muted); margin:8px 0;}
   .audit-confirm-list{margin:8px 0; padding-left:18px; max-height:180px; overflow:auto; font-size:11px;}
   .audit-confirm-effect{font-size:11px; color:var(--muted); margin:8px 0 12px;}
   .audit-confirm-actions{display:flex; gap:8px; flex-wrap:wrap;}

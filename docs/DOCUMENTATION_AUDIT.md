@@ -567,3 +567,30 @@ Community/Drive/update/Setup/job de tradução/provider/push. Smokes remotos: se
 `allowed=false`. Não houve extração de JWT/cookie/localStorage do navegador, portanto o smoke
 via sessão autenticada real do produto fica como primeiro passo antes do grant controlado.
 Contagem final remota: entitlements `0`, devices `0`, events `0`.
+
+### TDD #79 — Source flow UX + Vortex Chapter 2 acceptance (2026-08-24, base `1b16278`)
+
+**Gatilho:** a fonte real `https://vortexscans.org/series/shadow-slave/chapter-2` expõe
+reader válido mesmo com área de lista de capítulos vazia/enganosa. A UX também exigia a
+sequência manual `Validar origem → Iniciar`, ruim para Beta.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `README.md` | **Atualizado** | Roadmap separa story-text fechado de reconstrução visual, qualidade semântica e leitor interno ainda abertos. |
+| `docs/README.md` | **Atualizado** | Tabela de status explicita os tracks #80/#81/#82. |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Documenta start com análise automática, estados de erro e contrato do relatório de fonte. |
+| `docs/SOURCE_ADAPTERS.md` | **Atualizado** | Registra que Vortex usa reader como autoridade e não lista de capítulos. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Atualizado** | Guia passa a orientar `colar URL → Iniciar tradução`. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Não requer mudança estrutural** | O #79 não executa tradução nem altera gates de qualidade. |
+
+**Resultado #79:** o botão manual “Validar origem” sai do happy path. O clique em
+Iniciar executa análise segura de fonte, mostra “Analisando a fonte...”, persiste um
+resultado sanitizado e submete o start com a análise recém-gerada. Chamadas diretas de URL
+sem análise compatível continuam falhando antes de job. Fonte incompatível exige consentimento
+explícito para registrar um relatório local metadata-only; duplicatas por URL normalizada +
+motivo são idempotentes.
+
+**Roadmap pós-#79:** story-text coverage continua fechado, mas `ART-RECON-001`
+(texto fantasma/contraste ruim em região texturizada), `ART-RECON-002` (patch claro/plano
+sobre textura), `TRANSLATION-SEMANTIC-001` (português semântico/natural ruim) e leitor PDF
+integrado permanecem abertos para #80/#81/#82.

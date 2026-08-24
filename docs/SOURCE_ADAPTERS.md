@@ -407,6 +407,31 @@ codificam requisitos reais — revisão não spawna runner, cobertura incompleta
 de download, falha codificada é terminal e congelada — então foram mantidas e apontadas para
 o ator que agora as produz, via `run_source_phase`.
 
+### TDD #79 — UX sem validação manual
+
+O fluxo normal da UI não expõe mais um botão separado de “Validar origem”. O clique em
+**Iniciar tradução** executa a análise de fonte como parte da mesma ação do usuário:
+
+```
+URL válida → análise segura da fonte → política/licença → criação do job
+```
+
+Isso não remove validação interna. O endpoint de start para URL continua exigindo um
+`source_analysis_result_id` fresco e compatível com a URL atual; chamadas diretas sem esse
+resultado falham antes de criar job. A diferença é só de UX: a UI obtém esse resultado
+automaticamente no clique principal, sem pedir um segundo botão/confirmção.
+
+Para VortexScans, a autoridade de capítulo é a evidência do reader: identidade de URL,
+container do leitor, slots/imagens e ordem das páginas. Lista de capítulos vazia, widget de
+busca sem resultado ou texto “No chapters found” fora do reader não invalidam um capítulo
+cujo reader contém páginas válidas. A regressão de `shadow-slave/chapter-2` fixa 43 slots em
+fixture offline e preserva `chapter-1.5`.
+
+Fonte incompatível abre um relatório opcional para o desenvolvedor. O relatório é
+metadata-only (`url`, domínio, adapter detectado, razão, versão e nota opcional), exige
+clique explícito e é registrado em outbox local; não envia cookies, tokens, storage do
+navegador nem imagens do capítulo.
+
 `SourceAnalysisTimeoutTests` foi reconstruída, não remendada: ela dirigia um timeout dentro
 do submit e afirmava que a linha em staging virava para o thread se cancelar sozinho, e esse
 mecanismo deixou de existir. O que ela protegia sobrevive em dois testes — análise que não

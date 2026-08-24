@@ -345,6 +345,13 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
 - SFX estilizados e texto integrado à arte continuam difíceis de classificar e reconstruir.
 - Uma tradução gramaticalmente válida pode ainda soar pouco natural.
 - Fontes incomuns, texto curvo e backgrounds detalhados elevam o risco visual.
+- `ART-RECON-001`: lettering original/ghost text pode sobreviver em regiões texturizadas
+  ou open-art. Sentinela planejada para #80: página 5 do PDF auditado.
+- `ART-RECON-002`: patches brancos/cinzas planos sobre textura são visualmente
+  inaceitáveis. Sentinela planejada para #80: página 25.
+- `TRANSLATION-SEMANTIC-001`: saída em português pode estar gramaticalmente traduzida mas
+  semanticamente errada ou pouco natural. Sentinelas planejadas para #81 incluem “rato do
+  slim”, sintaxe quebrada e perda de sentido do caso P068.
 - Revisões estruturadas por risco visual continuam exigindo novo E2E real para provar que o
   PDF gerado ficou fisicamente limpo.
 - O comportamento do provedor pode variar entre execuções.

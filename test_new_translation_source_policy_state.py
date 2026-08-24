@@ -92,7 +92,7 @@ for (const [selector, value] of Object.entries(scenario.elements || {})) {
 for (const selector of [
   '#urlInput', '#localFolderInput', '#nameInput', '#outputInput', '#providerSelect',
   '#cacheToggle', '#forceToggle', '#ctxToggle', '#openToggle', '#sourceProfileToggle',
-  '#scopeCustomInput', '#validateSourceBtn', '#startBtn', '#sourceReadyPanel',
+  '#scopeCustomInput', '#startBtn', '#sourceReadyPanel',
   '#sourceReadyMeta', '#sourceReadyPolicyState', '#openSourcePolicySettings',
   '#urlSourceField', '#localFolderSourceField', '#urlError', '#localFolderError',
   '#scopeCustom',
@@ -438,26 +438,35 @@ class FrontendSourceStateContracts(unittest.TestCase):
         self.assertIn("terminalRunStatuses.has(state.status) && !state.jobId", surface)
         self.assertIn("clearLoadingSurface();", surface)
 
-    def test_validation_and_processing_are_separate_actions(self):
+    def test_start_button_runs_source_analysis_without_manual_validate_step(self):
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-        self.assertIn('class="btn-ghost show" type="button" id="validateSourceBtn"', shell)
+        self.assertNotIn('id="validateSourceBtn"', shell)
+        self.assertIn("enter</b> inicia a análise", shell)
         self.assertIn("async function validateSource", UI)
         self.assertIn("await api('/api/ui/source/analyze'", UI)
         start = UI[UI.index("async function startTranslation"):]
         start = start[:start.index("\n  async function cancelTranslation")]
+        self.assertIn("await api('/api/ui/source/analyze'", start)
         self.assertIn("source_analysis_result_id", start)
-        self.assertNotIn("validating_source", start)
+        self.assertIn("source_validation_required = true", start)
 
-    def test_start_button_is_derived_from_validated_source_and_policy(self):
+    def test_start_button_is_derived_from_current_url_and_policy(self):
         self.assertIn("function updateTranslationStartControls", UI)
         controls = UI[UI.index("function updateTranslationStartControls"):]
         controls = controls[:controls.index("\n  function", 20)]
-        self.assertIn("sourceValidationMatchesForm()", controls)
+        self.assertNotIn("sourceValidationMatchesForm()", controls)
         self.assertIn("workspacePolicyAllowsProcessing", controls)
         self.assertIn("start.disabled = !canStart", controls)
-        matching = UI[UI.index("function sourceValidationMatchesForm"):]
-        matching = matching[:matching.index("\n  function", 20)]
-        self.assertIn("sourceValidation.status === 'ready'", matching)
+        reasons = UI[UI.index("function translationStartDisabledReasons"):]
+        reasons = reasons[:reasons.index("\n  function", 20)]
+        self.assertNotIn("source_not_validated", reasons)
+        self.assertNotIn("source_analysis_result_missing", reasons)
+
+    def test_auto_analysis_failure_releases_start_busy_lock(self):
+        start = UI[UI.index("async function startTranslation"):]
+        start = start[:start.index("\n  async function cancelTranslation")]
+        self.assertGreaterEqual(start.count("delete button.dataset.busy"), 3)
+        self.assertIn("updateTranslationStartControls();\n        return;", start)
 
     def test_bootstrap_rehydrates_authorized_source_state_after_runtime_restart(self):
         key = "tradutor.sourceValidationDraft.v1"
@@ -511,7 +520,7 @@ class FrontendSourceStateContracts(unittest.TestCase):
         bootstrap = bootstrap[:bootstrap.index("\n  async function pollState")]
         self.assertNotIn("/api/ui/source/analyze", bootstrap)
 
-    def test_source_changed_after_restart_does_not_reuse_previous_validation(self):
+    def test_source_changed_after_restart_reanalyzes_current_url_instead_of_reusing_validation(self):
         key = "tradutor.sourceValidationDraft.v1"
         result = self._run_rehydration_harness({
             "action": "render",
@@ -521,7 +530,7 @@ class FrontendSourceStateContracts(unittest.TestCase):
         })
 
         self.assertEqual(result["appState"]["sourceValidation"]["status"], "idle")
-        self.assertTrue(result["elements"]["#startBtn"]["disabled"])
+        self.assertFalse(result["elements"]["#startBtn"]["disabled"])
         self.assertTrue(result["elements"]["#sourceReadyPanel"]["hidden"])
 
     def test_incomplete_ready_evidence_fails_closed_and_does_not_display_authorized(self):

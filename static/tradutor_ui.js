@@ -47,6 +47,7 @@
     lastFinishedId: '',
     sourceReview: null,
     sourceValidation: {status: 'idle', analysisResultId: '', sourceUrl: '', reasonCode: ''},
+    sourceReportDraft: null,
     sourceForm: {url: '', localFolder: '', chapterName: '', outputSlug: ''},
     qualityReview: null,
     qualityReviewFilter: 'pending',
@@ -633,6 +634,8 @@
     challenge_required: 'A fonte exige uma verificação interativa.',
     source_access_denied: 'A fonte recusou o acesso público.',
     source_rate_limited: 'A fonte limitou temporariamente o acesso.',
+    source_not_found: 'A página informada não foi encontrada.',
+    source_temporarily_unavailable: 'Não foi possível acessar essa fonte agora. Tente novamente.',
     incomplete_source_coverage: 'Não foi possível carregar todas as páginas do leitor.',
     no_chapter_images: 'Nenhuma página do capítulo foi encontrada.',
     // Kept distinct on purpose: a download error must never be shown for an analysis that
@@ -644,7 +647,7 @@
     connection_error: 'Nao foi possivel conectar ao site.',
     transport_error: 'Ocorreu um problema ao baixar as imagens.',
     incomplete_download: 'Algumas páginas não puderam ser baixadas.',
-    unsupported_source: 'Esta fonte ainda não é suportada.',
+    unsupported_source: 'Esta fonte ainda não é compatível com o Tradutor IA.',
     environment_not_configured: 'Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.',
   };
   function reasonText(code) {
@@ -1230,12 +1233,7 @@
     const pipelineBusy = inFlightStatuses.has(appState.status);
     const busyBlocksDraft = pipelineBusy && !appState.newTranslationDraft;
     if (!minimumValid) reasons.push(local ? 'local_folder_missing' : 'source_input_invalid');
-    if (!local) {
-      if (appState.sourceValidation.status !== 'ready') reasons.push('source_not_validated');
-      else if (appState.sourceValidation.sourceUrl !== syncSourceFormState().url) reasons.push('source_validation_stale');
-      if (!appState.sourceValidation.analysisResultId) reasons.push('source_analysis_result_missing');
-      if (!workspacePolicyAllowsProcessing()) reasons.push('workspace_policy_blocked');
-    }
+    if (!local && !workspacePolicyAllowsProcessing()) reasons.push('workspace_policy_blocked');
     if (validating) reasons.push('source_validation_in_progress');
     if (busyBlocksDraft) reasons.push('pipeline_busy');
     return reasons;
@@ -1251,23 +1249,16 @@
     const minimumValid = minimumSourceInputIsValid();
     const canStart = local
       ? minimumValid && !busyBlocksDraft
-      : minimumValid && sourceValidationMatchesForm()
-        && workspacePolicyAllowsProcessing() && !busyBlocksDraft;
+      : minimumValid && workspacePolicyAllowsProcessing() && !busyBlocksDraft;
     const disabledReasons = canStart ? [] : translationStartDisabledReasons();
     if (disabledReasons.join('|') !== appState.lastStartDisabledReasons.join('|')) {
       appState.lastStartDisabledReasons = disabledReasons;
       uiTrace('start_disabled_reasons', {reasons: appState.lastStartDisabledReasons});
     }
-    const validate = $('#validateSourceBtn');
     const start = $('#startBtn');
-    if (validate) {
-      validate.hidden = local;
-      validate.disabled = local || !minimumValid || validating || busyBlocksDraft;
-      validate.textContent = validating ? 'Validando origem…' : 'Validar origem';
-    }
     if (start) {
       start.disabled = !canStart;
-      if (!busyBlocksDraft) start.textContent = 'Iniciar tradução';
+      if (!busyBlocksDraft && start.dataset.busy !== '1') start.textContent = 'Iniciar tradução';
     }
     return {canStart, validating, pipelineBusy};
   }
@@ -1433,19 +1424,84 @@
     box.hidden = false;
     $('#startRetryBtn')?.addEventListener('click', () => { box.hidden = true; startTranslation(); });
   }
+  function sourceErrorCategory(code) {
+    const normalized = String(code || '').toLowerCase();
+    if (normalized === 'invalid_url') return 'invalid_url';
+    if (normalized === 'unsupported_source' || normalized.startsWith('unsupported_')) return 'unsupported_source';
+    if (['no_chapter_images', 'source_not_found', 'http_404'].includes(normalized)) return 'source_not_found';
+    if (['source_transport_failed', 'source_unavailable', 'source_navigation_timeout', 'source_rate_limited'].includes(normalized)) return 'source_temporarily_unavailable';
+    return normalized || 'source_extraction_failed';
+  }
+  function sourceReportPayload(error) {
+    const form = syncSourceFormState();
+    let domain = '';
+    try { domain = new URL(form.url).hostname; } catch (_) { domain = ''; }
+    return {
+      url: form.url,
+      host: domain,
+      domain,
+      detected_adapter: String(error?.adapter || error?.analysis?.adapter || ''),
+      failure_reason_code: sourceErrorCategory(error?.code || error?.reason_code),
+      timestamp: new Date().toISOString(),
+      user_note: '',
+    };
+  }
+  function openSourceReportDialog(error) {
+    appState.sourceReportDraft = sourceReportPayload(error || {});
+    const dialog = $('#sourceReportDialog');
+    const details = $('#sourceReportDetails');
+    if (details) {
+      details.textContent = `Domínio: ${appState.sourceReportDraft.domain || '—'} · motivo: ${appState.sourceReportDraft.failure_reason_code}`;
+      details.hidden = false;
+    }
+    if (!dialog) return;
+    dialog.hidden = false;
+    if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+  }
+  function closeSourceReportDialog() {
+    const dialog = $('#sourceReportDialog');
+    if (dialog?.open && typeof dialog.close === 'function') dialog.close();
+    if (dialog) dialog.hidden = true;
+  }
+  async function sendSourceSupportReport() {
+    if (!appState.sourceReportDraft) return;
+    const note = $('#sourceReportNote')?.value || '';
+    const payload = {...appState.sourceReportDraft, user_note: note};
+    const button = $('#sourceReportSend');
+    if (button) { button.disabled = true; button.textContent = 'Registrando…'; }
+    try {
+      const result = await api('/api/ui/source/report', {
+        method: 'POST', body: JSON.stringify(payload), timeoutMs: 10000,
+      });
+      if (!result?.queued) throw new Error('source_report_not_queued');
+      showToast(result.duplicate
+        ? 'Essa fonte já estava registrada para análise.'
+        : 'Obrigado. A fonte foi registrada para análise.', 'ok');
+      closeSourceReportDialog();
+    } catch (error) {
+      showToast(error.message || 'Não foi possível registrar a fonte agora.', 'error');
+    } finally {
+      if (button) { button.disabled = false; button.textContent = 'Enviar ao desenvolvedor'; }
+    }
+  }
   function showSourceValidationError(error) {
     const box = $('#startError');
-    const message = error.message || 'Não foi possível validar esta origem.';
+    const code = sourceErrorCategory(error.code || error.reason_code);
+    const message = error.message || reasonText(code) || 'Não foi possível analisar esta fonte.';
     $('#balloonText') && ($('#balloonText').textContent = 'A origem não pôde ser validada');
     clearLoadingSurface();
     if (!box) { showToast(message, 'error'); return; }
+    if (code === 'unsupported_source') openSourceReportDialog(error);
     box.innerHTML = [
-      '<strong>Origem não validada</strong>',
-      escapeHtml(reasonText(error.code) || message),
+      '<strong>Fonte não iniciada</strong>',
+      escapeHtml(reasonText(code) || message),
       error.action ? escapeHtml(error.action) : '',
-      '<button class="btn-ghost" id="sourceValidationRetryBtn">Validar novamente</button>',
+      code === 'unsupported_source'
+        ? '<button class="btn-ghost" id="sourceReportOpenBtn">Enviar ao desenvolvedor</button>'
+        : '<button class="btn-ghost" id="sourceValidationRetryBtn">Tentar novamente</button>',
     ].filter(Boolean).join('<br>');
     box.hidden = false;
+    $('#sourceReportOpenBtn')?.addEventListener('click', () => openSourceReportDialog(error));
     $('#sourceValidationRetryBtn')?.addEventListener('click', () => {
       box.hidden = true;
       validateSource();
@@ -1462,7 +1518,7 @@
     };
     clearNewTranslationDraftPanels();
     $('#startError') && ($('#startError').hidden = true);
-    $('#balloonText') && ($('#balloonText').textContent = 'Validando origem…');
+    $('#balloonText') && ($('#balloonText').textContent = 'Analisando a fonte...');
     updateTranslationStartControls();
     uiTrace('source_validation_started', {request_id: correlationId(), stage: 'source_validation'});
     try {
@@ -1497,7 +1553,7 @@
       renderSourceAnalysisReady(appState.sourceReady);
       $('#balloonText') && ($('#balloonText').textContent = ready
         ? (workspacePolicyAllowsProcessing()
-          ? 'Fonte pronta para processamento' : 'Fonte bloqueada pela política')
+          ? 'Fonte reconhecida. Preparando tradução...' : 'Fonte bloqueada pela política')
         : 'A origem não está pronta para processamento');
       showToast(ready
         ? (workspacePolicyAllowsProcessing() ? 'Fonte autorizada.' : 'Fonte analisada; autorização necessária.')
@@ -1523,24 +1579,74 @@
 
   async function startTranslation() {
     if (!validateForm()) return;
-    if (appState.selectedSourceType === 'url'
-        && (!sourceValidationMatchesForm() || !workspacePolicyAllowsProcessing())) {
+    if (appState.selectedSourceType === 'url' && !workspacePolicyAllowsProcessing()) {
       updateTranslationStartControls();
-      showToast(!workspacePolicyAllowsProcessing()
-        ? 'Ative a política de fontes autorizadas em Configurações.'
-        : 'Valide novamente esta origem antes de iniciar.', 'warn');
+      showToast('Ative a política de fontes autorizadas em Configurações.', 'warn');
       return;
     }
     const button = $('#startBtn');
     if (button?.dataset.busy === '1') return;      // guards a double click in-flight
     const previousLabel = button ? button.textContent : '';
-    if (button) { button.dataset.busy = '1'; button.disabled = true; button.textContent = 'Iniciando processamento…'; }
+    if (button) {
+      button.dataset.busy = '1';
+      button.disabled = true;
+      button.textContent = appState.selectedSourceType === 'url'
+        ? 'Analisando a fonte…' : 'Iniciando processamento…';
+    }
     $('#startError') && ($('#startError').hidden = true);
     const payload = formPayload();
     if (appState.selectedSourceType === 'url') {
+      appState.sourceValidation = {
+        status: 'validating', analysisResultId: '', sourceUrl: String(payload.url || ''),
+        reasonCode: '', analysis: null,
+      };
+      updateTranslationStartControls();
+      resetActivePipelineIdentity(payload.url || '');
+      renderLocalPipelineState('source_analysis', {
+        status: 'staging',
+        message: 'Analisando a fonte...',
+      });
+      let analysisResult;
+      try {
+        analysisResult = await api('/api/ui/source/analyze', {
+          method: 'POST', body: JSON.stringify(payload), timeoutMs: 190000,
+        });
+      } catch (error) {
+        showSourceValidationError(error);
+        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
+        if (button) delete button.dataset.busy;
+        updateTranslationStartControls();
+        return;
+      }
+      const ready = analysisResult?.status === 'source_analysis_ready' && analysisResult?.ready === true;
+      appState.sourceValidation = {
+        status: ready ? 'ready' : 'blocked',
+        analysisResultId: ready ? String(analysisResult.analysis_result_id || '') : '',
+        sourceUrl: String(payload.url || ''),
+        reasonCode: String(analysisResult?.reason_code || ''),
+        analysis: analysisResult?.analysis || null,
+      };
+      if (analysisResult?.policy && typeof analysisResult.policy === 'object') {
+        appState.settings = appState.settings || {};
+        appState.settings.workspace_source_policy = analysisResult.policy;
+      }
+      if (!ready) {
+        const error = new Error(analysisResult?.reason_code || 'source_extraction_failed');
+        error.code = analysisResult?.reason_code || 'source_extraction_failed';
+        error.analysis = analysisResult?.analysis || null;
+        showSourceValidationError(error);
+        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
+        if (button) delete button.dataset.busy;
+        updateTranslationStartControls();
+        return;
+      }
+      $('#balloonText') && ($('#balloonText').textContent = 'Fonte reconhecida. Preparando tradução...');
+      if (button) button.textContent = 'Preparando tradução…';
+      payload.source_validation_required = true;
       payload.source_analysis_result_id = appState.sourceValidation.analysisResultId;
+    } else {
+      resetActivePipelineIdentity(payload.url || payload.local_folder || '');
     }
-    resetActivePipelineIdentity(payload.url || payload.local_folder || '');
     renderLocalPipelineState('queued', {
       status: 'staging',
       message: 'Criando job de processamento',
@@ -1659,13 +1765,14 @@
       control.setAttribute('aria-disabled', active ? 'true' : 'false');
     });
   }
-  $('#validateSourceBtn')?.addEventListener('click', validateSource);
   $('#startBtn')?.addEventListener('click', startTranslation);
+  $('#sourceReportSend')?.addEventListener('click', sendSourceSupportReport);
+  $('#sourceReportDismiss')?.addEventListener('click', closeSourceReportDialog);
   $('#cancelBtn')?.addEventListener('click', () => cancelTranslation(
     false, appState.sourceReview?.job_id || ''));
   $('#runCancelAction')?.addEventListener('click', () => cancelTranslation(false, appState.activeJobId || ''));
   $('#urlInput')?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') { event.preventDefault(); validateSource(); }
+    if (event.key === 'Enter') { event.preventDefault(); startTranslation(); }
   });
   $('#urlInput')?.addEventListener('input', () => {
     if (!appState.currentSourceUrl || $('#urlInput').value.trim() !== appState.currentSourceUrl) {

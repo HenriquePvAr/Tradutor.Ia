@@ -157,8 +157,8 @@ Na lateral existe um menu com as áreas do programa:
 | **Logs** | Registro técnico do que aconteceu |
 | **Perfil** | Seus dados e privacidade |
 
-> 💡 Atalhos: as teclas **1 a 8** trocam de aba, e **Enter** valida a URL na tela de nova
-> tradução.
+> 💡 Atalhos: as teclas **1 a 8** trocam de aba, e **Enter** inicia a análise da URL na
+> tela de nova tradução.
 
 ## 8. Traduzindo um capítulo, passo a passo
 
@@ -171,9 +171,9 @@ Entrar na conta
    ↓
 Nova tradução → colar o endereço do capítulo
    ↓
-Validar origem
-   ↓
 Iniciar tradução
+   ↓
+O programa analisa a fonte automaticamente
    ↓
 Acompanhar o progresso
    ↓
@@ -201,11 +201,15 @@ sugeridos sozinhos; você pode ajustá-los.
 **5. Escolha o motor de tradução.** O padrão é **DeepL (Qualidade)**. Também existem
 **Riva — mais rápido** e **Nemotron — alternativo**. A escolha vale só para este capítulo.
 
-**6. Clique em "Validar origem".** O programa verifica se consegue analisar aquele
-endereço com segurança, **sem** baixar nada ainda. Se a validação falhar, o botão de
-iniciar continua desativado e uma mensagem explica o motivo.
+**6. Clique em "Iniciar tradução".** O programa analisa a fonte automaticamente antes de
+criar o processamento. Se o link for inválido, a página não existir, a fonte estiver
+temporariamente indisponível ou o site ainda não for compatível, nenhum processamento é
+criado e a mensagem explica o motivo.
 
-**7. Clique em "Iniciar tradução".**
+Quando um site ainda não é compatível, o Tradutor IA pergunta se você quer enviar o link ao
+desenvolvedor. Esse envio exige clique explícito e registra apenas metadados sanitizados
+como URL, domínio, motivo e versão do app; não envia cookies, senhas, tokens ou imagens do
+capítulo.
 
 > ⚠️ Use apenas conteúdo que você tem autorização para processar.
 
