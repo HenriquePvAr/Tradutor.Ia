@@ -249,6 +249,8 @@ class PhysicalManifestPersistenceTests(unittest.TestCase):
             "physical_regions_other_explicit": 0,
             "physical_source_residual_count": 5,
             "physical_source_residual_group_ids": [f"p001:BALAO_{i}" for i in range(1, 6)],
+            "ordinary_story_physical_residual_count": 2,
+            "ordinary_story_physical_residual_ids": ["p001:BALAO_1", "p001:BALAO_2"],
             "physical_gate_passed": False,
         }
 
@@ -268,6 +270,8 @@ class PhysicalManifestPersistenceTests(unittest.TestCase):
             "physical_regions_other_explicit": 0,
             "physical_source_residual_count": 0,
             "physical_source_residual_group_ids": [],
+            "ordinary_story_physical_residual_count": 0,
+            "ordinary_story_physical_residual_ids": [],
             "physical_gate_passed": True,
         }
 

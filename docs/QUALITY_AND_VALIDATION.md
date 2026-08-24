@@ -246,6 +246,27 @@ downstream foi provado apenas com candidato sintético rotulado, sem fabricar qu
 Por isso o próximo E2E real continua autorizado somente após budget explícito e deve medir
 qualidade de produto, não reabrir os gates locais já reconciliados.
 
+O E2E real #72 tornou-se a evidência atual de produto: commit, job e manifest bateram em
+`0b40ca23f0d734a345b8a559bf5934f80c01123e`, com DeepL `quality_optimized`, RapidOCR,
+35 source items e 72 páginas. A qualidade ainda ficou aberta (`review_required`), mas o
+ledger caiu para 104 regiões físicas esperadas, 99 traduzidas/renderizadas, 5 retidas para
+revisão e 6 resíduos físicos. P005, P006 e P062 passaram no runtime real; os resíduos
+ordinários de história restantes foram `p063:BALAO_1` e `p068:LINE_004`.
+
+O TDD #73 fecha esses dois roots offline. Para P063, o candidato DeepL persistido preservava
+a oposição semântica `TRIALS`/`EXECUTIONS`; a rejeição vinha de um falso positivo estreito do
+detector `repeated_translation_fragment` sobre o par português `PROVOCA`/`PROVAS`. Para P68,
+o problema era a primeira associação de ownership: a linha filha `LINE_004` compartilhava a
+região visual aberta do parent, mas era avaliada antes de `narration_box` existir no grupo.
+O cleanup agora anexa essa geometria por região visual compartilhada, sem mandar o texto
+corrompido ao provider e sem apagar SFX/open art próximo.
+
+A partir do #73, `physical_quality` mantém dois níveis: o global
+`physical_source_residual_count`, ainda fail-closed e útil para revisão, e o subgate
+`ordinary_story_physical_residual_count`/`ordinary_story_physical_residual_ids`, que deve ser
+0 para fechamento Beta de história comum. Um E2E real futuro ainda é obrigatório para provar
+o artifact novo; o #73 não altera PDFs históricos nem consome provider.
+
 ## Quality gate final
 
 `_validate_quality()` aprova a execução apenas quando todas estas condições são verdadeiras:

@@ -5659,6 +5659,46 @@ def _group_accepts_ignored_cleanup_attachment(group):
     return bool(getattr(group, "inside_narration_box_like_region", False))
 
 
+def _shared_open_visual_region_cleanup_owner(line, group):
+    """True when an ignored child physically belongs to the same open text region.
+
+    This path deliberately attaches geometry only.  It does not merge the child
+    OCR text into the provider input, and it is gated by story translation
+    authority so stylized SFX/open art lettering is not erased just because it
+    happens to share a weak white-region id.
+    """
+
+    line_metadata = getattr(line, "metadata", None) or {}
+    line_region = int(line_metadata.get("visual_white_region_id") or 0)
+    if not line_region or line_metadata.get("visual_white_region_enclosed"):
+        return False
+    try:
+        line_coverage = float(line_metadata.get("visual_white_region_coverage") or 0.0)
+    except (TypeError, ValueError):
+        line_coverage = 0.0
+    if line_coverage < 0.65:
+        return False
+    group_regions = []
+    group_coverages = []
+    for item in getattr(group, "lines", None) or []:
+        metadata = getattr(item, "metadata", None) or {}
+        if metadata.get("visual_white_region_enclosed"):
+            continue
+        region = int(metadata.get("visual_white_region_id") or 0)
+        if not region:
+            continue
+        group_regions.append(region)
+        try:
+            group_coverages.append(float(metadata.get("visual_white_region_coverage") or 0.0))
+        except (TypeError, ValueError):
+            group_coverages.append(0.0)
+    if line_region not in group_regions:
+        return False
+    if max(group_coverages or [0.0]) < 0.45:
+        return False
+    return _group_has_story_translation_authority(group)
+
+
 def _reclaim_short_lexical_lines(groups, candidates, image_shape):
     """Reclaim short speech lines filtered as noise into their speech group.
 
@@ -5751,7 +5791,10 @@ def _associate_ignored_cleanup_lines(groups, candidates, image_shape, page_index
                 record_count("associate_ignored.story_block_checks", 1, page_index=page_index)
                 if group.ignored or not _text_has_lexical_word(group.text):
                     continue
-                if not _group_accepts_ignored_cleanup_attachment(group):
+                if not (
+                    _group_accepts_ignored_cleanup_attachment(group)
+                    or _shared_open_visual_region_cleanup_owner(line, group)
+                ):
                     continue
                 if str(getattr(group, "classification", "") or "") in {
                     "decorative",
@@ -6553,7 +6596,11 @@ def _translation_repeated_fragment(tokens, allowed_names=None):
     """Detect a malformed token followed shortly by a longer near-duplicate."""
     allowed = set(allowed_names or [])
     for index, left in enumerate(tokens):
-        if len(left) < 5 or left in allowed:
+        if (
+            len(left) < 5
+            or left in allowed
+            or not _translation_fragment_token_looks_malformed(left)
+        ):
             continue
         for right in tokens[index + 1 : index + 4]:
             if len(right) < 5 or right in allowed or left == right:
@@ -6567,6 +6614,24 @@ def _translation_repeated_fragment(tokens, allowed_names=None):
             if prefix >= 4 and prefix / len(shorter) >= 0.6:
                 return f"{left}->{right}"
     return ""
+
+
+def _translation_fragment_token_looks_malformed(token):
+    """Whether a repeated-fragment candidate looks like OCR/provider damage.
+
+    Prefix similarity alone is too broad for Portuguese: a valid pair such as
+    ``PROVOCA``/``PROVAS`` shares a long stem but expresses different story
+    semantics.  Keep the retry guard for compact malformed fragments such as
+    ``PROVDE`` before ``PROVINCIA`` by requiring an internal consonant join that
+    is unusual in ordinary PT-BR morphology.
+    """
+
+    value = re.sub(r"[^A-Z]", "", str(token or "").upper())
+    if len(value) < 5:
+        return False
+    if re.search(r"(?:[BCDFGHJKLMNPQRSTVWXYZ]{4,}|VD|TD|DB|PB|KG|GQ|QG|QJ)", value):
+        return True
+    return False
 
 
 def _english_inflection_base(token):

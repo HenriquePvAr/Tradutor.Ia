@@ -936,6 +936,35 @@ qualidade de tradução real. A prova P68 continua geométrica: máscara parcial
 `LINE_004` fica bloqueada mesmo quando OCR degrada `IT'LL` para ruído; máscara completa no
 child geometry permite residual zero.
 
+O #72 substitui o #69 como evidência real canônica de qualidade do código corrente:
+`CURRENT_HEAD == job.commit_hash == run_manifest.commit_hash` em
+`0b40ca23f0d734a345b8a559bf5934f80c01123e`, DeepL `quality_optimized`, RapidOCR,
+35 source items e 72 páginas. A execução continuou `review_required`, mas reduziu o ledger
+para 104 regiões físicas esperadas, 99 traduzidas/renderizadas, 5 regiões retidas para
+revisão e 6 resíduos físicos. P005, P006 e P062 passaram no caminho real; os blockers de
+história comum restantes ficaram concentrados em `p063:BALAO_1` e `p068:LINE_004`.
+
+O TDD #73 fecha esses dois roots sem provider/job real. Em P063, o candidato DeepL
+persistido `AFINAL DE CONTA, O FEITIÇO PROVOCA PROVAS, NÃO EXECUÇÕES.` preserva a oposição
+semântica `TRIALS` versus `EXECUTIONS`; a rejeição era um falso positivo do detector
+`repeated_translation_fragment`, que tratava qualquer prefixo longo como duplicação
+malformada. O detector agora exige sinal genérico de token danificado antes de bloquear,
+mantendo casos como `PROVDE -> PROVINCIA` em review sem rejeitar pares portugueses válidos
+como `PROVOCA`/`PROVAS`.
+
+Em P068, a primeira perda de ownership acontecia antes da classificação/background final:
+`LINE_004` e o bloco `BALAO_2` compartilhavam a mesma região visual branca aberta, mas o
+attachment antigo dependia de sinais de `narration_box` que ainda não existiam naquele ponto.
+A associação de cleanup agora aceita, de forma geométrica e sem mesclar texto ao provider,
+linhas ignoradas que compartilham `visual_white_region_id` aberto com cobertura suficiente e
+um parent com autoridade story. A máscara real passa a consumir a box filha
+`[346, 1771, 134, 58]`; a prova continua estrutural, não baseada em OCR pós-render.
+
+O relatório físico também expõe o subgate `ordinary_story_physical_residual_count` e
+`ordinary_story_physical_residual_ids`. O contador global `physical_source_residual_count`
+continua fail-closed e inclui SFX/OCR ambíguo, mas o subgate separa o que bloqueia qualidade
+Beta de história comum do que permanece como revisão legítima não-story.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`

@@ -426,3 +426,39 @@ atual fecha os roots ordinários com candidato real persistido e conserva P68 co
 geometria/máscara, não OCR-string-only. A classificação documental esperada é **B**, porque
 P005/P062 não têm candidato DeepL real no #69; o downstream está provado com sintético, mas a
 qualidade real dessas traduções exige o próximo provider run autorizado.
+
+### TDD #72 — Real post-#71 quality E2E ledger (2026-08-24, base `0b40ca2`)
+
+**Gatilho:** após o #71, foi executado um E2E real autorizado para substituir o #69 como
+evidência de qualidade do código corrente, com job/manifest/HEAD todos em
+`0b40ca23f0d734a345b8a559bf5934f80c01123e`.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado no #73** | Registra o #72 como evidência real atual e delimita os dois blockers finais ordinários. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado no #73** | Registra os números do #72: 104 esperadas, 99 traduzidas/renderizadas, 5 retidas, 6 resíduos físicos, P005/P006/P062 verdes e P063/P068 abertos. |
+| `docs/DOCUMENTATION_AUDIT.md` | **Atualizado** | Este registro. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | O comportamento visível de usuário não mudou; a alteração é evidência de qualidade/runtime. |
+| Capturas de tela | **Não requer** | Evidência canônica está nos artefatos persistidos #72, quality report e inspeção visual local. |
+
+**Honestidade #72:** houve exatamente um job real; não houve rerun nem push. A qualidade
+permaneceu aberta porque `p063:BALAO_1` ficou em inglês e `p068:LINE_004` deixou `IT'LL`
+visível no PDF.
+
+### TDD #73 — Final two ordinary-story blockers offline closure (2026-08-24, base `0b40ca2`)
+
+**Gatilho:** o #72 reduziu a falha real a dois blockers ordinários: falso positivo de
+validação em P063 e perda de ownership físico em P068. A missão exigiu zero job, zero
+provider e uso exclusivo dos artefatos persistidos #72.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Documenta o root P063 (`repeated_translation_fragment` amplo demais), o root P68 (attachment antes de background classification) e o subgate `ordinary_story_physical_residual_*`. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Registra que #73 fecha os roots offline, preserva fail-closed global e exige E2E real futuro para provar artifact novo. |
+| `docs/DOCUMENTATION_AUDIT.md` | **Atualizado** | Este registro. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Nenhuma mudança de UX/review-state foi introduzida. |
+| Capturas de tela | **Não requer** | O fechamento é TDD/perícia offline sobre artefatos e fixtures. |
+
+**Honestidade #73:** nenhum job real, provider, rede, Supabase, Community ou Drive foi
+acionado. PDFs #69/#72 e artefatos históricos permanecem imutáveis. A qualidade de produto
+continua **OPEN — REAL POST-#73 VALIDATION REQUIRED**.

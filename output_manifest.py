@@ -196,6 +196,7 @@ _PHYSICAL_QUALITY_INT_FIELDS = (
     "physical_regions_render_failed",
     "physical_regions_other_explicit",
     "physical_source_residual_count",
+    "ordinary_story_physical_residual_count",
 )
 
 _PHYSICAL_POPULATION_INT_FIELDS = (
@@ -228,6 +229,12 @@ def sanitize_physical_quality(value: Mapping[str, Any] | None) -> dict[str, Any]
     result["physical_source_residual_group_ids"] = (
         [str(item) for item in group_ids[:200]]
         if isinstance(group_ids, list)
+        else []
+    )
+    ordinary_ids = source.get("ordinary_story_physical_residual_ids")
+    result["ordinary_story_physical_residual_ids"] = (
+        [str(item) for item in ordinary_ids[:200]]
+        if isinstance(ordinary_ids, list)
         else []
     )
     result["physical_gate_passed"] = bool(source.get("physical_gate_passed"))

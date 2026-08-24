@@ -1583,6 +1583,12 @@ def run_benchmark(args):
     quality["physical_source_residual_group_ids"] = physical_accounting[
         "physical_source_residual_group_ids"
     ]
+    quality["ordinary_story_physical_residual_count"] = physical_accounting[
+        "ordinary_story_physical_residual_count"
+    ]
+    quality["ordinary_story_physical_residual_ids"] = physical_accounting[
+        "ordinary_story_physical_residual_ids"
+    ]
     quality["physical_gate_passed"] = physical_accounting["physical_gate_passed"]
     if physical_accounting.get("source_completeness"):
         quality["source_completeness"] = physical_accounting["source_completeness"]
@@ -2530,6 +2536,28 @@ def _story_translation_required(item):
     )
 
 
+def _ordinary_story_residual_required(item):
+    """Whether a residual is an ordinary-story product blocker.
+
+    The physical ledger intentionally keeps every visible retained source.  This
+    narrower subgate separates story content a Beta reader expects in PT-BR from
+    short SFX/garbled review remnants that may keep the global physical gate in
+    review without being ordinary dialogue/narration.
+    """
+
+    if not _story_translation_required(item):
+        return False
+    text = _item_source_text(item)
+    compact = re.sub(r"[^A-Za-zÀ-ÿ]", "", text)
+    final_reason = str(item.get("translation_final_reason") or "")
+    if final_reason in {
+        "untranslated_source_after_retries",
+        "translation_not_selected",
+    } and len(compact) <= 7:
+        return False
+    return True
+
+
 def _translation_quality_accounting(states):
     terminal_counts = {
         state: 0 for state in sorted(TRANSLATION_TERMINAL_STATES)
@@ -2825,6 +2853,7 @@ def _physical_residual_accounting(states):
         "unavailable": 0,
     }
     residual_ids = []
+    ordinary_story_residual_ids = []
     completeness_ids = []
     missing_tokens = set()
     for state in states:
@@ -2869,6 +2898,8 @@ def _physical_residual_accounting(states):
                 )
                 result["physical_regions_review_source_retained"] += 1
                 residual_ids.append(region_id)
+                if _ordinary_story_residual_required(item):
+                    ordinary_story_residual_ids.append(region_id)
                 continue
 
             if final_state == "translated" and translated and valid and redrawn:
@@ -2891,6 +2922,8 @@ def _physical_residual_accounting(states):
             else:
                 result["physical_regions_other_explicit"] += 1
             residual_ids.append(region_id)
+            if _ordinary_story_residual_required(item):
+                ordinary_story_residual_ids.append(region_id)
 
     incomplete_coverage = _incomplete_speech_region_coverage(states)
     if incomplete_coverage:
@@ -2906,9 +2939,17 @@ def _physical_residual_accounting(states):
             )
             if region_id and region_id not in residual_ids:
                 residual_ids.append(region_id)
+            if region_id and region_id not in ordinary_story_residual_ids:
+                ordinary_story_residual_ids.append(region_id)
 
     result["physical_source_residual_count"] = len(residual_ids)
     result["physical_source_residual_group_ids"] = residual_ids[:200]
+    result["ordinary_story_physical_residual_count"] = len(
+        ordinary_story_residual_ids
+    )
+    result["ordinary_story_physical_residual_ids"] = (
+        ordinary_story_residual_ids[:200]
+    )
     if completeness_counts["checked"]:
         result["source_completeness"] = {
             **completeness_counts,
@@ -3009,6 +3050,12 @@ def _build_quality_report(report, states, translation_retry_records):
         ],
         "physical_source_residual_group_ids": physical_accounting[
             "physical_source_residual_group_ids"
+        ],
+        "ordinary_story_physical_residual_count": physical_accounting[
+            "ordinary_story_physical_residual_count"
+        ],
+        "ordinary_story_physical_residual_ids": physical_accounting[
+            "ordinary_story_physical_residual_ids"
         ],
         "physical_gate_passed": physical_accounting["physical_gate_passed"],
         "physical_decision": physical_accounting["physical_decision"],

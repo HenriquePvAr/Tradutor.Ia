@@ -20,6 +20,7 @@ from ocr_balloon import (
     TextGroup,
     _apply_classification_policy,
     _assign_visual_white_regions,
+    _build_text_mask,
     _classify_background_region,
     _classify_groups,
     _caption_overlay_mask,
@@ -1726,6 +1727,41 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertEqual(plan["counts"]["rendered_with_residual"], 0)
         self.assertEqual(plan["counts"]["rendered_clean"], 1)
 
+    def test_ordinary_story_physical_subgate_excludes_short_sfx_review(self):
+        items = [
+            {
+                "id": "BALAO_1",
+                "classification": "narration",
+                "translation_final_state": "manual_review",
+                "translation_final_reason": "invalid_translation_after_retries",
+                "manual_review_required": True,
+                "redrawn": False,
+                "bounding_box": [126, 369, 466, 152],
+                "clean_text": "AFTER ALL, THE SPELL SETS UP TRIALS, NOT EXECUTIONS.",
+                "translation": "",
+            },
+            {
+                "id": "BALAO_2",
+                "classification": "speech",
+                "translation_final_state": "manual_review",
+                "translation_final_reason": "untranslated_source_after_retries",
+                "manual_review_required": True,
+                "redrawn": False,
+                "bounding_box": [481, 1451, 216, 203],
+                "clean_text": "TUR",
+                "translation": "",
+            },
+        ]
+
+        physical = _physical_residual_accounting(self._coverage_state(items))
+
+        self.assertEqual(physical["physical_source_residual_count"], 2)
+        self.assertEqual(physical["ordinary_story_physical_residual_count"], 1)
+        self.assertEqual(
+            physical["ordinary_story_physical_residual_ids"],
+            ["p001:BALAO_1"],
+        )
+
     def test_render_plan_requires_structured_reason_for_skipped_story(self):
         items = [
             {
@@ -2216,6 +2252,48 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertTrue(candidate.ignored)
         self.assertNotIn("77", group.text)
         self.assertEqual(group.cleanup_lines, [child])
+
+    def test_corrupted_child_line_attaches_before_background_classification(self):
+        # #72 / p068:LINE_004.  The real runtime attached cleanup lines during
+        # analysis, before the final background classifier filled narration_box
+        # metrics on the parent group.  Shared open white-region ownership must
+        # still carry the child geometry into the later inpaint mask.
+        parent_lines = [
+            _boxed_line("TAKEAFEWHOURS", (166, 1841, 504, 50), confidence=0.997),
+            _boxed_line("FORTHENEAREST", (178, 1905, 478, 53), confidence=0.9979),
+            _boxed_line("AWAKENEDTO", (229, 1969, 372, 53), confidence=0.9968),
+            _boxed_line("GET HERE.", (274, 2032, 274, 57), confidence=0.9904),
+        ]
+        for parent in parent_lines:
+            parent.metadata = {
+                "visual_white_region_id": 22,
+                "visual_white_region_enclosed": False,
+                "visual_white_region_coverage": 0.544,
+            }
+        child = _boxed_line("77,!!", (346, 1771, 134, 58), confidence=0.9148)
+        child.metadata = {
+            "visual_white_region_id": 22,
+            "visual_white_region_enclosed": False,
+            "visual_white_region_coverage": 0.7234,
+        }
+        group = _group_lines(parent_lines)[0]
+        group.classification = "narration"
+        group.translation = "LEVE ALGUMAS HORAS PARA CHEGAR AQUI, DEPOIS QUE ACORDAR."
+        group.translation_candidate = group.translation
+        candidate = TextCandidate(
+            line=child,
+            ignored=True,
+            ignore_reason="too_few_useful_chars",
+        )
+
+        _associate_ignored_cleanup_lines([group], [candidate], (2460, 800, 3))
+
+        self.assertTrue(candidate.ignored)
+        self.assertEqual(group.cleanup_lines, [child])
+        mask = _build_text_mask((2460, 800, 3), [group], padding=0)
+        x, y, width, height = child.box
+        child_pixels = int(np.count_nonzero(mask[y : y + height, x : x + width]))
+        self.assertGreater(child_pixels, 0)
 
     def test_corrupted_child_line_on_open_art_does_not_attach_to_sfx_cleanup(self):
         parent = _boxed_line("STAGGER", (484, 3334, 280, 231), confidence=0.97)
@@ -4497,6 +4575,14 @@ class OCRQualityRegressionTests(unittest.TestCase):
         )
         self.assertFalse(valid)
         self.assertIn("repeated_translation_fragment", reason)
+
+    def test_story_trial_execution_candidate_is_not_rejected_as_repeated_fragment(self):
+        valid, reason = validate_translation_text(
+            "AFTER ALL, THE SPELL SETS UP TRIALS, NOT EXECUTIONS.",
+            "AFINAL DE CONTA, O FEITIÇO PROVOCA PROVAS, NÃO EXECUÇÕES.",
+            "narration",
+        )
+        self.assertTrue(valid, reason)
 
     def test_nvidia_retries_invalid_json_without_retranslating_other_batches(self):
         translator = TranslatorNvidiaBatch(api_key="test-key", enable_cache=False)
