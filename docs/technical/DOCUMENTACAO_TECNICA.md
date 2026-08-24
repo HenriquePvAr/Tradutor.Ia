@@ -885,6 +885,11 @@ o gate físico; o risco visual que decide se a tentativa pode prosseguir é a á
 será alterada. Isso fecha o blocker p002-like em que a caixa fonte era grande, mas a máscara
 owned era menor e ainda fail-closed pelo gate físico se deixar glyph fonte descoberto.
 
+Para p044-like, o gate de fidelidade semântica não roteia mais passiva preservada como
+`state_action_changed`: `being chosen` pode ser fielmente traduzido como `ser escolhido`.
+O caso severo original — uma decisão/ação progressiva virando atributo estático — continua
+roteado para adjudicação.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`

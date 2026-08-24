@@ -233,13 +233,24 @@ _TARGET_COPULA = re.compile(
 )
 _TARGET_GERUND = re.compile(r"\w{3,}ndo\b")
 _ADJECTIVAL = re.compile(r"(?:ado|ada|ados|adas|ido|ida|idos|idas|vel|veis)$")
+_SOURCE_PASSIVE_PROGRESSIVE = re.compile(
+    r"\bbeing\s+\w+(?:ed|en|osen|own|ung|ought|aught)\b"
+)
+_TARGET_PASSIVE_INFINITIVE = re.compile(
+    r"\bser\s+\w+(?:ado|ada|ados|adas|ido|ida|idos|idas|to|ta|tos|tas)\b"
+)
 
 
 def _state_replaced_action(source, candidate):
+    folded_source = _fold(source)
     folded_candidate = _fold(candidate)
-    if not _SOURCE_PROGRESSIVE.search(_fold(source)):
+    if not _SOURCE_PROGRESSIVE.search(folded_source):
         return False
     if _TARGET_GERUND.search(folded_candidate):
+        return False
+    if _SOURCE_PASSIVE_PROGRESSIVE.search(folded_source) and _TARGET_PASSIVE_INFINITIVE.search(
+        folded_candidate
+    ):
         return False
     return any(
         _ADJECTIVAL.search(match.group(1))

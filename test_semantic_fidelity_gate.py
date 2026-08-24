@@ -230,6 +230,14 @@ class LocalInvariantTests(unittest.TestCase):
         )
         self.assertTrue(finding.faithful)
 
+    def test_passive_being_chosen_kept_as_passive_is_not_routed(self):
+        finding = semantic_fidelity.evaluate_local_fidelity(
+            "FOR ME, BEING CHOSEN BY THE SPELL IS NOTHING BUT A DEATH SENTENCE.",
+            "PARA MIM, SER ESCOLHIDO PELO FEITIÇO NÃO É NADA MAIS DO QUE UMA SENTENÇA DE MORTE.",
+            classification="narration",
+        )
+        self.assertTrue(finding.faithful, finding)
+
     def test_a_state_source_translated_as_a_state_is_not_routed(self):
         finding = semantic_fidelity.evaluate_local_fidelity(
             "I AM TIRED.", "ESTOU CANSADO."
