@@ -965,6 +965,26 @@ O relatório físico também expõe o subgate `ordinary_story_physical_residual_
 continua fail-closed e inclui SFX/OCR ambíguo, mas o subgate separa o que bloqueia qualidade
 Beta de história comum do que permanece como revisão legítima não-story.
 
+O #74, executado já em `da3bd1033609973fc55659f6e59fffbdfce7dd38`, provou que P063 estava
+fechado no runtime real, mas deixou `p068:BALAO_2` como único residual ordinário:
+`physical_source_residual_count=5` e `ordinary_story_physical_residual_count=1`. A perícia
+#75 identificou o primeiro gate errado: `BALAO_2` tinha classe `narration`, contêiner
+`narration_box`, `main_text_score=1.0` e parent text legível
+`TAKEAFEWHOURS FORTHENEAREST AWAKENEDTO GET HERE.`, mas a geometria cleanup-only da linha
+corrompida `LINE_004` adicionava `ignored_line_inside_text_region` ao score OCR. Como esse
+motivo não era recuperável, o gate RapidOCR rejeitava a segunda leitura, deixava o parent fora
+do provider e congelava `translation_not_selected`.
+
+O contrato agora distingue completude textual de completude geométrica. Uma child line
+corrompida pode continuar fora do texto enviado ao provider, mas sua geometria não pode
+tornar inelegível um parent story forte. `ignored_line_inside_text_region` entra no caminho
+de warning recuperável somente sob as travas já existentes de `ocr_suspicious_but_translatable`:
+classe/autoridade story, pontuação, ausência de dígitos embutidos e pelo menos duas palavras
+ordinárias reconhecíveis. SFX/open art e OCR ambíguo curto continuam fail-closed. Como #74
+não persistiu candidato DeepL para P068, o #75 prova apenas routing/render/cleanup offline
+com candidato sintético; o próximo E2E real deve obter a primeira saída real do provider para
+esse parent.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`

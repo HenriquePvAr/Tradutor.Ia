@@ -267,6 +267,17 @@ A partir do #73, `physical_quality` mantém dois níveis: o global
 0 para fechamento Beta de história comum. Um E2E real futuro ainda é obrigatório para provar
 o artifact novo; o #73 não altera PDFs históricos nem consome provider.
 
+O E2E real #74 validou o #73 no caminho de produto apenas parcialmente: P063 fechou no runtime
+real (`AFINAL, O FEITIÇO PROVOCA PROVAS, NÃO EXECUÇÕES.`, source removido e residual físico
+0), mas P068 continuou como único residual ordinário. A evidência nova mostrou que o problema
+não era somente a máscara de `LINE_004`: o parent `p068:BALAO_2` nem chegou ao provider/render,
+terminando em `translation_not_selected`, sem candidato DeepL persistido. O TDD #75 separa
+texto e geometria: a linha corrompida `77,!!` permanece cleanup-only, mas o motivo
+`ignored_line_inside_text_region` não pode envenenar um parent de narração com contêiner e
+semântica fortes. Como #74 não possui candidato real para esse grupo, a prova #75 é
+produção-paritária local com candidato sintético apenas para routing/render/cleanup; qualidade
+continua **OPEN — REAL POST-#75 E2E REQUIRED**.
+
 ## Quality gate final
 
 `_validate_quality()` aprova a execução apenas quando todas estas condições são verdadeiras:

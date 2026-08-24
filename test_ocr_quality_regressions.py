@@ -61,10 +61,12 @@ from ocr_balloon import (
     _white_patch_artifact_metrics,
     _should_skip_paddle_full_for_ignored_decorative,
     apply_selective_ocr_fallbacks,
+    enforce_rapidocr_quality_gate,
     apply_group_translations,
     get_translatable_groups,
     render_analyzed_image,
     group_needs_selective_fallback,
+    ocr_suspicious_but_translatable,
     normalize_recurring_compact_names,
     score_group_ocr_quality,
     validate_translation_text,
@@ -2294,6 +2296,75 @@ class OCRQualityRegressionTests(unittest.TestCase):
         x, y, width, height = child.box
         child_pixels = int(np.count_nonzero(mask[y : y + height, x : x + width]))
         self.assertGreater(child_pixels, 0)
+
+    def test_corrupted_child_cleanup_does_not_poison_multiline_story_parent_routing(self):
+        # #74 / p068:BALAO_2.  The parent sentence is ordinary narration inside a
+        # narration box, but the separate "IT'LL" line OCR'd as punctuation and
+        # became cleanup-only geometry.  That child must not make the readable
+        # parent fail OCR quality before the provider ever sees it.
+        parent_lines = [
+            _boxed_line("TAKEAFEWHOURS", (166, 1841, 504, 50), confidence=0.997),
+            _boxed_line("FORTHENEAREST", (178, 1905, 478, 53), confidence=0.9979),
+            _boxed_line("AWAKENEDTO", (229, 1969, 372, 53), confidence=0.9968),
+            _boxed_line("GET HERE.", (274, 2032, 274, 57), confidence=0.9904),
+        ]
+        for parent in parent_lines:
+            parent.metadata = {
+                "visual_white_region_id": 22,
+                "visual_white_region_enclosed": False,
+                "visual_white_region_coverage": 0.544,
+            }
+        child = _boxed_line("77,!!", (346, 1771, 134, 58), confidence=0.9148)
+        child.metadata = {
+            "visual_white_region_id": 22,
+            "visual_white_region_enclosed": False,
+            "visual_white_region_coverage": 0.7234,
+        }
+        group = _group_lines(parent_lines)[0]
+        group.classification = "narration"
+        group.background_type = "narration_box"
+        group.background_metrics = {
+            "open_white_narration": True,
+            "dominant_white_enclosure": True,
+            "stylized_white_enclosure": True,
+        }
+        candidate = TextCandidate(
+            line=child,
+            ignored=True,
+            ignore_reason="too_few_useful_chars",
+        )
+        _associate_ignored_cleanup_lines([group], [candidate], (2460, 800, 3))
+        _score_group_quality([group])
+
+        self.assertLess(group.quality_score, config.RAPIDOCR_RECOVERY_MIN_QUALITY_SCORE)
+        self.assertIn("ignored_line_inside_text_region", group.quality_reasons)
+        self.assertTrue(ocr_suspicious_but_translatable(group))
+        self.assertEqual(enforce_rapidocr_quality_gate([group]), [])
+        self.assertFalse(group.ocr_quality_blocked)
+        self.assertTrue(_should_translate_group(group))
+        self.assertEqual(get_translatable_groups([group]), [group])
+
+    def test_corrupted_child_cleanup_does_not_route_sfx_parent(self):
+        parent = _boxed_line("STAGGER", (484, 3334, 280, 231), confidence=0.97)
+        parent.metadata = {
+            "visual_white_region_id": 1,
+            "visual_white_region_enclosed": False,
+            "visual_white_region_coverage": 0.70,
+        }
+        child = _boxed_line("77,!!", (500, 3570, 120, 50), confidence=0.91)
+        child.metadata = {
+            "visual_white_region_id": 1,
+            "visual_white_region_enclosed": False,
+            "visual_white_region_coverage": 0.70,
+        }
+        group = _group_lines([parent])[0]
+        group.classification = "sfx"
+        group.cleanup_lines = [child]
+        _score_group_quality([group])
+
+        self.assertFalse(ocr_suspicious_but_translatable(group))
+        self.assertFalse(_should_translate_group(group))
+        self.assertEqual(get_translatable_groups([group]), [])
 
     def test_corrupted_child_line_on_open_art_does_not_attach_to_sfx_cleanup(self):
         parent = _boxed_line("STAGGER", (484, 3334, 280, 231), confidence=0.97)

@@ -462,3 +462,22 @@ provider e uso exclusivo dos artefatos persistidos #72.
 **Honestidade #73:** nenhum job real, provider, rede, Supabase, Community ou Drive foi
 acionado. PDFs #69/#72 e artefatos históricos permanecem imutáveis. A qualidade de produto
 continua **OPEN — REAL POST-#73 VALIDATION REQUIRED**.
+
+### TDD #74/#75 — P068 final ordinary-story root closure offline (2026-08-24, base `da3bd10`)
+
+**Gatilho:** o E2E real #74 foi executado uma única vez pela UI visível e validou o commit
+`da3bd1033609973fc55659f6e59fffbdfce7dd38` no job, manifest e HEAD. P063 fechou no caminho
+real, mas P068 permaneceu visível em inglês porque `p068:BALAO_2` não foi traduzido/renderizado.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Registra o root P068 pós-#74: child cleanup-only derrubava o score OCR do parent e bloqueava provider routing antes de qualquer candidato real. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Registra que #74 fecha P063 real, mantém P068 como único residual ordinário e que #75 fecha routing/render/cleanup apenas offline/sintético por falta de candidato DeepL real. |
+| `docs/DOCUMENTATION_AUDIT.md` | **Atualizado** | Este registro. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Nenhuma mudança de UX foi introduzida. |
+| Capturas de tela | **Não requer** | A evidência está nos artefatos #74, no PDF persistido e nos testes offline. |
+
+**Honestidade #75:** nenhum job real, runner, provider, Vortex, Supabase, Community, Drive ou
+push foi usado. O #74 não tinha candidato DeepL persistido para `p068:BALAO_2`; por isso o
+fechamento local é de routing/render/cleanup, não de qualidade real do provider. PDFs #72/#74
+permanecem imutáveis e a qualidade de produto continua **OPEN — REAL POST-#75 E2E REQUIRED**.

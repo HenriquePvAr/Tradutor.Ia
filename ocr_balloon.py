@@ -3630,6 +3630,7 @@ OCR_RECOVERABLE_SUSPICION_REASONS = frozenset(
         "dictionary_near_miss",
         "adjacent_repeated_word_near_miss",
         "generic_ocr_repair_available",
+        "ignored_line_inside_text_region",
         "unknown_short_token_in_phrase",
         "short_improbable_caps_token",
         "medium_low_confidence",
