@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 import os
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -19,8 +20,12 @@ from beta_license import (
     LicenseState,
     SQLiteBetaLicenseStore,
     StaticBetaAuthorizer,
+    SupabaseBetaLicenseAuthorizer,
+    SupabaseBetaLicenseConfig,
+    build_beta_license_authorizer,
     stable_install_fingerprint_hash,
 )
+from community_auth import RequestPrincipal
 from job_store import JobStatus
 from test_translation_start import WEBTOON_URL, _Bridge
 
@@ -249,6 +254,140 @@ class BetaJobGateTests(unittest.TestCase):
             job_runner._assert_beta_authorization_metadata(job),
             "beta_license_not_authorized",
         )
+
+
+class _FakeResponse:
+    def __init__(self, status, payload):
+        self.status = status
+        self.content = json.dumps(payload).encode("utf-8") if payload is not None else b""
+
+
+class _FakeTransport:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.calls = []
+
+    def request(self, method, url, *, headers=None, data=None):
+        self.calls.append({
+            "method": method, "url": url, "headers": dict(headers or {}), "data": data})
+        if self.error:
+            raise self.error
+        return self.response
+
+
+class SupabaseBetaLicenseAuthorizerTests(unittest.TestCase):
+    def principal(self):
+        return RequestPrincipal(
+            user_id="00000000-0000-0000-0000-000000000001",
+            authenticated=True,
+            auth_source="supabase",
+        )
+
+    def config(self):
+        return SupabaseBetaLicenseConfig(
+            url="https://example.supabase.co",
+            publishable_key="sb_publishable_test",
+        )
+
+    def test_calls_rpc_with_public_key_and_user_bearer_only(self):
+        transport = _FakeTransport(_FakeResponse(200, {
+            "allowed": False,
+            "state": "not_entitled",
+            "reason_code": "not_entitled",
+            "user_id": "00000000-0000-0000-0000-000000000001",
+            "device_fingerprint_hash": "a" * 64,
+            "checked_at": "2026-08-24T12:00:00Z",
+            "retryable": False,
+        }))
+        authorizer = SupabaseBetaLicenseAuthorizer(
+            self.config(), device_fingerprint_hash="a" * 64, transport=transport)
+        decision = authorizer.authorize(principal=self.principal(), access_token="jwt.secret")
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.state, LicenseState.NOT_ENTITLED)
+        call = transport.calls[0]
+        self.assertIn("/rest/v1/rpc/authorize_beta_tester_device", call["url"])
+        self.assertEqual(call["headers"]["apikey"], "sb_publishable_test")
+        self.assertEqual(call["headers"]["Authorization"], "Bearer jwt.secret")
+        self.assertNotIn("service_role", str(call).lower())
+
+    def test_missing_token_fails_closed_without_network(self):
+        transport = _FakeTransport(_FakeResponse(200, {}))
+        authorizer = SupabaseBetaLicenseAuthorizer(
+            self.config(), device_fingerprint_hash="a" * 64, transport=transport)
+        decision = authorizer.authorize(principal=self.principal())
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.state, LicenseState.LICENSE_UNAVAILABLE)
+        self.assertEqual(transport.calls, [])
+
+    def test_malformed_response_denies_without_crash(self):
+        transport = _FakeTransport(_FakeResponse(200, {"allowed": True, "state": "bogus"}))
+        authorizer = SupabaseBetaLicenseAuthorizer(
+            self.config(), device_fingerprint_hash="a" * 64, transport=transport)
+        decision = authorizer.authorize(principal=self.principal(), access_token="jwt.secret")
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.state, LicenseState.MALFORMED_LICENSE)
+
+    def test_transport_error_redacts_token_from_decision(self):
+        transport = _FakeTransport(error=RuntimeError("Authorization: Bearer jwt.secret"))
+        authorizer = SupabaseBetaLicenseAuthorizer(
+            self.config(), device_fingerprint_hash="a" * 64, transport=transport)
+        decision = authorizer.authorize(principal=self.principal(), access_token="jwt.secret")
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason_code, "license_service_unavailable")
+        self.assertNotIn("jwt.secret", str(decision))
+
+    def test_supabase_provider_selected_only_with_public_config_and_device_hash(self):
+        authorizer = build_beta_license_authorizer({
+            "BETA_LICENSE_PROVIDER": "supabase",
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test",
+        }, device_fingerprint_hash="a" * 64, transport=_FakeTransport(_FakeResponse(200, {})))
+        self.assertIsInstance(authorizer, SupabaseBetaLicenseAuthorizer)
+
+    def test_production_fail_closed_provider_never_allows_by_default(self):
+        with self.assertRaisesRegex(RuntimeError, "remote provider required"):
+            build_beta_license_authorizer({"BETA_LICENSE_PROVIDER": "production"})
+
+
+class RemoteSqlContractTests(unittest.TestCase):
+    def test_authorization_rpc_is_hardened_and_atomic(self):
+        root = Path(__file__).resolve().parent
+        sql = (root / "supabase" / "migrations" /
+               "20260824130000_beta_tester_authorization_rpc.sql").read_text(
+                   encoding="utf-8")
+        lowered = sql.lower()
+        self.assertIn("create or replace function public.authorize_beta_tester_device", lowered)
+        self.assertIn("security definer", lowered)
+        self.assertIn("set search_path = pg_catalog, public", lowered)
+        self.assertIn("v_user_id uuid := auth.uid()", lowered)
+        self.assertIn("v_checked_at timestamptz := timezone('utc', now())", lowered)
+        self.assertIn("for update", lowered)
+        self.assertIn("revoke all on function public.authorize_beta_tester_device", lowered)
+        self.assertIn("from anon", lowered)
+        self.assertIn("grant execute on function public.authorize_beta_tester_device", lowered)
+        self.assertIn("to authenticated", lowered)
+        self.assertIn("revoke insert, update, delete on public.beta_tester_devices", lowered)
+        self.assertNotIn("p_user_id", lowered)
+
+    def test_grants_hardening_revokes_raw_table_privileges(self):
+        root = Path(__file__).resolve().parent
+        sql = (root / "supabase" / "migrations" /
+               "20260824140000_beta_tester_grants_hardening.sql").read_text(
+                   encoding="utf-8").lower()
+        self.assertIn(
+            "revoke all privileges on public.beta_tester_entitlements from anon, authenticated",
+            sql,
+        )
+        self.assertIn(
+            "revoke all privileges on public.beta_tester_devices from anon, authenticated",
+            sql,
+        )
+        self.assertIn(
+            "revoke all privileges on public.beta_tester_license_events from anon, authenticated",
+            sql,
+        )
+        self.assertIn("grant select on public.beta_tester_devices to authenticated", sql)
 
 
 class BetaSecurityStaticScanTests(unittest.TestCase):

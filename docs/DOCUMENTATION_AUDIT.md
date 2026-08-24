@@ -532,3 +532,38 @@ novos jobs protegidos; o runner valida o metadado seguro como defesa em profundi
 publicação de update, Setup, push ou mutation remota. A migration
 `20260824120000_beta_tester_licensing_foundation.sql` é contrato local para a próxima fase e
 não foi aplicada remotamente.
+
+### TDD #78 — Controlled Supabase Beta license integration (2026-08-24, base `ed22fd6`)
+
+**Gatilho:** #77 fechou a fundação local/offline; faltava provar schema remoto, RPC atômica,
+RLS/grants e negação autenticada antes de qualquer grant real.
+
+| Documento | Ação | Motivo |
+| --- | --- | --- |
+| `README.md` | **Atualizado** | Estado atual passa a registrar schema/RLS/RPC remotos aplicados e primeiro tester ainda pendente. |
+| `docs/README.md` | **Atualizado** | Tabela de status diferencia integração remota concluída de grant real pendente. |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Documenta migrations remotas, RPC, `auth.uid()`, server time, locking, grants e smoke negativo. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Não requer mudança** | Licenciamento não reabre qualidade de tradução. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | Ainda não há UX final de licença para tester externo. |
+| Capturas de tela | **Não requer** | Evidência canônica está nos metadados remotos e testes locais. |
+
+**Resultado #78:** no projeto Supabase `mimrsxnhqbqkffsekxuw` (`Tradutor IA Community`) foram
+aplicadas apenas migrations de licensing:
+
+- `20260824192515 beta_tester_licensing_foundation`
+- `20260824192601 beta_tester_authorization_rpc`
+- `20260824192729 beta_tester_grants_hardening`
+
+As tabelas `beta_tester_entitlements`, `beta_tester_devices` e
+`beta_tester_license_events` existem com RLS ligada. A RPC
+`public.authorize_beta_tester_device(text,text)` é `SECURITY DEFINER`, fixa
+`search_path = pg_catalog, public`, usa `auth.uid()`, tempo do servidor e `FOR UPDATE` no
+entitlement para serializar alocação de device. `anon` não executa a RPC; `authenticated`
+executa a RPC e tem somente `SELECT` bruto protegido por RLS.
+
+**Honestidade #78:** não foi criado entitlement real, device administrativo, tester,
+Community/Drive/update/Setup/job de tradução/provider/push. Smokes remotos: sem auth →
+`AUTH_REQUIRED`; contexto JWT simulado no banco sem entitlement → `NOT_ENTITLED`,
+`allowed=false`. Não houve extração de JWT/cookie/localStorage do navegador, portanto o smoke
+via sessão autenticada real do produto fica como primeiro passo antes do grant controlado.
+Contagem final remota: entitlements `0`, devices `0`, events `0`.

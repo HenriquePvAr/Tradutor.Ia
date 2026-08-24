@@ -88,7 +88,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
 | Qualidade / gates fail-closed | **IMPLEMENTADO** — **QUALITY CLOSED — REAL POST-#75 E2E VALIDATED** no TDD #76 para story-text Beta; reviews não-story/SFX/OCR ambíguo continuam fail-closed |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
-| Licenciamento / expiração de tester | **FUNDAÇÃO LOCAL IMPLEMENTADA** — TDD #77 cobre estado de licença, expiração, revogação, limite de dispositivos, concorrência e gate fail-closed; integração remota Supabase ainda pendente |
+| Licenciamento / expiração de tester | **SCHEMA/RPC REMOTOS IMPLEMENTADOS** — TDD #78 aplica Supabase schema/RLS/RPC atômica, nega usuário sem entitlement e mantém primeiro grant real pendente |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
 | Atualizador automático assinado | **PARCIAL** — integração remota/launcher implementada, sem canal/chave/UI de produção |
@@ -1083,7 +1083,8 @@ criar tradução, ver histórico ou acessar a comunidade.
 
 ### Licenciamento Scan Beta (`beta_license.py`)
 
-O TDD #77 adiciona a fundação local/offline do licenciamento de tester. Autenticação e
+O TDD #77 adicionou a fundação local/offline do licenciamento de tester. O TDD #78 conectou
+essa fundação ao Supabase remoto configurado. Autenticação e
 autorização são conceitos separados: um usuário autenticado pelo Supabase não recebe acesso
 Beta implicitamente. O contrato canônico usa `BetaAccessDecision`, com `allowed`, estado,
 motivo, `user_id`, hash de dispositivo, expiração, horário verificado, origem da decisão e
@@ -1112,12 +1113,33 @@ desabilitado. O runner tem defesa em profundidade:
 `job_runner._assert_beta_authorization_metadata()` recusa jobs protegidos cujo metadado de
 autorização não seja `ACTIVE` e completo, sem fazer lookup privilegiado nem ler segredo.
 
-O contrato de persistência para a próxima integração Supabase está em
-`supabase/migrations/20260824120000_beta_tester_licensing_foundation.sql`, com
-`beta_tester_entitlements`, `beta_tester_devices` e `beta_tester_license_events`, RLS ligada
-e políticas somente de leitura para o próprio usuário. Mutação administrativa continua fora
-do cliente. A integração remota, Edge Function/RPC transacional e caminho admin confiável
-são fase posterior.
+O contrato remoto está nas migrations:
+
+- `20260824120000_beta_tester_licensing_foundation.sql`
+- `20260824130000_beta_tester_authorization_rpc.sql`
+- `20260824140000_beta_tester_grants_hardening.sql`
+
+No Supabase remoto `Tradutor IA Community` (`mimrsxnhqbqkffsekxuw`), o conector registrou:
+
+- `20260824192515 beta_tester_licensing_foundation`
+- `20260824192601 beta_tester_authorization_rpc`
+- `20260824192729 beta_tester_grants_hardening`
+
+Tabelas: `beta_tester_entitlements`, `beta_tester_devices` e
+`beta_tester_license_events`, todas com RLS ligada. O cliente autenticado tem somente
+`SELECT` protegido por RLS; `anon` não executa a RPC nem acessa tabelas brutas. A RPC
+`public.authorize_beta_tester_device(text,text)` é `SECURITY DEFINER`, fixa
+`search_path = pg_catalog, public`, deriva usuário exclusivamente de `auth.uid()`, valida hash
+SHA-256 hex de 64 caracteres, usa `timezone('utc', now())` como autoridade de tempo e bloqueia
+a linha de entitlement `FOR UPDATE` antes de contar/inserir devices. Assim, o contrato remoto
+tem serialização por linha de entitlement para o último slot de dispositivo.
+
+O smoke remoto sem auth retorna `AUTH_REQUIRED`; o smoke remoto com contexto JWT simulado no
+banco e sem entitlement retorna `NOT_ENTITLED`, `allowed=false`, sem criar entitlement,
+device ou evento. Um smoke via sessão autenticada real do produto ainda deve preceder o
+primeiro grant.
+Mutação administrativa continua fora do cliente. O primeiro grant real de tester é fase
+posterior e ainda não foi criado.
 
 ## 20. Comunidade e armazenamento
 
@@ -1759,7 +1781,7 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 | `UPDATER-RELEASE-CHANNEL-PENDING` | Alta (bloqueia Beta externa) | Transporte HTTPS, verificação remota e seam do launcher existem, mas ainda não há hospedagem/canal de release, chave pública de produção embutida nem UI. | `update_transport.py`, `update_bootstrap.py`, `start_tradutor.py`, `update_manifest.py` | Definir junto com Setup/release operacional |
 | `LAUNCHER-SELF-UPDATE-DEFERRED` | Média | Um launcher em execução não se sobrescreve; o update atual faz handoff entre payloads versionados e bloqueia payload que exige bootstrap mais novo. Self-update do bootstrap depende do formato do Setup. | `update_bootstrap.py`, `start_tradutor.py` | Resolver na missão de Setup/bootstrapper |
 | `UPDATE-TRUST-ROOT-EMPTY` | Média | `update_manifest.TRUSTED_PUBLIC_KEYS` está vazio de propósito (não existe chave de release de produção); o updater falha fechado. | `update_manifest.py` | Preencher quando a chave de release existir, fora do repositório |
-| `TESTER-LICENSE-REMOTE-INTEGRATION-PENDING` | Alta (bloqueia Beta externa) | A fundação local de licenciamento existe, mas ainda falta integrar a autoridade remota Supabase/transação de dispositivo e caminho admin confiável. | `beta_license.py`, `supabase/migrations/20260824120000_beta_tester_licensing_foundation.sql`, `test_beta_tester_licensing.py` | Missão controlada de integração Supabase, sem Setup ainda |
+| `FIRST-TESTER-GRANT-PENDING` | Alta (bloqueia Beta externa) | Schema/RLS/RPC remotos existem e negam sem entitlement, mas nenhum tester real foi concedido. | `beta_license.py`, migrations `2026082412/13/14`, `test_beta_tester_licensing.py` | Missão controlada para criar exatamente um entitlement real e validar acesso |
 | `CLEAN-VM-VALIDATION-PENDING` | Alta (bloqueia Beta externa) | Nenhuma evidência de validação em VM Windows limpa. | — | Executar após o empacotamento existir |
 
 ### Limitações conhecidas do produto

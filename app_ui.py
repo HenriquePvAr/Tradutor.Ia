@@ -400,6 +400,16 @@ def _job_principal(request: Request) -> RequestPrincipal:
     return principal
 
 
+def _license_bearer_token(request: Request) -> str:
+    """Return the current Bearer token for in-memory license RPC use only."""
+
+    raw = str(request.headers.get("authorization", "") or "")
+    scheme, _, token = raw.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
 def _ui_principal(request: Request, *, mutate: bool = False) -> RequestPrincipal:
     """Require the canonical auth principal for identity-bound UI resources."""
     try:
@@ -603,6 +613,7 @@ async def api_run(
             guarded_payload,
             principal=_ui_principal(request, mutate=True),
             local_folder_allowed=requests_local_folder,
+            license_access_token=_license_bearer_token(request),
         )
     except SourceError as exc:
         # Source diagnostics are coded and deliberately generic: URL fragments, headers,
@@ -1794,8 +1805,13 @@ def api_resume(
     request: Request, payload: dict[str, Any] = Body(default={})
 ) -> dict[str, Any]:
     job_id = str(payload.get("job_id") or payload.get("id") or "")
-    _owned_ui_job(request, job_id, mutate=True)
-    return _api_call(BRIDGE.resume, job_id)
+    principal = _owned_ui_job(request, job_id, mutate=True)
+    return _api_call(
+        BRIDGE.resume,
+        job_id,
+        principal=principal,
+        license_access_token=_license_bearer_token(request),
+    )
 
 
 @app.post("/api/ui/profile")

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 
 class LicenseState(StrEnum):
@@ -123,7 +124,7 @@ class BetaAccessDecision:
 
 class BetaLicenseAuthorizer(Protocol):
     def authorize(
-        self, *, principal: Any = None, operation: str = "start_translation"
+        self, *, principal: Any = None, operation: str = "start_translation", **kwargs: Any
     ) -> BetaAccessDecision:
         ...
 
@@ -132,7 +133,7 @@ class LocalDevelopmentBetaAuthorizer:
     """Explicit non-production bypass used to keep hermetic development runnable."""
 
     def authorize(
-        self, *, principal: Any = None, operation: str = "start_translation"
+        self, *, principal: Any = None, operation: str = "start_translation", **_: Any
     ) -> BetaAccessDecision:
         user_id = str(getattr(principal, "user_id", "") or "local-dev")
         return BetaAccessDecision.allow(
@@ -144,6 +145,195 @@ class LocalDevelopmentBetaAuthorizer:
         )
 
 
+class RemoteBetaLicenseConfigError(RuntimeError):
+    """Remote licensing is not safely configured."""
+
+
+class RemoteBetaLicenseError(RuntimeError):
+    """Stable remote licensing error; message is always a safe reason code."""
+
+
+@dataclass(frozen=True, slots=True)
+class SupabaseBetaLicenseConfig:
+    """Public Supabase configuration for authenticated license RPC calls."""
+
+    url: str
+    publishable_key: str
+    rpc_name: str = "authorize_beta_tester_device"
+
+    def __repr__(self) -> str:
+        return "SupabaseBetaLicenseConfig(<redacted>)"
+
+    @property
+    def rest_url(self) -> str:
+        return f"{self.url}/rest/v1"
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "SupabaseBetaLicenseConfig":
+        values = os.environ if env is None else env
+        url = str(values.get("SUPABASE_URL", "") or "").strip().rstrip("/")
+        key = str(values.get("SUPABASE_PUBLISHABLE_KEY", "") or "").strip()
+        missing = [
+            name for name, value in (
+                ("SUPABASE_URL", url),
+                ("SUPABASE_PUBLISHABLE_KEY", key),
+            ) if not value
+        ]
+        if missing:
+            raise RemoteBetaLicenseConfigError(
+                f"supabase beta license not configured; missing: {', '.join(missing)}"
+            )
+        if not url.startswith("https://") and "127.0.0.1" not in url and "localhost" not in url:
+            raise RemoteBetaLicenseConfigError(
+                "SUPABASE_URL must use https (localhost allowed only for tests)"
+            )
+        return cls(url=url, publishable_key=key)
+
+
+def _default_remote_transport():
+    from google_drive_transport import RequestsHttpTransport
+
+    return RequestsHttpTransport(connect_timeout=10.0, read_timeout=20.0)
+
+
+class SupabaseBetaLicenseAuthorizer:
+    """Authenticated-user Supabase RPC adapter for Scan Beta licensing.
+
+    It uses only public Supabase configuration plus the current user's access token.
+    The token is passed in memory for the request and is never persisted into job or run
+    artifacts.
+    """
+
+    def __init__(
+        self,
+        config: SupabaseBetaLicenseConfig,
+        *,
+        device_fingerprint_hash: str,
+        access_token_provider=None,
+        transport=None,
+    ) -> None:
+        self._config = config
+        self._device_fingerprint_hash = str(device_fingerprint_hash or "").strip()
+        self._access_token_provider = access_token_provider
+        self._transport = transport
+
+    def _transport_client(self):
+        return self._transport if self._transport is not None else _default_remote_transport()
+
+    def _access_token(self, explicit: str = "") -> str:
+        token = str(explicit or "").strip()
+        if token:
+            return token
+        if self._access_token_provider is None:
+            return ""
+        return str(self._access_token_provider() or "").strip()
+
+    def authorize(
+        self,
+        *,
+        principal: Any = None,
+        operation: str = "start_translation",
+        access_token: str = "",
+    ) -> BetaAccessDecision:
+        if not getattr(principal, "authenticated", False):
+            return BetaAccessDecision.deny(LicenseState.AUTH_REQUIRED, "auth_required")
+        token = self._access_token(access_token)
+        if not token:
+            return BetaAccessDecision.deny(
+                LicenseState.LICENSE_UNAVAILABLE,
+                "license_access_token_unavailable",
+                user_id=str(getattr(principal, "user_id", "") or ""),
+                retryable=True,
+            )
+        payload = {"p_device_fingerprint_hash": self._device_fingerprint_hash}
+        headers = {
+            "apikey": self._config.publishable_key,
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        try:
+            response = self._transport_client().request(
+                "POST",
+                f"{self._config.rest_url}/rpc/{self._config.rpc_name}",
+                headers=headers,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            )
+        except Exception:
+            return BetaAccessDecision.deny(
+                LicenseState.LICENSE_UNAVAILABLE,
+                "license_service_unavailable",
+                user_id=str(getattr(principal, "user_id", "") or ""),
+                device_fingerprint_hash=self._device_fingerprint_hash,
+                retryable=True,
+            )
+        raw = response.content or b""
+        parsed: Any = None
+        if raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                return BetaAccessDecision.deny(
+                    LicenseState.MALFORMED_LICENSE,
+                    "malformed_license_response",
+                    user_id=str(getattr(principal, "user_id", "") or ""),
+                    device_fingerprint_hash=self._device_fingerprint_hash,
+                )
+        if response.status == 401:
+            return BetaAccessDecision.deny(LicenseState.AUTH_REQUIRED, "auth_required")
+        if response.status in {403, 404}:
+            return BetaAccessDecision.deny(
+                LicenseState.NOT_ENTITLED,
+                "license_not_entitled",
+                user_id=str(getattr(principal, "user_id", "") or ""),
+                device_fingerprint_hash=self._device_fingerprint_hash,
+            )
+        if response.status >= 400:
+            return BetaAccessDecision.deny(
+                LicenseState.LICENSE_UNAVAILABLE,
+                "license_service_unavailable",
+                user_id=str(getattr(principal, "user_id", "") or ""),
+                device_fingerprint_hash=self._device_fingerprint_hash,
+                retryable=response.status >= 500 or response.status == 429,
+            )
+        if isinstance(parsed, list):
+            parsed = parsed[0] if parsed else {}
+        decision = validate_authorization_response(parsed)
+        if decision.user_id and decision.user_id != str(getattr(principal, "user_id", "") or ""):
+            return BetaAccessDecision.deny(
+                LicenseState.MALFORMED_LICENSE,
+                "license_user_mismatch",
+                user_id=str(getattr(principal, "user_id", "") or ""),
+                device_fingerprint_hash=self._device_fingerprint_hash,
+            )
+        return decision
+
+
+def build_beta_license_authorizer(
+    env: Mapping[str, str] | None = None,
+    *,
+    device_fingerprint_hash: str = "",
+    access_token_provider=None,
+    transport=None,
+) -> BetaLicenseAuthorizer:
+    values = os.environ if env is None else env
+    provider = str(values.get("BETA_LICENSE_PROVIDER", "") or "").strip().casefold()
+    if provider in {"", "local_development", "local-dev"}:
+        return LocalDevelopmentBetaAuthorizer()
+    if provider == "supabase":
+        if not device_fingerprint_hash:
+            raise RemoteBetaLicenseConfigError("beta license device fingerprint missing")
+        return SupabaseBetaLicenseAuthorizer(
+            SupabaseBetaLicenseConfig.from_env(values),
+            device_fingerprint_hash=device_fingerprint_hash,
+            access_token_provider=access_token_provider,
+            transport=transport,
+        )
+    if provider in {"fail_closed", "production"}:
+        raise RemoteBetaLicenseConfigError("beta license remote provider required")
+    raise RemoteBetaLicenseConfigError("unknown beta license provider")
+
+
 class StaticBetaAuthorizer:
     """Tiny fake adapter for hermetic tests and offline state-machine proofs."""
 
@@ -152,7 +342,7 @@ class StaticBetaAuthorizer:
         self.calls: list[str] = []
 
     def authorize(
-        self, *, principal: Any = None, operation: str = "start_translation"
+        self, *, principal: Any = None, operation: str = "start_translation", **_: Any
     ) -> BetaAccessDecision:
         self.calls.append(operation)
         return self.decision

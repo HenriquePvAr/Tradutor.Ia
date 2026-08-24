@@ -4280,11 +4280,13 @@ class UiBridge:
         *,
         principal: RequestPrincipal | None = None,
         local_folder_allowed: bool = False,
+        license_access_token: str = "",
     ) -> dict[str, Any]:
         self.store.reconcile_confirmed_reviews()
         self.reconcile_orphans()
         beta_decision = self._require_beta_access(
-            principal=principal, operation="start_translation")
+            principal=principal, operation="start_translation",
+            access_token=license_access_token)
         source_type = self._requested_source_type(payload)
         if source_type == "local_folder":
             # The HTTP boundary calculates this from both the bind address and the peer.
@@ -5526,7 +5528,13 @@ class UiBridge:
             return "previous_attempt_still_running"
         return ""
 
-    def resume(self, job_id: str) -> dict[str, Any]:
+    def resume(
+        self,
+        job_id: str,
+        *,
+        principal: RequestPrincipal | None = None,
+        license_access_token: str = "",
+    ) -> dict[str, Any]:
         job = self.store.get_job(job_id)
         reason = self.resume_block_reason(job)
         if reason == "already_resumed":
@@ -5537,7 +5545,7 @@ class UiBridge:
         if reason:
             raise ValueError(self._RESUME_REFUSALS.get(reason, reason))
         beta_decision = self._require_beta_access(
-            principal=None, operation="resume_translation")
+            principal=principal, operation="resume_translation", access_token=license_access_token)
         if job["status"] == JobStatus.INTERRUPTED:
             self.store.mark_resumable(job_id, resume_from_stage=job.get("resume_from_stage") or "")
         # A resume is a fresh attempt that reuses the same output dir and command; the
@@ -5587,6 +5595,7 @@ class UiBridge:
         *,
         principal: RequestPrincipal | None,
         operation: str,
+        access_token: str = "",
     ) -> BetaAccessDecision:
         """Authoritative protected-operation gate before runner/provider work exists."""
 
@@ -5594,7 +5603,8 @@ class UiBridge:
         if authorizer is None:
             authorizer = LocalDevelopmentBetaAuthorizer()
         try:
-            decision = authorizer.authorize(principal=principal, operation=operation)
+            decision = authorizer.authorize(
+                principal=principal, operation=operation, access_token=access_token)
         except Exception as exc:  # noqa: BLE001 - license service errors fail closed
             raise ValueError("license_service_unavailable") from exc
         if not isinstance(decision, BetaAccessDecision):
