@@ -89,7 +89,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Cobertura story-text / gates fail-closed | **IMPLEMENTADO** — **CLOSED** no TDD #76 para story-text Beta; reviews não-story/SFX/OCR ambíguo continuam fail-closed |
 | Reconstrução visual de arte | **REVISÃO** — TDD #81 fechou os defeitos sistêmicos (preenchimento plano só com fundo comprovadamente plano, quadrilátero OCR nunca vira máscara sobre ilustração, footprint de glifo cobre corpo/contorno/halo, detector de patch plano). Arte muito estruturada agora cai em `REVIEW_REQUIRED_ART_RECONSTRUCTION` em vez de receber retângulo destrutivo |
 | Qualidade semântica/natural PT-BR | **REVISÃO** — TDD #82 separou confiança na fonte OCR, fidelidade de significado e naturalidade PT-BR em três severidades (`blocked`/`verify`/`review`). Replay offline sobre 542 regiões reais persistidas: 531 limpas, 8 em revisão por fonte OCR suspeita, 3 bloqueadas por divergência semântica. Regiões sem candidato alternativo persistido dependem de um E2E real com provedor |
-| Leitor PDF integrado | **PLANEJADO** — Histórico ainda abre artefatos por ações externas |
+| Leitor PDF integrado | **IMPLEMENTADO** — TDD #83: **LER** é a ação primária do card do Histórico e abre o capítulo na aba **Leitor**, dentro do shell, com paginação, zoom, ajuste à largura/página, miniaturas preguiçosas, teclado e tela cheia. Sem dependência nova: as páginas são os JPEGs já contidos no PDF da execução. Abrir externamente permanece como ação secundária |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Licenciamento / expiração de tester | **SCHEMA/RPC REMOTOS IMPLEMENTADOS** — TDD #78 aplica Supabase schema/RLS/RPC atômica, nega usuário sem entitlement e mantém primeiro grant real pendente |
 | Retomada de job interrompido | **PARCIAL** — API existe, botão na UI não existe |
@@ -1210,6 +1210,73 @@ perder uma atualização.
 linha do job terminal em 20:04:31.077, com `pdf_path` e `manifest_path` já vinculados. Não
 houve corrida de finalização; `review_required` é um estado **com** artefato completo, nunca
 "sem PDF".
+
+### Leitor de capítulos embutido (TDD #83)
+
+Ler um capítulo traduzido não exige mais sair do Tradutor IA. O card do Histórico
+tem **LER** como ação primária; `ABRIR EXTERNAMENTE` continua existindo como ação
+secundária sobre o mesmo `/api/ui/open` de sempre.
+
+**Motor de renderização.** Nenhuma dependência nova foi adicionada. `pdf.py` grava
+todo capítulo com Pillow: uma imagem de página inteira por página, `/DCTDecode`
+(JPEG baseline), sem operadores de texto, sem criptografia, com tabela xref
+clássica. `pdf_reader.py` lê exatamente essa forma — percorre a árvore de páginas,
+localiza o único XObject de imagem de cada página e devolve o **JPEG que já está
+dentro do artefato**, sem recodificar. Um PDF fora dessa forma levanta
+`UnsupportedPdf` e o leitor cai para o visualizador nativo do navegador
+(`mode: "embed"`), sem fingir paridade de recursos.
+
+**Vínculo com a execução.** O navegador nunca nomeia um arquivo. Ele envia o
+`job_id` opaco que já possui; `_owned_ui_job` prova a posse em SQL primeiro e
+`UiBridge.reader_pdf_for_owner` resolve **apenas** o campo `pdf_path` daquela
+execução. Duas execuções do mesmo capítulo abrem PDFs distintos porque cada card
+carrega o próprio `job_id`.
+
+**Segurança do serviço de PDF.**
+
+| Vetor | Resultado |
+| --- | --- |
+| Caminho arbitrário do cliente | impossível — nenhum caminho vem do cliente |
+| `../`, `..\`, travessia codificada em `job_id` | 404 (`job_id` é chave opaca, não caminho) |
+| `pdf_path` gravado apontando para fora de `output/` | recusado (`artifact_not_found`) |
+| Outro artefato (`run_manifest.json`, `quality_report.html`) | recusado — só `pdf_path` é resolvido, e o arquivo precisa começar com `%PDF-` |
+| Execução de outro dono | 404, indistinguível de inexistente |
+
+Rotas (todas `GET`, todas donas-escopadas):
+`/api/ui/reader/{job_id}` (metadados), `.../page/{n}` e `.../thumb/{n}`
+(`image/jpeg`, `X-Content-Type-Options: nosniff`) e `.../pdf`
+(`application/pdf` via `FileResponse`, que responde `Range`/`206` para o fallback
+nativo).
+
+**Ciclo de render.** Só a página atual existe no DOM, como um `<img>` com largura
+em CSS — não há canvas, worker nem pool a vazar. Miniaturas são geradas por Pillow
+com `draft()` (decodificação já reduzida) e só recebem `src` quando entram na
+viewport (`IntersectionObserver`). Caches são `lru_cache` limitados: 16 documentos
+parseados e 256 miniaturas, ambos chaveados por `(caminho, mtime, tamanho)`.
+
+**Estado e corridas.** `createReaderState` (`static/chapter_reader.js`) é puro e
+testado em node (`test_chapter_reader.mjs`). Cada abertura incrementa um token;
+um resultado que chega com token antigo é descartado, então abrir A e imediatamente
+B nunca pinta uma página de A. O `renderToken` combina token + página + escala, de
+modo que nem um render de página obsoleta nem um render de zoom obsoleto podem
+sobrescrever o atual.
+
+**Zoom e ajuste.** Passos fixos de 25 % a 400 % (sem deriva de ponto flutuante),
+`100 %`, `Largura` e `Página`. O modo padrão é ajuste à largura, que é como páginas
+verticais de manga se leem; o ajuste é recalculado por página, então páginas de
+tamanhos diferentes no mesmo capítulo cabem cada uma. Redimensionar a janela move um
+modo de ajuste e **não** desfaz um zoom manual.
+
+**Teclado.** `←`/`PageUp`, `→`/`PageDown`, `Home`, `End`, `+`/`=`, `-`, `W`
+(largura), `P` (página). Nenhum atalho dispara com o cursor dentro de um campo de
+texto nem fora da aba do leitor.
+
+**Tela cheia.** `requestFullscreen` sobre o contêiner do leitor. Indisponível ou
+negado, o leitor segue funcionando normalmente e apenas avisa.
+
+**Somente leitura.** Abrir um capítulo não reescreve o PDF, não toca no manifest,
+no relatório de qualidade, nas imagens originais, no status do job nem no hash do
+artefato. O arquivo é aberto em modo binário de leitura e lido por offset.
 
 ## 19. Autenticação e autorização
 

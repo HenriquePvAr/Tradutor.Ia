@@ -3066,3 +3066,90 @@ html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login
 #railApiStatus[data-state="connecting"] .dot{background:#c8a24a; box-shadow:0 0 6px rgba(200,162,74,.6); animation:none;}
 .auth-login-status-dot[data-state="connecting"] i{background:#c8a24a; box-shadow:0 0 8px rgba(200,162,74,.6);}
 .auth-login-status-dot[data-state="disconnected"] i{background:var(--vermillion); box-shadow:0 0 8px rgba(214,74,58,.7);}
+
+  /* Reading is the primary thing to do with a finished chapter, so LER carries the
+     accent fill while the other card actions stay ghosts. */
+  .hm-read-action{
+    border-color:var(--tab-accent,#c9a227)!important;
+    background:rgba(var(--tab-rgb,201,162,39),.16)!important;
+    color:var(--tab-accent,#c9a227)!important;
+    font-weight:700; letter-spacing:.06em;
+  }
+  .hm-read-action:hover{background:rgba(var(--tab-rgb,201,162,39),.26)!important;}
+  .hm-read-action:focus-visible{outline:2px solid var(--tab-accent,#c9a227); outline-offset:2px;}
+
+  /* ---------- in-app chapter reader ---------- */
+  /* The reader is a panel of the shell, not a page of its own: same ink surface,
+     same rail, same accent. Only the stage scrolls. */
+  #view-leitor.active{display:flex;}
+  .reader-shell{
+    display:flex; flex-direction:column; width:100%;
+    height:calc(100vh - 168px); min-height:420px;
+    border:1px solid var(--line); border-radius:12px; overflow:hidden;
+    background:linear-gradient(180deg, rgba(23,22,27,.92), rgba(12,12,15,.96));
+  }
+  .reader-shell:fullscreen{height:100vh; border:0; border-radius:0;}
+  .reader-bar{
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    padding:8px 12px; border-bottom:1px solid var(--line);
+    background:rgba(12,12,15,.72); backdrop-filter:blur(6px);
+  }
+  .reader-title{
+    font-weight:700; font-size:13px; letter-spacing:.02em;
+    max-width:32ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .reader-spacer{flex:1 1 auto;}
+  .reader-review{background:rgba(201,162,39,.16); color:var(--gold); border:1px solid rgba(201,162,39,.32);}
+  .reader-btn{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:32px; height:30px; padding:0; border-radius:7px;
+  }
+  .reader-btn svg{width:17px; height:17px;}
+  .reader-btn.reader-text{width:auto; padding:0 10px; font-size:11px; letter-spacing:.04em;}
+  .reader-btn[aria-pressed="true"]{
+    border-color:var(--tab-accent); color:var(--tab-accent);
+    background:rgba(var(--tab-rgb),.12);
+  }
+  .reader-btn:disabled{opacity:.35; cursor:not-allowed;}
+  .reader-pager{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);}
+  .reader-pager input{
+    width:52px; text-align:center; padding:4px 6px; font:inherit;
+    color:var(--paper); background:rgba(239,231,216,.05);
+    border:1px solid var(--line); border-radius:6px;
+  }
+  .reader-zoom{min-width:46px; text-align:center; font-size:12px; color:var(--muted);}
+  .reader-body{display:flex; flex:1 1 auto; min-height:0;}
+  .reader-thumbs{
+    flex:0 0 178px; overflow-y:auto; overflow-x:hidden;
+    padding:10px; display:flex; flex-direction:column; gap:8px;
+    border-right:1px solid var(--line); background:rgba(0,0,0,.22);
+  }
+  .reader-shell.no-thumbs .reader-thumbs{display:none;}
+  .reader-thumb{
+    position:relative; display:block; width:100%; padding:0; cursor:pointer;
+    background:rgba(239,231,216,.04); border:1px solid var(--line); border-radius:6px;
+    overflow:hidden; min-height:56px;
+  }
+  .reader-thumb img{display:block; width:100%; height:auto;}
+  .reader-thumb span{
+    position:absolute; right:4px; bottom:4px; padding:1px 5px; border-radius:4px;
+    font-size:10px; color:var(--paper); background:rgba(12,12,15,.78);
+  }
+  .reader-thumb.active{border-color:var(--tab-accent); box-shadow:0 0 0 1px var(--tab-accent);}
+  .reader-stage{
+    flex:1 1 auto; min-width:0; overflow:auto; padding:14px;
+    display:flex; flex-direction:column; align-items:center;
+    background:repeating-linear-gradient(45deg, rgba(0,0,0,.22) 0 12px, rgba(0,0,0,.26) 12px 24px);
+  }
+  .reader-page{display:block; height:auto; max-width:none; border-radius:3px;}
+  .reader-embed{width:100%; height:100%; border:0; background:var(--ink);}
+  .reader-status{
+    margin:auto; max-width:44ch; text-align:center; color:var(--muted);
+    font-size:13px; line-height:1.6;
+  }
+  .reader-status.error{color:var(--paper);}
+  .reader-status-actions{display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-top:14px;}
+  @media (max-width:880px){
+    .reader-shell{height:calc(100vh - 140px);}
+    .reader-thumbs{flex-basis:120px;}
+  }

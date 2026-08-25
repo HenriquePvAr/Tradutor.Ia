@@ -59,6 +59,7 @@ import linguistic_audit
 import linguistic_triage
 import font_fidelity
 import art_text_inpainting
+import pdf_reader
 import preview_gates
 import provider_execution
 import region_taxonomy
@@ -5876,6 +5877,93 @@ class UiBridge:
         if not path_value:
             raise ValueError("artifact_not_found")
         self._open_artifact_path(path_value, select=select)
+
+    # ---- in-app chapter reader -------------------------------------------------
+    #
+    # The browser never names a file. It sends the opaque job id it already holds,
+    # the owner-scoped SQL lookup below turns that into this run's own recorded
+    # ``pdf_path``, and nothing but that one field is ever resolved -- so no other
+    # artifact (manifest, quality report, page image) is reachable from here, and a
+    # traversal or absolute path from the client has nothing to traverse.
+
+    def reader_pdf_for_owner(self, owner_id: str, job_id: str) -> Path:
+        """Resolve the immutable PDF bound to exactly this run, confined to output/."""
+
+        job = self.store.get_job_for_owner(
+            str(owner_id or "").strip(), str(job_id or "").strip())
+        if job is None:
+            raise ValueError("artifact_not_found")
+        record = self._job_record(job)
+        path_value = str(record.get("pdf_path") or "")
+        if not path_value:
+            raise ValueError("artifact_unavailable")
+        path = Path(path_value).expanduser().resolve()
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+        if output_root not in path.parents:
+            raise ValueError("artifact_not_found")
+        if not path.is_file():
+            raise ValueError("artifact_unavailable")
+        # The extension is not the trust signal: the file has to actually be a PDF.
+        with open(path, "rb") as handle:
+            if handle.read(5) != b"%PDF-":
+                raise ValueError("artifact_unavailable")
+        return path
+
+    def reader_document_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        """Describe this run's chapter for the reader: pages, sizes, review state."""
+
+        job = self.store.get_job_for_owner(
+            str(owner_id or "").strip(), str(job_id or "").strip())
+        if job is None:
+            raise ValueError("artifact_not_found")
+        record = self._job_record(job)
+        path = self.reader_pdf_for_owner(owner_id, job_id)
+        payload: dict[str, Any] = {
+            "job_id": str(record.get("job_id") or job_id),
+            "run_id": str(record.get("run_id") or ""),
+            "title": str(record.get("chapter_name") or record.get("slug") or "Capítulo"),
+            "status": str(record.get("status") or ""),
+            "review_status": str(record.get("review_status") or ""),
+            "quality_gate": record.get("quality_gate"),
+            "review_required": str(record.get("status") or "") == "review_required"
+            or record.get("quality_gate") is False,
+            "pages": [],
+            "page_count": 0,
+            "mode": "embed",
+        }
+        try:
+            document = pdf_reader.open_document(path)
+        except (pdf_reader.UnsupportedPdf, OSError):
+            # A readable PDF this parser does not understand still opens: the browser's
+            # own viewer takes over and the toolbar reports reduced capability.
+            return payload
+        payload["mode"] = "images"
+        payload["page_count"] = document.page_count
+        payload["pages"] = [
+            {"width": page.width, "height": page.height} for page in document.pages
+        ]
+        return payload
+
+    def reader_page_for_owner(self, owner_id: str, job_id: str, page: int) -> bytes:
+        """Return the JPEG already stored inside this run's PDF for one page."""
+
+        path = self.reader_pdf_for_owner(owner_id, job_id)
+        try:
+            return pdf_reader.open_document(path).page_bytes(int(page))
+        except IndexError as exc:
+            raise ValueError("page_not_found") from exc
+        except pdf_reader.UnsupportedPdf as exc:
+            raise ValueError("page_not_available") from exc
+
+    def reader_thumbnail_for_owner(self, owner_id: str, job_id: str,
+                                   page: int) -> bytes:
+        path = self.reader_pdf_for_owner(owner_id, job_id)
+        try:
+            return pdf_reader.page_thumbnail(path, int(page))
+        except IndexError as exc:
+            raise ValueError("page_not_found") from exc
+        except pdf_reader.UnsupportedPdf as exc:
+            raise ValueError("page_not_available") from exc
 
     def resolve_local_artifact_for_action(self, local_artifact_id: str) -> dict[str, Any]:
         """Resolve an opaque UI history identifier to a server-side local artifact.

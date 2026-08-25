@@ -67,6 +67,7 @@ PIPELINE_HARNESS_ASSET = ROOT / "static" / "pipeline_loading_harness.js"
 PROCESSING_SURFACE_ASSET = ROOT / "static" / "processing_surface.js"
 SOCIAL_COMMUNITY_ASSET = ROOT / "static" / "social_community.js"
 SERVICE_HEALTH_ASSET = ROOT / "static" / "service_health.js"
+CHAPTER_READER_ASSET = ROOT / "static" / "chapter_reader.js"
 I18N_ASSETS = [
     ROOT / "static" / "i18n" / "pt-BR.js",
     ROOT / "static" / "i18n" / "en-US.js",
@@ -1912,6 +1913,80 @@ def api_community_profile_media(user_id: str, kind: str, request: Request) -> Fi
                                  "X-Content-Type-Options": "nosniff"})
 
 
+# ---- in-app chapter reader ---------------------------------------------------
+#
+# Every route below identifies the chapter by the opaque job id the browser already
+# holds. `_owned_ui_job` proves ownership in SQL first, and the bridge resolves the
+# one artifact field bound to that run. No client value ever reaches the filesystem,
+# so traversal, absolute paths and "fetch me the manifest instead" have no entry.
+
+_READER_HEADERS = {"Cache-Control": "private, max-age=300",
+                   "X-Content-Type-Options": "nosniff"}
+
+
+def _reader_error(exc: ValueError) -> HTTPException:
+    code = str(exc)
+    messages = {
+        "artifact_unavailable": "O PDF desta execução não está disponível.",
+        "page_not_found": "Esta página não existe neste capítulo.",
+        "page_not_available": "Não foi possível abrir esta página.",
+    }
+    if code == "artifact_not_found":
+        return HTTPException(status_code=404, detail="not_found")
+    return HTTPException(status_code=404, detail={
+        "code": code, "message": messages.get(code, "Não foi possível abrir este PDF.")})
+
+
+@app.get("/api/ui/reader/{job_id}")
+def api_reader_document(request: Request, job_id: str) -> dict[str, Any]:
+    principal = _owned_ui_job(request, job_id)
+    try:
+        return BRIDGE.reader_document_for_owner(principal.owner_id, job_id)
+    except ValueError as exc:
+        raise _reader_error(exc) from exc
+
+
+@app.get("/api/ui/reader/{job_id}/page/{page_number}")
+def api_reader_page(request: Request, job_id: str, page_number: int) -> Response:
+    principal = _owned_ui_job(request, job_id)
+    try:
+        payload = BRIDGE.reader_page_for_owner(principal.owner_id, job_id, page_number)
+    except ValueError as exc:
+        raise _reader_error(exc) from exc
+    return Response(content=payload, media_type="image/jpeg", headers=_READER_HEADERS)
+
+
+@app.get("/api/ui/reader/{job_id}/thumb/{page_number}")
+def api_reader_thumbnail(request: Request, job_id: str, page_number: int) -> Response:
+    principal = _owned_ui_job(request, job_id)
+    try:
+        payload = BRIDGE.reader_thumbnail_for_owner(
+            principal.owner_id, job_id, page_number)
+    except ValueError as exc:
+        raise _reader_error(exc) from exc
+    return Response(content=payload, media_type="image/jpeg", headers=_READER_HEADERS)
+
+
+@app.get("/api/ui/reader/{job_id}/pdf")
+def api_reader_pdf(request: Request, job_id: str) -> FileResponse:
+    """Serve the canonical PDF itself, for the browser viewer fallback.
+
+    FileResponse answers Range requests, so a large chapter is not re-sent in full
+    for every seek. Only this run's own `pdf_path` can ever be returned.
+    """
+
+    principal = _owned_ui_job(request, job_id)
+    try:
+        path = BRIDGE.reader_pdf_for_owner(principal.owner_id, job_id)
+    except ValueError as exc:
+        raise _reader_error(exc) from exc
+    return FileResponse(path, media_type="application/pdf", headers={
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "inline",
+    })
+
+
 @app.post("/api/ui/open")
 def api_open(
     request: Request, payload: dict[str, Any] = Body(default={})
@@ -1985,6 +2060,7 @@ def index() -> None:
     ui.add_body_html(f'<script type="module" src="{_asset_url(SERVICE_HEALTH_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(SOCIAL_COMMUNITY_ASSET)}"></script>')
+    ui.add_body_html(f'<script type="module" src="{_asset_url(CHAPTER_READER_ASSET)}"></script>')
 
 
 async def _build_auth_provider_at_startup() -> None:

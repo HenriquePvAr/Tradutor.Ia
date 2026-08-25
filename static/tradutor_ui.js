@@ -470,6 +470,7 @@
     nova: {hex: '#c5372c', rgb: '197,55,44'},
     queue: {hex: '#4a7fb5', rgb: '74,127,181'},
     hist: {hex: '#c9a227', rgb: '201,162,39'},
+    leitor: {hex: '#c9a227', rgb: '201,162,39'},
     community: {hex: '#b8557a', rgb: '184,85,122'},
     cfg: {hex: '#2f7a6b', rgb: '47,122,107'},
     logs: {hex: '#8a8377', rgb: '138,131,119'},
@@ -557,6 +558,7 @@
   /* ---------- tabs and motion ---------- */
   const views = {
     inicio: 'view-inicio', nova: 'view-nova', queue: 'view-queue', hist: 'view-hist',
+    leitor: 'view-leitor',
     community: 'view-community', cfg: 'view-cfg', logs: 'view-logs', profile: 'view-profile',
   };
   const railIndicator = $('#railIndicator');
@@ -606,7 +608,13 @@
       clearNewTranslationDraftPanels();
       clearBootstrapSurfaceForFreshTranslation();
     }
-    if (name === 'hist') renderHistory();
+    if (name === 'hist') {
+      renderHistory();
+      // Returning from the reader should land where the user left the library.
+      const main = document.querySelector('main');
+      const offset = Number(appState.historyScrollTop || 0);
+      if (main && offset > 0) window.requestAnimationFrame(() => { main.scrollTop = offset; });
+    }
     if (name === 'inicio') renderDashboard();
     if (name === 'community') loadCommunityFeed();
   }
@@ -4974,6 +4982,15 @@
     const icon = icons[action] || '';
     return `<button class="btn-ghost icon-action" data-action="${action}" data-path="${encodeURIComponent(path || '')}" aria-label="${escapeAttr(label)}" title="${escapeAttr(label)}">${icon}<span class="sr-only">${escapeHtml(label)}</span></button>`;
   }
+  // Reading a finished chapter happens inside the app. The external viewer stays as
+  // an explicit secondary action, never as the default way to read.
+  function readAction(record) {
+    if (!record.pdf_path) return '';
+    const jobId = String(record.job_id || '');
+    if (!jobId) return '';
+    const title = record.chapter_name || record.slug || 'capítulo';
+    return `<button class="btn-ghost hm-read-action" data-action="read" data-job-id="${escapeAttr(jobId)}" title="Ler dentro do Tradutor IA" aria-label="${escapeAttr(`Ler: ${title}`)}">LER</button>`;
+  }
   function retryAction(record) {
     const status = String(record?.status || '').toLowerCase();
     const jobId = String(record?.job_id || '').toLowerCase();
@@ -5425,7 +5442,7 @@
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span>${snapshotBadge}${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
-      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${reviewAction(record)}${actionButton('Abrir PDF', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
+      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${actionButton('Abrir externamente', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
     </div>`;
   }
   function renderHistory() {
@@ -5577,6 +5594,17 @@
     if (!record) return;
     if (button.dataset.action === 'open-preview') {
       void openPendingPreview(firstReadyPreviewForRecord(record) || pendingPreviewsForRecord(record)[0]);
+      return;
+    }
+    if (button.dataset.action === 'read') {
+      // The card carries its own job id, so run A's card can never open run B's PDF
+      // just because both share a chapter name.
+      const jobId = String(button.dataset.jobId || '');
+      if (!jobId || jobId !== String(record.job_id || '')) {
+        showToast('Este capítulo não corresponde mais a esta execução.', 'error');
+        return;
+      }
+      openChapterReader(jobId);
       return;
     }
     if (button.dataset.action === 'review') { void openChapterReview(record); return; }
@@ -6343,6 +6371,24 @@
     try { await api('/api/ui/open', {method: 'POST', body: JSON.stringify({job_id: jobId, artifact})}); }
     catch (error) { showToast(error.message, 'error'); }
   }
+
+  /* ---------- in-app chapter reader ---------- */
+  // static/chapter_reader.js owns the reader itself. This side only decides which
+  // run to open and keeps the History surface intact underneath it.
+  function openChapterReader(jobId) {
+    const main = document.querySelector('main');
+    if (main) appState.historyScrollTop = main.scrollTop;
+    activateTab('leitor');
+    window.dispatchEvent(new CustomEvent('tradutor-open-reader', {detail: {jobId}}));
+  }
+  window.addEventListener('tradutor-goto-tab', event => {
+    const tab = String(event?.detail?.tab || '');
+    if (views[tab]) activateTab(tab);
+  });
+  window.addEventListener('tradutor-open-artifact', event => {
+    const detail = event?.detail || {};
+    void openArtifact(String(detail.jobId || ''), String(detail.artifact || ''));
+  });
 
   /* ---------- queue ---------- */
   function queuePayload(url) {

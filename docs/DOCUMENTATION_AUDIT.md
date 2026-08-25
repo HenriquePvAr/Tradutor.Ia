@@ -719,3 +719,50 @@ story-text continua **CLOSED**: nenhuma severidade nova retém a origem em ingl�
 Supabase, Community ou Drive, nenhum push. Os artefatos reais foram lidos, nunca reescritos.
 Modalidade não foi implementada: as regras testadas produziram apenas falsos positivos.
 `ART-SEAM-DETECTOR-001` continua **pendente** e deliberadamente fora de #82.
+
+
+### TDD #83 — Leitor de capítulos embutido (2026-08-25, base `bc43c66`)
+
+| Documento | Classificação | Ação |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Nova subseção "Leitor de capítulos embutido (TDD #83)" em §18: motor de renderização sem dependência nova, vínculo execução↔artefato, tabela de vetores de segurança do serviço de PDF, ciclo de render, modelo de estado e corridas, zoom/ajuste, teclado, tela cheia e garantia de somente leitura. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Atualizado** | §7 ganha a área **Leitor** e o atalho passa de "1 a 8" para "1 a 9"; §16 ganha "Lendo um capítulo dentro do programa" com a tabela de controles, os atalhos de teclado, o comportamento em capítulos com revisão necessária e a mensagem de arquivo indisponível. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Não requer mudança** | Nenhum gate, severidade ou contagem de qualidade mudou. `ART-SEAM-DETECTOR-001` continua **pendente**. |
+| `docs/CONFIGURATION.md` | **Não requer mudança** | Nenhuma variável de ambiente nova. |
+| `docs/SECURITY.md` | **Não requer mudança** | O leitor não cria fronteira de confiança nova: reutiliza `_owned_ui_job`, a mesma prova de posse em SQL das demais rotas privadas de job. |
+
+**Dependência:** nenhuma. `pdf.py` já grava todo capítulo com Pillow como PDF de
+imagem por página (`/DCTDecode`), então `pdf_reader.py` devolve o JPEG que já está
+dentro do artefato sem recodificar e sem motor de PDF no navegador. Nada de CDN,
+nada de script remoto, nenhuma entrada nova em `requirements*.txt`. Um PDF fora
+dessa forma cai para o visualizador nativo do navegador (`mode: "embed"`), estado
+que é reportado em vez de disfarçado.
+
+**Perícia #83 (somente leitura sobre os 14 PDFs reais em `output/`):** todos os 14
+foram analisados com sucesso pelo parser (42 a 99 páginas). O capítulo 2 real
+(84 páginas, 13,4 MB) analisa em 14,5 ms; a primeira página sai em 0,36 ms e as
+seguintes em ~0,2 ms, porque cada página é lida por offset e nenhuma é decodificada
+para navegar. Vinte miniaturas custam 309 ms no total, com pico de 4,6 MB de heap.
+
+**Smoke local (runtime isolado, identidade `local_test`, cópia do capítulo 2 real):**
+histórico abre o leitor pela ação primária **LER**; 84 páginas, ajuste à largura
+por padrão; 84 miniaturas criadas mas apenas 6 carregadas; um único `<img>` no palco;
+limites de página, salto por digitação, lixo digitado, zoom 25–400 %, 100 %, ajuste
+à largura/página, teclado (`←`/`→`/`Home`/`End`) e supressão de atalho dentro do campo
+de página verificados ao vivo. Abrir a execução A e imediatamente a B deixa apenas a B
+(42 páginas) — nenhuma página da A sobrevive. Execução desconhecida produz erro contido
+com três ações e sem stack trace. Travessia (`..%2F..%2F.env`, `..%5C..%5CWindows`),
+caminho absoluto do cliente e outro artefato via rota de PDF: todos 404. Página válida:
+`200 image/jpeg` com `nosniff`; fallback: `206 application/pdf` com `Accept-Ranges`.
+Nenhuma URL ou log do leitor carrega token, credencial ou caminho de arquivo.
+
+**Imutabilidade:** SHA-256 do capítulo 2 antes e depois de todo o exercício —
+`eb14c98d19313c8ecfa7b9639f1b5960c82a37dfda9081f2d166f988b5bb12ea`, inalterado,
+`mtime` inalterado, nenhum arquivo novo na pasta da execução.
+
+**Honestidade #83:** nenhum job real, nenhum provider, nenhuma rede de provider, nenhuma
+mutação remota, Supabase, Community, Drive ou publicação de update, nenhum push. Não foi
+possível capturar uma imagem de tela neste ambiente (o painel do navegador não compõe
+quadros); a verificação visual foi feita por asserções de geometria, DOM e rede sobre a
+aplicação real em execução, e isso está declarado em vez de fabricado. `ART-SEAM-DETECTOR-001`
+continua **pendente** e deliberadamente fora de #83.

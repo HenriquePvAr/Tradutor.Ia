@@ -139,6 +139,10 @@
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
         Capítulos traduzidos
       </button></li>
+      <li><button type="button" class="rail-tab" data-tab="leitor">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5h7a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H3z"/><path d="M21 5h-7a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h7z"/></svg>
+        Leitor
+      </button></li>
       <li><button type="button" class="rail-tab" data-tab="community">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         Comunidade
@@ -702,6 +706,57 @@
       </div>
       <div class="pending-previews-card" id="historyPendingPreviews" hidden aria-live="polite"></div>
       <div class="hist-list" id="histList"></div>
+    </section>
+
+    <!-- LEITOR -->
+    <section class="panel-view" id="view-leitor">
+      <div class="reader-shell" id="readerShell">
+        <div class="reader-bar" role="toolbar" aria-label="Controles de leitura">
+          <button type="button" class="btn-ghost reader-btn" data-reader-action="back" title="Voltar ao Histórico" aria-label="Voltar ao Histórico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <span class="reader-title" id="readerTitle">Leitor</span>
+          <span class="badge review reader-review" id="readerBadge" hidden></span>
+          <span class="reader-spacer"></span>
+          <button type="button" class="btn-ghost reader-btn" data-reader-action="thumbs" title="Miniaturas" aria-label="Mostrar ou ocultar miniaturas">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="6" height="7"/><rect x="3" y="13" width="6" height="7"/><path d="M12 6h9M12 12h9M12 18h9"/></svg>
+          </button>
+          <button type="button" class="btn-ghost reader-btn" data-reader-action="prev" title="Página anterior" aria-label="Página anterior">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <span class="reader-pager">
+            <input type="text" inputmode="numeric" id="readerPageInput" aria-label="Página atual" size="3" />
+            <span id="readerPageTotal">/ —</span>
+          </span>
+          <button type="button" class="btn-ghost reader-btn" data-reader-action="next" title="Próxima página" aria-label="Próxima página">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+          </button>
+          <button type="button" class="btn-ghost reader-btn" data-reader-action="zoom-out" title="Diminuir zoom" aria-label="Diminuir zoom">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M21 21l-4.3-4.3"/></svg>
+          </button>
+          <span class="reader-zoom" id="readerZoomLabel">100%</span>
+          <button type="button" class="btn-ghost reader-btn" data-reader-action="zoom-in" title="Aumentar zoom" aria-label="Aumentar zoom">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M11 8v6M21 21l-4.3-4.3"/></svg>
+          </button>
+          <button type="button" class="btn-ghost reader-btn reader-text" data-reader-action="zoom-reset" title="Tamanho original" aria-label="Tamanho original">100%</button>
+          <button type="button" class="btn-ghost reader-btn reader-text" data-reader-action="fit-width" aria-pressed="false" title="Ajustar à largura" aria-label="Ajustar à largura">Largura</button>
+          <button type="button" class="btn-ghost reader-btn reader-text" data-reader-action="fit-page" aria-pressed="false" title="Ajustar à página" aria-label="Ajustar à página">Página</button>
+          <button type="button" class="btn-ghost reader-btn" data-reader-action="fullscreen" title="Tela cheia" aria-label="Tela cheia">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+          </button>
+          <button type="button" class="btn-ghost reader-btn" data-reader-action="external" title="Abrir externamente" aria-label="Abrir externamente">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+          </button>
+        </div>
+        <div class="reader-body">
+          <nav class="reader-thumbs" id="readerThumbs" aria-label="Miniaturas das páginas"></nav>
+          <div class="reader-stage" id="readerStage">
+            <div class="reader-status" id="readerStatus" aria-live="polite"></div>
+            <img class="reader-page" id="readerPage" alt="Página do capítulo traduzido" hidden />
+            <iframe class="reader-embed" id="readerEmbed" title="PDF do capítulo traduzido" hidden></iframe>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- COMUNIDADE -->

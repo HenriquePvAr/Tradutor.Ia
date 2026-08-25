@@ -151,13 +151,14 @@ Na lateral existe um menu com as áreas do programa:
 | **Início** | Resumo: séries em andamento, atividade recente e atalhos rápidos |
 | **Nova tradução** | Onde você começa a tradução de um capítulo |
 | **Fila** | Vários capítulos enfileirados para processar em sequência |
-| **Capítulos traduzidos** | Sua biblioteca local: abrir PDF, pasta e relatórios |
+| **Capítulos traduzidos** | Sua biblioteca local: ler, abrir pasta e ver relatórios |
+| **Leitor** | Lê o capítulo escolhido dentro do próprio programa |
 | **Comunidade** | Descobrir traduções e publicar as suas |
 | **Configurações** | Preferências do programa |
 | **Logs** | Registro técnico do que aconteceu |
 | **Perfil** | Seus dados e privacidade |
 
-> 💡 Atalhos: as teclas **1 a 8** trocam de aba, e **Enter** inicia a análise da URL na
+> 💡 Atalhos: as teclas **1 a 9** trocam de aba, e **Enter** inicia a análise da URL na
 > tela de nova tradução.
 
 ## 8. Traduzindo um capítulo, passo a passo
@@ -397,10 +398,46 @@ pasta para você.
 A aba **Capítulos traduzidos** é sua biblioteca local. Ela tem busca por nome e mostra o
 total de capítulos.
 
-Cada item permite abrir o PDF, abrir a pasta e ver os relatórios da execução.
+Cada item tem **LER** como ação principal, e ainda permite abrir o PDF no programa do
+computador, abrir a pasta e ver os relatórios da execução.
 
 Capítulos traduzidos em versões antigas do programa também aparecem: eles são descobertos
 pela pasta `output/`, mesmo sem registro interno.
+
+### Lendo um capítulo dentro do programa
+
+Clique em **LER** no capítulo desejado. Ele abre na aba **Leitor**, sem sair do Tradutor IA.
+
+Na barra do leitor você tem:
+
+| Controle | O que faz |
+| --- | --- |
+| ← (o primeiro, à esquerda) | volta para **Capítulos traduzidos** |
+| Miniaturas | mostra ou esconde a coluna de páginas em miniatura |
+| ‹ e › | página anterior e próxima |
+| Caixa de página | digite um número e pressione **Enter** para pular direto |
+| − e + | diminui e aumenta o zoom |
+| **100 %** | volta ao tamanho original |
+| **Largura** | ajusta a página à largura da tela — o modo mais confortável para manga vertical |
+| **Página** | mostra a página inteira de uma vez |
+| Tela cheia | usa a tela toda |
+| ↗ | abre o PDF no visualizador do seu computador |
+
+Pelo teclado: **←** e **→** (ou **Page Up** / **Page Down**) trocam de página, **Home** e
+**End** vão para a primeira e a última, **+** e **−** dão zoom, **W** ajusta à largura e
+**P** ajusta à página. Enquanto você digita na caixa de página, os atalhos ficam desligados.
+
+Clicar em uma miniatura leva direto àquela página, e a miniatura da página atual fica
+sempre visível na coluna.
+
+Um capítulo marcado como **Revisão necessária** também pode ser lido normalmente — o
+leitor apenas mostra um aviso discreto no topo.
+
+Se o arquivo de um capítulo antigo tiver sido movido ou apagado, o leitor avisa
+("O PDF desta execução não está disponível.") em vez de ficar carregando para sempre.
+
+> O leitor nunca altera nada. Ler um capítulo não modifica o PDF, as páginas nem os
+> relatórios.
 
 ## 17. Traduzir vários capítulos de uma vez
 
