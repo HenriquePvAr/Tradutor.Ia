@@ -804,6 +804,136 @@ def normalize_recurring_compact_names(groups):
     return repairs
 
 
+# --- protected-term boundary recovery ---------------------------------------
+# The complement of the pass above: there a name arrived *split*, here a term
+# arrives *joined* to the next word ("AWAKENEDTO").  The generic segmenter
+# cannot undo it - this pipeline deliberately carries no English dictionary
+# large enough to score an arbitrary decomposition - so the only anchor
+# available is a term the chapter itself spells on its own, repeatedly, plus
+# the function-word list the proper-name rules already use.
+#
+# Nothing is rewritten on a guess.  A join is undone only when exactly one
+# decomposition exists, its anchor is a repeated non-vocabulary term, and the
+# remaining piece is a token the source language is already known to spell.
+# Everything else - an unknown token, an untrusted remainder, two competing
+# splits - is left exactly as the OCR read it, which keeps it visible to the
+# suspicion and semantic-review paths instead of silently rewritten.
+PROTECTED_TERM_BOUNDARY_REASON = "protected_term_boundary"
+MIN_BOUNDARY_ANCHOR_LENGTH = 5
+MIN_BOUNDARY_ANCHOR_GROUPS = 2
+MIN_BOUNDARY_PIECE_LENGTH = 2
+
+
+def _boundary_anchor_terms(groups, extra_anchors=()):
+    """Terms the chapter proves it spells on its own, plus any the caller vouches for."""
+    seen_in = {}
+    for group in groups:
+        tokens = {
+            token.upper()
+            for token in re.findall(
+                rf"[A-Za-z]{{{MIN_BOUNDARY_ANCHOR_LENGTH},}}", clean_ocr_text(group.text)
+            )
+        }
+        for token in tokens:
+            seen_in[token] = seen_in.get(token, 0) + 1
+    anchors = {
+        token: count
+        for token, count in seen_in.items()
+        if count >= MIN_BOUNDARY_ANCHOR_GROUPS
+        and not _token_is_source_vocabulary(token)
+        and token not in SFX_WORDS
+    }
+    for term in extra_anchors or ():
+        token = re.sub(r"[^A-Z]", "", str(term or "").upper())
+        if len(token) >= MIN_BOUNDARY_ANCHOR_LENGTH:
+            anchors.setdefault(token, MIN_BOUNDARY_ANCHOR_GROUPS)
+    return anchors
+
+
+def _boundary_piece_is_plausible(piece):
+    return len(piece) >= MIN_BOUNDARY_PIECE_LENGTH and (
+        piece in ENGLISH_FUNCTION_TOKENS or piece in OCR_LEXICAL_REFERENCE_WORDS
+    )
+
+
+def _protected_term_boundary_split(token, anchors):
+    """``(index, anchor, piece)`` for the single safe decomposition, else ``None``."""
+    upper = token.upper()
+    if len(upper) < MIN_BOUNDARY_ANCHOR_LENGTH + MIN_BOUNDARY_PIECE_LENGTH:
+        return None
+    if upper in anchors or _token_is_source_vocabulary(upper):
+        return None
+    found = set()
+    for anchor in anchors:
+        if upper.startswith(anchor):
+            piece = upper[len(anchor):]
+            if _boundary_piece_is_plausible(piece):
+                found.add((len(anchor), anchor, piece))
+        if upper.endswith(anchor):
+            piece = upper[: len(upper) - len(anchor)]
+            if _boundary_piece_is_plausible(piece):
+                found.add((len(piece), anchor, piece))
+    # Two readings of the same token is not evidence, it is a coin toss.
+    return found.pop() if len(found) == 1 else None
+
+
+def recover_protected_term_boundaries(groups, extra_anchors=()):
+    """Undo OCR joins between a chapter's own terminology and the next word.
+
+    Rewrites ``group.text`` - the canonical source the translation request is
+    built from - while ``group.original_text`` keeps the forensic raw read.
+    Source *trust* is deliberately untouched: a repaired boundary says this one
+    token is now readable, never that the region's OCR was good.
+    """
+    groups = list(groups or [])
+    anchors = _boundary_anchor_terms(groups, extra_anchors)
+    if not anchors:
+        return []
+    repairs = []
+    for group in groups:
+        original = group.text
+        updated = original
+        applied = []
+        for match in re.finditer(r"[A-Za-z]+", original):
+            split = _protected_term_boundary_split(match.group(0), anchors)
+            if split is None:
+                continue
+            index, anchor, piece = split
+            token = match.group(0)
+            # Sliced from the original token, so its casing survives verbatim.
+            spaced = f"{token[:index]} {token[index:]}"
+            updated = updated.replace(token, spaced, 1)
+            applied.append((anchor, piece))
+        if updated == original or not applied:
+            continue
+        anchor, piece = applied[0]
+        group.original_text = group.original_text or original
+        group.text = updated
+        group.repaired_text = updated
+        group.repair_reason = ";".join(
+            part
+            for part in (group.repair_reason, PROTECTED_TERM_BOUNDARY_REASON)
+            if part
+        )
+        repairs.append(
+            {
+                "group_id": group.group_id,
+                "original_text": original,
+                "repaired_text": updated,
+                "repair_reason": PROTECTED_TERM_BOUNDARY_REASON,
+                "protected_term": anchor,
+                "joined_piece": piece,
+                "anchor_group_count": anchors[anchor],
+                # Evidence-derived, not a model score: half at the minimum
+                # number of standalone observations, full at double it.
+                "confidence": round(
+                    min(1.0, anchors[anchor] / (MIN_BOUNDARY_ANCHOR_GROUPS * 2)), 3
+                ),
+            }
+        )
+    return repairs
+
+
 def _normalize_vocative_name_variants(groups):
     observations = []
     for group in groups:

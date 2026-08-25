@@ -115,18 +115,20 @@ def reason_for_status(status_code) -> str:
     return PROVIDER_HTTP_ERROR
 
 
-def _body_bytes(texts, source_lang: str, model_type: str) -> bytes:
+def _body_bytes(texts, source_lang: str, model_type: str, context: str = "") -> bytes:
     """The exact bytes that go on the wire.  Chunk sizing measures this."""
-    return json.dumps(
-        {
-            "text": list(texts),
-            "source_lang": source_lang,
-            "target_lang": TARGET_LANG,
-            "model_type": model_type,
-            "show_billed_characters": True,
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
+    body = {
+        "text": list(texts),
+        "source_lang": source_lang,
+        "target_lang": TARGET_LANG,
+        "model_type": model_type,
+        "show_billed_characters": True,
+    }
+    if context:
+        # DeepL's documented `context` field: read to disambiguate, never
+        # translated and never returned. The first, batched pass sends none.
+        body["context"] = context
+    return json.dumps(body, ensure_ascii=False).encode("utf-8")
 
 
 def plan_chunks(texts, *, source_lang: str = "EN",
@@ -214,6 +216,8 @@ class DeepLTranslator:
         # no translation cache, so there is nothing for `force` to bypass.
         self.force_cache = False
         self.ptbr_naturalizer = None
+        # Attached to strict retries only - see ``translate_strict``.
+        self.session_context_text = ""
         self.stats = {
             "provider_name": PROVIDER_NAME,
             "provider_family": PROVIDER_FAMILY,
@@ -305,8 +309,54 @@ class DeepLTranslator:
                     self._bump("translation_results_associated")
         return translations
 
-    def _translate_chunk(self, texts) -> list[str]:
-        body = _body_bytes(texts, self.source_lang, self.model_type)
+    def translate_strict(
+        self,
+        text,
+        previous_translation="",
+        validation_reason="",
+        force=False,
+        allow_proper_names=True,
+        proper_names=None,
+        retry_origin="quality_retry",
+        retry_attempt=1,
+    ):
+        """The second attempt a rejected candidate needs.
+
+        DeepL takes no instructions, so there is no prompt to correct and the
+        rejection reason cannot be spoken to the model.  Two things can still
+        differ from the first attempt, and both matter for the failure class
+        this exists for - a class noun read as a verb:
+
+        * the source is the canonical one, so a boundary the normalizer
+          repaired since the first pass is what goes on the wire;
+        * the request is single-item and carries the chapter's terminology in
+          DeepL's ``context`` field, which the batched first pass never sends.
+
+        Without this method ``validate_and_retry_translations`` skips the retry
+        entirely (it gates on ``hasattr(translator, "translate_strict")``), so
+        under DeepL every semantic rejection ended as an untranslated region.
+        """
+        text = str(text or "")
+        if not text.strip() or not self.is_configured:
+            return ""
+        self._bump("strict_retry_requests")
+        self._bump("api_texts", 1)
+        self._bump("provider_source_characters", len(text))
+        try:
+            candidates = self._translate_chunk([text], context=self.session_context_text)
+        except DeepLProviderError as exc:
+            self._fail_closed(exc.reason_code, 1,
+                              status_code=exc.status_code, detail=exc.detail)
+            return ""
+        candidate = candidates[0] if candidates else ""
+        if candidate.strip() and candidate.strip() == str(previous_translation or "").strip():
+            # The provider stood by the answer that was just rejected. Reported,
+            # never re-offered: the validator will reject it again.
+            self._bump("strict_retry_duplicate_candidates")
+        return candidate
+
+    def _translate_chunk(self, texts, context: str = "") -> list[str]:
+        body = _body_bytes(texts, self.source_lang, self.model_type, context)
         if len(body) > PROVIDER_MAX_REQUEST_BYTES:
             raise DeepLProviderError(
                 PROVIDER_HTTP_ERROR, detail="request_body_exceeds_provider_maximum")
@@ -395,8 +445,13 @@ class DeepLTranslator:
 
     # -------------------------------------------------- interface no-ops
     def set_session_context(self, context_store):
-        """DeepL sends no prompt, so there is no context to attach."""
-        self.stats["context_enabled"] = False
+        """Kept for the strict retry only; the batched first pass sends none."""
+        try:
+            fragment = str(getattr(context_store, "prompt_fragment", lambda: "")() or "")
+        except Exception:  # noqa: BLE001 - a ledger outage must never sink a chapter.
+            fragment = ""
+        self.session_context_text = fragment.strip()
+        self.stats["context_enabled"] = bool(self.session_context_text)
 
     def set_detected_names(self, names):
         """Proper-name handling is DeepL-internal; nothing to inject."""

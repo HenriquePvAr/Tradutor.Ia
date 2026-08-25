@@ -225,10 +225,18 @@ class ErrorTaxonomyTests(unittest.TestCase):
         translator(transport).translate_many(["A"])
         self.assertEqual(transport.count, 1)
 
-    def test_the_translator_exposes_no_quality_retry_entrypoint(self):
-        # ocr_balloon/provider_execution both gate provider re-calls on this
-        # attribute; its absence is what keeps DeepL to one pass per region.
-        self.assertFalse(hasattr(translator(RecordingTransport()), "translate_strict"))
+    def test_the_quality_retry_entrypoint_is_bounded_to_one_extra_call(self):
+        # #84F5: the absence of this attribute used to keep DeepL to one pass
+        # per region, which meant a semantically rejected candidate had no
+        # second attempt and the region kept its English source on the page.
+        # Both callers (ocr_balloon, provider_execution) allow exactly one
+        # extra call, so exposing it adds a recovery path, never a loop.
+        transport = RecordingTransport()
+        client = translator(transport)
+        self.assertTrue(hasattr(client, "translate_strict"))
+        client.translate_strict("A", previous_translation="B",
+                                validation_reason="fidelity_uncertain")
+        self.assertEqual(transport.count, 1)
 
     def test_failure_diagnostics_are_bounded_and_sanitized(self):
         client = translator(RecordingTransport((400, "x" * 5000)))

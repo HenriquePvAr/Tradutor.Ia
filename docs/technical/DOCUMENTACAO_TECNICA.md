@@ -1080,6 +1080,66 @@ tentativa recusada não condena a reconstrução que o leitor recebeu. Quando
 `translation_quality_impact = "review_required"` e `manual_review_required`, de modo que
 render com revisão nunca é contabilizado como limpo.
 
+**`P068-RECOVERY-001` (TDD #84F5, fechado offline / pendente E2E real).** No E2E real de
+#84F3 a página 68 saiu com o inglês comum visível. A perícia sobre os artefatos persistidos
+(`00cc718e-…/progress.json`, `quality_report.json`) mostrou **três** defeitos distintos, e o
+primeiro deles nunca chegou ao validador semântico:
+
+1. **Fallback de página destrutivo (raiz do #84F3).** `ocr_metadata` da página 68 registra
+   `fallback_reason = "incomplete_group_after_selective_fallback"` e `final_engine =
+   "paddle"`. O Paddle devolveu **zero** linhas (`detected_line_count = 0` nas duas
+   tentativas) e o resultado foi aceito literalmente: `group_count` foi de 2 para 0,
+   `inpainting` e `redraw` ficaram em `0.0` e a página original entrou no PDF intacta. O
+   escalonamento existe para ler *uma* região mal lida melhor, nunca para apagar a página.
+   `benchmark_pipeline._fallback_discards_source_text()` recusa a substituição quando o
+   resultado do fallback traz menos de 60 % das letras que substituiria; nesse caso as
+   linhas correntes ficam, nada é gravado no cache de OCR e `ocr_metadata` recebe
+   `fallback_used = False` com `fallback_rejected_reason`. Regra genérica, sem exceção por
+   página.
+2. **Fronteira de termo colada pelo OCR.** O texto que o RapidOCR leu,
+   `TAKEAFEWHOURS FORTHENEAREST AWAKENEDTO GET HERE.`, gruda o substantivo de classe do
+   próprio capítulo na palavra funcional seguinte — a forma que vira "depois que acordar".
+   `ocr_balloon.recover_protected_term_boundaries()` desfaz esse tipo de junção usando como
+   âncora um termo que o **próprio capítulo** escreve isolado em pelo menos dois grupos (ou
+   um termo que o ledger de terminologia já garante, via `extra_anchors`), e só quando o
+   pedaço restante é um token que o pipeline já conhece (`ENGLISH_FUNCTION_TOKENS`,
+   `OCR_LEXICAL_REFERENCE_WORDS`). Não há dicionário novo, não há dependência nova e não há
+   regra por frase. Se existir **mais de uma** decomposição possível, ou se o resto não for
+   confiável (`KNOWNTERMXYZ`), ou se o token for desconhecido (`FOOBARBAZ`), nada é
+   reescrito: a região continua visível para os caminhos de suspeição/revisão semântica.
+3. **Fonte crua vs. fonte canônica.** A reparação reescreve `group.text` — a representação
+   canônica de onde a requisição de tradução é construída — enquanto `group.original_text`
+   preserva a leitura crua para perícia. A proveniência sai em `text_repairs` com
+   `repair_reason = "protected_term_boundary"`, `protected_term`, `joined_piece`,
+   `anchor_group_count` e `confidence` derivada da contagem de evidência. A confiança do
+   OCR da região **não** é promovida: uma fronteira reparada diz que aquele token passou a
+   ser legível, nunca que o OCR da região era bom.
+4. **DeepL não tinha retry nenhum.** `validate_and_retry_translations()` condiciona todo
+   retry a `hasattr(translator, "translate_strict")`, e o `DeepLTranslator` — provider
+   efetivo do #84F3 (`run_manifest.provider_effective = "deepl"`) — não expunha o método.
+   Sob DeepL, portanto, uma rejeição semântica não tinha segunda tentativa: segurança sem
+   recuperação. `DeepLTranslator.translate_strict()` passa a existir com o único par de
+   alavancas que a DeepL oferece — a fonte canônica (já com a fronteira reparada) e o campo
+   `context` documentado da API, alimentado por `set_session_context()` com a terminologia
+   do capítulo, que o primeiro passe em lote nunca envia. A DeepL não aceita instrução, então
+   o motivo de rejeição não é interpolado em prompt algum; um candidato idêntico ao já
+   rejeitado é contado em `strict_retry_duplicate_candidates` e reoferecido a ninguém — o
+   validador o rejeita de novo. O orçamento continua de **uma** chamada extra por região,
+   tanto em `ocr_balloon` quanto em `provider_execution`.
+
+O retry informado em si já existia e não foi enfraquecido: `translate_strict` recebe
+`validation_reason`, e `semantic_fidelity.retry_constraint()` traduz o código de motivo em
+uma restrição controlada (`preserve_protected_entity`, `preserve_temporal_relation`, …). Se
+todos os candidatos continuarem semanticamente ruins, a região permanece em revisão/rejeição
+e o candidato 1 nunca é restaurado.
+
+Contratos permanentes em `test_p068_semantic_recovery.py`: fallback destrutivo recusado,
+recuperação genérica de fronteira nas duas direções, token desconhecido e decomposição
+ambígua intocados, fonte canônica na requisição, retry estrito da DeepL com contexto e
+dedup, e o replay bad-first/good-second pelo caminho de produção. O candidato bom da segunda
+tentativa é **fixture de teste**, não um candidato DeepL persistido — a prova real depende
+do próximo E2E.
+
 Também desde o TDD #66, linhas OCR curtas e corrompidas que não têm palavra lexical — por
 exemplo um filho lido como dígitos/pontuação — podem ser associadas apenas como
 `cleanup_lines` de um grupo story pai quando a geometria prova que estão dentro do mesmo

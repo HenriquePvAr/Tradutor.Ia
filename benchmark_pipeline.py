@@ -35,6 +35,7 @@ from ocr_balloon import (
     enforce_rapidocr_quality_gate,
     get_translatable_groups,
     normalize_recurring_compact_names,
+    recover_protected_term_boundaries,
     summarize_speech_container_reocr,
     render_analyzed_image,
     validate_and_retry_translations,
@@ -1214,44 +1215,59 @@ def run_benchmark(args):
             )
             stage_seconds["ocr"] += fallback_elapsed
             stage_seconds["ocr_cpu"] += fallback_elapsed
-            with ocr_line_provenance.page(state["index"]):
-                ocr_line_provenance.record_replacement(
-                    state.get("raw_lines", []),
-                    fallback_lines,
-                    reason="full_page_paddle_fallback",
-                )
-            state["raw_lines"] = fallback_lines
-            state["ocr_metadata"] = {
-                **state.get("ocr_metadata", {}),
-                "fallback_used": True,
-                "fallback_reason": grouping_fallback_reason,
-                "original_engine": "rapidocr",
-                "final_engine": (
-                    "hybrid" if preserved_regional_count else "paddle"
-                ),
-                "fallback_variant": "paddle_full",
-                "preserved_regional_line_count": preserved_regional_count,
-            }
-            with profile_step(
-                "pipeline.analyze_after_full_page_fallback",
-                page_index=state["index"],
-                items=len(fallback_lines),
+            if _fallback_discards_source_text(
+                state.get("raw_lines", []), fallback_lines
             ):
-                candidates, groups = analyze_image_array(
-                    original,
-                    fallback_lines,
+                # Keep the read we already have. Taking this answer would leave
+                # the page with no groups at all, and an untranslated source
+                # page is a worse defect than the badly-read region that asked
+                # for the escalation.
+                state["ocr_metadata"] = {
+                    **state.get("ocr_metadata", {}),
+                    "fallback_used": False,
+                    "fallback_attempted_reason": grouping_fallback_reason,
+                    "fallback_rejected_reason": "fallback_discards_source_text",
+                    "fallback_variant": "paddle_full",
+                }
+            else:
+                with ocr_line_provenance.page(state["index"]):
+                    ocr_line_provenance.record_replacement(
+                        state.get("raw_lines", []),
+                        fallback_lines,
+                        reason="full_page_paddle_fallback",
+                    )
+                state["raw_lines"] = fallback_lines
+                state["ocr_metadata"] = {
+                    **state.get("ocr_metadata", {}),
+                    "fallback_used": True,
+                    "fallback_reason": grouping_fallback_reason,
+                    "original_engine": "rapidocr",
+                    "final_engine": (
+                        "hybrid" if preserved_regional_count else "paddle"
+                    ),
+                    "fallback_variant": "paddle_full",
+                    "preserved_regional_line_count": preserved_regional_count,
+                }
+                with profile_step(
+                    "pipeline.analyze_after_full_page_fallback",
                     page_index=state["index"],
-                )
-            if config.ENABLE_OCR_CACHE:
-                save_ocr_cache(
-                    state["ocr_cache_key"],
-                    state["image_hash"],
-                    ocr_lang,
-                    fallback_lines,
-                    state["timings"]["ocr"],
-                    state.get("precheck", {}),
-                    ocr_metadata=state["ocr_metadata"],
-                )
+                    items=len(fallback_lines),
+                ):
+                    candidates, groups = analyze_image_array(
+                        original,
+                        fallback_lines,
+                        page_index=state["index"],
+                    )
+                if config.ENABLE_OCR_CACHE:
+                    save_ocr_cache(
+                        state["ocr_cache_key"],
+                        state["image_hash"],
+                        ocr_lang,
+                        fallback_lines,
+                        state["timings"]["ocr"],
+                        state.get("precheck", {}),
+                        ocr_metadata=state["ocr_metadata"],
+                    )
         with profile_step(
             "pipeline.collect_group_text_repairs",
             page_index=state["index"],
@@ -1302,6 +1318,14 @@ def run_benchmark(args):
         for group in state.get("groups", [])
     ]
     chapter_name_repairs = normalize_recurring_compact_names(all_analyzed_groups)
+    # Same chapter-level evidence, the other direction: a term the chapter
+    # spells on its own that the OCR glued to the next word. Done here so the
+    # canonical source the provider receives is the repaired one, while
+    # ``group.original_text`` keeps the raw read for forensics.
+    chapter_name_repairs += recover_protected_term_boundaries(
+        all_analyzed_groups,
+        extra_anchors=_session_terminology_terms(session_context),
+    )
     if chapter_name_repairs:
         for state in analyzable_states:
             state["group_text_repairs"] = _group_text_repairs(
@@ -3749,6 +3773,42 @@ def _preserve_selected_regional_ocr(page_lines, selected_lines):
     merged.extend(regional_lines)
     merged.sort(key=lambda line: (line.box[1], line.box[0]))
     return merged, len(regional_lines)
+
+
+def _session_terminology_terms(session_context):
+    """Source terms the chapter ledger already vouches for, or nothing."""
+    if session_context is None or not hasattr(session_context, "term_bindings"):
+        return ()
+    try:
+        bindings = session_context.term_bindings() or {}
+    except Exception:  # noqa: BLE001 - a missing ledger must never sink a page.
+        return ()
+    return tuple(
+        str(entry.get("source") or key)
+        for key, entry in bindings.items()
+        if isinstance(entry, dict)
+    )
+
+
+def _fallback_discards_source_text(current_lines, fallback_lines):
+    """True when the page-level escalation returns less text than it replaces.
+
+    The escalation exists to read *one* badly-read region better; it is never a
+    licence to erase the page.  When the fallback engine finds nothing (or
+    almost nothing) where the current engine found readable lettering, taking
+    its answer drops every group, so nothing is translated, nothing is
+    inpainted, and the untouched source page is what reaches the PDF - the
+    worst possible outcome, produced by a step meant to improve quality.
+    """
+
+    def letters(lines):
+        return sum(
+            len(re.sub(r"[^A-Za-zÀ-ÿ]", "", str(getattr(line, "text", "") or "")))
+            for line in lines or []
+        )
+
+    current = letters(current_lines)
+    return current > 0 and letters(fallback_lines) < current * 0.6
 
 
 def _boxes_substantially_overlap(left, right):

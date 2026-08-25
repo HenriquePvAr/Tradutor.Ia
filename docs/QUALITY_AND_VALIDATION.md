@@ -485,6 +485,29 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   P5 (`REGION_002`) tinha candidato PT-BR utilizável e foi retido por
   `large_white_patch_on_nonwhite_background`; P6 motivou o contrato de outline/halo
   residual. A confirmação de saída final P5/P6 permanece pendente de novo E2E real.
+- `P068-RECOVERY-001` (**fechado offline em #84F5** — descoberto no E2E real de #84F3): a
+  página 68 saiu com o inglês comum visível. A perícia sobre os artefatos persistidos do run
+  `00cc718e-4a11-4641-ab2a-1d396cd070ba` mostrou que **o validador semântico nunca viu a
+  região**: `semantic_rejected = 0` no relatório, e `ocr_metadata` da página registra
+  `fallback_reason = "incomplete_group_after_selective_fallback"` com `final_engine =
+  "paddle"`. O Paddle devolveu zero linhas nas duas tentativas, o resultado foi aceito
+  literalmente, `group_count` foi de 2 para 0 e `inpainting`/`redraw` ficaram em `0.0` — a
+  página original entrou no PDF intacta. Somados a isso, dois defeitos reais de recuperação:
+  a leitura `TAKEAFEWHOURS FORTHENEAREST AWAKENEDTO GET HERE.` cola o substantivo de classe
+  do capítulo na palavra funcional seguinte, e o `DeepLTranslator` — provider efetivo do run
+  (`run_manifest.provider_effective = "deepl"`) — não expunha `translate_strict`, atributo do
+  qual todo retry depende, de modo que sob DeepL uma rejeição semântica não tinha segunda
+  tentativa.
+  **Correção (#84F5):** o fallback de página é recusado quando devolve menos texto do que
+  substituiria; a fronteira de termo protegido é recuperada de forma genérica, ancorada em
+  termos que o próprio capítulo escreve isolados (ou no ledger de terminologia) e limitada a
+  restos lexicais já conhecidos, preservando o OCR cru em `original_text` e a proveniência
+  em `text_repairs`; e a DeepL ganha um retry estrito bounded (uma chamada extra) que envia a
+  fonte canônica reparada e a terminologia do capítulo no campo `context` da API. O validador
+  semântico **não** foi enfraquecido, o candidato histórico ruim continua rejeitado e não
+  existe regra específica de P068. Contratos permanentes em
+  `test_p068_semantic_recovery.py`. O candidato bom da segunda tentativa é fixture de teste:
+  **a saída real do provider para P068 continua pendente de novo E2E real.**
 - **Replay offline com paridade de produção (#84F2)**: as regiões reais de P5, P6 e P25
   foram reprocessadas a partir das páginas e da geometria OCR persistidas do run
   `7d64890b-e303-497b-863f-74e2cd8d5645`, sem provider e sem rede, reproduzindo os números
