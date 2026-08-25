@@ -52,7 +52,8 @@ NVIDIA é o provedor padrão e o único exposto como fluxo principal pela UI. Os
 
 | Variável | Default | Finalidade |
 | --- | --- | --- |
-| `OCR_ENGINE` | `paddle` | Engine base carregada por `config.py`; a CLI sobrescreve para `rapidocr` no modo `fast` |
+| `OCR_ENGINE` | `paddle` | Engine base carregada por `config.py`; a CLI sobrescreve para `rapidocr` no modo `fast` e para `paddle` no modo `quality`, então definir esta variável não muda a engine de um job |
+| `TRADUTOR_OCR_ENGINE_OVERRIDE` | vazio | Único ponto de controle da engine por ambiente (`rapidocr`, `paddle` ou `paddle_mobile`): `run_webtoon._configure_mode` a respeita antes do mapeamento modo→engine. Ambientes sem `paddleocr` instalado precisam de `rapidocr` aqui para rodar o modo `quality`, e o guard continua falhando fechado se a engine escolhida não tiver dependência |
 | `OCR_FALLBACK_ENGINE` | `paddle` | Família usada quando a leitura inicial precisa de fallback |
 | `OCR_HYBRID_FALLBACK` | `True` | Permite combinar engines em vez de aceitar apenas a inicial |
 | `RAPIDOCR_ENABLED` | `False` | Habilita RapidOCR; a CLI `fast` define `True` durante a execução |
