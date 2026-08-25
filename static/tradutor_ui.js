@@ -4697,6 +4697,29 @@
     surface.renderProcessingSurface(root, model);
   }
 
+  // PIPELINE-UI-REGRESSION-002.
+  //
+  // #loadingSurface is a whole-page experience: its own <h1>, a three-column
+  // grid, a progress dial and a row of stage cards. It is mounted inline in the
+  // "Nova tradução" column, between the balloon preview and the compact
+  // #stageList pipeline, so painting it for an ordinary job covered the form
+  // with a second and much larger copy of a pipeline the column already shows —
+  // one whose terminal buttons no handler in this bundle listens for.
+  //
+  // #80 gated renderBootstrapSurface (mode 'bootstrap', bootHasClosed latch).
+  // This is the pipeline-mode repaint, it comes from renderProgress, and it was
+  // never gated. The compact #stageList below is driven by the same job state a
+  // few lines down, so nothing is lost by leaving the surface unpainted.
+  //
+  // It stays reachable for diagnostics behind the server's own fail-closed
+  // visual-test flag — the same one pipeline_loading_harness.js requires — and
+  // nowhere else. A bootstrap paint is left alone: closing the boot clears it.
+  function paintPipelineSurface(state, progress) {
+    if (window.__tradutorVisualTestEnabled === true) { renderLoadingSurface(state, progress); return; }
+    const root = $('#loadingSurface');
+    if (root && !root.hidden && root.dataset.lsMode !== 'bootstrap') clearLoadingSurface();
+  }
+
   function renderProgress(progress, pipelineState = null) {
     const state = pipelineState || buildPipelineState({status: appState.status}, progress);
     const runtimeKey = state.stage || progress.stage_key || 'idle';
@@ -4739,7 +4762,7 @@
       sfxPop(runtimeKey);
     }
     renderPipelinePreview(state);
-    renderLoadingSurface(state, progress);
+    paintPipelineSurface(state, progress);
     $('#scanline')?.classList.toggle('run', appState.status === 'running' && ['ocr', 'classification', 'render'].includes(runtimeKey));
     const summary = $('#runSummary');
     if (appState.status === 'running') {

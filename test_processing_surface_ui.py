@@ -14,6 +14,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -553,3 +554,202 @@ class BootstrapIsWiredToTheSurface(unittest.TestCase):
         self.assertIn("hidden = true", clear)
         for attribute in ("lsMode", "lsStatus", "lsTone"):
             self.assertIn(attribute, clear, attribute)
+
+
+# --------------------------------------------------------------------------
+# TDD #84F4 -- PIPELINE-UI-REGRESSION-002
+#
+# renderProgress() called renderLoadingSurface() on every runtime refresh, so a
+# perfectly ordinary job painted the full pipeline experience into
+# #loadingSurface.  That element is mounted inline in the "Nova traducao"
+# column, between the balloon preview and the compact #stageList pipeline, and
+# the surface is a three-column dark-navy grid with its own <h1>, a progress
+# dial, a live-activity column and seven stage cards.  Inside that column it
+# displaced the form and buried the compact pipeline under a second, larger
+# copy of itself -- and none of its terminal buttons (data-ls-action) has a
+# listener in this bundle, so it was inert as well as intrusive.
+#
+# #80 closed PIPELINE-UI-REGRESSION-001, which was the *bootstrap* repaint
+# (renderBootstrapSurface + the bootHasClosed latch).  The pipeline-mode
+# repaint reaches the same element from a different caller and was never gated.
+#
+# The surface itself is kept: pipeline_loading_harness.js renders it from
+# fixtures behind TRADUTOR_UI_VISUAL_TEST=1 on loopback, and the same
+# fail-closed flag is the only thing that lets the bundle paint it.
+# --------------------------------------------------------------------------
+
+GATE_HARNESS = r"""
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const scenario = JSON.parse(process.argv[3]);
+
+function extractFunction(name) {
+  const marker = 'function ' + name + '(';
+  const start = source.indexOf(marker);
+  if (start < 0) throw new Error('missing function ' + name);
+  const brace = source.indexOf('{', start);
+  let depth = 0;
+  for (let i = brace; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  throw new Error('unterminated function ' + name);
+}
+
+// A root that already carries a painted surface, so "did nothing" and
+// "cleared it" are distinguishable from "was never touched".
+const root = {
+  hidden: scenario.hidden === true,
+  dataset: Object.assign({lsMode: 'pipeline', lsTone: 'accent', lsStatus: 'running'},
+                         scenario.dataset || {}),
+  children: ['stale-blue-node'],
+  replaceChildren() { this.children = []; }
+};
+let painted = 0;
+function renderLoadingSurfaceSpy() {
+  painted += 1;
+  root.hidden = false;
+  root.children = ['blue-surface'];
+}
+function select(selector) { return selector === '#loadingSurface' ? root : null; }
+const windowStub = {__tradutorVisualTestEnabled: scenario.visualTest === true};
+
+const factory = new Function('$', 'window', 'renderLoadingSurface',
+  extractFunction('clearLoadingSurface') + '\n'
+  + extractFunction('paintPipelineSurface') + '\nreturn paintPipelineSurface;');
+factory(select, windowStub, renderLoadingSurfaceSpy)(
+  scenario.state || {}, scenario.progress || {});
+
+process.stdout.write(JSON.stringify({
+  painted: painted,
+  hidden: root.hidden === true,
+  children: root.children.length,
+  mode: root.dataset.lsMode === undefined ? null : root.dataset.lsMode
+}));
+"""
+
+
+def paint(state, *, visual_test=False, hidden=False, dataset=None, progress=None):
+    """Run the real gate and the real clearLoadingSurface against a stub root."""
+    scenario = {"state": state, "progress": progress or {}, "visualTest": visual_test,
+                "hidden": hidden, "dataset": dataset or {}}
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                     encoding="utf-8") as handle:
+        handle.write(GATE_HARNESS)
+        harness = handle.name
+    try:
+        result = subprocess.run(
+            [NODE, harness, str(ROOT / "static" / "tradutor_ui.js"), json.dumps(scenario)],
+            capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
+    finally:
+        Path(harness).unlink(missing_ok=True)
+    if result.returncode != 0:
+        raise AssertionError("node failed: " + result.stderr.strip())
+    return json.loads(result.stdout)
+
+
+# Every status a running job walks through, plus the terminal ones.  The blue
+# surface must stay down for all of them.
+JOB_STATES = [
+    {"status": "queued", "stage": "queued"},
+    {"status": "running", "stage": "source_analysis"},
+    {"status": "awaiting_source_review", "stage": "awaiting_source_review"},
+    {"status": "running", "stage": "download"},
+    {"status": "running", "stage": "ocr"},
+    {"status": "running", "stage": "translate"},
+    {"status": "running", "stage": "render"},
+    {"status": "running", "stage": "pdf"},
+    {"status": "running", "stage": "quality_review"},
+    {"status": "review_required", "stage": "quality_review", "jobId": "j"},
+    {"status": "finished", "stage": "pdf", "jobId": "j"},
+    {"status": "failed", "stage": "ocr", "jobId": "j"},
+    {"status": "cancelled", "stage": "translate", "jobId": "j"},
+]
+
+
+@unittest.skipUnless(NODE, "node is required to execute the gate")
+class TheBluePipelineSurfaceStaysOutOfTheNormalFlow(unittest.TestCase):
+    """PIPELINE-UI-REGRESSION-002: no job status may paint it in a Beta session."""
+
+    def test_no_job_state_paints_the_surface_in_a_normal_session(self):
+        for state in JOB_STATES:
+            with self.subTest(status=state["status"], stage=state["stage"]):
+                out = paint(state)
+                self.assertEqual(out["painted"], 0,
+                                 "the full pipeline surface must not be painted")
+                self.assertTrue(out["hidden"], "#loadingSurface must stay hidden")
+                self.assertEqual(out["children"], 0, "no surface nodes may remain")
+
+    def test_a_surface_left_over_from_before_is_cleared(self):
+        """Cancel, a terminal state or a reload must not leave blue behind."""
+        out = paint({"status": "cancelled", "stage": "translate", "jobId": "j"})
+        self.assertTrue(out["hidden"])
+        self.assertIsNone(out["mode"], "clearing must drop the state attributes")
+
+    def test_an_already_hidden_surface_is_left_untouched(self):
+        out = paint({"status": "running", "stage": "ocr"}, hidden=True)
+        self.assertEqual(out["painted"], 0)
+        self.assertTrue(out["hidden"])
+
+    def test_a_bootstrap_paint_is_not_stolen_by_the_pipeline_gate(self):
+        """#80 owns the bootstrap surface; closeBoot clears it, not this."""
+        out = paint({"status": "running", "stage": "ocr"}, dataset={"lsMode": "bootstrap"})
+        self.assertEqual(out["painted"], 0)
+        self.assertEqual(out["mode"], "bootstrap")
+
+    def test_the_visual_test_flag_is_the_only_way_in(self):
+        out = paint({"status": "running", "stage": "ocr"}, visual_test=True)
+        self.assertEqual(out["painted"], 1, "the diagnostic route must still work")
+
+
+class TheNormalFlowKeepsTheInlinePipeline(unittest.TestCase):
+    """Source contracts: one gated call site, no auto-navigation, real state."""
+
+    BUNDLE = ROOT / "static" / "tradutor_ui.js"
+    SHELL = ROOT / "ui" / "ui_shell.html"
+
+    def setUp(self):
+        self.text = code_of(self.BUNDLE)
+
+    def test_render_progress_reaches_the_surface_only_through_the_gate(self):
+        body = self.text[self.text.index("function renderProgress"):]
+        self.assertNotIn("renderLoadingSurface(", body,
+                         "renderProgress must not paint the surface directly")
+        self.assertIn("paintPipelineSurface(", body)
+
+    def test_the_gate_is_the_servers_fail_closed_flag_not_a_sniff(self):
+        gate = self.text[self.text.index("function paintPipelineSurface"):]
+        gate = gate[:gate.index("\n  }") + 4]
+        self.assertIn("window.__tradutorVisualTestEnabled === true", gate)
+        for sniff in ("location.hostname", "localhost", "127.0.0.1", "Date.now"):
+            self.assertNotIn(sniff, gate, sniff)
+
+    def test_the_gate_is_the_only_caller_left(self):
+        callers = re.findall(r"(?<!function )(?<![.\w])renderLoadingSurface\(", self.text)
+        self.assertEqual(len(callers), 1,
+                         "renderLoadingSurface must have exactly one call site")
+
+    def test_starting_a_job_keeps_the_user_on_nova_traducao(self):
+        """Start means start; it must never navigate to another surface."""
+        anchor = self.text.index("activateTab('nova');\n      return result;")
+        start = self.text[max(0, anchor - 4000):anchor + 40]
+        for other in ("activateTab('logs')", "activateTab('hist')",
+                      "activateTab('inicio')", "activateTab('leitor')"):
+            self.assertNotIn(other, start, other)
+
+    def test_the_compact_pipeline_is_the_one_the_column_shows(self):
+        shell = self.SHELL.read_text(encoding="utf-8")
+        self.assertLess(shell.index('id="loadingSurface"'), shell.index('id="stageList"'))
+        for stage in ("source_analysis", "awaiting_source_review", "download", "validation",
+                      "ocr", "translate", "render", "pdf", "quality_review"):
+            self.assertIn('data-stage="' + stage + '"', shell, stage)
+        # Driven by the job state, not by an animation.
+        block = self.text[self.text.index("function renderProgress"):]
+        block = block[block.index("$$('.stage-item').forEach"):]
+        block = block[:block.index("renderPipelinePreview")]
+        self.assertIn("state.status", block)
+        for fake in ("Math.random", "setInterval(", "requestAnimationFrame("):
+            self.assertNotIn(fake, block, fake)
