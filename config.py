@@ -390,6 +390,19 @@ MIN_FLAT_PATCH_COMPONENT_AREA = max(
     1,
     _env_int("MIN_FLAT_PATCH_COMPONENT_AREA", 400),
 )
+# Art *fidelity* is a separate axis from art *safety*.  A reconstruction can be
+# demonstrably non-destructive - no flat patch, no seam, no surviving source
+# lettering - and still be visibly smoother than the artwork it replaced, which
+# is what non-generative inpainting produces over a large lettering footprint.
+# That is a review outcome, never a reason to withhold the render and put the
+# English source back on the page.  The bound sits well above the destructive
+# ratio (MAX_FLAT_PATCH_TEXTURE_RATIO): the real #84 pages 5 and 6 measure
+# 0.37/0.29 against their own surroundings, while page 25 and page 6's caption
+# measure 2.34/1.40 and stay clean.
+MIN_ART_FIDELITY_TEXTURE_RATIO = _env_float(
+    "MIN_ART_FIDELITY_TEXTURE_RATIO",
+    0.55,
+)
 # Art reconstruction seams (ART-SEAM-DETECTOR-001).  A reconstruction can remove
 # every source glyph, avoid a flat rectangle and still be unacceptable because it
 # left a visible boundary where the artwork never had one.  The evidence is taken

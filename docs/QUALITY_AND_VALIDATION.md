@@ -433,8 +433,14 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
 - SFX estilizados e texto integrado à arte continuam difíceis de classificar e reconstruir.
 - Uma tradução gramaticalmente válida pode ainda soar pouco natural.
 - Fontes incomuns, texto curvo e backgrounds detalhados elevam o risco visual.
-- `ART-RECON-001`: lettering original/ghost text pode sobreviver em regiões texturizadas
-  ou open-art. Sentinela planejada para #80: página 5 do PDF auditado.
+- `ART-RECON-001` (**fechado offline em #84F2 no contrato local**): o footprint físico do
+  lettering original agora é tratado separadamente da tradução e da costura de arte. A
+  limpeza `source_scoped` pode incluir corpo, outline, halo/antialias e sombra visualmente
+  pertencente ao lettering, sempre limitada à evidência OCR da própria região; se esse
+  lettering sobreviver, `art_clean` fica impossível. O modelo de decisão distingue
+  `translation`, `source_removed`, `art` e `render_disposition`
+  (`render_clean`, `render_with_review`, `do_not_render`). A confirmação visual real de
+  P5/P6 ainda depende de um novo E2E; não declarar fechamento real antes disso.
 - `ART-RECON-002`: patches brancos/cinzas planos sobre textura são visualmente
   inaceitáveis. Sentinela planejada para #80: página 25.
 - `TRANSLATION-SEMANTIC-001`: fechado localmente em #82 — ver
@@ -472,9 +478,28 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   `structured_review`, com `unaccounted = 0`. Contratos permanentes em
   `test_semantic_runtime_acceptance.py`, incluindo o replay dos três sentinelas reais.
   Pendente apenas a confirmação em novo E2E real, que só ocorrerá depois de `ART-RECON-001`.
-- `ART-RECON-001` continua **aberto**: na página 6 do PDF real de #84 o contorno branco do
-  lettering de origem sobreviveu à limpeza e aparece atrás do português, com a região ainda
-  reportada `art_reconstruction_status: clean`.
+- `ART-RECON-001` foi fechado **offline/localmente em #84F2** para o falso-clean: outline,
+  halo e corpo residual são medidos antes do português ser desenhado e não podem produzir
+  `art_reconstruction_status: clean`. A política `render_disposition` também separa render
+  limpo, render com revisão e bloqueio. O run real #84 continua somente evidência histórica:
+  P5 (`REGION_002`) tinha candidato PT-BR utilizável e foi retido por
+  `large_white_patch_on_nonwhite_background`; P6 motivou o contrato de outline/halo
+  residual. A confirmação de saída final P5/P6 permanece pendente de novo E2E real.
+- **Replay offline com paridade de produção (#84F2)**: as regiões reais de P5, P6 e P25
+  foram reprocessadas a partir das páginas e da geometria OCR persistidas do run
+  `7d64890b-e303-497b-863f-74e2cd8d5645`, sem provider e sem rede, reproduzindo os números
+  do relatório original. Resultado inspecionado visualmente: P5 e P6 passam a renderizar o
+  PT-BR com o inglês ausente e sem ghost/retângulo/costura, sob
+  `render_with_review` + `art_reconstruction_fidelity_uncertain`; o contorno branco de
+  origem da página 6 desapareceu; a página 25 saiu **pixel a pixel idêntica** ao #84 real.
+  Isso é replay offline, **não** um E2E: o fechamento real segue pendente.
+- **Fidelidade de arte é um eixo separado da segurança de arte.** Uma reconstrução pode ser
+  comprovadamente não destrutiva e ainda ser visivelmente mais suave que a arte que
+  substituiu. `MIN_ART_FIDELITY_TEXTURE_RATIO` (0.55) marca `art_fidelity_uncertain` sem
+  mexer no bound destrutivo (`MAX_FLAT_PATCH_TEXTURE_RATIO`, 0.25). Nunca retém o render:
+  segurar um PT-BR bom por dúvida de fidelidade recolocaria o inglês na página. Toda região
+  que renderiza sob revisão carrega `translation_quality_impact: review_required` e
+  `manual_review_required` — `render_with_review` com qualidade `none` é impossível.
 - Revisões estruturadas por risco visual continuam exigindo novo E2E real para provar que o
   PDF gerado ficou fisicamente limpo.
 - O comportamento do provedor pode variar entre execuções.

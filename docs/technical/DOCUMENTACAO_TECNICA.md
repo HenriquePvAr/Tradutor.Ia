@@ -1045,6 +1045,41 @@ qualquer story text sem desfecho. O contrato de qualidade é fail-closed: story 
 candidato válido não pode simplesmente sumir do plano de render; se não for renderizado,
 precisa de razão estruturada ou aparece em `unaccounted`/`skipped_without_reason`.
 
+**`ART-RECON-001` (TDD #84F2, fechado localmente / pendente E2E real).** O pipeline passa a
+tratar lettering de origem como uma evidência física própria, distinta de tradução e de
+costura visual. `ocr_balloon.source_lettering_footprint()` constrói uma máscara local e
+limitada à evidência OCR da região, cobrindo corpo do glyph, outline/stroke,
+halo/antialias e sombra pertencente ao lettering sem usar dilatação gigante nem exceção por
+página/região. `ocr_balloon.residual_source_lettering_metrics()` mede residual antes do
+português ser desenhado; se houver residual físico, `art_reconstruction_verdict()` não pode
+retornar `clean`. A decisão final fica explícita em `render_disposition()`: tradução
+limpa/review, source removido/não removido e arte clean/review/fail produzem
+`render_clean`, `render_with_review` ou `do_not_render`. O guard
+`large_white_patch_on_nonwhite_background` e o detector de seam continuam independentes e
+não foram desabilitados. A validação real P5/P6 ainda depende de novo E2E.
+
+**Por que o guard de patch branco disparava (raiz, não sintoma).** O lettering das regiões
+P5/P6 é glifo escuro com contorno branco grosso. A máscara cobria o corpo e só parte do
+contorno; o contorno branco sobrevivente ficava na borda da máscara e servia de **fonte**
+para o `cv2.inpaint` Telea, que repintava o interior das letras com a cor do contorno. O
+guard `large_white_patch_on_nonwhite_background` estava certo — o que ele via era uma
+silhueta branca das letras. O mesmo footprint incompleto produzia o ghost da página 6:
+`source_owned_geometry_coverage` era medido contra o corpo do glifo (0.993), o contorno não
+entrava no denominador e o OCR pós-render não lê contorno sem corpo, então a região saía
+`clean` com o lettering original visível. Corrigir o footprint fecha os dois de uma vez;
+nenhum guard foi relaxado e não existe exceção por página ou por região.
+
+**Fidelidade vs. segurança.** `_remove_text_for_group()` marca `art_fidelity_uncertain`
+quando `flat_patch_texture_ratio < config.MIN_ART_FIDELITY_TEXTURE_RATIO` (0.55) — a mesma
+razão de textura já calculada pelo detector de patch chapado, sem medição nova. É um
+*finding*, nunca um veredito de segurança: não invalida a máscara e não retém o render. O
+finding viaja junto da tentativa que efetivamente foi renderizada (`visual_summary`), e
+`art_reconstruction_verdict()` só considera findings de tentativas que passaram — uma
+tentativa recusada não condena a reconstrução que o leitor recebeu. Quando
+`render_disposition()` devolve `render_with_review`, `_render_analyzed_image()` força
+`translation_quality_impact = "review_required"` e `manual_review_required`, de modo que
+render com revisão nunca é contabilizado como limpo.
+
 Também desde o TDD #66, linhas OCR curtas e corrompidas que não têm palavra lexical — por
 exemplo um filho lido como dígitos/pontuação — podem ser associadas apenas como
 `cleanup_lines` de um grupo story pai quando a geometria prova que estão dentro do mesmo

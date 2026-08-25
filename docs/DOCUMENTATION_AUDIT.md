@@ -951,3 +951,75 @@ as falhas JS relatadas antes eram de invocação, não defeito de produto; `pip 
 `ART-RECON-001` (halo/sub-máscara na página 6) e a saída de story visível ao usuário nas
 páginas 5/6 continuam abertos. Próxima missão: **TDD #84F2 — `ART-RECON-001` + saída de
 story P5/P6**, e só depois um novo E2E real.
+
+### TDD #84F2 — ART-RECON-001 local hardening (2026-08-25, base `e5faeaa`)
+
+**Classificação documental:** contrato local **fechado**, saída final P5/P6 real **pendente
+de E2E**. A missão separou cinco eixos que estavam acoplados no caminho visual:
+validade da tradução, remoção do lettering de origem, segurança da reconstrução da arte,
+fidelidade visual e disposição final de render.
+
+**Evidência real usada somente em leitura:** o run
+`output/shadow_slave_chapter_1_5/7d64890b-e303-497b-863f-74e2cd8d5645` mostrou P5
+`REGION_002` com candidato PT-BR persistido (`NÃO É A PORCARIA SINTÉTICA BARATA...`) retido
+por `large_white_patch_on_nonwhite_background`. A família P6 motivou o contrato de outline
+/ halo residual: lettering de origem não pode sobreviver e ainda ser contado como arte
+limpa.
+
+**Correção local:** `ocr_balloon.source_lettering_footprint()` modela corpo, outline,
+halo/antialias e sombra pertencente ao lettering dentro da evidência OCR da própria região.
+`residual_source_lettering_metrics()` mede o que sobrevive antes de desenhar o português.
+`art_reconstruction_verdict()` agora torna `art_clean` impossível quando há residual físico
+ou fidelidade incerta. `render_disposition()` centraliza `render_clean`,
+`render_with_review` e `do_not_render`, preservando a política de #84F1:
+`SEMANTIC REVIEW` pode renderizar com revisão, `SEMANTIC REJECT` não renderiza como aceito.
+
+**Raiz exata provada (replay offline com paridade de produção).** As regiões reais foram
+reprocessadas a partir das páginas e da geometria OCR persistidas do run
+`7d64890b-e303-497b-863f-74e2cd8d5645`, sem provider e sem rede, reproduzindo os números do
+relatório original (P6 `REGION_002`: máscara 54 492 px e 23 927 px de branco novo, idênticos
+ao persistido). A raiz é **uma só** e explica os dois defeitos:
+
+* O lettering de P5/P6 é **glifo escuro com contorno branco grosso**. A máscara de limpeza
+  cobria o corpo do glifo e apenas parte do contorno. O contorno branco sobrevivente ficava
+  na borda da máscara e **alimentava o Telea**, que repintava o interior das letras com a
+  cor do contorno.
+* Consequência A (P5 `REGION_002`, P6 `REGION_002`): o resultado era uma silhueta branca das
+  letras, `large_white_patch_on_nonwhite_background` disparava corretamente, todas as cinco
+  estratégias eram recusadas e o candidato PT-BR bom era descartado com
+  `translation_not_rendered_after_validation` — inglês na página final.
+* Consequência B (P6 `REGION_001`, o ghost de `ART-RECON-001`): ali o render era aceito com
+  `source_owned_geometry_coverage: 0.993`, porque a cobertura era medida contra o **corpo**
+  do glifo. O contorno não entrava no denominador, e o OCR pós-render não lê contorno sem
+  corpo, então a região saía `art_reconstruction_status: clean` com o contorno branco de
+  `SINCE IT COST ME EVERYTHING I HAD LEFT...` legível atrás do português.
+
+O guard de patch branco e o detector de costura estavam **corretos** nos dois casos: o
+defeito era o footprint da limpeza, a montante deles. Nenhum dos dois foi enfraquecido.
+
+**Eixo de fidelidade (separado da segurança).** Reconstrução segura e reconstrução fiel são
+coisas diferentes. `MIN_ART_FIDELITY_TEXTURE_RATIO` (0.55) marca `art_fidelity_uncertain`
+quando a textura reconstruída fica muito abaixo da arte ao redor, sem alterar nenhum
+veredito de segurança — o bound destrutivo (`MAX_FLAT_PATCH_TEXTURE_RATIO`, 0.25) continua
+onde estava. Nas regiões reais isso separa com folga: P5 0.37 e P6 0.29 caem em revisão,
+enquanto P25 2.34 e P6 `REGION_001` 1.40 permanecem `clean`. Uma região que renderiza sob
+revisão passa a carregar `translation_quality_impact: review_required` e
+`manual_review_required`, de modo que `render_with_review` com qualidade `none` é
+impossível e a região continua contabilizada na revisão estruturada.
+
+**Replay offline de produção — resultado visualmente inspecionado:**
+
+| Região | #84 real | Depois (replay offline) |
+| --- | --- | --- |
+| P5 `REGION_002` | inglês completo, sem PT-BR | `NÃO É A PORCARIA SINTÉTICA BARATA...` renderizado; inglês ausente; sem ghost, sem retângulo, sem costura; `art: review/art_reconstruction_fidelity_uncertain`; `render_with_review` |
+| P6 `REGION_002` | inglês completo, sem PT-BR | `É MELHOR QUE VALHA A PENA.` renderizado; inglês ausente; sem contorno/halo; `art: review`; `render_with_review` |
+| P6 `REGION_001` | PT-BR **com contorno branco de origem visível**, reportado `clean` | contorno **ausente**; `art: clean`; `render_clean` |
+| P25 `REGION_001` | traduzido, arte íntegra | **pixel a pixel idêntico**; `art: clean`; `render_clean` |
+
+A arte reconstruída de P5/P6 fica visivelmente mais suave que o original (o prédio de P5
+perde definição) — é exatamente por isso que o veredito é `review` e não `clean`.
+
+**Limite importante:** não houve job real, provider, DeepL, Vortex, rede, Supabase,
+Community, Drive ou publicação; o artefato #84 foi lido e nunca reescrito. O replay é
+offline com paridade de produção, não um E2E: o fechamento de produto continua aguardando um
+E2E real dedicado.
