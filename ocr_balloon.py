@@ -1435,9 +1435,20 @@ def _set_translation_terminal_state(
     group.translation_final_reason = new_reason
     if preserved_original is not None:
         group.preserved_original = bool(preserved_original)
+    # SEMANTIC-RUNTIME-001: the semantic verdict is part of the terminal state, not
+    # metadata beside it. A region the fidelity gate marked ``review`` still renders -
+    # the explicit policy is RENDER_WITH_REVIEW, because holding it would put the
+    # English source back on the page - but it is never published as clean: it carries
+    # a review quality impact and routes to structured review like any other review
+    # outcome. The real #84 run shipped three such regions as valid/translated/none.
+    semantic_review = bool(getattr(group, "semantic_review_reason", ""))
     group.translation_quality_impact = (
-        "review_required" if state in REVIEW_TERMINAL_STATES else "none"
+        "review_required"
+        if state in REVIEW_TERMINAL_STATES or semantic_review
+        else "none"
     )
+    if semantic_review:
+        group.manual_review_required = True
 
 
 def _normalized_translation_text(text):
@@ -6855,7 +6866,13 @@ def _retry_terminology_drift(
         # This retry may only ever improve the region. A consistency fix that
         # arrived with a changed meaning is not an improvement.
         if valid and fidelity_check is not None:
+            # The check re-files the semantic verdict against the candidate it is
+            # given. A candidate that is then discarded must not leave its verdict
+            # on the region that kept the previous translation.
+            prior_review = group.semantic_review_reason
             valid = not fidelity_check(candidate)
+            if not valid:
+                group.semantic_review_reason = prior_review
     resolved_reason = f"{reason_code.removesuffix('_conflict')}_retry_ok"
     retry_records.append({
         "group_id": group.group_id,
@@ -7027,6 +7044,7 @@ def _maybe_naturalize_translation(
         return
 
     name_spans = group_proper_name_spans(group)
+    prior_review = None
     valid, reason = validate_translation_text(
         group.text,
         candidate,
@@ -7052,6 +7070,9 @@ def _maybe_naturalize_translation(
             is_source_word=_token_is_source_vocabulary,
         )
         post_budget = {"verifier_calls": 0}
+        # Same rule as the terminology retry: the verdict below is about the
+        # naturalized candidate, and must not survive its rejection.
+        prior_review = group.semantic_review_reason
         reason = _fidelity_reason_for(
             group,
             candidate,
@@ -7079,6 +7100,8 @@ def _maybe_naturalize_translation(
         return
 
     group.naturalization_status = "rejected"
+    if prior_review is not None:
+        group.semantic_review_reason = prior_review
     group.naturalization_rejected_reason = _naturalization_rejection_reason(reason)
     _bump_counter(fidelity_stats, "naturalization_rejected_fidelity")
     _bump_counter(fidelity_stats, "naturalization_fallback_to_translation")

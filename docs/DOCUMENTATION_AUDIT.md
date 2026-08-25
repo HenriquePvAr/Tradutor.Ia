@@ -901,3 +901,53 @@ verde.
 
 **Prontidão para Setup.exe: NÃO.** `SEMANTIC-RUNTIME-001` é bloqueador visível ao usuário e
 precisa ser fechado antes do empacotamento.
+
+#### TDD #84F1 — `SEMANTIC-RUNTIME-001` fechado offline
+
+Missão de reparo funcional, **sem** job real, provedor, rede, mutação remota, Community,
+Drive ou publicação de update. Toda a evidência veio dos artefatos persistidos de #84, lidos
+em modo somente leitura (`job 8b1d02f9ecc644599c4540ef45289e65`,
+`run 7d64890b-e303-497b-863f-74e2cd8d5645`).
+
+**Auditoria das regiões afetadas.** O `progress.json` do run tem exatamente **três** itens
+com `semantic_review_reason` não vazio, e os três terminaram
+`translated / reason ok / valid true / quality_impact none / redrawn true`:
+
+| Região | Token | Motivo gravado |
+| --- | --- | --- |
+| p42 `REGION_001` | `COLLD` | `source_ocr_suspicious:COLLD` |
+| p43 `REGION_001` | `SLLM` | `source_ocr_suspicious:SLLM` |
+| p46 `REGION_002` | `VALLT` | `source_ocr_suspicious:VALLT` |
+
+Nenhuma outra região do run apresenta o padrão. **Inexplicadas: 0.** As três compartilham a
+mesma classe de fiação, então um contrato de caminho de produção parametrizado cobre as três.
+
+**Primeira divergência.** `ocr_balloon._fidelity_reason_for()` classifica corretamente o
+candidato como `REVIEW`, grava `group.semantic_review_reason` e **retorna string vazia** —
+por política de render deliberada. Quem consome esse retorno
+(`validate_and_retry_translations`) só enxerga "sem motivo de rejeição", marca
+`translation_valid = True` e chama `_set_translation_terminal_state(group, "translated")`,
+que derivava `translation_quality_impact` **apenas do estado terminal**. A severidade
+morria ali: `semantic_review_reason` seguia adiante como metadado decorativo, sem impacto de
+qualidade, sem roteamento para revisão e contado como render limpo.
+
+**Correção.** Detalhe técnico em
+[DOCUMENTACAO_TECNICA.md](technical/DOCUMENTACAO_TECNICA.md). Em resumo: o impacto de
+qualidade passa a ser derivado do veredito semântico dentro do **único** escritor de estado
+terminal; a política de render fica explícita (`REVIEW` + `RENDER_WITH_REVIEW`, `REJECT` não
+renderiza); a contabilidade ganha baldes canônicos exclusivos e passa a exigir
+`review_required` no capítulo; e o plano de render deixa de contar a região como limpa. O
+validador de #82 **não** foi enfraquecido, nada foi especializado por texto/página, e o
+controle P068 continua rejeitado.
+
+**Testes.** RED capturado antes da correção em `test_semantic_runtime_acceptance.py`
+(10 falhas, incluindo os três sentinelas com `quality_impact none`), verde depois. Gates
+completos: `python -m pytest` 4102 passaram / 34 pulados; `python -m unittest discover`
+3502 OK; as 14 suítes `.mjs` verdes com `node --experimental-vm-modules` — confirmando que
+as falhas JS relatadas antes eram de invocação, não defeito de produto; `pip check`,
+`py_compile` e `git diff --check` limpos.
+
+**Prontidão para Setup.exe: NÃO.** `SEMANTIC-RUNTIME-001` está fechado offline, mas
+`ART-RECON-001` (halo/sub-máscara na página 6) e a saída de story visível ao usuário nas
+páginas 5/6 continuam abertos. Próxima missão: **TDD #84F2 — `ART-RECON-001` + saída de
+story P5/P6**, e só depois um novo E2E real.

@@ -1006,6 +1006,37 @@ em `semantic_review_reason` no grupo e em `semantic_review*` no `fidelity_stats`
 Modalidade (`might`/`could`) fica fora do validador local: as regras testadas produziram só
 falsos positivos e o caso pertence ao adjudicador.
 
+**`SEMANTIC-RUNTIME-001` (TDD #84F1, fechado).** O E2E real de #84 provou que essa
+severidade parava no validador: três regiões (`SLLM` p43, `COLLD` p42, `VALLT` p46) saíram
+`translated / valid / quality_impact none`, contadas entre as traduzidas limpas, com o
+`semantic_review_reason` gravado e inerte. O validador estava certo; a fiação depois dele,
+não. A correção é de fiação, em pontos por onde todo desfecho passa:
+
+- `ocr_balloon._set_translation_terminal_state()` — único escritor de
+  `translation_quality_impact` — passa a derivar o impacto do veredito semântico junto com
+  o estado terminal: `semantic_review_reason` não vazio ⇒ `review_required` e
+  `manual_review_required = True`, em qualquer estado terminal. Por construção nenhum grupo
+  termina com motivo semântico e impacto `none`.
+- A política de render é explícita: **`REVIEW` + `RENDER_WITH_REVIEW`**. O português é
+  desenhado (segurá-lo devolveria inglês à página), mas a região é item de revisão
+  estruturada, nunca render limpo. `REJECT` (`BLOCKED`) continua fora do render, como em
+  #82 — o controle P068 segue rejeitado.
+- `benchmark_pipeline._translation_quality_accounting()` ganha os baldes canônicos
+  `semantic_checked` / `semantic_clean` / `semantic_review` / `semantic_rejected`,
+  exclusivos entre si e derivados do mesmo veredito, e inclui review e reject em
+  `requires_review`, de modo que o capítulo termina `review_required`.
+- `benchmark_pipeline._render_plan_accounting()` roteia a região com motivo semântico para
+  `structured_review_ids` (e para o subconjunto diagnóstico `semantic_review_ids`) em vez
+  de `rendered_clean_ids`, mantendo `unaccounted = 0` e `skipped_without_reason = 0`.
+- Correção correlata: o retry de terminologia e a naturalização consultam o gate com um
+  candidato especulativo; o veredito desse candidato descartado não sobrevive mais à região
+  que manteve a tradução anterior.
+
+Contratos permanentes em `test_semantic_runtime_acceptance.py`: replay dos três sentinelas
+persistidos de #84, exaustão de retry (nunca reaceita o candidato original), candidato bom
+na segunda tentativa e controle de região limpa (capítulo sem achado semântico continua
+podendo passar).
+
 O TDD #66 acrescenta contabilidade explícita de plano de render no `quality_report.json`.
 `render_plan_accounting` separa story text esperado, candidatos válidos, itens escolhidos
 para render, itens pulados com razão estruturada, regiões renderizadas limpas, regiões

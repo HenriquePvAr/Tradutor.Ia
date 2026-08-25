@@ -40,6 +40,7 @@ from ocr_balloon import (
     validate_and_retry_translations,
 )
 import ocr_line_provenance
+import semantic_fidelity
 import source_completeness
 from ocr_parallel import detect_ocr_jobs
 from ocr_engine import OCREngine
@@ -2583,6 +2584,14 @@ def _translation_quality_accounting(states):
         "proper_name_preserved": 0,
         "ocr_unintelligible_source": 0,
         "invalid_candidate": 0,
+        # SEMANTIC-RUNTIME-001: the semantic verdict is accounted for explicitly, so a
+        # region carrying a review reason can never also be counted as semantically
+        # clean. Every checked region lands in exactly one of the three buckets.
+        "semantic_checked": 0,
+        "semantic_clean": 0,
+        "semantic_review": 0,
+        "semantic_rejected": 0,
+        "semantic_review_ids": [],
         "translation_not_applied": 0,
         "missing_terminal_state": 0,
         "incomplete_region_coverage": 0,
@@ -2664,6 +2673,27 @@ def _translation_quality_accounting(states):
             )
         ) or _is_mixed_language_validation_reason(reason):
             result["source_language_residual"] += 1
+        # SEMANTIC-RUNTIME-001: one canonical bucket per checked region. The review
+        # reason is written by the same gate that writes the rejection, so the two can
+        # never disagree here, and a region with a reason can never count as clean.
+        if item.get("sent_to_nvidia") and candidate:
+            result["semantic_checked"] += 1
+            semantic_reason = str(item.get("semantic_review_reason") or "")
+            semantic_rejected = reason == "semantic_fidelity_failed_after_retries" or (
+                semantic_fidelity.is_fidelity_reason(
+                    item.get("translation_validation_reason")
+                )
+            )
+            if semantic_rejected:
+                result["semantic_rejected"] += 1
+            elif semantic_reason:
+                result["semantic_review"] += 1
+                result["semantic_review_ids"].append(
+                    f"p{int(item.get('page') or 0):03}:"
+                    f"{item.get('region_id') or item.get('id') or ''}:{semantic_reason}"
+                )
+            else:
+                result["semantic_clean"] += 1
 
     result["translation_not_applied"] = (
         result["detected_translatable"] - result["translated_rendered"]
@@ -2684,6 +2714,10 @@ def _translation_quality_accounting(states):
         or result["source_language_residual"]
         or result["invalid_candidate"]
         or result["incomplete_region_coverage"]
+        # A region the semantic gate marked for review is rendered but not clean:
+        # the chapter cannot pass quality with one still outstanding.
+        or result["semantic_review"]
+        or result["semantic_rejected"]
         or not result["accounting_closed"]
     )
     result["quality_passed"] = bool(
@@ -2728,6 +2762,7 @@ def _render_plan_accounting(states):
         "rendered_clean_ids": [],
         "rendered_with_residual_ids": [],
         "structured_review_ids": [],
+        "semantic_review_ids": [],
         "proper_noun_preserved_ids": [],
         "unaccounted_ids": [],
         "render_skipped_reasons": {},
@@ -2779,7 +2814,14 @@ def _render_plan_accounting(states):
                 if not final_reason:
                     result["skipped_without_reason"] += 1
 
-            if final_state == "translated" and translated and valid and redrawn:
+            semantic_reason = str(item.get("semantic_review_reason") or "")
+            if semantic_reason:
+                # SEMANTIC-RUNTIME-001: RENDER_WITH_REVIEW. The Portuguese is drawn -
+                # holding it would put the English source back on the page - but the
+                # region is a structured review item, never a clean render.
+                result["structured_review_ids"].append(region_id)
+                result["semantic_review_ids"].append(region_id)
+            elif final_state == "translated" and translated and valid and redrawn:
                 if region_id in residual_by_rendered:
                     result["rendered_with_residual_ids"].append(region_id)
                 else:
@@ -2799,6 +2841,7 @@ def _render_plan_accounting(states):
         "rendered_clean_ids",
         "rendered_with_residual_ids",
         "structured_review_ids",
+        "semantic_review_ids",
         "proper_noun_preserved_ids",
         "unaccounted_ids",
     ):
@@ -2811,6 +2854,7 @@ def _render_plan_accounting(states):
         "rendered_clean": len(result["rendered_clean_ids"]),
         "rendered_with_residual": len(result["rendered_with_residual_ids"]),
         "structured_review": len(result["structured_review_ids"]),
+        "semantic_review": len(result["semantic_review_ids"]),
         "proper_noun_preserved": len(result["proper_noun_preserved_ids"]),
         "unaccounted": len(result["unaccounted_ids"]),
         "skipped_without_reason": int(result["skipped_without_reason"]),

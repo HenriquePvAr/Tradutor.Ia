@@ -454,14 +454,24 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   reconstruções aceitas — nenhum falso positivo em produção — e `flat_patch: 0`, com a
   página 25 traduzida e a arte íntegra. Nenhuma costura óbvia foi classificada como limpa.
   Ver o registro da Fase D em [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md).
-- `SEMANTIC-RUNTIME-001` (**aberto, bloqueador de Beta — descoberto em #84**): a severidade
-  `review` do validador semântico de #82 **não chega à aceitação do candidato no runtime**.
-  O E2E real produziu `ISSO NÃO TEM NADA A VER COM UM RATO DO SLLM COMO EU.` com
-  `translation_valid: true`, `translation_final_reason: 'ok'` e
+- `SEMANTIC-RUNTIME-001` (**fechado offline em #84F1** — descoberto no E2E real de #84): a
+  severidade `review` do validador semântico de #82 **não chegava à aceitação do candidato
+  no runtime**. O E2E real produziu `ISSO NÃO TEM NADA A VER COM UM RATO DO SLLM COMO EU.`
+  com `translation_valid: true`, `translation_final_reason: 'ok'` e
   `translation_quality_impact: none`, contabilizado entre as regiões traduzidas — embora o
-  `semantic_review_reason` (`source_ocr_suspicious:SLLM`) esteja gravado e o validador
-  offline classifique a mesma dupla como `review`. Mesmo padrão nas páginas 42 (`COLLD`) e
-  46 (`VALLT`). A suíte offline de #82 continua verde: o defeito é de fiação, não de regra.
+  `semantic_review_reason` (`source_ocr_suspicious:SLLM`) estivesse gravado e o validador
+  offline classificasse a mesma dupla como `review`. Mesmo padrão nas páginas 42 (`COLLD`) e
+  46 (`VALLT`); nenhuma outra região do run apresentava o padrão. A suíte offline de #82
+  continuava verde: o defeito era de fiação, não de regra.
+  **Correção (#84F1):** o impacto de qualidade passa a ser derivado do veredito semântico
+  no único escritor de estado terminal, a política de render é explícita
+  (`REVIEW` + `RENDER_WITH_REVIEW`; `REJECT` não renderiza), e a contabilidade ganha os
+  baldes exclusivos `semantic_checked` / `semantic_clean` / `semantic_review` /
+  `semantic_rejected`, com review e reject exigindo `review_required` no capítulo. Uma
+  região com motivo semântico deixa de aparecer em `rendered_clean` e passa a
+  `structured_review`, com `unaccounted = 0`. Contratos permanentes em
+  `test_semantic_runtime_acceptance.py`, incluindo o replay dos três sentinelas reais.
+  Pendente apenas a confirmação em novo E2E real, que só ocorrerá depois de `ART-RECON-001`.
 - `ART-RECON-001` continua **aberto**: na página 6 do PDF real de #84 o contorno branco do
   lettering de origem sobreviveu à limpeza e aparece atrás do português, com a região ainda
   reportada `art_reconstruction_status: clean`.
