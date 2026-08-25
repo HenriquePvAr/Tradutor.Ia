@@ -449,12 +449,22 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   [Detector de costura](technical/DOCUMENTACAO_TECNICA.md#detector-de-costura-art-seam-detector-001).
   Controles negativos (balão plano, gradiente contínuo, contorno de origem cruzando a
   borda) e positivos (patch texturizado, bloco em gradiente, halo) são contratos
-  permanentes, e o retângulo destrutivo real da página 25 é detectado. **Evidência de
-  provedor real ainda pendente**: o E2E real de #84 foi tentado e abortou por
-  indisponibilidade do motor de OCR do ambiente (`engine=paddle`,
-  `dependency_unavailable`) antes de OCR, tradução e PDF, então o detector nunca rodou
-  sobre uma reconstrução real nova. Ver o registro da Fase D em
-  [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md).
+  permanentes, e o retângulo destrutivo real da página 25 é detectado. **Validado em
+  execução real** no E2E de #84 (72 páginas, RapidOCR + DeepL): `seam_suspected: 0` em 97
+  reconstruções aceitas — nenhum falso positivo em produção — e `flat_patch: 0`, com a
+  página 25 traduzida e a arte íntegra. Nenhuma costura óbvia foi classificada como limpa.
+  Ver o registro da Fase D em [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md).
+- `SEMANTIC-RUNTIME-001` (**aberto, bloqueador de Beta — descoberto em #84**): a severidade
+  `review` do validador semântico de #82 **não chega à aceitação do candidato no runtime**.
+  O E2E real produziu `ISSO NÃO TEM NADA A VER COM UM RATO DO SLLM COMO EU.` com
+  `translation_valid: true`, `translation_final_reason: 'ok'` e
+  `translation_quality_impact: none`, contabilizado entre as regiões traduzidas — embora o
+  `semantic_review_reason` (`source_ocr_suspicious:SLLM`) esteja gravado e o validador
+  offline classifique a mesma dupla como `review`. Mesmo padrão nas páginas 42 (`COLLD`) e
+  46 (`VALLT`). A suíte offline de #82 continua verde: o defeito é de fiação, não de regra.
+- `ART-RECON-001` continua **aberto**: na página 6 do PDF real de #84 o contorno branco do
+  lettering de origem sobreviveu à limpeza e aparece atrás do português, com a região ainda
+  reportada `art_reconstruction_status: clean`.
 - Revisões estruturadas por risco visual continuam exigindo novo E2E real para provar que o
   PDF gerado ficou fisicamente limpo.
 - O comportamento do provedor pode variar entre execuções.

@@ -834,3 +834,70 @@ publicação de update, nenhum push.
 **Prontidão para Setup.exe: NÃO** — por ausência de evidência real, não por defeito
 provado. O gate de qualidade real continua aberto até que o ambiente rode o pipeline com
 o motor de OCR de produção.
+
+#### Fase D (2ª tentativa, após #84R) — E2E real concluído, classificação D
+
+Com `TRADUTOR_OCR_ENGINE_OVERRIDE` corrigido em `.env` por #84R e o modo **fast**
+(RapidOCR puro, sem qualquer caminho Paddle), um segundo job real — orçamento explícito
+de 1 — rodou até o fim: `job_id 8b1d02f9ecc644599c4540ef45289e65`, `run_id
+7d64890b-e303-497b-863f-74e2cd8d5645`, 35 imagens → **72 páginas lógicas**, 97 grupos,
+6min 16s, término `review_required`. Proveniência por SHA completo: runtime HEAD,
+`JOB.commit_hash` e `run_manifest.commit_hash` todos
+`f944ace1392bfe19169b1938cff63b1c2f59a3be`. PDF
+`a5943041f85487398ffd07be43b54d0e2607b9d8acf52baf8fd6d9d823ea7092`, 9 976 982 bytes.
+
+**Nota de configuração:** o modo foi `fast`, **não** `quality_optimized` como a missão #84
+previa. `run_webtoon.py::_configure_mode()` deriva o motor do **modo de submissão**
+(`fast→rapidocr`, `quality→paddle`), nunca de `OCR_ENGINE`; e mesmo em `quality` restavam
+fallbacks regionais para Paddle, ausente nesta máquina. DeepL permaneceu o provider de
+tradução.
+
+**O que passou, com evidência real:**
+
+* **Página 25** — o retângulo chapado destrutivo **não voltou**. A fumaça texturizada está
+  íntegra e a região foi traduzida e renderizada (`PELO FEITIÇO DO PESADELO`), com
+  `uniform_light_line_rejected: true`. É o fecho de #81 provado em saída real.
+* **Detector de costura** — `seam_suspected: 0` em 97 reconstruções aceitas: nenhum falso
+  positivo em produção real, e nenhum patch chapado (`flat_patch: 0`). Nenhuma costura
+  óbvia foi classificada como limpa.
+* **P068** — o DeepL devolveu **exatamente** o candidato historicamente errado
+  (`LEVE ALGUMAS HORAS ... DEPOIS QUE ACORDAR`) e o gate de #82 **rejeitou**
+  (`semantic_fidelity_failed_after_retries`). O significado inventado não passou.
+* Proveniência, binding, imutabilidade (8 PDFs históricos com SHA-256 inalterado), hash do
+  novo PDF inalterado pelo leitor, 1 job, `attempt = 1`, zero rerun, zero hotfix.
+
+**O que reprovou — `SEMANTIC-RUNTIME-001` (novo, bloqueador):**
+
+O validador semântico offline classifica `THAT HAS NOTHING TO DO WITH A SLLM RAT LIKE ME.`
+→ `ISSO NÃO TEM NADA A VER COM UM RATO DO SLLM COMO EU.` como
+`review / source_ocr_suspicious / ('SLLM',)`. No runtime real a região saiu como
+`translation_final_state: translated`, `translation_final_reason: 'ok'`,
+`translation_valid: true`, `translation_quality_impact: **none**`, contabilizada entre as
+97 traduzidas. O `semantic_review_reason` **é** gravado
+(`source_ocr_suspicious:SLLM`), mas não produz impacto de qualidade nem roteia a região
+para revisão. Mesma falha em mais duas regiões: página 42 (`COLLD`) e página 46 (`VALLT`).
+
+Ou seja: a severidade `review` de #82 existe no validador e **não chega à aceitação** do
+candidato no runtime. O usuário vê português sem sentido contabilizado como limpo — o caso
+que a missão nomeia explicitamente como inaceitável. Isso é **classificação D** e é
+exatamente o tipo de defeito que só um E2E real expõe: a suíte offline de #82 continua
+verde.
+
+**Outros defeitos reais registrados (sem correção, por política):**
+
+* **Texto de história em inglês no PDF final (3 regiões).** Página 5 e página 6 têm
+  candidato PT-BR **bom**, descartado por `translation_not_rendered_after_validation`
+  porque a reconstrução de arte reprovou (`large_white_patch_on_nonwhite_background`);
+  página 68 é o P068. As demais 49 regiões com inglês preservado são SFX, URL, créditos e
+  promo — política estabelecida, não defeito.
+* **Ghost de origem na página 6**: o contorno branco do lettering original sobreviveu à
+  limpeza e aparece atrás do português, com a região ainda reportada
+  `art_reconstruction_status: clean`. Não é costura — o detector está correto no seu
+  contrato — é `ART-RECON-001` (sub-máscara/halo) ainda aberto.
+* **Leitor #83**: `GET /api/ui/reader/<job>` devolveu **401** nesta sessão. Reproduz
+  igualmente em capítulo **histórico**, logo é condição de sessão/ambiente após o reinício
+  do runtime, **não** regressão do artefato novo nem de #84 — o parser do #83 abre o PDF
+  novo normalmente (72 páginas). Registrado como smoke não concluído, não como sucesso.
+
+**Prontidão para Setup.exe: NÃO.** `SEMANTIC-RUNTIME-001` é bloqueador visível ao usuário e
+precisa ser fechado antes do empacotamento.
