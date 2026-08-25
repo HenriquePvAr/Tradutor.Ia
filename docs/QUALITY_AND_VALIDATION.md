@@ -450,8 +450,11 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   Controles negativos (balão plano, gradiente contínuo, contorno de origem cruzando a
   borda) e positivos (patch texturizado, bloco em gradiente, halo) são contratos
   permanentes, e o retângulo destrutivo real da página 25 é detectado. **Evidência de
-  provedor real ainda pendente**: a validação em um PDF real novo exige um E2E que não
-  foi executado em #84.
+  provedor real ainda pendente**: o E2E real de #84 foi tentado e abortou por
+  indisponibilidade do motor de OCR do ambiente (`engine=paddle`,
+  `dependency_unavailable`) antes de OCR, tradução e PDF, então o detector nunca rodou
+  sobre uma reconstrução real nova. Ver o registro da Fase D em
+  [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md).
 - Revisões estruturadas por risco visual continuam exigindo novo E2E real para provar que o
   PDF gerado ficou fisicamente limpo.
 - O comportamento do provedor pode variar entre execuções.

@@ -793,10 +793,44 @@ passando. O baseline de 542 regiões do #82 **não é reproduzível** a partir d
 persistido — o critério de seleção daquele corpus não virou script —, então o que se
 compara é a proporção: 8/460 (1,7 %) contra 11/542 (2,0 %). Nenhuma explosão.
 
-**Honestidade #84 — Fase D não executada:** a extensão do navegador esteve **desconectada**
-durante toda a missão (`list_connected_browsers` vazio), e o E2E real exige UI visível.
-Nenhum job real, nenhum DeepL, nenhuma execução de runner, nenhuma mutação remota,
-Supabase, Community, Drive ou publicação de update, nenhum push. Portanto **não existe
-evidência de provedor real em #84**: `ART-SEAM-DETECTOR-001` está fechado *offline*, e
-`TRANSLATION-SEMANTIC-001` continua dependente de provedor real. A decisão de prontidão
-para Setup.exe **não** foi tomada nesta missão.
+**Fase D — E2E real tentado, falha de ambiente (classificação F).** Um único job real foi
+submetido pela UI visível contra o commit funcional `f575536`, com orçamento explícito de
+1 job: `job_id 0348997189ef40b1a10f0fb73beaf479`, `run_id
+089ab5ed-87e7-42b1-be7a-57d20f5daf41`, `mode: quality`, `use_cache: false`, `force: true`,
+escopo completo. Proveniência confere por SHA completo — runtime HEAD, `JOB.commit_hash` e
+`job_manifest.commit_hash` são todos `f575536101ce0478710b7b1a014a0691a2e41b22`.
+
+A fonte resolveu normalmente (Vortex disponível, 35/35 páginas, adapter `vortexscans` v2).
+O pipeline abortou **um segundo depois de iniciar**, antes de OCR, tradução, reconstrução
+ou PDF:
+
+```
+run_webtoon.py _configure_mode -> ocr_engine.require_available_engine
+OCREngineUnavailableError: engine=paddle disponivel=false motivo=dependency_unavailable
+```
+
+Estado do ambiente: `OCR_ENGINE='paddle'`, `OCR_FALLBACK_ENGINE='paddle'`,
+`RAPIDOCR_ENABLED=False`, com `paddleocr` **ausente** e `rapidocr_onnxruntime`
+**instalado**. Ou seja, o motor exigido pela configuração não tem dependência instalada,
+enquanto o RapidOCR — o motor de produção que esta missão pretendia exercitar — está
+presente mas desligado por configuração. O guard falhou fechado corretamente: o runtime
+recusou operar com motor indisponível em vez de degradar em silêncio.
+
+Consequências registradas sem maquiagem: **nenhuma chamada ao DeepL** (zero ocorrências no
+log do runner), nenhum PDF novo, nenhum artefato além do `job_manifest.json`. Portanto
+**não existe evidência de provedor real em #84**. `ART-SEAM-DETECTOR-001` permanece fechado
+*offline* e sem validação em execução real; `TRANSLATION-SEMANTIC-001` continua dependente
+de provedor real. As auditorias das Fases E–H (P068, SLLM, páginas 5 e 25, costuras, 72
+páginas, leitor) **não foram executadas** por ausência de artefato — não por terem passado.
+
+Sem rerun e sem hotfix, conforme a política da missão: o orçamento de 1 job real foi
+consumido e a falha é de ambiente, não do código de #84.
+
+**Imutabilidade e disciplina:** os 8 PDFs históricos do capítulo mantêm SHA-256 idêntico ao
+baseline anterior à execução; a fila ganhou exatamente 1 job (49 → 50), `attempt = 1`,
+nenhum cancel, nenhum segundo Start. Nenhuma mutação remota, Supabase, Community, Drive ou
+publicação de update, nenhum push.
+
+**Prontidão para Setup.exe: NÃO** — por ausência de evidência real, não por defeito
+provado. O gate de qualidade real continua aberto até que o ambiente rode o pipeline com
+o motor de OCR de produção.
