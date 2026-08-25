@@ -390,6 +390,38 @@ MIN_FLAT_PATCH_COMPONENT_AREA = max(
     1,
     _env_int("MIN_FLAT_PATCH_COMPONENT_AREA", 400),
 )
+# Art reconstruction seams (ART-SEAM-DETECTOR-001).  A reconstruction can remove
+# every source glyph, avoid a flat rectangle and still be unacceptable because it
+# left a visible boundary where the artwork never had one.  The evidence is taken
+# in a narrow band around the cleanup mask and is always reconstruction-relative:
+# a balloon outline, a panel border or a character contour crossing the boundary
+# is a *source* edge and must not be read as a seam.
+DETECT_RECONSTRUCTION_SEAMS = _env_bool("DETECT_RECONSTRUCTION_SEAMS", True)
+SEAM_BAND_RADIUS = max(2, _env_int("SEAM_BAND_RADIUS", 4))
+MIN_SEAM_BAND_PIXELS = max(1, _env_int("MIN_SEAM_BAND_PIXELS", 48))
+# How much further the luminance may jump across the mask boundary than it
+# already moves over the same distance in the untouched art just outside it.  A
+# smooth gradient reconstructed smoothly scores ~0; a flat block dropped into
+# that same gradient scores ~23.
+MAX_SEAM_LUMINANCE_STEP = _env_float("MAX_SEAM_LUMINANCE_STEP", 12.0)
+# Texture energy immediately inside the boundary as a fraction of the untouched
+# context.  Inpainting always smooths, so this is deliberately generous; it
+# exists to catch texture that stops dead at the mask edge.
+MIN_SEAM_TEXTURE_RATIO = _env_float("MIN_SEAM_TEXTURE_RATIO", 0.35)
+# An inpaint halo is a ring that follows the mask contour and belongs to neither
+# side of it.  What makes it reconstruction evidence rather than an edge is that
+# it differs from the reconstructed interior *and* from the untouched context; a
+# legitimate source contour crossing the boundary differs from only one of them.
+MAX_SEAM_BOUNDARY_HALO_DELTA = _env_float("MAX_SEAM_BOUNDARY_HALO_DELTA", 18.0)
+# #81 already proved that one naive texture ratio produces false positives, so a
+# single signal grazing its bound is not enough to withhold a reconstruction.
+# Evidence counts as high confidence when a second signal corroborates it, or
+# when one signal reaches twice its own bound - a texture ratio of 0.0 means the
+# texture stopped dead at the mask edge, which is maximal by construction.
+# Measured: the destructive Page 25 rectangle scores 1.0, a flat block in a
+# gradient 1.0, an inpaint halo 3.49, while a flat two-tone caption whose fill
+# tone differs slightly from its neighbour scores 0.26 and stays accepted.
+SEAM_HIGH_CONFIDENCE_SCORE = _env_float("SEAM_HIGH_CONFIDENCE_SCORE", 1.0)
 MAX_NEW_DARK_COMPONENT_AREA = max(1, _env_int("MAX_NEW_DARK_COMPONENT_AREA", 120))
 MAX_NEW_DARK_PIXEL_RATIO = _env_float("MAX_NEW_DARK_PIXEL_RATIO", 0.04)
 TEXTURED_CAPTION_OVERLAY = _env_bool("TEXTURED_CAPTION_OVERLAY", True)

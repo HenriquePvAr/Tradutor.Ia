@@ -3036,6 +3036,7 @@ def _build_quality_report(report, states, translation_retry_records):
         "reconstruction_clean": 0,
         "reconstruction_review": 0,
         "flat_patch_suspected": 0,
+        "seam_suspected": 0,
         "rectangular_line_mask_rejections": 0,
         "background_type_counts": {},
         "translation_accounting": translation_accounting,
@@ -3202,6 +3203,11 @@ def _build_quality_report(report, states, translation_retry_records):
             1
             for item in items
             if (item.get("mask_metrics") or {}).get("flat_patch_rejected")
+        )
+        totals["seam_suspected"] += sum(
+            1
+            for item in items
+            if (item.get("mask_metrics") or {}).get("seam_suspected")
         )
         totals["rectangular_line_mask_rejections"] += sum(
             1

@@ -481,5 +481,231 @@ class Page5ProductionParity(unittest.TestCase):
         )
 
 
+class ReconstructionSeamDetector(unittest.TestCase):
+    """ART-SEAM-DETECTOR-001 (TDD #84).
+
+    A reconstruction can remove every source glyph, leave no flat rectangle and
+    still be unacceptable, because the cleanup itself drew a boundary the artwork
+    never had.  The evidence is reconstruction-relative: a balloon outline or a
+    character contour crossing the mask edge is a source edge, not a seam.
+    """
+
+    BOX = (50, 160, 590, 100)
+
+    def _mask(self, shape):
+        mask = np.zeros(shape[:2], np.uint8)
+        x, y, w, h = self.BOX
+        mask[y:y + h, x:x + w] = 255
+        return mask
+
+    def _seam(self, image, cleaned, mask):
+        group = _group([_line("NIGHTMARE", self.BOX)])
+        return ob._reconstruction_seam_metrics(image, cleaned, group, mask)
+
+    # --- negative controls -------------------------------------------------
+    def test_flat_balloon_boundary_is_not_a_seam(self):
+        """Variance is ~0 on both sides; that is a balloon, not a patch."""
+        image = _flat_canvas()
+        _draw_text(image, "REAL COFFEE.", (60, 230))
+        mask = self._mask(image.shape)
+        cleaned = image.copy()
+        cleaned[mask > 0] = (255, 255, 255)
+        metrics = self._seam(image, cleaned, mask)
+        self.assertFalse(metrics["seam_suspected"], metrics["seam_reason"])
+
+    def test_smooth_gradient_reconstruction_is_not_a_seam(self):
+        pristine = _gradient_canvas()
+        image = pristine.copy()
+        _draw_text(image, "NIGHTMARE", (60, 230))
+        mask = self._mask(image.shape)
+        cleaned = image.copy()
+        cleaned[mask > 0] = pristine[mask > 0]
+        metrics = self._seam(image, cleaned, mask)
+        self.assertFalse(metrics["seam_suspected"], metrics["seam_reason"])
+
+    def test_source_contour_crossing_the_boundary_is_not_a_seam(self):
+        """Strong edges exist on both sides because the art has a contour."""
+        pristine = _texture_canvas(base=150, amplitude=30)
+        cv2.line(pristine, (120, 40), (520, 380), (15, 15, 15), 9)
+        cv2.circle(pristine, (360, 210), 130, (240, 240, 240), 7)
+        image = pristine.copy()
+        _draw_text(image, "NIGHTMARE", (60, 230))
+        mask = self._mask(image.shape)
+        cleaned = image.copy()
+        cleaned[mask > 0] = pristine[mask > 0]
+        metrics = self._seam(image, cleaned, mask)
+        self.assertFalse(metrics["seam_suspected"], metrics["seam_reason"])
+
+    # --- positives ---------------------------------------------------------
+    def test_textured_patch_boundary_is_a_seam(self):
+        """Colour is close, but the texture stops dead at the mask edge."""
+        image = _texture_canvas()
+        mask = self._mask(image.shape)
+        cleaned = image.copy()
+        local = image[mask > 0].reshape(-1, 3).mean(axis=0)
+        cleaned[mask > 0] = local.astype(np.uint8)
+        metrics = self._seam(image, cleaned, mask)
+        self.assertTrue(metrics["seam_suspected"])
+        self.assertGreater(metrics["seam_score"], 0.0)
+        # The texture evidence has to stand on its own; which signal ranks
+        # highest is a reporting detail, not the contract.
+        self.assertLess(
+            metrics["seam_texture_ratio"],
+            config.MIN_SEAM_TEXTURE_RATIO,
+        )
+
+    def test_flat_block_in_a_gradient_is_a_seam(self):
+        image = _gradient_canvas()
+        mask = self._mask(image.shape)
+        cleaned = image.copy()
+        cleaned[mask > 0] = (168, 168, 168)
+        metrics = self._seam(image, cleaned, mask)
+        self.assertTrue(metrics["seam_suspected"])
+        self.assertGreater(
+            metrics["seam_luminance_step"] - metrics["seam_natural_luminance_step"],
+            config.MAX_SEAM_LUMINANCE_STEP,
+        )
+
+    def test_inpaint_halo_ring_is_a_seam(self):
+        image = _texture_canvas(base=140, amplitude=40)
+        mask = self._mask(image.shape)
+        cleaned = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
+        # A bright ring hugging the cleanup boundary - the classic inpaint halo.
+        contour = (
+            cv2.dilate(mask, np.ones((7, 7), np.uint8))
+            - cv2.erode(mask, np.ones((7, 7), np.uint8))
+        )
+        cleaned[contour > 0] = (252, 252, 252)
+        metrics = self._seam(image, cleaned, mask)
+        self.assertTrue(metrics["seam_suspected"])
+        self.assertIn("halo", metrics["seam_reason"])
+        self.assertGreater(
+            metrics["seam_boundary_halo_delta"],
+            config.MAX_SEAM_BOUNDARY_HALO_DELTA,
+        )
+
+    def test_single_grazing_signal_is_not_high_confidence(self):
+        """#81's lesson: one signal just past its bound is not a seam."""
+        pristine = _flat_canvas(level=224)
+        cv2.rectangle(pristine, (0, 0), (450, 400), (198, 198, 198), -1)
+        image = pristine.copy()
+        _draw_text(image, "NIGHTMARE", (60, 230))
+        mask = self._mask(image.shape)
+        cleaned = image.copy()
+        cleaned[mask > 0] = (224, 224, 224)
+        metrics = self._seam(image, cleaned, mask)
+        self.assertEqual(len(metrics["seam_signals"]), 1)
+        self.assertLess(metrics["seam_score"], config.SEAM_HIGH_CONFIDENCE_SCORE)
+        self.assertFalse(metrics["seam_suspected"])
+
+    def test_two_corroborating_signals_are_high_confidence(self):
+        image = _texture_canvas()
+        mask = self._mask(image.shape)
+        cleaned = image.copy()
+        cleaned[mask > 0] = image[mask > 0].reshape(-1, 3).mean(axis=0).astype(
+            np.uint8)
+        metrics = self._seam(image, cleaned, mask)
+        self.assertGreater(len(metrics["seam_signals"]), 1)
+        self.assertTrue(metrics["seam_suspected"])
+
+    # --- contract ----------------------------------------------------------
+    def test_thin_glyph_mask_reports_no_boundary_evidence(self):
+        """A stroke-width mask has no interior; say so instead of guessing."""
+        image = _texture_canvas()
+        mask = np.zeros(image.shape[:2], np.uint8)
+        mask[200:203, 60:600] = 255
+        metrics = self._seam(image, image.copy(), mask)
+        self.assertFalse(metrics["seam_suspected"])
+        self.assertEqual(metrics["seam_reason"], "mask_too_thin_for_seam_evidence")
+
+    def test_structured_result_carries_its_evidence(self):
+        image = _texture_canvas()
+        mask = self._mask(image.shape)
+        cleaned = image.copy()
+        cleaned[mask > 0] = (200, 200, 200)
+        metrics = self._seam(image, cleaned, mask)
+        for key in (
+            "seam_score", "seam_suspected", "seam_reason",
+            "seam_band_pixels", "seam_luminance_step",
+            "seam_natural_luminance_step",
+            "seam_texture_ratio", "seam_boundary_halo_delta",
+            "seam_context_luminance_spread",
+        ):
+            self.assertIn(key, metrics)
+        self.assertNotEqual(metrics["seam_reason"], "")
+
+
+class SeamDetectorProductionPath(unittest.TestCase):
+    """The detector runs in the cleanup path, not only in compare tooling."""
+
+    def test_seam_evidence_is_recorded_by_the_cleanup_path(self):
+        image = _flat_canvas(shape=(400, 700))
+        _draw_text(image, "REAL COFFEE.", (60, 230))
+        group = _group([_line("REAL COFFEE.", (50, 160, 590, 100))])
+        group.background_type = "white_balloon"
+        group.inside_balloon_like_region = True
+        _cleaned, _mask, metrics = ob._remove_text_for_group(
+            image, image, group, strategy="primary")
+        self.assertIn("seam_suspected", metrics)
+        self.assertFalse(metrics["seam_suspected"], metrics.get("seam_reason"))
+        self.assertTrue(metrics["mask_valid"], metrics.get("reason"))
+
+    def test_a_seam_routes_the_region_to_art_reconstruction_review(self):
+        status, reason = ob.art_reconstruction_verdict(
+            [{"reason": "visible_reconstruction_seam_at_mask_boundary"}],
+            accepted=False,
+        )
+        self.assertEqual(status, "review")
+        self.assertEqual(reason, "visible_reconstruction_seam_at_mask_boundary")
+
+
+class Page25SeamReplay(Page25ProductionParity):
+    """The old destructive Page 25 rectangle must be seam-detectable."""
+
+    def test_seam_detector_fails_the_old_flat_rectangle(self):
+        rect = np.zeros(self.image.shape[:2], np.uint8)
+        for _text, (x, y, w, h), _lid in self.LINES:
+            rect[y:y + h, x:x + w] = 255
+        old = self.image.copy()
+        old[rect > 0] = (238, 238, 238)
+        metrics = ob._reconstruction_seam_metrics(
+            self.image, old, self.group, rect)
+        self.assertTrue(
+            metrics["seam_suspected"],
+            "the Page 25 flat rectangle produced no seam evidence",
+        )
+
+    def test_current_pipeline_does_not_false_pass_page_25(self):
+        cleaned, mask, metrics = ob._remove_text_for_group(
+            self.image, self.image, self.group, strategy="primary")
+        if metrics.get("mask_valid"):
+            seam = ob._reconstruction_seam_metrics(
+                self.image, cleaned, self.group, mask)
+            self.assertFalse(
+                seam["seam_suspected"],
+                "an accepted Page 25 reconstruction carries seam evidence",
+            )
+        else:
+            # Withheld for structured review - the honest outcome, recorded
+            # rather than turned into an invented clean reconstruction.
+            self.assertTrue(metrics.get("reason"))
+
+
+class Page5SeamReplay(Page5ProductionParity):
+    """Page 5 boundary evidence, reported honestly - pass or review."""
+
+    def test_page_5_boundary_evidence_is_recorded(self):
+        cleaned, mask, metrics = ob._remove_text_for_group(
+            self.image, self.image, self.group, strategy="primary")
+        seam = ob._reconstruction_seam_metrics(
+            self.image, cleaned, self.group, mask)
+        self.assertIn("seam_reason", seam)
+        if metrics.get("mask_valid"):
+            self.assertFalse(
+                seam["seam_suspected"],
+                f"accepted Page 5 reconstruction carries a seam: {seam}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

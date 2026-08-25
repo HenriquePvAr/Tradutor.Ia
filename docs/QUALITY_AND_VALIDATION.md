@@ -161,17 +161,26 @@ por baixo havia sido substituída por um retângulo chapado. Cobertura de texto 
 reconstrução.
 
 O relatório de qualidade agora agrega `reconstruction_regions_expected`,
-`reconstruction_clean`, `reconstruction_review`, `flat_patch_suspected` e
-`rectangular_line_mask_rejections`, e cada item carrega `art_reconstruction_status` /
-`art_reconstruction_reason`.
+`reconstruction_clean`, `reconstruction_review`, `flat_patch_suspected`,
+`seam_suspected` e `rectangular_line_mask_rejections`, e cada item carrega
+`art_reconstruction_status` / `art_reconstruction_reason`.
 
 Uma região em revisão de reconstrução **não** reabre a cobertura de story text: são
 veredictos separados e devem ser lidos separadamente. Para Beta externa, porém, um defeito
 óbvio de reconstrução — patch chapado sobre arte texturizada, ghost do lettering de
 origem — é bloqueador por si só, mesmo com a tradução correta.
 
-Detalhes de implementação (anel de flatness, footprint de glifo, detector de patch plano)
-estão em `docs/technical/DOCUMENTACAO_TECNICA.md`, seção 16.
+**Segurança ≠ fidelidade (TDD #84).** As duas leituras acima ainda não separam “a
+reconstrução não destruiu a arte” de “a reconstrução não *inventou* uma borda”. Uma
+limpeza pode remover todo glifo de origem, não deixar nenhum retângulo chapado e mesmo
+assim deixar uma costura visível. `ART-SEAM-DETECTOR-001`, fechado offline em #84,
+responde essa terceira pergunta e falha fechado como
+`visible_reconstruction_seam_at_mask_boundary`, roteando a região para revisão em vez de
+declará-la limpa só porque o glifo de origem sumiu. Um patch óbvio classificado como
+limpo é pior que uma revisão conservadora.
+
+Detalhes de implementação (anel de flatness, footprint de glifo, detector de patch plano,
+detector de costura) estão em `docs/technical/DOCUMENTACAO_TECNICA.md`, seção 16.
 
 O relatório de qualidade também registra `render_plan_accounting`. Essa seção existe para
 separar três coisas que antes podiam parecer iguais:
@@ -432,10 +441,17 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   [Fidelidade semântica e PT-BR natural](#fidelidade-semântica-e-pt-br-natural). Continua
   aberto para os casos em que nenhum candidato persistido alternativo existe: eles exigem
   um E2E real com provedor.
-- `ART-SEAM-DETECTOR-001` (**pendente**): não existe detector dedicado de costura/borda
-  para avaliar a qualidade do limite entre patch reconstruído e arte original. Deve ser
-  fechado antes do Scan Beta externo / Release Candidate. Deliberadamente não implementado
-  em #82.
+- `ART-SEAM-DETECTOR-001` (**fechado offline em #84**): `_reconstruction_seam_metrics()`
+  avalia o limite entre patch reconstruído e arte original com três sinais de borda
+  relativos à reconstrução (salto de luminância calibrado contra o movimento natural da
+  arte ao lado, razão de textura e anel de halo), exigindo corroboração antes de reter a
+  reconstrução — ver
+  [Detector de costura](technical/DOCUMENTACAO_TECNICA.md#detector-de-costura-art-seam-detector-001).
+  Controles negativos (balão plano, gradiente contínuo, contorno de origem cruzando a
+  borda) e positivos (patch texturizado, bloco em gradiente, halo) são contratos
+  permanentes, e o retângulo destrutivo real da página 25 é detectado. **Evidência de
+  provedor real ainda pendente**: a validação em um PDF real novo exige um E2E que não
+  foi executado em #84.
 - Revisões estruturadas por risco visual continuam exigindo novo E2E real para provar que o
   PDF gerado ficou fisicamente limpo.
 - O comportamento do provedor pode variar entre execuções.

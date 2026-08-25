@@ -766,3 +766,37 @@ possível capturar uma imagem de tela neste ambiente (o painel do navegador não
 quadros); a verificação visual foi feita por asserções de geometria, DOM e rede sobre a
 aplicação real em execução, e isso está declarado em vez de fabricado. `ART-SEAM-DETECTOR-001`
 continua **pendente** e deliberadamente fora de #83.
+
+### TDD #84 — Detector de costura de reconstrução (2026-08-25, base `b768f84`)
+
+| Documento | Classificação | Ação |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Nova subseção "Detector de costura (ART-SEAM-DETECTOR-001)" em §16: os três sinais de borda relativos à reconstrução, a supressão do sinal de textura em contexto plano, a regra de corroboração e a calibração medida. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | §"Cobertura de story text ≠ qualidade de reconstrução" ganha a terceira leitura (segurança ≠ fidelidade); a dívida `ART-SEAM-DETECTOR-001` passa de **pendente** para **fechado offline**, com a pendência de provedor real declarada. |
+| `docs/CONFIGURATION.md` | **Atualizado** | Sete variáveis novas de calibração de costura. |
+| `docs/user/GUIA_DO_USUARIO.md` | **Não requer mudança** | O comportamento visível de revisão não mudou: uma costura roteia para a mesma revisão estruturada de reconstrução que já existia. |
+| `docs/SECURITY.md` | **Não requer mudança** | Nenhuma fronteira de confiança nova; o detector é aritmética local sobre pixels já carregados. |
+
+**Calibração (offline, medida — não estimada):** retângulo destrutivo real da página 25
+`seam_score` 1,0; bloco chapado em gradiente 1,0; halo de inpaint 3,49; patch texturizado
+1,09. Controle negativo que motivou a regra de corroboração: legenda plana de dois tons
+com preenchimento levemente diferente do vizinho, `seam_score` 0,26 — um único sinal
+raspando o limite, **mantida aceita**. Balão plano, gradiente contínuo e contorno de
+origem cruzando a máscara não produzem sinal algum.
+
+**Corpus semântico #82 rerodado (somente leitura sobre as execuções persistidas):** 460
+pares (origem, candidato) distintos — 452 limpos, 7 em revisão por
+`source_ocr_suspicious`, 1 em `verify` por `temporal_relation_changed`. As duas sentinelas
+reproduzem exatamente: o candidato P068 continua **não aceito limpo** e o
+`SLLM` / "rato do slim" continua roteado para revisão. Bare "depois" (advérbio) segue
+passando. O baseline de 542 regiões do #82 **não é reproduzível** a partir do que ficou
+persistido — o critério de seleção daquele corpus não virou script —, então o que se
+compara é a proporção: 8/460 (1,7 %) contra 11/542 (2,0 %). Nenhuma explosão.
+
+**Honestidade #84 — Fase D não executada:** a extensão do navegador esteve **desconectada**
+durante toda a missão (`list_connected_browsers` vazio), e o E2E real exige UI visível.
+Nenhum job real, nenhum DeepL, nenhuma execução de runner, nenhuma mutação remota,
+Supabase, Community, Drive ou publicação de update, nenhum push. Portanto **não existe
+evidência de provedor real em #84**: `ART-SEAM-DETECTOR-001` está fechado *offline*, e
+`TRANSLATION-SEMANTIC-001` continua dependente de provedor real. A decisão de prontidão
+para Setup.exe **não** foi tomada nesta missão.

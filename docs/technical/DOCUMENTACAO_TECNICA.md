@@ -854,6 +854,46 @@ chapado é bloco sintético. Um balão branco genuíno passa porque o anel dele 
 plano — a comparação é sempre contra o contexto local, nunca contra uma regra absoluta de
 “branco é suspeito”.
 
+### Detector de costura (ART-SEAM-DETECTOR-001)
+
+O detector de patch plano responde “o interior virou bloco sintético?”.
+`_reconstruction_seam_metrics()` responde outra pergunta, fechada em **TDD #84**: mesmo
+com os glifos de origem removidos, sem retângulo chapado e com resíduo de OCR zero, a
+limpeza deixou uma **borda visível** onde a arte não tinha nenhuma? A reprovação usa o
+reason `visible_reconstruction_seam_at_mask_boundary`.
+
+Toda evidência é **relativa à reconstrução**, medida numa banda estreita em torno da
+máscara. É isso que separa uma costura do contorno de um balão, da borda de um quadro ou
+do contorno de um personagem que cruza a máscara:
+
+| Sinal | O que mede | Limite |
+| --- | --- | --- |
+| `seam_luminance_step` | salto de luminância através da borda **menos** o quanto a luminância já se move na mesma distância na arte intocada ao lado (`seam_natural_luminance_step`) | `MAX_SEAM_LUMINANCE_STEP` (12,0) |
+| `seam_texture_ratio` | energia de textura logo dentro da borda contra o contexto intocado | `MIN_SEAM_TEXTURE_RATIO` (0,35) |
+| `seam_boundary_halo_delta` | anel que acompanha o contorno e não pertence a **nenhum** dos dois lados | `MAX_SEAM_BOUNDARY_HALO_DELTA` (18,0) |
+
+O sinal de textura é suprimido quando o contexto é comprovadamente plano
+(`MAX_FLAT_FILL_RING_SPREAD`): um balão genuíno tem variância ~0 dos dois lados e não pode
+ser condenado por isso. O sinal de halo exige divergência dos **dois** lados — um contorno
+de origem diverge de apenas um.
+
+**Nenhum limite mágico único.** #81 já provou que uma razão de textura ingênua produz
+falsos positivos, então um sinal raspando o limite não retém a reconstrução. A evidência
+só é alta confiança quando um segundo sinal corrobora, ou quando um sinal isolado atinge
+o dobro do próprio limite (`SEAM_HIGH_CONFIDENCE_SCORE`). Calibração medida: o retângulo
+destrutivo real da página 25 marca 1,0; um bloco chapado dentro de um gradiente 1,0; um
+halo de inpaint 3,49 — enquanto uma legenda plana de dois tons, cujo preenchimento difere
+levemente do vizinho, marca 0,26 e **continua aceita**.
+
+Uma máscara com largura de traço não tem interior para comparar: o resultado é
+`mask_too_thin_for_seam_evidence`, registrado como tal em vez de virar veredicto
+inventado. O trabalho é recortado para a vizinhança da máscara, nunca para a página
+inteira, e roda sobre o resultado da limpeza — o português renderizado ainda não existe,
+então lettering novo nunca pode ser confundido com evidência de reconstrução.
+
+O resultado é estruturado (`seam_score`, `seam_suspected`, `seam_reason`, `seam_signals` e
+as métricas de borda), nunca um `visual_bad = true` opaco.
+
 ### Fallback estruturado
 
 Quando a reconstrução não pode ser feita com segurança, o destino é **revisão

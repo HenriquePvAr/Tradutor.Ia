@@ -150,6 +150,13 @@ quiser permitir explicitamente a resolução no ambiente de teste.
 | `MAX_FLAT_PATCH_TEXTURE_RATIO` | `0.25` | Fração da textura do anel abaixo da qual o interior reconstruído é suspeito |
 | `MAX_FLAT_PATCH_ABSOLUTE_TEXTURE` | `1.0` | Energia Laplaciana interna absoluta abaixo da qual a reconstrução é chapada de fato. Exigido **junto** com a razão: inpainting sempre suaviza, então só a razão condenaria reconstrução legítima de arte granulada (~2,8–3,8) |
 | `MIN_FLAT_PATCH_COMPONENT_AREA` | `400` | Área mínima de componente sólido para o patch chapado ser condenado |
+| `DETECT_RECONSTRUCTION_SEAMS` | `True` | Liga o detector de costura (`ART-SEAM-DETECTOR-001`): reprova reconstrução que criou uma borda visível onde a arte não tinha nenhuma |
+| `SEAM_BAND_RADIUS` | `4` | Largura, em pixels, das bandas interna/externa comparadas em volta da borda da máscara |
+| `MIN_SEAM_BAND_PIXELS` | `48` | Pixels mínimos por banda para a medição de costura valer |
+| `MAX_SEAM_LUMINANCE_STEP` | `12.0` | Quanto a luminância pode saltar através da borda **além** do que ela já se move na mesma distância na arte intocada ao lado. Gradiente reconstruído suavemente marca ~0; bloco chapado no mesmo gradiente ~23 |
+| `MIN_SEAM_TEXTURE_RATIO` | `0.35` | Energia de textura logo dentro da borda como fração do contexto intocado; abaixo disso a textura parou no limite da máscara. Suprimido quando o contexto é comprovadamente plano, para não condenar balões |
+| `MAX_SEAM_BOUNDARY_HALO_DELTA` | `18.0` | Desvio de luminância de um anel que acompanha o contorno e diverge dos **dois** lados — halo de inpaint. Um contorno de origem diverge de apenas um lado |
+| `SEAM_HIGH_CONFIDENCE_SCORE` | `1.0` | Um sinal isolado só retém a reconstrução ao atingir o dobro do próprio limite; abaixo disso é preciso um segundo sinal corroborando. Existe porque #81 provou que uma razão de textura ingênua gera falsos positivos |
 
 `POST_RENDER_OCR_VALIDATION=False` no template. O modo CLI `fast` o habilita automaticamente para procurar texto-fonte que ainda permaneça visível depois do redraw.
 

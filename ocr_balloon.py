@@ -116,6 +116,7 @@ OCR_UNINTELLIGIBLE_SOURCE_REASON = "ocr_unintelligible_source_after_retries"
 REVIEW_REQUIRED_ART_RECONSTRUCTION = "review_required_art_reconstruction"
 ART_RECONSTRUCTION_REVIEW_REASONS = frozenset({
     "flat_reconstruction_patch_on_textured_background",
+    "visible_reconstruction_seam_at_mask_boundary",
     "large_white_patch_on_nonwhite_background",
     "dark_blotch_created_on_textured_art",
     "broad_mask_rejected_on_nonuniform_background",
@@ -8468,6 +8469,17 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
         metrics["mask_valid"] = False
         metrics["reason"] = "flat_reconstruction_patch_on_textured_background"
         return current_bgr.copy(), cleanup_mask, metrics
+    seam_metrics = _reconstruction_seam_metrics(
+        original_bgr,
+        cleaned,
+        group,
+        cleanup_mask,
+    )
+    metrics.update(seam_metrics)
+    if seam_metrics.get("seam_suspected"):
+        metrics["mask_valid"] = False
+        metrics["reason"] = "visible_reconstruction_seam_at_mask_boundary"
+        return current_bgr.copy(), cleanup_mask, metrics
     dark_patch_metrics = _dark_blotch_artifact_metrics(
         original_bgr,
         cleaned,
@@ -8702,6 +8714,180 @@ def _flat_patch_artifact_metrics(original_bgr, cleaned_bgr, group, cleanup_mask)
         ),
         "flat_patch_largest_component_area": int(largest),
         "flat_patch_rejected": rejected,
+    }
+
+
+def _reconstruction_seam_metrics(original_bgr, cleaned_bgr, group, cleanup_mask):
+    """ART-SEAM-DETECTOR-001: reject a reconstruction that drew its own boundary.
+
+    The flat-patch detector answers "is the interior synthetic".  This answers a
+    different question: even with the source glyphs gone, no flat rectangle and
+    zero OCR residual, did the cleanup leave a *visible boundary* where the
+    artwork never had one?
+
+    Every signal is reconstruction-relative, measured in a narrow band around the
+    cleanup mask.  That is what separates a seam from a speech-balloon outline, a
+    panel border or a character contour crossing the mask edge:
+
+    * luminance step - how far the luminance jumps across the boundary compared
+      with how far it already moves over the same distance in the untouched art
+      just outside it.  A gradient reconstructed smoothly scores ~0; a flat block
+      dropped into that gradient scores ~23.
+    * texture ratio - texture energy immediately inside the boundary against the
+      untouched context, so texture that stops dead at the mask edge is caught.
+      Suppressed where the context is provably flat, because a genuine balloon
+      has ~0 variance on both sides and must not be condemned for it.
+    * halo delta - a ring hugging the contour that belongs to neither side.  A
+      source contour differs from one side only; a halo differs from both.
+
+    Nothing here needs the rendered Portuguese: it runs on the cleanup result, so
+    new lettering can never be mistaken for reconstruction evidence.  The work is
+    cropped to the mask neighbourhood, never the page.
+    """
+
+    empty = {
+        "seam_signals": [],
+        "seam_band_pixels": 0,
+        "seam_luminance_step": None,
+        "seam_natural_luminance_step": None,
+        "seam_texture_ratio": None,
+        "seam_boundary_halo_delta": None,
+        "seam_context_luminance_spread": None,
+        "seam_score": 0.0,
+        "seam_suspected": False,
+        "seam_reason": "no_reconstruction_mask",
+    }
+    if cleanup_mask is None or not np.any(cleanup_mask):
+        return empty
+
+    mask_full = (np.asarray(cleanup_mask) > 0).astype(np.uint8)
+    band = int(config.SEAM_BAND_RADIUS)
+    height, width = mask_full.shape[:2]
+    ys, xs = np.where(mask_full > 0)
+    margin = band * 3 + 2
+    y0 = max(0, int(ys.min()) - margin)
+    y1 = min(height, int(ys.max()) + margin + 1)
+    x0 = max(0, int(xs.min()) - margin)
+    x1 = min(width, int(xs.max()) + margin + 1)
+    mask = mask_full[y0:y1, x0:x1]
+    cleaned = np.asarray(cleaned_bgr)[y0:y1, x0:x1]
+    gray = (
+        cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
+        if cleaned.ndim == 3
+        else cleaned
+    ).astype(np.float32)
+
+    def _disc(radius):
+        return cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (radius * 2 + 1, radius * 2 + 1),
+        )
+
+    core = cv2.erode(mask, _disc(band))
+    if not np.any(core):
+        # Stroke-width masks have no interior to compare against.  Say so rather
+        # than manufacture a verdict from the boundary alone.
+        return {**empty, "seam_reason": "mask_too_thin_for_seam_evidence"}
+    inner = (mask > 0) & (core == 0)
+    near = cv2.dilate(mask, _disc(band))
+    wide = cv2.dilate(mask, _disc(band * 2))
+    outer = (near > 0) & (mask == 0)
+    context = (wide > 0) & (near == 0)
+    minimum = int(config.MIN_SEAM_BAND_PIXELS)
+    if min(inner.sum(), outer.sum(), context.sum()) < minimum:
+        return {**empty, "seam_reason": "insufficient_boundary_band_evidence"}
+    contour = (cv2.dilate(mask, _disc(2)) > 0) & (cv2.erode(mask, _disc(2)) == 0)
+
+    kernel = (band * 4 + 1, band * 4 + 1)
+
+    def _local(selection):
+        weights = selection.astype(np.float32)
+        return cv2.blur(gray * weights, kernel), cv2.blur(weights, kernel)
+
+    inner_sum, inner_weight = _local(inner)
+    outer_sum, outer_weight = _local(outer)
+    context_sum, context_weight = _local(context)
+
+    def _mean_step(first, second):
+        (a_sum, a_weight), (b_sum, b_weight) = first, second
+        usable = contour & (a_weight > 1e-3) & (b_weight > 1e-3)
+        if not np.any(usable):
+            return 0.0
+        return float(np.abs(
+            a_sum[usable] / a_weight[usable] - b_sum[usable] / b_weight[usable]
+        ).mean())
+
+    step = _mean_step((inner_sum, inner_weight), (outer_sum, outer_weight))
+    natural = _mean_step(
+        (outer_sum, outer_weight),
+        (context_sum, context_weight),
+    )
+
+    inner_texture = float(gray[inner].std())
+    outer_texture = float(gray[outer].std())
+    # Flatness is a property of the *source* context.  The outer band is untouched
+    # by the cleanup, so the two images agree there - reading the original is what
+    # makes the measurement mean "the artwork is flat" rather than "the result is".
+    source = np.asarray(original_bgr)[y0:y1, x0:x1]
+    source_gray = (
+        cv2.cvtColor(source, cv2.COLOR_BGR2GRAY) if source.ndim == 3 else source
+    ).astype(np.float32)
+    low, high = np.percentile(source_gray[outer], [5.0, 95.0])
+    context_spread = float(high - low)
+    flat_context = context_spread <= config.MAX_FLAT_FILL_RING_SPREAD
+    texture_ratio = (
+        inner_texture / outer_texture if outer_texture > 1e-3 else None
+    )
+
+    ring = (near > 0) & (core == 0)
+    ring_mean = float(gray[ring].mean())
+    halo_delta = min(
+        abs(ring_mean - float(gray[core > 0].mean())),
+        abs(ring_mean - float(gray[context].mean())),
+    )
+
+    step_limit = float(config.MAX_SEAM_LUMINANCE_STEP)
+    texture_limit = float(config.MIN_SEAM_TEXTURE_RATIO)
+    halo_limit = float(config.MAX_SEAM_BOUNDARY_HALO_DELTA)
+    findings = []
+    if step - natural > step_limit:
+        findings.append((
+            (step - natural - step_limit) / step_limit,
+            "reconstruction_luminance_step_at_mask_boundary",
+        ))
+    if not flat_context and texture_ratio is not None and texture_ratio < texture_limit:
+        findings.append((
+            (texture_limit - texture_ratio) / texture_limit,
+            "reconstruction_texture_stops_at_mask_boundary",
+        ))
+    if halo_delta > halo_limit:
+        findings.append((
+            (halo_delta - halo_limit) / halo_limit,
+            "reconstruction_boundary_halo_ring",
+        ))
+    score, reason = max(findings, default=(0.0, ""))
+    # Fail closed only on high-confidence evidence.  #81 showed that a single
+    # signal grazing its bound condemns legitimate reconstructions, so a seam is
+    # declared when a second signal corroborates the first, or when one signal
+    # reaches twice its own bound.
+    high_confidence = bool(
+        len(findings) > 1 or score >= float(config.SEAM_HIGH_CONFIDENCE_SCORE)
+    )
+    return {
+        "seam_signals": sorted(name for _score, name in findings),
+        "seam_band_pixels": int(inner.sum() + outer.sum()),
+        "seam_luminance_step": round(step, 4),
+        "seam_natural_luminance_step": round(natural, 4),
+        "seam_texture_ratio": (
+            None if texture_ratio is None else round(texture_ratio, 4)
+        ),
+        "seam_boundary_halo_delta": round(halo_delta, 4),
+        "seam_context_luminance_spread": round(context_spread, 3),
+        "seam_score": round(float(score), 4),
+        "seam_suspected": bool(
+            config.DETECT_RECONSTRUCTION_SEAMS and reason and high_confidence
+        ),
+        "seam_reason": reason or "boundary_consistent_with_source_context",
     }
 
 
