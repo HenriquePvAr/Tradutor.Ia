@@ -642,3 +642,38 @@ artefato completo — o PDF do Chapter 2 existe e está vinculado.
 
 **Roadmap pós-#80:** `ART-RECON-001`/`ART-RECON-002` (#81),
 `TRANSLATION-SEMANTIC-001` (#82) e leitor PDF integrado (#83) seguem abertos.
+
+### TDD #81 — Qualidade de reconstrução de arte (2026-08-24, base `f43abf4`)
+
+| Documento | Classificação | Ação |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Seção 16 ganha “Segurança de preenchimento plano”, “Detector de patch plano” e “Fallback estruturado”; a tabela de status move Reconstrução visual de arte de **ABERTO** para **REVISÃO**. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Nova subseção separando story-text coverage (CLOSED no #76) de art reconstruction (`clean`/`review` por região) e listando os contadores novos. |
+| `docs/CONFIGURATION.md` | **Atualizado** | Documenta as chaves novas de flatness/patch plano. |
+| `docs/user/*` | **Não requer mudança** | Nenhum estado de revisão visível ao usuário mudou de nome ou de significado. |
+
+**Perícia #81 (somente leitura sobre artefato real de 72 páginas):**
+
+- **Página 25** (`BY THE NIGHTMARE SPELL` → `PELO FEITIÇO DO PESADELO`): o run persistido
+  registra `uniform_light_line_pixels: 127863` — os três quadriláteros de linha OCR — e
+  `visual_validation_passed: true` com `source_text_coverage: 1.0`. O fundo é fumaça
+  texturizada, mas *suave*: `local_texture_mean 0.373`, `edge_density 0.0`, o que fez a
+  classificação coarse marcar `uniform_light`/`strict_uniform_light` e autorizar
+  preenchimento de cor única. Medido no replay offline: 127863 px preenchidos com **1 cor,
+  desvio padrão 0.0**, sobre arte com desvio 69.7. O spread de luminância do anel local
+  mede **42.0** contra o limite de 30 — a evidência que faltava.
+- **Página 5** (`NOT THE CHEAP SYNTHETIC STUFF...`): o run persistido registra
+  `uncovered_source_text_pixels: 110` com maior componente de 53 px — o ghost do lettering —
+  e ainda assim `source_text_coverage: 0.998` foi tratado como pass. Medido nos mesmos
+  pixels, a máscara antiga deixa 161 px de origem descobertos; depois do #81 deixa 13.
+
+**Resultado #81:** os defeitos são sistêmicos e as correções também: nenhum ramo de
+produção referencia página, capítulo ou frase. Página e texto aparecem apenas em testes e
+perícia. Arte muito estruturada, quando a reconstrução não pode ser provada segura, passa a
+cair em revisão estruturada em vez de receber retângulo destrutivo.
+
+**Honestidade #81:** nenhum job real, nenhum provider, nenhuma rede, nenhuma mutação
+remota, nenhum push. O artefato real de 72 páginas foi lido, nunca reescrito; todo o replay
+de reconstrução foi para diretório temporário. A reconstrução por inpainting não é
+generativa: ela suaviza, e por isso o gate de patch plano exige near-uniformidade absoluta
+em vez de exigir que a textura seja reproduzida.

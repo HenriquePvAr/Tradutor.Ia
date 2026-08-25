@@ -228,9 +228,21 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
             image, image, group, strategy=FALLBACK
         )
         self.assertFalse(metrics.get("mask_valid"))
+        # The rejection is no longer about the *region* being oversized: since
+        # TDD #81 this fallback builds a glyph-scoped mask, so it now covers
+        # about 1% of the page instead of the whole OCR polygon.  What actually
+        # makes the case unsafe is that the display lettering is far too large
+        # for that mask to cover, which the residual-source evidence states
+        # directly.  Both reasons fail closed and both route to art
+        # reconstruction review; this one is the accurate diagnosis.
+        self.assertLess(metrics.get("source_scoped_mask_to_page_ratio"), 0.05)
         self.assertEqual(
             metrics.get("reason"),
-            "source_scoped_region_too_large_for_safe_cleanup",
+            "residual_source_text_after_cleanup",
+        )
+        self.assertIn(
+            metrics.get("reason"),
+            ocr_balloon.ART_RECONSTRUCTION_REVIEW_REASONS,
         )
 
     def test_large_source_evidence_with_small_mask_is_measured_by_mask_risk(self):

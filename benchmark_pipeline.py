@@ -3032,6 +3032,11 @@ def _build_quality_report(report, states, translation_retry_records):
         "text_overflow_items": 0,
         "white_patch_rejections": 0,
         "broad_mask_rejections": 0,
+        "reconstruction_regions_expected": 0,
+        "reconstruction_clean": 0,
+        "reconstruction_review": 0,
+        "flat_patch_suspected": 0,
+        "rectangular_line_mask_rejections": 0,
         "background_type_counts": {},
         "translation_accounting": translation_accounting,
         "render_plan_accounting": render_plan_accounting,
@@ -3179,6 +3184,31 @@ def _build_quality_report(report, states, translation_retry_records):
             for item in items
             if (item.get("mask_metrics") or {}).get("white_patch_rejected")
         )
+        # Art reconstruction quality is accounted separately from story-text
+        # coverage: a region can have every source glyph removed and still be a
+        # destroyed piece of artwork, so the two verdicts never share a counter.
+        totals["reconstruction_regions_expected"] += sum(
+            1 for item in items if item.get("art_reconstruction_status")
+        )
+        totals["reconstruction_clean"] += sum(
+            1 for item in items
+            if item.get("art_reconstruction_status") == "clean"
+        )
+        totals["reconstruction_review"] += sum(
+            1 for item in items
+            if item.get("art_reconstruction_status") == "review"
+        )
+        totals["flat_patch_suspected"] += sum(
+            1
+            for item in items
+            if (item.get("mask_metrics") or {}).get("flat_patch_rejected")
+        )
+        totals["rectangular_line_mask_rejections"] += sum(
+            1
+            for item in items
+            if (item.get("mask_metrics") or {}).get("uniform_light_line_rejected")
+            or (item.get("mask_metrics") or {}).get("uniform_dark_line_rejected")
+        )
         totals["broad_mask_rejections"] += sum(
             1
             for item in items
@@ -3293,6 +3323,8 @@ def _quality_item_summary(item):
         "visual_attempts": item.get("visual_attempts"),
         "mask_metrics": item.get("mask_metrics"),
         "manual_review_required": item.get("manual_review_required"),
+        "art_reconstruction_status": item.get("art_reconstruction_status"),
+        "art_reconstruction_reason": item.get("art_reconstruction_reason"),
         "safe_area": item.get("safe_area"),
         "translation_box": item.get("translation_box"),
         "bounding_box": item.get("bounding_box"),

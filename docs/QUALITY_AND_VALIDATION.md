@@ -146,6 +146,33 @@ Depois da tradução, o redraw precisa caber na região segura e não degradar a
 
 Quando uma tentativa visual é insegura, o grupo pode ser revertido e marcado para revisão. O sistema não deve preservar uma tradução à custa de corromper a página.
 
+### Cobertura de story text ≠ qualidade de reconstrução (TDD #81)
+
+São **duas dimensões independentes**, e o #81 passou a contabilizá-las separadamente:
+
+| Dimensão | Pergunta | Status |
+| --- | --- | --- |
+| **Story-text coverage** | o glifo de origem sumiu e o texto PT-BR está lá? | **CLOSED** desde o #76 |
+| **Art reconstruction** | a arte embaixo foi reconstruída ou destruída? | `clean` / `review` por região |
+
+Uma região podia — e no artefato real de 72 páginas *podia mesmo* — reportar
+`source_text_coverage: 1.0` e `visual_validation_passed: true` enquanto a arte texturizada
+por baixo havia sido substituída por um retângulo chapado. Cobertura de texto nunca prova
+reconstrução.
+
+O relatório de qualidade agora agrega `reconstruction_regions_expected`,
+`reconstruction_clean`, `reconstruction_review`, `flat_patch_suspected` e
+`rectangular_line_mask_rejections`, e cada item carrega `art_reconstruction_status` /
+`art_reconstruction_reason`.
+
+Uma região em revisão de reconstrução **não** reabre a cobertura de story text: são
+veredictos separados e devem ser lidos separadamente. Para Beta externa, porém, um defeito
+óbvio de reconstrução — patch chapado sobre arte texturizada, ghost do lettering de
+origem — é bloqueador por si só, mesmo com a tradução correta.
+
+Detalhes de implementação (anel de flatness, footprint de glifo, detector de patch plano)
+estão em `docs/technical/DOCUMENTACAO_TECNICA.md`, seção 16.
+
 O relatório de qualidade também registra `render_plan_accounting`. Essa seção existe para
 separar três coisas que antes podiam parecer iguais:
 

@@ -87,7 +87,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Supervisão do worker pelo launcher (TDD #53) | **IMPLEMENTADO** |
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
 | Cobertura story-text / gates fail-closed | **IMPLEMENTADO** — **CLOSED** no TDD #76 para story-text Beta; reviews não-story/SFX/OCR ambíguo continuam fail-closed |
-| Reconstrução visual de arte | **ABERTO** — ghost text e patches planos sobre arte texturizada ainda bloqueiam Beta externa |
+| Reconstrução visual de arte | **REVISÃO** — TDD #81 fechou os defeitos sistêmicos (preenchimento plano só com fundo comprovadamente plano, quadrilátero OCR nunca vira máscara sobre ilustração, footprint de glifo cobre corpo/contorno/halo, detector de patch plano). Arte muito estruturada agora cai em `REVIEW_REQUIRED_ART_RECONSTRUCTION` em vez de receber retângulo destrutivo |
 | Qualidade semântica/natural PT-BR | **ABERTO** — frases traduzidas podem estar em português mas semanticamente erradas |
 | Leitor PDF integrado | **PLANEJADO** — Histórico ainda abre artefatos por ações externas |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
@@ -806,6 +806,63 @@ A reconstrução usa:
 `preview_gates.py` é medição, não julgamento por inspeção: um rascunho só é aprovado por
 números que um humano pode conferir. As mesmas funções servem a qualquer rascunho — não
 dependem de página, região, frase ou capítulo.
+
+### Segurança de preenchimento plano (TDD #81)
+
+Remoção do texto-fonte e reconstrução da arte são **dois veredictos independentes**: o
+glifo de origem pode ter sumido e a arte mesmo assim estar destruída.
+
+A classificação coarse de background mede apenas textura de alta frequência. Um degradê
+suave — fumaça, sombreado, queda de luz em tecido — não é *ruidoso*, então era lido como
+`uniform_light` e autorizava preenchimento de cor única. `_local_background_flatness()`
+acrescenta a evidência que faltava: o **spread de luminância (percentis 5–95) do anel
+limpo em volta da máscara** (`FLAT_FILL_RING_RADIUS`, `MIN_FLAT_FILL_RING_PIXELS`). Balões
+e caixas de narração reais medem até ~24; fumaça, tecido e ilustração aberta começam em
+~43. O limite é `MAX_FLAT_FILL_RING_SPREAD` (padrão 30).
+
+Consequências no caminho de produção:
+
+- `_apply_cleanup_mask()` só usa preenchimento de cor única (claro ou escuro) quando o anel
+  local prova que o fundo é de fato um tom só; caso contrário reconstrói por inpainting;
+- `_uniform_light_line_text_mask()` / `_uniform_dark_line_text_mask()` só podem usar o
+  **quadrilátero da linha OCR** como máscara sobre fundo comprovadamente plano. Um
+  retângulo não é estratégia de máscara sobre ilustração;
+- o fallback `source_scoped` mede cobertura contra os **glifos** de origem
+  (`_uncovered_source_text_evidence`), não contra a área do polígono. Medir contra a área
+  fazia o fallback disparar em toda região texturizada e substituir a arte pelo próprio
+  quadrilátero;
+- `_glyph_footprint_padding()` e o raio de suporte do halo escalam com a altura da linha:
+  legenda pequena carrega uma borda de anti-aliasing, lettering de destaque carrega
+  contorno e brilho de vários pixels. O halo é limitado por `line_limit` e pelo suporte de
+  um componente de glifo aceito — crescimento local guiado por evidência, não dilatação
+  arbitrária.
+
+### Detector de patch plano
+
+`_flat_patch_artifact_metrics()` reprova uma reconstrução que virou bloco sintético, com
+reason `flat_reconstruction_patch_on_textured_background`. Ele compara a energia
+Laplaciana **do interior** da máscara (erodido, para a borda não mascarar um preenchimento
+perfeitamente uniforme) com a do anel de contexto.
+
+A razão sozinha não decide. O anel ainda contém o lettering de origem, que infla a textura
+de referência, e inpainting nunca reproduz grão por pixel: reconstruções legítimas de arte
+escura granulada medem ~2,8–3,8 de energia interna. Por isso a reprovação exige também
+near-uniformidade **absoluta** (`MAX_FLAT_PATCH_ABSOLUTE_TEXTURE`, padrão 1,0 — os
+preenchimentos planos que o gate existe para pegar medem 0,0) e um componente sólido
+grande (`MIN_FLAT_PATCH_COMPONENT_AREA`). Mais liso que o original é reconstrução; um tom
+chapado é bloco sintético. Um balão branco genuíno passa porque o anel dele também é
+plano — a comparação é sempre contra o contexto local, nunca contra uma regra absoluta de
+“branco é suspeito”.
+
+### Fallback estruturado
+
+Quando a reconstrução não pode ser feita com segurança, o destino é **revisão
+estruturada**, nunca um retângulo opaco. `art_reconstruction_verdict()` classifica o
+resultado (`clean` / `review`) de forma independente da cobertura de texto, preservando o
+reason específico quando ele pertence a `ART_RECONSTRUCTION_REVIEW_REASONS` e caindo em
+`REVIEW_REQUIRED_ART_RECONSTRUCTION` caso contrário. O veredicto viaja em
+`TextGroup.art_reconstruction_status` / `.art_reconstruction_reason` e é contabilizado
+separadamente no relatório de qualidade.
 
 ## 17. Qualidade, validação física e proveniência
 

@@ -358,6 +358,38 @@ REJECT_DARK_BLOTCH_ON_TEXTURED_ART = _env_bool(
     "REJECT_DARK_BLOTCH_ON_TEXTURED_ART",
     True,
 )
+# Art reconstruction safety.  A flat colour fill - and the OCR-line-quadrilateral
+# masks that make one look rectangular - is only defensible when the artwork
+# immediately around the cleanup mask really is one flat tone.  The bound is the
+# 5th-95th percentile luminance spread of that clean ring: measured real speech
+# balloons and narration boxes stay at or under ~24, while smoke, fabric and open
+# illustration start at ~43.  Keep it tunable, real scans vary.
+MAX_FLAT_FILL_RING_SPREAD = _env_float("MAX_FLAT_FILL_RING_SPREAD", 30.0)
+MIN_FLAT_FILL_RING_PIXELS = max(1, _env_int("MIN_FLAT_FILL_RING_PIXELS", 64))
+FLAT_FILL_RING_RADIUS = max(1, _env_int("FLAT_FILL_RING_RADIUS", 12))
+REJECT_FLAT_PATCH_ON_TEXTURED_ART = _env_bool(
+    "REJECT_FLAT_PATCH_ON_TEXTURED_ART",
+    True,
+)
+# A reconstruction whose interior texture collapses to this fraction of the
+# surrounding source texture reads as a synthetic block, not as artwork.
+MAX_FLAT_PATCH_TEXTURE_RATIO = _env_float("MAX_FLAT_PATCH_TEXTURE_RATIO", 0.25)
+# The ratio alone cannot carry this decision: the context ring still contains the
+# source lettering, which inflates the surrounding texture, and inpainting never
+# reproduces per-pixel film grain.  A legitimate reconstruction of dark noisy
+# artwork measures ~2.8-3.8 interior Laplacian energy while the flat fills this
+# gate exists to catch measure 0.0 - one single colour.  So a patch is only
+# condemned when it is near-uniform in absolute terms *and* far below its
+# surroundings; smoother-than-the-original is reconstruction, not a synthetic
+# block.
+MAX_FLAT_PATCH_ABSOLUTE_TEXTURE = _env_float(
+    "MAX_FLAT_PATCH_ABSOLUTE_TEXTURE",
+    1.0,
+)
+MIN_FLAT_PATCH_COMPONENT_AREA = max(
+    1,
+    _env_int("MIN_FLAT_PATCH_COMPONENT_AREA", 400),
+)
 MAX_NEW_DARK_COMPONENT_AREA = max(1, _env_int("MAX_NEW_DARK_COMPONENT_AREA", 120))
 MAX_NEW_DARK_PIXEL_RATIO = _env_float("MAX_NEW_DARK_PIXEL_RATIO", 0.04)
 TEXTURED_CAPTION_OVERLAY = _env_bool("TEXTURED_CAPTION_OVERLAY", True)

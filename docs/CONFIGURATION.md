@@ -143,6 +143,13 @@ quiser permitir explicitamente a resolução no ambiente de teste.
 | `REJECT_DARK_BLOTCH_ON_TEXTURED_ART` | `True` | Rejeita manchas escuras novas sobre arte |
 | `MAX_NEW_DARK_COMPONENT_AREA` | `120` | Área máxima de componente escuro novo |
 | `MAX_NEW_DARK_PIXEL_RATIO` | `0.04` | Proporção máxima de pixels escuros novos |
+| `MAX_FLAT_FILL_RING_SPREAD` | `30.0` | Spread de luminância (p5–p95) do anel limpo em volta da máscara acima do qual o fundo **não** é considerado plano; sem essa prova, preenchimento de cor única e máscara de quadrilátero OCR ficam proibidos. Balões reais medem até ~24, fumaça/tecido/ilustração a partir de ~43 |
+| `FLAT_FILL_RING_RADIUS` | `12` | Raio do anel de contexto usado nessa medição |
+| `MIN_FLAT_FILL_RING_PIXELS` | `64` | Pixels mínimos de anel para a medição valer |
+| `REJECT_FLAT_PATCH_ON_TEXTURED_ART` | `True` | Rejeita reconstrução que virou bloco chapado sobre arte texturizada |
+| `MAX_FLAT_PATCH_TEXTURE_RATIO` | `0.25` | Fração da textura do anel abaixo da qual o interior reconstruído é suspeito |
+| `MAX_FLAT_PATCH_ABSOLUTE_TEXTURE` | `1.0` | Energia Laplaciana interna absoluta abaixo da qual a reconstrução é chapada de fato. Exigido **junto** com a razão: inpainting sempre suaviza, então só a razão condenaria reconstrução legítima de arte granulada (~2,8–3,8) |
+| `MIN_FLAT_PATCH_COMPONENT_AREA` | `400` | Área mínima de componente sólido para o patch chapado ser condenado |
 
 `POST_RENDER_OCR_VALIDATION=False` no template. O modo CLI `fast` o habilita automaticamente para procurar texto-fonte que ainda permaneça visível depois do redraw.
 

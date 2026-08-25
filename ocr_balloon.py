@@ -107,6 +107,34 @@ PROPER_NAME_ONLY_REASON = "proper_name_only"
 # read itself. It carries its own reason so the accounting can tell the two apart.
 OCR_UNINTELLIGIBLE_SOURCE_REASON = "ocr_unintelligible_source_after_retries"
 
+# Art reconstruction is a quality dimension of its own: source text can be gone
+# and the artwork still be unacceptable, and artwork can be intact while the
+# source text survives.  These are the mask/reconstruction rejections that mean
+# "the artwork could not be rebuilt safely", as opposed to translation or OCR
+# problems, and they route a region to structured review instead of letting it
+# receive a destructive fill.
+REVIEW_REQUIRED_ART_RECONSTRUCTION = "review_required_art_reconstruction"
+ART_RECONSTRUCTION_REVIEW_REASONS = frozenset({
+    "flat_reconstruction_patch_on_textured_background",
+    "large_white_patch_on_nonwhite_background",
+    "dark_blotch_created_on_textured_art",
+    "broad_mask_rejected_on_nonuniform_background",
+    "residual_source_text_after_cleanup",
+    "source_scoped_region_too_large_for_safe_cleanup",
+    "mask_too_large_for_detected_characters",
+})
+
+
+def art_reconstruction_verdict(visual_attempts, *, accepted):
+    """Classify the art-reconstruction outcome independently of text coverage."""
+    if accepted:
+        return "clean", ""
+    for attempt in reversed(list(visual_attempts or [])):
+        reason = str(attempt.get("reason") or "")
+        if reason in ART_RECONSTRUCTION_REVIEW_REASONS:
+            return "review", reason
+    return "review", REVIEW_REQUIRED_ART_RECONSTRUCTION
+
 # Terminal reasons that record a proven, specific conclusion about a group. A later
 # stage may still preserve the original pixels for such a group, but it must not
 # replace the proven reason with its own generic one: the accounting keys off the
@@ -438,6 +466,8 @@ class TextGroup:
     naturalization_rejected_reason: str = ""
     naturalization_selected_version: str = ""
     naturalization_context: dict = field(default_factory=dict)
+    art_reconstruction_status: str = ""
+    art_reconstruction_reason: str = ""
 
     @property
     def confidence(self):
@@ -1825,6 +1855,10 @@ def _render_analyzed_image(
                 )
                 break
 
+        (
+            group.art_reconstruction_status,
+            group.art_reconstruction_reason,
+        ) = art_reconstruction_verdict(group.visual_attempts, accepted=accepted)
         if accepted:
             text_mask = cv2.bitwise_or(text_mask, accepted_cleanup_mask)
             allowed_mask = cv2.bitwise_or(allowed_mask, accepted_allowed_mask)
@@ -8158,9 +8192,11 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
     if strategy == "caption_overlay":
         limit_padding = min(3, config.MAX_MASK_EXPANSION)
     else:
-        limit_padding = 1 if (strategy == "conservative" or tight_background) else min(
-            config.MAX_MASK_EXPANSION,
-            config.TEXT_MASK_PADDING + 1,
+        limit_padding = 1 if (strategy == "conservative" or tight_background) else (
+            _glyph_footprint_padding(
+                group,
+                min(config.MAX_MASK_EXPANSION, config.TEXT_MASK_PADDING + 1),
+            )
         )
     maximum_mask = base_mask.copy()
     if limit_padding > 0:
@@ -8210,9 +8246,25 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
                 outline_metrics.get("accepted_text_components", 0)
             )
             owned_geometry_pixels = int(np.count_nonzero(base_mask))
-            current_coverage = float(
-                np.count_nonzero((cleanup_mask > 0) & (base_mask > 0))
-                / max(1, owned_geometry_pixels)
+            # Coverage has to be measured against the source *glyphs* inside the
+            # owned polygons, not against the polygon area.  An accurate glyph
+            # mask never fills a whole OCR quadrilateral, so measuring against
+            # its area made this fallback fire on every textured region and
+            # replace the artwork with the quadrilateral itself - the flat
+            # rectangular patch this strategy exists to avoid.
+            removal = _uncovered_source_text_evidence(
+                original_bgr,
+                original_bgr,
+                group,
+                cleanup_mask,
+            )
+            current_coverage = (
+                float(removal["source_owned_geometry_coverage"])
+                if removal.get("measured")
+                else float(
+                    np.count_nonzero((cleanup_mask > 0) & (base_mask > 0))
+                    / max(1, owned_geometry_pixels)
+                )
             )
             if current_coverage < 0.75 and not _proven_uniform_dark_region(
                 background_metrics
@@ -8390,6 +8442,17 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
         metrics["mask_valid"] = False
         metrics["reason"] = "large_white_patch_on_nonwhite_background"
         return current_bgr.copy(), cleanup_mask, metrics
+    flat_patch_metrics = _flat_patch_artifact_metrics(
+        original_bgr,
+        cleaned,
+        group,
+        cleanup_mask,
+    )
+    metrics.update(flat_patch_metrics)
+    if flat_patch_metrics.get("flat_patch_rejected"):
+        metrics["mask_valid"] = False
+        metrics["reason"] = "flat_reconstruction_patch_on_textured_background"
+        return current_bgr.copy(), cleanup_mask, metrics
     dark_patch_metrics = _dark_blotch_artifact_metrics(
         original_bgr,
         cleaned,
@@ -8542,6 +8605,91 @@ def _white_patch_artifact_metrics(
     }
 
 
+def _flat_patch_artifact_metrics(original_bgr, cleaned_bgr, group, cleanup_mask):
+    """Reject a reconstruction that replaced artwork with a synthetic flat block.
+
+    This is independent of source-text removal: the source glyphs can be gone and
+    the result still be unacceptable.  A genuine flat balloon passes because its
+    own surrounding ring is flat too - the comparison is always against the local
+    source context, never against an absolute "white is suspicious" rule.
+    """
+
+    empty = {
+        "flat_patch_source_ring_texture": None,
+        "flat_patch_reconstruction_texture": None,
+        "flat_patch_texture_ratio": None,
+        "flat_patch_largest_component_area": 0,
+        "flat_patch_rejected": False,
+    }
+    if cleanup_mask is None or not np.any(cleanup_mask):
+        return empty
+    flatness = _local_background_flatness(original_bgr, cleanup_mask)
+    if flatness["flat_fill_supported"]:
+        return {**empty, **flatness}
+    mask = np.asarray(cleanup_mask) > 0
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8),
+        8,
+    )
+    largest = max(
+        (int(stats[label, cv2.CC_STAT_AREA]) for label in range(1, count)),
+        default=0,
+    )
+    radius = int(config.FLAT_FILL_RING_RADIUS)
+    ring = (
+        cv2.dilate(
+            mask.astype(np.uint8) * 255,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (radius * 2 + 1, radius * 2 + 1),
+            ),
+            iterations=1,
+        ) > 0
+    ) & ~mask
+    original_gray = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY)
+    cleaned_gray = cv2.cvtColor(cleaned_bgr, cv2.COLOR_BGR2GRAY)
+    source_texture = float(
+        np.abs(cv2.Laplacian(original_gray, cv2.CV_32F))[ring].mean()
+    ) if np.any(ring) else 0.0
+    # Measure the reconstruction's *interior*: the mask boundary always carries a
+    # strong Laplacian response, which would hide a perfectly uniform fill.
+    interior = cv2.erode(
+        mask.astype(np.uint8) * 255,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+        iterations=1,
+    ) > 0
+    if not np.any(interior):
+        interior = mask
+    reconstruction_texture = float(
+        np.abs(cv2.Laplacian(cleaned_gray, cv2.CV_32F))[interior].mean()
+    )
+    ratio = (
+        reconstruction_texture / source_texture if source_texture > 0.0 else None
+    )
+    rejected = bool(
+        config.REJECT_FLAT_PATCH_ON_TEXTURED_ART
+        and ratio is not None
+        and ratio < config.MAX_FLAT_PATCH_TEXTURE_RATIO
+        # Absolute near-uniformity is what makes a patch read as synthetic. The
+        # ratio alone condemns any reconstruction of grainy artwork, because the
+        # context ring still holds the source lettering and inpainting cannot
+        # rebuild per-pixel noise.  Smoother than the original is
+        # reconstruction; one flat tone is a synthetic block.
+        and reconstruction_texture <= config.MAX_FLAT_PATCH_ABSOLUTE_TEXTURE
+        and largest >= config.MIN_FLAT_PATCH_COMPONENT_AREA
+    )
+    return {
+        **flatness,
+        "flat_patch_source_ring_texture": round(source_texture, 4),
+        "flat_patch_reconstruction_texture": round(reconstruction_texture, 4),
+        "flat_patch_texture_ratio": (
+            None if ratio is None else round(float(ratio), 4)
+        ),
+        "flat_patch_largest_component_area": int(largest),
+        "flat_patch_rejected": rejected,
+    }
+
+
 def _dark_blotch_artifact_metrics(
     original_bgr,
     cleaned_bgr,
@@ -8601,6 +8749,47 @@ def _dark_blotch_artifact_metrics(
     }
 
 
+def _glyph_footprint_padding(group, base):
+    """How far past the OCR polygon the visual glyph footprint may reach.
+
+    Anti-aliasing, an outline and a drop shadow all scale with the lettering, so
+    a constant padding is either wasteful on small captions or too tight on
+    display lettering - where it truncated glyphs and left ghosts behind.  The
+    result is still bounded by ``MAX_MASK_EXPANSION`` and only ever admits
+    pixels that evidence connects to an accepted glyph component.
+    """
+
+    heights = [
+        int(line.box[3])
+        for line in _cleanup_lines_for_group(group)
+        if int(line.box[3]) > 0
+    ]
+    if not heights:
+        return base
+    return int(max(
+        base,
+        min(config.MAX_MASK_EXPANSION, int(round(float(np.median(heights)) * 0.10))),
+    ))
+
+
+def _local_line_background_level(gray, line, fallback):
+    """Median luminance of the clean band just outside one OCR line box."""
+    x, y, w, h = [int(value) for value in line.box]
+    radius = int(config.FLAT_FILL_RING_RADIUS)
+    height, width = gray.shape[:2]
+    x1, y1 = max(0, x - radius), max(0, y - radius)
+    x2 = min(width, x + max(1, w) + radius)
+    y2 = min(height, y + max(1, h) + radius)
+    band = np.ones((y2 - y1, x2 - x1), dtype=bool)
+    ix1, iy1 = max(0, x - x1), max(0, y - y1)
+    ix2, iy2 = min(band.shape[1], ix1 + max(1, w)), min(band.shape[0], iy1 + max(1, h))
+    band[iy1:iy2, ix1:ix2] = False
+    values = gray[y1:y2, x1:x2][band]
+    if values.size < int(config.MIN_FLAT_FILL_RING_PIXELS):
+        return float(fallback)
+    return float(np.median(values))
+
+
 def _component_text_mask(img_bgr, group, maximum_mask, strategy="primary"):
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     mask = np.zeros(gray.shape, dtype=np.uint8)
@@ -8611,9 +8800,11 @@ def _component_text_mask(img_bgr, group, maximum_mask, strategy="primary"):
         polygon_mask = np.zeros(gray.shape, dtype=np.uint8)
         cv2.fillPoly(polygon_mask, [np.asarray(line.polygon, dtype=np.int32)], 255)
         line_limit = polygon_mask.copy()
-        line_limit_padding = 1 if strategy == "conservative" else min(
-            config.MAX_MASK_EXPANSION,
-            config.TEXT_MASK_PADDING + 1,
+        line_limit_padding = 1 if strategy == "conservative" else (
+            _glyph_footprint_padding(
+                group,
+                min(config.MAX_MASK_EXPANSION, config.TEXT_MASK_PADDING + 1),
+            )
         )
         if line_limit_padding > 0:
             line_limit = cv2.dilate(
@@ -8682,16 +8873,36 @@ def _component_text_mask(img_bgr, group, maximum_mask, strategy="primary"):
             accepted_components += 1
 
         if np.any(selected):
+            # The glyph footprint is everything that differs from the *local
+            # background*, not from the polygon median - the median is dragged
+            # towards the lettering by the lettering itself, which used to hide
+            # a soft glow just under it and leave the glow behind as a ghost.
+            background_level = _local_line_background_level(gray, line, median)
             if median >= 138:
-                weak_foreground = roi_gray <= min(252.0, median - 3.0)
+                weak_foreground = roi_gray <= min(252.0, background_level - 3.0)
             elif median <= 118:
-                weak_foreground = roi_gray >= max(3.0, median + 3.0)
+                weak_foreground = roi_gray >= max(3.0, background_level + 3.0)
             else:
                 weak_foreground = (blackhat >= 4) | (tophat >= 4)
-            weak_foreground &= roi_poly
+            # Glyph pixels do not stop at the OCR quadrilateral: a full stop or a
+            # descender routinely pokes a couple of pixels past it, and clipping
+            # the halo to the polygon leaves that sliver behind as a ghost.  The
+            # halo stays bounded by ``line_limit`` (polygon plus the existing
+            # padding) and by the support of an accepted glyph component, so this
+            # is evidence-driven local growth, not a wider mask.
+            weak_foreground &= line_limit[y1:y2, x1:x2] > 0
+            # The visual footprint of lettering scales with the lettering: small
+            # captions carry a one-pixel anti-alias edge, display lettering
+            # carries an outline and a soft glow several pixels wide.  A fixed
+            # 3px support left that glow behind as a ghost on large text, so the
+            # support radius follows the observed line height instead.
+            support_radius = max(3, min(16, int(round(h * 0.10))))
             support = cv2.dilate(
                 selected,
-                np.ones((7, 7), np.uint8),
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (support_radius * 2 + 1, support_radius * 2 + 1),
+                ),
                 iterations=1,
             )
             antialias_halo = (
@@ -8872,6 +9083,48 @@ def _proven_light_cleanup_region(metrics):
     )
 
 
+def _local_background_flatness(img_bgr, mask, *, ring_radius=None):
+    """Measure whether the artwork around ``mask`` is one flat tone.
+
+    ``_classify_background_region`` only measures high-frequency texture, so a
+    smooth gradient (smoke, shading, fabric falloff) reads as "flat" there and
+    used to authorise a single-colour fill that lands as a visible rectangle.
+    The evidence that actually matters is how much the luminance of the clean
+    ring immediately around the cleanup mask varies: a genuine white balloon or
+    narration box is uniform, illustration is not.
+    """
+
+    empty = {
+        "flat_fill_ring_pixels": 0,
+        "flat_fill_ring_luminance_spread": None,
+        "flat_fill_supported": False,
+    }
+    if mask is None or not np.any(mask):
+        return empty
+    mask_u8 = (np.asarray(mask) > 0).astype(np.uint8) * 255
+    radius = int(ring_radius or config.FLAT_FILL_RING_RADIUS)
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (radius * 2 + 1, radius * 2 + 1),
+    )
+    ring = (cv2.dilate(mask_u8, kernel, iterations=1) > 0) & (mask_u8 == 0)
+    gray = (
+        cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        if np.asarray(img_bgr).ndim == 3
+        else np.asarray(img_bgr)
+    )
+    values = gray[ring].astype(np.float32)
+    if values.size < int(config.MIN_FLAT_FILL_RING_PIXELS):
+        return {**empty, "flat_fill_ring_pixels": int(values.size)}
+    low, high = np.percentile(values, [5.0, 95.0])
+    spread = float(high - low)
+    return {
+        "flat_fill_ring_pixels": int(values.size),
+        "flat_fill_ring_luminance_spread": round(spread, 3),
+        "flat_fill_supported": bool(spread <= config.MAX_FLAT_FILL_RING_SPREAD),
+    }
+
+
 def _detached_light_text_components_mask(img_bgr, group, source_mask):
     """Recover isolated bright glyphs beside OCR lines on a uniform dark region."""
     metrics = getattr(group, "background_metrics", {}) or {}
@@ -8959,9 +9212,22 @@ def _uniform_dark_line_text_mask(img_bgr, group):
         )
         result = cv2.bitwise_or(result, selected)
         line_count += 1
+    flatness = _local_background_flatness(img_bgr, result)
+    spread = {
+        "uniform_dark_line_ring_luminance_spread":
+            flatness["flat_fill_ring_luminance_spread"],
+    }
+    if not flatness["flat_fill_supported"]:
+        return np.zeros_like(result), {
+            "uniform_dark_line_pixels": 0,
+            "uniform_dark_line_count": 0,
+            "uniform_dark_line_rejected": True,
+            **spread,
+        }
     return result, {
         "uniform_dark_line_pixels": int(np.count_nonzero(result)),
         "uniform_dark_line_count": int(line_count),
+        **spread,
     }
 
 
@@ -9002,9 +9268,21 @@ def _uniform_light_line_text_mask(img_bgr, group):
         line_mask = cv2.dilate(line_mask, np.ones((3, 3), np.uint8), iterations=1)
         result = cv2.bitwise_or(result, line_mask)
         line_count += 1
+    flatness = _local_background_flatness(img_bgr, result)
+    if not flatness["flat_fill_supported"]:
+        # Replacing a whole OCR quadrilateral is a rectangle, not a glyph mask.
+        # It is only safe where the surrounding artwork is provably one tone;
+        # otherwise the glyph-level mask has to carry the cleanup.
+        return np.zeros_like(result), {
+            "uniform_light_line_pixels": 0,
+            "uniform_light_line_count": 0,
+            "uniform_light_line_rejected": True,
+            **flatness,
+        }
     return result, {
         "uniform_light_line_pixels": int(np.count_nonzero(result)),
         "uniform_light_line_count": int(line_count),
+        **flatness,
     }
 
 
@@ -9102,6 +9380,15 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
         strategy == "source_scoped"
         and _proven_uniform_dark_region(group.background_metrics)
     )
+    if (white_region or dark_region) and not _local_background_flatness(
+        original_bgr,
+        cleanup_mask,
+    )["flat_fill_supported"]:
+        # The coarse background type proved the region is not *noisy*; it never
+        # proved it is one tone.  Without that proof a single colour lands as a
+        # visible patch, so reconstruct from the surrounding artwork instead.
+        white_region = False
+        dark_region = False
     if white_region:
         fill_color = _estimated_white_region_fill_color(
             original_bgr,
@@ -10665,6 +10952,8 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "visual_attempts": list(group.visual_attempts),
                 "mask_metrics": dict(group.mask_metrics),
                 "manual_review_required": bool(group.manual_review_required),
+                "art_reconstruction_status": str(group.art_reconstruction_status),
+                "art_reconstruction_reason": str(group.art_reconstruction_reason),
                 "detected_proper_names": list(group.detected_proper_names),
                 "preserve_as_name": bool(group.preserve_as_name),
                 "quality_evidence": dict(group.quality_evidence),
