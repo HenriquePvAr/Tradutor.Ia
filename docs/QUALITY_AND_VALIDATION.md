@@ -332,6 +332,58 @@ globais restantes são SFX/OCR ambíguo não-story preservados para revisão hum
 
 O resultado é persistido em `quality_report.json` e resumido em `timing_report.json`.
 
+## Fidelidade semântica e PT-BR natural
+
+Cobertura de texto de história (**fechada**) e fidelidade semântica são dimensões
+diferentes. A primeira pergunta "o texto foi traduzido e o inglês sumiu da página"; a
+segunda pergunta "a tradução ainda diz o que o original dizia". Uma tradução pode passar
+na primeira e falhar na segunda.
+
+`semantic_fidelity.py` responde em três severidades, nesta ordem:
+
+| Severidade | Significado | Efeito no pipeline |
+| --- | --- | --- |
+| `blocked` | Divergência **provada** sem julgamento: número trocado, nome próprio do capítulo dissolvido, ordem temporal invertida | Candidato rejeitado; o retry recebe a restrição correspondente |
+| `verify` | Algo se moveu, mas nenhuma regra decide o quê: negação, ação virada estado, papéis trocados, relação temporal inventada | Uma adjudicação semântica por região; incerteza nunca vale como aprovação |
+| `review` | Nem errado provado, nem confiável: fonte OCR suspeita, português malformado | **Renderiza normalmente** e é contado à parte; segurar a região devolveria inglês à página |
+
+### Confiança na fonte (OCR) antes de culpar o provedor
+
+Um token que a língua de origem não escreve (sem vogal, ou com três consoantes seguidas —
+o mesmo teste de forma que o score de qualidade de OCR já usa) e que **sobrevive literalmente
+para o português** é defeito de OCR, não de tradução: `SLLM RAT` → `RATO DO SLLM`. Nomes
+próprios e interjeições estilizadas (`HMMM`) ficam de fora.
+
+Tokens colados (`TAKEAFEWHOURS`) **não** são sinal: 126 de 542 regiões reais persistidas
+carregam um, e o provedor recupera quase todos corretamente. Sinalizá-los soterraria os
+defeitos reais numa fila de revisão quatro vezes maior.
+
+### Âncoras de significado
+
+Negação, quantidade (algarismos **e** quantidades por extenso), entidades protegidas pelo
+ledger do capítulo, papéis agente/paciente e relação temporal. Só a forma *subordinante*
+conta no alvo: `depois` sozinho é o advérbio "later" e não afirma ordem nenhuma; `depois
+que` afirma. Modalidade (`might`/`could`) permanece fora do validador local — as regras
+testadas produziram apenas falsos positivos e o caso pertence ao adjudicador.
+
+### PT-BR natural
+
+Duas formas apenas, ambas inequívocas: infinitivo cru depois de pronome ("você fazer") e
+palavra funcional duplicada ("da da"). Naturalidade não é literalidade e repetição legítima
+("NÃO, NÃO, NÃO!") continua válida.
+
+### Contexto de tradução
+
+O contexto é ligado por `set_session_context`, contrato comum a todos os adaptadores. Ele
+entra no *prompt*, nunca no texto-alvo, e é limitado (`FIDELITY_CONTEXT_MAX_LINES`,
+`FIDELITY_CONTEXT_MAX_TERMS`). O adaptador DeepL declara explicitamente
+`context_enabled = False` em vez de presumir suporte.
+
+### Contabilidade
+
+`fidelity_stats` passou a separar `semantic_review` e `semantic_review_<motivo>` das
+contagens de bloqueio. Cada grupo carrega `semantic_review_reason` no `quality_report.json`.
+
 ## Estados terminais
 
 | Estado | Condição | PDF pode existir? |
@@ -376,9 +428,14 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   ou open-art. Sentinela planejada para #80: página 5 do PDF auditado.
 - `ART-RECON-002`: patches brancos/cinzas planos sobre textura são visualmente
   inaceitáveis. Sentinela planejada para #80: página 25.
-- `TRANSLATION-SEMANTIC-001`: saída em português pode estar gramaticalmente traduzida mas
-  semanticamente errada ou pouco natural. Sentinelas planejadas para #81 incluem “rato do
-  slim”, sintaxe quebrada e perda de sentido do caso P068.
+- `TRANSLATION-SEMANTIC-001`: fechado localmente em #82 — ver
+  [Fidelidade semântica e PT-BR natural](#fidelidade-semântica-e-pt-br-natural). Continua
+  aberto para os casos em que nenhum candidato persistido alternativo existe: eles exigem
+  um E2E real com provedor.
+- `ART-SEAM-DETECTOR-001` (**pendente**): não existe detector dedicado de costura/borda
+  para avaliar a qualidade do limite entre patch reconstruído e arte original. Deve ser
+  fechado antes do Scan Beta externo / Release Candidate. Deliberadamente não implementado
+  em #82.
 - Revisões estruturadas por risco visual continuam exigindo novo E2E real para provar que o
   PDF gerado ficou fisicamente limpo.
 - O comportamento do provedor pode variar entre execuções.

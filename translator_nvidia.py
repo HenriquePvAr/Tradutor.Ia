@@ -527,6 +527,17 @@ class TranslatorNvidiaBatch:
             semantic_fidelity.STATE_ACTION_CHANGED:
                 "A tentativa anterior transformou uma acao ou decisao do original em um "
                 "estado do personagem; preserve a intencao e a acao do original.",
+            semantic_fidelity.TEMPORAL_RELATION_CHANGED:
+                "A tentativa anterior alterou ou inventou uma relacao de tempo (antes, "
+                "depois, ate) que nao esta no original; preserve exatamente a ordem "
+                "temporal do original e nao acrescente nenhuma.",
+            semantic_fidelity.SOURCE_OCR_SUSPICIOUS:
+                "O texto original contem um trecho ilegivel que sobreviveu sem "
+                "traducao; traduza apenas o que o original realmente diz, sem inventar "
+                "sentido para o trecho ilegivel.",
+            semantic_fidelity.GRAMMAR_MALFORMED:
+                f"A tentativa anterior nao e uma frase bem formada em {target}; "
+                "reescreva com gramatica correta, preservando o sentido do original.",
             semantic_fidelity.MEANING_MISMATCH:
                 "A tentativa anterior mudou o sentido do original; traduza preservando "
                 "negacao, quantidades, nomes, relacoes e intencao.",

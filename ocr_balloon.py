@@ -453,6 +453,8 @@ class TextGroup:
     visual_attempts: list[dict] = field(default_factory=list)
     mask_metrics: dict = field(default_factory=dict)
     manual_review_required: bool = False
+    # Rendered, but not proven clean: which semantic doubt this region carries.
+    semantic_review_reason: str = ""
     detected_proper_names: list[str] = field(default_factory=list)
     preserve_as_name: bool = False
     ocr_quality_blocked: bool = False
@@ -7046,6 +7048,7 @@ def _maybe_naturalize_translation(
                 group, terminology_ledger
             ),
             proper_names=name_spans,
+            is_source_word=_token_is_source_vocabulary,
         )
         post_budget = {"verifier_calls": 0}
         reason = _fidelity_reason_for(
@@ -7142,9 +7145,21 @@ def _fidelity_reason_for(group, candidate, *, ledger, verifier, budget, name_spa
         classification=group.classification,
         protected_entities=protected,
         proper_names=name_spans,
+        is_source_word=_token_is_source_vocabulary,
     )
+    # Every verdict is about *this* candidate: a retry that cleared the doubt must
+    # not inherit the rejected candidate's review flag.
+    group.semantic_review_reason = ""
     if finding.faithful:
         _bump_fidelity(stats, "fidelity_fast_path_pass")
+        return ""
+    if finding.status == semantic_fidelity.REVIEW:
+        # Doubt about the source or the surface form, not a proven wrong meaning.
+        # The candidate still renders - holding it would show English again - but
+        # the region is never reported as clean.
+        group.semantic_review_reason = finding.reason()
+        _bump_fidelity(stats, "semantic_review")
+        _bump_fidelity(stats, f"semantic_review_{finding.primary_reason}")
         return ""
     if finding.status == semantic_fidelity.BLOCKED:
         _bump_fidelity(stats, "fidelity_local_block")
@@ -10952,6 +10967,7 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "visual_attempts": list(group.visual_attempts),
                 "mask_metrics": dict(group.mask_metrics),
                 "manual_review_required": bool(group.manual_review_required),
+                "semantic_review_reason": str(group.semantic_review_reason),
                 "art_reconstruction_status": str(group.art_reconstruction_status),
                 "art_reconstruction_reason": str(group.art_reconstruction_reason),
                 "detected_proper_names": list(group.detected_proper_names),

@@ -88,7 +88,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Isolamento hermético do runtime de testes | **IMPLEMENTADO** |
 | Cobertura story-text / gates fail-closed | **IMPLEMENTADO** — **CLOSED** no TDD #76 para story-text Beta; reviews não-story/SFX/OCR ambíguo continuam fail-closed |
 | Reconstrução visual de arte | **REVISÃO** — TDD #81 fechou os defeitos sistêmicos (preenchimento plano só com fundo comprovadamente plano, quadrilátero OCR nunca vira máscara sobre ilustração, footprint de glifo cobre corpo/contorno/halo, detector de patch plano). Arte muito estruturada agora cai em `REVIEW_REQUIRED_ART_RECONSTRUCTION` em vez de receber retângulo destrutivo |
-| Qualidade semântica/natural PT-BR | **ABERTO** — frases traduzidas podem estar em português mas semanticamente erradas |
+| Qualidade semântica/natural PT-BR | **REVISÃO** — TDD #82 separou confiança na fonte OCR, fidelidade de significado e naturalidade PT-BR em três severidades (`blocked`/`verify`/`review`). Replay offline sobre 542 regiões reais persistidas: 531 limpas, 8 em revisão por fonte OCR suspeita, 3 bloqueadas por divergência semântica. Regiões sem candidato alternativo persistido dependem de um E2E real com provedor |
 | Leitor PDF integrado | **PLANEJADO** — Histórico ainda abre artefatos por ações externas |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Licenciamento / expiração de tester | **SCHEMA/RPC REMOTOS IMPLEMENTADOS** — TDD #78 aplica Supabase schema/RLS/RPC atômica, nega usuário sem entitlement e mantém primeiro grant real pendente |
@@ -947,6 +947,24 @@ o span é nome próprio; frases longas de story text com OCR suspeito e pontuaç
 roteadas ao tradutor em vez de ficarem retidas cruas, mas carregam evidência
 `ocr_source_suspicious` e continuam sujeitas ao validator, fidelidade e render gate. Tokens
 curtos uninteligíveis continuam fora da tradução.
+
+O TDD #82 separa em `semantic_fidelity.py` três perguntas que antes eram uma só. **Confiança
+na fonte**: um token que a língua de origem não escreve (sem vogal ou com três consoantes
+seguidas — a mesma forma que o score de OCR já testa) e que sobrevive literalmente para o
+português é defeito de OCR, não do provedor; ele vira `source_ocr_suspicious`, complemento
+— não duplicata — da evidência `ocr_source_suspicious` que o roteador de OCR já grava.
+Tokens colados (`TAKEAFEWHOURS`) deliberadamente não são sinal: 126 de 542 regiões reais
+persistidas carregam um e o provedor recupera quase todos. **Fidelidade de significado**:
+além de negação, quantidade numérica, entidades e papéis, o gate passa a cobrir quantidade
+por extenso (`three days` → `dois dias`) e relação temporal — só a forma subordinante conta
+no alvo, porque `depois` sozinho é o advérbio "later". **Naturalidade**: duas formas
+inequívocas apenas (infinitivo cru depois de pronome, palavra funcional duplicada).
+
+Severidade nova `review`: nem erro provado nem confiável. O candidato **renderiza**, porque
+segurá-lo devolveria inglês à página, mas nunca é contado como limpo — o motivo exato fica
+em `semantic_review_reason` no grupo e em `semantic_review*` no `fidelity_stats`.
+Modalidade (`might`/`could`) fica fora do validador local: as regras testadas produziram só
+falsos positivos e o caso pertence ao adjudicador.
 
 O TDD #66 acrescenta contabilidade explícita de plano de render no `quality_report.json`.
 `render_plan_accounting` separa story text esperado, candidatos válidos, itens escolhidos

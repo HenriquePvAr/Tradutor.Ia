@@ -677,3 +677,45 @@ remota, nenhum push. O artefato real de 72 páginas foi lido, nunca reescrito; t
 de reconstrução foi para diretório temporário. A reconstrução por inpainting não é
 generativa: ela suaviza, e por isso o gate de patch plano exige near-uniformidade absoluta
 em vez de exigir que a textura seja reproduzida.
+
+### TDD #82 — Fidelidade semântica e PT-BR natural (2026-08-24, base `29c8e95`)
+
+| Documento | Classificação | Ação |
+| --- | --- | --- |
+| `docs/technical/DOCUMENTACAO_TECNICA.md` | **Atualizado** | Nova subseção na auditoria linguística separando confiança na fonte OCR, fidelidade de significado e naturalidade; a tabela de status move Qualidade semântica/natural PT-BR de **ABERTO** para **REVISÃO**. |
+| `docs/QUALITY_AND_VALIDATION.md` | **Atualizado** | Nova seção “Fidelidade semântica e PT-BR natural” com a tabela de severidades, as âncoras de significado, o contrato de contexto de tradução e a contabilidade nova; `TRANSLATION-SEMANTIC-001` deixa de ser sentinela planejada e `ART-SEAM-DETECTOR-001` entra explicitamente como pendente. |
+| `docs/CONFIGURATION.md` | **Não requer mudança** | Nenhuma chave de configuração nova. |
+| `docs/user/*` | **Não requer mudança** | Nenhum estado visível ao usuário mudou de nome ou de significado. |
+
+**Perícia #82 (somente leitura sobre `quality_report.json` reais; 542 regiões story
+distintas, aceitas e renderizadas):**
+
+- **P068 / página 68 `REGION_002`** — OCR: `TAKEAFEWHOURS FORTHENEAREST AWAKENEDTO GET
+  HERE.`; candidato aceito como `ok`, sem retry: `LEVE ALGUMAS HORAS PARA CHEGAR AQUI,
+  DEPOIS QUE ACORDAR.` A classe de pessoas ("the nearest Awakened") virou um evento
+  ("depois que [alguém] acordar"). Raiz primária: `PROVIDER_SEMANTIC_ERROR` sobre fonte
+  aglutinada por OCR. Passou no gate antigo porque nenhum número, nome do ledger ou negação
+  se moveu — `AWAKENED` estava colado em `AWAKENEDTO` e por isso nunca casou com o ledger de
+  terminologia. Pós-fix: `verify` / `temporal_relation_changed:introduced` — a única região
+  das 542 em que a regra dispara. Sem candidato alternativo persistido.
+- **Página 43 `REGION_001`** — OCR leu `SLUM` como `SLLM`; o token sobreviveu literalmente:
+  `UM RATO DO SLLM`. Raiz: `OCR_SOURCE_CORRUPTION`. O grupo já carregava
+  `short_improbable_caps_token`, mas essa evidência nunca chegava à aceitação da tradução.
+  Pós-fix: `review` / `source_ocr_suspicious:SLLM` — renderiza, nunca é contado como limpo.
+  Sem candidato alternativo persistido.
+- **Páginas 42 (`COLLD`), 46 (`VALLT`), 25 (`IHNH`), 18 (`ARTBUSUNG`,
+  `ADAPTATIONTTOMIN`, `RANKTANK`)** — mesma classe, mesmo desfecho.
+- **Página 65 `REGION_002`** (`AGATETHROUGHWHICH` → `A GÁGATA`) permanece **não detectada**:
+  a palavra inventada tem forma portuguesa plausível e o repositório não tem léxico PT-BR.
+  Sinalizar aglutinação em bloco custaria 126 das 542 regiões em revisão, quase todas
+  traduzidas corretamente — foi medido e rejeitado.
+
+**Resultado #82:** 531 de 542 regiões seguem limpas, 8 vão para revisão semântica e 3
+bloqueiam. Nenhum ramo de produção referencia página, capítulo, região ou frase; os literais
+persistidos aparecem apenas em `test_semantic_meaning_and_ptbr_quality.py`. Cobertura de
+story-text continua **CLOSED**: nenhuma severidade nova retém a origem em inglês na página.
+
+**Honestidade #82:** nenhum job real, nenhum provider, nenhuma rede, nenhuma mutação remota,
+Supabase, Community ou Drive, nenhum push. Os artefatos reais foram lidos, nunca reescritos.
+Modalidade não foi implementada: as regras testadas produziram apenas falsos positivos.
+`ART-SEAM-DETECTOR-001` continua **pendente** e deliberadamente fora de #82.
