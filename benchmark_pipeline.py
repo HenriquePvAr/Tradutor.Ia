@@ -30,6 +30,7 @@ from ocr_balloon import (
     RENDER_CLEAN,
     RENDER_WITH_REVIEW,
     RESIDUAL_SOURCE_LETTERING_REASONS,
+    REVIEW_TERMINAL_STATES,
     TRANSLATION_TERMINAL_STATES,
     analyze_image_array,
     apply_rapidocr_region_recovery,
@@ -2608,6 +2609,44 @@ def _ordinary_story_residual_required(item):
     return True
 
 
+# The four things a physically retained source region can actually be. Only the
+# first is a product blocker: a reader who never gets "TAK" in Portuguese has
+# lost nothing, a reader who never gets a line of dialogue has lost the story.
+RESIDUAL_ORDINARY_STORY = "ordinary_story"
+RESIDUAL_SFX_EFFECT = "sfx_effect"
+RESIDUAL_PROMO = "promo"
+RESIDUAL_CREDIT_LOGO = "credit_logo"
+PHYSICAL_RESIDUAL_CLASSES = (
+    RESIDUAL_ORDINARY_STORY,
+    RESIDUAL_SFX_EFFECT,
+    RESIDUAL_PROMO,
+    RESIDUAL_CREDIT_LOGO,
+)
+
+
+def _physical_residual_class(item):
+    """Which of the four classes this retained source region belongs to.
+
+    #84F13 shipped exactly three physical residuals - ``TAK``, ``TUR`` and
+    ``TRNDGE`` - and the balloon detector had labelled all three ``speech``,
+    because they sit inside balloon-like containers.  They are onomatopoeia, and
+    the chapter hard-failed its physical gate for them.  Classifying by the
+    *shape of the text* rather than by the container label is what tells an
+    effect remnant apart from a lost line of dialogue, and it is the same
+    taxonomy the translation policy already uses - no new detector, and no
+    per-page exception.
+    """
+
+    text = _item_source_text(item)
+    if region_taxonomy.looks_like_watermark(text) or region_taxonomy.looks_like_url(text):
+        return RESIDUAL_PROMO
+    if region_taxonomy.looks_like_credit(text):
+        return RESIDUAL_CREDIT_LOGO
+    if _ordinary_story_residual_required(item):
+        return RESIDUAL_ORDINARY_STORY
+    return RESIDUAL_SFX_EFFECT
+
+
 def _physically_rendered_without_source(item):
     """Whether the shipped page shows PT-BR and no source English for this region.
 
@@ -2975,6 +3014,17 @@ def _physical_residual_accounting(states):
     }
     residual_ids = []
     ordinary_story_residual_ids = []
+    residual_class_counts = {name: 0 for name in PHYSICAL_RESIDUAL_CLASSES}
+    residual_class_ids = {name: [] for name in PHYSICAL_RESIDUAL_CLASSES}
+
+    def record_residual(region_id, item):
+        """File one retained source region under its class, once."""
+        residual_class = _physical_residual_class(item)
+        residual_class_counts[residual_class] += 1
+        residual_class_ids[residual_class].append(region_id)
+        if residual_class == RESIDUAL_ORDINARY_STORY:
+            ordinary_story_residual_ids.append(region_id)
+
     completeness_ids = []
     missing_tokens = set()
     for state in states:
@@ -3019,8 +3069,7 @@ def _physical_residual_accounting(states):
                 )
                 result["physical_regions_review_source_retained"] += 1
                 residual_ids.append(region_id)
-                if _ordinary_story_residual_required(item):
-                    ordinary_story_residual_ids.append(region_id)
+                record_residual(region_id, item)
                 continue
 
             if final_state == "translated" and translated and valid and redrawn:
@@ -3049,8 +3098,7 @@ def _physical_residual_accounting(states):
             else:
                 result["physical_regions_other_explicit"] += 1
             residual_ids.append(region_id)
-            if _ordinary_story_residual_required(item):
-                ordinary_story_residual_ids.append(region_id)
+            record_residual(region_id, item)
 
     incomplete_coverage = _incomplete_speech_region_coverage(states)
     if incomplete_coverage:
@@ -3066,9 +3114,19 @@ def _physical_residual_accounting(states):
             )
             if region_id and region_id not in residual_ids:
                 residual_ids.append(region_id)
+            # A *rendered* PT-BR line whose own balloon still shows source words
+            # is an ordinary-story defect whatever the leftover says: the reader
+            # sees Portuguese and English stacked in one bubble. This invariant
+            # is about the rendered line, not about the remnant's class.
             if region_id and region_id not in ordinary_story_residual_ids:
                 ordinary_story_residual_ids.append(region_id)
+                residual_class_counts[RESIDUAL_ORDINARY_STORY] += 1
+                residual_class_ids[RESIDUAL_ORDINARY_STORY].append(region_id)
 
+    result["physical_residual_classes"] = residual_class_counts
+    result["physical_residual_class_ids"] = {
+        name: ids[:200] for name, ids in residual_class_ids.items()
+    }
     result["physical_source_residual_count"] = len(residual_ids)
     result["physical_source_residual_group_ids"] = residual_ids[:200]
     result["ordinary_story_physical_residual_count"] = len(
@@ -3087,12 +3145,24 @@ def _physical_residual_accounting(states):
             "group_ids": completeness_ids[:200],
             "missing_tokens": sorted(missing_tokens)[:50],
         }
+    # #84F14: the gate used to require *zero* physical residuals, which made an
+    # onomatopoeia remnant fail the chapter exactly as hard as a lost line of
+    # dialogue - #84F13 was held back by "TAK", "TUR" and "TRNDGE" alone. The
+    # residual ledger is unchanged and still lists all of them; what changed is
+    # who may block. A retained SFX/promo/credit region is an accounted outcome
+    # that routes to review, ordinary story English is still a hard failure.
+    non_story_residuals = sum(
+        residual_class_counts[name]
+        for name in PHYSICAL_RESIDUAL_CLASSES
+        if name != RESIDUAL_ORDINARY_STORY
+    )
     regions_accounted = (
         result["physical_regions_expected"]
         == result["physical_regions_translated"]
         + result["physical_regions_preserved"]
         + result["physical_regions_rendered_with_review"]
-        and result["physical_source_residual_count"] == 0
+        + non_story_residuals
+        and result["ordinary_story_physical_residual_count"] == 0
     )
     # A recorded upstream failure means the chapter was only partially examined:
     # whatever regions survived describe the pages that worked, never the whole
@@ -3125,6 +3195,96 @@ def _physical_residual_accounting(states):
         decision = "pass"
     result["physical_decision"] = decision
     result["physical_gate_passed"] = decision == "pass"
+    return result
+
+
+def _user_visible_output_accounting(states):
+    """What a Beta reader actually sees, counted in the terms that block Setup.
+
+    The physical ledger answers "is the English gone"; the translation ledger
+    answers "did every region reach a terminal state".  Neither answers the only
+    question Setup cares about: is what is printed on the page readable
+    Portuguese.  #84F13 shipped three regions whose Portuguese still carried the
+    corrupt source token ("UM RATO DO SLLM") and passed every existing gate,
+    because ``review`` was one bucket and every member of it renders.
+
+    So ``review`` is split.  ``review_renderable`` may remain in a Beta build -
+    it is honest doubt over usable output.  ``review_unusable`` may not: the
+    finding itself proves the reader is looking at garbage.
+    """
+
+    physical = _physical_residual_accounting(states)
+    ordinary_residual_ids = set(physical["ordinary_story_physical_residual_ids"])
+    result = {
+        "ordinary_story_english_visible": 0,
+        "missing_ptbr": 0,
+        "semantic_clean": 0,
+        "semantic_review_renderable": 0,
+        "semantic_review_unusable": 0,
+        "semantic_reject": 0,
+        "semantic_bad_clean": 0,
+        "art_bad_clean": 0,
+        "semantic_review_unusable_ids": [],
+        "semantic_bad_clean_ids": [],
+    }
+    for state in states:
+        page = int(state.get("index") or 0)
+        for item in state.get("debug_data", {}).get("items", []):
+            if not _story_translation_required(item):
+                continue
+            group_id = str(item.get("id") or "")
+            region_id = f"p{page:03}:{group_id}" if group_id else f"p{page:03}"
+            if region_id in ordinary_residual_ids:
+                result["ordinary_story_english_visible"] += 1
+                continue
+            if not _physically_rendered_without_source(item):
+                # A non-story residual: accounted physically, nothing to read.
+                continue
+            if not str(item.get("translation") or "").strip():
+                result["missing_ptbr"] += 1
+                continue
+
+            review_reason = str(item.get("semantic_review_reason") or "")
+            final_state = str(item.get("translation_final_state") or "")
+            if final_state in {"rejected", "unresolved"}:
+                result["semantic_reject"] += 1
+            elif review_reason or final_state in REVIEW_TERMINAL_STATES:
+                usability = semantic_fidelity.review_usability(
+                    review_reason or str(item.get("translation_final_reason") or "")
+                )
+                if usability == semantic_fidelity.REVIEW_UNUSABLE:
+                    result["semantic_review_unusable"] += 1
+                    result["semantic_review_unusable_ids"].append(region_id)
+                else:
+                    result["semantic_review_renderable"] += 1
+            else:
+                # Shipped as clean. It is only *proven* bad when the run itself
+                # recorded a blocking finding or surviving source lettering and
+                # rendered anyway - a wrong word sense nothing detected cannot be
+                # counted here, and is not silently turned into a zero.
+                proven_bad = semantic_fidelity.is_fidelity_reason(
+                    str(item.get("translation_validation_reason") or "")
+                )
+                if proven_bad:
+                    result["semantic_bad_clean"] += 1
+                    result["semantic_bad_clean_ids"].append(region_id)
+                else:
+                    result["semantic_clean"] += 1
+            if str(item.get("art_reconstruction_reason") or "") in (
+                RESIDUAL_SOURCE_LETTERING_REASONS
+            ):
+                result["art_bad_clean"] += 1
+
+    result["setup_ready"] = not any(
+        result[name]
+        for name in (
+            "ordinary_story_english_visible",
+            "missing_ptbr",
+            "semantic_bad_clean",
+            "semantic_review_unusable",
+            "art_bad_clean",
+        )
+    )
     return result
 
 
@@ -3192,6 +3352,11 @@ def _build_quality_report(report, states, translation_retry_records):
         "ordinary_story_physical_residual_ids": physical_accounting[
             "ordinary_story_physical_residual_ids"
         ],
+        "physical_residual_classes": physical_accounting["physical_residual_classes"],
+        "physical_residual_class_ids": physical_accounting[
+            "physical_residual_class_ids"
+        ],
+        "user_visible_output": _user_visible_output_accounting(states),
         "physical_gate_passed": physical_accounting["physical_gate_passed"],
         "physical_decision": physical_accounting["physical_decision"],
         "physical_population_status": physical_accounting[

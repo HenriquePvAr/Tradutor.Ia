@@ -7355,6 +7355,7 @@ def _maybe_naturalize_translation(
             ),
             proper_names=name_spans,
             is_source_word=_token_is_source_vocabulary,
+            source_repair_reason=str(getattr(group, "repair_reason", "")),
         )
         post_budget = {"verifier_calls": 0}
         # Same rule as the terminology retry: the verdict below is about the
@@ -7457,6 +7458,7 @@ def _fidelity_reason_for(group, candidate, *, ledger, verifier, budget, name_spa
         protected_entities=protected,
         proper_names=name_spans,
         is_source_word=_token_is_source_vocabulary,
+        source_repair_reason=str(getattr(group, "repair_reason", "")),
     )
     # Every verdict is about *this* candidate: a retry that cleared the doubt must
     # not inherit the rejected candidate's review flag.

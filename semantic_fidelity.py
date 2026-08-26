@@ -54,10 +54,40 @@ FIDELITY_UNCERTAIN = "fidelity_uncertain"
 # Review-only: the defect is upstream of the provider, or in the surface form.
 SOURCE_OCR_SUSPICIOUS = "source_ocr_suspicious"
 GRAMMAR_MALFORMED = "ptbr_grammar_malformed"
+# The OCR lost the word boundaries and the repair pass could not put them back.
+SOURCE_SEGMENTATION_INCOMPLETE = "source_segmentation_incomplete"
 
 REVIEW_ONLY_FIDELITY_REASON_CODES = frozenset({
-    SOURCE_OCR_SUSPICIOUS, GRAMMAR_MALFORMED,
+    SOURCE_OCR_SUSPICIOUS, GRAMMAR_MALFORMED, SOURCE_SEGMENTATION_INCOMPLETE,
 })
+
+# --- how usable is a ``review`` verdict? ------------------------------------
+# ``REVIEW`` renders, because holding a region puts the English source back on
+# the page.  That is the right trade only while the Portuguese is something a
+# reader can actually use.  These three reasons say the opposite by
+# construction:
+#
+# * ``source_ocr_suspicious`` fires *only* when the corrupt source token is
+#   still present in the candidate - the garbage is literally on the shipped
+#   page ("UM RATO DO SLLM", "COLLD E WIELD HERDARAM").
+# * ``ptbr_grammar_malformed`` is malformed Portuguese, also on the page.
+# * ``source_segmentation_incomplete`` means nobody knows where the source words
+#   were, so no candidate built from it can be verified against anything.
+#
+# Such a region still renders and still routes to review, but it is a Setup
+# blocker: "flagged for review" is not a licence to ship nonsense as final
+# story output.
+REVIEW_RENDERABLE = "review_renderable"
+REVIEW_UNUSABLE = "review_unusable"
+UNUSABLE_REVIEW_REASON_CODES = frozenset({
+    SOURCE_OCR_SUSPICIOUS, GRAMMAR_MALFORMED, SOURCE_SEGMENTATION_INCOMPLETE,
+})
+
+
+def review_usability(reason):
+    """``REVIEW_UNUSABLE`` when the flagged output is unfit to read, else renderable."""
+    code = str(reason or "").split(":", 1)[0]
+    return REVIEW_UNUSABLE if code in UNUSABLE_REVIEW_REASON_CODES else REVIEW_RENDERABLE
 BLOCKING_FIDELITY_REASON_CODES = frozenset({
     QUANTITY_CHANGED, ENTITY_CHANGED, NEGATION_CHANGED, STATE_ACTION_CHANGED,
     ACTOR_RELATION_CHANGED, TEMPORAL_RELATION_CHANGED, MEANING_MISMATCH,
@@ -78,6 +108,7 @@ FIDELITY_RETRY_CONSTRAINTS = {
     FIDELITY_UNCERTAIN: "preserve_meaning",
     SOURCE_OCR_SUSPICIOUS: "preserve_meaning",
     GRAMMAR_MALFORMED: "preserve_natural_grammar",
+    SOURCE_SEGMENTATION_INCOMPLETE: "preserve_meaning",
 }
 
 TRANSLATABLE_CLASSIFICATIONS = frozenset({"speech", "thought", "narration", "unknown"})
@@ -374,6 +405,22 @@ def _known_word(token, is_source_word):
         return True
 
 
+# A run this long with no space inside it is not a word, it is several words the
+# OCR glued together. Kept above the longest ordinary English word a balloon
+# realistically carries so that legitimate long vocabulary never trips it.
+# ponytail: one length threshold, no lexicon. The repo's English reference list
+# is too sparse to segment against (it has MONSTER but not GATE or BECOME), so a
+# dictionary-based split would be less reliable than this, not more. Revisit if
+# a full lexicon lands.
+UNSEGMENTED_RUN_LENGTH = 13
+_ALPHA_RUN = re.compile(r"[^\W\d_]{%d,}" % UNSEGMENTED_RUN_LENGTH, re.UNICODE)
+
+
+def unsegmented_source_runs(source):
+    """Glued word runs the OCR produced and the repair pass never split."""
+    return tuple(match.group(0).upper() for match in _ALPHA_RUN.finditer(str(source or "")))
+
+
 def suspicious_source_tokens(source, candidate, *, known_entities=(), is_source_word=None):
     """Source tokens that make the source itself untrustworthy, in order."""
     entities = {part for entity in known_entities for part in _words(entity)}
@@ -478,6 +525,7 @@ def evaluate_local_fidelity(
     protected_entities=(),
     proper_names=(),
     is_source_word=None,
+    source_repair_reason="",
 ):
     """Layer A. Deterministic, free, and honest about what it cannot decide.
 
@@ -528,6 +576,17 @@ def evaluate_local_fidelity(
     )
     if suspicious:
         return FidelityFinding(REVIEW, (SOURCE_OCR_SUSPICIOUS,), suspicious)
+    # The word-segmentation repair ran and still left glued runs behind. The
+    # pipeline is saying, in its own provenance, that it does not know where the
+    # source words are - and a provider reading "AGATETHROUGHWHICH" will happily
+    # find "AGATE" in it and translate the gemstone. Nothing built on a source
+    # like that can be verified, so it renders under review and never clean.
+    if "segment" in str(source_repair_reason or ""):
+        runs = unsegmented_source_runs(source)
+        if runs:
+            return FidelityFinding(
+                REVIEW, (SOURCE_SEGMENTATION_INCOMPLETE,), runs[:4]
+            )
     malformed = _malformed_portuguese(target)
     if malformed:
         return FidelityFinding(REVIEW, (GRAMMAR_MALFORMED,), (malformed,))

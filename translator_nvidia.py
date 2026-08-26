@@ -538,6 +538,10 @@ class TranslatorNvidiaBatch:
             semantic_fidelity.GRAMMAR_MALFORMED:
                 f"A tentativa anterior nao e uma frase bem formada em {target}; "
                 "reescreva com gramatica correta, preservando o sentido do original.",
+            semantic_fidelity.SOURCE_SEGMENTATION_INCOMPLETE:
+                "O texto original tem palavras coladas sem espaco; separe as palavras "
+                "pelo sentido da frase inteira antes de traduzir, e nao trate um trecho "
+                "colado como se fosse uma unica palavra.",
             semantic_fidelity.MEANING_MISMATCH:
                 "A tentativa anterior mudou o sentido do original; traduza preservando "
                 "negacao, quantidades, nomes, relacoes e intencao.",

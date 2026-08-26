@@ -238,6 +238,20 @@ def sanitize_physical_quality(value: Mapping[str, Any] | None) -> dict[str, Any]
         if isinstance(ordinary_ids, list)
         else []
     )
+    # Which class each retained source region belongs to. Omitted rather than
+    # zero-filled when the run predates the contract, like every other block here.
+    classes = source.get("physical_residual_classes")
+    if isinstance(classes, Mapping):
+        result["physical_residual_classes"] = {
+            str(name): max(0, int(count or 0)) for name, count in classes.items()
+        }
+    class_ids = source.get("physical_residual_class_ids")
+    if isinstance(class_ids, Mapping):
+        result["physical_residual_class_ids"] = {
+            str(name): [str(item) for item in (ids or [])[:200]]
+            for name, ids in class_ids.items()
+            if isinstance(ids, list)
+        }
     result["physical_gate_passed"] = bool(source.get("physical_gate_passed"))
     # Terminal decision and its population evidence travel together: a report
     # that says zero regions were expected has to say why zero is the truth.
