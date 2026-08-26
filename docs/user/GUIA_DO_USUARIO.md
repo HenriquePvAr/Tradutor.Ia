@@ -218,10 +218,14 @@ capítulo.
 
 ### Modo de processamento
 
+Uma lista suspensa, no mesmo formato dos campos **Idioma original**, **Motor de tradução**
+e **Motor de OCR**. O padrão é **Qualidade**. Abaixo dela, uma linha curta descreve o modo
+selecionado.
+
 | Modo | Quando usar |
 | --- | --- |
+| **Qualidade** (padrão) | Páginas e fontes difíceis. Processamento mais conservador, mais lento. |
 | **Rápido** | Uso geral. Processa com otimizações automáticas e validação de qualidade. |
-| **Qualidade** | Páginas e fontes difíceis. Processamento mais conservador, mais lento. |
 | **Download-only** | Só coleta e valida as páginas. Não lê texto, não traduz e não gera PDF. Útil para conferir se um capítulo está completo. |
 
 ### Escopo
@@ -229,8 +233,8 @@ capítulo.
 Quantas páginas processar: **completo**, **3**, **5**, **20**, **50** ou um número que você
 escolher.
 
-> 💡 Para testar um capítulo novo, comece com **3 ou 5 páginas** no modo **Rápido**. Se o
-> resultado agradar, refaça no escopo completo.
+> 💡 Para testar um capítulo novo, comece com **3 ou 5 páginas**. Se o resultado agradar,
+> refaça no escopo completo.
 
 ### Opções
 
@@ -641,8 +645,9 @@ Pode, no campo **Motor de tradução**, capítulo a capítulo. O padrão é **De
 
 **E o motor de leitura de texto (OCR)?**
 Nesta beta há um só: **RapidOCR**. Ele aparece no campo **Motor de OCR**, logo abaixo do
-motor de tradução, apenas para você saber o que está sendo usado — não há troca nesta
-versão, e o programa nunca troca de motor por conta própria.
+motor de tradução, apenas para você saber o que está sendo usado. O campo não abre lista e
+não tem seta: não há troca nesta versão, e o programa nunca troca de motor por conta
+própria. O que o campo mostra é o motor realmente configurado para a execução.
 
 **O programa vai atualizar sozinho?**
 Não nesta versão. A atualização automática está em desenvolvimento.

@@ -350,22 +350,16 @@
             <div class="field-hint">Motor único desta beta técnica; o capítulo inteiro é lido com ele.</div>
           </div>
 
+          <!-- Same control shape as the engine fields above: three modes never
+               needed three cards, and the internal values are unchanged. -->
           <div class="field">
-            <label>Modo de processamento</label>
-            <div class="choice-row">
-              <div class="choice-card selected" data-mode="fast">
-                <div class="ct-title">Rápido</div>
-                <div class="ct-desc">Processa o capítulo com otimizações automáticas e validação de qualidade.</div>
-              </div>
-              <div class="choice-card" data-mode="quality">
-                <div class="ct-title">Qualidade</div>
-                <div class="ct-desc">Usa processamento mais conservador para páginas e fontes difíceis.</div>
-              </div>
-              <div class="choice-card" data-mode="download_only">
-                <div class="ct-title">Download-only</div>
-                <div class="ct-desc">Coleta e valida páginas sem OCR, tradução ou PDF.</div>
-              </div>
-            </div>
+            <label for="modeSelect">Modo de processamento</label>
+            <select id="modeSelect">
+              <option value="quality" selected>Qualidade</option>
+              <option value="fast">Rápido</option>
+              <option value="download_only">Download-only</option>
+            </select>
+            <div class="field-hint" id="modeHint">Usa processamento mais conservador para páginas e fontes difíceis.</div>
           </div>
 
           <div class="field">

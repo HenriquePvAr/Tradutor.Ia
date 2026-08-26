@@ -63,6 +63,7 @@ const names = [
   'clearSourceValidationDraft',
   'persistSourceValidationDraft',
   'refreshStoredSourceExecutionDraft',
+  'applyProcessingMode',
   'applyStoredExecutionDraft',
   'rehydrateSourceValidationFromReadyRecord',
   'formPayload',
@@ -95,7 +96,7 @@ for (const selector of [
   '#scopeCustomInput', '#startBtn', '#sourceReadyPanel',
   '#sourceReadyMeta', '#sourceReadyPolicyState', '#openSourcePolicySettings',
   '#urlSourceField', '#localFolderSourceField', '#urlError', '#localFolderError',
-  '#scopeCustom',
+  '#scopeCustom', '#modeSelect', '#modeHint',
 ]) {
   if (!elements[selector]) elements[selector] = makeElement(selector);
 }
@@ -103,9 +104,6 @@ const sourceTypeCards = [{dataset: {sourceType: 'url'}, classList: elements['#ur
                          {dataset: {sourceType: 'local_folder'}, classList: elements['#urlInput'].classList, setAttribute() {}}];
 const scopeCards = ['full', '3', '5', '20', '50', 'custom'].map(scope => ({
   dataset: {scope}, classList: {toggle() {}}, setAttribute() {},
-}));
-const choiceCards = ['fast', 'quality', 'download_only'].map(mode => ({
-  dataset: {mode}, classList: {toggle() {}},
 }));
 function $(selector) {
   const scopeMatch = String(selector).match(/^\.scope-card\[data-scope="([^"]+)"\]$/);
@@ -116,7 +114,6 @@ function $(selector) {
 function $$(selector) {
   if (selector === '.source-type-card') return sourceTypeCards;
   if (selector === '.scope-card') return scopeCards;
-  if (selector === '.choice-card') return choiceCards;
   if (selector === '.stage-item') return [];
   return [];
 }

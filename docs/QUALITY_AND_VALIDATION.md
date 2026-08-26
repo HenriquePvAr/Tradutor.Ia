@@ -341,6 +341,88 @@ globais restantes são SFX/OCR ambíguo não-story preservados para revisão hum
 
 O resultado é persistido em `quality_report.json` e resumido em `timing_report.json`.
 
+### Reconciliação de páginas de origem (`PAGE-ANALYSIS-FAILURE-GATE-001`)
+
+A contabilidade por região é estruturalmente cega para uma página que **não produziu
+região nenhuma**: se a análise falha antes do OCR, não há nada para contar, e "nada
+contado" nunca significa "nada existe". Foi assim que o run real #84F9 deixou cinco
+páginas (`p004`, `p008`, `p019`, `p032`, `p041`) fora da conta — e a `p032`, que carrega
+narração comum, chegou ao PDF final em inglês.
+
+`_source_page_accounting()` reconcilia as páginas de origem em um eixo próprio:
+
+```
+source_pages_expected = source_pages_analyzed + source_pages_unverified
+```
+
+- `source_pages_completed_with_error` — páginas cuja análise falhou;
+- `source_pages_missing` — páginas esperadas que nem chegaram a produzir estado;
+- `source_pages_unverified` — a soma das duas, e o gatilho do gate.
+
+Invariante permanente: **página existe + erro de análise + zero regiões OCR** nunca
+implica "sem conteúdo de história"; implica **conteúdo não verificado**. Cada página não
+verificada vira um finding explícito (`page_analysis_error`, `page_analysis_unresolved`
+ou `source_page_missing_from_accounting`) com `story_content_verified: false` e
+`quality: review_required`.
+
+Com `source_pages_unverified > 0` o `quality_passed` **não pode** ser `true`. O PDF de
+revisão continua sendo gerado — ele é útil para inspeção — mas o status do capítulo diz
+`review_required` com o finding `page_analysis_error`. Não existe "limpo por omissão".
+
+A evidência viaja no manifesto (`source_page_accounting`) além do `quality_report.json`,
+porque quem lê o manifesto é exatamente quem não pode confundir uma página que falhou com
+uma página limpa.
+
+### Diagnóstico de falha de página (`PAGE-ERROR-OBSERVABILITY-001`)
+
+Até #84F9 o erro persistido de uma página era a string `"str"`. O caminho era este: o
+chamador achatava a exceção com `str(exc)` antes de persistir, e a camada de persistência
+perguntava o `code`/tipo **da mensagem** — o tipo de uma `str` é, literalmente, `str`. A
+classe da exceção, o estágio e o motivo já tinham sido perdidos antes de qualquer escrita.
+
+`_page_error_record()` persiste agora um registro estruturado:
+
+```json
+{
+  "stage": "ocr",
+  "page": 32,
+  "page_id": "p032",
+  "code": "ocr_engine_unavailable:too_few_lines_for_text_regions;paddle_error:ModuleNotFoundError",
+  "exception_type": "ModuleNotFoundError",
+  "message": "...",
+  "retryable": false,
+  "traceback_available": true
+}
+```
+
+Ele vai para `errors/page_NNN/error.json` (e o `code` continua em `error.txt`), viaja no
+estado da página (`page_error`) e portanto no `progress.json`. O traceback completo fica
+em `errors/page_NNN/traceback.txt` e no log técnico local — nunca na UI. Tudo passa por
+`sanitize_diagnostic_text()`: chave, token ou URL de provedor em texto de exceção não
+chega ao disco.
+
+**Raiz real das cinco páginas de #84F9** (reproduzida offline a partir do `progress.json`
+persistido, sem rede e sem provedor): o gate de qualidade do RapidOCR recusou o próprio
+resultado (`too_few_lines_for_text_regions` / `zero_lines_on_text_like_page`) e a escalada
+limitada não tinha engine para escalar — `paddle_error:ModuleNotFoundError`. O motivo
+completo sempre esteve em `state["error"]` dentro do `progress.json`; apenas o `error.txt`
+o perdia. RapidOCR segue sendo o engine único da Beta e Paddle **não** foi introduzido: o
+comportamento correto é falhar fechado, e o que faltava era a falha aparecer na
+contabilidade.
+
+### Residual físico: o estado renderizado é a autoridade
+
+Revisão não é resíduo de inglês. Uma região que enviou sob `render_with_review` teve a
+remoção da fonte aprovada por construção — `render_disposition()` devolve `do_not_render`
+quando a fonte sobrevive — e teve o PT-BR desenhado. Ela continua sendo item de revisão
+estruturada em todos os outros eixos, mas **não** é resíduo físico, e sai de
+`ordinary_story_physical_residual_ids` para o contador próprio
+`physical_regions_rendered_with_review`.
+
+O inverso continua valendo: `do_not_render`, região não redesenhada, ou razão de arte
+`residual_source_text_after_cleanup` / `residual_source_lettering_after_cleanup` — casos
+em que o inglês está mesmo visível — seguem contando como resíduo.
+
 ## Fidelidade semântica e PT-BR natural
 
 Cobertura de texto de história (**fechada**) e fidelidade semântica são dimensões
@@ -443,6 +525,22 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   P5/P6 ainda depende de um novo E2E; não declarar fechamento real antes disso.
 - `ART-RECON-002`: patches brancos/cinzas planos sobre textura são visualmente
   inaceitáveis. Sentinela planejada para #80: página 25.
+- `PAGE-ERROR-OBSERVABILITY-001` (**fechado em #84F10**): o erro persistido de uma página
+  deixou de ser `"str"` e passou a ser um registro estruturado com estágio, classe de
+  exceção, código seguro, mensagem sanitizada e traceback local. A raiz das cinco páginas
+  de #84F9 foi identificada e reproduzida offline a partir do `progress.json` real
+  (`ocr_engine_unavailable:…;paddle_error:ModuleNotFoundError`).
+- `PAGE-ANALYSIS-FAILURE-GATE-001` (**fechado offline em #84F10**): página com
+  `completed_with_error` sempre entra na contabilidade como página **não verificada**,
+  gera finding explícito e impede `quality_passed = true`. Zero regiões nunca mais equivale
+  a "sem história". A confirmação em execução real depende do próximo E2E.
+- `TRANSLATION-SEMANTIC-PRECINCT-001` (**dívida de revisão semântica, aberto**): `PRECINCT 7`
+  saiu como `7º DISTRITO ELEITORAL` no PDF real de #84F9. Em contexto policial isso está
+  semanticamente errado, mas a evidência de contexto disponível hoje não distingue distrito
+  policial de distrito eleitoral com confiança alta. Nenhuma correção pontual é aceitável:
+  `test_pipeline_review_global_contracts.py` proíbe explicitamente literais de capítulo
+  (`PRECINCT` incluído) no runtime. Fica registrado como dívida até haver sinal genérico
+  suficiente no ledger de terminologia.
 - `TRANSLATION-SEMANTIC-001`: fechado localmente em #82 — ver
   [Fidelidade semântica e PT-BR natural](#fidelidade-semântica-e-pt-br-natural). Continua
   aberto para os casos em que nenhum candidato persistido alternativo existe: eles exigem

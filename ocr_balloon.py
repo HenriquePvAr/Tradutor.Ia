@@ -114,6 +114,13 @@ OCR_UNINTELLIGIBLE_SOURCE_REASON = "ocr_unintelligible_source_after_retries"
 # problems, and they route a region to structured review instead of letting it
 # receive a destructive fill.
 REVIEW_REQUIRED_ART_RECONSTRUCTION = "review_required_art_reconstruction"
+# The subset that literally means "source lettering is still visible". Named so the
+# physical residual ledger can tell "the artwork is imperfect" (no English left) from
+# "the English survived the cleanup" (a real residual) without matching strings.
+RESIDUAL_SOURCE_LETTERING_REASONS = frozenset({
+    "residual_source_text_after_cleanup",
+    "residual_source_lettering_after_cleanup",
+})
 ART_RECONSTRUCTION_REVIEW_REASONS = frozenset({
     "flat_reconstruction_patch_on_textured_background",
     "visible_reconstruction_seam_at_mask_boundary",

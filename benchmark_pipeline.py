@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -26,6 +27,9 @@ from json_utils import dumps_json
 from ocr_balloon import (
     OCR_UNINTELLIGIBLE_SOURCE_REASON,
     PROPER_NAME_ONLY_REASON,
+    RENDER_CLEAN,
+    RENDER_WITH_REVIEW,
+    RESIDUAL_SOURCE_LETTERING_REASONS,
     TRANSLATION_TERMINAL_STATES,
     analyze_image_array,
     apply_rapidocr_region_recovery,
@@ -83,7 +87,7 @@ from pdf_naming import (
 from translator_nllb import get_translator
 from translator_nvidia import PROMPT_VERSION
 from resource_monitor import ResourceMonitor, detect_gpu_basic
-from ui_helpers import derive_final_run_status
+from ui_helpers import derive_final_run_status, sanitize_diagnostic_text
 
 
 BASELINE_SECONDS = 2129.41
@@ -999,6 +1003,7 @@ def run_benchmark(args):
                 state["ocr_error"],
                 errors_folder,
                 stage_seconds,
+                stage="ocr",
             )
             counters["pages_with_error"] += 1
             _write_progress(
@@ -1017,6 +1022,7 @@ def run_benchmark(args):
                 "image_load_failed_before_classification",
                 errors_folder,
                 stage_seconds,
+                stage="image_load",
             )
             counters["pages_with_error"] += 1
             continue
@@ -1495,17 +1501,26 @@ def run_benchmark(args):
                 flush=True,
             )
         except Exception as exc:
+            # The exception object, not ``str(exc)``: flattening it here is what
+            # turned five real #84F9 page failures into the word "str".
             _complete_page_with_error(
                 state,
-                str(exc),
+                exc,
                 errors_folder,
                 stage_seconds,
+                stage="page_processing",
             )
             counters["pages_with_error"] += 1
+            record = state["page_error"]
             print(
-                f"Pagina {state['index']}/{len(image_paths)}: erro: {exc}",
+                f"Pagina {state['index']}/{len(image_paths)}: erro:"
+                f" {record['exception_type']}: {record['message']}",
                 flush=True,
             )
+            # The local technical log keeps the trace; the UI never sees it.
+            trace = _page_error_traceback(exc)
+            if trace:
+                print(trace, flush=True)
         finally:
             state.pop("original_bgr", None)
             state.pop("candidates", None)
@@ -1588,8 +1603,17 @@ def run_benchmark(args):
     summary = _aggregate_debug_data(completed_states)
     translation_accounting = _translation_quality_accounting(completed_states)
     physical_accounting = _physical_residual_accounting(completed_states)
+    # Reconciled over every source page the run set out to process, not over the
+    # states that survived: a page whose analysis threw produces no regions, and
+    # region accounting alone cannot see it at all.
+    page_accounting = _source_page_accounting(page_states, len(image_paths))
     quality["translation_accounting"] = translation_accounting
     quality["physical_quality"] = physical_accounting
+    quality["source_page_accounting"] = page_accounting
+    quality["source_pages_unverified"] = page_accounting["source_pages_unverified"]
+    quality["source_page_findings"] = page_accounting["findings"]
+    quality["source_page_gate_passed"] = page_accounting["page_gate_passed"]
+    quality["final_story_output_verified"] = page_accounting["story_output_verified"]
     quality["translation_terminal_states_complete"] = translation_accounting[
         "accounting_closed"
     ]
@@ -1621,6 +1645,7 @@ def run_benchmark(args):
         quality.get("passed")
         and translation_accounting["quality_passed"]
         and physical_accounting["physical_gate_passed"]
+        and page_accounting["page_gate_passed"]
     )
     counters["ocr_page_fallbacks"] = summary["ocr_page_fallbacks"]
     counters["ocr_region_fallbacks"] = summary["ocr_region_fallbacks"]
@@ -2583,6 +2608,33 @@ def _ordinary_story_residual_required(item):
     return True
 
 
+def _physically_rendered_without_source(item):
+    """Whether the shipped page shows PT-BR and no source English for this region.
+
+    The review verdict and the physical fact are different questions.  A region
+    that shipped under ``RENDER_WITH_REVIEW`` passed the source-removal axis by
+    construction - ``render_disposition`` returns ``do_not_render`` when the
+    source survives - and had its Portuguese drawn, so it is still a structured
+    review item everywhere else, but it is not a source residual.  #84F9 listed
+    several such regions as ordinary-story residuals purely because they kept a
+    review terminal state.  The two art reasons that literally mean "source
+    lettering survived the cleanup" stay residual.
+    """
+
+    if not item.get("redrawn"):
+        return False
+    if str(item.get("render_disposition") or "") not in {
+        RENDER_CLEAN,
+        RENDER_WITH_REVIEW,
+    }:
+        return False
+    if str(item.get("art_reconstruction_reason") or "") in (
+        RESIDUAL_SOURCE_LETTERING_REASONS
+    ):
+        return False
+    return bool(str(item.get("translation") or "").strip())
+
+
 def _translation_quality_accounting(states):
     terminal_counts = {
         state: 0 for state in sorted(TRANSLATION_TERMINAL_STATES)
@@ -2894,6 +2946,7 @@ def _physical_residual_accounting(states):
         "physical_regions_translated": 0,
         "physical_regions_preserved": 0,
         "physical_regions_review_source_retained": 0,
+        "physical_regions_rendered_with_review": 0,
         "physical_regions_render_failed": 0,
         "physical_regions_other_explicit": 0,
         "physical_source_residual_count": 0,
@@ -2976,6 +3029,12 @@ def _physical_residual_accounting(states):
             if final_reason == PROPER_NAME_ONLY_REASON:
                 result["physical_regions_preserved"] += 1
                 continue
+            # The final rendered state is authoritative for *physical* retention:
+            # review status routes the region to the review queue, it does not put
+            # English pixels back on the page.
+            if _physically_rendered_without_source(item):
+                result["physical_regions_rendered_with_review"] += 1
+                continue
 
             if final_state == "translated" and translated and valid and not redrawn:
                 result["physical_regions_render_failed"] += 1
@@ -3030,7 +3089,9 @@ def _physical_residual_accounting(states):
         }
     regions_accounted = (
         result["physical_regions_expected"]
-        == result["physical_regions_translated"] + result["physical_regions_preserved"]
+        == result["physical_regions_translated"]
+        + result["physical_regions_preserved"]
+        + result["physical_regions_rendered_with_review"]
         and result["physical_source_residual_count"] == 0
     )
     # A recorded upstream failure means the chapter was only partially examined:
@@ -3574,8 +3635,67 @@ def _save_page_processed_cache(state):
     )
 
 
-def _complete_page_with_error(state, error, errors_folder, stage_seconds):
-    state["error"] = error
+PAGE_ANALYSIS_ERROR_CODE = "page_analysis_error"
+PAGE_ANALYSIS_UNRESOLVED_CODE = "page_analysis_unresolved"
+PAGE_SOURCE_MISSING_CODE = "source_page_missing_from_accounting"
+
+
+def _page_error_traceback(error):
+    """The local technical trace for a page failure, or ``""`` for a plain reason."""
+
+    if not isinstance(error, BaseException) or error.__traceback__ is None:
+        return ""
+    return sanitize_diagnostic_text(
+        "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+    )
+
+
+def _page_error_record(error, *, stage, index, retryable=False):
+    """PAGE-ERROR-OBSERVABILITY-001: structured, secret-free page diagnostics.
+
+    Real run #84F9 persisted the single word ``"str"`` for five failed pages: the
+    caller flattened the exception with ``str(exc)`` first, so the persistence
+    layer asked a *string* for its ``code``/type and dutifully wrote down the type
+    of the message.  The exception class, the stage and the reason were all gone
+    before anything was written.  The record below keeps them, and keeps them
+    safe: messages are run through the repository's own diagnostic sanitizer, so
+    a provider URL or an API key in an exception text never reaches disk.
+    """
+
+    page = int(index or 0)
+    if isinstance(error, BaseException):
+        exception_type = type(error).__name__
+        code = str(getattr(error, "code", "") or "") or exception_type
+        message = str(error)
+    else:
+        exception_type = ""
+        code = str(error or "").strip() or "unknown_page_error"
+        message = code
+    return {
+        "stage": str(stage or "page_analysis"),
+        "page": page,
+        "page_id": f"p{page:03}",
+        "code": sanitize_diagnostic_text(code)[:200],
+        "exception_type": exception_type,
+        "message": sanitize_diagnostic_text(message)[:400],
+        "retryable": bool(retryable),
+        "traceback_available": bool(_page_error_traceback(error)),
+    }
+
+
+def _complete_page_with_error(
+    state,
+    error,
+    errors_folder,
+    stage_seconds,
+    *,
+    stage="page_analysis",
+):
+    record = _page_error_record(error, stage=stage, index=state.get("index"))
+    state["page_error"] = record
+    state["error"] = record["code"]
     state["status"] = "error"
     state["cache_source"] = "error_original"
     state["debug_data"] = _empty_debug_data(
@@ -3591,10 +3711,106 @@ def _complete_page_with_error(state, error, errors_folder, stage_seconds):
     stage_seconds["image_save"] += elapsed
     page_folder = errors_folder / f"page_{state['index']:03}"
     page_folder.mkdir(parents=True, exist_ok=True)
-    # Provider/library exception messages often echo a request URL. Persist a stable code
-    # instead of a raw message; detailed diagnostics stay in the live process only.
-    safe_error = str(getattr(error, "code", "") or type(error).__name__)
-    (page_folder / "error.txt").write_text(safe_error, encoding="utf-8")
+    (page_folder / "error.txt").write_text(record["code"], encoding="utf-8")
+    (page_folder / "error.json").write_text(dumps_json(record), encoding="utf-8")
+    # The traceback is a local diagnostic artefact only: it never reaches the UI,
+    # and it is sanitized like every other persisted diagnostic.
+    trace = _page_error_traceback(error)
+    if trace:
+        (page_folder / "traceback.txt").write_text(trace, encoding="utf-8")
+
+
+def _source_page_accounting(states, expected_pages=None):
+    """PAGE-ANALYSIS-FAILURE-GATE-001: reconcile source pages, not just regions.
+
+    Region accounting is structurally blind to a page that produced no regions:
+    an exception before OCR leaves nothing to count, and "nothing counted" is not
+    "nothing there".  Real run #84F9 lost five pages that way, one of which
+    (p032) carried ordinary narration and shipped in English.  Source pages are
+    therefore reconciled on their own axis: expected == analysed + unverified,
+    with every unverified page named in an explicit finding.
+    """
+
+    states = list(states)
+    expected = int(expected_pages or 0) or len(states)
+    result = {
+        "source_pages_expected": expected,
+        "source_pages_analyzed": 0,
+        "source_pages_completed_with_error": 0,
+        "source_pages_missing": 0,
+        "source_pages_unverified": 0,
+        "source_pages_unverified_ids": [],
+        "findings": [],
+    }
+    for state in states:
+        index = int(state.get("index") or 0)
+        page_id = f"p{index:03}"
+        status = str(state.get("status") or "")
+        page_error = state.get("page_error") or {}
+        failed = bool(state.get("ocr_error")) or status in {
+            "error",
+            "completed_with_error",
+            "failed",
+        }
+        if not failed and status == "completed":
+            result["source_pages_analyzed"] += 1
+            continue
+        if failed:
+            result["source_pages_completed_with_error"] += 1
+        result["source_pages_unverified_ids"].append(page_id)
+        result["findings"].append({
+            "code": (
+                PAGE_ANALYSIS_ERROR_CODE if failed
+                else PAGE_ANALYSIS_UNRESOLVED_CODE
+            ),
+            "page": index,
+            "page_id": page_id,
+            "status": status or "unknown",
+            # Pre-#84F10 states carry no structured record; ``ocr_error`` still
+            # says which stage refused the page.
+            "stage": str(
+                page_error.get("stage")
+                or ("ocr" if state.get("ocr_error") else "page_analysis")
+            ),
+            "exception_type": str(page_error.get("exception_type") or ""),
+            "error_code": str(
+                page_error.get("code") or state.get("ocr_error") or state.get("error") or ""
+            ),
+            # The page never finished analysis, so nothing is known about the
+            # story content it carries. Unknown is not absent.
+            "story_content_verified": False,
+            "quality": "review_required",
+        })
+    result["source_pages_missing"] = max(
+        0, expected - result["source_pages_analyzed"] - len(result["source_pages_unverified_ids"])
+    )
+    if result["source_pages_missing"]:
+        result["findings"].append({
+            "code": PAGE_SOURCE_MISSING_CODE,
+            "page": 0,
+            "page_id": "",
+            "status": "absent",
+            "stage": "page_analysis",
+            "exception_type": "",
+            "error_code": "",
+            "missing_count": result["source_pages_missing"],
+            "story_content_verified": False,
+            "quality": "review_required",
+        })
+    result["source_pages_unverified"] = (
+        len(result["source_pages_unverified_ids"]) + result["source_pages_missing"]
+    )
+    result["accounting_closed"] = expected == (
+        result["source_pages_analyzed"] + result["source_pages_unverified"]
+    )
+    result["page_gate_passed"] = bool(
+        result["accounting_closed"] and result["source_pages_unverified"] == 0
+    )
+    # A chapter with an unverified page cannot claim its user-visible story output
+    # was checked; the PDF may still exist, but only as a review artefact.
+    result["story_output_verified"] = result["page_gate_passed"]
+    result["status"] = "passed" if result["page_gate_passed"] else "review_required"
+    return result
 
 
 def _mark_fast_ocr_review(state, reason, trigger):
@@ -3678,6 +3894,7 @@ def _serializable_state(state):
         "fast_ocr_fallback_metadata",
         "timings",
         "error",
+        "page_error",
     }
     return {key: value for key, value in state.items() if key in allowed}
 

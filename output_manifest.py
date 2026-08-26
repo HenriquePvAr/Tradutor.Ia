@@ -193,6 +193,7 @@ _PHYSICAL_QUALITY_INT_FIELDS = (
     "physical_regions_translated",
     "physical_regions_preserved",
     "physical_regions_review_source_retained",
+    "physical_regions_rendered_with_review",
     "physical_regions_render_failed",
     "physical_regions_other_explicit",
     "physical_source_residual_count",
@@ -261,6 +262,58 @@ def sanitize_physical_quality(value: Mapping[str, Any] | None) -> dict[str, Any]
         # omits it and stays schema-valid, rather than reporting zero checked
         # groups as if the evidence had been looked at.
         result["source_completeness"] = completeness
+    return result
+
+
+_SOURCE_PAGE_INT_FIELDS = (
+    "source_pages_expected",
+    "source_pages_analyzed",
+    "source_pages_completed_with_error",
+    "source_pages_missing",
+    "source_pages_unverified",
+)
+
+
+def sanitize_source_page_accounting(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """PAGE-ANALYSIS-FAILURE-GATE-001 evidence, or nothing at all.
+
+    Durable, because a page that failed analysis is exactly the page the manifest
+    reader must not mistake for a clean one.  Only page identifiers and stable
+    codes travel; the exception message stays in the local error folder.
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    source = (
+        value.get("source_page_accounting")
+        if isinstance(value.get("source_page_accounting"), Mapping)
+        else value
+    )
+    if not isinstance(source, Mapping) or "page_gate_passed" not in source:
+        return {}
+    result: dict[str, Any] = {
+        field: max(0, int(source.get(field) or 0))
+        for field in _SOURCE_PAGE_INT_FIELDS
+    }
+    ids = source.get("source_pages_unverified_ids")
+    result["source_pages_unverified_ids"] = (
+        [str(item) for item in ids[:200]] if isinstance(ids, list) else []
+    )
+    findings = source.get("findings")
+    result["findings"] = [
+        {
+            "code": str(item.get("code") or "")[:80],
+            "page_id": str(item.get("page_id") or "")[:16],
+            "stage": str(item.get("stage") or "")[:40],
+            "exception_type": str(item.get("exception_type") or "")[:80],
+            "story_content_verified": bool(item.get("story_content_verified")),
+        }
+        for item in (findings if isinstance(findings, list) else [])[:200]
+        if isinstance(item, Mapping)
+    ]
+    result["page_gate_passed"] = bool(source.get("page_gate_passed"))
+    result["accounting_closed"] = bool(source.get("accounting_closed"))
+    result["story_output_verified"] = bool(source.get("story_output_verified"))
     return result
 
 
@@ -424,6 +477,9 @@ def build_run_manifest(
     physical_quality = sanitize_physical_quality(quality_validation)
     if physical_quality:
         manifest["physical_quality"] = physical_quality
+    page_accounting = sanitize_source_page_accounting(quality_validation)
+    if page_accounting:
+        manifest["source_page_accounting"] = page_accounting
     line_provenance = sanitize_ocr_line_provenance(ocr_line_provenance)
     if line_provenance:
         manifest["ocr_line_provenance"] = line_provenance

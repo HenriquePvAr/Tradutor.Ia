@@ -701,6 +701,22 @@ linguagem visual de `Motor de tradução: DeepL (Qualidade)`, e as Configuraçõ
 silêncio, o campo é **informativo e não selecionável**: não há opção Paddle exposta, porque
 Paddle não é exigido nem instalado nesta beta.
 
+**Controles da beta (TDD #84F10).** O campo do OCR perdeu a seta de dropdown
+(`#ocrEngineSelect { appearance: none }`): uma seta em um campo de opção única promete
+alternativas que não existem. O rótulo deixou de ser fixo — `applyOcrEngineStatus()` o
+deriva de `settings.ocr_engine`, de modo que `RapidOCR · Ativo` só aparece quando RapidOCR
+é de fato o engine configurado; qualquer outro id é reportado como ele é, em vez de a UI
+afirmar um motor que o run não vai usar.
+
+No mesmo movimento, `Modo de processamento` deixou de ser uma grade de três cartões
+grandes e virou um `<select id="modeSelect">` com a mesma largura e o mesmo alinhamento de
+`Motor de tradução` e `Motor de OCR`, com uma linha de ajuda contextual (`#modeHint`) sob
+o campo. **Os valores internos não mudaram** (`quality`, `fast`, `download_only`), o
+contrato de start é o mesmo e `DEEPL_MODEL_TYPE=quality_optimized` segue sendo o modelo
+canônico da beta; o padrão exibido e selecionado é **Qualidade**. `applyProcessingMode()`
+é o único ponto que decide o modo, de modo que o select, um rascunho restaurado e um
+replay de histórico não podem discordar sobre o valor que a execução vai carregar.
+
 O fallback **solicita comparação**; ele não fabrica a leitura correta. Os metadados
 registram engine original, engine final, confidences, motivos de fallback, reparos e
 scores.
@@ -1297,6 +1313,24 @@ O relatório físico também expõe o subgate `ordinary_story_physical_residual_
 `ordinary_story_physical_residual_ids`. O contador global `physical_source_residual_count`
 continua fail-closed e inclui SFX/OCR ambíguo, mas o subgate separa o que bloqueia qualidade
 Beta de história comum do que permanece como revisão legítima não-story.
+
+O TDD #84F10 corrige um falso positivo dessa conta: até então, uma região que enviou sob
+`render_with_review` continuava listada em `ordinary_story_physical_residual_ids` apenas por
+manter um estado terminal de revisão — mesmo com o PT-BR desenhado e o inglês fisicamente
+ausente. O **estado final renderizado** passa a ser a autoridade: `render_disposition` em
+`{render_clean, render_with_review}` com `redrawn` significa que a remoção da fonte foi
+aprovada por construção (`render_disposition()` devolve `do_not_render` quando a fonte
+sobrevive), e a região sai do ledger de resíduo para o contador próprio
+`physical_regions_rendered_with_review`, sem deixar de ser revisão estruturada em todos os
+outros eixos. Resíduo real continua contando: `do_not_render`, região não redesenhada e as
+razões de arte `residual_source_text_after_cleanup` /
+`residual_source_lettering_after_cleanup` — em que o inglês está mesmo visível — não são
+filtradas.
+
+O mesmo TDD acrescenta a reconciliação de páginas de origem
+(`PAGE-ANALYSIS-FAILURE-GATE-001`) e o registro estruturado de erro de página
+(`PAGE-ERROR-OBSERVABILITY-001`); ambos estão detalhados em
+[Qualidade e validação](../QUALITY_AND_VALIDATION.md#quality-gate-final).
 
 O #74, executado já em `da3bd1033609973fc55659f6e59fffbdfce7dd38`, provou que P063 estava
 fechado no runtime real, mas deixou `p068:BALAO_2` como único residual ordinário:

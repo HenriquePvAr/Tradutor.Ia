@@ -420,7 +420,6 @@
   input[type=text]:focus, select:focus, textarea:focus{border-color:var(--vermillion); box-shadow:0 0 0 3px rgba(197,55,44,0.12);}
   input[type=text]::placeholder, textarea::placeholder{color:#5c574e;}
 
-  .choice-row{display:flex; gap:10px;}
   .source-type-row{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:2px 0 16px;}
   .source-type-card{
     appearance:none; border:1px solid var(--line); border-radius:2px; padding:10px 12px;
@@ -430,18 +429,9 @@
   .source-type-card:hover,.source-type-card:focus-visible{border-color:var(--tab-accent); color:var(--paper); outline:none;}
   .source-type-card.selected{border-color:var(--tab-accent); color:var(--paper); background:rgba(var(--tab-rgb),.08);}
   .field-hint{margin-top:7px; color:var(--muted); font:9.5px/1.55 'JetBrains Mono',monospace;}
-  .choice-card{
-    flex:1; border:1px solid var(--line); border-radius:2px; padding:14px;
-    cursor:pointer; transition:all .18s; position:relative; overflow:hidden;
-  }
-  .choice-card:hover{border-color:rgba(239,231,216,0.35); transform:translateY(-3px); box-shadow:0 10px 22px rgba(0,0,0,0.35);}
-  .choice-card:active{transform:translateY(-1px) scale(.98);}
-  .choice-card.selected{border-color:var(--vermillion); background:rgba(197,55,44,0.07);}
-  .choice-card.selected .ct-title{color:var(--vermillion);}
-  .choice-card .ct-title{font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:13.5px; margin-bottom:4px;}
-  .choice-card .ct-desc{font-size:10.5px; color:var(--muted); line-height:1.5;}
-  .choice-card[data-mode="quality"].selected{border-color:var(--teal); background:rgba(47,122,107,0.09);}
-  .choice-card[data-mode="quality"].selected .ct-title{color:var(--teal);}
+  /* One supported OCR engine: the field reports it, it does not offer a choice,
+     so it must not carry a dropdown arrow that promises alternatives. */
+  #ocrEngineSelect{appearance:none; -webkit-appearance:none; -moz-appearance:none;}
 
   .chip-row{display:flex; gap:8px; flex-wrap:wrap;}
   .chip{
@@ -2199,7 +2189,6 @@ html[data-visual-reduced-motion="1"] .auth-login-page *{animation:none!important
 .review-mode-banner strong{font-size:15px;letter-spacing:.2px}
 .review-mode-banner .rmb-meta{font-size:12px;opacity:.72;font-variant-numeric:tabular-nums}
 .translation-form-locked{position:relative}
-.translation-form-locked .choice-card,
 .translation-form-locked .scope-card{pointer-events:none;opacity:.58}
 .translation-form-locked input:disabled,
 .translation-form-locked select:disabled,

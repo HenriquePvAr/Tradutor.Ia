@@ -34,7 +34,7 @@
     cursor: 0,
     historyRevision: 0,
     selectedScope: 'full',
-    selectedMode: 'fast',
+    selectedMode: 'quality',
     selectedSourceType: 'url',
     nameDirty: false,
     outputDirty: false,
@@ -1052,6 +1052,24 @@
     draft.updated_at = Date.now();
     writeSourceValidationDraft(draft);
   }
+  // One place owns the mode, so the select, a restored draft and a history replay
+  // can never disagree about the value the run will actually carry. The internal
+  // values are unchanged: the three-card grid became a select, nothing else.
+  function applyProcessingMode(mode) {
+    const hints = {
+      quality: 'Usa processamento mais conservador para páginas e fontes difíceis.',
+      fast: 'Processa o capítulo com otimizações automáticas e validação de qualidade.',
+      download_only: 'Coleta e valida páginas sem OCR, tradução ou PDF.',
+    };
+    const value = Object.prototype.hasOwnProperty.call(hints, String(mode))
+      ? String(mode) : 'quality';
+    appState.selectedMode = value;
+    const select = $('#modeSelect');
+    if (select) select.value = value;
+    const hint = $('#modeHint');
+    if (hint) hint.textContent = hints[value];
+    return value;
+  }
   function applyStoredExecutionDraft(execution) {
     if (!execution || typeof execution !== 'object') return;
     appState.programmingFields = true;
@@ -1070,9 +1088,7 @@
       $('#sourceProfileToggle').checked = execution.create_source_profile;
     }
     appState.programmingFields = false;
-    appState.selectedMode = execution.selected_mode === 'quality' || execution.selected_mode === 'download_only'
-      ? execution.selected_mode : 'fast';
-    $$('.choice-card').forEach(card => card.classList.toggle('selected', card.dataset.mode === appState.selectedMode));
+    applyProcessingMode(execution.selected_mode);
     const scope = String(execution.selected_scope || 'full');
     const scopeCard = $(`.scope-card[data-scope="${escapeAttr(scope)}"]`) || $('.scope-card[data-scope="full"]');
     if (scopeCard) {
@@ -1135,14 +1151,12 @@
   }
 
   /* ---------- form ---------- */
-  $$('.choice-card').forEach(card => card.addEventListener('click', () => {
-    $$('.choice-card').forEach(item => item.classList.remove('selected'));
-    card.classList.add('selected');
-    appState.selectedMode = card.dataset.mode;
+  $('#modeSelect')?.addEventListener('change', () => {
+    applyProcessingMode($('#modeSelect').value);
     const label = $('.stage-item[data-stage="ocr"] span:nth-of-type(2)');
     if (label) label.textContent = 'Leitura do texto';
     refreshStoredSourceExecutionDraft();
-  }));
+  });
   $$('.scope-card').forEach(card => card.addEventListener('click', () => {
     if (appState.selectedSourceType === 'local_folder' && card.dataset.scope !== 'full') return;
     $$('.scope-card').forEach(item => item.classList.remove('selected'));
@@ -1793,7 +1807,7 @@
         delete control.dataset.runLockDisabled;
       }
     });
-    panel.querySelectorAll('.choice-card, .scope-card').forEach(control => {
+    panel.querySelectorAll('.scope-card').forEach(control => {
       control.setAttribute('aria-disabled', active ? 'true' : 'false');
     });
   }
@@ -6360,8 +6374,8 @@
     appState.programmingFields = false;
     appState.nameDirty = true;
     appState.outputDirty = true;
-    appState.selectedMode = record.mode === 'quality' ? 'quality' : 'fast';
-    $$('.choice-card').forEach(card => card.classList.toggle('selected', card.dataset.mode === appState.selectedMode));
+    // A replayed run keeps the mode it actually ran with.
+    applyProcessingMode(record.mode === 'fast' ? 'fast' : 'quality');
     const scope = local ? 'full' : (record.max_images ? String(record.max_images) : 'full');
     const direct = $(`.scope-card[data-scope="${scope}"]`);
     const chosen = direct || $('.scope-card[data-scope="custom"]');
@@ -6562,7 +6576,7 @@
     document.documentElement.dataset.tradutorApiConfigured = apiReady ? '1' : '0';
     window.dispatchEvent(new CustomEvent('tradutor:api-configured-changed'));
     $('#settingServiceFriendly').textContent = apiReady ? 'Conectado' : 'Não configurado';
-    $('#settingModeFriendly').textContent = 'Rápido';
+    $('#settingModeFriendly').textContent = 'Qualidade';
     $('#settingReadingFriendly').textContent = settings.rapidocr_available ? 'Disponível' : 'Indisponível';
     $('#settingParallelFriendly').textContent = trueValue(settings.ocr_parallel) ? 'Ativo' : 'Automático';
     $('#settingContextFriendly').textContent = 'Ativo';
@@ -6585,7 +6599,17 @@
     $('#settingPython').textContent = settings.python_version || '—';
     $('#settingNicegui').textContent = settings.nicegui_version || '—';
     $('#settingBuild').textContent = 'local';
+    applyOcrEngineStatus(settings.ocr_engine);
     renderWorkspaceSourcePolicy(settings.workspace_source_policy || {});
+  }
+  // The read-only OCR field reports the engine the run will really use. It offers
+  // no alternatives, and it never claims RapidOCR for a differently configured run.
+  function applyOcrEngineStatus(engine) {
+    const field = $('#ocrEngineSelect');
+    const option = field?.options?.[0];
+    if (!option) return;
+    const id = String(engine || '').trim().toLowerCase();
+    option.textContent = !id || id === 'rapidocr' ? 'RapidOCR · Ativo' : `${id} · Ativo`;
   }
   function renderWorkspaceSourcePolicy(policy = {}) {
     const active = policy.status === 'active'
