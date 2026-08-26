@@ -475,6 +475,11 @@ class TextGroup:
     original_text: str = ""
     repaired_text: str = ""
     repair_reason: str = ""
+    # Semantic recovery only: what the *retry* was allowed to translate, and on
+    # what evidence. ``text`` above stays the raw OCR - a repair proposes a
+    # canonical reading, it never erases what the page actually said.
+    canonical_source_text: str = ""
+    source_repairs: tuple = ()
     region_id: str = ""
     region_type: str = "unknown"
     parent_balloon_id: str = ""
@@ -1153,6 +1158,28 @@ MIN_STANDALONE_NAME_LENGTH = 4
 
 def _name_token_of(raw):
     return re.sub(r"[^A-Z']", "", _ascii_fold(str(raw or "")).upper()).strip("'")
+
+
+def source_repair_vocabulary(context_texts=()):
+    """The words a suspicious source token may be corrected *to*.
+
+    The pipeline's own dialogue lexicon, plus whatever the bounded surrounding
+    context spells plausibly - a scene that says "EMERGENCY CONTAINMENT VAULT"
+    somewhere else is the evidence that makes a corrupt reading of it
+    correctable, and nothing wider is ever assembled.
+
+    Sound effects are excluded by construction (``ORDINARY_DIALOGUE_WORDS``
+    already drops them), so an onomatopoeia is never a repair target; and a
+    context token that is itself improbably spelled never joins, because OCR
+    damage may not vouch for OCR damage.
+    """
+    vocabulary = set(ORDINARY_DIALOGUE_WORDS)
+    for text in context_texts or ():
+        for token in re.findall(r"[A-Za-z]+", str(text or "")):
+            token = token.upper()
+            if len(token) >= 3 and not semantic_fidelity.improbable_source_token(token):
+                vocabulary.add(token)
+    return vocabulary
 
 
 def _token_is_source_vocabulary(token):
@@ -7478,6 +7505,14 @@ def _fidelity_reason_for(group, candidate, *, ledger, verifier, budget, name_spa
         group.semantic_review_reason = finding.reason()
         _bump_fidelity(stats, "semantic_review")
         _bump_fidelity(stats, f"semantic_review_{finding.primary_reason}")
+        if semantic_fidelity.is_review_unusable(group.semantic_review_reason):
+            # Detection was where this used to stop. A candidate a reader cannot
+            # use is worth the one retry the region already has, so the reason is
+            # returned like any other rejection; the caller restores this exact
+            # review verdict if the second candidate is no better, and the region
+            # renders as it did before.
+            _bump_fidelity(stats, "semantic_recovery_requested")
+            return group.semantic_review_reason
         return ""
     if finding.status == semantic_fidelity.BLOCKED:
         _bump_fidelity(stats, "fidelity_local_block")
@@ -7515,6 +7550,42 @@ def _fidelity_reason_for(group, candidate, *, ledger, verifier, budget, name_spa
         else "fidelity_verifier_uncertain",
     )
     return verdict.reason()
+
+
+def _canonical_retry_source(group, reason):
+    """The source the retry should translate: repaired if that can be proved.
+
+    Only for the one rejection class where the source itself is the defect. The
+    provider is otherwise being asked to translate a word that does not exist,
+    and the first attempt already showed what it does with one - it carries the
+    garbage through untranslated.
+
+    A repair happens only when the vocabulary this scene vouches for holds
+    exactly one word a single edit away; anything ambiguous is left alone, and
+    ``group.text`` - the raw OCR - is never overwritten either way.
+    """
+    if not str(reason or "").startswith(semantic_fidelity.SOURCE_OCR_SUSPICIOUS):
+        return group.text
+    context = tuple(getattr(group, "page_context_texts", ()) or ())
+    suspicious = semantic_fidelity.suspicious_source_tokens(
+        group.text,
+        group.translation_candidate or group.translation,
+        known_entities=group_proper_name_spans(group),
+        is_source_word=_token_is_source_vocabulary,
+    )
+    if not suspicious:
+        return group.text
+    canonical, repairs = semantic_fidelity.repair_suspicious_source(
+        group.text,
+        suspicious,
+        source_repair_vocabulary(context),
+        protected=group_proper_name_spans(group),
+    )
+    if not repairs:
+        return group.text
+    group.source_repairs = tuple(repairs)
+    group.canonical_source_text = canonical
+    return canonical
 
 
 def validate_and_retry_translations(
@@ -7576,6 +7647,11 @@ def validate_and_retry_translations(
             _group_validation_allowed_proper_names(group),
             required_name_spans=name_spans,
         )
+        # What every validator *except* the fidelity gate concluded. If a
+        # recovery attempt below fails, this is the reason the region goes back
+        # to: a review is not a rejection, and stamping the review reason onto
+        # the rejection channel would make the accounting count it as one.
+        pre_fidelity_reason = reason
         if valid:
             # Everything above answered "is this the target language". This asks
             # whether it still says what the source said.
@@ -7606,10 +7682,19 @@ def validate_and_retry_translations(
             continue
         if semantic_fidelity.is_fidelity_reason(reason):
             _bump_fidelity(fidelity_stats, "fidelity_retry")
+        # A review the reader cannot use is being *recovered*, not rejected: the
+        # verdict is held here so that a second candidate which is no better
+        # leaves the region exactly where detection left it - rendering, under
+        # review, never clean.
+        pending_review = (
+            reason if semantic_fidelity.is_review_unusable(reason) else ""
+        )
+        original_translation = group.translation
         original_candidate = group.translation_candidate or clean_ocr_text(
             group.translation
         )
         latest_candidate = original_candidate
+        retry_source = _canonical_retry_source(group, reason)
         had_retry_error = False
         names_were_forbidden = False
         retry_enabled = bool(
@@ -7627,7 +7712,7 @@ def validate_and_retry_translations(
             names_were_forbidden = bool(isolated_first)
             try:
                 candidate = translator.translate_strict(
-                    group.text,
+                    retry_source,
                     previous_translation=latest_candidate,
                     validation_reason=reason,
                     force=force,
@@ -7635,6 +7720,7 @@ def validate_and_retry_translations(
                     proper_names=[] if isolated_first else name_spans,
                     retry_origin="isolated_retry" if isolated_first else "quality_retry",
                     retry_attempt=attempt,
+                    source_context=group.page_context_texts,
                 )
             except Exception as exc:  # noqa: BLE001 - keep the caller on failure.
                 candidate = ""
@@ -7714,6 +7800,21 @@ def validate_and_retry_translations(
                 reason = new_reason
 
         if group.translation_valid:
+            continue
+        if pending_review:
+            # Recovery was attempted and did not produce anything better. The
+            # region goes back to the verdict detection gave it: the first
+            # candidate renders, under review, never counted as clean and still a
+            # Setup blocker. Withholding it instead would put the English source
+            # back on the page, which is the defect this whole gate exists to
+            # avoid, and promoting it to clean would be a lie.
+            group.translation = original_translation
+            group.translation_candidate = original_candidate
+            group.translation_valid = True
+            group.semantic_review_reason = pending_review
+            group.translation_validation_reason = pre_fidelity_reason
+            _set_translation_terminal_state(group, "translated", pre_fidelity_reason)
+            _bump_fidelity(fidelity_stats, "semantic_recovery_failed")
             continue
         # The model was told this text held no names and that every word had to be
         # translated, and it handed the text straight back. For a lone

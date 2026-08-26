@@ -25,6 +25,7 @@ import time
 from urllib.parse import urlparse
 
 import config
+import semantic_fidelity
 from provider_transport import ProviderTimeoutPolicy
 
 PROVIDER_NAME = "deepl"
@@ -319,18 +320,24 @@ class DeepLTranslator:
         proper_names=None,
         retry_origin="quality_retry",
         retry_attempt=1,
+        source_context=(),
     ):
         """The second attempt a rejected candidate needs.
 
         DeepL takes no instructions, so there is no prompt to correct and the
-        rejection reason cannot be spoken to the model.  Two things can still
-        differ from the first attempt, and both matter for the failure class
-        this exists for - a class noun read as a verb:
+        rejection reason cannot be spoken to the model.  Three things can still
+        differ from the first attempt, and all of them matter for the failure
+        class this exists for - a class noun read as a verb:
 
         * the source is the canonical one, so a boundary the normalizer
           repaired since the first pass is what goes on the wire;
         * the request is single-item and carries the chapter's terminology in
-          DeepL's ``context`` field, which the batched first pass never sends.
+          DeepL's ``context`` field, which the batched first pass never sends;
+        * ``source_context`` adds the neighbouring source lines of the scene to
+          that same field.  This is precisely what the field is documented for -
+          text read to disambiguate and never translated - and it is the only
+          thing that can settle which sense of an ambiguous word this scene
+          means.  Descriptive evidence, never an instruction.
 
         Without this method ``validate_and_retry_translations`` skips the retry
         entirely (it gates on ``hasattr(translator, "translate_strict")``), so
@@ -342,8 +349,13 @@ class DeepLTranslator:
         self._bump("strict_retry_requests")
         self._bump("api_texts", 1)
         self._bump("provider_source_characters", len(text))
+        context = " ".join(
+            part for part in (self.session_context_text,
+                              semantic_fidelity.scene_context(source_context))
+            if part
+        )
         try:
-            candidates = self._translate_chunk([text], context=self.session_context_text)
+            candidates = self._translate_chunk([text], context=context)
         except DeepLProviderError as exc:
             self._fail_closed(exc.reason_code, 1,
                               status_code=exc.status_code, detail=exc.detail)

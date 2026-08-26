@@ -565,6 +565,61 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   de #84F9, a regra marca exatamente uma: `p046:BALAO_1`. Contrato permanente em
   `test_84f15_word_sense_disambiguation.py`. A confirmação em execução real depende do
   próximo E2E.
+- `SEMANTIC-RECOVERY-001` (**fechado offline em #84F17**): #84F14 e #84F15 ensinaram o
+  pipeline a **detectar** duas classes de saída ruim que todos os outros validadores
+  chamavam de limpa — origem corrompida sobrevivendo literalmente no português
+  (`source_ocr_suspicious`) e português fluente comprometido com o sentido errado de uma
+  palavra ambígua (`word_sense_context_mismatch`). A detecção era onde o trabalho parava:
+  uma região marcada `review_unusable` **nunca pedia uma segunda tradução**. A recuperação
+  agora existe, e é limitada.
+
+  **Recuperação classe A — origem suspeita.** Antes do retry, `_canonical_retry_source()`
+  tenta tornar a origem uma palavra de novo. Não é corretor ortográfico sobre texto de OCR:
+  roda **apenas** sobre tokens que `suspicious_source_tokens()` já provou não confiáveis
+  (grafia improvável, desconhecidos do léxico e carregados sem tradução para o candidato) e
+  corrige um token quando o vocabulário que a cena avaliza contém **exatamente uma** palavra
+  a uma edição de distância (`unique_source_repair()`). Duas candidatas é palpite, e um
+  palpite que reescreve um nome, um termo de fantasia ou um SFX é defeito pior do que o que
+  tenta corrigir: ambiguidade significa **nenhum reparo** e a região permanece
+  `REVIEW_UNUSABLE`. O vocabulário é `source_repair_vocabulary()` — o léxico de diálogo do
+  próprio pipeline (SFX excluídos por construção) mais os tokens plausíveis do contexto
+  limitado; um token de contexto com grafia improvável nunca entra, porque dano de OCR não
+  avaliza dano de OCR.
+
+  **Proveniência: bruto e canônico coexistem.** `group.text` continua sendo o que o OCR leu.
+  O reparo viaja separado em `canonical_source_text` e `source_repairs` (`raw_source`,
+  `canonical_source`, `repair_reason`, `repair_confidence`, `repair_evidence`). Só o
+  **retry** vê a forma canônica; o detector continua lendo a origem bruta, então um
+  candidato que ainda carregue o token corrompido continua sendo pego.
+
+  **Recuperação classe B — sentido contextual.** `word_sense_context_mismatch` alimenta o
+  mesmo retry limitado, com a restrição `preserve_word_sense` e as linhas de origem
+  vizinhas da cena como `source_context` (`semantic_fidelity.scene_context()`, limitado a
+  6 linhas / 600 caracteres). No DeepL isso entra no campo `context` documentado — texto
+  lido para desambiguar, nunca traduzido; no NVIDIA entra como `contexto_da_cena` no
+  payload. É **evidência descritiva**, nunca instrução: o provedor recebe algo para ler,
+  não a resposta que esperamos.
+
+  **Limite de chamadas.** A recuperação **reusa** o orçamento existente e não empilha
+  nenhum novo: no máximo **2 chamadas de tradução por região** (1 inicial + 1 retry
+  seletivo), com o teto por capítulo de `_selective_translation_retry_budget()`
+  (`ceil(N/8)`) inalterado, mais no máximo 1 chamada de adjudicação e 1 de naturalização,
+  que já existiam.
+
+  **Falha de recuperação não vira aprovação.** Se o segundo candidato não for melhor, a
+  região volta exatamente ao veredito da detecção: o primeiro candidato renderiza, sob
+  `review_unusable`, nunca contado como limpo e ainda bloqueando `setup_ready`. Não é
+  rejeição — o motivo de review não é gravado no canal de rejeição
+  (`translation_validation_reason`), para que a contabilidade não o conte como
+  `semantic_rejected`. `review_renderable` continua sem gastar retry algum.
+
+  **Replay offline do run real de #84F9** (sem provedor): `p042` (`COLLD`) tem reparo único
+  provado (`COLLD` → `COULD`, evidência `unique_single_edit`) e o retry recebe a origem
+  canônica; `p043` (`SLLM`) e `p046` (`VALLT`) **não** têm candidata única em vocabulário
+  nenhum e permanecem `REVIEW_UNUSABLE` com tentativa de retry sob `preserve_meaning` —
+  nenhum mapeamento literal foi adicionado; `p046:BALAO_1` (`PRECINCT`) obtém o retry de
+  sentido com o contexto da cena. Contrato permanente em
+  `test_84f17_semantic_recovery.py`. Confirmação em execução real depende do próximo E2E.
 - `TRANSLATION-SEMANTIC-001`: fechado localmente em #82 — ver
   [Fidelidade semântica e PT-BR natural](#fidelidade-semântica-e-pt-br-natural). Continua
   aberto para os casos em que nenhum candidato persistido alternativo existe: eles exigem

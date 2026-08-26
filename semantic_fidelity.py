@@ -96,6 +96,11 @@ def review_usability(reason):
     """``REVIEW_UNUSABLE`` when the flagged output is unfit to read, else renderable."""
     code = str(reason or "").split(":", 1)[0]
     return REVIEW_UNUSABLE if code in UNUSABLE_REVIEW_REASON_CODES else REVIEW_RENDERABLE
+
+
+def is_review_unusable(reason):
+    """True for a review verdict that may never be shipped as final story output."""
+    return review_usability(reason) == REVIEW_UNUSABLE
 BLOCKING_FIDELITY_REASON_CODES = frozenset({
     QUANTITY_CHANGED, ENTITY_CHANGED, NEGATION_CHANGED, STATE_ACTION_CHANGED,
     ACTOR_RELATION_CHANGED, TEMPORAL_RELATION_CHANGED, MEANING_MISMATCH,
@@ -121,6 +126,31 @@ FIDELITY_RETRY_CONSTRAINTS = {
 }
 
 TRANSLATABLE_CLASSIFICATIONS = frozenset({"speech", "thought", "narration", "unknown"})
+
+# What a retry may show the provider *about the scene*, as opposed to about the
+# rejection. Descriptive source evidence only - the neighbouring lines, verbatim
+# - which is what disambiguates a word whose senses the region alone cannot
+# settle. Bounded so no chapter is ever assembled and no prompt grows without
+# limit, and never phrased as an instruction: the provider is given something to
+# read, not an answer to repeat.
+SCENE_CONTEXT_MAX_LINES = 6
+SCENE_CONTEXT_MAX_CHARS = 600
+
+
+def scene_context(context_texts):
+    """The bounded neighbouring source lines a retry may see, as one string."""
+    lines, total = [], 0
+    for text in context_texts or ():
+        line = " ".join(str(text or "").split())
+        if not line or line in lines:
+            continue
+        if total + len(line) > SCENE_CONTEXT_MAX_CHARS:
+            break
+        lines.append(line)
+        total += len(line)
+        if len(lines) >= SCENE_CONTEXT_MAX_LINES:
+            break
+    return " ".join(lines)
 
 
 @dataclass(frozen=True)
@@ -405,6 +435,11 @@ _IMPROBABLE_TOKEN = re.compile(
 SUSPICIOUS_TOKEN_LENGTH = 4
 
 
+def improbable_source_token(token):
+    """True when the source language does not spell a token this shape."""
+    return bool(_IMPROBABLE_TOKEN.match(_fold(token)))
+
+
 def _known_word(token, is_source_word):
     if is_source_word is None:
         return False
@@ -446,6 +481,91 @@ def suspicious_source_tokens(source, candidate, *, known_entities=(), is_source_
         if token in candidate_words and _IMPROBABLE_TOKEN.match(token):
             suspicious.append(token)
     return tuple(token.upper() for token in suspicious)
+
+
+# --- repairing a source the detector just called untrustworthy ----------------
+# Detection was where #84F14 stopped: a corrupt token that survived into the
+# Portuguese was filed unusable and shipped.  The provider is then being asked to
+# translate a word that does not exist, so before the one retry it gets, the
+# source is given its best shot at being a word again.
+#
+# This is deliberately *not* a spellchecker over OCR text.  It runs only on
+# tokens ``suspicious_source_tokens`` already proved untrustworthy - improbably
+# spelled, unknown to the lexicon, and carried untranslated into the candidate -
+# and it corrects one only when the vocabulary the caller vouches for holds
+# exactly one word a single edit away.  Two candidates is a guess, and a guess
+# that rewrites a name, a fantasy term or an SFX is a worse defect than the one
+# it is trying to fix, so ambiguity means no repair and the region stays
+# ``REVIEW_UNUSABLE``.
+#
+# The raw OCR is never overwritten: the caller keeps the original text and the
+# canonical form travels separately, with its evidence.
+SOURCE_REPAIR_MIN_LENGTH = 4
+SOURCE_REPAIR_REASON = "unique_single_edit_source_vocabulary"
+
+
+def _within_one_edit(left, right):
+    """True when one substitution, insertion or deletion turns one into the other."""
+    if left == right:
+        return False
+    if len(left) > len(right):
+        left, right = right, left
+    if len(right) - len(left) > 1:
+        return False
+    index = 0
+    while index < len(left) and left[index] == right[index]:
+        index += 1
+    if len(left) == len(right):
+        return left[index + 1:] == right[index + 1:]
+    return left[index:] == right[index + 1:]
+
+
+def unique_source_repair(token, vocabulary):
+    """The one vocabulary word a single edit from ``token``, or ``""``.
+
+    ``""`` for no candidate *and* for more than one: both mean the evidence does
+    not name a single answer, and only a single answer may rewrite a source.
+    """
+    token = str(token or "").upper()
+    if len(token) < SOURCE_REPAIR_MIN_LENGTH or token in vocabulary:
+        return ""
+    matches = {word for word in vocabulary if _within_one_edit(token, word)}
+    return matches.pop() if len(matches) == 1 else ""
+
+
+def repair_suspicious_source(source, suspicious_tokens, vocabulary, *, protected=()):
+    """``(canonical_source, repairs)`` - unique high-confidence repairs only.
+
+    ``repairs`` carries the provenance the caller must persist: what the OCR
+    actually read, what it was corrected to, and on what evidence.
+    """
+    text = str(source or "")
+    protected_tokens = {part.upper() for entry in protected for part in _words(entry)}
+    lexicon = {str(word).upper() for word in (vocabulary or ())}
+    repairs = []
+    for raw in dict.fromkeys(str(token or "").upper() for token in suspicious_tokens):
+        if not raw or raw in protected_tokens:
+            continue
+        canonical = unique_source_repair(raw, lexicon)
+        if not canonical:
+            continue
+        repaired = re.sub(
+            rf"\b{re.escape(raw)}\b", canonical, text, flags=re.IGNORECASE
+        )
+        if repaired == text:
+            continue
+        text = repaired
+        repairs.append({
+            "raw_source": raw,
+            "canonical_source": canonical,
+            "repair_reason": SOURCE_REPAIR_REASON,
+            # Uniqueness is the gate, so every accepted repair is equally
+            # evidenced; the number exists so the provenance record has the
+            # same shape as every other confidence the pipeline persists.
+            "repair_confidence": 1.0,
+            "repair_evidence": f"unique_single_edit:{raw}>{canonical}",
+        })
+    return text, tuple(repairs)
 
 
 # --- Portuguese a reader would not accept ------------------------------------

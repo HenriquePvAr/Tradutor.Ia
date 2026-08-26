@@ -1047,6 +1047,34 @@ código não cita termo nenhum, a tabela é o dado. O achado é `word_sense_cont
 recuperar o sentido certo nem perceber que está errado. Sobre todas as regiões persistidas
 do run real de #84F9 a regra marca exatamente uma (`p046:BALAO_1`) — medido, não afirmado.
 
+**Recuperação de review inutilizável (TDD #84F17, `SEMANTIC-RECOVERY-001`).** Detectar não
+basta. `_fidelity_reason_for()` passa a **devolver** o motivo quando
+`semantic_fidelity.is_review_unusable()` é verdadeiro, o que faz a região gastar o retry
+seletivo que ela já tinha — `review_renderable` continua não gastando nada.
+
+Antes do retry, `_canonical_retry_source()` tenta reparar a origem, e só para a classe em que
+a origem é o defeito. `unique_source_repair()` corrige um token quando o vocabulário da cena —
+`source_repair_vocabulary()`, o léxico de diálogo do pipeline (SFX excluídos por construção)
+mais os tokens **plausíveis** do contexto limitado — contém **exatamente uma** palavra a uma
+edição de distância. Zero candidatas ou duas significam nenhum reparo: um palpite que reescreve
+um nome próprio, um termo de fantasia ou uma onomatopeia é defeito pior do que o que tenta
+corrigir. `group.text` nunca é sobrescrito; a forma canônica e sua evidência (`raw_source`,
+`canonical_source`, `repair_reason`, `repair_confidence`, `repair_evidence`) vivem em
+`canonical_source_text` / `source_repairs`, e só o retry as vê — o detector continua lendo o
+OCR bruto, então o reparo não pode silenciá-lo.
+
+O retry leva ainda `source_context`: as linhas de origem vizinhas da cena, limitadas por
+`semantic_fidelity.scene_context()` (6 linhas / 600 caracteres). No DeepL entram no campo
+`context` documentado — lido para desambiguar, nunca traduzido; no NVIDIA, como
+`contexto_da_cena` no payload. Evidência descritiva, nunca instrução nomeando a resposta.
+
+Se o segundo candidato não passar a validação inteira, a região volta ao veredito da detecção:
+o primeiro candidato renderiza, `semantic_review_reason` é restaurado, e o motivo de review
+**não** é gravado em `translation_validation_reason` — esse é o canal de rejeição, e a
+contabilidade contaria a região como `semantic_rejected`, que é um veredito diferente e falso.
+Máximo real por região: 2 chamadas de tradução (1 inicial + 1 retry), teto de capítulo
+`ceil(N/8)` inalterado.
+
 **`SEMANTIC-RUNTIME-001` (TDD #84F1, fechado).** O E2E real de #84 provou que essa
 severidade parava no validador: três regiões (`SLLM` p43, `COLLD` p42, `VALLT` p46) saíram
 `translated / valid / quality_impact none`, contadas entre as traduzidas limpas, com o

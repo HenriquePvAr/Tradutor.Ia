@@ -1098,3 +1098,39 @@ em `UNUSABLE_REVIEW_REASON_CODES`: renderiza, conta como `semantic_review_unusab
 **Status de produto.** `TRANSLATION-SEMANTIC-PRECINCT-001` fechado offline; a qualidade semântica
 visível ao usuário fica **CLOSED OFFLINE / pendente de E2E real**, e a saída final de história
 visível ao usuário segue **OPEN / pendente de novo E2E real autorizado**. `READY FOR SETUP.EXE: NO`.
+
+### TDD #84F17 — recuperação de review semântico inutilizável (2026-08-26, base `9c38c3a`)
+
+**O que faltava.** #84F14 e #84F15 fecharam a **detecção** de duas classes de saída ruim, e
+pararam aí. Uma região marcada `review_unusable` era publicada como estava: nunca pedia uma
+segunda tradução, nem quando a própria origem era o defeito. `SEMANTIC-RECOVERY-001` fecha o
+caminho `candidato ruim → detecta → recuperação limitada → candidato bom se houver → senão
+REVIEW_UNUSABLE`, sem nunca produzir `candidato ruim → CLEAN` nem retries infinitos.
+
+**Duas classes, dois caminhos.** `source_ocr_suspicious` recebe reparo de origem *antes* do
+retry — `unique_source_repair()` só corrige quando o vocabulário da cena tem **exatamente uma**
+palavra a uma edição de distância; ambiguidade, nome próprio, termo protegido, SFX e palavra
+já conhecida ficam intocados. `word_sense_context_mismatch` recebe a restrição
+`preserve_word_sense` mais as linhas de origem vizinhas como contexto descritivo, pelo campo
+`context` do DeepL (uso documentado) e por `contexto_da_cena` no NVIDIA — nunca uma instrução
+nomeando a resposta.
+
+**Proveniência.** `group.text` continua sendo o OCR bruto; a forma canônica e sua evidência
+vivem em `canonical_source_text` / `source_repairs`. Só o retry vê a forma canônica, então o
+detector nunca é silenciado pelo reparo.
+
+**Limite.** Máximo de **2 chamadas de tradução por região** (1 inicial + 1 retry seletivo), teto
+de capítulo `ceil(N/8)` inalterado. Nada foi empilhado: terminologia, OCR e sentido disputam o
+mesmo orçamento que já existia.
+
+**Replay offline do run real de #84F9** (zero chamadas a provedor): `p042` (`COLLD`) tem reparo
+único provado por evidência genérica (`COLLD` → `COULD`); `p043` (`SLLM`) e `p046` (`VALLT`) não
+têm candidata única em vocabulário nenhum e **permanecem `REVIEW_UNUSABLE`** — nenhum mapeamento
+literal foi codificado para forçá-los; `p046:BALAO_1` (`PRECINCT`) obtém o retry de sentido com
+o contexto policial da cena. Recuperação que falha volta ao veredito da detecção: renderiza sob
+review, nunca vira `clean`, e não é convertida em rejeição.
+
+**Status de produto.** `SEMANTIC-RECOVERY-001` fechado offline. Detecção semântica: **CLOSED
+OFFLINE**. Recuperação semântica: **CLOSED OFFLINE**. Leitor contínuo (#84F16): **CLOSED**. A
+saída final de história visível ao usuário segue **OPEN / pendente de novo E2E real
+autorizado**. `READY FOR SETUP.EXE: NO`.

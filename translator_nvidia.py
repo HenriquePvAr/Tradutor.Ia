@@ -570,6 +570,7 @@ class TranslatorNvidiaBatch:
         proper_names=None,
         retry_origin="quality_retry",
         retry_attempt=1,
+        source_context=(),
     ):
         if not str(text).strip():
             return text
@@ -595,6 +596,13 @@ class TranslatorNvidiaBatch:
             if constraint:
                 # The model is told which constraint failed, never any reasoning.
                 payload["restricao"] = constraint
+            scene = semantic_fidelity.scene_context(source_context)
+            if scene:
+                # Descriptive evidence, exactly like DeepL's ``context`` field:
+                # the other source lines of this scene, verbatim, so an ambiguous
+                # word has something to be disambiguated *by*. Never an
+                # instruction, and never the answer we are hoping for.
+                payload["contexto_da_cena"] = scene
             parsed = self._request_json_with_retry(
                 [
                     {
