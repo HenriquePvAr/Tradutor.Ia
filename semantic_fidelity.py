@@ -56,9 +56,13 @@ SOURCE_OCR_SUSPICIOUS = "source_ocr_suspicious"
 GRAMMAR_MALFORMED = "ptbr_grammar_malformed"
 # The OCR lost the word boundaries and the repair pass could not put them back.
 SOURCE_SEGMENTATION_INCOMPLETE = "source_segmentation_incomplete"
+# The source word has more than one sense and the candidate picked the one the
+# surrounding context does not support.
+WORD_SENSE_CONTEXT_MISMATCH = "word_sense_context_mismatch"
 
 REVIEW_ONLY_FIDELITY_REASON_CODES = frozenset({
     SOURCE_OCR_SUSPICIOUS, GRAMMAR_MALFORMED, SOURCE_SEGMENTATION_INCOMPLETE,
+    WORD_SENSE_CONTEXT_MISMATCH,
 })
 
 # --- how usable is a ``review`` verdict? ------------------------------------
@@ -73,6 +77,9 @@ REVIEW_ONLY_FIDELITY_REASON_CODES = frozenset({
 # * ``ptbr_grammar_malformed`` is malformed Portuguese, also on the page.
 # * ``source_segmentation_incomplete`` means nobody knows where the source words
 #   were, so no candidate built from it can be verified against anything.
+# * ``word_sense_context_mismatch`` is fluent Portuguese that states a different
+#   fact than the source ("PRECINCT 7" -> "7 DISTRITO ELEITORAL").  A reader
+#   cannot recover the intended sense from it, and cannot tell it is wrong.
 #
 # Such a region still renders and still routes to review, but it is a Setup
 # blocker: "flagged for review" is not a licence to ship nonsense as final
@@ -81,6 +88,7 @@ REVIEW_RENDERABLE = "review_renderable"
 REVIEW_UNUSABLE = "review_unusable"
 UNUSABLE_REVIEW_REASON_CODES = frozenset({
     SOURCE_OCR_SUSPICIOUS, GRAMMAR_MALFORMED, SOURCE_SEGMENTATION_INCOMPLETE,
+    WORD_SENSE_CONTEXT_MISMATCH,
 })
 
 
@@ -109,6 +117,7 @@ FIDELITY_RETRY_CONSTRAINTS = {
     SOURCE_OCR_SUSPICIOUS: "preserve_meaning",
     GRAMMAR_MALFORMED: "preserve_natural_grammar",
     SOURCE_SEGMENTATION_INCOMPLETE: "preserve_meaning",
+    WORD_SENSE_CONTEXT_MISMATCH: "preserve_word_sense",
 }
 
 TRANSLATABLE_CLASSIFICATIONS = frozenset({"speech", "thought", "narration", "unknown"})
@@ -457,6 +466,103 @@ def _malformed_portuguese(candidate):
     return match.group(0) if match else ""
 
 
+# --- which sense of an ambiguous word -----------------------------------------
+# A different defect from every rule above: the source is clean, the Portuguese
+# is well formed, every invariant holds - and the noun means something else.
+# "PRECINCT 7" came back "7 DISTRITO ELEITORAL" on a page that also says
+# "EMERGENCY CONTAINMENT VAULT".  Nothing local can catch that, because nothing
+# local is wrong.
+#
+# The evidence is three-part and all three parts are required, which is what
+# keeps this from becoming the short-balloon detector again:
+#
+#   1. the source spells a word this table knows to be ambiguous;
+#   2. the candidate *commits* to one of its senses, by carrying a target word
+#      that only that sense would produce ("eleitoral", "celula");
+#   3. the bounded context - this region plus its neighbours - does not support
+#      that sense.  Either it supports a different one (a proven mismatch) or it
+#      supports none, in which case nobody knows and a confident guess is not a
+#      clean translation.
+#
+# A candidate that stays neutral ("DISTRITO 7") commits to no sense and is never
+# flagged.  The table is small and meant to stay small: an entry earns its place
+# by being a word whose senses a reader cannot recover from the wrong choice.
+AMBIGUOUS_WORD_SENSES = {
+    "precinct": {
+        "police": {
+            "source": frozenset({
+                "police", "officer", "officers", "cop", "cops", "sheriff",
+                "detective", "arrest", "arrested", "patrol", "security",
+                "guard", "guards", "detention", "containment", "custody",
+                "checkpoint", "station", "crime", "suspect", "prisoner",
+            }),
+            "target": frozenset({"policial", "policiais", "policia", "delegacia"}),
+        },
+        "electoral": {
+            "source": frozenset({
+                "vote", "votes", "voter", "voters", "ballot", "ballots",
+                "election", "elections", "electoral", "poll", "polls",
+                "polling", "campaign", "candidate",
+            }),
+            "target": frozenset({
+                "eleitoral", "eleitorais", "eleicao", "eleicoes", "votacao",
+            }),
+        },
+    },
+    "cell": {
+        "prison": {
+            "source": frozenset({
+                "prison", "jail", "cage", "guard", "guards", "inmate",
+                "prisoner", "prisoners", "warden", "bars", "locked", "chains",
+                "slave", "slaves", "captive",
+            }),
+            "target": frozenset({"cela", "celas"}),
+        },
+        "biological": {
+            "source": frozenset({
+                "blood", "tissue", "dna", "organism", "body", "bone",
+                "membrane", "microscope", "flesh", "muscle", "nerve",
+            }),
+            "target": frozenset({"celula", "celulas"}),
+        },
+        "device": {
+            "source": frozenset({
+                "phone", "battery", "signal", "charger", "call", "screen",
+            }),
+            "target": frozenset({"celular", "celulares"}),
+        },
+    },
+}
+
+
+def word_sense_conflicts(source, candidate, context_texts=()):
+    """``term>sense`` for every sense the candidate asserts and nothing supports."""
+    source_words = set(_words(source))
+    if not source_words & set(AMBIGUOUS_WORD_SENSES):
+        return ()
+    candidate_words = set(_words(candidate))
+    evidence = set(source_words)
+    for text in context_texts or ():
+        evidence |= set(_words(text))
+    conflicts = []
+    for term, senses in AMBIGUOUS_WORD_SENSES.items():
+        if term not in source_words:
+            continue
+        asserted = [
+            name for name, sense in senses.items()
+            if candidate_words & sense["target"]
+        ]
+        # Exactly one, or the candidate is saying something this table cannot
+        # read and guessing would be worse than staying quiet.
+        if len(asserted) != 1:
+            continue
+        sense = asserted[0]
+        if evidence & senses[sense]["source"]:
+            continue
+        conflicts.append(f"{term}>{sense}")
+    return tuple(conflicts)
+
+
 # --- who did what to whom ---------------------------------------------------
 def _entities_reordered(source, candidate, protected_entities):
     """The same two known identities, in the other order.
@@ -526,6 +632,7 @@ def evaluate_local_fidelity(
     proper_names=(),
     is_source_word=None,
     source_repair_reason="",
+    context_texts=(),
 ):
     """Layer A. Deterministic, free, and honest about what it cannot decide.
 
@@ -590,6 +697,11 @@ def evaluate_local_fidelity(
     malformed = _malformed_portuguese(target)
     if malformed:
         return FidelityFinding(REVIEW, (GRAMMAR_MALFORMED,), (malformed,))
+    # Last, because it is the only rule that reads anything outside this region:
+    # everything provable about the region alone has already had its say.
+    senses = word_sense_conflicts(source, target, context_texts)
+    if senses:
+        return FidelityFinding(REVIEW, (WORD_SENSE_CONTEXT_MISMATCH,), senses[:4])
     return FidelityFinding()
 
 

@@ -1052,3 +1052,49 @@ RapidOCR.
 
 **Status de produto.** `P068-RECOVERY-001` está fechado offline, mas a saída final visível ao
 usuário segue **OPEN / pendente de novo E2E real autorizado**. `READY FOR SETUP.EXE: NO`.
+
+### TDD #84F15 — desambiguação de sentido contextual (2026-08-26, base `64b563e`)
+
+**Classificação documental:** contrato offline fechado; E2E real final ainda pendente. A missão
+não executou job real, provider, DeepL, rede, Supabase remoto, Community, Drive ou push.
+
+**Classe fechada.** Origem limpa + português fluente + sentido errado da palavra + contabilizado
+como `semantic_clean`. Sentinela real: `p046:BALAO_1`, `PRECINCT 7` → `7º DISTRITO ELEITORAL`,
+persistido em `.cache/processed` com `translation_valid: true`, `translation_validation_reason:
+'ok'`, `semantic_review_reason: ''` e `manual_review_required: false`. A leitura de OCR estava
+correta (`raw_text == clean_text == "PRECINCT 7"`, confiança 0.93, `OCR_SUFFICIENT`), o
+português é bem formado e todos os invariantes de #82 são satisfeitos — número preservado,
+sem nome próprio, sem negação, sem relação temporal. **Primeira divergência:** a escolha de
+sentido pelo provedor; nenhuma camada olhava para o sentido.
+
+**Raiz.** `evaluate_local_fidelity()` só via a região isolada. A única "contexto" que existia
+(`_fidelity_context()`) é do adjudicador remoto — linhas de personagem e glossário — e nunca
+chega à camada local. Sem contexto, um candidato fluente que troca o sentido de um substantivo
+ambíguo é indistinguível de uma tradução correta.
+
+**Correção.** `semantic_fidelity.word_sense_conflicts()` + `context_texts` em
+`evaluate_local_fidelity()`, alimentado por `TextGroup.page_context_texts` (as demais regiões
+da mesma página, montado uma vez em `validate_and_retry_translations`). Contrato de três
+evidências obrigatórias, descrito em
+[QUALITY_AND_VALIDATION.md](../QUALITY_AND_VALIDATION.md) e em
+[DOCUMENTACAO_TECNICA.md](technical/DOCUMENTACAO_TECNICA.md). Nenhum
+literal de capítulo, nenhuma condição por página, nenhum ramo por termo: a tabela é o dado, e
+o teste `test_the_rule_is_the_table_and_nothing_else` prova que remover a entrada apaga o achado.
+
+**Evidência de contexto real.** A página 46 não contém `police` nem `officer`. O que existe é
+`EMERGENCY CONTAINMENT VAULT` na região vizinha — domínio de detenção/segurança. É essa
+evidência persistida, e não um token inventado, que sustenta o sentido policial e derruba o
+eleitoral.
+
+**Falsos positivos, medidos.** Varredura de todas as regiões traduzidas persistidas do run real
+de #84F9: a regra marca **uma** região, `p046:BALAO_1`. O detector amplo de balão curto que
+marcaria quatro **não** foi promovido.
+
+**Contabilidade.** `word_sense_context_mismatch` entra em `REVIEW_ONLY_FIDELITY_REASON_CODES` e
+em `UNUSABLE_REVIEW_REASON_CODES`: renderiza, conta como `semantic_review_unusable`, nunca como
+`semantic_clean`, e zera `setup_ready`. O modelo de #84F14 (`clean` / `review_renderable` /
+`review_unusable` / `reject`) fica intacto.
+
+**Status de produto.** `TRANSLATION-SEMANTIC-PRECINCT-001` fechado offline; a qualidade semântica
+visível ao usuário fica **CLOSED OFFLINE / pendente de E2E real**, e a saída final de história
+visível ao usuário segue **OPEN / pendente de novo E2E real autorizado**. `READY FOR SETUP.EXE: NO`.

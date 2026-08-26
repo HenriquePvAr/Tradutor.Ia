@@ -1033,6 +1033,20 @@ em `semantic_review_reason` no grupo e em `semantic_review*` no `fidelity_stats`
 Modalidade (`might`/`could`) fica fora do validador local: as regras testadas produziram só
 falsos positivos e o caso pertence ao adjudicador.
 
+**Sentido lexical contextual (TDD #84F15).** Última regra da camada local, e a única que lê
+algo fora da região: `word_sense_conflicts()`. A origem pode estar perfeita, o português bem
+formado e todos os invariantes acima satisfeitos, e a palavra ainda significar outra coisa —
+`PRECINCT 7` → `7º DISTRITO ELEITORAL` numa página que também diz `EMERGENCY CONTAINMENT
+VAULT`. A evidência tem três partes e todas são obrigatórias: (1) a origem escreve um termo
+que `AMBIGUOUS_WORD_SENSES` conhece como ambíguo; (2) o candidato **se compromete** com um
+sentido, carregando um marcador em PT-BR exclusivo dele; (3) o contexto limitado — a região
+mais as demais regiões da mesma página, nunca o capítulo — não sustenta esse sentido. Um
+candidato neutro (`DISTRITO 7`) não é marcado, e um termo fora da tabela nunca é olhado: o
+código não cita termo nenhum, a tabela é o dado. O achado é `word_sense_context_mismatch`,
+`review` de severidade e `review_unusable` de usabilidade, porque o leitor não tem como
+recuperar o sentido certo nem perceber que está errado. Sobre todas as regiões persistidas
+do run real de #84F9 a regra marca exatamente uma (`p046:BALAO_1`) — medido, não afirmado.
+
 **`SEMANTIC-RUNTIME-001` (TDD #84F1, fechado).** O E2E real de #84 provou que essa
 severidade parava no validador: três regiões (`SLLM` p43, `COLLD` p42, `VALLT` p46) saíram
 `translated / valid / quality_impact none`, contadas entre as traduzidas limpas, com o

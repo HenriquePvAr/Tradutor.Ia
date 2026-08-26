@@ -528,6 +528,9 @@ class TextGroup:
     naturalization_rejected_reason: str = ""
     naturalization_selected_version: str = ""
     naturalization_context: dict = field(default_factory=dict)
+    # The other regions read on the same page: bounded lexical context, used to
+    # decide which sense of an ambiguous source word the page is talking about.
+    page_context_texts: tuple = ()
     art_reconstruction_status: str = ""
     art_reconstruction_reason: str = ""
 
@@ -7356,6 +7359,7 @@ def _maybe_naturalize_translation(
             proper_names=name_spans,
             is_source_word=_token_is_source_vocabulary,
             source_repair_reason=str(getattr(group, "repair_reason", "")),
+            context_texts=tuple(getattr(group, "page_context_texts", ()) or ()),
         )
         post_budget = {"verifier_calls": 0}
         # Same rule as the terminology retry: the verdict below is about the
@@ -7459,6 +7463,7 @@ def _fidelity_reason_for(group, candidate, *, ledger, verifier, budget, name_spa
         proper_names=name_spans,
         is_source_word=_token_is_source_vocabulary,
         source_repair_reason=str(getattr(group, "repair_reason", "")),
+        context_texts=tuple(getattr(group, "page_context_texts", ()) or ()),
     )
     # Every verdict is about *this* candidate: a retry that cleared the doubt must
     # not inherit the rejected candidate's review flag.
@@ -7523,6 +7528,15 @@ def validate_and_retry_translations(
 ):
     retry_records = []
     selective_retry_budget_remaining = _selective_translation_retry_budget(groups)
+    # What else this page says, given to every region as lexical context. The
+    # page is the bound: no chapter is ever assembled, and nothing here reaches a
+    # provider prompt - it only decides which sense of an ambiguous word the
+    # scene supports.
+    page_texts = [str(other.text or "") for other in groups if str(other.text or "").strip()]
+    for group in groups:
+        group.page_context_texts = tuple(
+            text for text in page_texts if text != str(group.text or "")
+        )
     # Scanned once, and only if some region actually hands its source back: a chapter
     # with nothing to explain never pays for the scan.
     chapter_entities = {}

@@ -534,13 +534,37 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   `completed_with_error` sempre entra na contabilidade como página **não verificada**,
   gera finding explícito e impede `quality_passed = true`. Zero regiões nunca mais equivale
   a "sem história". A confirmação em execução real depende do próximo E2E.
-- `TRANSLATION-SEMANTIC-PRECINCT-001` (**dívida de revisão semântica, aberto**): `PRECINCT 7`
-  saiu como `7º DISTRITO ELEITORAL` no PDF real de #84F9. Em contexto policial isso está
-  semanticamente errado, mas a evidência de contexto disponível hoje não distingue distrito
-  policial de distrito eleitoral com confiança alta. Nenhuma correção pontual é aceitável:
-  `test_pipeline_review_global_contracts.py` proíbe explicitamente literais de capítulo
-  (`PRECINCT` incluído) no runtime. Fica registrado como dívida até haver sinal genérico
-  suficiente no ledger de terminologia.
+- `TRANSLATION-SEMANTIC-PRECINCT-001` (**fechado offline em #84F15 no contrato local**):
+  `PRECINCT 7` saiu como `7º DISTRITO ELEITORAL` no PDF real de #84F9 — origem limpa,
+  português bem formado, todos os invariantes de fidelidade satisfeitos, e mesmo assim
+  contabilizado como `semantic_clean`. A classe do defeito é **seleção de sentido lexical**,
+  não corrupção de OCR.
+
+  **Contrato de sentido contextual.** `semantic_fidelity.word_sense_conflicts()` exige três
+  evidências simultâneas antes de marcar qualquer região:
+
+  1. a origem escreve uma palavra que a tabela `AMBIGUOUS_WORD_SENSES` conhece como ambígua
+     (hoje `precinct` e `cell` — é um léxico extensível, não uma regra de capítulo: nenhum
+     ramo do código cita um termo, e remover a entrada apaga o achado);
+  2. o candidato **se compromete** com um dos sentidos, carregando um marcador em PT-BR que
+     só aquele sentido produziria (`eleitoral`, `célula`, `cela`);
+  3. o contexto limitado — a própria região mais as demais regiões **da mesma página** —
+     não sustenta esse sentido, seja por sustentar outro (divergência provada) seja por não
+     sustentar nenhum (ninguém sabe, e um palpite confiante não é tradução limpa).
+
+  Um candidato neutro (`DISTRITO 7`) não se compromete com sentido nenhum e nunca é marcado.
+  Nenhum capítulo é montado e nada disso chega a prompt de provedor: o contexto é apenas
+  léxico e limitado à página.
+
+  **Resultado.** `word_sense_context_mismatch` é `review` e entra em
+  `UNUSABLE_REVIEW_REASON_CODES`: a região continua renderizando (segurar poria inglês de
+  volta na página), mas nunca é contada como limpa e bloqueia `setup_ready`. O código tem
+  instrução de retry própria (`preserve_word_sense`) no provedor, sem injetar texto de origem.
+
+  **Falso positivo medido, não afirmado.** Varrendo todas as regiões persistidas do run real
+  de #84F9, a regra marca exatamente uma: `p046:BALAO_1`. Contrato permanente em
+  `test_84f15_word_sense_disambiguation.py`. A confirmação em execução real depende do
+  próximo E2E.
 - `TRANSLATION-SEMANTIC-001`: fechado localmente em #82 — ver
   [Fidelidade semântica e PT-BR natural](#fidelidade-semântica-e-pt-br-natural). Continua
   aberto para os casos em que nenhum candidato persistido alternativo existe: eles exigem

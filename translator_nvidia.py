@@ -542,6 +542,10 @@ class TranslatorNvidiaBatch:
                 "O texto original tem palavras coladas sem espaco; separe as palavras "
                 "pelo sentido da frase inteira antes de traduzir, e nao trate um trecho "
                 "colado como se fosse uma unica palavra.",
+            semantic_fidelity.WORD_SENSE_CONTEXT_MISMATCH:
+                "A tentativa anterior escolheu um sentido de palavra ambigua que nao "
+                "corresponde ao contexto da cena; use o sentido coerente com o restante "
+                "da pagina, sem inventar informacao nova.",
             semantic_fidelity.MEANING_MISMATCH:
                 "A tentativa anterior mudou o sentido do original; traduza preservando "
                 "negacao, quantidades, nomes, relacoes e intencao.",
