@@ -564,6 +564,22 @@ def driver_resolution_diagnostics(env=None) -> dict[str, object]:
     }
 
 
+# Matched by exception class name so classification never depends on importing the
+# transport library, and so Selenium's own ``TimeoutException`` keeps the browser code.
+_SOURCE_TRANSPORT_CODES = {
+    "ReadTimeout": "source_timeout",
+    "ConnectTimeout": "source_timeout",
+    "Timeout": "source_timeout",
+    # Deliberately not the builtin ``TimeoutError``: browser startup raises it too, and
+    # the name alone cannot tell the two apart.  The one caller that *knows* it is waiting
+    # on source analysis (``app_ui.api_source_analyze``) classifies that case itself.
+    "ConnectionError": "source_network_error",
+    "SSLError": "source_network_error",
+    "ProxyError": "source_network_error",
+    "TooManyRedirects": "source_network_error",
+}
+
+
 def _pipeline_exception_code(exc: BaseException) -> str:
     """Classify local operational failures without leaking provider/browser details."""
     if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC:
@@ -571,6 +587,13 @@ def _pipeline_exception_code(exc: BaseException) -> str:
     existing = str(getattr(exc, "code", "") or "")
     if existing:
         return existing
+    # Reaching the source over the network and starting a browser are different
+    # failures with the same words in them.  Classify by exception type first, so a
+    # source read timeout is never filed as a browser startup problem: the message
+    # heuristics below only ever see a driver/browser exception.
+    transport = _SOURCE_TRANSPORT_CODES.get(type(exc).__name__)
+    if transport:
+        return transport
     message = str(exc).lower()
     if "timed out" in message or "timeout" in message:
         return "browser_startup_timeout"

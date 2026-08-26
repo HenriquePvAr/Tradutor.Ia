@@ -55,10 +55,13 @@ pip install -r requirements-dev.txt
 Os arquivos têm responsabilidades diferentes:
 
 - `requirements.txt`: processamento de imagem, Selenium, PaddleOCR, tradução e monitoramento;
-- `requirements-rapidocr.txt`: RapidOCR e ONNX Runtime usados pelo modo `fast`;
+- `requirements-rapidocr.txt`: RapidOCR e ONNX Runtime usados como OCR primário do fluxo Beta
+  nos modos `fast` e `quality`;
 - `requirements-ui.txt`: NiceGUI para a interface local.
 
-Se você pretende usar somente o modo `quality` pela CLI, RapidOCR não é obrigatório. Se pretende usar somente a CLI, NiceGUI também é opcional. Para o fluxo completo recomendado, instale os três conjuntos.
+Para o fluxo completo recomendado, instale os três conjuntos. Se pretende usar somente a CLI,
+NiceGUI é opcional. PaddleOCR continua útil para fallbacks de maior qualidade, mas não é
+requisito para executar o modo `quality` quando RapidOCR está disponível.
 
 ## 4. Criar a configuração local
 
@@ -78,9 +81,9 @@ Não versione `.env`, não cole a chave em comandos e não a inclua em relatóri
 
 PaddleOCR é instalado pelo arquivo principal de requisitos. Na primeira inicialização de uma variante de modelo, a biblioteca pode buscar os arquivos oficiais correspondentes. O código usa:
 
-- PaddleOCR completo no modo `quality` e em fallbacks de maior qualidade;
+- RapidOCR/ONNX Runtime como OCR primário dos modos `fast` e `quality`;
+- PaddleOCR completo como fallback opcional de maior qualidade;
 - `PP-OCRv4_mobile_det` e reconhecimento mobile nos fallbacks leves;
-- RapidOCR/ONNX Runtime no modo `fast`.
 
 Planeje a primeira execução com conexão disponível e espaço em disco. O projeto não exige que modelos sejam copiados manualmente para uma pasta interna do repositório.
 

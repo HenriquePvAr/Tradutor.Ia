@@ -583,6 +583,32 @@ async def api_source_analyze(
             "message": "Não foi possível validar esta fonte.",
             "action": "Revise os campos e tente novamente.",
         }) from exc
+    except Exception as exc:
+        # SOURCE-ANALYSIS-OBSERVABILITY-001. This failure happens before any job row
+        # exists, so there is no job status, no history entry and no per-job log to carry
+        # the evidence: without this branch the user saw a bare 500 and the exception was
+        # lost. No job is created here - the user is simply told it is retryable, and the
+        # sanitized class is recorded for diagnosis.
+        from down import _pipeline_exception_code
+
+        code = _pipeline_exception_code(exc)
+        if isinstance(exc, TimeoutError) and code == "browser_startup_timeout":
+            code = "source_timeout"
+        # Host only: never the path or query string, which is where a signed token or a
+        # session identifier would sit.
+        host = urllib_parse.urlsplit(str((payload or {}).get("url") or "")).hostname or ""
+        print(
+            "source_analysis_failed_before_job "
+            f"code={code} exception={type(exc).__name__} stage=source_analysis "
+            f"host={host[:120]}",
+            flush=True,
+        )
+        raise HTTPException(status_code=502, detail={
+            "code": code,
+            "stage": "analise_da_fonte",
+            "message": "Não foi possível analisar esta fonte agora. Tente novamente.",
+            "action": "Verifique sua conexão e tente novamente.",
+        }) from exc
 
 
 @app.post("/api/ui/source/report")

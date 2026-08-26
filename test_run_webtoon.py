@@ -16,11 +16,17 @@ from translator_nvidia import TranslatorNvidiaBatch
 
 class RunWebtoonTests(unittest.TestCase):
     def test_engine_override_is_explicit_and_generic(self):
+        # Both modes now resolve to RapidOCR on their own, so the override is only
+        # meaningful when it selects a *different* engine than the mode would.
         import config
+        import ocr_engine
         previous = config.OCR_ENGINE
         try:
-            with patch.dict("os.environ", {"TRADUTOR_OCR_ENGINE_OVERRIDE": "rapidocr"}, clear=False):
-                self.assertEqual(_configure_mode("quality"), "rapidocr")
+            with (
+                patch.dict("os.environ", {"TRADUTOR_OCR_ENGINE_OVERRIDE": "paddle"}, clear=False),
+                patch.object(ocr_engine.importlib.util, "find_spec", return_value=object()),
+            ):
+                self.assertEqual(_configure_mode("quality"), "paddle")
         finally:
             config.OCR_ENGINE = previous
 

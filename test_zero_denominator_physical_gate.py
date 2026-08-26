@@ -270,7 +270,9 @@ class ModeEnginePreflightTest(unittest.TestCase):
             attr.start()
             self.addCleanup(attr.stop)
 
-    def test_quality_mode_selects_paddle_and_fast_mode_selects_rapidocr(self):
+    def test_both_modes_require_rapidocr_as_the_primary_engine(self):
+        # Paddle is an optional escalation, so it is never the engine whose absence
+        # stops the run.  Only the primary engine is required, in both modes.
         seen = []
 
         def record(engine):
@@ -278,29 +280,44 @@ class ModeEnginePreflightTest(unittest.TestCase):
             return engine
 
         with patch.object(ocr_engine, "require_available_engine", record):
-            self.assertEqual(run_webtoon._configure_mode("quality"), "paddle")
+            self.assertEqual(run_webtoon._configure_mode("quality"), "rapidocr")
             self.assertEqual(run_webtoon._configure_mode("fast"), "rapidocr")
 
-        self.assertEqual(seen, ["paddle", "rapidocr"])
+        self.assertEqual(seen, ["rapidocr", "rapidocr"])
 
-    def test_quality_mode_stops_before_any_chapter_work_when_paddle_is_missing(self):
+    def test_quality_mode_stops_before_any_chapter_work_when_rapidocr_is_missing(self):
         with patch.object(ocr_engine.importlib.util, "find_spec", return_value=None):
             with self.assertRaises(ocr_engine.OCREngineUnavailableError) as caught:
                 run_webtoon._configure_mode("quality")
 
-        self.assertEqual(caught.exception.engine, "paddle")
+        self.assertEqual(caught.exception.engine, "rapidocr")
         self.assertEqual(caught.exception.reason_class, "dependency_unavailable")
 
     def test_no_silent_fallback_to_the_other_engine(self):
-        # RapidOCR being installed must not rescue a run that asked for Paddle.
+        # Paddle being installed must not rescue a run whose primary engine is missing.
+        def only_paddle(name):
+            return None if name.startswith("rapidocr") else object()
+
+        with patch.object(
+            ocr_engine.importlib.util, "find_spec", side_effect=only_paddle
+        ):
+            with self.assertRaises(ocr_engine.OCREngineUnavailableError):
+                run_webtoon._configure_mode("quality")
+
+    def test_quality_mode_runs_when_only_rapidocr_is_installed(self):
+        # The canonical Beta configuration: quality mode on a machine without Paddle.
+        import config
+
         def only_rapidocr(name):
             return object() if name.startswith("rapidocr") else None
 
         with patch.object(
             ocr_engine.importlib.util, "find_spec", side_effect=only_rapidocr
         ):
-            with self.assertRaises(ocr_engine.OCREngineUnavailableError):
-                run_webtoon._configure_mode("quality")
+            self.assertEqual(run_webtoon._configure_mode("quality"), "rapidocr")
+
+        self.assertEqual(config.OCR_ENGINE, "rapidocr")
+        self.assertFalse(config.FAST_OCR_MODE)
 
     def test_fast_mode_runs_normally_when_rapidocr_is_available(self):
         import config

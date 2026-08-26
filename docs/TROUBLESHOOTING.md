@@ -98,7 +98,9 @@ python -m pip install -r requirements-rapidocr.txt
 python -c "from rapidocr_onnxruntime import RapidOCR; print('RapidOCR: OK')"
 ```
 
-Como alternativa temporária, use `--mode quality`, que inicia com PaddleOCR.
+`--mode quality` também usa RapidOCR como primário no fluxo Beta atual. Instale
+`requirements-rapidocr.txt` ou configure explicitamente outro OCR disponível; não conte com
+Paddle como substituto silencioso do OCR primário.
 
 ## Chave NVIDIA ausente ou inválida
 

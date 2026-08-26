@@ -1023,3 +1023,28 @@ perde definição) — é exatamente por isso que o veredito é `review` e não 
 Community, Drive ou publicação; o artefato #84 foi lido e nunca reescrito. O replay é
 offline com paridade de produção, não um E2E: o fechamento de produto continua aguardando um
 E2E real dedicado.
+
+### TDD #84F6R — source analysis preflight recovery (2026-08-25, base `b5cdad2`)
+
+**Classificação documental:** contrato offline fechado; E2E real final ainda pendente. A missão
+não executou job real, provider, rede externa, Vortex real, Webtoons real, Supabase, Community,
+Drive ou push.
+
+**Escopo fechado.** O roteamento de fonte foi preso por contrato hermético: URL VortexScans
+suportada seleciona `VortexScansAdapter`, não chama `canonicalize_webtoons_url` e não depende de
+Webtoons. URL Webtoons continua selecionando o adapter Webtoons e seu canonicalizer próprio.
+Domínio desconhecido continua no fluxo unsupported/fallback controlado.
+
+**Falha pré-job observável.** Se a análise de fonte falha antes de criar job, o sistema mantém
+zero job, zero run e zero histórico fantasma, devolve erro recuperável para a UI, registra log
+sanitizado com estágio, host seguro e classe de falha, libera o lock do botão Start e não
+reintroduz a superfície azul de processamento no fluxo Beta normal.
+
+**OCR quality.** `quality` / `quality_optimized` agora é RapidOCR-primário. Paddle permanece
+fallback opcional; ausência de Paddle não bloqueia o modo qualidade quando RapidOCR está
+disponível. Ausência do OCR primário configurado continua falhando fechado. O guard de #84F5
+continua no caminho de produção e rejeita fallback vazio que apagaria uma leitura útil do
+RapidOCR.
+
+**Status de produto.** `P068-RECOVERY-001` está fechado offline, mas a saída final visível ao
+usuário segue **OPEN / pendente de novo E2E real autorizado**. `READY FOR SETUP.EXE: NO`.

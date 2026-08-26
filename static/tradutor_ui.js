@@ -1447,7 +1447,9 @@
     if (normalized === 'invalid_url') return 'invalid_url';
     if (normalized === 'unsupported_source' || normalized.startsWith('unsupported_')) return 'unsupported_source';
     if (['no_chapter_images', 'source_not_found', 'http_404'].includes(normalized)) return 'source_not_found';
-    if (['source_transport_failed', 'source_unavailable', 'source_navigation_timeout', 'source_rate_limited'].includes(normalized)) return 'source_temporarily_unavailable';
+    // Recoverable transport classes are grouped into one message for the user; the
+    // backend keeps them apart in its own logs so the class itself is never lost.
+    if (['source_transport_failed', 'source_unavailable', 'source_navigation_timeout', 'source_rate_limited', 'source_timeout', 'source_network_error'].includes(normalized)) return 'source_temporarily_unavailable';
     return normalized || 'source_extraction_failed';
   }
   function sourceReportPayload(error) {

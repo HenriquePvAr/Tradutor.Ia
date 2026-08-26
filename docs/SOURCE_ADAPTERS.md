@@ -46,6 +46,11 @@ Para uma submissão, a resolução é determinística:
 Um adapter específico sempre vence o fallback universal. A presença de um host no fallback não
 o transforma em fonte homologada nem cria allowlist global.
 
+O adapter escolhido também é dono da canonicalização específica. `vortexscans.org` não passa pelo
+canonicalizer Webtoons, e um timeout ou indisponibilidade de Webtoons não pode bloquear uma URL
+VortexScans suportada. Falhas pré-job de source analysis devem ser expostas como erro recuperável
+e sanitizado na UI, sem criar job, run ou histórico fantasma.
+
 ## Adapters específicos
 
 ### Webtoons
@@ -75,6 +80,7 @@ rotulado como `incomplete_download`, porque nenhum byte de página foi baixado n
   são tratados como Vortex;
 - aceita somente path genérico de capítulo no formato `/series/<slug>/chapter-<slug>`;
 - possui seletores próprios, sem reutilizar seletores do Webtoons;
+- não chama nem depende do canonicalizer Webtoons;
 - nunca aceita CDN externo como URL de capítulo ou destino de navegação;
 - um host de recurso público só pode ser autorizado na instância atual depois de observado e
   validado; essa autorização não vira allowlist global nem vaza para outro job;

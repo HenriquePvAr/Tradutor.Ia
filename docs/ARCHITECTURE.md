@@ -62,8 +62,13 @@ A UI tem seu próprio bridge assíncrono. Ela não usa automaticamente `process_
 
 Os modos públicos são:
 
-- `fast`: RapidOCR como primeira engine, fallback Paddle e validação OCR pós-render;
-- `quality`: PaddleOCR como primeira engine.
+- `fast`: RapidOCR como primeira engine, com fallbacks pesados desativados por padrão;
+- `quality`: RapidOCR como engine primária, validação OCR pós-render e escalonamentos
+  opcionais para Paddle quando ele estiver disponível.
+
+PaddleOCR não é dependência obrigatória do modo `quality`: ele é fallback opcional. A
+ausência de Paddle não deve bloquear uma execução em qualidade quando RapidOCR está instalado
+e disponível; já a ausência do OCR primário configurado falha fechado antes do capítulo.
 
 Sem `--force`, caches e progresso compatíveis podem ser reutilizados. `--download-only` executa apenas a coleta e a auditoria do download.
 
@@ -154,6 +159,16 @@ nem fixa o IP final de `requests`; para URLs não confiáveis, o deploy precisar
 política de egress/interceptação adicional. Consulte [Adaptador universal de capítulos](UNIVERSAL_CHAPTER_ADAPTER.md)
 para limites, perfis de evidência e limitações.
 
+O roteamento de fonte é decidido pelo adapter selecionado por host antes de qualquer
+canonicalização específica. VortexScans usa o adapter/canonicalizer Vortex; Webtoons usa o
+adapter/canonicalizer Webtoons. Uma falha ou timeout de Webtoons não deve participar nem
+bloquear a análise de uma URL Vortex suportada.
+
+Quando a análise da fonte falha antes de criar job, o comportamento esperado é: zero job, zero
+run, zero entrada fantasma de histórico, mensagem recuperável na UI, log sanitizado com estágio,
+adapter/host seguro e classe de falha. O shell normal da aba "Nova tradução" permanece visível:
+a superfície azul de processamento não deve aparecer em erro pré-job.
+
 Para Webtoons, a análise específica resolve slots lazy antes de formar `source_selection`.
 `webtoons_reader_bridge.py` adapta o driver Selenium já aberto para
 `lazy_slot_resolver.resolve_lazy_reader_slots`, relendo apenas imagens descendentes do reader e
@@ -181,7 +196,12 @@ Essa transformação ocorre antes do OCR quando `SMART_WEBTOON_PDF_SPLIT=True`.
 
 `ocr_engine.py` fornece uma interface comum para RapidOCR, PaddleOCR completo, PaddleOCR Mobile e o caminho opcional de Tesseract.
 
-No modo `fast`:
+Nos modos `fast` e `quality`, RapidOCR é o OCR primário da configuração Beta. O modo `quality`
+mantém os recursos de recuperação e validação mais caros, mas Paddle só participa como fallback
+opcional se o pacote estiver disponível e se a política de fallback o selecionar. Um fallback
+vazio ou destrutivo não pode apagar uma leitura útil do RapidOCR.
+
+No caminho RapidOCR:
 
 1. RapidOCR processa a página;
 2. reparos conservadores podem normalizar problemas estruturais sem traduzir o texto;

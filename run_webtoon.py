@@ -419,14 +419,18 @@ def _interactive_args(parser):
 
 def _configure_mode(mode):
     override = os.getenv("TRADUTOR_OCR_ENGINE_OVERRIDE", "").strip().lower()
-    engine = override if override in {"rapidocr", "paddle", "paddle_mobile"} else (
-        "rapidocr" if mode == "fast" else "paddle"
-    )
+    # RapidOCR is the primary engine in both modes.  Quality differs by *how much*
+    # recovery it is allowed (regional and full-page Paddle escalation, post-render
+    # validation), not by requiring a second engine to be installed: Paddle is an
+    # optional fallback, so a machine without it still runs the canonical quality mode.
+    engine = override if override in {"rapidocr", "paddle", "paddle_mobile"} else "rapidocr"
     # Engine selection is the last point before download and OCR, so it is where
-    # a missing engine has to stop the run.  Otherwise an unavailable engine only
-    # surfaces as one OCR error per page, after the whole chapter was fetched,
+    # a missing *primary* engine has to stop the run.  Otherwise an unavailable engine
+    # only surfaces as one OCR error per page, after the whole chapter was fetched,
     # and still produces a PDF with nothing translated.  No silent substitution:
-    # a different engine is a user decision, not a recovery.
+    # a different engine is a user decision, not a recovery.  The optional fallback is
+    # deliberately not required here; when it is absent the escalation is skipped and
+    # the RapidOCR read is kept (see benchmark_pipeline._fallback_discards_source_text).
     from ocr_engine import require_available_engine
 
     require_available_engine(engine)

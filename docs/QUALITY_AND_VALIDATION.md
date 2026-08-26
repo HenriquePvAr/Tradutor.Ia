@@ -508,6 +508,17 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   existe regra específica de P068. Contratos permanentes em
   `test_p068_semantic_recovery.py`. O candidato bom da segunda tentativa é fixture de teste:
   **a saída real do provider para P068 continua pendente de novo E2E real.**
+- `SOURCE-ANALYSIS-OBSERVABILITY-001` / política OCR de qualidade (**fechado offline em
+  #84F6R**): o preflight real posterior a #84F5 falhou antes de criar job, durante análise da
+  fonte. O contrato agora diferencia erro pré-job recuperável de fonte (`source_timeout`,
+  `source_network_error`, parse/internal), mostra mensagem útil na UI, registra apenas estágio,
+  host seguro e classe sanitizada, libera o lock do botão Start e mantém zero job/run/histórico
+  fantasma. O roteamento Vortex/Webtoons também fica hermético: VortexScans é selecionado por
+  host literal e não chama canonicalizer Webtoons. Em paralelo, `quality`/`quality_optimized`
+  passa a ser RapidOCR-primário; Paddle permanece fallback opcional. Se Paddle estiver ausente e
+  RapidOCR estiver disponível, a execução é válida; se RapidOCR faltar, falha fechado. O guard
+  de #84F5 impede que fallback Paddle vazio apague texto útil do RapidOCR. Tudo isso é offline:
+  **a saída final P068/usuário continua pendente de novo E2E real autorizado.**
 - **Replay offline com paridade de produção (#84F2)**: as regiões reais de P5, P6 e P25
   foram reprocessadas a partir das páginas e da geometria OCR persistidas do run
   `7d64890b-e303-497b-863f-74e2cd8d5645`, sem provider e sem rede, reproduzindo os números

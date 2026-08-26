@@ -678,7 +678,7 @@ lossless nos dois casos — as 100/100 páginas ficaram pixel-idênticas. Estág
 `ocr_engine.py` oferece interface comum para **RapidOCR** (ONNX Runtime), **PaddleOCR
 completo**, **PaddleOCR Mobile** e o caminho opcional de Tesseract.
 
-Modo `fast` (padrão):
+Modos `fast` e `quality`:
 
 1. RapidOCR processa a página.
 2. Reparos conservadores normalizam problemas estruturais **sem traduzir**.
@@ -688,7 +688,11 @@ Modo `fast` (padrão):
 6. Paddle completo só entra quando a comparação ainda não resolve o contrato.
 7. Vence o candidato com melhor combinação de qualidade, confidence e coerência.
 
-Modo `quality`: PaddleOCR como engine inicial.
+O modo `quality` não troca mais a engine primária para Paddle. Ele mantém RapidOCR como
+primário e conserva as validações e escalonamentos mais caros; PaddleOCR é fallback opcional,
+usado somente quando disponível e quando a política de fallback justificar. Ausência de Paddle
+não é fatal se RapidOCR está disponível. Ausência do OCR primário configurado continua falhando
+fechado antes do capítulo.
 
 O fallback **solicita comparação**; ele não fabrica a leitura correta. Os metadados
 registram engine original, engine final, confidences, motivos de fallback, reparos e
@@ -1132,6 +1136,25 @@ O retry informado em si já existia e não foi enfraquecido: `translate_strict` 
 uma restrição controlada (`preserve_protected_entity`, `preserve_temporal_relation`, …). Se
 todos os candidatos continuarem semanticamente ruins, a região permanece em revisão/rejeição
 e o candidato 1 nunca é restaurado.
+
+**`SOURCE-ANALYSIS-OBSERVABILITY-001` e política OCR `quality` (TDD #84F6R, fechado offline /
+pendente E2E real).** Depois de #84F5, a tentativa real seguinte parou antes da criação do job:
+a análise da fonte falhou e nenhum run/PDF foi produzido. O contrato fechado offline garante que
+falhas pré-job sejam visíveis e recuperáveis para o usuário, com log sanitizado (`stage =
+source_analysis`, host seguro, classe `source_timeout`/`source_network_error`/parse/internal),
+sem traceback ou secrets, e com liberação do lock do Start. A UI mantém o shell normal de "Nova
+tradução" e não reintroduz a superfície azul de processamento nesse estado.
+
+O mesmo bloco fixa a fronteira de adapters: VortexScans é selecionado pelo host literal
+`vortexscans.org` e não chama `canonicalize_webtoons_url`; Webtoons continua dono do seu
+canonicalizer e do lazy reader. Um timeout simulado de Webtoons não bloqueia uma fixture Vortex,
+e domínio desconhecido continua no fluxo unsupported/fallback controlado.
+
+Por fim, `quality`/`quality_optimized` é RapidOCR-primário. PaddleOCR é fallback opcional, não
+requisito de ambiente para o Beta. Quando Paddle está ausente, o fallback é pulado e a leitura
+RapidOCR permanece; quando RapidOCR está ausente como primário, a execução falha fechado. O guard
+`_fallback_discards_source_text()` continua no caminho de produção e rejeita fallback vazio que
+apagaria texto útil. Não houve job real, rede externa nem provider nesse fechamento.
 
 Contratos permanentes em `test_p068_semantic_recovery.py`: fallback destrutivo recusado,
 recuperação genérica de fronteira nas duas direções, token desconhecido e decomposição
