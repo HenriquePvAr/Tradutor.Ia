@@ -256,16 +256,88 @@ class QualityModeOcrPolicyTests(unittest.TestCase):
 
     def test_missing_paddle_is_skipped_not_fatal_when_rapidocr_answered(self):
         engine = ocr_engine.OCREngine("en", engine="rapidocr", fallback_engine="paddle")
+        rapid_line = _ocr_line("AND THEN...", (20, 10, 70, 20))
         with (
             patch.object(ocr_engine.config, "OCR_HYBRID_FALLBACK", True),
             patch.object(ocr_engine.config, "FAST_OCR_MODE", False),
             patch.object(ocr_engine.OCREngine, "_get_paddle",
                          side_effect=ModuleNotFoundError("paddleocr")),
         ):
-            lines = engine._fallback_from_rapidocr(_blank_image(), 1, "suspect_region")
+            lines = engine._fallback_from_rapidocr(
+                _blank_image(),
+                1,
+                "suspect_region",
+                rapid_lines=[rapid_line],
+            )
+
+        self.assertEqual([line.text for line in lines], ["AND THEN..."])
+        self.assertFalse(engine.last_run_metadata.get("engine_unavailable"))
+        self.assertEqual(engine.last_run_metadata.get("final_engine"), "rapidocr")
+        self.assertEqual(
+            engine.last_run_metadata.get("fallback_rejected_reason"),
+            "optional_paddle_unavailable",
+        )
+
+    def test_rapidocr_page_suspicion_preserves_good_story_line_without_paddle(self):
+        engine = ocr_engine.OCREngine("en", engine="rapidocr", fallback_engine="paddle")
+        story_line = _ocr_line("AND THEN...", (30, 25, 90, 24))
+        with (
+            patch.object(ocr_engine.config, "RAPIDOCR_ENABLED", True),
+            patch.object(ocr_engine.config, "RAPIDOCR_PAGE_FALLBACK", True),
+            patch.object(ocr_engine.config, "OCR_HYBRID_FALLBACK", True),
+            patch.object(ocr_engine.config, "FAST_OCR_MODE", False),
+            patch.object(ocr_engine, "_estimate_text_regions", return_value=13),
+            patch.object(ocr_engine, "_detect_story_text_region_boxes",
+                         return_value=[(20, 10, 120, 60)]),
+            patch.object(ocr_engine.OCREngine, "_detect_with_rapidocr",
+                         return_value=[story_line]),
+            patch.object(ocr_engine.OCREngine, "_get_paddle",
+                         side_effect=AssertionError("Paddle must not be required")),
+        ):
+            lines = engine.detect_lines(_blank_image(), page=32)
+
+        self.assertEqual([line.text for line in lines], ["AND THEN..."])
+        self.assertFalse(engine.last_run_metadata.get("engine_unavailable"))
+        self.assertEqual(engine.last_run_metadata.get("final_engine"), "rapidocr")
+        self.assertEqual(engine.last_run_metadata.get("ocr_sufficiency"), ocr_engine.OCR_REVIEW)
+
+    def test_zero_line_decorative_page_does_not_become_engine_failure(self):
+        engine = ocr_engine.OCREngine("en", engine="rapidocr", fallback_engine="paddle")
+        with (
+            patch.object(ocr_engine.config, "RAPIDOCR_ENABLED", True),
+            patch.object(ocr_engine.config, "RAPIDOCR_PAGE_FALLBACK", True),
+            patch.object(ocr_engine, "_estimate_text_regions", return_value=20),
+            patch.object(ocr_engine, "_detect_story_text_region_boxes", return_value=[]),
+            patch.object(ocr_engine.OCREngine, "_detect_with_rapidocr", return_value=[]),
+            patch.object(ocr_engine.OCREngine, "_get_paddle",
+                         side_effect=AssertionError("Paddle must not be required")),
+        ):
+            lines = engine.detect_lines(_blank_image(), page=8)
 
         self.assertEqual(lines, [])
-        self.assertTrue(engine.last_run_metadata.get("engine_unavailable"))
+        self.assertFalse(engine.last_run_metadata.get("engine_unavailable"))
+        self.assertEqual(engine.last_run_metadata.get("ocr_sufficiency"), ocr_engine.OCR_REVIEW)
+
+    def test_zero_line_story_box_still_fails_closed_after_regional_retry_fails(self):
+        import ocr_parallel
+
+        engine = ocr_engine.OCREngine("en", engine="rapidocr", fallback_engine="paddle")
+        with (
+            patch.object(ocr_engine.config, "RAPIDOCR_ENABLED", True),
+            patch.object(ocr_engine.config, "RAPIDOCR_PAGE_FALLBACK", True),
+            patch.object(ocr_engine, "_estimate_text_regions", return_value=8),
+            patch.object(ocr_engine, "_detect_story_text_region_boxes",
+                         return_value=[(20, 10, 120, 60)]),
+            patch.object(ocr_engine.OCREngine, "_detect_with_rapidocr", return_value=[]),
+        ):
+            lines = engine.detect_lines(_blank_image(), page=19)
+
+        self.assertEqual(lines, [])
+        self.assertEqual(engine.last_run_metadata.get("ocr_sufficiency"), ocr_engine.OCR_INSUFFICIENT)
+        self.assertEqual(
+            ocr_parallel._ocr_error_from_metadata(engine.last_run_metadata),
+            "ocr_insufficient:zero_lines_on_story_like_page",
+        )
 
     def test_missing_primary_rapidocr_fails_closed_without_downgrading(self):
         def only_paddle(name):
@@ -321,6 +393,24 @@ def _blank_image():
     import numpy as np
 
     return np.zeros((40, 120, 3), dtype="uint8")
+
+
+def _ocr_line(text, box):
+    import numpy as np
+
+    x, y, width, height = box
+    polygon = np.array(
+        [[x, y], [x + width, y], [x + width, y + height], [x, y + height]],
+        dtype=np.int32,
+    )
+    return ocr_engine.OCRLine(
+        text=text,
+        confidence=0.96,
+        polygon=polygon,
+        box=box,
+        raw_text=text,
+        engine="rapidocr",
+    )
 
 
 def _drive(coroutine):

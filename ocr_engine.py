@@ -9,6 +9,11 @@ import numpy as np
 import config
 
 
+OCR_SUFFICIENT = "OCR_SUFFICIENT"
+OCR_REVIEW = "OCR_REVIEW"
+OCR_INSUFFICIENT = "OCR_INSUFFICIENT"
+
+
 PADDLE_LANG_BY_CHOICE = {
     "1": "japan",
     "2": "korean",
@@ -191,6 +196,7 @@ class OCREngine:
                 img_bgr,
                 page,
                 "rapidocr_disabled",
+                primary_failure=True,
             )
 
         try:
@@ -201,17 +207,18 @@ class OCREngine:
                 img_bgr,
                 page,
                 f"rapidocr_error:{type(exc).__name__}",
+                primary_failure=True,
             )
 
         lines, repairs = _repair_ocr_lines(lines)
         suspicion = _rapidocr_suspicion(img_bgr, lines)
         if suspicion["reasons"] and config.RAPIDOCR_PAGE_FALLBACK:
-            return self._fallback_from_rapidocr(
+            return self._handle_rapidocr_suspicion(
                 img_bgr,
                 page,
-                ";".join(suspicion["reasons"]),
-                rapid_metrics=suspicion["metrics"],
-                repairs=repairs,
+                lines,
+                suspicion,
+                repairs,
             )
 
         self.last_run_metadata = self._run_metadata(
@@ -220,8 +227,107 @@ class OCREngine:
             final_engine="rapidocr",
             rapid_metrics=suspicion["metrics"],
             repairs=repairs,
+            ocr_sufficiency=OCR_SUFFICIENT,
         )
         return self._annotate_lines(lines, page, "rapidocr")
+
+    def _handle_rapidocr_suspicion(self, img_bgr, page, lines, suspicion, repairs):
+        """Keep RapidOCR's valid page result and retry only unresolved story boxes.
+
+        The old page-level fallback treated an aggregate mismatch ("few OCR lines
+        versus many visual components") as permission to discard the whole-page
+        RapidOCR result and require Paddle.  In beta, RapidOCR is the required
+        engine; a suspected gap means region-level recovery/review, not replacing
+        a good line with an unavailable engine.
+        """
+
+        reasons = list(suspicion.get("reasons") or [])
+        rapid_metrics = dict(suspicion.get("metrics") or {})
+        recovery_lines, recovery_records = self._rapidocr_story_region_retry(
+            img_bgr,
+            lines,
+            page,
+        )
+        lines = _dedupe_ocr_lines(list(lines or []) + recovery_lines)
+        story_regions = int(rapid_metrics.get("estimated_story_text_regions") or 0)
+        recovered_regions = sum(
+            1 for record in recovery_records if record.get("selection") == "accepted"
+        )
+        unresolved_story_regions = max(0, story_regions - _covered_story_region_count(
+            img_bgr,
+            lines,
+        ))
+        if not lines and story_regions > 0 and recovered_regions == 0:
+            sufficiency = OCR_INSUFFICIENT
+            fallback_reason = "zero_lines_on_story_like_page"
+        else:
+            sufficiency = OCR_REVIEW
+            fallback_reason = ";".join(reasons)
+
+        self.last_run_metadata = self._run_metadata(
+            page,
+            original_engine="rapidocr",
+            final_engine="rapidocr",
+            fallback_used=False,
+            fallback_reason=fallback_reason,
+            rapid_metrics=rapid_metrics,
+            repairs=repairs,
+            engine_unavailable=False,
+            ocr_sufficiency=sufficiency,
+            ocr_review_reasons=reasons,
+            rapidocr_region_recovery=recovery_records,
+            unresolved_story_regions=unresolved_story_regions,
+        )
+        return self._annotate_lines(lines, page, "rapidocr")
+
+    def _rapidocr_story_region_retry(self, img_bgr, lines, page):
+        boxes = _uncovered_story_text_regions(img_bgr, lines)
+        if not boxes:
+            return [], []
+
+        recovered = []
+        records = []
+        for index, box in enumerate(boxes[: config.RAPIDOCR_RECOVERY_MAX_REGIONS_PER_PAGE], start=1):
+            x, y, width, height = box
+            crop = img_bgr[y : y + height, x : x + width]
+            record = {
+                "region_id": f"page_story_region_{index}",
+                "crop_box": [int(value) for value in box],
+                "ocr_engine": "rapidocr",
+                "ocr_pass": "regional_retry",
+                "preprocess_variant": "rapidocr_region_crop_upscaled",
+                "selection": "rejected",
+            }
+            records.append(record)
+            if crop.size == 0:
+                record["reason"] = "empty_crop"
+                continue
+            try:
+                crop_lines = self._detect_with_rapidocr(crop, upscale=True)
+            except Exception as exc:  # noqa: BLE001 - a retry must never hide failure.
+                record["reason"] = "rapidocr_retry_error"
+                record["error"] = f"{type(exc).__name__}: {exc}"
+                continue
+            crop_lines, crop_repairs = _repair_ocr_lines(crop_lines)
+            offset_lines = [
+                _offset_ocr_line_for_page_retry(line, x, y, record["region_id"])
+                for line in crop_lines
+            ]
+            offset_lines = [
+                line for line in offset_lines
+                if _line_inside_box(line, box) and not _duplicates_any_line(line, lines + recovered)
+            ]
+            record["text_repairs"] = crop_repairs
+            record["line_count"] = len(offset_lines)
+            if not offset_lines:
+                record["reason"] = "rapidocr_retry_no_new_lines"
+                continue
+            record["selection"] = "accepted"
+            record["reason"] = "rapidocr_retry_accepted"
+            record["texts"] = [line.text for line in offset_lines]
+            recovered.extend(offset_lines)
+
+        return recovered, records
 
     def _fallback_from_rapidocr(
         self,
@@ -230,6 +336,8 @@ class OCREngine:
         reason,
         rapid_metrics=None,
         repairs=None,
+        rapid_lines=None,
+        primary_failure=False,
     ):
         can_use_paddle = (
             config.OCR_HYBRID_FALLBACK
@@ -240,6 +348,7 @@ class OCREngine:
             )
         )
         if not can_use_paddle:
+            lines = [] if primary_failure else list(rapid_lines or [])
             self.last_run_metadata = self._run_metadata(
                 page,
                 original_engine="rapidocr",
@@ -247,9 +356,10 @@ class OCREngine:
                 fallback_reason=reason,
                 rapid_metrics=rapid_metrics,
                 repairs=repairs,
-                engine_unavailable="ModuleNotFoundError" in reason,
+                engine_unavailable=bool(primary_failure or "ModuleNotFoundError" in reason),
+                ocr_sufficiency=OCR_INSUFFICIENT if primary_failure else OCR_REVIEW,
             )
-            return []
+            return self._annotate_lines(lines, page, "rapidocr")
 
         paddle = OCREngine(
             self.lang_choice,
@@ -287,6 +397,22 @@ class OCREngine:
         if paddle_unavailable:
             paddle_reason = str(paddle_metadata.get("fallback_reason") or "").strip()
             fallback_reason = ";".join(part for part in (reason, paddle_reason) if part)
+            if not primary_failure and rapid_lines:
+                self.last_run_metadata = self._run_metadata(
+                    page,
+                    original_engine="rapidocr",
+                    final_engine="rapidocr",
+                    fallback_used=False,
+                    fallback_reason=fallback_reason,
+                    rapid_metrics=rapid_metrics,
+                    repairs=repairs,
+                    engine_unavailable=False,
+                    ocr_sufficiency=OCR_REVIEW,
+                    ocr_review_reasons=[reason],
+                )
+                self.last_run_metadata["fallback_variant"] = "paddle_mobile"
+                self.last_run_metadata["fallback_rejected_reason"] = "optional_paddle_unavailable"
+                return self._annotate_lines(list(rapid_lines), page, "rapidocr")
         self.last_run_metadata = self._run_metadata(
             page,
             original_engine="rapidocr",
@@ -295,7 +421,8 @@ class OCREngine:
             fallback_reason=fallback_reason,
             rapid_metrics=rapid_metrics,
             repairs=repairs,
-            engine_unavailable=paddle_unavailable,
+            engine_unavailable=bool(paddle_unavailable and primary_failure),
+            ocr_sufficiency=OCR_INSUFFICIENT if paddle_unavailable and primary_failure else OCR_REVIEW,
         )
         self.last_run_metadata["fallback_variant"] = "paddle_mobile"
         return self._annotate_lines(lines, page, "paddle")
@@ -460,8 +587,12 @@ class OCREngine:
         rapid_metrics=None,
         repairs=None,
         engine_unavailable=False,
+        ocr_sufficiency=None,
+        ocr_review_reasons=None,
+        rapidocr_region_recovery=None,
+        unresolved_story_regions=None,
     ):
-        return {
+        metadata = {
             "page": page,
             "original_engine": original_engine,
             "final_engine": final_engine,
@@ -471,6 +602,15 @@ class OCREngine:
             "rapidocr_metrics": rapid_metrics or {},
             "text_repairs": repairs or [],
         }
+        if ocr_sufficiency:
+            metadata["ocr_sufficiency"] = ocr_sufficiency
+        if ocr_review_reasons is not None:
+            metadata["ocr_review_reasons"] = list(ocr_review_reasons or [])
+        if rapidocr_region_recovery is not None:
+            metadata["rapidocr_region_recovery"] = list(rapidocr_region_recovery or [])
+        if unresolved_story_regions is not None:
+            metadata["unresolved_story_regions"] = int(unresolved_story_regions)
+        return metadata
 
     @staticmethod
     def _line_from_whole_image(text, img_bgr):
@@ -1208,9 +1348,12 @@ def _rapidocr_suspicion(img_bgr, lines):
     strange_lines = sum(_strange_text_ratio(line.text) > 0.22 for line in lines)
     improbable_tokens, total_tokens = _improbable_token_counts(lines)
     text_regions = _estimate_text_regions(img_bgr)
+    story_text_regions = _estimate_story_text_regions(img_bgr)
 
     if not lines and text_regions >= 2:
         reasons.append("zero_lines_on_text_like_page")
+    if not lines and story_text_regions >= 1:
+        reasons.append("zero_lines_on_story_like_page")
     if lines and average_confidence < config.RAPIDOCR_MIN_CONFIDENCE:
         reasons.append("low_average_confidence")
     if invalid_boxes:
@@ -1240,6 +1383,7 @@ def _rapidocr_suspicion(img_bgr, lines):
             "improbable_tokens": int(improbable_tokens),
             "total_tokens": int(total_tokens),
             "estimated_text_regions": int(text_regions),
+            "estimated_story_text_regions": int(story_text_regions),
         },
     }
 
@@ -1318,6 +1462,125 @@ def _estimate_text_regions(img_bgr):
         ):
             candidates += 1
     return min(20, candidates // 3)
+
+
+def _estimate_story_text_regions(img_bgr):
+    return len(_detect_story_text_region_boxes(img_bgr))
+
+
+def _detect_story_text_region_boxes(img_bgr):
+    if img_bgr is None or img_bgr.size == 0:
+        return []
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    # Speech/narration containers in the Webtoon source are large, bright,
+    # contiguous regions.  This deliberately ignores small connected components
+    # such as logos, SFX strokes, highlights and decorative texture.
+    _, bright = cv2.threshold(gray, 238, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, kernel, iterations=2)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(bright, connectivity=8)
+    boxes = []
+    image_area = max(1, width * height)
+    for index in range(1, count):
+        x, y, component_width, component_height, area = stats[index]
+        if component_width <= 0 or component_height <= 0:
+            continue
+        fill_ratio = float(area) / float(component_width * component_height)
+        area_ratio = float(area) / float(image_area)
+        if (
+            width * 0.18 <= component_width <= width * 0.95
+            and 18 <= component_height <= height * 0.18
+            and 0.0025 <= area_ratio <= 0.12
+            and fill_ratio >= 0.62
+        ):
+            boxes.append((
+                int(x),
+                int(y),
+                int(component_width),
+                int(component_height),
+            ))
+    boxes.sort(key=lambda box: (box[1], box[0]))
+    return boxes
+
+
+def _uncovered_story_text_regions(img_bgr, lines):
+    boxes = _detect_story_text_region_boxes(img_bgr)
+    return [
+        box for box in boxes
+        if not any(_boxes_overlap_ratio(line.box, box) >= 0.18 for line in lines or [])
+    ]
+
+
+def _covered_story_region_count(img_bgr, lines):
+    return len(_detect_story_text_region_boxes(img_bgr)) - len(
+        _uncovered_story_text_regions(img_bgr, lines)
+    )
+
+
+def _offset_ocr_line_for_page_retry(line, offset_x, offset_y, region_id):
+    polygon = np.asarray(line.polygon).reshape(-1, 2).copy()
+    polygon[:, 0] += int(offset_x)
+    polygon[:, 1] += int(offset_y)
+    box = _box_from_poly(polygon)
+    metadata = {
+        **(line.metadata or {}),
+        "ocr_engine": "rapidocr",
+        "ocr_pass": "regional_retry",
+        "region_id": region_id,
+        "preprocess_variant": "rapidocr_region_crop_upscaled",
+    }
+    return OCRLine(
+        text=line.text,
+        confidence=line.confidence,
+        polygon=polygon.astype(np.int32),
+        box=box,
+        raw_text=line.raw_text,
+        engine="rapidocr",
+        page=line.page,
+        metadata=metadata,
+        original_text=line.original_text or line.raw_text or line.text,
+        repaired_text=line.repaired_text or line.text,
+        repair_reason=line.repair_reason,
+    )
+
+
+def _line_inside_box(line, box):
+    return _boxes_overlap_ratio(line.box, box) >= 0.18
+
+
+def _duplicates_any_line(candidate, lines):
+    return any(
+        _normalize_ocr_line_text(candidate.text) == _normalize_ocr_line_text(line.text)
+        and _boxes_overlap_ratio(candidate.box, line.box) >= 0.2
+        for line in lines or []
+    )
+
+
+def _dedupe_ocr_lines(lines):
+    deduped = []
+    for line in sorted(lines or [], key=lambda item: (item.box[1], item.box[0])):
+        if not _duplicates_any_line(line, deduped):
+            deduped.append(line)
+    return deduped
+
+
+def _normalize_ocr_line_text(text):
+    return re.sub(r"[^A-Z0-9]+", "", str(text or "").upper())
+
+
+def _boxes_overlap_ratio(left, right):
+    lx, ly, lw, lh = [int(value) for value in left]
+    rx, ry, rw, rh = [int(value) for value in right]
+    x1 = max(lx, rx)
+    y1 = max(ly, ry)
+    x2 = min(lx + lw, rx + rw)
+    y2 = min(ly + lh, ry + rh)
+    overlap = max(0, x2 - x1) * max(0, y2 - y1)
+    if overlap <= 0:
+        return 0.0
+    smaller = max(1, min(lw * lh, rw * rh))
+    return float(overlap) / float(smaller)
 
 
 def _ocr_scale(width, height):

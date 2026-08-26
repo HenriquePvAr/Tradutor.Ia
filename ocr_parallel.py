@@ -12,7 +12,7 @@ from adaptive_scheduler import (
     config_from_module,
     snapshot_from_psutil,
 )
-from ocr_engine import OCREngine
+from ocr_engine import OCR_INSUFFICIENT, OCREngine
 from ocr_memory_policy import choose_workers, snapshot as memory_snapshot
 from pipeline_cache import deserialize_ocr_lines, serialize_ocr_lines
 
@@ -21,7 +21,12 @@ _WORKER_ENGINE = None
 
 
 def _ocr_error_from_metadata(metadata):
-    if not isinstance(metadata, dict) or not metadata.get("engine_unavailable"):
+    if not isinstance(metadata, dict):
+        return None
+    if metadata.get("ocr_sufficiency") == OCR_INSUFFICIENT:
+        reason = str(metadata.get("fallback_reason") or "unknown").strip() or "unknown"
+        return f"ocr_insufficient:{reason}"
+    if not metadata.get("engine_unavailable"):
         return None
     reason = str(metadata.get("fallback_reason") or "unknown").strip() or "unknown"
     return f"ocr_engine_unavailable:{reason}"
