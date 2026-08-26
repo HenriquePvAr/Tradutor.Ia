@@ -359,7 +359,7 @@ async function loadTradutorUi(history, options = {}) {
     'historyPendingPreviews', 'seriesSearch', 'seriesSort', 'dashChapters', 'dashSeries',
     'dashPages', 'dashApproved', 'dashSeriesList', 'dashActivityList',
   ].forEach((id) => document.ensureId(id));
-  ['inicio', 'nova', 'queue', 'hist', 'community', 'cfg', 'logs', 'profile'].forEach((tabName) => {
+  ['inicio', 'nova', 'queue', 'hist', 'leitor', 'community', 'cfg', 'logs', 'profile'].forEach((tabName) => {
     document.ensureId(`view-${tabName}`).setAttribute('class', tabName === 'inicio' ? 'panel-view active' : 'panel-view');
     const tab = document.createElement('button');
     tab.setAttribute('class', tabName === 'inicio' ? 'rail-tab active' : 'rail-tab');
@@ -368,6 +368,16 @@ async function loadTradutorUi(history, options = {}) {
     document.body.appendChild(tab);
   });
   installModal(document);
+  const windowListeners = {};
+  class FakeCustomEvent {
+    constructor(type, init = {}) {
+      this.type = type;
+      this.detail = init.detail || {};
+      this.defaultPrevented = false;
+    }
+    preventDefault() { this.defaultPrevented = true; }
+    stopPropagation() {}
+  }
   const window = {
     document,
     location: { search: '', hostname: '127.0.0.1', origin: 'http://127.0.0.1:8080' },
@@ -382,7 +392,14 @@ async function loadTradutorUi(history, options = {}) {
     clearInterval() {},
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
-    addEventListener() {},
+    addEventListener(type, fn) {
+      (windowListeners[type] = windowListeners[type] || []).push(fn);
+    },
+    dispatchEvent(event) {
+      for (const fn of windowListeners[event.type] || []) fn(event);
+      return !event.defaultPrevented;
+    },
+    CustomEvent: FakeCustomEvent,
     sessionStorage: { getItem: () => '[]', setItem() {}, removeItem() {}, clear() {} },
     localStorage: { getItem: () => null, setItem() {}, removeItem() {}, clear() {} },
     fetch: async (url) => ({
@@ -611,6 +628,19 @@ await test('normal translation publication button still opens modal', async () =
   document.querySelector('.hist-item').querySelector('button[data-action="publish"]').click();
   assert.equal(modalState(document).open, true);
   assert.equal(modalState(document).title, 'Synthetic Chapter');
+});
+
+await test('history read button opens reader using the button job id when row id differs', async () => {
+  const record = makeRecord('history-row-1', {
+    job_id: 'reader-job-1',
+  });
+  const { window, document } = await loadTradutorUi([record]);
+  let openedJobId = '';
+  window.addEventListener('tradutor-open-reader', (event) => {
+    openedJobId = event.detail.jobId;
+  });
+  document.querySelector('.hist-item').querySelector('button[data-action="read"]').click();
+  assert.equal(openedJobId, 'reader-job-1');
 });
 
 await test('historical ineligible source remains denied and cannot open modal', async () => {

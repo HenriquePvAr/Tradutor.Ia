@@ -2,8 +2,10 @@
 //
 // The backend hands us one JPEG per page (the image already stored inside the run's
 // PDF), so "rendering" here is an <img> plus CSS width: no PDF engine, no canvas
-// pool, no worker to leak. Only the current page is in the DOM; thumbnails load when
-// they scroll into view.
+// pool, no worker to leak. A chapter is read by scrolling: every page gets a slot
+// sized from the page metadata (so the scrollbar is honest from the first frame),
+// but only the pages around the reader hold decoded bytes. Thumbnails load when they
+// scroll into view.
 //
 // `createReaderState` below is pure and owns every decision (bounds, zoom steps, fit
 // scale, staleness). It is exported so the contract can be tested in node without a
@@ -14,6 +16,11 @@ export const MAX_ZOOM = 4;
 // Explicit steps, so repeated zooming lands on the same values every time instead of
 // drifting through floating point (1.1^n never returns to exactly 1).
 export const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.25, 1.5, 2, 2.5, 3, 4];
+// Separation between stacked pages, in CSS pixels. Must match `.reader-pages` gap.
+export const PAGE_GAP = 16;
+// Pages kept decoded on each side of the one being read: 2 + current + 2 = 5 images
+// in memory at most, whatever the chapter length.
+export const RENDER_RADIUS = 2;
 const CLOSED = 'closed';
 const LOADING = 'loading';
 const READY = 'ready';
@@ -38,6 +45,9 @@ export function createReaderState() {
     page: 1,
     zoom: 1,
     fitMode: 'width',
+    // How the chapter is read (continuous scroll or one page at a time). Independent
+    // of fitMode, which is only how big a page is drawn.
+    viewMode: 'continuous',
     fullscreen: false,
     thumbnails: true,
     reviewRequired: false,
@@ -49,9 +59,11 @@ export function createReaderState() {
     return state.pages[state.page - 1] || null;
   }
 
-  // The effective scale: fit modes derive it from the viewport, manual zoom does not.
-  function scale() {
-    const page = currentPage();
+  // The effective scale of one page: fit modes derive it from the viewport, manual
+  // zoom does not. Per page, because a chapter may mix page sizes and, stacked, they
+  // all have to obey the same fit at the same time.
+  function pageScale(number) {
+    const page = state.pages[number - 1];
     if (!page || !page.width || !page.height) return clampZoom(state.zoom);
     const {width, height} = state.viewport;
     if (state.fitMode === 'width' && width > 0) return clampZoom(width / page.width);
@@ -61,10 +73,12 @@ export function createReaderState() {
     return clampZoom(state.zoom);
   }
 
+  const scale = () => pageScale(state.page);
+
   // Identity of what should be on screen right now. A render that finishes carrying
   // an older token is a result for a page or a scale the user already left behind.
   function renderToken() {
-    return `${state.token}:${state.page}:${scale().toFixed(4)}`;
+    return `${state.token}:${state.viewMode}:${state.page}:${scale().toFixed(4)}`;
   }
 
   function open(jobId) {
@@ -127,6 +141,79 @@ export function createReaderState() {
   const canPrevious = () => state.status === READY && state.page > 1;
   const canNext = () => state.status === READY && state.page < state.pageCount;
 
+  function setViewMode(mode) {
+    // The page being read is deliberately untouched: switching how the chapter is
+    // laid out must never send the reader back to page 1.
+    state.viewMode = mode === 'single' ? 'single' : 'continuous';
+    return state.viewMode;
+  }
+
+  // Where every page sits in the scroll container, at the current scale. Computed
+  // from the page metadata alone, so the slots reserve their space before a single
+  // byte is decoded and the scrollbar never jumps under the user.
+  function layout() {
+    if (state.pageCount < 1) return [];
+    const numbers = state.viewMode === 'single'
+      ? [state.page]
+      : state.pages.map((_, index) => index + 1);
+    let top = 0;
+    return numbers.map(page => {
+      const item = state.pages[page - 1] || {width: 0, height: 0};
+      const factor = pageScale(page);
+      const box = {page, top,
+                   width: Math.round(item.width * factor),
+                   height: Math.round(item.height * factor)};
+      top += box.height + PAGE_GAP;
+      return box;
+    });
+  }
+
+  // The page the eye is on: the one holding most of the visible area.
+  function pageAt(scrollTop) {
+    const boxes = layout();
+    if (!boxes.length) return state.page;
+    const top = Math.max(0, Number(scrollTop) || 0);
+    const last = boxes[boxes.length - 1];
+    const documentBottom = last.top + last.height;
+    if (state.viewMode === 'continuous'
+        && state.viewport.height > 0
+        && top + state.viewport.height >= documentBottom - 1) {
+      return last.page;
+    }
+    const bottom = top + state.viewport.height;
+    let best = boxes[0].page;
+    let visible = -Infinity;
+    boxes.forEach(box => {
+      const overlap = Math.min(bottom, box.top + box.height) - Math.max(top, box.top);
+      if (overlap > visible + 0.5) { visible = overlap; best = box.page; }
+    });
+    return best;
+  }
+
+  function setCurrentFromScroll(scrollTop) {
+    state.page = pageAt(scrollTop);
+    return state.page;
+  }
+
+  // Where the container has to scroll for `value` to be the page being read.
+  function offsetOf(value) {
+    const page = Number.parseInt(value, 10);
+    const wanted = Number.isFinite(page)
+      ? Math.min(state.pageCount, Math.max(1, page)) : state.page;
+    return layout().find(box => box.page === wanted)?.top ?? 0;
+  }
+
+  // The only pages worth decoding. A 72 page chapter costs five images, not 72.
+  function renderWindow() {
+    if (state.pageCount < 1) return [];
+    if (state.viewMode === 'single') return [state.page];
+    const first = Math.max(1, state.page - RENDER_RADIUS);
+    const last = Math.min(state.pageCount, state.page + RENDER_RADIUS);
+    const pages = [];
+    for (let page = first; page <= last; page += 1) pages.push(page);
+    return pages;
+  }
+
   function setZoom(value) {
     state.fitMode = 'none';
     state.zoom = clampZoom(Number(value));
@@ -156,9 +243,10 @@ export function createReaderState() {
   }
 
   return {
-    state, scale, renderToken, currentPage,
+    state, scale, pageScale, renderToken, currentPage,
     open, accept, fail, close,
     goto, next, previous, first, last, canPrevious, canNext,
+    setViewMode, layout, pageAt, setCurrentFromScroll, offsetOf, renderWindow,
     setZoom, zoomIn, zoomOut, resetZoom, fitWidth, fitPage, setViewport,
   };
 }
@@ -195,7 +283,7 @@ function boot() {
   const reader = createReaderState();
   const $ = id => document.getElementById(id);
   const stage = $('readerStage');
-  const image = $('readerPage');
+  const pagesBox = $('readerPages');
   const embed = $('readerEmbed');
   const thumbs = $('readerThumbs');
   const pageInput = $('readerPageInput');
@@ -227,7 +315,9 @@ function boot() {
   const authFetch = async (url, extra) =>
     fetch(url, readerRequestInit(await sessionToken(), extra));
 
-  let pageBlobUrl = '';
+  // One object URL per decoded page, revoked as soon as the page leaves the render
+  // window: the bounded cache the continuous reader depends on.
+  const pageBlobUrls = new Map();
   let embedBlobUrl = '';
   const thumbBlobUrls = [];
   const releaseThumbnails = () => {
@@ -345,32 +435,95 @@ function boot() {
     }
   }
 
-  function renderPage(keepScroll) {
-    const {state} = reader;
-    if (!image) return;
-    const page = reader.currentPage();
-    if (state.status !== READY || state.mode !== 'images' || !page) return;
-    const token = reader.renderToken();
-    const width = Math.round(page.width * reader.scale());
-    image.dataset.token = token;
-    image.style.width = `${width}px`;
-    const source = `/api/ui/reader/${encodeURIComponent(state.jobId)}/page/${state.page}`;
-    if (!keepScroll && stage) stage.scrollTop = 0;
-    // Zooming and fitting reuse the page already in memory; only a page change fetches.
-    if (image.dataset.source === source) return;
-    image.dataset.source = source;
-    void loadInto(image, source, () => image.dataset.source, source).then(object => {
+  const releasePage = page => {
+    const url = pageBlobUrls.get(page);
+    if (!url) return;
+    URL.revokeObjectURL(url);
+    pageBlobUrls.delete(page);
+  };
+
+  // One page failing is one page failing: the rest of the chapter stays readable and
+  // this slot offers to try again. A rejected session is still a global problem.
+  function failedSlot(slot, page, status) {
+    if (status === '401' || status === '403') {
+      reader.fail(reader.state.token, 'authentication_required');
+      render();
+      return;
+    }
+    slot.classList.add('failed');
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn-ghost reader-retry';
+    retry.dataset.readerRetryPage = String(page);
+    retry.textContent = `Recarregar página ${page}`;
+    slot.appendChild(retry);
+  }
+
+  function loadPage(slot, page) {
+    if (slot.firstChild) return;
+    slot.classList.remove('failed');
+    const img = document.createElement('img');
+    img.className = 'reader-page';
+    img.alt = `Página ${page} do capítulo traduzido`;
+    slot.appendChild(img);
+    const source = `/api/ui/reader/${encodeURIComponent(reader.state.jobId)}/page/${page}`;
+    const token = reader.state.token;
+    void loadInto(img, source, () => reader.state.token, token).then(object => {
       if (!object) return;
-      if (!object.startsWith('blob:')) {
-        image.dataset.source = '';
-        reader.fail(state.token, object === '401' || object === '403'
-          ? 'authentication_required' : 'page_not_available');
-        render(true);
+      // Scrolled out of the window while the bytes were in flight: do not keep them.
+      if (!img.isConnected) {
+        if (object.startsWith('blob:')) URL.revokeObjectURL(object);
         return;
       }
-      if (pageBlobUrl) URL.revokeObjectURL(pageBlobUrl);
-      pageBlobUrl = object;
+      if (object.startsWith('blob:')) { pageBlobUrls.set(page, object); return; }
+      img.remove();
+      failedSlot(slot, page, object);
     });
+  }
+
+  // Slots first (sized from metadata, so nothing shifts), bytes only for the pages
+  // around the reader.
+  function renderPages() {
+    const {state} = reader;
+    if (!pagesBox) return;
+    const boxes = state.status === READY && state.mode === 'images' ? reader.layout() : [];
+    const signature = `${state.token}:${state.viewMode}:${boxes.map(box => box.page).join(',')}`;
+    if (pagesBox.dataset.signature !== signature) {
+      pagesBox.dataset.signature = signature;
+      pagesBox.textContent = '';
+      pageBlobUrls.forEach(url => URL.revokeObjectURL(url));
+      pageBlobUrls.clear();
+      const fragment = document.createDocumentFragment();
+      boxes.forEach(box => {
+        const slot = document.createElement('div');
+        slot.className = 'reader-slot';
+        slot.dataset.page = String(box.page);
+        fragment.appendChild(slot);
+      });
+      pagesBox.appendChild(fragment);
+    }
+    pagesBox.hidden = boxes.length === 0;
+    const wanted = new Set(reader.renderWindow());
+    boxes.forEach((box, index) => {
+      const slot = pagesBox.children[index];
+      if (!slot) return;
+      slot.style.width = `${box.width}px`;
+      slot.style.height = `${box.height}px`;
+      if (wanted.has(box.page)) loadPage(slot, box.page);
+      else if (slot.firstChild) { slot.textContent = ''; releasePage(box.page); }
+    });
+  }
+
+  const scrollToCurrent = () => {
+    if (stage) stage.scrollTop = reader.offsetOf(reader.state.page);
+  };
+
+  // A page change is a scroll, in both view modes (single page lands at the top of
+  // its one slot). Never a rebuild of the reader.
+  function jump(value) {
+    reader.goto(value);
+    render();
+    scrollToCurrent();
   }
 
   function syncToolbar() {
@@ -389,6 +542,9 @@ function boot() {
     root.querySelectorAll('[data-reader-action="fit-width"],[data-reader-action="fit-page"]')
       .forEach(button => button.setAttribute('aria-pressed',
         String(button.dataset.readerAction === `fit-${state.fitMode}`)));
+    root.querySelectorAll('[data-reader-action^="view-"]')
+      .forEach(button => button.setAttribute('aria-pressed',
+        String(button.dataset.readerAction === `view-${state.viewMode}`)));
     if (titleBox) titleBox.textContent = state.title || 'Leitor';
     if (badge) {
       badge.hidden = !ready || !state.reviewRequired;
@@ -396,9 +552,8 @@ function boot() {
     }
   }
 
-  function render(keepScroll) {
+  function render() {
     const {state} = reader;
-    if (image) image.hidden = !(state.status === READY && state.mode === 'images');
     if (embed) {
       const useEmbed = state.status === READY && state.mode === 'embed';
       embed.hidden = !useEmbed;
@@ -418,15 +573,16 @@ function boot() {
     else if (state.status === CLOSED) setStatus('Escolha um capítulo em "Capítulos traduzidos" para ler aqui.', '');
     else setStatus('', '');
     syncToolbar();
-    renderPage(keepScroll);
+    renderPages();
     syncThumbSelection();
   }
 
   function releaseAll() {
     releaseThumbnails();
-    if (pageBlobUrl) { URL.revokeObjectURL(pageBlobUrl); pageBlobUrl = ''; }
+    pageBlobUrls.forEach(url => URL.revokeObjectURL(url));
+    pageBlobUrls.clear();
     if (embedBlobUrl) { URL.revokeObjectURL(embedBlobUrl); embedBlobUrl = ''; }
-    if (image) { image.removeAttribute('src'); image.dataset.source = ''; }
+    if (pagesBox) { pagesBox.textContent = ''; pagesBox.dataset.signature = ''; }
     if (embed) { embed.removeAttribute('src'); embed.dataset.source = ''; }
   }
 
@@ -459,6 +615,7 @@ function boot() {
     if (!reader.accept(token, payload)) return;
     measure();
     render();
+    scrollToCurrent();
     renderThumbnails();
     syncThumbSelection();
   }
@@ -489,26 +646,35 @@ function boot() {
 
   const backToHistory = () => window.dispatchEvent(new CustomEvent('tradutor-goto-tab', {detail: {tab: 'hist'}}));
 
+  // Rescaling keeps the reader on the page it was on instead of falling back to the
+  // top of the chapter.
+  const restage = () => { render(); scrollToCurrent(); };
+
   const ACTIONS = {
     back: backToHistory,
-    prev: () => { reader.previous(); render(); },
-    next: () => { reader.next(); render(); },
-    'zoom-in': () => { reader.zoomIn(); render(true); },
-    'zoom-out': () => { reader.zoomOut(); render(true); },
-    'zoom-reset': () => { reader.resetZoom(); render(true); },
-    'fit-width': () => { measure(); reader.fitWidth(); render(true); },
-    'fit-page': () => { measure(); reader.fitPage(); render(true); },
+    prev: () => jump(reader.state.page - 1),
+    next: () => jump(reader.state.page + 1),
+    'zoom-in': () => { reader.zoomIn(); restage(); },
+    'zoom-out': () => { reader.zoomOut(); restage(); },
+    'zoom-reset': () => { reader.resetZoom(); restage(); },
+    'fit-width': () => { measure(); reader.fitWidth(); restage(); },
+    'fit-page': () => { measure(); reader.fitPage(); restage(); },
+    'view-continuous': () => { reader.setViewMode('continuous'); restage(); },
+    'view-single': () => { reader.setViewMode('single'); restage(); },
     fullscreen: toggleFullscreen,
     external: openExternally,
-    thumbs: () => { reader.state.thumbnails = !reader.state.thumbnails; render(true); },
+    thumbs: () => { reader.state.thumbnails = !reader.state.thumbnails; restage(); },
     retry: () => { if (reader.state.jobId) void load(reader.state.jobId); },
   };
 
   root.addEventListener('click', event => {
     const thumb = event.target.closest('.reader-thumb');
-    if (thumb && thumbs?.contains(thumb)) {
-      reader.goto(thumb.dataset.page);
-      render();
+    if (thumb && thumbs?.contains(thumb)) { jump(thumb.dataset.page); return; }
+    // A single page that failed to load is retried on its own.
+    const retry = event.target.closest('[data-reader-retry-page]');
+    if (retry) {
+      const slot = retry.closest('.reader-slot');
+      if (slot) { slot.textContent = ''; loadPage(slot, Number(slot.dataset.page)); }
       return;
     }
     const button = event.target.closest('[data-reader-action]');
@@ -516,12 +682,9 @@ function boot() {
     ACTIONS[button.dataset.readerAction]?.();
   });
 
-  pageInput?.addEventListener('change', () => {
-    reader.goto(pageInput.value);
-    render();
-  });
+  pageInput?.addEventListener('change', () => jump(pageInput.value));
   pageInput?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') { reader.goto(pageInput.value); render(); }
+    if (event.key === 'Enter') jump(pageInput.value);
   });
 
   // Global shortcuts belong to the reader only while it is the visible tab, and never
@@ -541,8 +704,8 @@ function boot() {
     }[event.key];
     if (!action) return;
     event.preventDefault();
-    if (action === 'first') { reader.first(); render(); return; }
-    if (action === 'last') { reader.last(); render(); return; }
+    if (action === 'first') { jump(1); return; }
+    if (action === 'last') { jump(reader.state.pageCount); return; }
     ACTIONS[action]?.();
   });
 
@@ -553,15 +716,31 @@ function boot() {
       if (reader.state.status !== READY) return;
       measure();
       // Manual zoom is a user decision; only fit modes follow the container.
-      if (reader.state.fitMode !== 'none') render(true);
+      if (reader.state.fitMode !== 'none') restage();
       else syncToolbar();
     }, 120);
   });
   document.addEventListener('fullscreenchange', () => {
     reader.state.fullscreen = Boolean(document.fullscreenElement);
     measure();
-    if (reader.state.status === READY) render(true);
+    if (reader.state.status === READY) restage();
   });
+
+  // Reading is scrolling: the page counter, the thumbnail selection and the decoded
+  // window all follow the stage, from the scroll event itself and never from a timer.
+  let scrollFrame = 0;
+  stage?.addEventListener('scroll', () => {
+    if (reader.state.status !== READY || reader.state.mode !== 'images') return;
+    if (scrollFrame) return;
+    scrollFrame = window.requestAnimationFrame(() => {
+      scrollFrame = 0;
+      const before = reader.state.page;
+      if (reader.setCurrentFromScroll(stage.scrollTop) === before) return;
+      renderPages();
+      syncToolbar();
+      syncThumbSelection();
+    });
+  }, {passive: true});
 
   window.addEventListener('tradutor-open-reader', event => {
     const jobId = String(event?.detail?.jobId || '');

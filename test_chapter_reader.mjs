@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import {
-  createReaderState, MIN_ZOOM, MAX_ZOOM, ZOOM_STEPS,
+  createReaderState, MIN_ZOOM, MAX_ZOOM, ZOOM_STEPS, PAGE_GAP, RENDER_RADIUS,
   CLOSED, LOADING, READY, ERROR,
   readerRequestInit, readerErrorMessage,
 } from './static/chapter_reader.js';
@@ -248,6 +248,121 @@ test('an expired session is not reported as a broken pdf', () => {
 
 test('an unknown code still gets the generic message', () => {
   assert.equal(readerErrorMessage('who_knows'), readerErrorMessage('reader_failed'));
+});
+
+/* ------------------------------------------------------- continuous reading */
+// A chapter is read by scrolling, the way any PDF viewer is read: the pages are
+// stacked, the reader knows where each one sits, which one the eye is on, and which
+// few of them are worth decoding. Single page stays available as one-slot layout.
+
+test('a reader reads continuously by default', () => {
+  const reader = ready(uniform(72));
+  assert.equal(reader.state.viewMode, 'continuous');
+});
+
+test('switching to single page and back keeps the page the user was on', () => {
+  const reader = ready(uniform(72));
+  reader.goto(40);
+  assert.equal(reader.setViewMode('single'), 'single');
+  assert.equal(reader.state.page, 40);
+  reader.setViewMode('continuous');
+  assert.equal(reader.state.page, 40);
+  // Anything that is not the single-page mode is continuous reading.
+  assert.equal(reader.setViewMode('nonsense'), 'continuous');
+});
+
+test('switching view mode invalidates stale rendered page bytes', () => {
+  const reader = ready(uniform(72));
+  const continuous = reader.renderToken();
+  reader.setViewMode('single');
+  const single = reader.renderToken();
+  assert.notEqual(single, continuous);
+  reader.setViewMode('continuous');
+  assert.equal(reader.renderToken(), continuous);
+});
+
+test('continuous layout stacks every page with one gap between them', () => {
+  const reader = ready(uniform(3, 1000, 2000));
+  const boxes = reader.layout();
+  assert.deepEqual(boxes.map(box => box.page), [1, 2, 3]);
+  assert.deepEqual(boxes.map(box => box.top),
+    [0, 2000 + PAGE_GAP, 2 * (2000 + PAGE_GAP)]);
+  assert.deepEqual(boxes.map(box => box.height), [2000, 2000, 2000]);
+});
+
+test('single page mode lays out only the page being read', () => {
+  const reader = ready(uniform(72, 1000, 2000));
+  reader.goto(40);
+  reader.setViewMode('single');
+  const boxes = reader.layout();
+  assert.equal(boxes.length, 1);
+  assert.deepEqual([boxes[0].page, boxes[0].top], [40, 0]);
+});
+
+test('a closed reader lays out nothing', () => {
+  assert.deepEqual(createReaderState().layout(), []);
+});
+
+test('fit width sizes every stacked page, not only the current one', () => {
+  const reader = ready([{width: 2000, height: 4000}, {width: 500, height: 400}]);
+  reader.fitWidth();
+  assert.deepEqual(reader.layout().map(box => box.width), [1000, 1000]);
+});
+
+test('scrolling down moves through the chapter page by page', () => {
+  const reader = ready(uniform(72, 1000, 2000));
+  assert.equal(reader.setCurrentFromScroll(0), 1);
+  assert.equal(reader.setCurrentFromScroll(2100), 2);
+  assert.equal(reader.setCurrentFromScroll(4200), 3);
+  assert.equal(reader.state.page, 3);
+});
+
+test('the dominant page wins when two pages share the viewport', () => {
+  const reader = ready(uniform(10, 1000, 2000));
+  assert.equal(reader.setCurrentFromScroll(1900), 2);
+  assert.equal(reader.setCurrentFromScroll(1500), 1);
+});
+
+test('the bottom of a continuous chapter reports the last page', () => {
+  const reader = ready(uniform(72, 1000, 2000));
+  const boxes = reader.layout();
+  const last = boxes.at(-1);
+  const maxScrollTop = last.top + last.height - reader.state.viewport.height;
+  assert.equal(reader.setCurrentFromScroll(maxScrollTop), 72);
+});
+
+test('a jump reports where the continuous reader has to scroll', () => {
+  const reader = ready(uniform(72, 1000, 2000));
+  assert.equal(reader.offsetOf(1), 0);
+  assert.equal(reader.offsetOf(40), 39 * (2000 + PAGE_GAP));
+  // Never a scroll target outside the document.
+  assert.equal(reader.offsetOf(999), 71 * (2000 + PAGE_GAP));
+  assert.equal(reader.offsetOf('abc'), 0);
+});
+
+test('single page mode always scrolls to the top of its one page', () => {
+  const reader = ready(uniform(72, 1000, 2000));
+  reader.goto(68);
+  reader.setViewMode('single');
+  assert.equal(reader.offsetOf(68), 0);
+});
+
+test('only the pages around the reader are decoded, never the whole chapter', () => {
+  const reader = ready(uniform(72));
+  assert.equal(RENDER_RADIUS >= 1, true);
+  assert.deepEqual(reader.renderWindow(), [1, 2, 3]);
+  reader.goto(40);
+  assert.deepEqual(reader.renderWindow(), [38, 39, 40, 41, 42]);
+  reader.goto(72);
+  assert.deepEqual(reader.renderWindow(), [70, 71, 72]);
+  // Never the whole chapter, however long it is.
+  assert.equal(reader.renderWindow().length <= 2 * RENDER_RADIUS + 1, true);
+  reader.setViewMode('single');
+  assert.deepEqual(reader.renderWindow(), [72]);
+});
+
+test('a reader with no document decodes nothing', () => {
+  assert.deepEqual(createReaderState().renderWindow(), []);
 });
 
 if (failures.length) {

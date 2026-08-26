@@ -725,6 +725,10 @@
           <button type="button" class="btn-ghost reader-btn" data-reader-action="thumbs" title="Miniaturas" aria-label="Mostrar ou ocultar miniaturas">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="6" height="7"/><rect x="3" y="13" width="6" height="7"/><path d="M12 6h9M12 12h9M12 18h9"/></svg>
           </button>
+          <span class="reader-group" role="group" aria-label="Modo de visualização">
+            <button type="button" class="btn-ghost reader-btn reader-text" data-reader-action="view-continuous" aria-pressed="true" title="Leitura contínua" aria-label="Leitura contínua">Contínuo</button>
+            <button type="button" class="btn-ghost reader-btn reader-text" data-reader-action="view-single" aria-pressed="false" title="Uma página por vez" aria-label="Uma página por vez">Página única</button>
+          </span>
           <button type="button" class="btn-ghost reader-btn" data-reader-action="prev" title="Página anterior" aria-label="Página anterior">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
           </button>
@@ -756,7 +760,7 @@
           <nav class="reader-thumbs" id="readerThumbs" aria-label="Miniaturas das páginas"></nav>
           <div class="reader-stage" id="readerStage">
             <div class="reader-status" id="readerStatus" aria-live="polite"></div>
-            <img class="reader-page" id="readerPage" alt="Página do capítulo traduzido" hidden />
+            <div class="reader-pages" id="readerPages" hidden></div>
             <iframe class="reader-embed" id="readerEmbed" title="PDF do capítulo traduzido" hidden></iframe>
           </div>
         </div>

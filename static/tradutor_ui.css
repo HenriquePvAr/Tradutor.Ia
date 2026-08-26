@@ -3100,6 +3100,9 @@ html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login
     background:rgba(var(--tab-rgb),.12);
   }
   .reader-btn:disabled{opacity:.35; cursor:not-allowed;}
+  /* View mode (how the chapter is read) is its own pair, apart from the fit buttons
+     (how big a page is drawn). */
+  .reader-group{display:inline-flex; align-items:center; gap:2px;}
   .reader-pager{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);}
   .reader-pager input{
     width:52px; text-align:center; padding:4px 6px; font:inherit;
@@ -3130,7 +3133,18 @@ html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login
     display:flex; flex-direction:column; align-items:center;
     background:repeating-linear-gradient(45deg, rgba(0,0,0,.22) 0 12px, rgba(0,0,0,.26) 12px 24px);
   }
-  .reader-page{display:block; height:auto; max-width:none; border-radius:3px;}
+  /* Stacked pages. Each slot is sized from the page metadata before its bytes
+     arrive, so the scrollbar is honest and nothing shifts under the reader. The gap
+     must stay equal to PAGE_GAP in static/chapter_reader.js. */
+  .reader-pages{display:flex; flex-direction:column; align-items:center; gap:16px; flex:0 0 auto;}
+  .reader-slot{
+    position:relative; flex:0 0 auto; border-radius:3px;
+    background:rgba(239,231,216,.06);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .reader-slot.failed{border:1px solid var(--line); background:rgba(0,0,0,.35);}
+  .reader-retry{font-size:11px;}
+  .reader-page{display:block; width:100%; height:100%; border-radius:3px;}
   .reader-embed{width:100%; height:100%; border:0; background:var(--ink);}
   .reader-status{
     margin:auto; max-width:44ch; text-align:center; color:var(--muted);
