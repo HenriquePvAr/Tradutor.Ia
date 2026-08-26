@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import {
   createReaderState, MIN_ZOOM, MAX_ZOOM, ZOOM_STEPS,
   CLOSED, LOADING, READY, ERROR,
+  readerRequestInit, readerErrorMessage,
 } from './static/chapter_reader.js';
 
 const failures = [];
@@ -219,6 +220,34 @@ test('a document the parser could not page falls back to the browser viewer', ()
   reader.accept(token, {title: 'X', mode: 'embed', page_count: 0, pages: []});
   assert.equal(reader.state.mode, 'embed');
   assert.equal(reader.state.status, READY);
+});
+
+/* --------------------------------------------------------------- transport */
+// Under the Supabase provider the session is a Bearer token in a header. A plain
+// fetch (and an <img src>) is anonymous, which is why every reader request came
+// back 401 and the UI reported it as an unreadable PDF.
+
+test('a request carries the session bearer without putting it in the url', () => {
+  const init = readerRequestInit('tok.en.value', {headers: {Accept: 'application/json'}});
+  assert.equal(init.headers.Authorization, 'Bearer tok.en.value');
+  assert.equal(init.headers.Accept, 'application/json');
+  assert.equal(init.credentials, 'same-origin');
+});
+
+test('a cookie provider without a token still sends the session cookie', () => {
+  const init = readerRequestInit('');
+  assert.equal('Authorization' in init.headers, false);
+  assert.equal(init.credentials, 'same-origin');
+});
+
+test('an expired session is not reported as a broken pdf', () => {
+  const expired = readerErrorMessage('authentication_required');
+  assert.notEqual(expired, readerErrorMessage('reader_failed'));
+  assert.match(expired, /sess/i);
+});
+
+test('an unknown code still gets the generic message', () => {
+  assert.equal(readerErrorMessage('who_knows'), readerErrorMessage('reader_failed'));
 });
 
 if (failures.length) {

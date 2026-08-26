@@ -898,6 +898,10 @@ verde.
   igualmente em capítulo **histórico**, logo é condição de sessão/ambiente após o reinício
   do runtime, **não** regressão do artefato novo nem de #84 — o parser do #83 abre o PDF
   novo normalmente (72 páginas). Registrado como smoke não concluído, não como sucesso.
+  **Correção de leitura (#84F8):** o 401 **não** era condição transitória de sessão nem de
+  ambiente. É defeito estrutural e permanente: `static/chapter_reader.js` nunca enviava o
+  Bearer que o provider real da beta exige, e `<img src>`/`<iframe src>` não conseguem
+  enviá-lo. Fechado offline como `READER-SESSION-001` — ver `QUALITY_AND_VALIDATION.md`.
 
 **Prontidão para Setup.exe: NÃO.** `SEMANTIC-RUNTIME-001` é bloqueador visível ao usuário e
 precisa ser fechado antes do empacotamento.

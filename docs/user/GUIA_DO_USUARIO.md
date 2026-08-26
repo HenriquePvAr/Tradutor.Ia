@@ -435,6 +435,8 @@ leitor apenas mostra um aviso discreto no topo.
 
 Se o arquivo de um capítulo antigo tiver sido movido ou apagado, o leitor avisa
 ("O PDF desta execução não está disponível.") em vez de ficar carregando para sempre.
+E se a sua sessão tiver expirado, ele diz exatamente isso — "Sua sessão expirou. Entre
+novamente para ler este capítulo." — em vez de sugerir que o PDF está quebrado.
 
 > O leitor nunca altera nada. Ler um capítulo não modifica o PDF, as páginas nem os
 > relatórios.
@@ -636,6 +638,11 @@ resultado. Eles ficam registrados na revisão.
 **Posso mudar o serviço de tradução?**
 Pode, no campo **Motor de tradução**, capítulo a capítulo. O padrão é **DeepL
 (Qualidade)**.
+
+**E o motor de leitura de texto (OCR)?**
+Nesta beta há um só: **RapidOCR**. Ele aparece no campo **Motor de OCR**, logo abaixo do
+motor de tradução, apenas para você saber o que está sendo usado — não há troca nesta
+versão, e o programa nunca troca de motor por conta própria.
 
 **O programa vai atualizar sozinho?**
 Não nesta versão. A atualização automática está em desenvolvimento.

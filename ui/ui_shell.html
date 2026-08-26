@@ -340,6 +340,16 @@
             <div class="field-hint">Vale só para este capítulo; não altera a configuração global.</div>
           </div>
 
+          <!-- Informational, not a choice: the beta ships one OCR engine and never
+               substitutes it silently, so showing a picker here would be a lie. -->
+          <div class="field" id="ocrEngineField">
+            <label for="ocrEngineSelect">Motor de OCR</label>
+            <select id="ocrEngineSelect" disabled>
+              <option>RapidOCR · Ativo</option>
+            </select>
+            <div class="field-hint">Motor único desta beta técnica; o capítulo inteiro é lido com ele.</div>
+          </div>
+
           <div class="field">
             <label>Modo de processamento</label>
             <div class="choice-row">
@@ -961,17 +971,12 @@
         <div class="panel">
           <div class="panel-label">Motor de OCR</div>
           <label class="radio-opt"><input type="radio" name="ocr" checked disabled>
-            <div><div class="ro-title">PaddleOCR <span class="badge paddle" style="margin-left:6px;">padrão seguro</span></div><div class="ro-desc" id="settingPaddle">verificando instalação…</div></div>
+            <div><div class="ro-title">RapidOCR <span class="badge rapid" style="margin-left:6px;">Ativo</span></div><div class="ro-desc" id="settingRapid">verificando instalação…</div></div>
           </label>
-          <label class="radio-opt"><input type="radio" name="ocr" disabled>
-            <div><div class="ro-title">RapidOCR híbrido <span class="badge rapid" style="margin-left:6px;">experimental</span></div><div class="ro-desc" id="settingRapid">verificando instalação…</div></div>
-          </label>
-          <label class="radio-opt"><input type="radio" name="ocr" disabled>
-            <div><div class="ro-title">Tesseract</div><div class="ro-desc">Fallback manual — exige instalação separada no Windows</div></div>
-          </label>
+          <div class="field-hint">Motor único desta beta técnica. Não há troca de motor nesta versão e nenhuma substituição acontece em silêncio.</div>
 
           <div class="range-wrap">
-            <div class="kv-row" style="border:none; padding-bottom:4px;"><span class="kv-key">RAPIDOCR_MIN_CONFIDENCE <span class="tip" tabindex="0" data-tip="Confiança mínima pra aceitar um resultado do RapidOCR. Abaixo disso, a região passa pro PaddleOCR mobile e, se ainda ficar ruim, pro PaddleOCR completo.">?</span></span><span class="kv-val" id="confVal">0.55</span></div>
+            <div class="kv-row" style="border:none; padding-bottom:4px;"><span class="kv-key">RAPIDOCR_MIN_CONFIDENCE <span class="tip" tabindex="0" data-tip="Confiança mínima pra aceitar um resultado do RapidOCR. Abaixo disso, a região entra em recuperação regional e, se ainda ficar ruim, vai para revisão.">?</span></span><span class="kv-val" id="confVal">0.55</span></div>
             <input type="range" min="0" max="1" step="0.01" value="0.55" id="confRange" disabled>
           </div>
 
@@ -998,12 +1003,12 @@
               <div class="kv-row"><span class="kv-key">Python</span><span class="kv-val" id="settingPython">—</span></div>
               <div class="kv-row"><span class="kv-key">NiceGUI</span><span class="kv-val" id="settingNicegui">—</span></div>
               <div class="kv-row"><span class="kv-key">Licença</span><span class="kv-val">não especificada</span></div>
-              <div class="kv-row"><span class="kv-key">Stack</span><span class="kv-val">Selenium · OpenCV · PaddleOCR/RapidOCR · Tesseract · NLLB-200 · Pillow · NVIDIA API</span></div>
+              <div class="kv-row"><span class="kv-key">Stack</span><span class="kv-val">Selenium · OpenCV · RapidOCR · NLLB-200 · Pillow · NVIDIA API</span></div>
             </div>
 
             <div class="scan-credits">
               <div class="sc-title">staff deste capítulo</div>
-              <div class="sc-row"><span class="sc-role">Raw / OCR</span><span class="sc-name">PaddleOCR · RapidOCR híbrido</span></div>
+              <div class="sc-row"><span class="sc-role">Raw / OCR</span><span class="sc-name">RapidOCR</span></div>
               <div class="sc-row"><span class="sc-role">Tradução</span><span class="sc-name">DeepL · quality_optimized</span></div>
               <div class="sc-row"><span class="sc-role">Clean & Typesetting</span><span class="sc-name">redesenho automático dos balões</span></div>
               <div class="sc-row"><span class="sc-role">Quality Check</span><span class="sc-name">gate de validação · rollback seletivo</span></div>

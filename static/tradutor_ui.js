@@ -6563,7 +6563,7 @@
     window.dispatchEvent(new CustomEvent('tradutor:api-configured-changed'));
     $('#settingServiceFriendly').textContent = apiReady ? 'Conectado' : 'Não configurado';
     $('#settingModeFriendly').textContent = 'Rápido';
-    $('#settingReadingFriendly').textContent = settings.paddle_available || settings.rapidocr_available ? 'Disponível' : 'Indisponível';
+    $('#settingReadingFriendly').textContent = settings.rapidocr_available ? 'Disponível' : 'Indisponível';
     $('#settingParallelFriendly').textContent = trueValue(settings.ocr_parallel) ? 'Ativo' : 'Automático';
     $('#settingContextFriendly').textContent = 'Ativo';
     $('#settingTranslationMode').textContent = settings.translation_mode || '—';
@@ -6575,7 +6575,8 @@
     $('#settingRate').textContent = settings.max_requests_per_minute || '—';
     $('#settingTranslateSfx').checked = trueValue(settings.translate_sfx);
     $('#settingPrioritize').checked = trueValue(settings.prioritize_enclosed_text);
-    $('#settingPaddle').textContent = settings.paddle_available ? `disponível · ${settings.paddleocr_version}` : 'não disponível';
+    // RapidOCR is the beta's only engine. Paddle is an optional escalation that is not
+    // installed and is never substituted in silently, so it gets no row of its own.
     $('#settingRapid').textContent = settings.rapidocr_available ? `disponível · ${settings.rapidocr_version}` : 'não disponível';
     $('#confRange').value = Number(settings.rapidocr_min_confidence || .55);
     $('#confVal').textContent = Number(settings.rapidocr_min_confidence || .55).toFixed(2);

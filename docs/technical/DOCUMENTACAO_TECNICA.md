@@ -694,6 +694,13 @@ usado somente quando disponível e quando a política de fallback justificar. Au
 não é fatal se RapidOCR está disponível. Ausência do OCR primário configurado continua falhando
 fechado antes do capítulo.
 
+**Superfície da beta (TDD #84F8).** O usuário agora **vê** qual motor está ativo: a tela de
+nova tradução mostra um campo informativo `Motor de OCR` com `RapidOCR · Ativo`, na mesma
+linguagem visual de `Motor de tradução: DeepL (Qualidade)`, e as Configurações mostram uma
+única linha `RapidOCR — Ativo`. Como a beta tem um motor só e nenhuma substituição em
+silêncio, o campo é **informativo e não selecionável**: não há opção Paddle exposta, porque
+Paddle não é exigido nem instalado nesta beta.
+
 O fallback **solicita comparação**; ele não fabrica a leitura correta. Os metadados
 registram engine original, engine final, confidences, motivos de fallback, reparos e
 scores.
@@ -1437,9 +1444,20 @@ Rotas (todas `GET`, todas donas-escopadas):
 (`application/pdf` via `FileResponse`, que responde `Range`/`206` para o fallback
 nativo).
 
+**Transporte autenticado (TDD #84F8).** As rotas do leitor são donas-escopadas como
+qualquer outra, e sob o provider real da beta a sessão é um **Bearer em cabeçalho**.
+Um `<img src>`/`<iframe src>` não consegue enviar cabeçalho, então todo byte que o
+leitor mostra é **buscado** por `fetch` com o mesmo token canônico do resto do app
+(`window.__tradutorGetCanonicalAccessToken`, via `readerRequestInit`) e entregue ao
+elemento como object URL, revogada ao trocar de página ou fechar. `credentials:
+'same-origin'` continua enviado, de modo que os providers baseados em cookie
+funcionam sem caminho alternativo. **O token nunca aparece em URL**, não existe
+credencial exclusiva do leitor e nenhuma verificação de dono foi relaxada. Um `401`
+é reportado como sessão expirada, não como PDF ilegível.
+
 **Ciclo de render.** Só a página atual existe no DOM, como um `<img>` com largura
 em CSS — não há canvas, worker nem pool a vazar. Miniaturas são geradas por Pillow
-com `draft()` (decodificação já reduzida) e só recebem `src` quando entram na
+com `draft()` (decodificação já reduzida) e só são buscadas quando entram na
 viewport (`IntersectionObserver`). Caches são `lru_cache` limitados: 16 documentos
 parseados e 256 miniaturas, ambos chaveados por `(caminho, mtime, tamanho)`.
 

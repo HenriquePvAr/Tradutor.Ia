@@ -519,6 +519,51 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   RapidOCR estiver disponível, a execução é válida; se RapidOCR faltar, falha fechado. O guard
   de #84F5 impede que fallback Paddle vazio apague texto útil do RapidOCR. Tudo isso é offline:
   **a saída final P068/usuário continua pendente de novo E2E real autorizado.**
+- `STORY-TERMINOLOGY-RESIDUAL-001` (**fechado offline em #84F8** — descoberto no E2E real do run
+  `5758024e-7ab4-43d3-a7ec-04d773c7154a`): quatro caixas de narrativa comum saíram em inglês —
+  `p040:BALAO_1`, `p040:BALAO_2`, `p054:BALAO_1`, `p057:BALAO_1`. A perícia sobre
+  `progress.json` mostra as quatro com a **mesma** forma: `translation_candidate` em PT-BR
+  utilizável (`raw_provider_candidate_class = PTBR_CLEAN`), `translation = ""`,
+  `translation_final_state = manual_review`,
+  `translation_final_reason = terminology_conflict_after_retries`
+  (`terminology_conflict:AWAKENED` nas duas de p040, `terminology_conflict:FIRST` em p054/p057),
+  sem qualquer veredito semântico de rejeição. `_finalize_translation_failure` limpava
+  `group.translation`, e `_should_translate_group` então excluía a região do render — o
+  candidato existia e desaparecia em silêncio, deixando o inglês na página.
+  **Correção (#84F8):** conflito de terminologia passa a ser tratado como *incerteza sobre uma
+  palavra*, não como prova de erro de sentido. Uma decisão única
+  (`terminology_review_render_candidate`) libera o candidato **apenas** quando o estado
+  terminal é `manual_review` por `terminology_conflict_after_retries`, a razão não é de
+  fidelidade semântica, e o próprio validador classifica o candidato como `PTBR_CLEAN`. A
+  região renderiza sob `RENDER_WITH_REVIEW`, mantém `manual_review_required = true`,
+  `translation_quality_impact = review_required` e o motivo real preservado, e **nunca** é
+  contabilizada como limpa. `translation_render_state` centraliza o eixo de tradução
+  (clean/review/reject) num único lugar. O caminho de **rejeição** semântica não foi tocado:
+  candidato rejeitado, inglês residual, candidato igual à fonte e ausência de candidato
+  continuam retidos — a proteção de P068 permanece intacta.
+  **Conciliação da contabilidade do run (não explicado = 0):** `physical_source_residual_count`
+  = 7 = 4 narrativas comuns (acima) + 2 `source_language_residual` (`p011:BALAO_1` "TAK" e
+  `p011:BALAO_2` "TUR", candidato igual à fonte) + 1 `missing_translation_candidate`
+  (`p013:BALAO_3` "TRNDGE", sem candidato algum). Só as quatro primeiras passam a renderizar;
+  as outras três mantêm seus próprios vereditos. Contratos em `test_84f8_rc_blockers.py`.
+  **A saída final visível ao usuário continua pendente de novo E2E real autorizado.**
+- `READER-SESSION-001` (**fechado offline em #84F8**): o leitor integrado abria a execução
+  correta e exibia "Não foi possível abrir este PDF." O PDF era válido (72 páginas, extração
+  de JPEG e miniatura OK pelo `pdf_reader.py`) e o `UiBridge` respondia corretamente; o
+  defeito estava no **transporte do navegador**. Sob o provider real da beta
+  (`COMMUNITY_AUTH_PROVIDER=supabase`) a sessão é um Bearer em cabeçalho — `_extract_bearer`
+  só aceita `Authorization` — e `static/chapter_reader.js` usava um `fetch` sem cabeçalho,
+  enquanto `<img src>` e `<iframe src>` **estruturalmente** não conseguem enviá-lo. As quatro
+  rotas respondiam `401 authentication_required`, código ausente de `ERROR_MESSAGES`, que caía
+  na mensagem genérica — escondendo a causa real.
+  **Correção (#84F8):** o leitor passa a usar o mesmo token canônico do resto do app
+  (`__tradutorGetCanonicalAccessToken`) via `readerRequestInit`, e páginas, miniaturas e o PDF
+  do fallback são **buscados** e entregues aos elementos como object URLs, revogadas ao trocar
+  de página ou fechar. Nenhuma dependência nova de PDF, nenhum token em URL, nenhuma
+  credencial exclusiva do leitor: job_id opaco, validação de dono em SQL, vínculo exato de
+  run, confinamento a `output/`, verificação `%PDF-` e bloqueio de travessia seguem intactos.
+  Um 401 agora é reportado como sessão expirada, não como PDF quebrado. Contratos em
+  `test_84f8_rc_blockers.py` e `test_chapter_reader.mjs`.
 - **Replay offline com paridade de produção (#84F2)**: as regiões reais de P5, P6 e P25
   foram reprocessadas a partir das páginas e da geometria OCR persistidas do run
   `7d64890b-e303-497b-863f-74e2cd8d5645`, sem provider e sem rede, reproduzindo os números

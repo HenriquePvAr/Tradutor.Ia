@@ -171,7 +171,23 @@ const ERROR_MESSAGES = {
   not_found: 'O PDF desta execução não está disponível.',
   page_not_available: 'Não foi possível abrir este PDF.',
   reader_failed: 'Não foi possível abrir este PDF.',
+  // A 401/403 is a session problem, not a broken artifact. Reporting it as "this PDF
+  // cannot be opened" is what hid the real defect: every reader request was anonymous.
+  authentication_required: 'Sua sessão expirou. Entre novamente para ler este capítulo.',
+  csrf_rejected: 'Sua sessão expirou. Entre novamente para ler este capítulo.',
 };
+
+export const readerErrorMessage = code =>
+  ERROR_MESSAGES[code] || ERROR_MESSAGES.reader_failed;
+
+// The app authenticates with a Bearer token in a header (Supabase), or with a
+// same-origin session cookie (local/Better Auth). Sending both covers either
+// provider, and the token never appears in a URL.
+export function readerRequestInit(token, extra = {}) {
+  const headers = {...(extra.headers || {})};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return {...extra, headers, credentials: 'same-origin', cache: 'no-store'};
+}
 
 function boot() {
   const root = document.getElementById('view-leitor');
@@ -194,6 +210,46 @@ function boot() {
   const toast = (message, kind) => {
     if (typeof window.__tradutorToast === 'function') window.__tradutorToast(message, kind);
   };
+
+  // ---- authenticated transport -------------------------------------------
+  // `<img src>` and `<iframe src>` cannot carry an Authorization header, so every
+  // byte the reader shows is fetched here and handed to the element as an object
+  // URL. Same canonical token the rest of the app uses; no reader-only credential,
+  // no token in a query string, ownership still proven server-side per request.
+  async function sessionToken() {
+    const cached = window.__tradutorAccessToken || '';
+    if (cached) return cached;
+    const resolve = window.__tradutorGetCanonicalAccessToken;
+    if (typeof resolve !== 'function') return '';
+    try { return (await resolve()) || ''; } catch (_) { return ''; }
+  }
+
+  const authFetch = async (url, extra) =>
+    fetch(url, readerRequestInit(await sessionToken(), extra));
+
+  let pageBlobUrl = '';
+  let embedBlobUrl = '';
+  const thumbBlobUrls = [];
+  const releaseThumbnails = () => {
+    while (thumbBlobUrls.length) URL.revokeObjectURL(thumbBlobUrls.pop());
+  };
+
+  // Loads `url` into `element.src`, keeping only the newest blob alive. `guard()`
+  // must still return `stamp` when the bytes arrive, or the result is stale.
+  async function loadInto(element, url, guard, stamp) {
+    let blob;
+    try {
+      const response = await authFetch(url);
+      if (!response.ok) return String(response.status);
+      blob = await response.blob();
+    } catch (_) {
+      return 'reader_failed';
+    }
+    if (guard() !== stamp) return '';
+    const object = URL.createObjectURL(blob);
+    element.src = object;
+    return object;
+  }
 
   function measure() {
     if (!stage) return;
@@ -228,8 +284,21 @@ function boot() {
     statusBox.appendChild(actions);
   }
 
+  // A thumbnail is fetched once, when it first scrolls into view, and never re-fetched.
+  function loadThumbnail(img) {
+    if (!img || img.dataset.loading || img.getAttribute('src')) return;
+    img.dataset.loading = '1';
+    const token = reader.state.token;
+    void loadInto(img, img.dataset.src, () => reader.state.token, token)
+      .then(object => {
+        if (object && object.startsWith('blob:')) thumbBlobUrls.push(object);
+        else delete img.dataset.loading;
+      });
+  }
+
   function renderThumbnails() {
     if (!thumbs) return;
+    releaseThumbnails();
     thumbs.innerHTML = '';
     if (observer) observer.disconnect();
     if (reader.state.mode !== 'images') return;
@@ -238,9 +307,7 @@ function boot() {
         entries.forEach(entry => {
           if (!entry.isIntersecting) return;
           const button = entry.target;
-          const img = button.querySelector('img');
-          // Rendered once, when it first becomes visible, and never re-fetched.
-          if (img && !img.src) img.src = img.dataset.src;
+          loadThumbnail(button.querySelector('img'));
           observer.unobserve(button);
         });
       }, {root: thumbs, rootMargin: '400px 0px'})
@@ -261,7 +328,7 @@ function boot() {
       button.append(img, number);
       fragment.appendChild(button);
       if (observer) observer.observe(button);
-      else img.src = img.dataset.src;
+      else loadThumbnail(img);
     }
     thumbs.appendChild(fragment);
   }
@@ -272,8 +339,7 @@ function boot() {
     const active = thumbs.querySelector(`.reader-thumb[data-page="${reader.state.page}"]`);
     if (!active) return;
     active.classList.add('active');
-    const img = active.querySelector('img');
-    if (img && !img.src) img.src = img.dataset.src;
+    loadThumbnail(active.querySelector('img'));
     if (typeof active.scrollIntoView === 'function') {
       active.scrollIntoView({block: 'nearest'});
     }
@@ -289,8 +355,22 @@ function boot() {
     image.dataset.token = token;
     image.style.width = `${width}px`;
     const source = `/api/ui/reader/${encodeURIComponent(state.jobId)}/page/${state.page}`;
-    if (image.getAttribute('src') !== source) image.setAttribute('src', source);
     if (!keepScroll && stage) stage.scrollTop = 0;
+    // Zooming and fitting reuse the page already in memory; only a page change fetches.
+    if (image.dataset.source === source) return;
+    image.dataset.source = source;
+    void loadInto(image, source, () => image.dataset.source, source).then(object => {
+      if (!object) return;
+      if (!object.startsWith('blob:')) {
+        image.dataset.source = '';
+        reader.fail(state.token, object === '401' || object === '403'
+          ? 'authentication_required' : 'page_not_available');
+        render(true);
+        return;
+      }
+      if (pageBlobUrl) URL.revokeObjectURL(pageBlobUrl);
+      pageBlobUrl = object;
+    });
   }
 
   function syncToolbar() {
@@ -324,11 +404,17 @@ function boot() {
       embed.hidden = !useEmbed;
       const source = useEmbed
         ? `/api/ui/reader/${encodeURIComponent(state.jobId)}/pdf` : '';
-      if (embed.getAttribute('src') !== source) embed.setAttribute('src', source);
+      if (embed.dataset.source !== source) {
+        embed.dataset.source = source;
+        if (embedBlobUrl) { URL.revokeObjectURL(embedBlobUrl); embedBlobUrl = ''; }
+        if (!source) embed.removeAttribute('src');
+        else void loadInto(embed, source, () => embed.dataset.source, source)
+          .then(object => { if (object?.startsWith('blob:')) embedBlobUrl = object; });
+      }
     }
     if (shell) shell.classList.toggle('no-thumbs', !state.thumbnails || state.mode !== 'images');
     if (state.status === LOADING) setStatus('Carregando capítulo…', 'loading');
-    else if (state.status === ERROR) setStatus(ERROR_MESSAGES[state.error] || ERROR_MESSAGES.reader_failed, 'error');
+    else if (state.status === ERROR) setStatus(readerErrorMessage(state.error), 'error');
     else if (state.status === CLOSED) setStatus('Escolha um capítulo em "Capítulos traduzidos" para ler aqui.', '');
     else setStatus('', '');
     syncToolbar();
@@ -336,19 +422,29 @@ function boot() {
     syncThumbSelection();
   }
 
+  function releaseAll() {
+    releaseThumbnails();
+    if (pageBlobUrl) { URL.revokeObjectURL(pageBlobUrl); pageBlobUrl = ''; }
+    if (embedBlobUrl) { URL.revokeObjectURL(embedBlobUrl); embedBlobUrl = ''; }
+    if (image) { image.removeAttribute('src'); image.dataset.source = ''; }
+    if (embed) { embed.removeAttribute('src'); embed.dataset.source = ''; }
+  }
+
   async function load(jobId) {
     const token = reader.open(jobId);
-    if (image) image.removeAttribute('src');
+    releaseAll();
     if (thumbs) thumbs.innerHTML = '';
     render();
     let payload = null;
     try {
-      const response = await fetch(`/api/ui/reader/${encodeURIComponent(jobId)}`,
-        {credentials: 'same-origin', headers: {'Accept': 'application/json'}});
+      const response = await authFetch(`/api/ui/reader/${encodeURIComponent(jobId)}`,
+        {headers: {'Accept': 'application/json'}});
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}));
         const code = typeof detail?.detail === 'object'
-          ? detail.detail.code : String(detail?.detail || 'reader_failed');
+          ? detail.detail.code
+          : String(detail?.detail
+            || (response.status === 401 ? 'authentication_required' : 'reader_failed'));
         // A result for a chapter the user already left must never paint over the new one.
         reader.fail(token, code);
         render();
@@ -472,7 +568,7 @@ function boot() {
     if (!jobId) return;
     void load(jobId);
   });
-  window.addEventListener('tradutor-close-reader', () => { reader.close(); render(); });
+  window.addEventListener('tradutor-close-reader', () => { reader.close(); releaseAll(); render(); });
 
   window.__tradutorReader = reader;
   render();

@@ -362,7 +362,11 @@ class SameChapterConsistencyTests(unittest.TestCase):
                 records,
             )
 
-    def test_unfixable_drift_requires_review_instead_of_trusting_conflict(self):
+    def test_unfixable_drift_ships_under_review_instead_of_english(self):
+        # TDD #84F8: an unresolved terminology conflict is uncertainty about a word,
+        # not proof the sentence is wrong. Withholding the whole region republished
+        # the English source, so the usable PT-BR now ships flagged for review while
+        # the conflict itself stays recorded and never counts as clean.
         with tempfile.TemporaryDirectory() as folder:
             store = _store(folder)
             store.prepare([])
@@ -381,9 +385,10 @@ class SameChapterConsistencyTests(unittest.TestCase):
                 terminology_ledger=store,
             )
             self.assertFalse(drifted.translation_valid)
-            self.assertEqual(drifted.translation, "")
+            self.assertEqual(drifted.translation, "O PORTALIS ESTA FECHADO")
             self.assertEqual(drifted.rejected_translation, "O PORTALIS ESTA FECHADO")
             self.assertTrue(drifted.manual_review_required)
+            self.assertEqual(drifted.translation_quality_impact, "review_required")
             self.assertEqual(
                 drifted.translation_final_reason,
                 "terminology_conflict_after_retries",

@@ -142,7 +142,9 @@ class SafeExhaustedRetryPolicyTests(unittest.TestCase):
         self.assertEqual(group.translation_final_reason, "semantic_fidelity_failed_after_retries")
         self.assertTrue(semantic_fidelity.is_fidelity_reason(group.translation_validation_reason))
 
-    def test_terminology_failure_exhaustion_does_not_trust_conflicting_candidate(self):
+    def test_terminology_failure_exhaustion_renders_under_review_never_as_clean(self):
+        # TDD #84F8: the candidate ships so the English source does not stay on the
+        # page, but it is never trusted -- not valid, review-required, conflict kept.
         group = _group("THE ZARQUON IS CLOSED")
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -156,9 +158,11 @@ class SafeExhaustedRetryPolicyTests(unittest.TestCase):
 
         _validate(group, translator, terminology_ledger=ledger)
 
-        self.assertEqual(group.translation, "")
+        self.assertEqual(group.translation, "O PORTALIS ESTA FECHADO")
         self.assertEqual(group.translation_candidate, "O PORTALIS ESTA FECHADO")
         self.assertFalse(group.translation_valid)
+        self.assertTrue(group.manual_review_required)
+        self.assertEqual(group.translation_quality_impact, "review_required")
         self.assertEqual(group.translation_final_reason, "terminology_conflict_after_retries")
 
     def test_last_allowed_retry_success_stays_trusted(self):

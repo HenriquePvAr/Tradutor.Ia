@@ -1692,6 +1692,56 @@ def _candidate_forensic_class(source, candidate, classification=""):
     return "OTHER"
 
 
+# A terminology conflict says the chapter ledger is unsure which *word* to use. It is
+# not proof the sentence is wrong, so withholding the whole region for it republishes
+# the English source, which is the worse defect. Semantic rejection, residual English
+# and an unreadable source are different verdicts and keep withholding.
+TERMINOLOGY_REVIEW_REASONS = ("terminology_conflict_after_retries",)
+
+
+def terminology_review_render_candidate(group):
+    """The PT-BR a terminology-review region may still ship, or ``""`` if none may."""
+
+    if str(getattr(group, "translation_final_state", "")) != "manual_review":
+        return ""
+    if str(getattr(group, "translation_final_reason", "")) not in TERMINOLOGY_REVIEW_REASONS:
+        return ""
+    if semantic_fidelity.is_fidelity_reason(
+        getattr(group, "translation_validation_reason", "")
+    ):
+        return ""
+    candidate = clean_ocr_text(getattr(group, "translation_candidate", "") or "")
+    if not candidate:
+        return ""
+    # Only a candidate the validator itself calls clean PT-BR: a mixed-language or
+    # still-English target would swap one residual for another.
+    if _candidate_forensic_class(
+        group.text, candidate, group.classification
+    ) != "PTBR_CLEAN":
+        return ""
+    return candidate
+
+
+def translation_render_state(group):
+    """The translation axis handed to :func:`render_disposition`.
+
+    Kept apart from the render loop so the three verdicts -- clean, review, reject --
+    are one decision with one place to read, instead of a chain of overwrites.
+    """
+
+    final_state = str(getattr(group, "translation_final_state", ""))
+    if final_state in {"rejected", "unresolved"}:
+        return "reject", str(
+            getattr(group, "translation_final_reason", "") or "semantic_reject")
+    if getattr(group, "semantic_review_reason", ""):
+        return "review", str(group.semantic_review_reason)
+    if final_state in REVIEW_TERMINAL_STATES:
+        return "review", str(
+            getattr(group, "translation_final_reason", "")
+            or "translation_review_required")
+    return "clean", ""
+
+
 def _terminal_translation_failure_reason(group, validation_reason, candidate):
     candidate_text = clean_ocr_text(candidate)
     if not candidate_text:
@@ -1800,6 +1850,14 @@ def _finalize_translation_failure(
         reason,
         preserved_original=True,
     )
+    # Single place the failure path can hand a usable PT-BR candidate back to the
+    # renderer. The region stays review-required and carries its real reason; only
+    # the choice between "ship PT-BR under review" and "leave English on the page"
+    # changes, and only for the terminology class.
+    renderable = terminology_review_render_candidate(group)
+    if renderable:
+        group.translation = renderable
+        group.preserved_original = False
 
 
 def _ensure_translation_terminal_state(group):
@@ -2049,10 +2107,16 @@ def _render_analyzed_image(
                 accepted_allowed_mask = group_allowed
                 group.visual_validation = visual_summary
                 group.redrawn = True
+                # A region that shipped only because terminology review is safe to
+                # render is still a review item: closing it as "translated" would
+                # leave a review reason next to a "none" quality impact.
+                review_reason = (
+                    group.translation_final_reason
+                    if terminology_review_render_candidate(group) else "")
                 _set_translation_terminal_state(
                     group,
-                    "translated",
-                    group.translation_validation_reason or "ok",
+                    "manual_review" if review_reason else "translated",
+                    review_reason or group.translation_validation_reason or "ok",
                     preserved_original=False,
                 )
                 break
@@ -2061,14 +2125,7 @@ def _render_analyzed_image(
             group.art_reconstruction_status,
             group.art_reconstruction_reason,
         ) = art_reconstruction_verdict(group.visual_attempts, accepted=accepted)
-        translation_state = "clean"
-        translation_reason = ""
-        if group.semantic_review_reason:
-            translation_state = "review"
-            translation_reason = group.semantic_review_reason
-        if group.translation_final_state in {"rejected", "unresolved"}:
-            translation_state = "reject"
-            translation_reason = group.translation_final_reason or "semantic_reject"
+        translation_state, translation_reason = translation_render_state(group)
         source_removed = bool(
             accepted
             and not _source_removal_incomplete(
@@ -3409,7 +3466,10 @@ def _should_translate_group(group):
     # retry still fails, keep the untouched source region instead of erasing it
     # and drawing broken/mixed text back onto the page.
     if group.sent_to_translation and not group.translation_valid:
-        return False
+        # ...unless the only objection is terminology: that region has a usable PT-BR
+        # target and refusing it would put the English source back in front of the
+        # reader. It renders under review, never as clean.
+        return bool(terminology_review_render_candidate(group))
     if not _group_has_story_translation_authority(group):
         return False
     if (
