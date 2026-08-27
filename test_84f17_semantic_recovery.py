@@ -290,19 +290,20 @@ class RecoveryOutcomeTests(unittest.TestCase):
         self.assertEqual(group.semantic_review_reason, "")
         self.assertEqual(ocr_balloon.translation_render_state(group)[0], "clean")
 
-    def test_all_bad_stays_review_unusable_and_still_renders(self):
+    def test_all_bad_stays_review_unusable_and_does_not_render(self):
         source = f"EMERGENCY CONTAINMENT {OCR_CORRUPT_UNRECOVERABLE}"
         bad = f"BARREIRA DE CONTENCAO {OCR_CORRUPT_UNRECOVERABLE}"
         worse = f"CONTENCAO DE EMERGENCIA {OCR_CORRUPT_UNRECOVERABLE}"
         group = _group(source, bad, classification="narration")
         _run([group], _ScriptedTranslator(worse))
         axis, reason = ocr_balloon.translation_render_state(group)
-        self.assertEqual(axis, "review")
+        self.assertEqual(axis, "reject")
         self.assertEqual(
             semantic_fidelity.review_usability(reason),
             semantic_fidelity.REVIEW_UNUSABLE,
         )
-        # Rendering, never rejected: withholding puts the English back.
+        # It remains a review outcome, but the physical renderer preserves the
+        # source region rather than drawing a known-unusable target.
         self.assertTrue(group.translation.strip())
         self.assertNotEqual(group.translation_final_state, "rejected")
         # A failed recovery is still a *review*. Leaving the fidelity reason on

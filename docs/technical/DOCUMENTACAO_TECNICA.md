@@ -1424,6 +1424,21 @@ segunda tradução fiel. O detector PT-BR também passa a bloquear formas gramat
 malformadas como `passo a ser` em contexto de terceira pessoa, preservando casos ambíguos
 ou raros sem evidência local suficiente.
 
+O TDD #84F23 fecha `REVIEW-UNUSABLE-RENDER-001` no limite físico do render: a decisão
+semântica de renderização agora precede limpeza, reconstrução e tipografia. Candidatos
+`clean` e `review_renderable` continuam podendo desenhar a tradução, mas
+`review_unusable` e `reject` param antes do inpaint e preservam os pixels originais da
+região. Isso impede que o sistema de fidelidade visual do #84F22 transforme uma tradução
+inutilizável em lettering bonito no PDF.
+
+O mesmo TDD registra `P65-SOURCE-RECOVERY-001`: a recuperação de fonte para
+`source_segmentation_incomplete` é local, limitada e baseada apenas no crop real lido por
+RapidOCR. Pequenas variantes determinísticas do crop podem propor uma fonte canônica
+somente quando há concordância independente, confiança suficiente e consistência de
+fronteiras de palavras; a tradução alvo nunca é usada como evidência de fonte. Se as
+leituras forem ambíguas, o comportamento correto é preservar a fonte original, manter
+`REVIEW_UNUSABLE` e bloquear a saída final.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`

@@ -1779,12 +1779,57 @@ def translation_render_state(group):
         return "reject", str(
             getattr(group, "translation_final_reason", "") or "semantic_reject")
     if getattr(group, "semantic_review_reason", ""):
-        return "review", str(group.semantic_review_reason)
+        reason = str(group.semantic_review_reason)
+        if semantic_fidelity.is_review_unusable(reason):
+            return "reject", reason
+        return "review", reason
     if final_state in REVIEW_TERMINAL_STATES:
-        return "review", str(
+        reason = str(
             getattr(group, "translation_final_reason", "")
             or "translation_review_required")
+        if semantic_fidelity.is_review_unusable(reason):
+            return "reject", reason
+        return "review", reason
     return "clean", ""
+
+
+def translation_allows_physical_render(group):
+    """True when translated lettering may enter cleanup/style/render.
+
+    Semantic usability is the first physical-render gate.  A candidate that was
+    routed to review but is still readable may render with review accounting;
+    a candidate whose review reason means "unusable" must preserve the source
+    pixels instead.  Typography fidelity is deliberately downstream of this.
+    """
+
+    state, reason = translation_render_state(group)
+    if state == "reject":
+        return False, reason or "translation_not_renderable"
+    return True, reason
+
+
+def _preserve_unrenderable_translation(group, reason):
+    safe_reason = str(reason or "translation_not_renderable")
+    group.redrawn = False
+    group.manual_review_required = True
+    group.preserved_original = True
+    group.render_disposition = DO_NOT_RENDER
+    group.render_disposition_reason = safe_reason
+    group.visual_validation = {
+        "visual_validation_passed": True,
+        "reason": "translation_render_suppressed",
+        "render_disposition": DO_NOT_RENDER,
+        "render_disposition_reason": safe_reason,
+        "translated_rendered": False,
+        "source_preserved": True,
+    }
+    group.visual_attempts = [dict(group.visual_validation)]
+    _set_translation_terminal_state(
+        group,
+        "manual_review",
+        safe_reason,
+        preserved_original=True,
+    )
 
 
 def _terminal_translation_failure_reason(group, validation_reason, candidate):
@@ -2033,6 +2078,11 @@ def _render_analyzed_image(
         accepted_cleanup_mask = None
         accepted_strategy = ""
         accepted_allowed_mask = None
+
+        render_allowed, render_block_reason = translation_allows_physical_render(group)
+        if not render_allowed:
+            _preserve_unrenderable_translation(group, render_block_reason)
+            continue
 
         if _translation_echoes_source(group):
             group.redrawn = False
@@ -4135,6 +4185,219 @@ def _rapidocr_attempt_record(attempt, strategy, text, score, reasons):
         "quality_score": round(float(score), 4),
         "quality_reasons": list(reasons or []),
     }
+
+
+RAPIDOCR_SOURCE_RECOVERY_MAX_VARIANTS = 7
+
+
+def _source_recovery_text(lines):
+    return clean_ocr_text(" ".join(str(getattr(line, "text", "") or "") for line in lines))
+
+
+def _source_recovery_confidence(lines):
+    values = [
+        float(getattr(line, "confidence", 0.0) or 0.0)
+        for line in lines or []
+    ]
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
+def _source_recovery_boundaries(lines):
+    return [
+        [int(value) for value in tuple(getattr(line, "box", ()) or ())[:4]]
+        for line in lines or []
+        if len(tuple(getattr(line, "box", ()) or ())) >= 4
+    ]
+
+
+def _source_recovery_normalized(text):
+    return source_completeness.compact(clean_ocr_text(text))
+
+
+def _source_recovery_word_signature(text):
+    return "|".join(source_completeness.fold_tokens(clean_ocr_text(text)))
+
+
+def rapidocr_source_recovery_variants(crop):
+    """Small deterministic local-only image variants for source recovery."""
+
+    crop = np.asarray(crop)
+    variants = [{"name": "original_crop", "image": crop}]
+    if crop.size == 0:
+        return variants
+    variants.append({
+        "name": "upscale_2x",
+        "image": cv2.resize(crop, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC),
+    })
+    variants.append({
+        "name": "upscale_3x",
+        "image": cv2.resize(crop, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC),
+    })
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    equalized = cv2.equalizeHist(gray)
+    variants.append({
+        "name": "grayscale_autocontrast",
+        "image": cv2.cvtColor(equalized, cv2.COLOR_GRAY2BGR),
+    })
+    _ret, thresh = cv2.threshold(
+        equalized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    variants.append({
+        "name": "threshold_otsu",
+        "image": cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR),
+    })
+    sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+    variants.append({
+        "name": "light_sharpen",
+        "image": cv2.filter2D(crop, -1, sharpen_kernel),
+    })
+    variants.append({
+        "name": "inverted_if_needed",
+        "image": cv2.bitwise_not(crop),
+    })
+    return variants[:RAPIDOCR_SOURCE_RECOVERY_MAX_VARIANTS]
+
+
+def _rapidocr_detect_source_variant(engine, image, *, page_index):
+    if isinstance(engine, OCREngine):
+        lines = engine._detect_with_rapidocr(image, upscale=False)
+        for line in lines:
+            line.engine = "rapidocr"
+            line.page = page_index
+            line.metadata = {
+                **(line.metadata or {}),
+                "ocr_engine": "rapidocr",
+                "ocr_pass": "source_recovery_variant",
+            }
+    else:
+        lines = engine.detect_lines(image, page=page_index, rapidocr_upscale=False)
+    return list(lines or [])
+
+
+def _source_recovery_agreement(attempts, *, min_confidence=0.55):
+    by_text = {}
+    for attempt in attempts or []:
+        normalized = str(attempt.get("normalized_text") or "")
+        word_signature = str(attempt.get("word_signature") or "")
+        if not normalized or not word_signature:
+            continue
+        by_text.setdefault((normalized, word_signature), []).append(attempt)
+    if not by_text:
+        return {
+            "trusted": False,
+            "reason": "no_ocr_text",
+            "canonical_source": "",
+            "agreement_count": 0,
+        }
+    (normalized, word_signature), winners = max(
+        by_text.items(),
+        key=lambda item: (len(item[1]), sum(float(v.get("confidence") or 0.0) for v in item[1])),
+    )
+    avg_conf = sum(float(item.get("confidence") or 0.0) for item in winners) / len(winners)
+    materially_disagreeing = [
+        "|".join(key) for key, items in by_text.items()
+        if key != (normalized, word_signature) and len(items) >= 2
+    ]
+    if len(winners) < 2:
+        reason = "insufficient_variant_agreement"
+    elif avg_conf < min_confidence:
+        reason = "low_variant_confidence"
+    elif materially_disagreeing:
+        reason = "material_variant_disagreement"
+    else:
+        reason = "variant_agreement"
+    return {
+        "trusted": reason == "variant_agreement",
+        "reason": reason,
+        "canonical_source": str(winners[0].get("text") or ""),
+        "normalized_source": normalized,
+        "word_signature": word_signature,
+        "agreement_count": len(winners),
+        "average_confidence": round(float(avg_conf), 4),
+        "disagreements": sorted(materially_disagreeing),
+    }
+
+
+def recover_source_with_rapidocr_variants(
+    original_bgr,
+    group,
+    ocr_lang,
+    *,
+    page_index=None,
+    engine=None,
+    max_variants=RAPIDOCR_SOURCE_RECOVERY_MAX_VARIANTS,
+):
+    """Bounded local source recovery for unusable segmented OCR.
+
+    This reads only the source pixels with RapidOCR variants.  It never looks at
+    the Portuguese candidate and never converts a fluent target into source
+    truth.  Ambiguity is a successful safety result: preserve source and review.
+    """
+
+    if original_bgr is None or getattr(original_bgr, "size", 0) == 0:
+        return {
+            "trusted": False,
+            "reason": "empty_source_image",
+            "attempts": [],
+            "max_variants": int(max_variants),
+        }
+    crop_box = _fallback_crop_box(group, original_bgr.shape)
+    x, y, width, height = crop_box
+    crop = original_bgr[y : y + height, x : x + width]
+    source_hash = hashlib.sha256(crop.tobytes()).hexdigest() if crop.size else ""
+    record = {
+        "page": page_index,
+        "group_id": getattr(group, "group_id", ""),
+        "region_id": getattr(group, "region_id", ""),
+        "crop_box": [int(value) for value in crop_box],
+        "source_image_hash": source_hash,
+        "max_variants": int(max_variants),
+        "engine": "rapidocr",
+        "target_used_as_source": False,
+        "attempts": [],
+        "trusted": False,
+        "canonical_source": "",
+    }
+    if crop.size == 0:
+        record["reason"] = "empty_source_crop"
+        return record
+    owned_engine = engine is None
+    if engine is None:
+        engine = OCREngine(ocr_lang, engine="rapidocr", fallback_engine="")
+    for variant in rapidocr_source_recovery_variants(crop)[: int(max_variants)]:
+        try:
+            lines = _rapidocr_detect_source_variant(
+                engine,
+                variant["image"],
+                page_index=page_index,
+            )
+            text = _source_recovery_text(lines)
+            confidence = _source_recovery_confidence(lines)
+            error = ""
+        except Exception as exc:  # noqa: BLE001 - recovery must fail closed.
+            lines = []
+            text = ""
+            confidence = 0.0
+            error = f"{type(exc).__name__}: {exc}"
+        record["attempts"].append({
+            "variant": variant["name"],
+            "text": text,
+            "normalized_text": _source_recovery_normalized(text),
+            "word_signature": _source_recovery_word_signature(text),
+            "confidence": round(float(confidence), 4),
+            "boundaries": _source_recovery_boundaries(lines),
+            "error": error,
+        })
+    agreement = _source_recovery_agreement(record["attempts"])
+    record.update(agreement)
+    if record.get("trusted"):
+        group.canonical_source_text = str(record.get("canonical_source") or "")
+        group.source_repairs = tuple()
+        group.source_recovery = dict(record)
+    elif owned_engine:
+        group.source_recovery = dict(record)
+    return record
 
 
 # What a region re-read is allowed to do to the lines it was derived from.
@@ -7490,8 +7753,9 @@ def _fidelity_reason_for(group, candidate, *, ledger, verifier, budget, name_spa
     a yes.
     """
     protected = _fidelity_protected_entities(group, ledger)
+    source_text = _source_text_for_validation(group)
     finding = semantic_fidelity.evaluate_local_fidelity(
-        group.text,
+        source_text,
         candidate,
         classification=group.classification,
         protected_entities=protected,
@@ -7560,6 +7824,14 @@ def _fidelity_reason_for(group, candidate, *, ledger, verifier, budget, name_spa
     return verdict.reason()
 
 
+def _source_text_for_validation(group):
+    recovery = getattr(group, "source_recovery", {}) or {}
+    canonical = str(recovery.get("canonical_source") or "").strip()
+    if recovery.get("trusted") and canonical:
+        return canonical
+    return group.text
+
+
 def _canonical_retry_source(group, reason):
     """The source the retry should translate: repaired if that can be proved.
 
@@ -7572,6 +7844,12 @@ def _canonical_retry_source(group, reason):
     exactly one word a single edit away; anything ambiguous is left alone, and
     ``group.text`` - the raw OCR - is never overwritten either way.
     """
+    if str(reason or "").startswith(semantic_fidelity.SOURCE_SEGMENTATION_INCOMPLETE):
+        recovery = getattr(group, "source_recovery", {}) or {}
+        if recovery.get("trusted") and str(recovery.get("canonical_source") or "").strip():
+            group.canonical_source_text = str(recovery.get("canonical_source") or "")
+            return group.canonical_source_text
+        return group.text
     if not str(reason or "").startswith(semantic_fidelity.SOURCE_OCR_SUSPICIOUS):
         return group.text
     context = tuple(getattr(group, "page_context_texts", ()) or ())
@@ -7648,8 +7926,9 @@ def validate_and_retry_translations(
                 stats=fidelity_stats,
             )
 
+        validation_source = _source_text_for_validation(group)
         valid, reason = validate_translation_text(
-            group.text,
+            validation_source,
             group.translation,
             group.classification,
             _group_validation_allowed_proper_names(group),
@@ -7754,8 +8033,9 @@ def validate_and_retry_translations(
             if candidate:
                 latest_candidate = candidate
                 group.translation_candidate = candidate
+            validation_source = _source_text_for_validation(group)
             valid, new_reason = validate_translation_text(
-                group.text,
+                validation_source,
                 candidate,
                 group.classification,
                 _group_validation_allowed_proper_names(group),
