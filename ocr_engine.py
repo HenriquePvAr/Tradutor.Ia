@@ -342,6 +342,7 @@ class OCREngine:
         can_use_paddle = (
             config.OCR_HYBRID_FALLBACK
             and self.fallback_engine == "paddle"
+            and bool(getattr(config, "OCR_LEGACY_PADDLE_FALLBACK", False))
             and (
                 not bool(getattr(config, "FAST_OCR_MODE", False))
                 or bool(getattr(config, "FAST_OCR_HEAVY_FALLBACK", False))

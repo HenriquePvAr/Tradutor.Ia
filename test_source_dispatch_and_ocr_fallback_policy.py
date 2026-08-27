@@ -259,6 +259,7 @@ class QualityModeOcrPolicyTests(unittest.TestCase):
         rapid_line = _ocr_line("AND THEN...", (20, 10, 70, 20))
         with (
             patch.object(ocr_engine.config, "OCR_HYBRID_FALLBACK", True),
+            patch.object(ocr_engine.config, "OCR_LEGACY_PADDLE_FALLBACK", True),
             patch.object(ocr_engine.config, "FAST_OCR_MODE", False),
             patch.object(ocr_engine.OCREngine, "_get_paddle",
                          side_effect=ModuleNotFoundError("paddleocr")),

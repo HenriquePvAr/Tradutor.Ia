@@ -215,6 +215,7 @@ def _run_fake_selective_fallback(original, candidates):
         patch.object(config, "OCR_ENGINE", "rapidocr"),
         patch.object(config, "OCR_HYBRID_FALLBACK", True),
         patch.object(config, "OCR_FALLBACK_ENGINE", "paddle"),
+        patch.object(config, "OCR_LEGACY_PADDLE_FALLBACK", True),
         patch("ocr_balloon.OCREngine") as engine_cls,
         patch(
             "ocr_balloon._candidate_groups_for_fallback",
@@ -3889,6 +3890,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
             patch.object(config, "OCR_ENGINE", "rapidocr"),
             patch.object(config, "OCR_HYBRID_FALLBACK", True),
             patch.object(config, "OCR_FALLBACK_ENGINE", "paddle"),
+            patch.object(config, "OCR_LEGACY_PADDLE_FALLBACK", True),
         ):
             self.assertEqual(
                 _grouping_fallback_reason({"raw_lines": group.lines}, [group]),

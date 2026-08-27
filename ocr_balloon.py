@@ -4877,6 +4877,7 @@ def apply_selective_ocr_fallbacks(
         and config.OCR_ENGINE == "rapidocr"
         and config.OCR_HYBRID_FALLBACK
         and config.OCR_FALLBACK_ENGINE == "paddle"
+        and bool(getattr(config, "OCR_LEGACY_PADDLE_FALLBACK", False))
     ):
         return raw_lines, []
 
@@ -7804,7 +7805,7 @@ def _fidelity_reason_for(group, candidate, *, ledger, verifier, budget, name_spa
     context_lines, terms = _fidelity_context(ledger)
     verdict = semantic_fidelity.adjudicate(
         verifier,
-        source_text=group.text,
+        source_text=source_text,
         candidate=candidate,
         finding=finding,
         target_language=getattr(config, "TARGET_LANGUAGE", "pt"),
@@ -7830,6 +7831,48 @@ def _source_text_for_validation(group):
     if recovery.get("trusted") and canonical:
         return canonical
     return group.text
+
+
+def _source_recovery_context(source_recovery_context, group):
+    if not source_recovery_context:
+        return None
+    if id(group) in source_recovery_context:
+        return source_recovery_context[id(group)]
+    group_id = getattr(group, "group_id", "")
+    region_id = getattr(group, "region_id", "")
+    return (
+        source_recovery_context.get((group_id, region_id))
+        or source_recovery_context.get(group_id)
+    )
+
+
+def _ensure_local_source_recovery_before_retry(group, reason, source_recovery_context):
+    if not str(reason or "").startswith(semantic_fidelity.SOURCE_SEGMENTATION_INCOMPLETE):
+        return None
+    recovery = getattr(group, "source_recovery", {}) or {}
+    if recovery.get("trusted") and str(recovery.get("canonical_source") or "").strip():
+        return recovery
+    context = _source_recovery_context(source_recovery_context, group)
+    if not context:
+        return None
+    original_bgr = context.get("original_bgr")
+    if original_bgr is None:
+        return None
+    record = recover_source_with_rapidocr_variants(
+        original_bgr,
+        group,
+        context.get("ocr_lang", "eng"),
+        page_index=context.get("page_index"),
+        engine=context.get("engine"),
+        max_variants=context.get(
+            "max_variants",
+            RAPIDOCR_SOURCE_RECOVERY_MAX_VARIANTS,
+        ),
+    )
+    group.source_recovery = dict(record or {})
+    if record and record.get("trusted") and str(record.get("canonical_source") or "").strip():
+        group.canonical_source_text = str(record.get("canonical_source") or "")
+    return record
 
 
 def _canonical_retry_source(group, reason):
@@ -7882,6 +7925,7 @@ def validate_and_retry_translations(
     fidelity_verifier=None,
     fidelity_stats=None,
     ptbr_naturalizer=None,
+    source_recovery_context=None,
 ):
     retry_records = []
     selective_retry_budget_remaining = _selective_translation_retry_budget(groups)
@@ -7981,6 +8025,11 @@ def validate_and_retry_translations(
             group.translation
         )
         latest_candidate = original_candidate
+        _ensure_local_source_recovery_before_retry(
+            group,
+            reason,
+            source_recovery_context,
+        )
         retry_source = _canonical_retry_source(group, reason)
         had_retry_error = False
         names_were_forbidden = False
@@ -8018,12 +8067,12 @@ def validate_and_retry_translations(
                     else f"strict_retry_error:{type(exc).__name__}"
                 )
             candidate = _repair_translation_candidate_before_validation(
-                group.text,
+                retry_source,
                 clean_ocr_text(candidate),
                 group.classification,
                 required_name_spans=name_spans,
             )
-            candidate = _match_source_case(group.text, candidate)
+            candidate = _match_source_case(retry_source, candidate)
             group.retry_candidate = candidate
             group.retry_candidate_class = _candidate_forensic_class(
                 group.text,
@@ -8049,7 +8098,7 @@ def validate_and_retry_translations(
                     valid, new_reason = False, fidelity_reason
             retry_record = {
                 "group_id": group.group_id,
-                "source": group.text,
+                "source": retry_source,
                 "previous_translation": group.translation,
                 "candidate_translation": candidate,
                 "attempt": attempt,
@@ -8057,6 +8106,11 @@ def validate_and_retry_translations(
                 "reason": new_reason,
                 "retry_type": "isolated" if isolated_first else "quality",
             }
+            if retry_source != group.text:
+                retry_record["raw_source"] = group.text
+            recovery_record = getattr(group, "source_recovery", {}) or {}
+            if recovery_record:
+                retry_record["source_recovery"] = dict(recovery_record)
             if isolated_first:
                 retry_record["isolated"] = True
             retry_records.append(retry_record)
@@ -12501,6 +12555,9 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "angle_degrees": round(group.angle_degrees, 2),
                 "near_image_edge": group.near_image_edge,
                 "alignment_score": round(group.alignment_score, 3),
+                "canonical_source_text": str(group.canonical_source_text),
+                "source_repairs": list(group.source_repairs),
+                "source_recovery": dict(getattr(group, "source_recovery", {}) or {}),
                 "translation_valid": group.translation_valid,
                 "translation_retry_count": group.translation_retry_count,
                 "translation_validation_reason": group.translation_validation_reason,

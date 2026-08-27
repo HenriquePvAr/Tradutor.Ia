@@ -93,6 +93,10 @@ def effective_ocr_engine():
 
 OCR_FALLBACK_ENGINE = _env_str("OCR_FALLBACK_ENGINE", "paddle").lower()
 OCR_HYBRID_FALLBACK = _env_bool("OCR_HYBRID_FALLBACK", True)
+# Paddle remains available only for explicit legacy diagnostics. The Beta
+# default is RapidOCR primary plus bounded RapidOCR recovery, then fail-closed
+# review if evidence is still unusable.
+OCR_LEGACY_PADDLE_FALLBACK = _env_bool("OCR_LEGACY_PADDLE_FALLBACK", False)
 RAPIDOCR_ENABLED = _env_bool("RAPIDOCR_ENABLED", False)
 RAPIDOCR_MIN_CONFIDENCE = _env_float("RAPIDOCR_MIN_CONFIDENCE", 0.55)
 RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK = _env_bool(

@@ -1439,6 +1439,20 @@ fronteiras de palavras; a tradução alvo nunca é usada como evidência de font
 leituras forem ambíguas, o comportamento correto é preservar a fonte original, manter
 `REVIEW_UNUSABLE` e bloquear a saída final.
 
+O TDD #84F25 fecha `P65-PRODUCTION-RECOVERY-PARITY-001`: o mesmo recovery local acima agora
+é chamado no caminho canônico de validação/retry de produção antes do retry final de
+tradução. A fonte OCR bruta continua preservada para auditoria, mas uma recuperação
+confiável preenche `canonical_source_text`/`source_recovery`, alimenta o retry e também a
+validação semântica downstream. A proveniência persistida separa fonte bruta, fonte
+canônica, engine RapidOCR, variantes, concordância, confiança e `target_used_as_source =
+false`.
+
+O mesmo TDD registra `OCR-FALLBACK-POLICY-001`: no padrão Beta, RapidOCR é o engine
+primário e a recuperação regional/local também é RapidOCR. Paddle deixa de ser fallback
+automático do fluxo `quality_optimized`; só pode ser alcançado por opt-in legacy explícito
+(`OCR_LEGACY_PADDLE_FALLBACK`). Se RapidOCR não produzir evidência suficiente, o caminho
+correto é revisão/fail-closed, não spam de Paddle.
+
 ### Manifest autodescritivo
 
 `output_manifest.py` define e valida o `run_manifest.json`. `load_verified_run_manifest()`

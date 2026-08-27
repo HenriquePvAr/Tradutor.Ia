@@ -756,6 +756,16 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   segurar um PT-BR bom por dúvida de fidelidade recolocaria o inglês na página. Toda região
   que renderiza sob revisão carrega `translation_quality_impact: review_required` e
   `manual_review_required` — `render_with_review` com qualidade `none` é impossível.
+- **Paridade de recovery de fonte (#84F25):** uma região marcada por
+  `source_segmentation_incomplete` pode executar recovery local bounded com RapidOCR antes
+  do retry final de tradução. Se houver concordância independente suficiente, a fonte
+  canônica recuperada alimenta o retry e os validadores downstream; a fonte bruta permanece
+  no relatório para auditoria. Se a leitura continuar ambígua, a região segue
+  `REVIEW_UNUSABLE` e não renderiza.
+- **Política Beta RapidOCR/Paddle (#84F25):** o padrão `quality_optimized` usa RapidOCR como
+  engine primário e RapidOCR para recovery regional/local. Paddle é compatibilidade legacy
+  explicitamente opt-in por `OCR_LEGACY_PADDLE_FALLBACK`; ele não roda automaticamente em
+  regiões suspeitas nem é requisito para fechar qualidade Beta.
 - Revisões estruturadas por risco visual continuam exigindo novo E2E real para provar que o
   PDF gerado ficou fisicamente limpo.
 - O comportamento do provedor pode variar entre execuções.

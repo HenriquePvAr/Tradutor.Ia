@@ -144,6 +144,7 @@ class FastOCRPolicyTests(unittest.TestCase):
     def test_rapidocr_fallback_reports_unavailable_fallback_engine(self):
         with patch.object(config, "RAPIDOCR_ENABLED", False), \
                 patch.object(config, "OCR_HYBRID_FALLBACK", True), \
+                patch.object(config, "OCR_LEGACY_PADDLE_FALLBACK", True), \
                 patch.object(config, "FAST_OCR_MODE", False):
             engine = OCREngine("en", engine="rapidocr", fallback_engine="paddle")
             with patch.object(OCREngine, "_detect_with_paddle", side_effect=ModuleNotFoundError("paddleocr")):

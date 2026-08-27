@@ -1403,6 +1403,15 @@ def run_benchmark(args):
         fidelity_verifier=getattr(translator, "fidelity_verifier", None),
         fidelity_stats=translator_stats,
         ptbr_naturalizer=getattr(translator, "ptbr_naturalizer", None),
+        source_recovery_context={
+            id(group): {
+                "original_bgr": state["original_bgr"],
+                "ocr_lang": ocr_lang,
+                "page_index": state["index"],
+            }
+            for state in analyzable_states
+            for group in state.get("translatable_groups", [])
+        },
     )
     if session_context is not None:
         session_context.record_translations(translation_targets)
@@ -3610,6 +3619,9 @@ def _quality_item_summary(item):
         "quality_score": item.get("quality_score"),
         "quality_reasons": item.get("quality_reasons"),
         "fallback_used": item.get("fallback_used"),
+        "canonical_source_text": item.get("canonical_source_text"),
+        "source_repairs": item.get("source_repairs"),
+        "source_recovery": item.get("source_recovery"),
         "translation_valid": item.get("translation_valid"),
         "translation_validation_reason": item.get("translation_validation_reason"),
         "translation_retry_count": item.get("translation_retry_count"),
@@ -4069,6 +4081,7 @@ def _grouping_fallback_reason(state, groups):
         config.OCR_ENGINE == "rapidocr"
         and config.OCR_HYBRID_FALLBACK
         and config.OCR_FALLBACK_ENGINE == "paddle"
+        and bool(getattr(config, "OCR_LEGACY_PADDLE_FALLBACK", False))
     ):
         return ""
 
