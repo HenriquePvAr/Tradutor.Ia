@@ -2138,6 +2138,7 @@ def _render_analyzed_image(
                 group,
                 font_path,
                 strategy=strategy,
+                source_bgr=original,
             )
             redraw_seconds += time.perf_counter() - redraw_started
             group_allowed = _draw_allowed_group_mask(
@@ -10647,7 +10648,7 @@ def _estimated_white_region_fill_color(img_bgr, mask, box):
     return np.clip(color, 0, 255).astype(np.uint8)
 
 
-def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
+def _draw_group_translation(img_bgr, group, font_path, strategy="primary", source_bgr=None):
     text = group.translation or group.text
     if not text:
         return img_bgr
@@ -10661,8 +10662,9 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
         if strategy == "caption_overlay"
         else _text_style_for_region(img_bgr, draw_box)
     )
+    typography_source = source_bgr if source_bgr is not None else img_bgr
     typography_profile = typography_profile_for_region(
-        img_bgr, group, draw_box, style=style)
+        typography_source, group, draw_box, style=style)
     style = _text_style_from_typography_profile(style, typography_profile)
     if typography_profile.get("case_style") == "uppercase":
         text = str(text).upper()
@@ -10706,6 +10708,8 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
 
     if preview_font_role:
         font_role = preview_font_role
+    elif typography_profile.get("selected_font_role"):
+        font_role = str(typography_profile.get("selected_font_role"))
     elif typography_profile.get("font_class") in {"condensed_display", "tall_display"}:
         font_role = "shout"
     elif style.name == "decorative_purple":
@@ -11079,7 +11083,13 @@ def _draw_allowed_group_mask(image_shape, group, cleanup_mask=None):
     )
     if group.translation_box:
         x, y, w, h = group.translation_box
-        pad = min(2, config.MAX_MASK_EXPANSION)
+        profile = getattr(group, "typography_profile", {}) or {}
+        effect_pad = (
+            int(profile.get("stroke_width") or 0)
+            + int(profile.get("glow_strength") or 0)
+            + max(0, int(round(float(getattr(group, "font_size", 0) or 0) * 0.04)))
+        )
+        pad = min(max(2, effect_pad), max(2, int(config.MAX_MASK_EXPANSION)))
         x1 = max(0, int(x) - pad)
         y1 = max(0, int(y) - pad)
         x2 = min(image_shape[1], int(x + w) + pad)
@@ -11787,16 +11797,16 @@ def extract_original_lettering_profile(img_bgr, group, box):
     blue_ratio = float(np.mean(blue_mask)) if len(glyph_hsv) else 0.0
     white_ratio = float(np.mean(white_mask)) if len(glyph_hsv) else 0.0
     dark_ratio = float(np.mean(dark_mask)) if len(glyph_hsv) else 0.0
-    if dark_ratio >= 0.30:
-        dominant_bgr = np.median(glyph_bgr[dark_mask], axis=0)
-        color_family = "black"
-    elif np.any(red_mask):
+    if red_ratio >= 0.10:
         dominant_bgr = np.median(glyph_bgr[red_mask], axis=0)
         color_family = "red"
-    elif np.any(blue_mask):
+    elif blue_ratio >= 0.10:
         dominant_bgr = np.median(glyph_bgr[blue_mask], axis=0)
         color_family = "blue"
-    elif np.any(white_mask):
+    elif dark_ratio >= 0.30:
+        dominant_bgr = np.median(glyph_bgr[dark_mask], axis=0)
+        color_family = "black"
+    elif white_ratio >= 0.25:
         dominant_bgr = np.median(glyph_bgr[white_mask], axis=0)
         color_family = "white"
     else:
@@ -11868,7 +11878,22 @@ def typography_profile_for_region(img_bgr, group, box, *, style=None):
     classification = str(getattr(group, "classification", "") or "").lower()
     case_style = _case_style(text)
     aspect = float(w) / max(1.0, float(h))
-    open_caption = classification in {"narration", "caption", "system", "thought"} or aspect >= 3.2
+    source_line_count = len(getattr(group, "lines", []) or [])
+    compact_letters = re.sub(r"[^A-Z]", "", _ascii_fold(text).upper())
+    display_geometry = (
+        h >= 120
+        and len(compact_letters) >= 10
+        and (
+            source_line_count >= 2
+            or classification in {"unknown", "speech"}
+            or aspect >= 1.6
+        )
+    )
+    open_caption = (
+        classification in {"narration", "caption", "system", "thought"}
+        or aspect >= 3.2
+        or display_geometry
+    )
     emphatic = "!" in text or "..." in text or len(text.split()) <= 6
 
     base = {
@@ -11901,12 +11926,18 @@ def typography_profile_for_region(img_bgr, group, box, *, style=None):
         "content_width_ratio": 1.0,
         "font_size_scale": 0.78,
         "line_height_scale": 1.0,
+        "font_match_method": "visual_class_mapping",
+        "font_match_score": 0.0,
+        "font_match_confidence": 0.0,
+        "fallback_reason": "",
     }
     lettering = extract_original_lettering_profile(img_bgr, group, box)
     if float(lettering.get("confidence") or 0.0) >= 0.42:
         base["style_source"] = "original_pixels"
         base["style_confidence"] = float(lettering.get("confidence") or 0.0)
         base["original_lettering"] = dict(lettering)
+        base["font_match_score"] = float(lettering.get("confidence") or 0.0)
+        base["font_match_confidence"] = float(lettering.get("confidence") or 0.0)
         base["stroke_width"] = max(
             int(base["stroke_width"]),
             int(lettering.get("stroke_width") or 1),
@@ -11930,9 +11961,12 @@ def typography_profile_for_region(img_bgr, group, box, *, style=None):
                 "font_size_scale": 0.98,
                 "content_width_ratio": 0.88,
                 "line_height_scale": 0.9,
+                "selected_font_role": "shout",
             })
             return base
-        if color_family in {"blue", "white"} and open_caption and stats["brightness"] < 150:
+        if color_family in {"blue", "white"} and open_caption and (
+            stats["brightness"] < 170 or int(lettering.get("glow_strength") or 0) > 0
+        ):
             base.update({
                 "visual_class": "mystic_blue_system",
                 "font_class": "condensed_display",
@@ -11947,10 +11981,33 @@ def typography_profile_for_region(img_bgr, group, box, *, style=None):
                 "font_size_scale": 0.94,
                 "content_width_ratio": 0.9,
                 "line_height_scale": 0.9,
+                "selected_font_role": "shout",
+            })
+            return base
+        if (
+            open_caption
+            and color_family == "black"
+            and float(lettering.get("glyph_occupancy") or 0.0) >= 0.08
+        ):
+            base.update({
+                "visual_class": "ink_display",
+                "font_class": "tall_display",
+                "fill_color": (18, 16, 22),
+                "stroke_color": (250, 250, 252),
+                "stroke_width": max(int(base["stroke_width"]), 1),
+                "glow_color": None,
+                "glow_strength": 0,
+                "shadow_color": None,
+                "shadow_offset": (0, 0),
+                "font_size_scale": 1.04,
+                "content_width_ratio": 0.92,
+                "line_height_scale": 0.9,
+                "selected_font_role": "shout",
             })
             return base
         if (
             color_family in {"black", "neutral", "white"}
+            and not open_caption
             and (classification in {"speech", "dialogue"} or stats["brightness"] >= 170)
         ):
             base.update({
@@ -11967,7 +12024,27 @@ def typography_profile_for_region(img_bgr, group, box, *, style=None):
             })
             return base
 
-    if classification in {"speech", "dialogue"} or stats["brightness"] >= 180:
+    if open_caption and stats["brightness"] >= 172 and emphatic:
+        base.update({
+            "visual_class": "dramatic_red_display",
+            "font_class": "tall_display",
+            "fill_color": (118, 8, 10),
+            "stroke_color": (255, 250, 250),
+            "stroke_width": 2,
+            "glow_color": (146, 22, 32),
+            "glow_strength": 4,
+            "shadow_color": (48, 8, 12),
+            "shadow_offset": (2, 2),
+            "shadow_blur": 2,
+            "letter_spacing": 0.02,
+            "line_height": 0.94,
+            "content_width_ratio": 0.88,
+            "font_size_scale": 0.98,
+            "line_height_scale": 0.9,
+            "selected_font_role": "shout",
+            "fallback_reason": "source_pixels_low_confidence_but_display_geometry",
+        })
+    elif classification in {"speech", "dialogue"} or stats["brightness"] >= 180:
         base.update({
             "visual_class": "balloon_dialogue",
             "font_class": "comic_sans_style",
@@ -11998,24 +12075,6 @@ def typography_profile_for_region(img_bgr, group, box, *, style=None):
             "line_height": 0.93,
             "content_width_ratio": 0.9,
             "font_size_scale": 0.94,
-            "line_height_scale": 0.9,
-        })
-    elif open_caption and stats["brightness"] >= 172 and emphatic:
-        base.update({
-            "visual_class": "dramatic_red_display",
-            "font_class": "tall_display",
-            "fill_color": (118, 8, 10),
-            "stroke_color": (255, 250, 250),
-            "stroke_width": 2,
-            "glow_color": (146, 22, 32),
-            "glow_strength": 4,
-            "shadow_color": (48, 8, 12),
-            "shadow_offset": (2, 2),
-            "shadow_blur": 2,
-            "letter_spacing": 0.02,
-            "line_height": 0.94,
-            "content_width_ratio": 0.88,
-            "font_size_scale": 0.98,
             "line_height_scale": 0.9,
         })
     elif open_caption:
