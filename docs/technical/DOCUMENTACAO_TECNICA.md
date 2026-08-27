@@ -708,6 +708,14 @@ deriva de `settings.ocr_engine`, de modo que `RapidOCR · Ativo` só aparece qua
 é de fato o engine configurado; qualquer outro id é reportado como ele é, em vez de a UI
 afirmar um motor que o run não vai usar.
 
+**Proveniência efetiva do OCR (TDD #84F19).** O processo da UI não lê mais
+`config.OCR_ENGINE` como fonte de verdade para o painel de configuração: esse valor pode ser
+apenas o default do processo e não o motor efetivo da beta. `ui_bridge` passa a reportar
+`settings.ocr_engine` por `config.effective_ocr_engine()`, o mesmo resolvedor usado antes de
+iniciar um run. Com o default canônico da beta, a UI mostra `RapidOCR · Ativo`; um override
+explícito e suportado continua sendo reportado pelo próprio id. O campo segue informativo:
+sem opção Paddle/Tesseract exposta e sem seta de seletor.
+
 No mesmo movimento, `Modo de processamento` deixou de ser uma grade de três cartões
 grandes e virou um `<select id="modeSelect">` com a mesma largura e o mesmo alinhamento de
 `Motor de tradução` e `Motor de OCR`, com uma linha de ajuda contextual (`#modeHint`) sob
@@ -1405,6 +1413,16 @@ geometria child `LINE_004` sem enviar a child separadamente. O relatório final 
 (`p011:BALAO_1`, `p011:BALAO_2`, `p013:BALAO_3`, `p015:BALAO_8`) são revisão preservada de
 SFX/OCR ambíguo não-story, então o job pode continuar `review_required` sem reabrir o gate
 Beta de história comum.
+
+O TDD #84F19 endurece a auditoria semântica sem criar correção por literal. Quando a
+fonte OCR ainda contém uma palavra corrida que pode ser segmentada apenas por palavras
+funcionais inglesas comuns, a saída fica marcada como `source_segmentation_incomplete` e a
+região permanece em `REVIEW_UNUSABLE`; um retry corretivo pode ser alcançado pelo orçamento
+normal, mas não transforma uma fonte ambígua em candidato limpo. Em fontes segmentadas
+normalmente, o mesmo caminho ainda permite trocar uma primeira tradução malformada por uma
+segunda tradução fiel. O detector PT-BR também passa a bloquear formas gramaticais
+malformadas como `passo a ser` em contexto de terceira pessoa, preservando casos ambíguos
+ou raros sem evidência local suficiente.
 
 ### Manifest autodescritivo
 

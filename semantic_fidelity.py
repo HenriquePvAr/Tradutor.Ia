@@ -465,6 +465,68 @@ def unsegmented_source_runs(source):
     return tuple(match.group(0).upper() for match in _ALPHA_RUN.finditer(str(source or "")))
 
 
+# --- collapsed source runs, proved without provenance ------------------------
+# Provenance is useful when it reaches this gate, but the residual text can carry
+# its own evidence: a long uppercase run whose edge tiles into multiple closed-
+# class English words has lost boundaries even when the line-level repair reason
+# was not copied onto the grouped region. Length alone is deliberately rejected;
+# the rule needs corroborating function-word structure at an edge and never
+# rewrites the source.
+COLLAPSED_RUN_MIN_TILED_WORDS = 2
+_TILING_WORDS = frozenset({
+    "ABOUT", "AFTER", "AGAIN", "ALREADY", "ALSO", "ALWAYS", "ANOTHER",
+    "ANYTHING", "BECAUSE", "BEEN", "BEFORE", "BEING", "COULD", "EACH", "EVEN",
+    "EVER", "EVERY", "EVERYTHING", "FROM", "HAVE", "HAVING", "HERE", "INTO",
+    "JUST", "MANY", "MINE", "MORE", "MOST", "MUCH", "MUST", "NEVER", "NOTHING",
+    "ONLY", "ONTO", "OTHER", "OURS", "OVER", "SHALL", "SHOULD", "SOME",
+    "SOMETHING", "STILL", "SUCH", "THAN", "THAT", "THEIR", "THEM", "THEN",
+    "THERE", "THESE", "THEY", "THIS", "THOSE", "THOUGH", "THROUGH", "UNDER",
+    "UPON", "VERY", "WERE", "WHAT", "WHEN", "WHERE", "WHICH", "WHILE", "WHOM",
+    "WHOSE", "WILL", "WITH", "WOULD", "YOUR", "YOURS",
+})
+_TILING_BY_LENGTH = tuple(sorted(_TILING_WORDS, key=len, reverse=True))
+
+
+def _tile_from_end(run, reverse):
+    """The closed-class words tiling ``run`` inward from one end, plus what is left."""
+    text, words = run[::-1] if reverse else run, []
+    while True:
+        word = next(
+            (
+                candidate
+                for candidate in _TILING_BY_LENGTH
+                if text.startswith(candidate[::-1] if reverse else candidate)
+            ),
+            None,
+        )
+        if word is None:
+            return words, (text[::-1] if reverse else text)
+        text = text[len(word):]
+        words.append(word)
+
+
+def _best_tiling(run):
+    """``(words, residual, reverse)`` for whichever end tiles further."""
+    forward, reverse = _tile_from_end(run, False), _tile_from_end(run, True)
+    if len(reverse[0]) > len(forward[0]):
+        return reverse[0], reverse[1], True
+    return forward[0], forward[1], False
+
+
+def collapsed_source_runs(source):
+    """Runs whose word boundaries are provably gone, in order."""
+    return tuple(
+        run
+        for run in unsegmented_source_runs(source)
+        if len(_best_tiling(run)[0]) >= COLLAPSED_RUN_MIN_TILED_WORDS
+    )
+
+
+# Deliberately no repair here, unlike the single-edit rule above. The tiling
+# proves that some boundaries collapsed, never the unique full sentence. A source
+# nobody can reconstruct stays ``REVIEW_UNUSABLE``.
+
+
 def suspicious_source_tokens(source, candidate, *, known_entities=(), is_source_word=None):
     """Source tokens that make the source itself untrustworthy, in order."""
     entities = {part for entity in known_entities for part in _words(entity)}
@@ -578,11 +640,19 @@ _BARE_INFINITIVE = re.compile(
 _DUPLICATED_FUNCTION_WORD = re.compile(
     r"\b(de|do|da|dos|das|o|a|os|as|em|no|na|que|para|com|um|uma)\s+\1\b"
 )
+_THIRD_PERSON_NOUN_WITH_FIRST_PERSON_STEP = re.compile(
+    r"\b(?:esse|essa|este|esta|aquele|aquela|o|a)\s+"
+    r"[a-z]{4,}\s+passo\s+a\s+ser\b"
+)
 
 
 def _malformed_portuguese(candidate):
     folded = _fold(candidate)
-    match = _BARE_INFINITIVE.search(folded) or _DUPLICATED_FUNCTION_WORD.search(folded)
+    match = (
+        _BARE_INFINITIVE.search(folded)
+        or _DUPLICATED_FUNCTION_WORD.search(folded)
+        or _THIRD_PERSON_NOUN_WITH_FIRST_PERSON_STEP.search(folded)
+    )
     return match.group(0) if match else ""
 
 
@@ -805,15 +875,18 @@ def evaluate_local_fidelity(
         return FidelityFinding(REVIEW, (SOURCE_OCR_SUSPICIOUS,), suspicious)
     # The word-segmentation repair ran and still left glued runs behind. The
     # pipeline is saying, in its own provenance, that it does not know where the
-    # source words are - and a provider reading "AGATETHROUGHWHICH" will happily
-    # find "AGATE" in it and translate the gemstone. Nothing built on a source
-    # like that can be verified, so it renders under review and never clean.
-    if "segment" in str(source_repair_reason or ""):
-        runs = unsegmented_source_runs(source)
-        if runs:
-            return FidelityFinding(
-                REVIEW, (SOURCE_SEGMENTATION_INCOMPLETE,), runs[:4]
-            )
+    # source words are. Nothing built on a source with unresolved collapsed
+    # boundaries can be verified, so it renders under review and never clean.
+    runs = (
+        unsegmented_source_runs(source)
+        if "segment" in str(source_repair_reason or "")
+        # No provenance reached this gate, which on the real corpus means the
+        # repair recorded itself somewhere else, not that it never ran. The
+        # residual proves the collapse on its own.
+        else collapsed_source_runs(source)
+    )
+    if runs:
+        return FidelityFinding(REVIEW, (SOURCE_SEGMENTATION_INCOMPLETE,), runs[:4])
     malformed = _malformed_portuguese(target)
     if malformed:
         return FidelityFinding(REVIEW, (GRAMMAR_MALFORMED,), (malformed,))

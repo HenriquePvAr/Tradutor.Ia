@@ -74,6 +74,23 @@ SELENIUM_CLEANUP_TIMEOUT_SECONDS = min(
 )
 OCR_CONF_THRESHOLD = _env_int("OCR_CONF_THRESHOLD", 15)
 OCR_ENGINE = _env_str("OCR_ENGINE", "paddle").lower()
+
+# The engine a run will *really* use, as opposed to the one this process happens
+# to hold. ``OCR_ENGINE`` above is an *output* of the decision below: the job
+# process writes it when a run starts. A process that never starts a run - the
+# UI - still carries the packaging default, and reporting that as fact is how the
+# settings panel came to show "paddle . Ativo" for a chapter read by RapidOCR.
+# Anything that displays or records the engine asks here instead.
+BETA_OCR_ENGINE = "rapidocr"
+BETA_OCR_ENGINES = frozenset({"rapidocr", "paddle", "paddle_mobile"})
+
+
+def effective_ocr_engine():
+    """The Beta engine, unless an explicit supported override names another."""
+    override = _env_str("TRADUTOR_OCR_ENGINE_OVERRIDE", "").strip().lower()
+    return override if override in BETA_OCR_ENGINES else BETA_OCR_ENGINE
+
+
 OCR_FALLBACK_ENGINE = _env_str("OCR_FALLBACK_ENGINE", "paddle").lower()
 OCR_HYBRID_FALLBACK = _env_bool("OCR_HYBRID_FALLBACK", True)
 RAPIDOCR_ENABLED = _env_bool("RAPIDOCR_ENABLED", False)

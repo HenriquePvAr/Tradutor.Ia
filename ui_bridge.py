@@ -30,6 +30,7 @@ from typing import Any
 from urllib.parse import quote
 
 from community_auth import RequestPrincipal, bind_is_loopback, peer_is_loopback
+from config import effective_ocr_engine
 from job_store import JobStatus, JobStore
 from output_manifest import MANIFEST_FILENAME, load_verified_run_manifest, sanitize_source_url
 from ui_helpers import (
@@ -4112,7 +4113,10 @@ class UiBridge:
             or values.get("NVIDIA_TRANSLATION_BATCH_SIZE", "20"),
             "max_requests_per_minute": os.getenv("NVIDIA_MAX_REQUESTS_PER_MINUTE")
             or values.get("NVIDIA_MAX_REQUESTS_PER_MINUTE", "20"),
-            "ocr_engine": os.getenv("OCR_ENGINE") or values.get("OCR_ENGINE", "paddle"),
+            # Not ``OCR_ENGINE``: that is what a *job* process writes once a run
+            # starts, and this process never starts one, so reading it here
+            # reports the packaging default as fact.
+            "ocr_engine": effective_ocr_engine(),
             "rapidocr_min_confidence": os.getenv("RAPIDOCR_MIN_CONFIDENCE")
             or values.get("RAPIDOCR_MIN_CONFIDENCE", "0.55"),
             "ocr_parallel": os.getenv("OCR_PARALLEL") or values.get("OCR_PARALLEL", "False"),

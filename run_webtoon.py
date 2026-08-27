@@ -38,7 +38,7 @@ def build_parser():
         "--mode",
         choices=("fast", "quality"),
         default="fast",
-        help="fast usa RapidOCR hibrido; quality usa PaddleOCR.",
+        help="fast usa RapidOCR hibrido; quality usa RapidOCR com validacoes e fallbacks opcionais.",
     )
     cache_group = parser.add_mutually_exclusive_group()
     cache_group.add_argument(
@@ -418,12 +418,15 @@ def _interactive_args(parser):
 
 
 def _configure_mode(mode):
-    override = os.getenv("TRADUTOR_OCR_ENGINE_OVERRIDE", "").strip().lower()
     # RapidOCR is the primary engine in both modes.  Quality differs by *how much*
     # recovery it is allowed (regional and full-page Paddle escalation, post-render
     # validation), not by requiring a second engine to be installed: Paddle is an
     # optional fallback, so a machine without it still runs the canonical quality mode.
-    engine = override if override in {"rapidocr", "paddle", "paddle_mobile"} else "rapidocr"
+    # The resolution lives in ``config`` so that the UI process can report the same
+    # answer without starting a run.
+    from config import effective_ocr_engine
+
+    engine = effective_ocr_engine()
     # Engine selection is the last point before download and OCR, so it is where
     # a missing *primary* engine has to stop the run.  Otherwise an unavailable engine
     # only surfaces as one OCR error per page, after the whole chapter was fetched,
