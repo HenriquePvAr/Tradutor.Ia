@@ -6,11 +6,11 @@ import os
 import re
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import config
 import region_taxonomy
@@ -441,6 +441,14 @@ class TextStyle:
     brightness: float
     saturation: float
     hue: float
+    glow_fill: tuple[int, int, int] | None = None
+    glow_radius: int = 0
+    font_class: str = "unknown_fallback"
+    visual_class: str = "generic"
+    letter_spacing: float = 0.0
+    line_height_scale: float = 1.0
+    content_width_ratio: float = 1.0
+    font_size_scale: float = 0.78
 
 
 @dataclass
@@ -10319,10 +10327,16 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
         if strategy == "caption_overlay"
         else _text_style_for_region(img_bgr, draw_box)
     )
+    typography_profile = typography_profile_for_region(
+        img_bgr, group, draw_box, style=style)
+    style = _text_style_from_typography_profile(style, typography_profile)
+    if typography_profile.get("case_style") == "uppercase":
+        text = str(text).upper()
     group.color_name = style.name
     group.region_brightness = style.brightness
     group.region_saturation = style.saturation
     group.region_hue = style.hue
+    group.typography_profile = dict(typography_profile)
 
     pil_img = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_img)
@@ -10340,7 +10354,8 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
 
     source_line_heights = [line.box[3] for line in group.lines if line.box[3] > 0]
     source_height = float(np.median(source_line_heights)) if source_line_heights else h
-    size_scale = 0.72 if style.name == "decorative_purple" else 0.78
+    size_scale = float(typography_profile.get("font_size_scale") or (
+        0.72 if style.name == "decorative_purple" else 0.78))
     font_size = min(config.MAX_FONT_SIZE, max(config.MIN_FONT_SIZE, int(source_height * size_scale)))
     if len(text) > max(1, len(group.text)) * 1.2:
         font_size = max(config.MIN_FONT_SIZE, int(font_size * 0.92))
@@ -10357,6 +10372,8 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
 
     if preview_font_role:
         font_role = preview_font_role
+    elif typography_profile.get("font_class") in {"condensed_display", "tall_display"}:
+        font_role = "shout"
     elif style.name == "decorative_purple":
         font_role = "decorative"
     elif "!" in group.text:
@@ -10373,19 +10390,32 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
     while font_size >= config.MIN_FONT_SIZE:
         font = get_font(preview_font_path or font_path, font_size, role=font_role,
                         prefer_role=prefer_preview_role, text=text)
-        spacing = max(1, int(font_size * 0.1))
-        wrap_width = int(content_w * 0.8) if style.name == "decorative_purple" else content_w
-        lines = (
-            _wrap_text(
+        spacing = max(1, int(font_size * 0.1 * float(
+            typography_profile.get("line_height_scale") or 1.0)))
+        wrap_width = int(content_w * float(
+            typography_profile.get("content_width_ratio") or (
+                0.8 if style.name == "decorative_purple" else 1.0)))
+        if config.AUTO_LINE_WRAP and typography_profile.get("font_class") in {
+            "condensed_display", "tall_display",
+        }:
+            max_chars = max(8, int(max(12, wrap_width) / max(1, font_size * 0.58)))
+            lines = typographic_wrap_lines(
+                text,
+                max_chars=max_chars,
+                profile=typography_profile,
+            )
+        else:
+            lines = (
+                _wrap_text(
                 draw,
                 text,
                 font,
                 max_width=max(12, wrap_width),
                 split_long_words=font_size <= config.MIN_FONT_SIZE,
+                )
+                if config.AUTO_LINE_WRAP
+                else [text]
             )
-            if config.AUTO_LINE_WRAP
-            else [text]
-        )
         text_block = "\n".join(lines)
         text_bbox = draw.multiline_textbbox(
             (0, 0),
@@ -10411,6 +10441,7 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
     font = get_font(preview_font_path or font_path, font_size, role=font_role,
                     prefer_role=prefer_preview_role, text=text)
     group.font_runtime_validation = dict(getattr(font, "tradutor_font_runtime", {}) or {})
+    group.font_runtime_validation["typography_profile"] = dict(typography_profile)
     group.font_size = font_size
     group.text_overflow_ratio = float(overflow_ratio)
     group.draw_box = tuple(draw_box)
@@ -10439,6 +10470,23 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary"):
         group.translation_valid = False
         group.translation_validation_reason = "translation_box_outside_safe_area"
         return img_bgr
+
+    if style.glow_fill and style.glow_radius > 0:
+        glow = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow)
+        glow_draw.multiline_text(
+            (draw_x, draw_y),
+            text_block,
+            font=font,
+            fill=style.glow_fill + (190,),
+            spacing=spacing,
+            align="center",
+            stroke_width=max(style.stroke_width + 1, 2),
+            stroke_fill=style.glow_fill + (210,),
+        )
+        glow = glow.filter(ImageFilter.GaussianBlur(radius=style.glow_radius))
+        pil_img = Image.alpha_composite(pil_img.convert("RGBA"), glow).convert("RGB")
+        draw = ImageDraw.Draw(pil_img)
 
     if style.shadow_fill:
         shadow_x = draw_x + style.shadow_offset[0]
@@ -11323,6 +11371,435 @@ def _enforce_visual_bounds(
         "reason": ";".join(reasons),
     }
     return (final_bgr if passed else original_bgr.copy()), summary
+
+
+def _region_background_stats(img_bgr, box):
+    x, y, w, h = [int(v) for v in box]
+    roi = img_bgr[y : y + h, x : x + w]
+    if roi.size == 0:
+        return {"brightness": 255.0, "saturation": 0.0, "hue": 0.0,
+                "blue_ratio": 0.0, "red_ratio": 0.0}
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
+    hue = hsv[:, :, 0]
+    val = hsv[:, :, 2]
+    saturated = sat >= 36
+    blue = (hue >= 86) & (hue <= 138) & saturated & (val >= 40)
+    red = ((hue <= 12) | (hue >= 168)) & saturated & (val >= 50)
+    return {
+        "brightness": float(np.mean(gray)),
+        "saturation": float(np.mean(sat)),
+        "hue": float(np.median(hue[saturated])) if np.any(saturated) else 0.0,
+        "blue_ratio": float(np.mean(blue)),
+        "red_ratio": float(np.mean(red)),
+    }
+
+
+def _expanded_box(box, shape, margin):
+    x, y, w, h = [int(v) for v in box]
+    ih, iw = shape[:2]
+    x1 = max(0, x - margin)
+    y1 = max(0, y - margin)
+    x2 = min(iw, x + w + margin)
+    y2 = min(ih, y + h + margin)
+    return x1, y1, max(1, x2 - x1), max(1, y2 - y1)
+
+
+def extract_original_lettering_profile(img_bgr, group, box):
+    """Infer style from the source lettering pixels owned by this region.
+
+    It is intentionally approximate: enough to preserve colour family, outline,
+    glow and visual weight without pretending to identify the exact commercial
+    font. No text literal, page id or chapter id participates in this decision.
+    """
+    x, y, w, h = _expanded_box(box, img_bgr.shape, 8)
+    roi = img_bgr[y : y + h, x : x + w]
+    if roi.size == 0:
+        return {"confidence": 0.0, "source": "insufficient_pixels"}
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    border = np.concatenate([
+        roi[: max(1, min(4, roi.shape[0]))].reshape(-1, 3),
+        roi[-max(1, min(4, roi.shape[0])) :].reshape(-1, 3),
+        roi[:, : max(1, min(4, roi.shape[1]))].reshape(-1, 3),
+        roi[:, -max(1, min(4, roi.shape[1])) :].reshape(-1, 3),
+    ])
+    border_hsv = cv2.cvtColor(border.reshape(1, -1, 3), cv2.COLOR_BGR2HSV)[0]
+    bg_gray = float(np.median(cv2.cvtColor(
+        border.reshape(1, -1, 3), cv2.COLOR_BGR2GRAY)))
+    bg_sat = float(np.median(border_hsv[:, 1]))
+    contrast = np.abs(gray.astype(np.float32) - bg_gray)
+    sat = hsv[:, :, 1].astype(np.float32)
+    val = hsv[:, :, 2].astype(np.float32)
+    hue = hsv[:, :, 0]
+    glyph_mask = (
+        (contrast >= 28)
+        | ((sat - bg_sat) >= 34)
+        | ((val >= 190) & (bg_gray <= 115))
+    )
+    glyph_ratio = float(np.mean(glyph_mask))
+    if glyph_ratio < 0.006:
+        return {"confidence": 0.0, "source": "insufficient_pixels"}
+    glyph_hsv = hsv[glyph_mask]
+    glyph_bgr = roi[glyph_mask]
+    saturated = glyph_hsv[:, 1] >= 45
+    bright = glyph_hsv[:, 2] >= 185
+    red_mask = ((glyph_hsv[:, 0] <= 12) | (glyph_hsv[:, 0] >= 168)) & saturated
+    blue_mask = (glyph_hsv[:, 0] >= 82) & (glyph_hsv[:, 0] <= 138) & saturated
+    white_mask = (glyph_hsv[:, 1] <= 75) & bright
+    dark_mask = glyph_hsv[:, 2] <= 70
+    red_ratio = float(np.mean(red_mask)) if len(glyph_hsv) else 0.0
+    blue_ratio = float(np.mean(blue_mask)) if len(glyph_hsv) else 0.0
+    white_ratio = float(np.mean(white_mask)) if len(glyph_hsv) else 0.0
+    dark_ratio = float(np.mean(dark_mask)) if len(glyph_hsv) else 0.0
+    if dark_ratio >= 0.30:
+        dominant_bgr = np.median(glyph_bgr[dark_mask], axis=0)
+        color_family = "black"
+    elif np.any(red_mask):
+        dominant_bgr = np.median(glyph_bgr[red_mask], axis=0)
+        color_family = "red"
+    elif np.any(blue_mask):
+        dominant_bgr = np.median(glyph_bgr[blue_mask], axis=0)
+        color_family = "blue"
+    elif np.any(white_mask):
+        dominant_bgr = np.median(glyph_bgr[white_mask], axis=0)
+        color_family = "white"
+    else:
+        dominant_bgr = np.median(glyph_bgr, axis=0)
+        color_family = "colored" if float(np.median(glyph_hsv[:, 1])) >= 45 else "neutral"
+    # Estimate outline/glow from how much the visible glyph footprint expands
+    # beyond the high-confidence core. This is a structural signal, not a font id.
+    core = contrast >= max(38.0, float(np.percentile(contrast[glyph_mask], 65)))
+    expanded = cv2.dilate(core.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1) > 0
+    halo = glyph_mask & ~core
+    halo_hsv = hsv[halo] if np.any(halo) else np.empty((0, 3), dtype=np.uint8)
+    halo_blue = (
+        float(np.mean((halo_hsv[:, 0] >= 82) & (halo_hsv[:, 0] <= 138) & (halo_hsv[:, 1] >= 35)))
+        if len(halo_hsv) else 0.0
+    )
+    halo_red = (
+        float(np.mean(((halo_hsv[:, 0] <= 12) | (halo_hsv[:, 0] >= 168)) & (halo_hsv[:, 1] >= 35)))
+        if len(halo_hsv) else 0.0
+    )
+    stroke_width = 2 if float(np.mean(expanded)) > glyph_ratio * 1.15 or max(white_ratio, dark_ratio) > 0.25 else 1
+    glow_strength = 0
+    glow_color = None
+    if halo_blue >= 0.12 or (blue_ratio >= 0.10 and bg_gray < 130):
+        glow_strength = 5
+        glow_color = (58, 160, 255)
+    elif halo_red >= 0.08 or red_ratio >= 0.10:
+        glow_strength = 4
+        glow_color = (146, 22, 32)
+    confidence = min(1.0, 0.45 + glyph_ratio * 8.0 + max(red_ratio, blue_ratio, white_ratio, dark_ratio) * 0.35)
+    return {
+        "confidence": round(float(confidence), 4),
+        "source": "original_pixels",
+        "color_family": color_family,
+        "dominant_bgr": tuple(int(v) for v in dominant_bgr.tolist()),
+        "red_ratio": round(red_ratio, 4),
+        "blue_ratio": round(blue_ratio, 4),
+        "white_ratio": round(white_ratio, 4),
+        "dark_ratio": round(dark_ratio, 4),
+        "glyph_occupancy": round(glyph_ratio, 4),
+        "stroke_width": int(stroke_width),
+        "glow_strength": int(glow_strength),
+        "glow_color": glow_color,
+        "background_brightness": round(bg_gray, 3),
+    }
+
+
+def _case_style(text):
+    letters = re.findall(r"[^\W\d_]", str(text or ""), flags=re.UNICODE)
+    if not letters:
+        return "uppercase"
+    upper = sum(1 for char in letters if char.upper() == char)
+    lower = sum(1 for char in letters if char.lower() == char and char.upper() != char)
+    if upper >= max(1, int(len(letters) * 0.82)):
+        return "uppercase"
+    if lower >= max(1, int(len(letters) * 0.82)):
+        return "lowercase"
+    return "mixed"
+
+
+def typography_profile_for_region(img_bgr, group, box, *, style=None):
+    """Return the reusable visual lettering contract for one region.
+
+    This deliberately uses only local pixels, geometry and classification. It
+    never keys on page id, region id, chapter title or phrase literal.
+    """
+    stats = _region_background_stats(img_bgr, box)
+    x, y, w, h = [int(v) for v in box]
+    text = str(getattr(group, "translation", "") or getattr(group, "text", "") or "")
+    classification = str(getattr(group, "classification", "") or "").lower()
+    case_style = _case_style(text)
+    aspect = float(w) / max(1.0, float(h))
+    open_caption = classification in {"narration", "caption", "system", "thought"} or aspect >= 3.2
+    emphatic = "!" in text or "..." in text or len(text.split()) <= 6
+
+    base = {
+        "text_role": classification or "unknown",
+        "font_class": "unknown_fallback",
+        "case_style": case_style,
+        "style_source": "fallback_context",
+        "style_confidence": 0.0,
+        "weight": "bold",
+        "fill_color": tuple((style.fill if style else (43, 36, 52))),
+        "stroke_color": tuple((style.stroke_fill if style else (246, 243, 249))),
+        "stroke_width": int(style.stroke_width if style else 1),
+        "glow_color": None,
+        "glow_strength": 0,
+        "shadow_color": tuple(style.shadow_fill) if style and style.shadow_fill else None,
+        "shadow_offset": tuple(style.shadow_offset) if style else (0, 0),
+        "shadow_blur": 0,
+        "letter_spacing": 0.0,
+        "line_height": 1.0,
+        "alignment": "center",
+        "text_box_margin": 0.11,
+        "rotation": 0,
+        "fit_mode": "balanced",
+        "visual_class": "generic",
+        "background_brightness": round(stats["brightness"], 3),
+        "background_saturation": round(stats["saturation"], 3),
+        "background_hue": round(stats["hue"], 3),
+        "background_blue_ratio": round(stats["blue_ratio"], 4),
+        "background_red_ratio": round(stats["red_ratio"], 4),
+        "content_width_ratio": 1.0,
+        "font_size_scale": 0.78,
+        "line_height_scale": 1.0,
+    }
+    lettering = extract_original_lettering_profile(img_bgr, group, box)
+    if float(lettering.get("confidence") or 0.0) >= 0.42:
+        base["style_source"] = "original_pixels"
+        base["style_confidence"] = float(lettering.get("confidence") or 0.0)
+        base["original_lettering"] = dict(lettering)
+        base["stroke_width"] = max(
+            int(base["stroke_width"]),
+            int(lettering.get("stroke_width") or 1),
+        )
+        if lettering.get("glow_color"):
+            base["glow_color"] = tuple(lettering["glow_color"])
+            base["glow_strength"] = int(lettering.get("glow_strength") or 0)
+        color_family = str(lettering.get("color_family") or "")
+        if color_family == "red" and open_caption:
+            base.update({
+                "visual_class": "dramatic_red_display",
+                "font_class": "tall_display",
+                "fill_color": (118, 8, 10),
+                "stroke_color": (255, 250, 250),
+                "stroke_width": max(int(base["stroke_width"]), 2),
+                "glow_color": tuple(lettering.get("glow_color") or (146, 22, 32)),
+                "glow_strength": max(int(lettering.get("glow_strength") or 0), 4),
+                "shadow_color": (48, 8, 12),
+                "shadow_offset": (2, 2),
+                "shadow_blur": 2,
+                "font_size_scale": 0.98,
+                "content_width_ratio": 0.88,
+                "line_height_scale": 0.9,
+            })
+            return base
+        if color_family in {"blue", "white"} and open_caption and stats["brightness"] < 150:
+            base.update({
+                "visual_class": "mystic_blue_system",
+                "font_class": "condensed_display",
+                "fill_color": (226, 245, 255),
+                "stroke_color": (26, 86, 160) if color_family != "black" else (10, 10, 16),
+                "stroke_width": max(int(base["stroke_width"]), 2),
+                "glow_color": tuple(lettering.get("glow_color") or (58, 160, 255)),
+                "glow_strength": max(int(lettering.get("glow_strength") or 0), 4),
+                "shadow_color": (3, 15, 36),
+                "shadow_offset": (2, 2),
+                "shadow_blur": 2,
+                "font_size_scale": 0.94,
+                "content_width_ratio": 0.9,
+                "line_height_scale": 0.9,
+            })
+            return base
+        if (
+            color_family in {"black", "neutral", "white"}
+            and (classification in {"speech", "dialogue"} or stats["brightness"] >= 170)
+        ):
+            base.update({
+                "visual_class": "balloon_dialogue",
+                "font_class": "comic_sans_style",
+                "fill_color": (32, 28, 38),
+                "stroke_color": (250, 250, 252),
+                "stroke_width": 1,
+                "glow_color": None,
+                "glow_strength": 0,
+                "shadow_color": None,
+                "shadow_offset": (0, 0),
+                "font_size_scale": 0.78,
+            })
+            return base
+
+    if classification in {"speech", "dialogue"} or stats["brightness"] >= 180:
+        base.update({
+            "visual_class": "balloon_dialogue",
+            "font_class": "comic_sans_style",
+            "fill_color": (32, 28, 38),
+            "stroke_color": (250, 250, 252),
+            "stroke_width": 1,
+            "glow_color": None,
+            "glow_strength": 0,
+            "shadow_color": None,
+            "shadow_offset": (0, 0),
+            "font_size_scale": 0.78,
+        })
+    elif open_caption and stats["brightness"] < 118 and (
+        stats["blue_ratio"] >= 0.05 or stats["saturation"] >= 42
+    ):
+        base.update({
+            "visual_class": "mystic_blue_system",
+            "font_class": "condensed_display",
+            "fill_color": (226, 245, 255),
+            "stroke_color": (26, 86, 160),
+            "stroke_width": 2,
+            "glow_color": (58, 160, 255),
+            "glow_strength": 5,
+            "shadow_color": (3, 15, 36),
+            "shadow_offset": (2, 2),
+            "shadow_blur": 2,
+            "letter_spacing": 0.03,
+            "line_height": 0.93,
+            "content_width_ratio": 0.9,
+            "font_size_scale": 0.94,
+            "line_height_scale": 0.9,
+        })
+    elif open_caption and stats["brightness"] >= 172 and emphatic:
+        base.update({
+            "visual_class": "dramatic_red_display",
+            "font_class": "tall_display",
+            "fill_color": (118, 8, 10),
+            "stroke_color": (255, 250, 250),
+            "stroke_width": 2,
+            "glow_color": (146, 22, 32),
+            "glow_strength": 4,
+            "shadow_color": (48, 8, 12),
+            "shadow_offset": (2, 2),
+            "shadow_blur": 2,
+            "letter_spacing": 0.02,
+            "line_height": 0.94,
+            "content_width_ratio": 0.88,
+            "font_size_scale": 0.98,
+            "line_height_scale": 0.9,
+        })
+    elif open_caption:
+        base.update({
+            "visual_class": "high_contrast_display",
+            "font_class": "condensed_display",
+            "fill_color": (248, 247, 252),
+            "stroke_color": (18, 18, 24),
+            "stroke_width": 2,
+            "glow_color": (220, 232, 255) if stats["saturation"] >= 32 else None,
+            "glow_strength": 3 if stats["saturation"] >= 32 else 0,
+            "shadow_color": (8, 8, 14),
+            "shadow_offset": (2, 2),
+            "font_size_scale": 0.9,
+            "content_width_ratio": 0.92,
+        })
+    return base
+
+
+def _text_style_from_typography_profile(style, profile):
+    return replace(
+        style,
+        fill=tuple(profile.get("fill_color") or style.fill),
+        stroke_fill=tuple(profile.get("stroke_color") or style.stroke_fill),
+        stroke_width=int(profile.get("stroke_width") or style.stroke_width),
+        shadow_fill=(
+            tuple(profile.get("shadow_color"))
+            if profile.get("shadow_color") is not None
+            else None
+        ),
+        shadow_offset=tuple(profile.get("shadow_offset") or style.shadow_offset),
+        glow_fill=(
+            tuple(profile.get("glow_color"))
+            if profile.get("glow_color") is not None
+            else None
+        ),
+        glow_radius=int(profile.get("glow_strength") or 0),
+        font_class=str(profile.get("font_class") or style.font_class),
+        visual_class=str(profile.get("visual_class") or style.visual_class),
+        letter_spacing=float(profile.get("letter_spacing") or 0.0),
+        line_height_scale=float(profile.get("line_height_scale") or 1.0),
+        content_width_ratio=float(profile.get("content_width_ratio") or 1.0),
+        font_size_scale=float(profile.get("font_size_scale") or style.font_size_scale),
+    )
+
+
+def typographic_wrap_lines(text, *, max_chars, profile=None):
+    """Balanced word wrapping for display lettering.
+
+    The normal pixel fitter still verifies the final render. This pre-wrap keeps
+    display narration from becoming one weak line or one word per line.
+    """
+    words = str(text or "").split()
+    if not words:
+        return []
+    max_chars = max(4, int(max_chars or 24))
+    target_lines = max(1, int(math.ceil(len(" ".join(words)) / max_chars)))
+    if profile and profile.get("font_class") in {"condensed_display", "tall_display"}:
+        target_lines = max(target_lines, 2 if len(words) >= 4 else 1)
+    target_lines = min(max(target_lines, 1), max(1, len(words)))
+    target = max(4, int(math.ceil(len(" ".join(words)) / target_lines)))
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        candidate = " ".join(current + [word])
+        if current and len(candidate) > max_chars and len(lines) < target_lines - 1:
+            lines.append(" ".join(current))
+            current = [word]
+        elif current and len(candidate) > target * 1.25 and len(lines) < target_lines - 1:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        lines.append(" ".join(current))
+    while len(lines) > 1 and len(lines[-1]) < target * 0.45:
+        tail = lines.pop().split()
+        prev = lines.pop().split()
+        merged = prev + tail
+        midpoint = max(1, len(merged) // 2)
+        lines.extend([" ".join(merged[:midpoint]), " ".join(merged[midpoint:])])
+        break
+    return lines
+
+
+def _relative_luminance(rgb):
+    r, g, b = [float(v) / 255.0 for v in rgb]
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def validate_visual_text_profile(profile):
+    """Heuristic final-text visual gate for audit telemetry and tests."""
+    reasons: list[str] = []
+    font_class = str(profile.get("font_class") or "")
+    if font_class in {"", "unknown_fallback"}:
+        reasons.append("font_class_unknown")
+    fill = tuple(profile.get("fill_color") or (0, 0, 0))
+    bg = float(profile.get("background_brightness") or 0.0) / 255.0
+    contrast = abs(_relative_luminance(fill) - bg)
+    if contrast < 0.32 and int(profile.get("stroke_width") or 0) <= 0:
+        reasons.append("contrast_too_low")
+    occupancy = float(profile.get("occupancy_ratio") or 0.0)
+    if str(profile.get("visual_class") or "").endswith("_system") or font_class.endswith("display"):
+        if occupancy and occupancy < 0.18:
+            reasons.append("weak_visual_presence")
+        if int(profile.get("stroke_width") or 0) <= 0:
+            reasons.append("outline_missing")
+        if (
+            str(profile.get("visual_class")) == "mystic_blue_system"
+            and int(profile.get("glow_strength") or 0) <= 0
+        ):
+            reasons.append("glow_missing")
+    return {
+        "passed": not reasons,
+        "reasons": reasons,
+        "visual_validation_version": "84f22-typography-profile-v1",
+        "contrast": round(contrast, 4),
+    }
 
 
 def _text_style_for_region(img_bgr, box):

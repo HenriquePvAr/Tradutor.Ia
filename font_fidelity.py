@@ -21,7 +21,7 @@ FONT_FIDELITY_VERSION = "1.1"
 ROLE_FONT_FILES = {
     "bold": ("arialbd.ttf", "calibrib.ttf", "seguisb.ttf", "trebucbd.ttf"),
     "decorative": ("georgia.ttf", "georgiab.ttf", "calibril.ttf"),
-    "shout": ("arialbi.ttf", "ariali.ttf", "segoeuii.ttf"),
+    "shout": ("impact.ttf", "bahnschrift.ttf", "arialbd.ttf", "arialbi.ttf", "segoeuii.ttf"),
     "regular": ("segoeui.ttf", "calibri.ttf", "arial.ttf"),
 }
 
