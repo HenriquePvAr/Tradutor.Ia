@@ -475,6 +475,17 @@ class TextGroup:
     classification_reason: str = ""
     classification_confidence: float = 0.0
     classification_evidence: dict = field(default_factory=dict)
+    # Set once a weak "decorative" legacy label is promoted to real story/
+    # display content (see ``_decorative_textured_story_promotion_allowed``).
+    # ``classification`` itself is rewritten to a translatable weak label at
+    # promotion time, so this survives that rewrite and lets the promotion
+    # check recognise an already-promoted group on later calls.
+    story_display_promoted: bool = False
+    # Set by ``_restore_lost_local_texture`` when it reinjects statistically
+    # matched grain into a cleanup reconstruction that lost real texture to
+    # inpainting. That grain is synthesised, not recovered, so it must never
+    # by itself clear ``art_fidelity_uncertain`` (ART-RECON-001).
+    texture_synthesized: bool = False
     inside_balloon_like_region: bool = False
     inside_narration_box_like_region: bool = False
     main_text_score: float = 0.0
@@ -3503,12 +3514,16 @@ def _decorative_textured_story_promotion_allowed(group):
     high-confidence, punctuated multi-word clause with clean OCR so short labels,
     credits, SFX and damaged garbage remain fail-closed.
     """
-    if group.classification != "decorative":
+    if group.classification != "decorative" and not bool(
+        getattr(group, "story_display_promoted", False)
+    ):
         return False
     if getattr(group, "background_type", "") not in {"textured_art", "speed_lines"}:
         return False
     if bool(getattr(group, "preserve_as_name", False)):
         return False
+    if _decorative_short_display_story_promotion_allowed(group):
+        return True
     if bool(getattr(group, "quality_reasons", []) or []):
         return False
     try:
@@ -3587,6 +3602,94 @@ def _decorative_textured_story_promotion_allowed(group):
     return any(word in dialogue_markers for word in folded_words)
 
 
+def _decorative_short_display_story_promotion_allowed(group):
+    """Allow quoted short story captions without promoting scan branding.
+
+    Some webtoon story beats are not sentences: they are short, quoted, highly
+    stylised display captions placed directly on artwork.  The legacy visual
+    classifier calls them ``decorative`` and the generic weak-label rule rejects
+    them because they lack punctuation or four prose words.  This promotion is
+    still narrow: it requires a dark/saturated display context, high OCR
+    confidence, quoted/caption shape, and the canonical taxonomy must not see a
+    URL, watermark, logo, SFX or preserved entity.
+    """
+
+    body = str(getattr(group, "text", "") or "")
+    if not body.strip():
+        return False
+    policy = region_taxonomy.resolve_region_policy(
+        original_classification=getattr(group, "classification", ""),
+        source_text=body,
+        preserve_as_name=bool(getattr(group, "preserve_as_name", False)),
+        evidence={"confidence": getattr(group, "confidence", 0.0)},
+    )
+    if region_taxonomy.is_preservable(policy["normalized_classification"]):
+        return False
+    if not region_taxonomy.is_translatable(policy["normalized_classification"]):
+        return False
+    reasons = set(getattr(group, "quality_reasons", []) or [])
+    benign_reasons = {
+        "dictionary_near_miss",
+        "generic_ocr_repair_available",
+    }
+    if reasons - benign_reasons:
+        return False
+    try:
+        confidence = float(getattr(group, "confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < 0.82:
+        return False
+    try:
+        main_score = float(getattr(group, "main_text_score", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        main_score = 0.0
+    if main_score < 0.35:
+        return False
+    folded_words = [
+        re.sub(r"[^A-Z']", "", _ascii_fold(word).upper())
+        for word in re.findall(r"[A-Za-zÀ-ÿ']+", body)
+    ]
+    semantic_words = [
+        word
+        for word in folded_words
+        if len(word.strip("'")) >= 2 and any(ch in "AEIOUY" for ch in word)
+    ]
+    if not (2 <= len(semantic_words) <= 5):
+        return False
+    compact = re.sub(r"[^A-Z0-9]", "", _ascii_fold(body).upper())
+    if len(compact) < 8:
+        return False
+    if any(token in compact for token in ("HTTP", "WWW", "COM", "ORG", "SCAN")):
+        return False
+    letters = [char for char in body if char.isalpha()]
+    uppercase_ratio = (
+        sum(char.upper() == char for char in letters) / max(1, len(letters))
+    )
+    if uppercase_ratio < 0.80:
+        return False
+    quoted = bool(re.search(r"[\"“”'‘’].+[\"“”'‘’]", body.strip()))
+    caption_like = quoted or len(semantic_words) >= 3
+    if not caption_like:
+        return False
+    def _metric(name, default=0.0):
+        try:
+            return float(metrics.get(name, default))
+        except (TypeError, ValueError):
+            return float(default)
+
+    metrics = getattr(group, "background_metrics", {}) or {}
+    dark_context = bool(
+        _metric("context_dark_pixel_ratio") >= 0.78
+        and _metric("context_white_pixel_ratio", 1.0) <= 0.05
+    )
+    saturated_context = bool(
+        _metric("context_saturation_mean") >= 55.0
+        or _metric("saturation_mean") >= 55.0
+    )
+    return dark_context and saturated_context
+
+
 def _apply_classification_policy(group):
     if group.classification == "sfx" and not config.TRANSLATE_SFX:
         group.ignored = True
@@ -3602,6 +3705,17 @@ def _apply_classification_policy(group):
         group.classification,
         group.text,
     )
+    if _decorative_textured_story_promotion_allowed(group):
+        weak_promotion_allowed = True
+        # Promotion must be complete, not just an ``ignored`` flip: downstream
+        # consumers (isolated-retry eligibility, proper-name context, render
+        # gating) key off ``group.classification`` itself, using the existing
+        # weak-label vocabulary. Leaving the stale "decorative" legacy label in
+        # place after promotion is what let a promoted region still fail
+        # strong retry and never reach translation/render.
+        if group.classification == "decorative":
+            group.classification = "unknown"
+        group.story_display_promoted = True
     if (
         group.classification == "decorative"
         and getattr(group, "background_type", "") in {
@@ -3723,6 +3837,8 @@ def _group_has_story_translation_authority(group):
         return False
     if not region_taxonomy.is_translatable(category):
         return False
+    if _decorative_textured_story_promotion_allowed(group):
+        return True
     return region_taxonomy.weak_label_semantic_promotion_allowed(
         getattr(group, "classification", ""),
         getattr(group, "text", ""),
@@ -9908,9 +10024,16 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
     # a synthetic block (the guard above cleared it) but it is markedly smoother
     # than the artwork around it.  It renders, and it renders as review.
     fidelity_ratio = flat_patch_metrics.get("flat_patch_texture_ratio")
+    metrics["texture_synthesized"] = bool(getattr(group, "texture_synthesized", False))
     metrics["art_fidelity_uncertain"] = bool(
-        fidelity_ratio is not None
-        and fidelity_ratio < config.MIN_ART_FIDELITY_TEXTURE_RATIO
+        (
+            fidelity_ratio is not None
+            and fidelity_ratio < config.MIN_ART_FIDELITY_TEXTURE_RATIO
+        )
+        # Synthesised grain fixes the *visible* flat-block defect, but it is a
+        # statistical match, not a recovered original - it must not by itself
+        # promote the reconstruction to "clean" (ART-RECON-001).
+        or metrics["texture_synthesized"]
     )
     seam_metrics = _reconstruction_seam_metrics(
         original_bgr,
@@ -11166,11 +11289,17 @@ def _detached_dark_text_components_mask(img_bgr, group, source_mask):
 
 
 def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy="primary"):
+    # Attempt-scoped: several strategies may run for one group, each calling
+    # this function once, so start clean rather than carrying a flag set by an
+    # earlier attempt that did not end up shipping.
+    group.texture_synthesized = False
     result = current_bgr.copy()
     if cleanup_mask is None or not np.any(cleanup_mask):
         return result
     if strategy == "caption_overlay":
-        return _apply_textured_caption_overlay(result, cleanup_mask)
+        return _apply_textured_caption_overlay(
+            result, cleanup_mask, original_bgr=original_bgr, group=group,
+        )
     draw_box = _safe_draw_box(group.box, original_bgr.shape, group)
     white_region = (
         config.WHITE_BALLOON_FLAT_FILL
@@ -11239,7 +11368,9 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
             <= 0.01
         )
         radius = 7 if source_display_dark_context else 1
-        return _apply_textured_caption_overlay(result, cleanup_mask, radius=radius)
+        return _apply_textured_caption_overlay(
+            result, cleanup_mask, radius=radius, original_bgr=original_bgr, group=group,
+        )
     else:
         radius = 1 if strategy in {"conservative", "source_scoped"} else 2
         local = cv2.inpaint(result, cleanup_mask, radius, cv2.INPAINT_TELEA)
@@ -11247,7 +11378,83 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
     return result
 
 
-def _apply_textured_caption_overlay(img_bgr, mask, *, radius=3):
+def _restore_lost_local_texture(result_bgr, source_bgr, mask, *, ring_radius=None, group=None):
+    """Reinject grain Telea inpainting removed from a genuinely textured area.
+
+    Telea (and any small-radius diffusion inpaint) reconstructs a hole by
+    propagating smooth colour inward from its boundary.  Over a large mask this
+    is well-proven to erase real per-pixel grain/dust texture even though the
+    *large-scale* colour it produces is reasonable - the result reads as a flat
+    rectangular patch precisely where the source was noisy artwork (P002: a
+    speckled starfield behind display lettering).  This measures the same
+    Laplacian-texture signal already used to *detect* that defect
+    (``_flat_patch_artifact_metrics``) and, only when the surrounding proven
+    context is itself textured, adds matched-magnitude luminance noise back
+    into the reconstruction so it does not read as an invented flat block. A
+    genuinely flat/uniform surrounding area (low source ring texture) is left
+    untouched, so real uniform balloons/boxes are never grained artificially.
+
+    This is a *cosmetic* repair, not a fidelity claim: the injected grain is
+    statistically matched, not recovered, so it must never silently clear
+    ``art_fidelity_uncertain`` on its own (ART-RECON-001).  When it fires,
+    ``group.texture_synthesized`` is set so the caller can keep reporting the
+    honest "review" disposition even though the ugly flat block is gone.
+    """
+    mask_u8 = (np.asarray(mask) > 0).astype(np.uint8) * 255
+    if not np.any(mask_u8):
+        return result_bgr
+    radius = int(ring_radius or config.FLAT_FILL_RING_RADIUS)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
+    ring = (cv2.dilate(mask_u8, kernel, iterations=1) > 0) & (mask_u8 == 0)
+    if not np.any(ring):
+        return result_bgr
+    interior = cv2.erode(
+        mask_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1,
+    ) > 0
+    if not np.any(interior):
+        interior = mask_u8 > 0
+    source_gray = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2GRAY)
+    result_gray = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2GRAY)
+    source_texture = float(np.abs(cv2.Laplacian(source_gray, cv2.CV_32F))[ring].mean())
+    if source_texture <= 1e-3:
+        # Surrounding art is itself flat - nothing lost to restore.
+        return result_bgr
+    # A single mask-wide average hides a *localised* flat patch: several OCR
+    # lines share one merged mask (P005: three balloon lines over sky/cloud/
+    # building art), and a sub-region that lost its texture can still average
+    # out fine against a nearby sub-region that reconstructed well.  Measure a
+    # spatially-varying "expected local texture" field instead: the real
+    # Laplacian magnitude survives untouched in the ring, and is extended
+    # across the masked interior with the same inpainting algorithm already
+    # used for colour, so a locally busy neighbour (building edges) or locally
+    # calm one (open sky) informs its own patch rather than one page-wide mean.
+    lap_src_u8 = np.clip(np.abs(cv2.Laplacian(source_gray, cv2.CV_32F)), 0, 255).astype(np.uint8)
+    expected_field = cv2.inpaint(lap_src_u8, mask_u8, radius, cv2.INPAINT_TELEA).astype(np.float32)
+    expected_field = cv2.GaussianBlur(expected_field, (0, 0), 3.0)
+    actual_field = cv2.GaussianBlur(
+        np.abs(cv2.Laplacian(result_gray, cv2.CV_32F)), (0, 0), 3.0,
+    )
+    deficit_field = expected_field * config.MIN_ART_FIDELITY_TEXTURE_RATIO - actual_field
+    deficit_field = np.clip(deficit_field, 0.0, None)
+    if float(deficit_field[interior].max(initial=0.0)) < 0.5:
+        # Locally, every patch already clears the same bar
+        # ``art_fidelity_uncertain`` uses - already good enough.
+        return result_bgr
+    # The Laplacian magnitude of Gaussian noise with stdev sigma scales
+    # roughly linearly with sigma, so this closes the measured deficit without
+    # having to invert the full convolution.
+    sigma_field = np.clip(deficit_field * 0.6, 0.0, 22.0)
+    rng = np.random.default_rng(0)
+    noise = rng.normal(0.0, 1.0, size=result_gray.shape).astype(np.float32) * sigma_field
+    noisy = result_bgr.astype(np.float32) + noise[..., None]
+    result = result_bgr.copy()
+    result[interior] = np.clip(noisy[interior], 0, 255).astype(np.uint8)
+    if group is not None:
+        group.texture_synthesized = True
+    return result
+
+
+def _apply_textured_caption_overlay(img_bgr, mask, *, radius=3, original_bgr=None, group=None):
     """Remove caption glyphs while retaining the local artwork texture.
 
     This function deliberately never creates a synthetic dark backing.  A small
@@ -11261,6 +11468,9 @@ def _apply_textured_caption_overlay(img_bgr, mask, *, radius=3):
     repaired = cv2.inpaint(img_bgr, inpaint_mask, int(radius), cv2.INPAINT_TELEA)
     result = img_bgr.copy()
     result[mask > 0] = repaired[mask > 0]
+    result = _restore_lost_local_texture(
+        result, original_bgr if original_bgr is not None else img_bgr, mask, group=group,
+    )
     return result
 
 

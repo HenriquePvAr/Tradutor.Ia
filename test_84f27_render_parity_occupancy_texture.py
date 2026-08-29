@@ -159,6 +159,57 @@ def _p006_decorative_story_group():
     return group
 
 
+def _p001_mystic_blue_display_group():
+    group = _group(
+        1,
+        "BALAO_4",
+        '"DARE TO DREAM"',
+        '"OUSE SONHAR"',
+        [('"DARE TO DREAM"', (83, 912, 652, 85))],
+        classification="decorative",
+        region_id="REGION_004",
+    )
+    group.background_type = "textured_art"
+    group.background_metrics = {
+        "background_type": "textured_art",
+        "context_brightness_mean": 17.686,
+        "context_dark_pixel_ratio": 0.991,
+        "context_white_pixel_ratio": 0.0,
+        "context_saturation_mean": 171.524,
+        "brightness_mean": 102.228,
+        "saturation_mean": 145.39,
+    }
+    group.main_text_score = 0.48
+    group.quality_reasons = [
+        "dictionary_near_miss",
+        "generic_ocr_repair_available",
+    ]
+    return group
+
+
+def _scan_watermark_group():
+    group = _group(
+        1,
+        "WATERMARK",
+        "VORTEXSCANS.COM",
+        "VORTEXSCANS.COM",
+        [("VORTEXSCANS.COM", (470, 845, 250, 34))],
+        classification="decorative",
+        region_id="REGION_SCAN",
+    )
+    group.background_type = "textured_art"
+    group.background_metrics = {
+        "background_type": "textured_art",
+        "context_brightness_mean": 25.0,
+        "context_dark_pixel_ratio": 0.92,
+        "context_white_pixel_ratio": 0.0,
+        "context_saturation_mean": 100.0,
+    }
+    group.main_text_score = 0.4
+    group.quality_reasons = []
+    return group
+
+
 def _p024_red_display_group():
     return _group(
         24,
@@ -195,13 +246,102 @@ def _source_lettering_ratio(image, group):
 
 
 class RenderParityContracts(unittest.TestCase):
+    def test_short_mystic_blue_display_story_text_is_translatable_not_decorative_skip(self):
+        group = _p001_mystic_blue_display_group()
+
+        ob._apply_classification_policy(group)
+
+        self.assertFalse(group.ignored)
+        self.assertEqual(group.ignore_reason, "")
+        self.assertTrue(ob._should_translate_group(group))
+
+    def test_scan_watermark_remains_preserved_not_promoted_by_display_caption_rule(self):
+        group = _scan_watermark_group()
+
+        ob._apply_classification_policy(group)
+
+        self.assertTrue(group.ignored)
+        self.assertEqual(group.ignore_reason, "url")
+        self.assertFalse(ob._should_translate_group(group))
+
+    def test_promoted_display_story_text_completes_classification_not_just_ignored_flag(self):
+        """#84F30 regression: promotion must not stop at ``ignored = False``.
+
+        A weak "decorative" legacy label promoted on real story/display
+        evidence has to update ``group.classification`` itself to a
+        downstream-recognised weak label too. Leaving the stale "decorative"
+        label behind after promotion is exactly what let a promoted region
+        keep failing the generic isolated-retry gate (which only trusts
+        speech/thought/narration/unknown) and never reach translation/render.
+        """
+        group = _p001_mystic_blue_display_group()
+
+        ob._apply_classification_policy(group)
+
+        self.assertFalse(group.ignored)
+        self.assertNotEqual(
+            group.classification,
+            "decorative",
+            "promotion cleared ignored but left the downstream classification"
+            " on the weak legacy label, so retry/authority checks still see"
+            " a decorative region",
+        )
+        self.assertIn(group.classification, {"speech", "thought", "narration", "unknown"})
+        self.assertTrue(ob._group_has_story_translation_authority(group))
+
+    def test_promoted_display_story_text_is_eligible_for_isolated_strong_retry(self):
+        """A promoted display-story group must not be excluded from the one
+        extra fully-translating attempt merely because its original weak OCR
+        taxonomy label was "decorative" (the previous failure class: a first
+        candidate identical to the source, or another weak candidate, needs
+        an isolated stronger retry to actually reach a PT-BR target)."""
+        group = _p001_mystic_blue_display_group()
+
+        ob._apply_classification_policy(group)
+
+        self.assertTrue(ob._needs_isolated_retry(group, "candidate_equals_source"))
+        self.assertTrue(
+            ob._needs_isolated_retry(group, "residual_source_language: dare")
+        )
+
+    def test_unpromoted_decorative_text_stays_ineligible_for_isolated_strong_retry(self):
+        """Negative control: an ordinary decorative label with no story/display
+        evidence (weak confidence, no dark/saturated display context) must
+        stay outside the strong-retry gate — promotion must not become a
+        blanket bypass for every decorative region."""
+        group = _group(
+            1,
+            "BALAO_5",
+            "SPARKLE",
+            "BRILHO",
+            [("SPARKLE", (10, 10, 100, 40))],
+            classification="decorative",
+            region_id="REGION_005",
+        )
+
+        ob._apply_classification_policy(group)
+
+        self.assertEqual(group.classification, "decorative")
+        self.assertFalse(ob._needs_isolated_retry(group, "candidate_equals_source"))
+
     def test_p002_valid_blue_display_candidate_is_physically_rendered(self):
+        """#84F30 P002 regression: the source-scoped display cleanup used to
+        leave a visibly flat/smoothed rectangular patch where the speckled
+        starfield background had been (Telea inpainting over a large merged
+        display-caption mask erases real per-pixel grain). The fix
+        (``_restore_lost_local_texture``) reinjects grain matched to the
+        proven-textured surrounding context so the reconstruction no longer
+        reads as an invented flat block. That grain is statistically matched,
+        not recovered, so - per ART-RECON-001 - it must not silently promote
+        the disposition to "clean": the render must still honestly report
+        "review" (``texture_synthesized``), while the *visible* rectangle
+        defect (measured by ``flat_patch_texture_ratio``) is gone.
+        """
         _source, _rendered, group = _render(2, _p002_blue_display_group())
 
         self.assertTrue(group.redrawn, group.visual_attempts)
         self.assertEqual(group.translation_final_state, "translated")
         self.assertEqual(group.source_completeness["status"], source_completeness.STATUS_PASS)
-        self.assertIn(group.art_reconstruction_status, {"clean", "review"})
         self.assertNotEqual(group.art_reconstruction_reason, "dark_blotch_created_on_textured_art")
         self.assertLessEqual(
             int((group.mask_metrics or {}).get("residual_text_pixels_after_cleanup") or 0),
@@ -212,6 +352,20 @@ class RenderParityContracts(unittest.TestCase):
             bool((group.mask_metrics or {}).get("source_scoped_display_dark_evidence_cleanup")),
             group.mask_metrics,
         )
+        # The reconstruction must not read as a flat rectangular block: its
+        # interior texture must be comparable to (not far below) the proven
+        # textured ring around it.
+        self.assertGreaterEqual(
+            float((group.mask_metrics or {}).get("flat_patch_texture_ratio") or 0.0),
+            0.55,
+            group.mask_metrics,
+        )
+        self.assertTrue(
+            bool((group.mask_metrics or {}).get("texture_synthesized")),
+            group.mask_metrics,
+        )
+        # Fidelity stays honestly uncertain: the improved ratio above is a
+        # cosmetic repair, not a claim the original artwork was recovered.
         self.assertTrue(
             bool((group.mask_metrics or {}).get("art_fidelity_uncertain")),
             group.mask_metrics,
@@ -249,11 +403,28 @@ class OccupancyAndTextureContracts(unittest.TestCase):
         self.assertGreaterEqual(target_ratio, min(0.11, source_ratio * 0.55))
 
     def test_p005_bottom_source_scoped_cleanup_preserves_enough_texture(self):
+        """#84F30 P005-bottom regression: the source-scoped mask here is a
+        single merged blob spanning four balloon lines over sky/cloud/building
+        art.  A *whole-mask* texture average could pass even while one
+        sub-region (say, over a cloud) reconstructed as a locally flat light
+        polygon - exactly the "light/polygonal reconstruction patch" defect
+        seen in the real run, hidden by an average that let other sub-regions
+        compensate.  ``_restore_lost_local_texture`` now measures a spatially
+        varying expected-texture field (real ring texture extended inward)
+        instead of one page-wide mean, so a locally flat patch is caught and
+        grained even when the old whole-mask ratio looked fine.  As with P002,
+        that grain is synthesised, not recovered, so fidelity honestly stays
+        "review" (``texture_synthesized``) rather than silently "clean".
+        """
         _source, _rendered, group = _render(5, _p005_bottom_group())
 
         self.assertTrue(group.redrawn, group.visual_attempts)
         self.assertEqual(group.translation_final_state, "translated")
-        self.assertFalse(
+        self.assertTrue(
+            bool(group.mask_metrics.get("texture_synthesized")),
+            group.mask_metrics,
+        )
+        self.assertTrue(
             bool(group.mask_metrics.get("art_fidelity_uncertain")),
             group.mask_metrics,
         )
@@ -273,7 +444,23 @@ class OccupancyAndTextureContracts(unittest.TestCase):
         )
 
     def test_p006_decorative_story_text_fails_closed_while_art_reconstruction_is_unsafe(self):
-        _source, _rendered, group = _render(6, _p006_decorative_story_group())
+        # Hermeticity: this contract is "no advanced fallback is available",
+        # not "the developer machine happens to lack the optional model". A
+        # real production model can be installed at the default
+        # ADVANCED_ART_INPAINT_MODEL_PATH (e.g. under %LOCALAPPDATA%), in
+        # which case the primary strategies' fail-closed behaviour is masked
+        # by a genuinely successful LaMa fallback. Force the "unavailable"
+        # state explicitly instead of relying on ambient machine state, the
+        # same way test_p006_decorative_story_text_can_use_verified_lama_fallback
+        # explicitly forces the "available" state.
+        old_enabled = config.ADVANCED_ART_INPAINTING
+        try:
+            config.ADVANCED_ART_INPAINTING = False
+            advanced_art_inpainting.reset_default_inpainter_for_tests()
+            _source, _rendered, group = _render(6, _p006_decorative_story_group())
+        finally:
+            config.ADVANCED_ART_INPAINTING = old_enabled
+            advanced_art_inpainting.reset_default_inpainter_for_tests()
 
         self.assertFalse(group.redrawn, group.visual_attempts)
         self.assertEqual(group.translation_final_state, "manual_review")

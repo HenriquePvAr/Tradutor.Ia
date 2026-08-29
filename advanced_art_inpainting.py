@@ -114,10 +114,24 @@ class AdvancedArtInpainter:
         with self._lock:
             self._model = None
 
-    def reconstruct(self, image_bgr: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, dict]:
+    def reconstruct(
+        self,
+        image_bgr: np.ndarray,
+        mask: np.ndarray,
+        *,
+        debug_capture: dict | None = None,
+    ) -> tuple[np.ndarray, dict]:
         """Return a clean image composited only inside ``mask``.
 
         ``mask > 0`` means REMOVE / RECONSTRUCT.
+
+        ``debug_capture``, when given a dict, is populated with the raw model
+        output (``pred_bgr``, at page size and location, uncomposited) and the
+        context crop box, so a caller can compare RAW model output against the
+        COMPOSITED result in the same offline run (#84F30 evidence).  This is
+        opt-in and diagnostic only: normal callers pass nothing, inference and
+        the returned ``composited``/``telemetry`` are unchanged either way, and
+        nothing is persisted to disk unless the caller chooses to save it.
         """
         if image_bgr is None or mask is None or not np.any(mask > 0):
             raise ValueError("invalid_image_or_mask")
@@ -146,6 +160,12 @@ class AdvancedArtInpainter:
         target_crop = composited[y : y + h, x : x + w]
         target_crop[crop_mask > 0] = pred_bgr[crop_mask > 0]
         composited[y : y + h, x : x + w] = target_crop
+        if debug_capture is not None:
+            raw_full = image_bgr.copy()
+            raw_full[y : y + h, x : x + w] = pred_bgr
+            debug_capture["raw_pred_bgr_full"] = raw_full
+            debug_capture["raw_pred_bgr_crop"] = pred_bgr.copy()
+            debug_capture["context_crop_xywh"] = [int(x), int(y), int(w), int(h)]
         telemetry = {
             "advanced_inpaint_used": True,
             "model_id": self.descriptor.model_id,
