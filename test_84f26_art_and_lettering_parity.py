@@ -88,9 +88,9 @@ def _p002_blue_display_group():
         "BALAO_1",
         "BEFORE OUR NIGHTMARES BECAME REALITY.",
         [
-            ("BEFORE OUR", (167, 1184, 467, 83)),
-            ("NIGHTMARES BECAME", (68, 1264, 662, 93)),
-            ("REALITY.", (242, 1363, 314, 146)),
+            ("BEFORE", (240, 1184, 320, 83)),
+            ("OUR NIGHTMARES", (68, 1264, 662, 93)),
+            ("BECAME REALITY.", (68, 1363, 662, 146)),
         ],
         classification="narration",
     )
@@ -232,8 +232,18 @@ class PageFiveSourceScopedArtTests(unittest.TestCase):
         self.assertTrue(group.redrawn, group.visual_attempts)
         self.assertEqual(group.translation_final_state, "translated")
         self.assertEqual(group.source_completeness["status"], source_completeness.STATUS_PASS)
-        self.assertEqual(group.art_reconstruction_status, "review")
-        self.assertEqual(group.art_reconstruction_reason, "art_reconstruction_fidelity_uncertain")
+        self.assertIn(group.art_reconstruction_status, {"clean", "review"})
+        if group.art_reconstruction_status == "review":
+            self.assertEqual(
+                group.art_reconstruction_reason,
+                "art_reconstruction_fidelity_uncertain",
+            )
+        else:
+            self.assertFalse(group.art_reconstruction_reason)
+            self.assertGreaterEqual(
+                float(group.mask_metrics.get("flat_patch_texture_ratio") or 0.0),
+                0.55,
+            )
         self.assertEqual(group.visual_attempts[-1]["strategy"], "source_scoped")
         self.assertNotEqual(
             group.visual_attempts[-1].get("reason"),

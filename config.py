@@ -467,6 +467,28 @@ MAX_SOURCE_SCOPED_PAGE_AREA_RATIO = _env_float(
     "MAX_SOURCE_SCOPED_PAGE_AREA_RATIO",
     0.08,
 )
+ADVANCED_ART_INPAINTING = _env_bool("ADVANCED_ART_INPAINTING", True)
+ADVANCED_ART_INPAINT_MODEL_ID = _env_str(
+    "ADVANCED_ART_INPAINT_MODEL_ID",
+    "anime_manga_lama_large_jit",
+)
+ADVANCED_ART_INPAINT_MODEL_PATH = _env_str(
+    "ADVANCED_ART_INPAINT_MODEL_PATH",
+    os.path.join(
+        os.getenv("LOCALAPPDATA") or os.getcwd(),
+        "TradutorIA",
+        "models",
+        "anime_manga_lama_large.pt",
+    ),
+)
+ADVANCED_ART_INPAINT_MODEL_SHA256 = _env_str(
+    "ADVANCED_ART_INPAINT_MODEL_SHA256",
+    "479d3afdcb7ed2fd944ed4ebcc39ca45b33491f0f2e43eb1000bd623cfb41823",
+).lower()
+ADVANCED_ART_INPAINT_MAX_ATTEMPTS_PER_REGION = max(
+    0,
+    _env_int("ADVANCED_ART_INPAINT_MAX_ATTEMPTS_PER_REGION", 1),
+)
 CAPTION_OVERLAY_OPACITY = min(
     0.95,
     max(0.35, _env_float("CAPTION_OVERLAY_OPACITY", 0.94)),

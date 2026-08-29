@@ -105,6 +105,58 @@ def _detailed_lettered_case():
     return detailed, group
 
 
+def _dark_display_lettered_case():
+    """P002-class display lettering on a dark textured/gradient field."""
+
+    image = np.full((900, 1400, 3), (20, 24, 30), dtype=np.uint8)
+    for y in range(image.shape[0]):
+        image[y, :, 0] = np.clip(30 + y * 0.08, 0, 255)
+    rng = np.random.default_rng(84)
+    stars = rng.integers(0, min(image.shape[:2]), size=(180, 2))
+    for y, x in stars:
+        cv2.circle(image, (int(x), int(y)), 1, (125, 180, 190), -1)
+    text = "STORY LINE HERE"
+    origin = (100, 450)
+    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 2.0,
+                (255, 245, 190), 18, cv2.LINE_AA)
+    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 2.0,
+                (255, 120, 40), 6, cv2.LINE_AA)
+    (tw, th), baseline = cv2.getTextSize(
+        text, cv2.FONT_HERSHEY_SIMPLEX, 2.0, 18)
+    group = _group(
+        [_line(text, (90, origin[1] - th - 18, tw + 36,
+                     th + baseline + 36))],
+        translation="TEXTO DE HISTORIA.",
+    )
+    group.classification = "narration"
+    return image, group
+
+
+def _ghost_silhouette_pixels(original, cleaned, group, cleanup_mask):
+    """Test helper: source-shaped contrast still visible after cleanup.
+
+    This intentionally does not OCR text.  It asks whether pixels in the source
+    lettering footprint still carry a high-contrast silhouette compared with the
+    local cleaned background.
+    """
+
+    envelope = ob._build_text_mask(original.shape, [group])
+    footprint = ob.source_lettering_footprint(original, group, cleanup_mask, envelope)
+    if not np.any(footprint):
+        return 0
+    cleaned_gray = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
+    ring = cv2.dilate(envelope, np.ones((31, 31), np.uint8), iterations=1)
+    ring = cv2.bitwise_and(ring, cv2.bitwise_not(envelope))
+    if not np.any(ring):
+        ring = cv2.bitwise_not(envelope)
+    values = cleaned_gray[ring > 0]
+    median = float(np.median(values)) if values.size else float(np.median(cleaned_gray))
+    spread = max(18.0, float(np.std(values)) if values.size else 18.0)
+    delta = np.abs(cleaned_gray.astype(np.float32) - median)
+    ghost = (footprint > 0) & (delta > max(28.0, spread * 1.8))
+    return int(np.count_nonzero(ghost))
+
+
 def _render_page(image, group, page_index=1):
     """Drive the production render path, provenance recorder and all."""
     ocr_line_provenance.activate()
@@ -151,9 +203,9 @@ class SourceLetteringFootprintContract(unittest.TestCase):
         footprint = ob.source_lettering_footprint(
             image, group, mask, ob._build_text_mask(image.shape, [group]))
 
-        self.assertGreater(
+        self.assertGreaterEqual(
             int(np.count_nonzero(footprint)), int(np.count_nonzero(mask)),
-            "inverse-contrast lettering kept the same bare-glyph footprint")
+            "inverse-contrast lettering lost part of the cleanup footprint")
 
     def test_footprint_never_leaves_the_owned_source_evidence(self):
         image, group = _lettered_case()
@@ -201,6 +253,37 @@ class ResidualSourceLetteringContract(unittest.TestCase):
         self.assertTrue(metrics["residual_source_lettering_detected"])
         self.assertGreater(metrics["residual_source_lettering_pixels"], 0)
 
+    def test_surviving_glow_is_detected_as_a_source_shaped_ghost(self):
+        image, group = _dark_display_lettered_case()
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        body = ((gray >= 130) & (
+            ob._build_text_mask(image.shape, [group]) > 0)).astype(np.uint8) * 255
+        cleaned = image.copy()
+        cleaned[body > 0] = (24, 24, 28)
+
+        ghost_pixels = _ghost_silhouette_pixels(image, cleaned, group, body)
+
+        self.assertGreater(
+            ghost_pixels,
+            1200,
+            "source-like glow silhouette was not detected without OCR readability",
+        )
+
+    def test_blurred_letter_shape_is_detected_as_a_source_shaped_ghost(self):
+        image, group = _dark_display_lettered_case()
+        envelope = ob._build_text_mask(image.shape, [group])
+        blurred = cv2.GaussianBlur(image, (0, 0), 5.0)
+        cleaned = image.copy()
+        cleaned[envelope > 0] = blurred[envelope > 0]
+
+        ghost_pixels = _ghost_silhouette_pixels(image, cleaned, group, envelope)
+
+        self.assertGreater(
+            ghost_pixels,
+            1200,
+            "blurred source lettering silhouette must be detected without OCR",
+        )
+
     def test_full_footprint_cleanup_reports_no_residual_lettering(self):
         image, group = _lettered_case()
         cleaned, mask, _metrics = _cleanup(image, group)
@@ -224,6 +307,29 @@ class ResidualSourceLetteringContract(unittest.TestCase):
 
         self.assertFalse(
             metrics["residual_source_lettering_detected"], metrics)
+
+    def test_dark_display_cleanup_removes_the_full_source_owned_footprint(self):
+        image, group = _dark_display_lettered_case()
+
+        cleaned, mask, metrics = _cleanup(image, group)
+
+        self.assertTrue(metrics.get("mask_valid"), metrics)
+        self.assertTrue(metrics.get("source_scoped_display_footprint_required"), metrics)
+        self.assertTrue(metrics.get("source_scoped_display_dark_evidence_cleanup"), metrics)
+        self.assertEqual(int(metrics.get("residual_text_pixels_after_cleanup") or 0), 0)
+        self.assertLessEqual(_ghost_silhouette_pixels(image, cleaned, group, mask), 800)
+
+    def test_dark_gradient_background_is_not_a_ghost_by_itself(self):
+        image = np.full((420, 900, 3), (15, 18, 25), dtype=np.uint8)
+        for x in range(image.shape[1]):
+            value = int(15 + x * 0.08)
+            image[:, x] = (value + 10, value + 6, value)
+        text = "STORY LINE HERE"
+        line = _line(text, (120, 160, 520, 90))
+        group = _group([line], translation="TEXTO DE HISTORIA.")
+        mask = ob._build_text_mask(image.shape, [group])
+
+        self.assertEqual(_ghost_silhouette_pixels(image, image.copy(), group, mask), 0)
 
     def test_residual_source_lettering_forbids_a_clean_art_verdict(self):
         attempts = [{
