@@ -23,6 +23,21 @@ ROLE_FONT_FILES = {
     "decorative": ("georgia.ttf", "georgiab.ttf", "calibril.ttf"),
     "shout": ("impact.ttf", "bahnschrift.ttf", "arialbd.ttf", "arialbi.ttf", "segoeuii.ttf"),
     "regular": ("segoeui.ttf", "calibri.ttf", "arial.ttf"),
+    # Role-aware, source-derived typography (TDD #84F32). Each semantic text
+    # role gets its own local-font candidate chain instead of collapsing onto
+    # one shared bucket. Ordinary comic dialogue/narration get organic,
+    # handwritten-leaning local fonts (Comic Sans MS / Segoe Print family)
+    # rather than a heavy geometric block; display-class roles keep the
+    # existing bold/condensed/impact-style candidates. These are local Windows
+    # system fonts used only to prove the architecture - see FUTURE PACKAGING.
+    "balloon_dialogue": ("comic.ttf", "segoepr.ttf", "comici.ttf", "calibri.ttf"),
+    "thought_dialogue": ("comici.ttf", "segoepr.ttf", "comic.ttf", "calibrii.ttf"),
+    "narration_box": ("trebucbd.ttf", "comicbd.ttf", "segoeprb.ttf", "calibrib.ttf"),
+    "story_caption": ("trebuc.ttf", "corbel.ttf", "calibri.ttf", "segoepr.ttf"),
+    "display": ("bahnschrift.ttf", "impact.ttf", "arialbd.ttf"),
+    "dramatic_display": ("impact.ttf", "bahnschrift.ttf", "arialbi.ttf"),
+    "system_text": ("corbeli.ttf", "calibrili.ttf", "trebucit.ttf"),
+    "location_label": ("corbelb.ttf", "calibrib.ttf", "trebucbd.ttf"),
 }
 
 # A generic allow-list of local fonts the renderer may consider for human visual
@@ -33,6 +48,14 @@ AUTHORIZED_FONT_FILES = {
     "bold": ("arialbd.ttf", "calibrib.ttf", "seguisb.ttf", "trebucbd.ttf"),
     "shout": ("arialbi.ttf", "ariali.ttf", "impact.ttf", "bahnschrift.ttf"),
     "decorative": ("georgia.ttf", "georgiab.ttf", "georgiai.ttf", "calibril.ttf"),
+    "balloon_dialogue": ("comic.ttf", "segoepr.ttf", "comici.ttf"),
+    "thought_dialogue": ("comici.ttf", "segoepr.ttf"),
+    "narration_box": ("trebucbd.ttf", "comicbd.ttf", "segoeprb.ttf"),
+    "story_caption": ("trebuc.ttf", "corbel.ttf"),
+    "display": ("bahnschrift.ttf", "arialbd.ttf"),
+    "dramatic_display": ("impact.ttf", "arialbi.ttf"),
+    "system_text": ("corbeli.ttf", "calibrili.ttf"),
+    "location_label": ("corbelb.ttf", "trebucbd.ttf"),
 }
 
 

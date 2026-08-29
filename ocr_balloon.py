@@ -11593,6 +11593,12 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary", sourc
 
     if preview_font_role:
         font_role = preview_font_role
+    elif typography_profile.get("font_role"):
+        # Semantic, source-derived role (TDD #84F32): balloon_dialogue,
+        # thought_dialogue, narration_box, story_caption, display,
+        # dramatic_display, system_text, location_label. Resolved generically
+        # in typography_profile_for_region from visual_class/text_role only.
+        font_role = str(typography_profile.get("font_role"))
     elif typography_profile.get("selected_font_role"):
         font_role = str(typography_profile.get("selected_font_role"))
     elif typography_profile.get("font_class") in {"condensed_display", "tall_display"}:
@@ -12769,7 +12775,66 @@ def _case_style(text):
     return "mixed"
 
 
+# TDD #84F32 - semantic font-role taxonomy. Maps the already-computed,
+# source-pixel-derived visual_class to a distinct font candidate bucket in
+# font_fidelity.ROLE_FONT_FILES, instead of every display-like visual_class
+# collapsing onto the single "shout" bucket. Generic: keyed only on the
+# classifier output, never on page/region/text literals.
+# Strong signals: these visual_class values come from actual source-pixel
+# color/geometry detection (glow, ink, dramatic red, etc - the #84F31 fix) and
+# always win, regardless of the region's semantic classification.
+_STRONG_VISUAL_CLASS_ROLES = {
+    "dramatic_red_display": "dramatic_display",
+    "mystic_blue_system": "system_text",
+    "ink_display": "display",
+    "high_contrast_display": "display",
+}
+
+# Weak/default signal: "balloon_dialogue" is itself just a "not heavy display"
+# fallback appearance, not a strong pixel signal - a known semantic role
+# (narration/caption/system/location/thought) should still take it over.
+_FONT_ROLE_BY_TEXT_ROLE = {
+    "thought": "thought_dialogue",
+    "narration": "narration_box",
+    "caption": "story_caption",
+    "system": "system_text",
+    "location": "location_label",
+    "speech": "balloon_dialogue",
+    "dialogue": "balloon_dialogue",
+}
+
+
+def _resolve_font_role(text_role, visual_class, font_class):
+    """Pick a semantic font role from classifier output alone (no hardcode)."""
+    role = _STRONG_VISUAL_CLASS_ROLES.get(str(visual_class or ""))
+    if role:
+        return role, "visual_class_mapping"
+    role = _FONT_ROLE_BY_TEXT_ROLE.get(str(text_role or ""))
+    if role:
+        return role, "text_role_mapping"
+    if str(visual_class or "") == "balloon_dialogue":
+        return "balloon_dialogue", "visual_class_mapping"
+    if str(font_class or "") in {"condensed_display", "tall_display"}:
+        return "display", "font_class_mapping"
+    # Ordinary comic dialogue is the safe default: source webtoon lettering is
+    # far more often organic/handwritten than a heavy geometric display block,
+    # so an unclassified region should not silently fall back to "regular"
+    # (arial/calibri/segoeui) - see mission #8.
+    return "balloon_dialogue", "generic_fallback"
+
+
 def typography_profile_for_region(img_bgr, group, box, *, style=None):
+    profile = _typography_profile_for_region(img_bgr, group, box, style=style)
+    font_role, font_role_source = _resolve_font_role(
+        profile.get("text_role"), profile.get("visual_class"), profile.get("font_class"),
+    )
+    profile["font_role"] = font_role
+    profile["font_role_source"] = font_role_source
+    profile["font_role_fallback"] = font_role_source == "generic_fallback"
+    return profile
+
+
+def _typography_profile_for_region(img_bgr, group, box, *, style=None):
     """Return the reusable visual lettering contract for one region.
 
     This deliberately uses only local pixels, geometry and classification. It
