@@ -10840,6 +10840,19 @@ def _proven_light_cleanup_region(metrics):
             and float(metrics.get("context_dark_pixel_ratio", 1.0)) <= 0.015
             and float(metrics.get("context_saturation_mean", 255.0)) <= 5.0
         )
+        or (
+            # Simple white speech balloons can be conservatively typed as
+            # textured_art when the glyphs and border dominate the crop.  The
+            # immediate ring is still the decisive evidence: a mostly-white,
+            # low-saturation context with only a small dark border/antialias
+            # budget is a safe light cleanup target, not a white patch over art.
+            float(metrics.get("context_brightness_mean", 0.0)) >= 242.0
+            and float(metrics.get("context_white_pixel_ratio", 0.0)) >= 0.94
+            and float(metrics.get("context_dark_pixel_ratio", 1.0)) <= 0.045
+            and float(metrics.get("context_saturation_mean", 255.0)) <= 8.0
+            and float(metrics.get("white_pixel_ratio", 0.0)) >= 0.60
+            and float(metrics.get("saturation_mean", 255.0)) <= 12.0
+        )
     )
 
 
