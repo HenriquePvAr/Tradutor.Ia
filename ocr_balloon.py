@@ -12687,18 +12687,24 @@ def extract_original_lettering_profile(img_bgr, group, box):
     blue_ratio = float(np.mean(blue_mask)) if len(glyph_hsv) else 0.0
     white_ratio = float(np.mean(white_mask)) if len(glyph_hsv) else 0.0
     dark_ratio = float(np.mean(dark_mask)) if len(glyph_hsv) else 0.0
-    if red_ratio >= 0.10:
-        dominant_bgr = np.median(glyph_bgr[red_mask], axis=0)
-        color_family = "red"
-    elif blue_ratio >= 0.10:
-        dominant_bgr = np.median(glyph_bgr[blue_mask], axis=0)
-        color_family = "blue"
-    elif dark_ratio >= 0.30:
-        dominant_bgr = np.median(glyph_bgr[dark_mask], axis=0)
-        color_family = "black"
-    elif white_ratio >= 0.25:
-        dominant_bgr = np.median(glyph_bgr[white_mask], axis=0)
-        color_family = "white"
+    # Pick whichever family actually dominates the glyph pixels, not merely the
+    # first one to clear its own floor. A colored-glow family (red/blue) is a
+    # rare, visually loud signal so it still needs a floor to qualify at all,
+    # but a broad source bbox spanning several lines (or textured art bleeding
+    # into the loose contrast mask) can push a *minority* blue/red sliver over
+    # that low floor while black/white ink is still the true majority - that
+    # false minority must not outrank the real majority ink color.
+    family_candidates = {
+        "red": (red_ratio if red_ratio >= 0.10 else 0.0, red_mask),
+        "blue": (blue_ratio if blue_ratio >= 0.10 else 0.0, blue_mask),
+        "black": (dark_ratio if dark_ratio >= 0.30 else 0.0, dark_mask),
+        "white": (white_ratio if white_ratio >= 0.25 else 0.0, white_mask),
+    }
+    color_family, (best_ratio, best_mask) = max(
+        family_candidates.items(), key=lambda item: item[1][0]
+    )
+    if best_ratio > 0.0:
+        dominant_bgr = np.median(glyph_bgr[best_mask], axis=0)
     else:
         dominant_bgr = np.median(glyph_bgr, axis=0)
         color_family = "colored" if float(np.median(glyph_hsv[:, 1])) >= 45 else "neutral"
@@ -12719,10 +12725,17 @@ def extract_original_lettering_profile(img_bgr, group, box):
     stroke_width = 2 if float(np.mean(expanded)) > glyph_ratio * 1.15 or max(white_ratio, dark_ratio) > 0.25 else 1
     glow_strength = 0
     glow_color = None
-    if halo_blue >= 0.12 or (blue_ratio >= 0.10 and bg_gray < 130):
+    # A glow must reinforce the ink's own already-established dominant color
+    # (color_family above), not be inferred independently from the noisier
+    # halo signal alone: a halo/edge ring can pick up blue/red hue from a
+    # textured art background bleeding through gaps between glyphs (e.g. a sky
+    # showing between lines of white/black comic lettering), which is
+    # background contamination, not a real colored glow around white or black
+    # ink.
+    if color_family == "blue" and (halo_blue >= 0.12 or bg_gray < 130):
         glow_strength = 5
         glow_color = (58, 160, 255)
-    elif halo_red >= 0.08 or red_ratio >= 0.10:
+    elif color_family == "red" and (halo_red >= 0.08 or red_ratio >= 0.10):
         glow_strength = 4
         glow_color = (146, 22, 32)
     confidence = min(1.0, 0.45 + glyph_ratio * 8.0 + max(red_ratio, blue_ratio, white_ratio, dark_ratio) * 0.35)
@@ -12854,14 +12867,12 @@ def typography_profile_for_region(img_bgr, group, box, *, style=None):
                 "selected_font_role": "shout",
             })
             return base
-        if color_family in {"blue", "white"} and open_caption and (
-            stats["brightness"] < 170 or int(lettering.get("glow_strength") or 0) > 0
-        ):
+        if color_family == "blue" and open_caption:
             base.update({
                 "visual_class": "mystic_blue_system",
                 "font_class": "condensed_display",
                 "fill_color": (226, 245, 255),
-                "stroke_color": (26, 86, 160) if color_family != "black" else (10, 10, 16),
+                "stroke_color": (26, 86, 160),
                 "stroke_width": max(int(base["stroke_width"]), 2),
                 "glow_color": tuple(lettering.get("glow_color") or (58, 160, 255)),
                 "glow_strength": max(int(lettering.get("glow_strength") or 0), 4),
@@ -12876,14 +12887,19 @@ def typography_profile_for_region(img_bgr, group, box, *, style=None):
             return base
         if (
             open_caption
-            and color_family == "black"
+            and color_family in {"black", "white"}
             and float(lettering.get("glyph_occupancy") or 0.0) >= 0.08
         ):
+            # High-contrast display lettering directly over art: comic ink in
+            # black-on-white or white-on-black, no colored glow. Which side is
+            # the fill vs the outline follows the majority ink color detected
+            # above, not a fixed preset.
+            is_black_ink = color_family == "black"
             base.update({
                 "visual_class": "ink_display",
                 "font_class": "tall_display",
-                "fill_color": (18, 16, 22),
-                "stroke_color": (250, 250, 252),
+                "fill_color": (18, 16, 22) if is_black_ink else (248, 247, 250),
+                "stroke_color": (250, 250, 252) if is_black_ink else (18, 16, 22),
                 "stroke_width": max(int(base["stroke_width"]), 1),
                 "glow_color": None,
                 "glow_strength": 0,

@@ -190,6 +190,24 @@ class RealSourceTypographyParityTests(unittest.TestCase):
         self.assertEqual(profile["glow_strength"], 0)
         self.assertNotEqual(profile["visual_class"], "balloon_dialogue")
 
+    def test_p005_bottom_white_display_is_not_misclassified_as_mystic_blue(self):
+        """#84F31 regression: source lettering here is white fill/black outline
+        comic display directly over a textured art background (a cloudy sky
+        behind a building). The naive per-family floor used to let a minority
+        blue-hued sliver (background bleeding through the gaps between the
+        four stacked lines) outrank the true majority white/black ink, and an
+        unrelated background-darkness fallback then forced a mystic blue/glow
+        preset onto lettering that has no glow in the source at all.
+        """
+        profile = _profile(5, _p005_bottom_group())
+
+        self.assertEqual(profile["visual_class"], "ink_display")
+        self.assertEqual(profile["font_class"], "tall_display")
+        self.assertEqual(profile["style_source"], "original_pixels")
+        self.assertEqual(profile["glow_strength"], 0)
+        self.assertIsNone(profile["glow_color"])
+        self.assertNotEqual(profile["visual_class"], "mystic_blue_system")
+
     def test_p024_red_display_uses_dramatic_source_style(self):
         profile = _profile(24, _p024_red_display_group())
 
@@ -282,6 +300,60 @@ class RenderingMaskAllowanceTests(unittest.TestCase):
 
         self.assertGreater(int(np.count_nonzero(mask)), 0)
         self.assertEqual(group.allowed_modification_box, (152, 572, 496, 142))
+
+
+def _synthetic_white_outline_over_textured_art_group():
+    """A page-independent stand-in for the P005/P006 defect class: bold
+    white-fill/black-outline comic display lettering stacked over a dark,
+    saturated, textured (non-uniform) art background - with real gaps
+    between lines that expose that background, the same geometry that
+    previously let background hue outvote the true white/black ink majority.
+    """
+    return _group(
+        999,
+        "SYNTH_1",
+        "WRONG PRESET TEST",
+        [
+            ("WRONG", (10, 10, 140, 60)),
+            ("PRESET TEST", (10, 110, 260, 60)),
+        ],
+        classification="unknown",
+    )
+
+
+class WrongPresetPreventionTests(unittest.TestCase):
+    """#84F31 - synthetic fixture for mission test 40: white fill + black
+    outline over textured/dark art must never render as blue mystical glow
+    just because the background happens to be dark or saturated.
+    """
+
+    def _textured_art_image(self):
+        rng = np.random.default_rng(42)
+        canvas = np.zeros((190, 280, 3), dtype=np.uint8)
+        # A muted, mid-toned, non-uniform (textured) grey-blue background -
+        # akin to a cloudy sky/building panel behind comic lettering - with
+        # only a mild blue cast, deliberately the kind of background that
+        # used to get misread as a source "glow" merely for being dark/tinted.
+        for row in range(canvas.shape[0]):
+            shade = 118 + int(14 * np.sin(row / 11.0))
+            canvas[row, :] = (shade + 6, shade, max(0, shade - 8))
+        noise = rng.integers(-8, 8, size=canvas.shape, dtype=np.int16)
+        canvas = np.clip(canvas.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+        font = cv2.FONT_HERSHEY_DUPLEX
+        for text, origin in (("WRONG", (12, 55)), ("PRESET TEST", (12, 155))):
+            cv2.putText(canvas, text, origin, font, 1.3, (10, 10, 12), 9, cv2.LINE_AA)
+            cv2.putText(canvas, text, origin, font, 1.3, (248, 248, 250), 3, cv2.LINE_AA)
+        return canvas
+
+    def test_white_outline_display_over_textured_art_is_not_mystic_blue(self):
+        image = self._textured_art_image()
+        group = _synthetic_white_outline_over_textured_art_group()
+
+        profile = ob.typography_profile_for_region(image, group, group.box)
+
+        self.assertNotEqual(profile["visual_class"], "mystic_blue_system")
+        self.assertNotIn(profile["glow_color"], {(58, 160, 255)})
 
 
 if __name__ == "__main__":
