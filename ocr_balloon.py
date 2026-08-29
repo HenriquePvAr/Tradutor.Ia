@@ -11520,6 +11520,101 @@ def _estimated_white_region_fill_color(img_bgr, mask, box):
     return np.clip(color, 0, 255).astype(np.uint8)
 
 
+# TDD #84F32R - per-line hierarchy. Source lettering can give one line of a
+# group (an intro clause, a trailing emphasis) a deliberately different visual
+# weight than its neighbours (e.g. a small "BEFORE" versus a large "OUR
+# NIGHTMARES BECAME REALITY."). Nothing upstream of the draw call ever
+# recorded that per-line signal - ``typography_profile_for_region`` only ever
+# saw the group's *union* box - so every line was always rendered at the same
+# font size. The source OCR line boxes already carry per-line height, which is
+# a generic, source-derived hierarchy signal with no text/page/region literal
+# involved.
+def _source_line_scale_ratios(group):
+    """Relative per-line size ratios derived only from source line heights.
+
+    Returns ``None`` when there is no real hierarchy signal to preserve: fewer
+    than two source lines, or a height spread too small to be a deliberate
+    hierarchy rather than normal OCR box jitter. The same font role/family is
+    still used for every line - only the size differs.
+    """
+    heights = [float(line.box[3]) for line in getattr(group, "lines", []) or [] if line.box[3] > 0]
+    if len(heights) < 2:
+        return None
+    median = float(np.median(heights))
+    if median <= 0:
+        return None
+    ratios = [h / median for h in heights]
+    spread = max(ratios) / max(1e-6, min(ratios))
+    if spread < 1.2:
+        return None
+    return [max(0.62, min(1.35, r)) for r in ratios]
+
+
+def _per_line_metrics(draw, lines, fonts, stroke_width):
+    widths = []
+    heights = []
+    tops = []
+    lefts = []
+    for line, font in zip(lines, fonts):
+        bbox = draw.textbbox((0, 0), line, font=font, stroke_width=stroke_width)
+        lefts.append(bbox[0])
+        tops.append(bbox[1])
+        widths.append(bbox[2] - bbox[0])
+        heights.append(bbox[3] - bbox[1])
+    return widths, heights, lefts, tops
+
+
+def _build_per_line_plan(draw, lines, ratios, base_font_size, *, font_role, font_path,
+                         prefer_role, text, style, content_w, content_h, spacing):
+    """Size/measure one font per target line and shrink the whole block, as a
+    unit, if the per-line sizes would overflow the already-fitted uniform
+    bound. Returns ``None`` if measurement fails for any reason - the caller
+    then falls back to the existing single-font render path untouched."""
+    if len(lines) != len(ratios):
+        return None
+    try:
+        sizes = [max(config.MIN_FONT_SIZE, int(round(base_font_size * r))) for r in ratios]
+        fonts = [get_font(font_path, size, role=font_role, prefer_role=prefer_role, text=text)
+                 for size in sizes]
+        widths, heights, lefts, tops = _per_line_metrics(draw, lines, fonts, style.stroke_width)
+        block_w = max(widths) if widths else 0
+        block_h = int(sum(heights) + spacing * max(0, len(lines) - 1))
+        if block_w <= 0 or block_h <= 0:
+            return None
+        shrink = min(1.0, content_w / max(1, block_w), content_h / max(1, block_h))
+        if shrink < 1.0:
+            sizes = [max(config.MIN_FONT_SIZE, int(round(size * shrink))) for size in sizes]
+            fonts = [get_font(font_path, size, role=font_role, prefer_role=prefer_role, text=text)
+                     for size in sizes]
+            widths, heights, lefts, tops = _per_line_metrics(draw, lines, fonts, style.stroke_width)
+            block_w = max(widths) if widths else 0
+            block_h = int(sum(heights) + spacing * max(0, len(lines) - 1))
+        return {
+            "fonts": fonts,
+            "sizes": sizes,
+            "widths": widths,
+            "heights": heights,
+            "lefts": lefts,
+            "tops": tops,
+            "width": block_w,
+            "height": block_h,
+        }
+    except Exception:
+        return None
+
+
+def _draw_multiline_per_font(draw, origin, lines, plan, *, fill, spacing, stroke_width=0, stroke_fill=None):
+    x0, y0 = origin
+    y = y0
+    for line, font, w, h, left, top in zip(
+        lines, plan["fonts"], plan["widths"], plan["heights"], plan["lefts"], plan["tops"],
+    ):
+        x = x0 + (plan["width"] - w) / 2.0 - left
+        draw.text((x, y - top), line, font=font, fill=fill,
+                  stroke_width=stroke_width, stroke_fill=stroke_fill)
+        y += h + spacing
+
+
 def _draw_group_translation(img_bgr, group, font_path, strategy="primary", source_bgr=None):
     text = group.translation or group.text
     if not text:
@@ -11616,6 +11711,10 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary", sourc
 
     overflow_ratio = 1.0
     prefer_preview_role = bool(preview_font_role and not preview_font_path)
+    # Computed once, up front: a real per-line hierarchy signal doesn't depend
+    # on font_size, and the wrap below needs it as a target line count so the
+    # translated text has an unambiguous line to land each source ratio on.
+    line_scales = _source_line_scale_ratios(group)
     while font_size >= config.MIN_FONT_SIZE:
         font = get_font(preview_font_path or font_path, font_size, role=font_role,
                         prefer_role=prefer_preview_role, text=text)
@@ -11632,6 +11731,7 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary", sourc
                 text,
                 max_chars=max_chars,
                 profile=typography_profile,
+                target_line_count=len(group.lines) if line_scales else None,
             )
         else:
             lines = (
@@ -11680,6 +11780,28 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary", sourc
     draw_x = content_x + (content_w - text_w) / 2 - text_bbox[0]
     draw_y = content_y + (content_h - text_h) / 2 - text_bbox[1]
 
+    # Per-line hierarchy (TDD #84F32R): only engages when the target wrapped
+    # 1:1 onto the same number of lines the source had (so each target line
+    # has an unambiguous source line to inherit a scale from) and the source
+    # actually shows a real size hierarchy. The uniform block above already
+    # proved a same-size render fits the safe area, so this can only ever
+    # shrink further from that already-accepted bound, never grow past it.
+    line_plan = None
+    if line_scales and len(lines) == len(group.lines):
+        line_plan = _build_per_line_plan(
+                draw, lines, line_scales, font_size,
+                font_role=font_role, font_path=preview_font_path or font_path,
+                prefer_role=prefer_preview_role, text=text, style=style,
+                content_w=content_w, content_h=content_h, spacing=spacing,
+            )
+    if line_plan:
+        text_w = line_plan["width"]
+        text_h = line_plan["height"]
+        draw_x = content_x + (content_w - text_w) / 2
+        draw_y = content_y + (content_h - text_h) / 2
+        text_bbox = (0, 0, text_w, text_h)
+        group.line_font_sizes = list(line_plan["sizes"])
+
     if group.text_overflow_ratio > config.MAX_TEXT_OVERFLOW_RATIO:
         group.translation_valid = False
         group.translation_validation_reason = "text_does_not_fit_region"
@@ -11692,27 +11814,72 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary", sourc
     tx2 = int(np.ceil(draw_x + text_bbox[2] + stroke_pad))
     ty2 = int(np.ceil(draw_y + text_bbox[3] + stroke_pad))
     translation_box = (tx1, ty1, max(1, tx2 - tx1), max(1, ty2 - ty1))
+    # Fit must include the rendered *effect* footprint, not just the raw
+    # glyph+stroke box: a glow (Gaussian-blurred halo) or a shadow offset both
+    # push visible ink beyond ``translation_box`` before this gate ever sees
+    # it, which let a target that "fit" on paper still bleed past the safe
+    # area once the glow/shadow was actually painted. Reuse the same additive
+    # padding ``_draw_allowed_group_mask`` already trusts for the allowed
+    # modification mask, so the two agree on what "fits" means.
+    effect_pad = int(round(
+        stroke_pad
+        + float(style.glow_radius or 0)
+        + (max(abs(style.shadow_offset[0]), abs(style.shadow_offset[1]))
+           if style.shadow_fill else 0)
+    ))
+    ex1 = int(np.floor(draw_x + text_bbox[0] - effect_pad))
+    ey1 = int(np.floor(draw_y + text_bbox[1] - effect_pad))
+    ex2 = int(np.ceil(draw_x + text_bbox[2] + effect_pad))
+    ey2 = int(np.ceil(draw_y + text_bbox[3] + effect_pad))
+    effect_box = (ex1, ey1, max(1, ex2 - ex1), max(1, ey2 - ey1))
     overflow = _box_overflow_ratio(translation_box, draw_box)
+    effect_overflow = _box_overflow_ratio(effect_box, draw_box)
+    # ``text_overflow_ratio`` intentionally stays scoped to the raw
+    # glyph+stroke box only - it feeds the strict ``MAX_TEXT_OVERFLOW_RATIO``
+    # gate elsewhere in the pipeline (the post-render visual acceptance
+    # loop), which must keep its existing, already-tuned behaviour. The
+    # effect footprint gets its own field and its own, more lenient gate
+    # right below.
     group.text_overflow_ratio = max(group.text_overflow_ratio, overflow)
     group.translation_box = translation_box
+    group.effect_box = effect_box
+    group.effect_overflow_ratio = effect_overflow
     if config.REJECT_TEXT_OVERFLOW and overflow > config.MAX_TEXT_OVERFLOW_RATIO:
         group.translation_valid = False
         group.translation_validation_reason = "translation_box_outside_safe_area"
+        return img_bgr
+    # A glow/shadow footprint is allowed to graze past the raw glyph+stroke
+    # box a little (that already happens for plenty of accepted balloon
+    # styles) - what it must never do is bleed *severely* past the safe area
+    # the way an unrelated-panel spill would (mission #13/#14). This is a
+    # separate, more lenient hard gate from ``MAX_TEXT_OVERFLOW_RATIO`` above
+    # precisely so it does not reject the many small, already-accepted
+    # glow/shadow styles that only graze the edge by a pixel or two.
+    if config.REJECT_TEXT_OVERFLOW and effect_overflow > config.MAX_EFFECT_OVERFLOW_RATIO:
+        group.translation_valid = False
+        group.translation_validation_reason = "translation_effect_outside_safe_area"
         return img_bgr
 
     if style.glow_fill and style.glow_radius > 0:
         glow = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
         glow_draw = ImageDraw.Draw(glow)
-        glow_draw.multiline_text(
-            (draw_x, draw_y),
-            text_block,
-            font=font,
-            fill=style.glow_fill + (190,),
-            spacing=spacing,
-            align="center",
-            stroke_width=max(style.stroke_width + 1, 2),
-            stroke_fill=style.glow_fill + (210,),
-        )
+        if line_plan:
+            _draw_multiline_per_font(
+                glow_draw, (draw_x, draw_y), lines, line_plan,
+                fill=style.glow_fill + (190,), spacing=spacing,
+                stroke_width=max(style.stroke_width + 1, 2), stroke_fill=style.glow_fill + (210,),
+            )
+        else:
+            glow_draw.multiline_text(
+                (draw_x, draw_y),
+                text_block,
+                font=font,
+                fill=style.glow_fill + (190,),
+                spacing=spacing,
+                align="center",
+                stroke_width=max(style.stroke_width + 1, 2),
+                stroke_fill=style.glow_fill + (210,),
+            )
         glow = glow.filter(ImageFilter.GaussianBlur(radius=style.glow_radius))
         pil_img = Image.alpha_composite(pil_img.convert("RGBA"), glow).convert("RGB")
         draw = ImageDraw.Draw(pil_img)
@@ -11720,25 +11887,38 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary", sourc
     if style.shadow_fill:
         shadow_x = draw_x + style.shadow_offset[0]
         shadow_y = draw_y + style.shadow_offset[1]
+        if line_plan:
+            _draw_multiline_per_font(
+                draw, (shadow_x, shadow_y), lines, line_plan,
+                fill=style.shadow_fill, spacing=spacing,
+            )
+        else:
+            draw.multiline_text(
+                (shadow_x, shadow_y),
+                text_block,
+                font=font,
+                fill=style.shadow_fill,
+                spacing=spacing,
+                align="center",
+            )
+
+    if line_plan:
+        _draw_multiline_per_font(
+            draw, (draw_x, draw_y), lines, line_plan,
+            fill=style.fill, spacing=spacing,
+            stroke_width=style.stroke_width, stroke_fill=style.stroke_fill,
+        )
+    else:
         draw.multiline_text(
-            (shadow_x, shadow_y),
+            (draw_x, draw_y),
             text_block,
             font=font,
-            fill=style.shadow_fill,
+            fill=style.fill,
             spacing=spacing,
             align="center",
+            stroke_width=style.stroke_width,
+            stroke_fill=style.stroke_fill,
         )
-
-    draw.multiline_text(
-        (draw_x, draw_y),
-        text_block,
-        font=font,
-        fill=style.fill,
-        spacing=spacing,
-        align="center",
-        stroke_width=style.stroke_width,
-        stroke_fill=style.stroke_fill,
-    )
 
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
@@ -13092,19 +13272,28 @@ def _text_style_from_typography_profile(style, profile):
     )
 
 
-def typographic_wrap_lines(text, *, max_chars, profile=None):
+def typographic_wrap_lines(text, *, max_chars, profile=None, target_line_count=None):
     """Balanced word wrapping for display lettering.
 
     The normal pixel fitter still verifies the final render. This pre-wrap keeps
     display narration from becoming one weak line or one word per line.
+
+    ``target_line_count``, when given, forces the wrap onto that exact number
+    of lines instead of the char-count balance below - used so a source
+    per-line hierarchy (TDD #84F32R) has an unambiguous target line to land
+    on, rather than depending on the translated text happening to balance
+    onto the same count by chance.
     """
     words = str(text or "").split()
     if not words:
         return []
     max_chars = max(4, int(max_chars or 24))
-    target_lines = max(1, int(math.ceil(len(" ".join(words)) / max_chars)))
-    if profile and profile.get("font_class") in {"condensed_display", "tall_display"}:
-        target_lines = max(target_lines, 2 if len(words) >= 4 else 1)
+    if target_line_count:
+        target_lines = max(1, min(int(target_line_count), len(words)))
+    else:
+        target_lines = max(1, int(math.ceil(len(" ".join(words)) / max_chars)))
+        if profile and profile.get("font_class") in {"condensed_display", "tall_display"}:
+            target_lines = max(target_lines, 2 if len(words) >= 4 else 1)
     target_lines = min(max(target_lines, 1), max(1, len(words)))
     target = max(4, int(math.ceil(len(" ".join(words)) / target_lines)))
     lines: list[str] = []

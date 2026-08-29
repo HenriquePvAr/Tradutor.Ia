@@ -325,6 +325,11 @@ TEXT_SAFE_PADDING = max(0, _env_int("TEXT_SAFE_PADDING", 12))
 MIN_FONT_SIZE = max(6, _env_int("MIN_FONT_SIZE", 12))
 MAX_FONT_SIZE = max(MIN_FONT_SIZE, _env_int("MAX_FONT_SIZE", 42))
 MAX_TEXT_OVERFLOW_RATIO = _env_float("MAX_TEXT_OVERFLOW_RATIO", 0.01)
+# Separate, more lenient hard gate (TDD #84F32R) for the rendered *effect*
+# footprint (glow/shadow), which is allowed to graze the safe area edge the
+# way many already-accepted balloon styles already do, but must never bleed
+# severely into unrelated artwork/panel content.
+MAX_EFFECT_OVERFLOW_RATIO = _env_float("MAX_EFFECT_OVERFLOW_RATIO", 0.20)
 AUTO_LINE_WRAP = _env_bool("AUTO_LINE_WRAP", True)
 AUTO_FONT_SHRINK = _env_bool("AUTO_FONT_SHRINK", True)
 
