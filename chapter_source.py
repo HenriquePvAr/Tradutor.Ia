@@ -16,6 +16,7 @@ import re
 import socket
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Any, Iterable, Protocol
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -142,6 +143,8 @@ class ChapterSourceAdapter(Protocol):
                 extra_warnings: tuple[str, ...] = ()) -> Any: ...
     def wait_until_ready(self, browser: Any) -> None: ...
     def collect_dom_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]: ...
+    def collect_dom_candidates_from_html(self, html: str, page_url: str
+                                          ) -> list[dict[str, Any]] | None: ...
     def collect_network_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]: ...
     def collect_json_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]: ...
     def cluster_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
@@ -623,6 +626,17 @@ class BaseAdapter:
         """Expose bounded DOM evidence to an adapter override or an offline fixture."""
         return list(self._collected_payload(browser, page_url).get("dom_candidates") or [])
 
+    def collect_dom_candidates_from_html(self, html: str, page_url: str
+                                          ) -> list[dict[str, Any]] | None:
+        """Static-HTML equivalent of ``collect_dom_candidates``, no browser involved.
+
+        Default: unsupported.  A source whose reader only exists after client-side JS runs
+        cannot honestly claim HTTP-only discovery, so it returns ``None`` here and the caller
+        falls back to the existing browser-based analysis.  Only an adapter that can prove its
+        reader is server-rendered (see ``VortexScansAdapter``) should override this.
+        """
+        return None
+
     def collect_network_candidates(self, browser: Any, *, page_url: str = "") -> list[dict[str, Any]]:
         """Expose bounded browser-observed network image evidence only."""
         return list(self._collected_payload(browser, page_url).get("network_candidates") or [])
@@ -709,6 +723,98 @@ _VORTEXSCANS_CHAPTER_PATH = re.compile(
     re.IGNORECASE,
 )
 
+_VOID_HTML_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
+
+
+def _safe_html_int(value: Any) -> int:
+    try:
+        return max(0, int(str(value or "0").strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+class _VortexReaderHTMLParser(HTMLParser):
+    """Extract ordered reader ``<img>`` evidence from Vortex's server-rendered HTML.
+
+    Deliberately narrow: it understands only the exact
+    ``article.immersive-reader section[itemprop="articleBody"]:not(.hidden)`` /
+    ``figure.image-container img[data-reader-page-image]`` shape this adapter's own browser
+    selectors already require, not arbitrary CSS. Anything outside that shape yields no
+    candidates, which the caller treats as "HTTP discovery unsupported" and falls back to the
+    browser-driven analysis.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._stack: list[str] = []
+        self._article_depth: int | None = None
+        self._section_depth: int | None = None
+        self.candidates: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _class_tokens(attrs: dict[str, str | None]) -> set[str]:
+        return set(str(attrs.get("class") or "").split())
+
+    def handle_starttag(self, tag: str, attrs_list) -> None:
+        tag = tag.casefold()
+        attrs = {name.casefold(): value for name, value in attrs_list}
+        in_article = self._article_depth is not None
+        in_section = in_article and self._section_depth is not None
+        if tag == "article" and self._article_depth is None:
+            if "immersive-reader" in self._class_tokens(attrs):
+                self._article_depth = len(self._stack)
+        elif (tag == "section" and in_article and self._section_depth is None
+              and str(attrs.get("itemprop") or "") == "articleBody"
+              and "hidden" not in self._class_tokens(attrs)):
+            self._section_depth = len(self._stack)
+        elif tag == "img" and in_section and "data-reader-page-image" in attrs:
+            src = str(attrs.get("src") or attrs.get("data-src") or "").strip()
+            if src:
+                order = len(self.candidates)
+                try:
+                    reader_index = int(str(attrs.get("data-reader-index") or order))
+                except ValueError:
+                    reader_index = order
+                width = _safe_html_int(attrs.get("width"))
+                height = _safe_html_int(attrs.get("height"))
+                self.candidates.append({
+                    "url": src,
+                    "source": "html_img_src",
+                    "order": order,
+                    "y": reader_index,
+                    "width": width,
+                    "height": height,
+                    "naturalWidth": width,
+                    "naturalHeight": height,
+                    "container": (
+                        'article.immersive-reader section[itemprop="articleBody"]'),
+                    "className": str(attrs.get("class") or ""),
+                    "id": str(attrs.get("id") or ""),
+                    "alt": str(attrs.get("alt") or ""),
+                    "context": "reader",
+                    "origin": "dom",
+                    "visible": True,
+                })
+        if tag not in _VOID_HTML_TAGS:
+            self._stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.casefold()
+        if tag in _VOID_HTML_TAGS:
+            return
+        if tag in self._stack:
+            while self._stack and self._stack.pop() != tag:
+                pass
+        depth = len(self._stack)
+        if self._section_depth is not None and depth <= self._section_depth:
+            self._section_depth = None
+        if self._article_depth is not None and depth <= self._article_depth:
+            self._article_depth = None
+            self._section_depth = None
+
 
 class VortexScansAdapter(BaseAdapter):
     """Conservative adapter for VortexScans chapter URLs.
@@ -794,6 +900,20 @@ class VortexScansAdapter(BaseAdapter):
         if host not in self._observed_resource_hosts:
             raise SourceError(UNSUPPORTED_SOURCE, "unobserved_resource_host")
         self._authorized_resource_hosts.add(host)
+
+    def collect_dom_candidates_from_html(self, html: str, page_url: str
+                                          ) -> list[dict[str, Any]] | None:
+        """Vortex renders every reader page as a plain ``<img>`` in the initial HTTP
+        response (proven against a live chapter): a bounded GET is enough, no browser
+        needed. Returns ``None`` -- not a partial list -- whenever the known static shape is
+        not found, so the caller always falls back to the browser rather than guessing.
+        """
+        parser = _VortexReaderHTMLParser()
+        try:
+            parser.feed(str(html or ""))
+        except Exception:
+            return None
+        return parser.candidates or None
 
 
 class UniversalChapterAdapter(BaseAdapter):

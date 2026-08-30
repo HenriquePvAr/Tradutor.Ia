@@ -89,6 +89,7 @@ def download_images(
     approved_candidate_ids=None,
 ):
     from chapter_source import SourceError, select_adapter
+    from http_source_discovery import discover_via_http
 
     max_retries = max_retries or MAX_RETRIES_DOWNLOAD
     target_folder = target_folder or TEMP_FOLDER
@@ -154,71 +155,83 @@ def download_images(
         report["adapter_name"] = report["adapter"]
         report["adapter_version"] = _safe_report_metadata(
             getattr(adapter, "adapter_version", ""), "unknown")
-        # Selenium would otherwise follow the chain before exposing ``current_url``. Resolve
-        # and validate every top-level redirect with a bounded, cookie-free request first.
-        navigation_url = preflight_browser_navigation(adapter, url)
-        driver = _create_driver()
-        ownership = _capture_driver_ownership(driver)
         collection_started = time.perf_counter()
-        _set_browser_timeouts(driver)
-        driver.get(navigation_url)
-        time.sleep(4)
-        current_url = getattr(driver, "current_url", "")
-        if not isinstance(current_url, str) or not current_url.startswith(("http://", "https://")):
-            raise SourceError("unsupported_source", "invalid_browser_final_url")
-        # Selenium follows the navigation itself; validate its final public destination before
-        # looking at any reader content. Universal adapters scope it to this in-memory run.
-        adapter.validate_redirect(current_url)
-        viewer_snapshot = _viewer_image_snapshot(driver, adapter)
-        report["viewer_image_count"] = viewer_snapshot["image_count"]
-        report["viewer_unique_urls"] = len(viewer_snapshot["urls"])
-        report["viewer_urls"] = [_sanitized_url(value) for value in viewer_snapshot["urls"]]
-        report["viewer_manifest_complete"] = bool(viewer_snapshot["complete_manifest"])
-        scroll_diagnostics = _scroll_incrementally(driver, adapter=adapter)
-        report["scroll_diagnostics"] = scroll_diagnostics
-        viewer_snapshot_after_scroll = _viewer_image_snapshot(driver, adapter)
-        report["viewer_image_count_after_scroll"] = viewer_snapshot_after_scroll["image_count"]
-        report["viewer_unique_urls_after_scroll"] = len(viewer_snapshot_after_scroll["urls"])
-        report["lazy_loading_fully_loaded"] = bool(
-            scroll_diagnostics.get("reached_document_end")
-            and viewer_snapshot_after_scroll["complete_manifest"]
-            and len(viewer_snapshot_after_scroll["urls"]) >= len(viewer_snapshot["urls"])
-        )
-        if len(viewer_snapshot_after_scroll["urls"]) > len(viewer_snapshot["urls"]):
-            viewer_snapshot = viewer_snapshot_after_scroll
+        # HTTP-first: an adapter that can prove its reader is server-rendered (Vortex) gets a
+        # bounded, cookie-free GET instead of a browser -- for source discovery *and* for this
+        # download run, since ``build_transports``/``RequestsTransport`` below already work
+        # without a driver. Only when this is unsupported or inconclusive does Chrome start.
+        http_analysis = discover_via_http(adapter, url)
+        pagination_diagnostics = _pagination_diagnostic("not_applicable")
+        source_warnings = ()
+        if http_analysis is not None:
+            current_url = url
+            source_analysis = http_analysis
+            report["collection_strategy"] = "http_static_html"
+        else:
+            # Selenium would otherwise follow the chain before exposing ``current_url``. Resolve
+            # and validate every top-level redirect with a bounded, cookie-free request first.
+            navigation_url = preflight_browser_navigation(adapter, url)
+            driver = _create_driver()
+            ownership = _capture_driver_ownership(driver)
+            _set_browser_timeouts(driver)
+            driver.get(navigation_url)
+            time.sleep(4)
+            current_url = getattr(driver, "current_url", "")
+            if not isinstance(current_url, str) or not current_url.startswith(("http://", "https://")):
+                raise SourceError("unsupported_source", "invalid_browser_final_url")
+            # Selenium follows the navigation itself; validate its final public destination before
+            # looking at any reader content. Universal adapters scope it to this in-memory run.
+            adapter.validate_redirect(current_url)
+            viewer_snapshot = _viewer_image_snapshot(driver, adapter)
             report["viewer_image_count"] = viewer_snapshot["image_count"]
             report["viewer_unique_urls"] = len(viewer_snapshot["urls"])
             report["viewer_urls"] = [_sanitized_url(value) for value in viewer_snapshot["urls"]]
-        if viewer_snapshot["complete_manifest"]:
-            report["collection_strategy"] = "direct_viewer_manifest"
-        # Every adapter, including a registered specific reader, owns the same analysis
-        # contract.  This prevents an older DOM-only shortcut from bypassing coverage limits,
-        # network/JSON evidence, candidate IDs or the accepted-reader manifest.
-        source_warnings = _scroll_coverage_warnings(scroll_diagnostics, adapter)
-        source_analysis = adapter.analyze(
-            {
-                "driver": driver,
-                "page_url": current_url,
-                "lazy_slot_resolver": _webtoons_lazy_resolver(
-                    cancel_check=None,
-                    on_progress=None,
-                ),
-            },
-            profile=_load_source_profile(current_url, adapter),
-            extra_warnings=source_warnings)
-        source_analysis, pagination_diagnostics = _maybe_collect_paginated_reader(
-            driver,
-            adapter,
-            source_analysis,
-            page_url=current_url,
-            profile=_load_source_profile(current_url, adapter),
-        )
+            report["viewer_manifest_complete"] = bool(viewer_snapshot["complete_manifest"])
+            scroll_diagnostics = _scroll_incrementally(driver, adapter=adapter)
+            report["scroll_diagnostics"] = scroll_diagnostics
+            viewer_snapshot_after_scroll = _viewer_image_snapshot(driver, adapter)
+            report["viewer_image_count_after_scroll"] = viewer_snapshot_after_scroll["image_count"]
+            report["viewer_unique_urls_after_scroll"] = len(viewer_snapshot_after_scroll["urls"])
+            report["lazy_loading_fully_loaded"] = bool(
+                scroll_diagnostics.get("reached_document_end")
+                and viewer_snapshot_after_scroll["complete_manifest"]
+                and len(viewer_snapshot_after_scroll["urls"]) >= len(viewer_snapshot["urls"])
+            )
+            if len(viewer_snapshot_after_scroll["urls"]) > len(viewer_snapshot["urls"]):
+                viewer_snapshot = viewer_snapshot_after_scroll
+                report["viewer_image_count"] = viewer_snapshot["image_count"]
+                report["viewer_unique_urls"] = len(viewer_snapshot["urls"])
+                report["viewer_urls"] = [_sanitized_url(value) for value in viewer_snapshot["urls"]]
+            if viewer_snapshot["complete_manifest"]:
+                report["collection_strategy"] = "direct_viewer_manifest"
+            # Every adapter, including a registered specific reader, owns the same analysis
+            # contract.  This prevents an older DOM-only shortcut from bypassing coverage limits,
+            # network/JSON evidence, candidate IDs or the accepted-reader manifest.
+            source_warnings = _scroll_coverage_warnings(scroll_diagnostics, adapter)
+            source_analysis = adapter.analyze(
+                {
+                    "driver": driver,
+                    "page_url": current_url,
+                    "lazy_slot_resolver": _webtoons_lazy_resolver(
+                        cancel_check=None,
+                        on_progress=None,
+                    ),
+                },
+                profile=_load_source_profile(current_url, adapter),
+                extra_warnings=source_warnings)
+            source_analysis, pagination_diagnostics = _maybe_collect_paginated_reader(
+                driver,
+                adapter,
+                source_analysis,
+                page_url=current_url,
+                profile=_load_source_profile(current_url, adapter),
+            )
+            if pagination_diagnostics.get("followed_pages"):
+                # BrowserSessionTransport must retain the browser's final same-origin reader
+                # context.  It is never persisted; reports expose only the safe counters above.
+                current_url = str(getattr(driver, "current_url", "") or current_url)
+                report["collection_strategy"] = "adapter_accepted_paginated_manifest"
         report["pagination"] = pagination_diagnostics
-        if pagination_diagnostics.get("followed_pages"):
-            # BrowserSessionTransport must retain the browser's final same-origin reader
-            # context.  It is never persisted; reports expose only the safe counters above.
-            current_url = str(getattr(driver, "current_url", "") or current_url)
-            report["collection_strategy"] = "adapter_accepted_paginated_manifest"
         report["source_analysis"] = _public_source_analysis(source_analysis)
         report["source_outcome"] = _safe_report_metadata(
             getattr(source_analysis, "outcome", ""), "source_not_ready")
@@ -253,7 +266,8 @@ def download_images(
         # images exposed by a page.  IDs remain opaque even when two signed URLs share a path.
         report["expected_chapter_candidate_ids"] = selected_ids
         report["expected_chapter_urls"] = [_sanitized_url(item["url"]) for item in candidates]
-        if not pagination_diagnostics.get("followed_pages"):
+        if (report["collection_strategy"] != "http_static_html"
+                and not pagination_diagnostics.get("followed_pages")):
             report["collection_strategy"] = "adapter_accepted_manifest"
         report["timings"]["collection_seconds"] = (
             time.perf_counter() - collection_started
@@ -334,6 +348,40 @@ def _resolve_canonical_source(adapter, normalized_url):
     """Injection seam for hermetic analysis tests."""
     resolver = getattr(adapter, "resolve_canonical_url", None)
     return resolver(normalized_url) if callable(resolver) else None
+
+
+def discover_chapter_source(url, *, cancel_check=None, on_progress=None):
+    """Discover a chapter's pages the cheapest way that can prove it saw the whole reader.
+
+    Same public contract as ``analyze_chapter_source`` (a ``SourceAnalysis``): this is a drop-in
+    replacement for the UI preflight and the worker's own source phase. It tries a bounded,
+    cookie-free HTTP GET plus the adapter's static-HTML reader knowledge first
+    (``http_source_discovery.discover_via_http``); Chrome/Selenium is only started when that is
+    unsupported for this adapter or did not produce a confident, complete analysis.
+    """
+    from chapter_source import SourceError, select_adapter
+    from http_source_discovery import discover_via_http
+
+    adapter = select_adapter(url)
+    adapter.validate_url(url)
+    adapter.validate_path(url)
+    normalized = adapter.normalize_url(url)
+    canonical_identity = _resolve_canonical_source(adapter, normalized)
+    if canonical_identity is not None:
+        normalized = adapter.normalize_url(canonical_identity.canonical_url)
+        adapter.validate_url(normalized)
+        adapter.validate_path(normalized)
+    if cancel_check and cancel_check():
+        raise SourceError("cancelled", "before_source_analysis")
+    http_analysis = discover_via_http(adapter, normalized, cancel_check=cancel_check)
+    if http_analysis is not None:
+        if canonical_identity is not None:
+            http_analysis.canonical_url = normalized
+            http_analysis.canonical_identity = canonical_identity.public()
+        return http_analysis
+    # HTTP discovery does not apply to this source, or was inconclusive: same seam, same URL,
+    # falls back to the existing browser-based analysis.
+    return analyze_chapter_source(url, cancel_check=cancel_check, on_progress=on_progress)
 
 
 def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):

@@ -174,10 +174,14 @@ class Worker:
             job.get("worker_pid"), create_time=job.get("worker_create_time"))
 
     def _analyze_source(self, url: str, *, cancel_check=None, on_progress=None):
-        """Injection seam: tests replace this instead of driving a real browser."""
-        from down import analyze_chapter_source
+        """Injection seam: tests replace this instead of driving a real browser.
 
-        return analyze_chapter_source(url, cancel_check=cancel_check, on_progress=on_progress)
+        Tries HTTP-only discovery first (no Chrome) and only falls back to the browser-based
+        analysis when the adapter/page does not support it -- see ``discover_chapter_source``.
+        """
+        from down import discover_chapter_source
+
+        return discover_chapter_source(url, cancel_check=cancel_check, on_progress=on_progress)
 
     def _prepare_source(self, job: dict) -> dict | None:
         """Run the source phase when needed. Returns None when no runner may start.

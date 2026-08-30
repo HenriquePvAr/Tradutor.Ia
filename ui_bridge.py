@@ -4791,10 +4791,14 @@ class UiBridge:
 
     @staticmethod
     def _analyze_source(url: str, *, cancel_check=None):
-        """Late import keeps UI bootstrap/import hermetic; only a user submit navigates."""
-        from down import analyze_chapter_source
+        """Late import keeps UI bootstrap/import hermetic; only a user submit navigates.
 
-        return analyze_chapter_source(url, cancel_check=cancel_check)
+        Tries HTTP-only discovery first (no Chrome) and only falls back to the browser-based
+        analysis when the adapter/page does not support it -- see ``discover_chapter_source``.
+        """
+        from down import discover_chapter_source
+
+        return discover_chapter_source(url, cancel_check=cancel_check)
 
     async def _run_source_analysis(self, url: str, *, cancel_check=None):
         """Run Selenium analysis off the UI loop while retaining cancellation visibility."""
