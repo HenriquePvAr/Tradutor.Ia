@@ -2199,7 +2199,17 @@ class ChapterQualityRevision:
             number = page_number(page)
             items = page.get("debug_data", {}).get("items") or []
             for offset, item in enumerate(items):
-                if not isinstance(item, dict) or item.get("ignored"):
+                if not isinstance(item, dict):
+                    continue
+                # A region dropped at classification (``ignored``) is normally out
+                # of scope for this audit - it was proven preservable art/SFX/
+                # branding. But a region ignored only on weak confidence (see
+                # ``_ignored_decorative_requires_review`` in ocr_balloon.py) still
+                # carries ``manual_review_required`` precisely so it does not
+                # vanish from the quality gate. Excluding every ignored item here
+                # let that flag go uncounted and the chapter ship "finished" with
+                # untranslated story text still on the page.
+                if item.get("ignored") and not item.get("manual_review_required"):
                     continue
                 region_id = stable_region_key(number, item)
                 classification = str(item.get("classification") or "unknown").lower()
@@ -3509,7 +3519,13 @@ class ChapterQualityRevision:
         number = page_number(page)
         groups: list[TextGroup] = []
         for item in page.get("debug_data", {}).get("items") or []:
-            if not isinstance(item, dict) or item.get("ignored"):
+            if not isinstance(item, dict):
+                continue
+            # Same carve-out as ``_collect_regions``: a region ignored only on weak
+            # confidence still needs to be reconstructed here so selective retry can
+            # reprocess that one balloon instead of the review queue holding a flag
+            # nothing ever acts on.
+            if item.get("ignored") and not item.get("manual_review_required"):
                 continue
             original_box = tuple(int(v) for v in (item.get("bounding_box") or [0, 0, 1, 1])[:4])
             box = tuple(int(v) for v in (item.get("draw_box") or item.get("bounding_box") or [0, 0, 1, 1])[:4])

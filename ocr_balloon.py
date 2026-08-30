@@ -1695,6 +1695,24 @@ def _normalized_translation_text(text):
     return re.sub(r"[^a-z0-9]+", "", folded)
 
 
+def _echo_is_name_shaped(group):
+    """True when a source==candidate echo is a legitimate silent preserve.
+
+    An echo is only "nothing to translate" when the source itself has the shape
+    of a lone name/token (branding, proper names) or a short stylized
+    vocalization ("AGH...", "HUH?"). Any wider echo - an ordinary multi-word
+    story sentence the provider handed back unchanged - is a translation that
+    never actually happened, and must not be reported as a clean, no-review
+    preserve (see the render-time caller).
+    """
+    if bool(getattr(group, "preserve_as_name", False)):
+        return True
+    if group_has_name_only_shape(group):
+        return True
+    tokens = _source_entity_tokens(getattr(group, "text", "") or "")
+    return _is_nonlexical_vocalization_token(set(tokens))
+
+
 def _translation_echoes_source(group):
     """True when rendering the group would only echo its source text.
 
@@ -2100,21 +2118,45 @@ def _render_analyzed_image(
 
         if _translation_echoes_source(group):
             group.redrawn = False
-            group.visual_validation = {
-                "visual_validation_passed": True,
-                "reason": "source_echo_preserved_original",
-                "render_preserved_source_echo": True,
-            }
-            # Preserve the original pixels either way, but let a proven reason such as
-            # ``proper_name_only`` survive: the precedence policy in
-            # ``_set_translation_terminal_state`` keeps the specific reason and only
-            # takes this generic one when none was proven earlier.
-            _set_translation_terminal_state(
-                group,
-                "preserved_original",
-                "source_echo_preserved_original",
-                preserved_original=True,
-            )
+            # An echo is only a clean, no-review preserve when the source itself
+            # has the shape of a lone name/token (branding, proper names, stylized
+            # vocalizations). Anything wider - an ordinary multi-word story
+            # sentence the provider happened to hand back unchanged - is a
+            # translation that never actually happened, and shipping it silently
+            # as "preserved_original" is how ordinary dialogue/narration stays
+            # English with no trace in the review queue. Pixels still cannot be
+            # invented (fail-closed), so the source stays on the page either way,
+            # but this case must surface for retry/review instead of passing as
+            # clean.
+            if _echo_is_name_shaped(group):
+                group.visual_validation = {
+                    "visual_validation_passed": True,
+                    "reason": "source_echo_preserved_original",
+                    "render_preserved_source_echo": True,
+                }
+                # Preserve the original pixels either way, but let a proven reason such as
+                # ``proper_name_only`` survive: the precedence policy in
+                # ``_set_translation_terminal_state`` keeps the specific reason and only
+                # takes this generic one when none was proven earlier.
+                _set_translation_terminal_state(
+                    group,
+                    "preserved_original",
+                    "source_echo_preserved_original",
+                    preserved_original=True,
+                )
+            else:
+                group.visual_validation = {
+                    "visual_validation_passed": False,
+                    "reason": "source_echo_unresolved_story_text",
+                    "render_preserved_source_echo": True,
+                }
+                group.manual_review_required = True
+                _set_translation_terminal_state(
+                    group,
+                    "manual_review",
+                    "source_echo_unresolved_story_text",
+                    preserved_original=True,
+                )
             continue
 
         for strategy in (
@@ -3856,17 +3898,20 @@ def _score_group_quality(groups):
 
 
 def _ignored_decorative_requires_review(group, reasons):
-    """Keep unclassified linguistic decorative text visible to quality review.
+    """Keep unclassified linguistic decorative/unknown text visible to quality review.
 
-    Decorative text is normally preserved. A long, punctuated or compact-word
-    candidate can instead be missed dialogue, so it must not disappear from the
-    audit merely because its classifier is conservative. This does not alter SFX
-    routing or render the region.
+    Decorative and weak-``unknown`` labels are both conservative drops: the
+    classifier withheld the region from translation for lack of confidence, not
+    because policy proved it is preservable art/SFX/branding. A long, punctuated
+    or compact-word candidate dropped this way can be missed dialogue, so it must
+    not disappear from the audit merely because the classifier was conservative.
+    This does not alter SFX routing or render the region - it only makes sure the
+    region stays visible to the quality gate instead of shipping silently.
     """
     if not (
         group.ignored
-        and group.classification == "decorative"
-        and group.ignore_reason == "decorative_text"
+        and group.ignore_reason in {"decorative_text", "weak_unknown_text"}
+        and group.classification in {"decorative", "unknown"}
     ):
         return False
     text = clean_ocr_text(group.text)
