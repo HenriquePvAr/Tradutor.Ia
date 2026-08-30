@@ -536,6 +536,79 @@ class DownloaderRegressionTests(unittest.TestCase):
 
         self.assertEqual(analyse.call_args.kwargs["extra_warnings"], ("scroll_incomplete",))
 
+    def test_source_analysis_retries_once_on_a_crashed_renderer(self):
+        """A dead Chrome session (any host, not just one source) gets one fresh retry."""
+        from selenium.common.exceptions import InvalidSessionIdException
+
+        result = SimpleNamespace(
+            outcome="supported_specific_adapter", can_download=True, accepted=[], warnings=[],
+        )
+        analyse = mock.Mock(return_value=result)
+        adapter = SimpleNamespace(
+            is_specific=True,
+            validate_url=lambda _url: None,
+            validate_path=lambda _url: None,
+            normalize_url=lambda value: value,
+            validate_redirect=lambda _url: None,
+            analyze=analyse,
+        )
+        crashed_driver = _QuitDriver()
+        fresh_driver = _QuitDriver()
+        with (
+            mock.patch("chapter_source.select_adapter", return_value=adapter),
+            mock.patch("down.inspect_source_preflight", return_value="https://known.example.test/chapter/1"),
+            mock.patch("down._create_driver", side_effect=[crashed_driver, fresh_driver]) as create_driver,
+            mock.patch("down._capture_driver_ownership", return_value={}),
+            mock.patch("down._refresh_driver_ownership"),
+            mock.patch("down._bounded_driver_teardown", return_value={}),
+            mock.patch(
+                "down._scroll_incrementally",
+                side_effect=[
+                    InvalidSessionIdException("session deleted as the browser has closed the connection"),
+                    {"reached_document_end": True, "stabilized": True},
+                ],
+            ),
+            mock.patch("down._load_source_profile", return_value=None),
+            mock.patch("down.time.sleep"),
+        ):
+            self.assertIs(analyze_chapter_source("https://known.example.test/chapter/1"), result)
+
+            self.assertEqual(create_driver.call_count, 2)
+        analyse.assert_called_once()
+
+    def test_source_analysis_gives_up_after_repeated_renderer_crashes(self):
+        from selenium.common.exceptions import InvalidSessionIdException
+
+        adapter = SimpleNamespace(
+            is_specific=True,
+            validate_url=lambda _url: None,
+            validate_path=lambda _url: None,
+            normalize_url=lambda value: value,
+            validate_redirect=lambda _url: None,
+            analyze=mock.Mock(),
+        )
+        with (
+            mock.patch("chapter_source.select_adapter", return_value=adapter),
+            mock.patch("down.inspect_source_preflight", return_value="https://known.example.test/chapter/1"),
+            mock.patch("down._create_driver", side_effect=[_QuitDriver(), _QuitDriver()]) as create_driver,
+            mock.patch("down._capture_driver_ownership", return_value={}),
+            mock.patch("down._refresh_driver_ownership"),
+            mock.patch("down._bounded_driver_teardown", return_value={}),
+            mock.patch(
+                "down._scroll_incrementally",
+                side_effect=InvalidSessionIdException("session deleted as the browser has closed the connection"),
+            ),
+            mock.patch("down._load_source_profile", return_value=None),
+            mock.patch("down.time.sleep"),
+        ):
+            with self.assertRaises(InvalidSessionIdException):
+                analyze_chapter_source("https://known.example.test/chapter/1")
+
+            self.assertEqual(create_driver.call_count, 2)
+        self.assertEqual(down._pipeline_exception_code(
+            InvalidSessionIdException("session deleted as the browser has closed the connection")),
+            "browser_crashed")
+
     def test_canvas_capture_is_saved_without_a_network_transport(self):
         image = Image.new("RGB", (800, 1200), "navy")
         buffer = io.BytesIO()

@@ -365,65 +365,75 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
     )
     if cancel_check and cancel_check():
         raise SourceError("cancelled", "before_source_analysis")
-    driver = None
-    ownership = {}
-    try:
-        driver = _create_driver()
-        ownership = _capture_driver_ownership(driver)
-        _set_browser_timeouts(driver)
-        driver.get(navigation_url)
-        if cancel_check and cancel_check():
-            raise SourceError("cancelled", "during_source_analysis")
-        final_url = getattr(driver, "current_url", "")
-        if not isinstance(final_url, str) or not final_url.startswith(("http://", "https://")):
-            raise SourceError("unsupported_source", "invalid_browser_final_url")
-        # The preflight has no browser cookies. Revalidate Chrome's actual final destination
-        # before scrolling or inspecting its DOM.
-        adapter.validate_redirect(final_url)
-        time.sleep(4)
-        scroll_diagnostics = _scroll_incrementally(driver, adapter=adapter, cancel_check=cancel_check)
-        if cancel_check and cancel_check():
-            raise SourceError("cancelled", "during_source_analysis")
-        # Registered adapters do not get a weaker completeness policy than the universal
-        # fallback.  An incomplete scroll is a reviewable, terminal source outcome for every
-        # source; it must never become a partial chapter merely because its host is known.
-        source_warnings = _scroll_coverage_warnings(scroll_diagnostics, adapter)
-        source_analysis = adapter.analyze(
-            {
-                "driver": driver,
-                "page_url": final_url,
-                "lazy_slot_resolver": _webtoons_lazy_resolver(
-                    cancel_check=cancel_check,
-                    on_progress=on_progress,
-                ),
-            },
-            profile=_load_source_profile(final_url, adapter),
-            extra_warnings=source_warnings)
-        source_analysis, _ = _maybe_collect_paginated_reader(
-            driver,
-            adapter,
-            source_analysis,
-            page_url=final_url,
-            profile=_load_source_profile(final_url, adapter),
-            cancel_check=cancel_check,
-        )
-        # Aggregation may return a fresh SourceAnalysis instance, so attach operation-level
-        # identity and preflight only after all collection transforms are complete.
-        source_analysis.preflight = (
-            preflight.public() if hasattr(preflight, "public") else {})
-        if canonical_identity is not None:
-            source_analysis.canonical_url = normalized
-            source_analysis.canonical_identity = canonical_identity.public()
-        # A source review may show only small data-URI previews derived from already-visible
-        # DOM images. This performs no image request and failures leave the diagnosis intact.
-        from universal_chapter_adapter import attach_review_thumbnails
+    # A crashed renderer (``_is_driver_crash``) is retried once with a fresh driver: it is
+    # observed against unrelated hosts too, so it is Chrome dying, not this source being
+    # blocked, and a second attempt is the only way to tell those apart. Anything else --
+    # cancellation, a coded ``SourceError``, an ordinary timeout -- is not retried here.
+    driver_crash_attempts = 2
+    for attempt in range(driver_crash_attempts):
+        driver = None
+        ownership = {}
+        try:
+            driver = _create_driver()
+            ownership = _capture_driver_ownership(driver)
+            _set_browser_timeouts(driver)
+            driver.get(navigation_url)
+            if cancel_check and cancel_check():
+                raise SourceError("cancelled", "during_source_analysis")
+            final_url = getattr(driver, "current_url", "")
+            if not isinstance(final_url, str) or not final_url.startswith(("http://", "https://")):
+                raise SourceError("unsupported_source", "invalid_browser_final_url")
+            # The preflight has no browser cookies. Revalidate Chrome's actual final destination
+            # before scrolling or inspecting its DOM.
+            adapter.validate_redirect(final_url)
+            time.sleep(4)
+            scroll_diagnostics = _scroll_incrementally(driver, adapter=adapter, cancel_check=cancel_check)
+            if cancel_check and cancel_check():
+                raise SourceError("cancelled", "during_source_analysis")
+            # Registered adapters do not get a weaker completeness policy than the universal
+            # fallback.  An incomplete scroll is a reviewable, terminal source outcome for every
+            # source; it must never become a partial chapter merely because its host is known.
+            source_warnings = _scroll_coverage_warnings(scroll_diagnostics, adapter)
+            source_analysis = adapter.analyze(
+                {
+                    "driver": driver,
+                    "page_url": final_url,
+                    "lazy_slot_resolver": _webtoons_lazy_resolver(
+                        cancel_check=cancel_check,
+                        on_progress=on_progress,
+                    ),
+                },
+                profile=_load_source_profile(final_url, adapter),
+                extra_warnings=source_warnings)
+            source_analysis, _ = _maybe_collect_paginated_reader(
+                driver,
+                adapter,
+                source_analysis,
+                page_url=final_url,
+                profile=_load_source_profile(final_url, adapter),
+                cancel_check=cancel_check,
+            )
+            # Aggregation may return a fresh SourceAnalysis instance, so attach operation-level
+            # identity and preflight only after all collection transforms are complete.
+            source_analysis.preflight = (
+                preflight.public() if hasattr(preflight, "public") else {})
+            if canonical_identity is not None:
+                source_analysis.canonical_url = normalized
+                source_analysis.canonical_identity = canonical_identity.public()
+            # A source review may show only small data-URI previews derived from already-visible
+            # DOM images. This performs no image request and failures leave the diagnosis intact.
+            from universal_chapter_adapter import attach_review_thumbnails
 
-        source_analysis = attach_review_thumbnails(driver, source_analysis)
-        return source_analysis
-    finally:
-        if driver is not None:
-            _refresh_driver_ownership(ownership)
-            _bounded_driver_teardown(driver, ownership)
+            source_analysis = attach_review_thumbnails(driver, source_analysis)
+            return source_analysis
+        except Exception as exc:
+            if _is_driver_crash(exc) and attempt + 1 < driver_crash_attempts:
+                continue
+            raise
+        finally:
+            if driver is not None:
+                _refresh_driver_ownership(ownership)
+                _bounded_driver_teardown(driver, ownership)
 
 
 def _webtoons_lazy_resolver(*, cancel_check=None, on_progress=None,
@@ -564,6 +574,32 @@ def driver_resolution_diagnostics(env=None) -> dict[str, object]:
     }
 
 
+# The renderer can die mid-navigation on an ordinary, non-hostile page: observed in
+# production against multiple unrelated hosts, not just one source, right after a system
+# Chrome update. Selenium reports it as a session-id error with no other diagnosis, so a
+# single retry with a brand-new driver is the only thing that can tell a transient crash
+# apart from a real block -- and it costs nothing when the crash never happens.
+_DRIVER_CRASH_MARKERS = (
+    "session deleted as the browser has closed the connection",
+    "not connected to devtools",
+    "chrome not reachable",
+    "disconnected: unable to receive message from renderer",
+    "disconnected: unable to send message to renderer",
+)
+
+
+def _is_driver_crash(exc: BaseException) -> bool:
+    """True when Chrome itself died mid-session, independent of any particular site."""
+    from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
+
+    if isinstance(exc, InvalidSessionIdException):
+        return True
+    if isinstance(exc, WebDriverException):
+        message = str(exc).lower()
+        return any(marker in message for marker in _DRIVER_CRASH_MARKERS)
+    return False
+
+
 # Matched by exception class name so classification never depends on importing the
 # transport library, and so Selenium's own ``TimeoutException`` keeps the browser code.
 _SOURCE_TRANSPORT_CODES = {
@@ -587,6 +623,8 @@ def _pipeline_exception_code(exc: BaseException) -> str:
     existing = str(getattr(exc, "code", "") or "")
     if existing:
         return existing
+    if _is_driver_crash(exc):
+        return "browser_crashed"
     # Reaching the source over the network and starting a browser are different
     # failures with the same words in them.  Classify by exception type first, so a
     # source read timeout is never filed as a browser startup problem: the message
