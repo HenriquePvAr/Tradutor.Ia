@@ -12480,10 +12480,30 @@ def _post_render_source_text_check(
     # expectation cannot explain keeps failing.
     expected_sequence = _ascii_folded_tokens(group.translation)
     expected_joined = "".join(expected_sequence)
-    observed_joined = "".join(_ascii_folded_tokens(final_text))
-    source_joined = "".join(_ascii_folded_tokens(group.text))
+    observed_tokens = _ascii_folded_tokens(final_text)
+    observed_joined = "".join(observed_tokens)
+    source_tokens_folded = _ascii_folded_tokens(group.text)
+    source_joined = "".join(source_tokens_folded)
     expected_similarity = _ocr_shape_similarity(observed_joined, expected_joined)
     source_similarity = _ocr_shape_similarity(observed_joined, source_joined)
+    # A multi-line balloon's lines are detected independently, and RapidOCR's
+    # detection order does not always match reading order - two lines can come
+    # back swapped even though every word was read correctly.  That is word-order
+    # noise, not a language signal, so it must not sink a correct render below the
+    # match bar.  A sorted, order-independent comparison of the same tokens
+    # recovers the evidence the ordered ratio throws away.
+    expected_similarity = max(
+        expected_similarity,
+        _ocr_shape_similarity(
+            "".join(sorted(observed_tokens)), "".join(sorted(expected_sequence))
+        ),
+    )
+    source_similarity = max(
+        source_similarity,
+        _ocr_shape_similarity(
+            "".join(sorted(observed_tokens)), "".join(sorted(source_tokens_folded))
+        ),
+    )
     # The observed output as a whole reads as the expected translation, and
     # reads less like the source than like the translation.  That is what makes
     # the flagged tokens OCR noise rather than surviving source text.

@@ -245,6 +245,33 @@ class StartIsIdempotent(StoreCase):
             "needs a single-flight promise that later callers reuse",
         )
 
+    def test_start_shows_busy_state_before_the_blocking_source_analysis_call(self):
+        """MISSION-84F34-C: source analysis runs synchronously inside the
+        request/response cycle of ``/api/ui/source/analyze`` (it can take up
+        to 190s - see the ``timeoutMs`` on that call). A first click that
+        does not visibly react until that call resolves reads as "did
+        nothing", inviting repeat clicks. The button's busy state and the
+        indeterminate progress render must happen synchronously, before that
+        awaited call - not be faked with a fabricated percentage.
+        """
+        js = read("static/tradutor_ui.js")
+        start = js.index("async function runStartTranslation")
+        end = js.index("\n  function visibleCancelControl")
+        block = js[start:end]
+        busy_index = block.index("button.dataset.busy = '1'")
+        render_index = block.index("renderLocalPipelineState('source_analysis'")
+        analyze_call_index = block.index("api('/api/ui/source/analyze'")
+        self.assertLess(
+            busy_index, analyze_call_index,
+            "the Start button must go busy before the source-analysis "
+            "request is awaited, not after it resolves",
+        )
+        self.assertLess(
+            render_index, analyze_call_index,
+            "the progress state must render before the network call so the "
+            "spinner is real feedback, not faked progress after the fact",
+        )
+
     def test_every_start_entrypoint_uses_the_canonical_command(self):
         js = read("static/tradutor_ui.js")
         start = js.index("let startInFlight")

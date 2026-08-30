@@ -4640,6 +4640,33 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertEqual(result["reason"], "empty_post_render_crop")
 
+    def test_post_render_ocr_allows_reordered_multiline_balloon_read(self):
+        # P053 regression: RapidOCR detects a multi-line balloon's lines
+        # independently, and its detection order does not always match the
+        # balloon's reading order.  Two words coming back swapped is OCR
+        # word-order noise, not surviving English - it must not fail a
+        # translation that fully covers the source with no residual tokens,
+        # including an accent-folded word ("SO" from "SO'") that happens to
+        # collide with an English stopword.
+        group = _scored_group(
+            "JUST GO INTO THE DREAM REALM, KILL A FEW MONSTERS..."
+        )
+        group.translation = (
+            "SÓ ENTRAR NO REINO DOS SONHOS, MATAR ALGUNS MONSTROS..."
+        )
+        group.safe_area = (0, 0, 220, 80)
+        image = np.full((100, 240, 3), 255, dtype=np.uint8)
+        reordered_read = _line(
+            "SO ENTRAR REINO NO DOS SONHOS MATAR MONSTROS ALGUNS"
+        )
+        with patch(
+            "ocr_balloon.OCREngine._detect_with_rapidocr",
+            return_value=[reordered_read],
+        ):
+            result = _post_render_source_text_check(image, group, page_index=53)
+        self.assertTrue(result["passed"], result.get("validator_reason"))
+        self.assertEqual(result.get("residual_source_tokens"), [])
+
     def test_translation_fragment_duplication_is_rejected_for_retry(self):
         valid, reason = validate_translation_text(
             "A COLLEGE IN THE PROVINCE",
