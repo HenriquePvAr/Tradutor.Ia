@@ -12531,6 +12531,19 @@ def _post_render_source_text_check(
             "reason": f"post_render_ocr_unavailable:{type(exc).__name__}",
         }
 
+    # RapidOCR's detection order is not guaranteed to be reading order (top to
+    # bottom, left to right) - a multi-line balloon crop can come back with its
+    # lines out of sequence. Joining them in detection order then glues one
+    # line's tail directly against a different line's head with no separating
+    # space, which reads back as a fabricated extra glyph ("NO" -> "RNO",
+    # "MONSTROS" -> "SMONSTROS") that belongs to neither line. Sorting by
+    # position first - the same fix already applied to the RapidOCR recovery
+    # read elsewhere - joins the lines in the order they were actually drawn.
+    def _reading_order_key(line):
+        box = getattr(line, "box", None)
+        return (box[1], box[0]) if box else (0, 0)
+
+    lines = sorted(lines, key=_reading_order_key)
     final_text = clean_ocr_text(" ".join(line.text for line in lines))
     final_tokens = set(
         re.findall(r"[A-Z']+", _ascii_fold(final_text).upper())
@@ -12563,6 +12576,7 @@ def _post_render_source_text_check(
             except Exception:  # noqa: BLE001 - fall back to the wide-crop read.
                 draw_lines = None
             if draw_lines:
+                draw_lines = sorted(draw_lines, key=_reading_order_key)
                 draw_text = clean_ocr_text(
                     " ".join(line.text for line in draw_lines)
                 )
