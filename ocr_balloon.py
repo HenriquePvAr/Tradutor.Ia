@@ -4282,6 +4282,15 @@ def _classify_paddle_full_call(call):
 # Evidence that the recogniser produced characters, not words: the shapes it
 # returned do not form text any language would write. Each of these alone is
 # enough to justify one more RapidOCR read of the same pixels.
+#
+# ``compact_word_segmentation_candidate`` belongs here too: it means the DP
+# segmenter found a plausible word split for a fused run but the runtime
+# safety gate (``assess_ocr_repair``) could not ship it alone because the
+# split also changed a letter, not just a space - exactly the case a second,
+# independent read (this same retry, on the same pixels, at the scale the
+# recogniser prefers) exists to corroborate or refute. Without this, a group
+# scoring just above ``RAPIDOCR_RECOVERY_MIN_QUALITY_SCORE`` never gets the
+# second read at all and the unresolved fused run ships untranslated.
 RAPIDOCR_CORRUPTION_REASONS = frozenset(
     {
         "empty_text",
@@ -4294,6 +4303,7 @@ RAPIDOCR_CORRUPTION_REASONS = frozenset(
         "many_improbable_characters",
         "long_token_without_spaces",
         "cross_line_lexical_confidence_disagreement",
+        "compact_word_segmentation_candidate",
     }
 )
 
@@ -4358,14 +4368,27 @@ def _ordinary_dialogue_words(text):
     """Distinct known English dialogue words in ``text``.
 
     Apostrophes are split rather than stripped so a contraction that lost its
-    space ("I'VETURNED") still yields the pronoun it starts with.
+    space ("I'VETURNED") still yields the pronoun it starts with. A token the
+    recogniser fused with its neighbour ("YOURATTRIBUTES") never matches this
+    whole-token lookup even when every one of its parts is ordinary
+    vocabulary - the same compact-word segmenter the repair pipeline already
+    trusts elsewhere is reused here (routing only, it does not rewrite the
+    group's text) so a fused-but-recoverable run still counts as evidence.
     """
     words = set()
     for token in re.findall(r"[A-Za-z']+", _ascii_fold(str(text or "")).upper()):
         for part in token.split("'"):
             part = re.sub(r"[^A-Z]", "", part)
+            if not part:
+                continue
             if part in ORDINARY_DIALOGUE_WORDS:
                 words.add(part)
+                continue
+            segmented, segment_score = segment_compact_english_word(part)
+            if segmented and segment_score >= 0.58:
+                for piece in segmented.upper().split():
+                    if piece in ORDINARY_DIALOGUE_WORDS:
+                        words.add(piece)
     return words
 
 
@@ -12513,6 +12536,39 @@ def _post_render_source_text_check(
         re.findall(r"[A-Z']+", _ascii_fold(final_text).upper())
     )
     residual = set(source_tokens & final_tokens)
+
+    # The wide union crop above exists so a source glyph sitting outside the
+    # newly drawn text (a bigger source font, a different wrap) still gets
+    # searched for residue - that coverage must not shrink. But the same wide
+    # crop is what this checker used to validate "does the render match the
+    # expected translation", and that padded region can include art or a
+    # neighbouring line the target text was never drawn into. A second,
+    # independent read scoped to only the box the renderer actually drew the
+    # target text into is the authoritative region for that comparison - the
+    # same "segunda leitura" pattern already used for suspicious source OCR.
+    # A read that fails or comes back empty falls back to the wide-crop text,
+    # which only restores the previous (already-safe) behaviour.
+    match_text = final_text
+    draw_region = tuple(group.safe_area or group.draw_box or group.box)
+    if draw_region != tuple(region):
+        dx, dy, dw, dh = draw_region
+        dx1 = max(0, int(dx))
+        dy1 = max(0, int(dy))
+        dx2 = min(rendered_bgr.shape[1], int(dx + dw))
+        dy2 = min(rendered_bgr.shape[0], int(dy + dh))
+        draw_crop = rendered_bgr[dy1:dy2, dx1:dx2]
+        if draw_crop.size:
+            try:
+                draw_lines = engine._detect_with_rapidocr(draw_crop)
+            except Exception:  # noqa: BLE001 - fall back to the wide-crop read.
+                draw_lines = None
+            if draw_lines:
+                draw_text = clean_ocr_text(
+                    " ".join(line.text for line in draw_lines)
+                )
+                if draw_text:
+                    match_text = draw_text
+
     language_valid, language_reason = validate_translation_text(
         "",
         final_text,
@@ -12537,7 +12593,13 @@ def _post_render_source_text_check(
     # expectation cannot explain keeps failing.
     expected_sequence = _ascii_folded_tokens(group.translation)
     expected_joined = "".join(expected_sequence)
-    observed_tokens = _ascii_folded_tokens(final_text)
+    # The shape comparison against the expected translation is scoped to the
+    # tight ``match_text`` read (the box actually drawn into), not the wide
+    # union crop: art or a neighbouring line inside that wider padding can
+    # read back as a stray extra glyph (e.g. "NO" -> "RNO") that drags a
+    # correct render's similarity below the bar for no reason connected to
+    # the translation itself.
+    observed_tokens = _ascii_folded_tokens(match_text)
     observed_joined = "".join(observed_tokens)
     source_tokens_folded = _ascii_folded_tokens(group.text)
     source_joined = "".join(source_tokens_folded)
