@@ -11834,6 +11834,36 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary", sourc
             align="center",
             stroke_width=style.stroke_width,
         )
+        # A glyph whose real ink dips below the font's nominal descent (a
+        # deep comma/tail on one wrapped line, widened further by the
+        # stroke outline) can eat into the gap this ``spacing`` assumed was
+        # there, packing that line's ink close enough to the next line's
+        # cap-height that post-render OCR's line detector fuses the two
+        # rows and fabricates a boundary character (#84F43, P26: "NO" ->
+        # "RNO", "MONSTROS" -> "SMONSTROS"). Detect that overshoot from the
+        # actual rendered ink of this text - not a page- or phrase-specific
+        # guess - and grow spacing to cover it before the fit check below,
+        # so a size that needs more room to stay legible shrinks the same
+        # way it already does for plain overflow, instead of shipping a
+        # cramped, OCR-ambiguous render at the original size.
+        if len(lines) > 1:
+            line_bottoms = [
+                draw.textbbox((0, 0), ln, font=font, stroke_width=style.stroke_width)[3]
+                for ln in lines[:-1]
+            ]
+            descender_overshoot = (
+                max(line_bottoms) - min(line_bottoms) if line_bottoms else 0
+            )
+            if descender_overshoot > 0:
+                spacing = spacing + descender_overshoot + max(2, style.stroke_width)
+                text_bbox = draw.multiline_textbbox(
+                    (0, 0),
+                    text_block,
+                    font=font,
+                    spacing=spacing,
+                    align="center",
+                    stroke_width=style.stroke_width,
+                )
         text_w = text_bbox[2] - text_bbox[0]
         text_h = text_bbox[3] - text_bbox[1]
         overflow_ratio = max(
