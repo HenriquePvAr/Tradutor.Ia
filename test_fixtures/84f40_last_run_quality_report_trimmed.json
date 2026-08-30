@@ -1,0 +1,2199 @@
+{
+ "summary": {
+  "processed_images": 35,
+  "available_valid_images": 35,
+  "quality_validation": {
+   "pdf_pages": 35,
+   "expected_pdf_pages": 35
+  }
+ },
+ "totals": {
+  "manual_review_required_groups": 28
+ },
+ "pages": [
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "index": 1
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 2
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "index": 3
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 4
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "index": 5
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "index": 6
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "index": 7
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_7",
+     "region_id": "REGION_007"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_7",
+     "region_id": "REGION_007"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_8",
+     "region_id": "REGION_008"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_9",
+     "region_id": "REGION_009"
+    }
+   ],
+   "index": 8
+  },
+  {
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "index": 9
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "index": 10
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "index": 11
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "index": 12
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 13
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "index": 14
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 15
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "index": 16
+  },
+  {
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 17
+  },
+  {
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002",
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002",
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "index": 18
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "index": 19
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "index": 20
+  },
+  {
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 21
+  },
+  {
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "index": 22
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_7",
+     "region_id": "REGION_007"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_7",
+     "region_id": "REGION_007"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_7",
+     "region_id": "REGION_007"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 23
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "index": 24
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_7",
+     "region_id": "REGION_007"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_8",
+     "region_id": "REGION_008"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_9",
+     "region_id": "REGION_009"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_7",
+     "region_id": "REGION_007"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_8",
+     "region_id": "REGION_008"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_9",
+     "region_id": "REGION_009"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_7",
+     "region_id": "REGION_007"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_8",
+     "region_id": "REGION_008"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_9",
+     "region_id": "REGION_009"
+    }
+   ],
+   "index": 25
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "visual_validation_failures": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "index": 26
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    }
+   ],
+   "index": 27
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001",
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001",
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001",
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "index": 28
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 29
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 30
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    }
+   ],
+   "index": 31
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002",
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002",
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    }
+   ],
+   "index": 32
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    }
+   ],
+   "index": 33
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "translation_terminal_items": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "narrations_translated": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    }
+   ],
+   "index": 34
+  },
+  {
+   "suspicious_groups": [
+    {
+     "manual_review_required": true,
+     "id": "BALAO_1",
+     "region_id": "REGION_001"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_2",
+     "region_id": "REGION_002"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_3",
+     "region_id": "REGION_003"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_4",
+     "region_id": "REGION_004"
+    },
+    {
+     "manual_review_required": true,
+     "id": "BALAO_5",
+     "region_id": "REGION_005"
+    },
+    {
+     "manual_review_required": false,
+     "id": "BALAO_7",
+     "region_id": "REGION_007"
+    }
+   ],
+   "translation_retries": [
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_001"
+     }
+    },
+    {
+     "source_recovery": {
+      "region_id": "REGION_002"
+     }
+    }
+   ],
+   "sfx_preserved": [
+    {
+     "manual_review_required": false,
+     "id": "BALAO_6",
+     "region_id": "REGION_006"
+    }
+   ],
+   "index": 35
+  }
+ ]
+}

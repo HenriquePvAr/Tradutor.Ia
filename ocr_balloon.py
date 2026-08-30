@@ -32,6 +32,7 @@ from ocr_engine import (
     suggest_english_word,
 )
 from fast_ocr_policy import run_ocr_with_timeout
+import selective_review_retry
 
 try:
     from config import FONT_PATH, TEMP_FOLDER, TEMP_OUT
@@ -12619,6 +12620,27 @@ def _post_render_source_text_check(
             cleanup_mask,
         )
     removal_incomplete = _source_removal_incomplete(group, removal)
+
+    if (
+        (source_language_detected or residual)
+        and not removal_incomplete
+        and selective_review_retry.render_residual_forgivable(
+            flagged_tokens=residual,
+            forgiven_ocr_noise_tokens=forgiven_ocr_noise,
+            source_text_coverage=removal.get("source_text_coverage", 0.0),
+        )
+    ):
+        # Every flagged token already individually cleared the same
+        # provenance-based noise test the whole-string ``rendered_matches_
+        # expected`` gate uses (explainable by the expected translation, not
+        # the source) and the mask proved the source was fully removed. The
+        # only thing this closes is the case where *unrelated* noise
+        # elsewhere in a long line kept the whole-string shape match from
+        # passing even though every flagged token was already safe on its
+        # own. Never a second render or translation attempt, and never
+        # forgiveness for a token the per-token check did not already grant.
+        source_language_detected = False
+        residual = []
 
     passed = (
         not residual

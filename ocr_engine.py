@@ -850,13 +850,38 @@ def repair_ocr_text(text):
     ):
         return text, ""
     repaired, compact_reason = _repair_compact_age(text)
+    repaired, digit_noise_reason = _repair_isolated_digit_noise(repaired)
     repaired, repeated_reason = _repair_repeated_word(repaired)
     reasons = [
         reason
-        for reason in (compact_reason, repeated_reason)
+        for reason in (compact_reason, digit_noise_reason, repeated_reason)
         if reason
     ]
     return repaired, ";".join(reasons)
+
+
+# A recognizer occasionally reports one spurious digit glyph stuck to an
+# otherwise correctly read short word ("IN1", "IT1"). This is not a rank or
+# stat ("B2", "HP 50" keep their digits - see ``alphanumeric_ocr_artifact``
+# elsewhere) - it only fires when dropping a single trailing digit turns the
+# token into a real dictionary word, so it can only discard one noise
+# character, never invent or change a letter.
+_ISOLATED_DIGIT_NOISE = re.compile(r"\b([A-Za-z]{2,4})1\b")
+
+
+def _repair_isolated_digit_noise(text):
+    source = str(text or "")
+
+    def replace(match):
+        word = match.group(1)
+        if word.lower() in COMMON_ENGLISH_WORDS:
+            return word
+        return match.group(0)
+
+    repaired = _ISOLATED_DIGIT_NOISE.sub(replace, source)
+    if repaired == source:
+        return source, ""
+    return repaired, "strip_isolated_digit_noise"
 
 
 def _repair_compact_age(text):
@@ -949,6 +974,7 @@ def assess_ocr_repair(
             "split_attached_pronoun_contraction",
             "normalize_confused_exclamation_marks",
             "segment_compact_english_word",
+            "strip_isolated_digit_noise",
         }
     ):
         accepted = edit_distance == 0 or bool(agreeing_engines)
