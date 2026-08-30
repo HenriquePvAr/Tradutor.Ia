@@ -154,6 +154,17 @@ class ProperNameDetectionTests(unittest.TestCase):
             ["SUNLESS"],
         )
 
+    def test_name_declaration_context_survives_ocr_glue_on_the_pronoun(self):
+        """Job acd0f20ca7e14c09b74009a64a46678b, p024: OCR glued the alias onto
+        "ME" ("CALL MESUNNY") with no separating space. Losing the match here
+        does not fall back to a safer default - it silently drops both names
+        the sentence declares, since neither is capitalization-derived.
+        """
+        self.assertEqual(
+            detect_proper_name_spans("SUNLESS... BUT PEOPLE CALL MESUNNY."),
+            ["SUNLESS", "SUNNY"],
+        )
+
 
 class FailClosedAmbiguityTests(unittest.TestCase):
     """A bare vocative proves nothing without a lexicon, so nothing is claimed.

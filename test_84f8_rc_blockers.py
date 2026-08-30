@@ -170,6 +170,26 @@ class TerminologyReviewRenderTests(unittest.TestCase):
         self.assertEqual(terminology_review_render_candidate(group), "")
         self.assertFalse(_should_translate_group(group))
 
+    def test_declared_name_translated_literally_stays_withheld(self):
+        """A real production regression (job acd0f20ca7e14c09b74009a64a46678b, p024).
+
+        The chapter declares an alias ("SUNLESS... but people call me Sunny"),
+        OCR glued the pronoun onto the alias ("CALL MESUNNY"), and the
+        candidate translated the *other* declared name ("SUNLESS") into an
+        ordinary adjective ("Sem sol") instead of keeping it. A terminology
+        conflict on an unrelated term routed the region here, and this must
+        not wave a mistranslated name through just because the rest of the
+        sentence reads as fluent Portuguese.
+        """
+        group = _group(
+            "SUNLESS... BUT PEOPLE CALL MESUNNY.",
+            "SEM SOL... MAS AS PESSOAS ME CHAMAM DE SUNNY.",
+            reason="terminology_conflict_after_retries",
+            validation_reason="terminology_conflict:SUNLESS",
+        )
+        self.assertEqual(terminology_review_render_candidate(group), "")
+        self.assertFalse(_should_translate_group(group))
+
 
 class RenderDispositionTests(unittest.TestCase):
     def test_manual_review_terminal_state_renders_with_review_not_clean(self):

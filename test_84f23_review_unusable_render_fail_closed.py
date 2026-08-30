@@ -239,6 +239,72 @@ class RapidOCRSourceRecoveryTests(unittest.TestCase):
         self.assertEqual(record["reason"], "material_variant_disagreement")
         self.assertEqual(group.canonical_source_text, "")
 
+    def _attempt(self, text, confidence):
+        return {
+            "text": text,
+            "normalized_text": ob._source_recovery_normalized(text),
+            "word_signature": ob._source_recovery_word_signature(text),
+            "confidence": confidence,
+        }
+
+    def test_p31a_reordered_reads_of_same_tokens_agree(self):
+        """TEST P31-A: independent reads, same relevant tokens, different order.
+
+        Coverage is total (every attempt spells the identical set of words),
+        no critical token (a negation, a number, a name) is missing from any
+        read, so the multiset agreement in ``_reorder_tolerant_agreement`` may
+        trust the region instead of leaving a correct PT-BR translation
+        rejected as ``source_segmentation_incomplete``.
+        """
+        attempts = [
+            self._attempt(
+                "WHAT YOU DO DURING THE TRIAL WILL DETERMINE THE REWARDS.", 0.86
+            ),
+            self._attempt(
+                "THE TRIAL WILL DO DURING THE WHAT YOU DETERMINE REWARDS.", 0.84
+            ),
+            self._attempt(
+                "DO THE TRIAL WILL DURING WHAT YOU THE DETERMINE REWARDS.", 0.83
+            ),
+        ]
+        record = ob._source_recovery_agreement(attempts)
+
+        self.assertTrue(record["trusted"], record)
+        self.assertEqual(record["reason"], "order_independent_variant_agreement")
+        self.assertEqual(record["agreement_count"], 3)
+
+    def test_p31b_reordered_reads_disagreeing_on_a_negation_stay_unresolved(self):
+        """TEST P31-B: three reads, no two of which share the same tokens.
+
+        One drops "NOT", another spells the negation a different way. Every
+        attempt's multiset is therefore unique to itself, so no cluster ever
+        reaches the two-attempt corroboration the agreement requires - the
+        ambiguity a real negation disagreement represents is preserved, not
+        resolved by a coincidental majority.
+        """
+        attempts = [
+            self._attempt("YOU WILL NOT SUCCEED IN THE TRIAL.", 0.86),
+            self._attempt("YOU WILL SUCCEED IN THE TRIAL.", 0.85),
+            self._attempt("YOU WILL NEVER SUCCEED IN THE TRIAL.", 0.84),
+        ]
+        record = ob._source_recovery_agreement(attempts)
+
+        self.assertFalse(record["trusted"], record)
+        self.assertEqual(record["reason"], "insufficient_variant_agreement")
+
+    def test_p31c_genuinely_different_reads_stay_fail_closed(self):
+        """TEST P31-C: two corroborated readings that actually disagree."""
+        attempts = [
+            self._attempt("YOU BECOME A GATE THROUGH WHICH A MONSTER APPEARS.", 0.88),
+            self._attempt("YOU BECOME A GATE THROUGH WHICH A MONSTER APPEARS.", 0.88),
+            self._attempt("YOU BECOME A DOOR THROUGH WHICH A CREATURE APPEARS.", 0.88),
+            self._attempt("YOU BECOME A DOOR THROUGH WHICH A CREATURE APPEARS.", 0.88),
+        ]
+        record = ob._source_recovery_agreement(attempts)
+
+        self.assertFalse(record["trusted"], record)
+        self.assertEqual(record["reason"], "material_variant_disagreement")
+
     def test_trustworthy_recovered_source_can_feed_fake_retry(self):
         group = _group(P65_SOURCE, P65_BAD_TARGET)
         group.source_recovery = {

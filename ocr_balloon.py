@@ -1275,11 +1275,20 @@ def _declared_name_tokens(text):
     me Y") or asks about a just-heard name ("X? That's a strange name").  That
     context is stronger than suffix heuristics such as ``-LESS`` because the
     source is literally talking about a name.
+
+    ``ME`` is followed by a zero-or-more space match, not one-or-more: OCR
+    routinely glues the alias straight onto the pronoun with no space ("CALL
+    MESUNNY"), and losing the match there does not fall back to some safer
+    default - it silently drops *both* names the sentence declares, "SUNLESS"
+    included, since neither is capitalization-derived. The idiom itself stays
+    as narrow as the docstring above says: this only ever fires inside the
+    full "X... but people call me Y" clause, so the missing space is
+    deliberately the only slack given.
     """
     cleaned = clean_ocr_text(text)
     result = []
     for pattern in (
-        r"\b([A-Za-z][A-Za-z’-]{2,})\b\s*(?:[.…。]{2,}|,)?\s*BUT\s+PEOPLE\s+CALL\s+ME\s+([A-Za-z][A-Za-z’-]{2,})\b",
+        r"\b([A-Za-z][A-Za-z’-]{2,})\b\s*(?:[.…。]{2,}|,)?\s*BUT\s+PEOPLE\s+CALL\s+ME\s*([A-Za-z][A-Za-z’-]{2,})\b",
         r"^\s*([A-Za-z][A-Za-z’-]{2,})\s*\?\s+THAT'?S\s+A\s+STRANGE\s+NAME\b",
     ):
         for match in re.finditer(pattern, cleaned, flags=re.I):
@@ -1754,12 +1763,18 @@ def _candidate_forensic_class(source, candidate, classification=""):
         return "SOURCE_EQUAL"
     if str(classification or "").casefold() == "sfx":
         return "ENTITY/SFX/PRESERVED"
+    # A declared name the source spells must survive into whatever this function
+    # calls clean: without it, a candidate that quietly translated a character's
+    # name ("SUNLESS" -> "Sem sol") reads as ordinary fluent Portuguese and is
+    # waved through as ``PTBR_CLEAN`` - which is exactly what let a terminology
+    # review region (``terminology_review_render_candidate`` below) ship a
+    # mistranslated name instead of holding the region for review.
     valid, reason = validate_translation_text(
         source,
         candidate,
         classification,
         [],
-        required_name_spans=[],
+        required_name_spans=detect_proper_name_spans(source),
     )
     if valid:
         return "PTBR_CLEAN"
@@ -4507,7 +4522,19 @@ RAPIDOCR_SOURCE_RECOVERY_MAX_VARIANTS = 7
 
 
 def _source_recovery_text(lines):
-    return clean_ocr_text(" ".join(str(getattr(line, "text", "") or "") for line in lines))
+    # RapidOCR's detection order is not reading order (the same instability
+    # ``reading_order`` already corrects for grouping and for the post-render
+    # check below): a multi-line balloon re-read with a different image variant
+    # (upscaled, sharpened, inverted) can emit its lines in a different
+    # sequence even though every variant sees the same geometry.  Joining in
+    # detection order then makes independently-correct reads of the same crop
+    # disagree on nothing but word order, which starves
+    # ``_source_recovery_agreement`` of the corroboration it needs.  Sorting by
+    # position first, before any attempt is compared, removes that noise at its
+    # source instead of teaching the comparison to tolerate it.
+    return clean_ocr_text(
+        " ".join(str(getattr(line, "text", "") or "") for line in reading_order(lines))
+    )
 
 
 def _source_recovery_confidence(lines):
@@ -4591,6 +4618,71 @@ def _rapidocr_detect_source_variant(engine, image, *, page_index):
     return list(lines or [])
 
 
+def _multiset_key(word_signature):
+    """The tokens of ``word_signature``, order-independent.
+
+    ``word_signature`` already is the fold-cased tokens in reading order;
+    sorting it collapses two attempts that read the same words in a different
+    sequence into one bucket while keeping a genuine content difference (a
+    dropped number, a missing negation word, a swapped name) in a different
+    one - that difference changes which tokens are present, not just their
+    order, so it survives the sort.
+    """
+    return "|".join(sorted(word_signature.split("|"))) if word_signature else ""
+
+
+def _reorder_tolerant_agreement(by_text, min_confidence):
+    """Corroboration across attempts whose tokens match as a multiset.
+
+    Only consulted when the exact, order-preserving grouping in
+    :func:`_source_recovery_agreement` found no trustworthy cluster.  After
+    ``_source_recovery_text`` already joins each attempt's lines in geometric
+    reading order, two independent reads of the same crop still disagreeing on
+    *word order* rather than content is the residual case this exists for -
+    RapidOCR splitting a wrapped line differently across image variants, for
+    instance.  It never lowers the bar on content: two multiset clusters that
+    each gather independent corroboration are a real disagreement, not order
+    noise, and are left for the caller's fail-closed verdict to stand.
+    """
+    by_multiset = {}
+    for (_normalized, word_signature), items in by_text.items():
+        key = _multiset_key(word_signature)
+        if not key:
+            continue
+        by_multiset.setdefault(key, []).extend(items)
+    if not by_multiset:
+        return None
+
+    ranked = sorted(
+        by_multiset.items(),
+        key=lambda item: (len(item[1]), sum(float(v.get("confidence") or 0.0) for v in item[1])),
+        reverse=True,
+    )
+    winners = ranked[0][1]
+    # A lone cluster with nothing to be corroborated against is the ordinary
+    # case this function exists for (every read landed the same words, just
+    # shuffled). More than one cluster is only trusted when there is a clear
+    # winner - a second cluster with its own two-attempt corroboration is a
+    # real disagreement, not order noise, and must be left ambiguous.
+    runner_up = ranked[1][1] if len(ranked) > 1 else ()
+    if len(winners) < 2 or len(runner_up) >= 2:
+        return None
+    avg_conf = sum(float(item.get("confidence") or 0.0) for item in winners) / len(winners)
+    if avg_conf < min_confidence:
+        return None
+    canonical = max(winners, key=lambda item: float(item.get("confidence") or 0.0))
+    return {
+        "trusted": True,
+        "reason": "order_independent_variant_agreement",
+        "canonical_source": str(canonical.get("text") or ""),
+        "normalized_source": str(canonical.get("normalized_text") or ""),
+        "word_signature": str(canonical.get("word_signature") or ""),
+        "agreement_count": len(winners),
+        "average_confidence": round(float(avg_conf), 4),
+        "disagreements": [],
+    }
+
+
 def _source_recovery_agreement(attempts, *, min_confidence=0.55):
     by_text = {}
     for attempt in attempts or []:
@@ -4623,6 +4715,13 @@ def _source_recovery_agreement(attempts, *, min_confidence=0.55):
         reason = "material_variant_disagreement"
     else:
         reason = "variant_agreement"
+    # Order alone should never be why a correct read is left unusable: it is
+    # geometry-explainable noise, never a content signal.  Confidence is a
+    # different concern and is never rescued here.
+    if reason in ("insufficient_variant_agreement", "material_variant_disagreement"):
+        reordered = _reorder_tolerant_agreement(by_text, min_confidence)
+        if reordered is not None:
+            return reordered
     return {
         "trusted": reason == "variant_agreement",
         "reason": reason,
