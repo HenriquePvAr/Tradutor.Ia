@@ -790,6 +790,40 @@ COMMON_ENGLISH_WORD_SCORES = {
     "you": 1.8,
     "your": 1.6,
     "yeah": 1.2,
+    # 84F41: generic vocabulary was too small to catch real fused-word OCR
+    # reads (RapidOCR sometimes drops the space between two words on the
+    # same line). These are ordinary, chapter-agnostic English words needed
+    # so compact-run detection actually fires instead of silently scoring a
+    # corrupted/fused line as clean. No page, phrase, or translation is
+    # hardcoded here - only generic source-language vocabulary.
+    "attributes": 1.0,
+    "becoming": 1.1,
+    "call": 1.3,
+    "check": 1.2,
+    "children": 1.3,
+    "determine": 1.0,
+    "during": 1.3,
+    "dream": 1.3,
+    "echoes": 1.0,
+    "first": 1.4,
+    "had": 1.5,
+    "inherited": 1.0,
+    "magical": 1.1,
+    "memories": 1.1,
+    "people": 1.4,
+    "poetic": 1.0,
+    "powers": 1.1,
+    "realm": 1.1,
+    "rewards": 1.0,
+    "so": 1.6,
+    "soul": 1.1,
+    "special": 1.2,
+    "succeed": 1.0,
+    "training": 1.1,
+    "trial": 1.1,
+    "visit": 1.1,
+    "waiting": 1.1,
+    "wield": 1.0,
 }
 
 COMMON_ENGLISH_WORDS = set(COMMON_ENGLISH_WORD_SCORES)

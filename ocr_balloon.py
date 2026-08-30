@@ -1586,7 +1586,18 @@ def _repair_narrow_ptbr_verb_mood(source_text, candidate, classification):
     if classification not in {"speech", "thought", "narration", "unknown"}:
         return candidate
     folded_source = _ascii_fold(source_text).upper()
-    if not re.search(r"\bWHAT\s+YOU\s+DO\b", folded_source):
+    # 84F41: a RapidOCR line occasionally drops the space right after "DO"
+    # (``WHAT YOU DODURINGTHETRIALWILL...``), which hid this exact "what you
+    # do" shape behind the plain ``\b`` boundary below and left the resulting
+    # "voce fazer" bad mood unrepaired. The extra branch only recognizes the
+    # same literal "what you do" prefix glued to more letters - it never
+    # matches a genuinely different verb such as "does"/"doing"/"done".
+    has_boundary_match = re.search(r"\bWHAT\s+YOU\s+DO\b", folded_source)
+    has_fused_match = re.search(
+        r"\bWHAT\s+YOU\s+DO(?!ES\b|ING\b|NE\b|N['’]?T\b)[A-Z]",
+        folded_source,
+    )
+    if not (has_boundary_match or has_fused_match):
         return candidate
     return re.sub(
         r"\b(VO[CÇ]Ê|VOCE)\s+FAZER\b",
