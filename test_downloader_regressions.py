@@ -180,6 +180,24 @@ class DownloaderRegressionTests(unittest.TestCase):
             down._create_driver()
         self.assertNotIn("--no-sandbox", options.arguments)
 
+    def test_local_driver_disables_sandbox_only_when_opted_in(self):
+        class OptionsProbe:
+            def __init__(self):
+                self.arguments = []
+
+            def add_argument(self, value):
+                self.arguments.append(value)
+
+        options = OptionsProbe()
+        with mock.patch.object(down, "Options", return_value=options), \
+             mock.patch.object(down, "CHROMEDRIVER_PATH", "C:/local/chromedriver.exe"), \
+             mock.patch.object(down.os.path, "isfile", return_value=True), \
+             mock.patch.object(down, "Service", return_value=object()), \
+             mock.patch.object(down.webdriver, "Chrome", return_value=object()), \
+             mock.patch.dict(down.os.environ, {"SOURCE_BROWSER_DISABLE_SANDBOX": "1"}):
+            down._create_driver()
+        self.assertIn("--no-sandbox", options.arguments)
+
     def test_local_driver_enables_performance_logging_when_supported(self):
         class OptionsProbe:
             def __init__(self):

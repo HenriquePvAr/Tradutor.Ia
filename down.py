@@ -666,6 +666,13 @@ def _create_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--log-level=3")
     chrome_options.add_argument("--window-size=1400,2200")
+    # Opt-in only: some local machines have security software that kills Chrome's
+    # sandboxed renderer process outright (session dies with "browser has closed the
+    # connection" on every navigation, regardless of Chrome/driver version). Disabling
+    # the sandbox trades away real protection against a malicious scan page, so it must
+    # never be the default -- only this machine's own operator can decide that trade-off.
+    if str(os.getenv("SOURCE_BROWSER_DISABLE_SANDBOX", "0")).strip() == "1":
+        chrome_options.add_argument("--no-sandbox")
     if runtime.executable_path:
         chrome_options.binary_location = runtime.executable_path
     profile_dir = tempfile.mkdtemp(prefix="tradutor-source-browser-")
