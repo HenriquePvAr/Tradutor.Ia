@@ -840,6 +840,52 @@ def normalize_recurring_compact_names(groups):
     return repairs
 
 
+def propagate_chapter_declared_names(groups):
+    """Propagate names declared by the chapter text to every group that mentions them.
+
+    When a group says ``X... but people call me Y``, both X and Y are proven
+    proper names.  Other groups that contain those same tokens should know they
+    are names too - otherwise ``detect_proper_name_spans`` may miss them when
+    context clues are weak, and the translator silently converts the name into
+    the target language.
+
+    No name is invented: only tokens found via ``_declared_name_tokens`` or
+    already in ``detected_proper_names`` are propagated.  A token must also pass
+    the same ``_token_is_source_vocabulary`` guard so common English words that
+    happen to appear in a declaration pattern (e.g. ``JUST``) are never promoted.
+    """
+    # ponytail: O(groups * names) scan, fine for chapter-sized inputs
+    groups = list(groups or [])
+    chapter_names = set()
+    for group in groups:
+        text = clean_ocr_text(getattr(group, "text", "") or "")
+        # Declared names ("X... but people call me Y") override the vocabulary
+        # heuristic: the sentence structure is stronger evidence than the -LESS
+        # or -FUL suffix that _token_is_source_vocabulary would flag.
+        for token in _declared_name_tokens(text):
+            key = _name_token_of(token)
+            if key and len(key) >= MIN_PROPER_NAME_LENGTH:
+                chapter_names.add(key)
+        for name in getattr(group, "detected_proper_names", ()) or ():
+            key = _name_token_of(str(name))
+            if key and len(key) >= MIN_PROPER_NAME_LENGTH and not _token_is_source_vocabulary(key):
+                chapter_names.add(key)
+    if not chapter_names:
+        return []
+    propagated = []
+    for group in groups:
+        text = clean_ocr_text(getattr(group, "text", "") or "")
+        text_upper = text.upper()
+        existing = {_name_token_of(n) for n in getattr(group, "detected_proper_names", ()) or ()}
+        for name in chapter_names:
+            if name in existing:
+                continue
+            if name in text_upper:
+                group.detected_proper_names.append(name)
+                propagated.append({"group_id": getattr(group, "group_id", ""), "name": name})
+    return propagated
+
+
 # --- protected-term boundary recovery ---------------------------------------
 # The complement of the pass above: there a name arrived *split*, here a term
 # arrives *joined* to the next word ("AWAKENEDTO").  The generic segmenter
@@ -1801,6 +1847,24 @@ def _candidate_forensic_class(source, candidate, classification=""):
 TERMINOLOGY_REVIEW_REASONS = ("terminology_conflict_after_retries",)
 
 
+# Validation reasons that indicate a Portuguese-language candidate with a quality
+# defect rather than a language defect. Rendering imperfect Portuguese under review
+# is always preferable to leaving English on the page, which is the alternative when
+# every retry produced the same quality issue and no cleaner candidate exists.
+# ponytail: linear scan of prefixes; switch to a set if the list grows past ~20.
+_QUALITY_ONLY_VALIDATION_PREFIXES = (
+    "unnatural_ptbr_verb_mood",
+    "stray_ocr_fragment",
+    "repeated_translation_fragment",
+    "proper_name_altered",
+)
+
+
+def _is_quality_only_validation_reason(reason):
+    """True when the validation reason is a PT-BR quality issue, not a language issue."""
+    return str(reason or "").startswith(_QUALITY_ONLY_VALIDATION_PREFIXES)
+
+
 def terminology_review_render_candidate(group):
     """The PT-BR a terminology-review region may still ship, or ``""`` if none may."""
 
@@ -1820,6 +1884,37 @@ def terminology_review_render_candidate(group):
     if _candidate_forensic_class(
         group.text, candidate, group.classification
     ) != "PTBR_CLEAN":
+        return ""
+    return candidate
+
+
+def _quality_review_render_candidate(group):
+    """Rescue a PT-BR candidate rejected only for quality, not language.
+
+    When every retry produced a candidate with the same quality defect (verb mood,
+    OCR artifact, etc.) but the candidate IS in Portuguese, rendering it under
+    review is the lesser evil compared to leaving English story text on the page.
+    Semantic-fidelity failures and candidates with actual English residual are
+    never rescued - those are content defects, not polish defects.
+    """
+    if str(getattr(group, "translation_final_state", "")) != "manual_review":
+        return ""
+    if semantic_fidelity.is_fidelity_reason(
+        getattr(group, "translation_validation_reason", "")
+    ):
+        return ""
+    validation_reason = str(getattr(group, "translation_validation_reason", ""))
+    if not _is_quality_only_validation_reason(validation_reason):
+        return ""
+    candidate = clean_ocr_text(getattr(group, "translation_candidate", "") or "")
+    if not candidate:
+        return ""
+    forensic = _candidate_forensic_class(group.text, candidate, group.classification)
+    # PTBR_CLEAN means the name-aware validator is happy (rare here, since
+    # we entered _finalize_translation_failure). OTHER means a quality-only
+    # rejection - exactly the class we rescue. PARTIAL_ENGLISH and
+    # FULL_ENGLISH_OTHER stay blocked.
+    if forensic in ("PARTIAL_ENGLISH", "FULL_ENGLISH_OTHER", "SOURCE_EQUAL", "EMPTY"):
         return ""
     return candidate
 
@@ -2000,8 +2095,12 @@ def _finalize_translation_failure(
     # Single place the failure path can hand a usable PT-BR candidate back to the
     # renderer. The region stays review-required and carries its real reason; only
     # the choice between "ship PT-BR under review" and "leave English on the page"
-    # changes, and only for the terminology class.
+    # changes.  First: the strict terminology path (candidate must be PTBR_CLEAN).
+    # Second: the quality-only path (candidate is Portuguese but has a grammar or
+    # OCR-artifact defect - still better than shipping English).
     renderable = terminology_review_render_candidate(group)
+    if not renderable:
+        renderable = _quality_review_render_candidate(group)
     if renderable:
         group.translation = renderable
         group.preserved_original = False

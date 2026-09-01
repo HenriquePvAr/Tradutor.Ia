@@ -40,6 +40,7 @@ from ocr_balloon import (
     enforce_rapidocr_quality_gate,
     get_translatable_groups,
     normalize_recurring_compact_names,
+    propagate_chapter_declared_names,
     recover_protected_term_boundaries,
     summarize_speech_container_reocr,
     render_analyzed_image,
@@ -1338,6 +1339,10 @@ def run_benchmark(args):
             state["group_text_repairs"] = _group_text_repairs(
                 state.get("groups", [])
             )
+    # Declared names ("X... but people call me Y") from any group are evidence
+    # for the whole chapter: propagate them so every group that mentions the
+    # name knows it is a proper name, even without local context clues.
+    propagate_chapter_declared_names(all_analyzed_groups)
     detected_names = sorted(
         {
             name

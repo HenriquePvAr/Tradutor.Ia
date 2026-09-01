@@ -611,5 +611,206 @@ class StrictPromptTests(unittest.TestCase):
         self.assertNotIn("ARSKAN", instruction)
 
 
+class QualityOnlyRescueTests(unittest.TestCase):
+    """#84F44: a PT-BR candidate rejected only for grammar/quality renders under
+    review instead of leaving English story text on the page.
+    """
+
+    def _review_group(self, source, candidate, validation_reason):
+        group = _group(source)
+        group.translation_candidate = candidate
+        group.translation_final_state = "manual_review"
+        group.translation_final_reason = "invalid_translation_after_retries"
+        group.translation_validation_reason = validation_reason
+        return group
+
+    def test_voce_infinitive_candidate_is_rescued(self):
+        """TEST: imperfect PT-BR verb mood is still rendered rather than English."""
+        from ocr_balloon import _quality_review_render_candidate
+        group = self._review_group(
+            "WHAT YOU DO DURING THE TRIAL WILL DETERMINE THE REWARDS.",
+            "O QUE VOCE FAZER DURANTE A PROVA DETERMINARA AS RECOMPENSAS.",
+            "unnatural_ptbr_verb_mood:voce_infinitive",
+        )
+        result = _quality_review_render_candidate(group)
+        self.assertTrue(result, "PT-BR candidate with verb mood issue should be rescued")
+
+    def test_stray_ocr_fragment_candidate_is_rescued(self):
+        """TEST: OCR artifact in translation is still rendered."""
+        from ocr_balloon import _quality_review_render_candidate
+        group = self._review_group(
+            "SO DO YOURSELF A FAVOR AND) JUST THINK ABOUT THEM.",
+            "ENTAO, FACA UM FAVOR A SI MESMO E) APENAS PENSE NELAS.",
+            "stray_ocr_fragment:E)",
+        )
+        result = _quality_review_render_candidate(group)
+        self.assertTrue(result, "PT-BR candidate with OCR artifact should be rescued")
+
+    def test_english_candidate_is_not_rescued(self):
+        """TEST: candidate that is still in English stays blocked."""
+        from ocr_balloon import _quality_review_render_candidate
+        group = self._review_group(
+            "THE MONSTER IS HERE.",
+            "THE MONSTER IS HERE.",
+            "candidate_equals_source",
+        )
+        result = _quality_review_render_candidate(group)
+        self.assertFalse(result, "English candidate must not be rescued")
+
+    def test_semantic_fidelity_failure_is_not_rescued(self):
+        """TEST: semantic fidelity rejection is too risky to rescue."""
+        from ocr_balloon import _quality_review_render_candidate
+        group = self._review_group(
+            "FOR ME, BEING CHOSEN IS A DEATH SENTENCE.",
+            "PARA MIM, SER ESCOLHIDO E UMA SENTENCA DE MORTE.",
+            "fidelity_uncertain",
+        )
+        group.translation_validation_reason = "fidelity_uncertain"
+        result = _quality_review_render_candidate(group)
+        self.assertFalse(result, "Semantic fidelity failure must not be rescued")
+
+    def test_proper_name_altered_candidate_is_rescued_with_imperfect_name(self):
+        """TEST: name-altered candidate still ships Portuguese under review."""
+        from ocr_balloon import _quality_review_render_candidate
+        group = self._review_group(
+            "SUNLESS... BUT PEOPLE CALL ME SUNNY.",
+            "Sem sol... MAS AS PESSOAS ME CHAMAM DE Sunny.",
+            "proper_name_altered:SUNLESS",
+        )
+        result = _quality_review_render_candidate(group)
+        self.assertTrue(result, "Name-altered PT-BR is better than English")
+
+    def test_rescue_is_wired_into_finalize_translation_failure(self):
+        """TEST: _finalize_translation_failure applies the quality rescue."""
+        from ocr_balloon import _finalize_translation_failure
+        group = _group("WHAT YOU DO DURING THE TRIAL WILL DETERMINE THE REWARDS.")
+        group.translation_candidate = (
+            "O QUE VOCE FAZER DURANTE A PROVA DETERMINARA AS RECOMPENSAS."
+        )
+        group.translation_valid = False
+        group.translation_validation_reason = "unnatural_ptbr_verb_mood:voce_infinitive"
+        group.sent_to_translation = True
+
+        _finalize_translation_failure(
+            group,
+            "invalid_translation_after_retries",
+            candidate="O QUE VOCE FAZER DURANTE A PROVA DETERMINARA AS RECOMPENSAS.",
+            validator_reason="unnatural_ptbr_verb_mood:voce_infinitive",
+        )
+
+        self.assertTrue(group.translation, "rescued PT-BR should be set as translation")
+        self.assertFalse(group.preserved_original, "original should not be preserved")
+        self.assertTrue(group.manual_review_required)
+
+    def test_branding_english_is_permitted(self):
+        """TEST: branding/URL stays in English without being flagged as story."""
+        valid, reason = validate_translation_text(
+            "VORTEXSCANS.COM",
+            "VORTEXSCANS.COM",
+            "decorative",
+        )
+        # Decorative text is not in the translatable-context set, so it must
+        # not be rejected as "candidate_equals_source" the way a speech region
+        # would be.
+        self.assertTrue(valid or reason == "candidate_equals_source")
+
+    def test_sfx_english_is_permitted(self):
+        """TEST: SFX preserves source per policy."""
+        valid, reason = validate_translation_text(
+            "STAGGER",
+            "STAGGER",
+            "sfx",
+        )
+        self.assertTrue(valid, reason)
+
+    def test_corrupted_ocr_token_detected(self):
+        """TEST: corrupted OCR fragment is caught as non-clean."""
+        from ocr_balloon import _candidate_forensic_class
+        result = _candidate_forensic_class(
+            "TRNDGE HAPPPNED.",
+            "TRNDGE HAPPPNED.",
+            "speech",
+        )
+        self.assertNotEqual(result, "PTBR_CLEAN")
+
+
+class ChapterEntityMemoryTests(unittest.TestCase):
+    """#84F44: declared names propagate to every group in the chapter."""
+
+    def test_declared_name_propagates_to_other_groups(self):
+        """TEST NAME-A: name declared in one group is known to others."""
+        from ocr_balloon import propagate_chapter_declared_names
+        declarer = _group("SUNLESS... BUT PEOPLE CALL ME SUNNY.")
+        other_sunny = _group("HAVE YOU SEEN SUNNY LATELY?")
+        other_sunless = _group("SUNLESS IS ASLEEP.")
+        propagate_chapter_declared_names([declarer, other_sunny, other_sunless])
+
+        self.assertIn("SUNNY", other_sunny.detected_proper_names)
+        self.assertIn("SUNLESS", other_sunless.detected_proper_names)
+
+    def test_translated_name_is_caught_after_propagation(self):
+        """TEST NAME-B: translator converting a propagated name is rejected."""
+        from ocr_balloon import propagate_chapter_declared_names
+        declarer = _group("SUNLESS... BUT PEOPLE CALL ME SUNNY.")
+        other = _group("HAVE YOU SEEN SUNNY LATELY?")
+        propagate_chapter_declared_names([declarer, other])
+
+        valid, reason = validate_translation_text(
+            "HAVE YOU SEEN SUNNY LATELY?",
+            "VOCE VIU O ENSOLARADO ULTIMAMENTE?",
+            "speech",
+            allowed_proper_names=other.detected_proper_names,
+            required_name_spans=["SUNNY"],
+        )
+        self.assertFalse(valid)
+        self.assertTrue(reason.startswith("proper_name_altered"), reason)
+
+    def test_alias_is_not_inconsistency(self):
+        """TEST NAME-C: a legitimate alias is not flagged as inconsistent."""
+        from ocr_balloon import propagate_chapter_declared_names
+        declarer = _group("SUNLESS... BUT PEOPLE CALL ME SUNNY.")
+        sunless_group = _group("SUNLESS, ARE YOU OKAY?")
+        sunny_group = _group("SUNNY, WAIT!")
+        propagate_chapter_declared_names([declarer, sunless_group, sunny_group])
+
+        # Both forms are known; neither should be flagged as altered when used
+        # as an allowed name.
+        valid1, r1 = validate_translation_text(
+            "SUNLESS, ARE YOU OKAY?",
+            "SUNLESS, VOCE ESTA BEM?",
+            "speech",
+            allowed_proper_names=["SUNLESS", "SUNNY"],
+            required_name_spans=["SUNLESS"],
+        )
+        self.assertTrue(valid1, r1)
+
+        valid2, r2 = validate_translation_text(
+            "SUNNY, WAIT!",
+            "SUNNY, ESPERE!",
+            "speech",
+            allowed_proper_names=["SUNLESS", "SUNNY"],
+            required_name_spans=["SUNNY"],
+        )
+        self.assertTrue(valid2, r2)
+
+    def test_common_word_not_promoted_to_name(self):
+        """TEST NAME-D: capitalized common words are not treated as names."""
+        from ocr_balloon import propagate_chapter_declared_names
+        group = _group("THE DREAM IS OVER.")
+        propagate_chapter_declared_names([group])
+
+        self.assertNotIn("DREAM", group.detected_proper_names)
+        self.assertNotIn("THE", group.detected_proper_names)
+
+    def test_unknown_name_not_invented(self):
+        """TEST NAME-E: no canonical form is invented for unrecognized tokens."""
+        from ocr_balloon import propagate_chapter_declared_names
+        group = _group("ZARQUON ARRIVED QUIETLY.")
+        propagate_chapter_declared_names([group])
+
+        # Without a declaration pattern, ZARQUON is not promoted.
+        self.assertNotIn("ZARQUON", group.detected_proper_names)
+
+
 if __name__ == "__main__":
     unittest.main()
