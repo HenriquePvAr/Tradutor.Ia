@@ -542,6 +542,13 @@ class TranslatorNvidiaBatch:
                 "O texto original tem palavras coladas sem espaco; separe as palavras "
                 "pelo sentido da frase inteira antes de traduzir, e nao trate um trecho "
                 "colado como se fosse uma unica palavra.",
+            # Same defect, same instruction: the two codes differ only in what
+            # the candidate did with the glued source, never in what a retry is
+            # being asked for.
+            semantic_fidelity.SOURCE_SEGMENTATION_RECOVERED:
+                "O texto original tem palavras coladas sem espaco; separe as palavras "
+                "pelo sentido da frase inteira antes de traduzir, e nao trate um trecho "
+                "colado como se fosse uma unica palavra.",
             semantic_fidelity.WORD_SENSE_CONTEXT_MISMATCH:
                 "A tentativa anterior escolheu um sentido de palavra ambigua que nao "
                 "corresponde ao contexto da cena; use o sentido coerente com o restante "

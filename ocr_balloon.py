@@ -12880,10 +12880,23 @@ def _post_render_source_text_check(
     # however uncertain the read was, and however well the line as a whole
     # matches the translation.  ``CONTROL`` sits inside ``CONTROLE``; only the
     # provenance can tell the surviving source word from the rendered one.
+    #
+    # ``source_tokens``, not the raw provenance: a token can belong to the source
+    # *and* to the intended Portuguese, and then the provenance proves nothing
+    # about which of the two the camera saw.  "SE VOCE FOR BEM-SUCEDIDO" puts
+    # ``FOR`` on the page as the future subjunctive of *ser*, while the source
+    # spells the English preposition in "BE WAITING FOR YOU" - reading that back
+    # is the translation doing its job.  The rest of this function already draws
+    # the line there (``intended_translation_tokens`` below, and the filter that
+    # builds ``source_tokens``); only this test still used the unfiltered set,
+    # so the collision was the one thing it could never forgive.  Subtracting the
+    # intended tokens, not switching to ``source_tokens``, keeps every other
+    # exclusion that set applies (length, names, SFX) out of the decision.
     forgiven_ocr_noise = sorted(
         token
         for token in flagged_tokens
-        if token not in provenance_tokens and token in expected_joined
+        if token not in (provenance_tokens - intended_translation_tokens)
+        and token in expected_joined
     )
     rendered_matches_expected = bool(
         expected_joined

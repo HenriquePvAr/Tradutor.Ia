@@ -56,13 +56,17 @@ SOURCE_OCR_SUSPICIOUS = "source_ocr_suspicious"
 GRAMMAR_MALFORMED = "ptbr_grammar_malformed"
 # The OCR lost the word boundaries and the repair pass could not put them back.
 SOURCE_SEGMENTATION_INCOMPLETE = "source_segmentation_incomplete"
+# Same collapsed source, opposite evidence: the candidate is built on none of the
+# unreadable part.  Still uncertain, still reviewed, but readable - see
+# ``unresolved_run_debris``.
+SOURCE_SEGMENTATION_RECOVERED = "source_segmentation_recovered"
 # The source word has more than one sense and the candidate picked the one the
 # surrounding context does not support.
 WORD_SENSE_CONTEXT_MISMATCH = "word_sense_context_mismatch"
 
 REVIEW_ONLY_FIDELITY_REASON_CODES = frozenset({
     SOURCE_OCR_SUSPICIOUS, GRAMMAR_MALFORMED, SOURCE_SEGMENTATION_INCOMPLETE,
-    WORD_SENSE_CONTEXT_MISMATCH,
+    SOURCE_SEGMENTATION_RECOVERED, WORD_SENSE_CONTEXT_MISMATCH,
 })
 
 # --- how usable is a ``review`` verdict? ------------------------------------
@@ -122,6 +126,7 @@ FIDELITY_RETRY_CONSTRAINTS = {
     SOURCE_OCR_SUSPICIOUS: "preserve_meaning",
     GRAMMAR_MALFORMED: "preserve_natural_grammar",
     SOURCE_SEGMENTATION_INCOMPLETE: "preserve_meaning",
+    SOURCE_SEGMENTATION_RECOVERED: "preserve_meaning",
     WORD_SENSE_CONTEXT_MISMATCH: "preserve_word_sense",
 }
 
@@ -523,8 +528,51 @@ def collapsed_source_runs(source):
 
 
 # Deliberately no repair here, unlike the single-edit rule above. The tiling
-# proves that some boundaries collapsed, never the unique full sentence. A source
-# nobody can reconstruct stays ``REVIEW_UNUSABLE``.
+# proves that some boundaries collapsed, never the unique full sentence.
+
+
+# --- did the collapse actually reach the candidate? --------------------------
+# A collapsed run says the *source* cannot be verified. It does not, on its own,
+# say the translation is unusable, and treating the two as the same thing is what
+# held back correct Portuguese: "BUT YOU WILL ALSO" came back as ordinary
+# Portuguese that shares nothing with the glued "BUTYOU", while "A GATE THROUGH
+# WHICH" came back as "A GATES", carrying the unsegmented "AGATE" straight onto
+# the page as a word that is neither English nor Portuguese.
+#
+# The discriminator is that debris, and it is measured against the *residual* of
+# the tiling - the stretch no closed-class word could account for, which is
+# precisely the part nobody could read.  A candidate word that *contains* four or
+# more of those letters in sequence was built out of the unreadable fragment,
+# whatever ending the provider then put on it ("AGATE" -> "GÁTES", "GÁTETA").
+# Four is the floor the module already uses for a token worth suspecting; below
+# it a shared run is a coincidence between two languages that share an alphabet.
+#
+# ponytail: substring match, no Portuguese lexicon. It over-matches Latin
+# cognates - "ORIENTADA" shares six letters with "ORIENTEDASPECT" and is a
+# correct translation - so a region can stay held on a shared root. That is the
+# safe direction: the rule only ever chooses between "keep the old veto" and
+# "release", so it can never block something the previous code allowed.
+# Separating a cognate from carried-over debris needs a real PT-BR lexicon the
+# repo does not have. Revisit if one lands.
+UNRESOLVED_RUN_DEBRIS_MIN_LENGTH = 4
+
+
+def unresolved_run_debris(runs, candidate):
+    """Candidate words carried over from the part of a collapsed run nobody read."""
+    words = dict.fromkeys(word.upper() for word in _words(candidate))
+    debris = []
+    for run in runs or ():
+        residual = _best_tiling(str(run or "").upper())[1]
+        fragments = {
+            residual[start:start + UNRESOLVED_RUN_DEBRIS_MIN_LENGTH]
+            for start in range(len(residual) - UNRESOLVED_RUN_DEBRIS_MIN_LENGTH + 1)
+        }
+        for word in words:
+            if len(word) < UNRESOLVED_RUN_DEBRIS_MIN_LENGTH or word in debris:
+                continue
+            if any(fragment in word for fragment in fragments):
+                debris.append(word)
+    return tuple(debris)
 
 
 def suspicious_source_tokens(source, candidate, *, known_entities=(), is_source_word=None):
@@ -886,7 +934,20 @@ def evaluate_local_fidelity(
         else collapsed_source_runs(source)
     )
     if runs:
-        return FidelityFinding(REVIEW, (SOURCE_SEGMENTATION_INCOMPLETE,), runs[:4])
+        # The collapse is real either way. What decides usability is whether it
+        # reached the candidate: unreadable debris on the page, malformed
+        # Portuguese, or a sense nothing supports all mean nobody can check the
+        # result against anything. None of those, and every rule above already
+        # passed, is the strongest evidence this pipeline has that the provider
+        # recovered the sentence - so the region renders, under review, with the
+        # segmentation uncertainty recorded in its own reason code.
+        unresolved = (
+            unresolved_run_debris(runs, target)
+            or _malformed_portuguese(target)
+            or word_sense_conflicts(source, target, context_texts)
+        )
+        code = SOURCE_SEGMENTATION_INCOMPLETE if unresolved else SOURCE_SEGMENTATION_RECOVERED
+        return FidelityFinding(REVIEW, (code,), runs[:4])
     malformed = _malformed_portuguese(target)
     if malformed:
         return FidelityFinding(REVIEW, (GRAMMAR_MALFORMED,), (malformed,))

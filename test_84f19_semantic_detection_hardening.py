@@ -115,16 +115,37 @@ class SegmentationResidualTests(unittest.TestCase):
         self.assertIn("AGATETHROUGHWHICH", finding.critical_fact_mismatches)
 
     def test_the_provenance_gated_rule_still_fires_when_provenance_exists(self):
-        """#84F14's rule is untouched: a run plus segmentation provenance still routes."""
+        """#84F14's rule is untouched: a run plus segmentation provenance still routes.
+
+        #84F45R changed which *code* the routed region carries, never whether it
+        routes.  This candidate carries none of the unread run, so the region is
+        reviewed as ``source_segmentation_recovered`` instead of vetoed - the
+        twin below keeps the veto for a candidate built on the run.
+        """
         finding = evaluate(
             "THIS TAKEAFEWHOURSNOW",
             "ISSO LEVA ALGUMAS HORAS AGORA",
+            source_repair_reason="segment_compact_english_word",
+        )
+        self.assertEqual(finding.status, semantic_fidelity.REVIEW)
+        self.assertEqual(
+            finding.primary_reason,
+            semantic_fidelity.SOURCE_SEGMENTATION_RECOVERED,
+        )
+        self.assertIn("TAKEAFEWHOURSNOW", finding.critical_fact_mismatches)
+
+    def test_a_candidate_built_on_the_unread_run_still_vetoes(self):
+        """The same source, a candidate that carried the run onto the page."""
+        finding = evaluate(
+            "THIS TAKEAFEWHOURSNOW",
+            "ISSO LEVA ALGUMAS TAKEA AGORA",
             source_repair_reason="segment_compact_english_word",
         )
         self.assertEqual(
             finding.primary_reason,
             semantic_fidelity.SOURCE_SEGMENTATION_INCOMPLETE,
         )
+        self.assertTrue(semantic_fidelity.is_review_unusable(finding.reason()))
 
 
 class SegmentationFalsePositiveTests(unittest.TestCase):
@@ -260,15 +281,26 @@ class CollapsedSourceReachesRecoveryTests(unittest.TestCase):
 
     GOOD = "...VOCÊ SE TORNA UM PORTAL PELO QUAL UM MONSTRO SURGE NO MUNDO REAL."
 
-    def test_ambiguous_source_stays_unusable_even_when_retry_reads_well(self):
+    def test_ambiguous_source_recovers_when_the_retry_carries_none_of_the_run(self):
+        """#84F45R: the veto became a decision, and this is the side it releases.
+
+        The retry the collapsed source buys is unchanged - same trigger, same
+        reason, same single call.  What changed is the verdict on its result: a
+        candidate that carries no part of the run nobody could read is the
+        strongest evidence this pipeline has that the sentence was recovered, and
+        holding it would put the English source back on the page.  The region is
+        still never clean: it renders under review, and the run is still named.
+        """
         group = _group(P65_SOURCE, P65_CANDIDATE)
         translator = _ScriptedTranslator(self.GOOD)
         validate_and_retry_translations([group], translator, fidelity_stats={})
         self.assertEqual(len(translator.calls), 1)
         self.assertTrue(translator.calls[0]["reason"].startswith(
             semantic_fidelity.SOURCE_SEGMENTATION_INCOMPLETE))
-        self.assertEqual(group.translation, P65_CANDIDATE)
-        self.assertTrue(semantic_fidelity.is_review_unusable(
+        self.assertEqual(group.translation, self.GOOD)
+        self.assertTrue(str(group.semantic_review_reason).startswith(
+            semantic_fidelity.SOURCE_SEGMENTATION_RECOVERED))
+        self.assertFalse(semantic_fidelity.is_review_unusable(
             group.semantic_review_reason))
 
     def test_bad_first_good_second_selects_the_second_candidate_for_clean_source(self):
