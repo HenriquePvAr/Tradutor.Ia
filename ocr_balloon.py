@@ -9506,19 +9506,29 @@ def _classify_background_region(img_bgr, group, page_index=None):
             minLineLength=minimum_line,
             maxLineGap=5,
         )
+        # OpenCV encodes the same segments differently across releases:
+        # ``(N, 1, 4)`` up to OpenCV 4 and ``(N, 4)`` from OpenCV 5 on. Both are
+        # normalised to ``(N, 4)`` here. Anything whose trailing axis is not the
+        # 4 segment coordinates is treated as "no lines detected" instead of
+        # being reshaped into fabricated coordinates.
+        segments = np.empty((0, 4), dtype=np.int32)
+        if hough is not None:
+            candidate = np.asarray(hough)
+            if candidate.ndim >= 2 and candidate.shape[-1] == 4:
+                segments = candidate.reshape(-1, 4)
+
         diagonal_lines = 0
         long_lines = 0
-        if hough is not None:
-            for entry in hough[:, 0]:
-                x1, y1, x2, y2 = (int(value) for value in entry)
-                length = float(np.hypot(x2 - x1, y2 - y1))
-                if length < minimum_line:
-                    continue
-                long_lines += 1
-                angle = abs(float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))) % 180
-                acute = min(angle, 180 - angle)
-                if 12 <= acute <= 78:
-                    diagonal_lines += 1
+        for entry in segments:
+            x1, y1, x2, y2 = (int(value) for value in entry)
+            length = float(np.hypot(x2 - x1, y2 - y1))
+            if length < minimum_line:
+                continue
+            long_lines += 1
+            angle = abs(float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))) % 180
+            acute = min(angle, 180 - angle)
+            if 12 <= acute <= 78:
+                diagonal_lines += 1
 
     metrics = {
         "draw_box": list(draw_box),
