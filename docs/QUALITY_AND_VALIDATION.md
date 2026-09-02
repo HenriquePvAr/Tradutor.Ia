@@ -762,6 +762,17 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   canônica recuperada alimenta o retry e os validadores downstream; a fonte bruta permanece
   no relatório para auditoria. Se a leitura continuar ambígua, a região segue
   `REVIEW_UNUSABLE` e não renderiza.
+- **Resíduo de fusão não é medido ao pé da letra (#84F47):** sobre uma fonte com corrida
+  colapsada, o discriminador entre `source_segmentation_recovered` (renderiza sob revisão) e
+  `source_segmentation_incomplete` (`REVIEW_UNUSABLE`) é se o resíduo ilegível chegou ao
+  candidato — e ele chega tanto copiado (`AGATE` → `GÁTES`) quanto reaproveitado como
+  palavra real do alvo (`AGATE` → `GATA`, uma gata onde a fonte tinha um portal). A
+  comparação aceita **uma substituição** por janela de 4 letras justamente porque o
+  provedor tende a dar terminação portuguesa ao fragmento em vez de copiá-lo. Um alvo
+  fluente, gramatical e sem resíduo literal **não** é evidência de recuperação; quem decide
+  é o resíduo do tiling. Sem lexicon PT-BR o erro pende para o lado seguro: um cognato pode
+  segurar a região, que então recebe o retry seletivo sobre a fonte recuperada antes de
+  qualquer descarte.
 - **Política Beta RapidOCR/Paddle (#84F25):** o padrão `quality_optimized` usa RapidOCR como
   engine primário e RapidOCR para recovery regional/local. Paddle é compatibilidade legacy
   explicitamente opt-in por `OCR_LEGACY_PADDLE_FALLBACK`; ele não roda automaticamente em

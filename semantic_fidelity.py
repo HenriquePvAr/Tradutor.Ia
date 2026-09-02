@@ -541,20 +541,45 @@ def collapsed_source_runs(source):
 #
 # The discriminator is that debris, and it is measured against the *residual* of
 # the tiling - the stretch no closed-class word could account for, which is
-# precisely the part nobody could read.  A candidate word that *contains* four or
-# more of those letters in sequence was built out of the unreadable fragment,
-# whatever ending the provider then put on it ("AGATE" -> "GÁTES", "GÁTETA").
-# Four is the floor the module already uses for a token worth suspecting; below
-# it a shared run is a coincidence between two languages that share an alphabet.
+# precisely the part nobody could read.  A candidate word holding four of those
+# letters in sequence was built out of the unreadable fragment, whatever ending
+# the provider then put on it ("AGATE" -> "GÁTES", "GÁTETA").  Four is the floor
+# the module already uses for a token worth suspecting; below it a shared run is
+# a coincidence between two languages that share an alphabet.
 #
-# ponytail: substring match, no Portuguese lexicon. It over-matches Latin
-# cognates - "ORIENTADA" shares six letters with "ORIENTEDASPECT" and is a
-# correct translation - so a region can stay held on a shared root. That is the
-# safe direction: the rule only ever chooses between "keep the old veto" and
-# "release", so it can never block something the previous code allowed.
-# Separating a cognate from carried-over debris needs a real PT-BR lexicon the
-# repo does not have. Revisit if one lands.
+# Matched with one substitution allowed, not literally, because a *literal*
+# match is not the shape the failure takes.  The provider does not copy the
+# unreadable fragment out; it makes a word of it, and the cheapest way to make a
+# Portuguese word out of English letters is to change the ending.  "AGATE" came
+# back once as "GÁTES", which still spelled GATE, and once as "GATA", which is a
+# real noun, correctly spelled, in a grammatical sentence, and still the fragment
+# nobody read - a female cat where the source had a gate.  A rule that only sees
+# the first of those is measuring the provider's spelling luck, not whether the
+# collapse reached the page.
+#
+# ponytail: substring plus one substitution, no Portuguese lexicon. It
+# over-matches Latin cognates - "ORIENTADA" shares six letters with
+# "ORIENTEDASPECT" and is a correct translation - so a region can stay held on a
+# shared root. That is the safe direction: the rule only ever chooses between
+# "keep the old veto" and "release", so it can never block something the
+# pre-#84F45R code allowed, and what it holds gets the selective retry over the
+# recovered source before anything is dropped. Separating a cognate from
+# carried-over debris needs a real PT-BR lexicon the repo does not have. Revisit
+# if one lands.
 UNRESOLVED_RUN_DEBRIS_MIN_LENGTH = 4
+
+
+def _carries_fragment(word, fragments):
+    """True when ``word`` holds one of ``fragments`` verbatim or one edit away."""
+    windows = {
+        word[start:start + UNRESOLVED_RUN_DEBRIS_MIN_LENGTH]
+        for start in range(len(word) - UNRESOLVED_RUN_DEBRIS_MIN_LENGTH + 1)
+    }
+    return any(
+        window == fragment or _within_one_edit(window, fragment)
+        for window in windows
+        for fragment in fragments
+    )
 
 
 def unresolved_run_debris(runs, candidate):
@@ -570,7 +595,7 @@ def unresolved_run_debris(runs, candidate):
         for word in words:
             if len(word) < UNRESOLVED_RUN_DEBRIS_MIN_LENGTH or word in debris:
                 continue
-            if any(fragment in word for fragment in fragments):
+            if _carries_fragment(word, fragments):
                 debris.append(word)
     return tuple(debris)
 
