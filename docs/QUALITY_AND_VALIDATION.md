@@ -781,5 +781,14 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   PDF gerado ficou fisicamente limpo.
 - O comportamento do provedor pode variar entre execuções.
 - O contrato end-to-end atual foi auditado no Windows.
+- `OPENCV-THRESHOLD-SENSITIVITY-001` (**aberto, não corrigido**): a decisão
+  `open_light_art_caption` em `ocr_balloon.py` compara razões de pixels escuros contra
+  limiares literais (`dark_ratio <= 0.08` e vizinhos). Esses valores foram calibrados
+  contra o resultado de `cv2` no ambiente congelado; versões diferentes do OpenCV podem
+  deslocar levemente as saídas de suavização/morfologia que alimentam a razão e, com isso,
+  virar a classificação em regiões de fronteira. Por isso `requirements.txt` fixa
+  `opencv-python==5.0.0.93` — o pin é parte do contrato de qualidade, não uma preferência
+  de versão. Enquanto o limiar não for substituído por uma medida normalizada, **trocar a
+  versão ou a variante do OpenCV exige reexecutar o E2E de qualidade**, não apenas a suíte.
 
 Para investigar uma execução sem apagar evidências, consulte [Troubleshooting](TROUBLESHOOTING.md).

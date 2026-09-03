@@ -36,7 +36,23 @@ models/
 
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .playwright-cli/
+
+# Packaging output and alternative virtualenv layouts.
+build/
+dist/
+*.egg-info/
+venv/
+env/
+
+# Crash and trace dumps left behind by Chrome/Crashpad and Windows ETW sessions.
+*.dmp
+*.etl
+
+# Personal IDE state.
+.idea/
+.vscode/
 
 # Private key material must never reach a commit. The release signing key lives OUTSIDE this
 # repository (see scripts/sign_release.py); this is only a guard against an accidental copy.

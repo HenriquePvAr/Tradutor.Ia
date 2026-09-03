@@ -59,6 +59,15 @@ Os arquivos têm responsabilidades diferentes:
   nos modos `fast` e `quality`;
 - `requirements-ui.txt`: NiceGUI para a interface local.
 
+**OpenCV — instale exatamente uma variante.** O projeto requer `opencv-python`, fixado em
+`requirements.txt` na versão auditada. Nenhum módulo `contrib` é usado, então
+`opencv-contrib-python`, `opencv-python-headless` e `opencv-contrib-python-headless` não
+acrescentam nada e, instalados no mesmo ambiente, apenas criam um segundo `cv2` no
+`sys.path` cuja versão depende da ordem dos diretórios. Se `python -m pip list | findstr
+opencv` mostrar mais de uma linha, desinstale as variantes extras antes de confiar em
+qualquer resultado de qualidade. Ver `OPENCV-THRESHOLD-SENSITIVITY-001` em
+[Qualidade e validação](QUALITY_AND_VALIDATION.md).
+
 Para o fluxo completo recomendado, instale os três conjuntos. Se pretende usar somente a CLI,
 NiceGUI é opcional. PaddleOCR continua útil para fallbacks de maior qualidade, mas não é
 requisito para executar o modo `quality` quando RapidOCR está disponível.

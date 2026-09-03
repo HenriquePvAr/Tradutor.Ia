@@ -1,6 +1,15 @@
-numpy
-Pillow
-opencv-python
+# Imaging/CV stack: pinned to the exact build that produced the frozen quality
+# baseline (4514 passed / 34 skipped / 0 failed). These libraries decide pixel-level
+# behaviour (segmentation thresholds, inpainting, render), so a clean install must
+# reproduce them exactly instead of resolving to whatever is newest.
+#
+# OpenCV contract: `opencv-python` (core + highgui), NOT `opencv-contrib-python`
+# and NOT `opencv-python-headless`. The codebase only calls core/imgproc/photo/
+# imgcodecs APIs - no contrib module is used - so installing a contrib or headless
+# variant alongside this one only creates a conflicting `cv2` on sys.path.
+numpy==2.3.5
+Pillow==12.3.0
+opencv-python==5.0.0.93
 selenium
 webdriver-manager
 python-dotenv
@@ -20,5 +29,5 @@ google-auth>=2.0,<3
 google-auth-oauthlib>=1.0,<2
 PyJWT>=2.8,<3
 cryptography>=42,<50
-nicegui==3.14.0
+nicegui==3.15.0
 psycopg[binary]>=3.2,<4

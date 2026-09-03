@@ -1,2 +1,4 @@
-nicegui
+# Must match the pin in requirements.txt so the two files cannot resolve to
+# different NiceGUI builds in the same environment.
+nicegui==3.15.0
 
