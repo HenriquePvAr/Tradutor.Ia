@@ -230,7 +230,7 @@ sem novo E2E real.
 | Histórico | Implementado |
 | Comunidade (Supabase + Drive) | Implementado; fail-closed quando não configurado |
 | Refinamento natural PT-BR (Nemotron) | **Não automático** — sugestão manual, explicitamente autorizada, na revisão; nunca aplica tradução sozinha |
-| Retomada de job interrompido pela UI | Parcial — a API existe, o controle na interface não |
+| Retomada de job interrompido pela UI | Implementada — botão **Retomar** exibido para os jobs que o backend marca `can_resume` |
 | Instalador para usuário final | **Não existe** |
 | Instalação limpa em Windows | **Não provada** |
 | Updater | Parcial — staging, ativação atômica e rollback existem; canal assinado e UI pendentes |
@@ -298,23 +298,75 @@ A flag `--experimental-vm-modules` é obrigatória para as suítes `.mjs`. Coman
 
 ## Roadmap
 
-> Esta seção descreve **intenções**, não comportamento disponível. Nada aqui deve ser lido como recurso existente. Empacotamento (`Setup.exe`) e distribuição externa ainda **não existem** nesta versão. O licenciamento remoto já tem schema/RPC/RLS, mas o primeiro entitlement real de tester ainda não foi criado.
+> Esta seção descreve **intenções**, não comportamento disponível. O que já existe está na
+> [tabela de status](#status-do-projeto) e na
+> [Documentação Técnica §2](docs/technical/DOCUMENTACAO_TECNICA.md#2-escopo-atual-do-produto);
+> nada listado abaixo deve ser lido como recurso existente.
 
-- criar exatamente um entitlement real controlado de tester antes de Setup/Beta externa;
-- melhorar reconstrução de arte em regiões texturizadas/open-art; sentinelas: página 5
-  com texto fantasma/contraste ruim e página 25 com patch retangular claro sobre textura;
-- criar gate semântico/natural PT-BR para traduções gramaticais mas erradas; sentinelas:
-  “rato do slim”, sintaxe quebrada e perda de sentido do caso P068;
-- adicionar visualizador PDF integrado com zoom, fit-width, thumbnails, teclado, tela cheia
-  e abertura direta pelo Histórico;
-- entregar instalador para usuário final e canal de atualização assinado;
-- expor a retomada de capítulo interrompido na interface;
-- aprimorar a classificação de SFX e elementos decorativos;
-- melhorar naturalidade e consistência da tradução PT-BR;
-- ampliar a validação visual e os relatórios de revisão;
-- simplificar a instalação e o gerenciamento de modelos;
-- evoluir os testes end-to-end automatizados com material autorizado;
-- adicionar uma demonstração pública reproduzível.
+### Definição da primeira Beta (MVP)
+
+O escopo da primeira Beta é deliberadamente estreito. Um tester externo de Scan deve
+conseguir, **sem clonar o repositório, sem Python, Node ou Git instalados manualmente**:
+
+instalar → abrir → fazer login e ativar a licença de tester → colar uma URL suportada →
+traduzir o capítulo → acompanhar o progresso → revisar quando o gate pedir → abrir o PDF no
+Leitor → reencontrar o capítulo no Histórico → receber uma atualização assinada.
+
+Fora do MVP por decisão explícita: editor de camadas, naturalização automática, memória
+persistente de personagens entre capítulos, presets, monetização e suporte universal a
+fontes. O suporte declarado da primeira Beta é **VortexScans**; outras fontes continuam
+sujeitas à análise universal, que é fail-closed e não é promessa de suporte.
+
+### Bloqueadores da Beta
+
+Ordenados por dependência. Nenhum é trabalho de qualidade de pipeline — o
+[Quality Freeze](docs/QUALITY_FREEZE.md) permanece ativo.
+
+| # | Bloqueador | Estado hoje | Registro |
+| --- | --- | --- | --- |
+| 1 | Convergir para **uma** distribuição de OpenCV em runtime | três variantes coexistem; `cv2` vem da `-headless` | `OPENCV-VARIANT-SHADOWING-001` |
+| 2 | Empacotar runtime + instalador para usuário final | nenhum spec de build, builder ou `Setup.exe` | `PACKAGING-PENDING` |
+| 3 | Provisionamento de configuração do tester | tester precisaria criar `.env` à mão | `TESTER-CONFIG-PROVISIONING-PENDING` |
+| 4 | Ligar o authorizer de licença Beta à configuração | `ui_bridge.py` fixa o authorizer de desenvolvimento local | `BETA-AUTHORIZER-NOT-WIRED` |
+| 5 | Conceder o primeiro entitlement real de tester | schema/RLS/RPC existem; nenhum grant real | `FIRST-TESTER-GRANT-PENDING` |
+| 6 | Canal de release assinado: hospedagem, chave pública e UI de atualização | núcleo de confiança fechado; `TRUSTED_PUBLIC_KEYS` e `DEFAULT_MANIFEST_URL` vazios de propósito | `UPDATER-RELEASE-CHANNEL-PENDING`, `UPDATE-TRUST-ROOT-EMPTY` |
+| 7 | Provar instalação limpa em Windows + E2E real sobre ela | nenhuma validação em máquina limpa | `CLEAN-INSTALL-NOT-YET-PROVEN`, `CLEAN-VM-VALIDATION-PENDING` |
+
+Itens de robustez que acompanham a Beta sem bloqueá-la: executar as suítes `.mjs` na CI
+(`CI-JS-SUITES-NOT-RUN`) e provar a disponibilidade das fontes do Windows exigidas por
+`font_fidelity` numa instalação limpa.
+
+### Fases
+
+| Fase | Conteúdo | Estado |
+| --- | --- | --- |
+| 0 | Quality Freeze do pipeline | concluída |
+| 1 | Reconciliação de documentação e roadmap | concluída |
+| 2 | Preparação de `main` sobre a baseline congelada | próxima |
+| 3 | Empacotamento: OpenCV único, runtime empacotado, instalador | bloqueadores 1–2 |
+| 4 | Auth/licença de tester ponta a ponta | bloqueadores 3–5 |
+| 5 | Canal de atualização assinado | bloqueador 6 |
+| 6 | Validação em Windows limpo + E2E real | bloqueador 7 |
+| 7 | Entrega controlada a um tester de Scan | — |
+| 8 | Feedback e hotfixes | — |
+| 9 | Evolução pós-Beta | — |
+
+### Pós-Beta
+
+Explicitamente **fora** do caminho crítico, para que nenhum destes atrase a entrega:
+
+- editor de camadas (regiões editáveis, arrastar/redimensionar, controles de tipografia,
+  desfazer/refazer, comparação, presets);
+- naturalização automática PT-BR — hoje é sugestão manual, autorizada caso a caso, e assim
+  permanece na Beta;
+- memória persistente de personagens e glossário editorial entre capítulos (a consistência
+  mínima de terminologia e nome próprio **dentro** do capítulo já existe);
+- fidelidade de reconstrução em regiões texturizadas/open-art;
+- gate automático de qualidade semântica PT-BR;
+- adapters adicionais de fonte e descoberta HTTP genérica (hoje só VortexScans implementa o
+  coletor de HTML estático);
+- monetização, planos e créditos;
+- demonstração pública reproduzível com material autorizado.
 
 ## Autor
 

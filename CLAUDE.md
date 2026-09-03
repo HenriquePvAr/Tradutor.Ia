@@ -123,8 +123,11 @@ WHY: <motivo — ex.: refatoração interna sem mudança de comportamento, API, 
 | Provider de tradução padrão | **DeepL** (`ui_helpers.DEFAULT_TRANSLATION_PROVIDER`) |
 | Provider de auth padrão | **supabase** (`community_auth.build_auth_provider`) |
 | Supervisão do worker | implementada: 2s/5s/15s, 3 tentativas, `degraded`, reset em 120s |
-| Retomada de job interrompido na UI | **não existe** — só `POST /api/ui/resume` |
-| Instalador, updater, licença de tester | **não existem** |
+| Retomada de job interrompido na UI | **implementada** (TDD #56) — painel `#interruptedJobsPanel` + botão `Retomar` em `static/tradutor_ui.js`, exibido só quando o backend marca `can_resume` |
+| Instalador para usuário final | **não existe** — nenhum spec de build, `Setup.exe` ou builder no repositório |
+| Updater | **parcial** — `update_manifest.py` (Ed25519 + SHA-256), `update_transport.py` (HTTPS), `update_installer.py` (staging/ativação atômica/rollback) e `update_bootstrap.py` (chamado por `start_tradutor.py all`) existem e estão conectados. Faltam: chave pública de release (`TRUSTED_PUBLIC_KEYS` vazio de propósito), canal/hospedagem (`DEFAULT_MANIFEST_URL = ""`) e superfície de UI |
+| Licença de tester Beta | **parcial** — `beta_license.py` (estados, expiração, revogação, limite de dispositivo, RPC Supabase) existe; o gate é aplicado em `UiBridge.start()`/`resume()` e reforçado em `job_runner`. Mas `ui_bridge.py` instancia `LocalDevelopmentBetaAuthorizer()` fixo: `build_beta_license_authorizer` não tem chamador de produção, e nenhum entitlement real de tester foi concedido |
+| Instalação limpa em Windows | **não provada** (`CLEAN-INSTALL-NOT-YET-PROVEN`) |
 
 Detalhes e dívida técnica completa:
 [Documentação Técnica §29](docs/technical/DOCUMENTACAO_TECNICA.md#29-dívida-técnica-conhecida).

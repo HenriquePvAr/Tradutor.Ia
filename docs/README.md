@@ -1,6 +1,6 @@
 # Documentação do Tradutor IA
 
-> **Base verificada:** `a6a46e4` (branch `fix/main-e2e-findings`) · **Revisado em:** 2026-09-03
+> **Base verificada:** `fed9b0c` (branch `fix/main-e2e-findings`) · **Revisado em:** 2026-09-03
 >
 > O comportamento de produção está sob **[Quality Freeze](QUALITY_FREEZE.md)**.
 
@@ -109,7 +109,7 @@ em que foram escritos e **não** substituem os documentos primários:
 | Histórico | ✅ implementado |
 | Comunidade (Supabase + Drive) | ✅ implementado, fail-closed se não configurado |
 | Licenciamento de tester | ✅ schema/RLS/RPC remotos aplicados; primeiro tester real ainda não criado |
-| Retomada de job interrompido pela UI | ⚠️ parcial — API existe, controle na interface não |
+| Retomada de job interrompido pela UI | ✅ implementada (TDD #56) — botão **Retomar** para os jobs marcados `can_resume` |
 | Instalador para usuário final | ⛔ não existe — sem spec de build no repositório |
 | Atualizador | ⚠️ parcial — staging/ativação atômica/rollback existem; canal assinado e UI pendentes |
 | Validação em Windows limpo | ⛔ não provada |
