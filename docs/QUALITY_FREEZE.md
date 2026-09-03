@@ -79,12 +79,36 @@ O freeze não é levantado por uma suíte verde. Ele é levantado quando:
 | --- | --- |
 | 1 — OpenCV único e igual ao declarado | **ATENDIDA no perfil Beta** — `requirements-beta.txt` resolve uma única distribuição (`opencv-python==5.0.0.93`), `pip check` limpo, `scripts/check_runtime_profile.py` verde, `cv2.__version__ == 5.0.0` |
 | 2 — instalação limpa reproduzível | **PARCIAL** — o perfil instala e roda limpo a partir dos manifests; falta a máquina Windows limpa |
-| 3 — novo E2E real sobre essa instalação | **NÃO EXECUTADO** |
+| 3 — novo E2E real sobre essa instalação | **EXECUTADO — não reproduziu os gates congelados** (ver abaixo) |
+
+#### E2E sob o runtime Beta — job `902b149e`
+
+Shadow Slave — Chapter 1.5, DeepL `quality_optimized`, modo Qualidade, RapidOCR, escopo
+COMPLETO, cache OFF, force ON, contexto ON, descoberta HTTP. Rodou em 6,2 min sobre
+`.venv-beta`.
+
+| Item | Resultado |
+| --- | --- |
+| Páginas | **35/35**, `page_gate_passed: true`, `accounting_closed: true`, 0 erro de página |
+| PDF | **válido** — `%PDF-1.4`, 35 objetos de página, 10,27 MB |
+| Provider | `deepl`/`quality_optimized`, sem fallback, sem mismatch |
+| Paddle | **não instalado, não importado, não usado** — 0 módulos Paddle nos 5 processos do job; `fallbacks_to_paddle_mobile/full = 0` |
+| OpenCV em runtime | **uma única** `cv2.pyd`, de `.venv-beta` (`cv2 5.0.0`) |
+| Nomes próprios | preservados (`proper_noun_preserved: 1`) |
+| Texto corrompido / mistura de idioma | `mixed_language_items: 0`, `text_overflow_items: 0` |
+| Regressão visual severa | nenhuma — `pages_visual_validation_failed: 0` |
+| **P28 / P31 / P32** | **NÃO reproduzem o PASS congelado** — `structured_review` em `p028:BALAO_1`, `p031:BALAO_1`, `p032:BALAO_2` |
+| Resíduo físico | `ordinary_story_english_visible: 1` em `p032:BALAO_2` (`source_segmentation_incomplete`, OCR colou `AGATETHROUGHWHICH`) |
+| Gate físico | `physical_gate_passed: false`, `physical_decision: "review"` — **fail-closed correto**: recusou renderizar o candidato ruim em vez de publicá-lo |
 
 **O freeze continua ATIVO.** A condição 1 foi atendida *trocando* o `cv2` efetivamente
 carregado de 4.10.0 para 5.0.0 — exatamente a mudança que
-`OPENCV-THRESHOLD-SENSITIVITY-001` diz exigir um E2E real. Até esse E2E existir, a baseline
-de qualidade **não** está provada sob o runtime Beta, e a suíte verde não substitui essa
-prova.
+`OPENCV-THRESHOLD-SENSITIVITY-001` diz exigir um E2E real. O E2E agora existe e **não**
+reproduziu os gates congelados: a baseline de qualidade **não** está preservada sob o
+runtime Beta.
+
+Atribuição ainda em aberto: um único job não separa a troca de `cv2` de (a) não determinismo
+do DeepL entre execuções e (b) mudança do conteúdo na fonte desde julho. Fechar essa questão
+exige um E2E de controle sobre `cv2 4.10.0` com o mesmo capítulo — não feito aqui.
 
 Até lá, qualquer mudança de comportamento de produção precisa carregar seu próprio E2E.

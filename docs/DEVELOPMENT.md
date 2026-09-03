@@ -329,7 +329,8 @@ próprio gate do RapidOCR recusa a página, a falha é fechada e contabilizada
 | Item | Estado |
 | --- | --- |
 | Baseline de empacotamento | **PRONTA** — pipeline congelado, manifests pinados, evidência de E2E registrada |
-| Perfil de runtime Beta | **DEFINIDO E PROVADO EM AMBIENTE LIMPO** — `requirements-beta.txt`, uma única distribuição de OpenCV, `pip check` limpo, preflight verde |
+| Perfil de runtime Beta | **DEFINIDO E PROVADO EM AMBIENTE LIMPO** — `requirements-beta.txt`, uma única distribuição de OpenCV, `pip check` limpo, preflight verde, E2E real executado (job `902b149e`: 35/35 páginas, PDF válido, zero Paddle carregado) |
+| Baseline de qualidade sob o runtime Beta | **NÃO PRESERVADA** — o E2E não reproduziu P28/P31/P32; ver [Quality Freeze](QUALITY_FREEZE.md) |
 | Instalação limpa em Windows | **NÃO PROVADA** — não existe validação em máquina limpa |
 | Instalador para usuário final | **NÃO EXISTE** — não há spec de build nem `Setup.exe` no repositório |
 | Modelo de atualização | **PARCIAL** — `update_installer.py`/`update_manifest.py`/`update_transport.py` implementam staging, ativação atômica e rollback; canal assinado e superfície de UI pendentes |
