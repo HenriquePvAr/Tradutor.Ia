@@ -211,11 +211,18 @@ class HermeticTestBoundaryTests(unittest.TestCase):
         root = Path(__file__).resolve().parent
         # Walk source directories only. Descending into ``output`` or ``.cache`` would read
         # the user's real run artifacts, which the runtime guard refuses (TDD #55).
-        skipped = {".venv", "__pycache__", "__pypackages__", ".git", "output", ".cache",
+        skipped = {"__pycache__", "__pypackages__", ".git", "output", ".cache",
                    "node_modules", "tmp"}
+
+        def is_source_dir(name: str) -> bool:
+            # Any interpreter environment beside the repository, not only the one named
+            # ``.venv``: validating a Beta profile means a second one (``.venv-beta``)
+            # exists here, and its site-packages ship ~1300 third-party ``test_*.py``.
+            return name not in skipped and not name.lstrip(".").startswith("venv")
+
         candidates: set[Path] = set()
         for folder, subfolders, files in os.walk(root):
-            subfolders[:] = [name for name in subfolders if name not in skipped]
+            subfolders[:] = [name for name in subfolders if is_source_dir(name)]
             candidates.update(
                 Path(folder) / name for name in files
                 if name.startswith("test_") and name.endswith(".py")

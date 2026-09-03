@@ -1,6 +1,8 @@
 .env
 .env.local
 .venv/
+# Clean-room environment built from requirements-beta.txt to validate the Beta runtime.
+.venv-beta/
 **pycache**/
 __pycache__/
 pycache/

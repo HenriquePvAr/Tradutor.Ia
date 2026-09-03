@@ -1,0 +1,24 @@
+# BETA1_OCR_RUNTIME_CONTRACT - the complete runtime profile shipped with Beta 1.
+#
+#   RapidOCR              REQUIRED / PRIMARY   (requirements-rapidocr.txt)
+#   OpenCV                opencv-python==5.0.0.93, exactly one distribution
+#   PaddleOCR/Paddle/X    NOT BUNDLED          (requirements-paddle.txt, optional)
+#   Browser fallback      Selenium/Chrome, declared in requirements.txt but only
+#                         used when HTTP source discovery does not apply
+#
+# This file composes the existing manifests instead of restating their pins, so the
+# Beta profile can never drift from the audited versions.
+#
+# Install into a clean interpreter with user site-packages disabled:
+#   python -m venv .venv-beta
+#   .venv-beta\Scripts\python.exe -s -m pip install -r requirements-beta.txt
+#   .venv-beta\Scripts\python.exe -s scripts/check_runtime_profile.py
+#
+# `check_runtime_profile.py` is the enforcement point: no requirements file can
+# express "must not be installed", so the guard fails the build when more than one
+# OpenCV distribution, or any Paddle distribution, is present.
+#
+# Runtime only. The validation environment additionally installs
+# `-r requirements-dev.txt` to run the suite; that is not shipped.
+-r requirements.txt
+-r requirements-rapidocr.txt

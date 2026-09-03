@@ -1,0 +1,17 @@
+# OPTIONAL legacy OCR fallback. NOT part of the Beta 1 runtime profile.
+#
+# The code keeps full PaddleOCR support: `ocr_engine` imports `paddleocr` lazily,
+# availability is probed with `importlib.util.find_spec`, and `run_webtoon._configure_mode`
+# treats Paddle as an optional escalation in both fast and quality modes. Nothing here
+# is required for RapidOCR to run.
+#
+# WARNING - installing this file breaks the OpenCV contract in `requirements.txt`:
+#   paddleocr -> paddlex[ocr] -> opencv-contrib-python==4.10.0.84
+# `opencv-contrib-python` and `opencv-python` both install a top-level `cv2/` package.
+# pip does not detect the collision, so the last install wins and the effective
+# `cv2.__version__` silently becomes 4.10.0 instead of the contractual 5.0.0.93.
+# See `OPENCV-VARIANT-SHADOWING-001` in docs/DEVELOPMENT.md.
+#
+# Only install this in a dedicated environment used to exercise the Paddle path.
+paddlepaddle==3.2.2
+paddleocr

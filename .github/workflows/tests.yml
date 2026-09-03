@@ -34,7 +34,9 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: |
+            requirements-beta.txt
             requirements.txt
+            requirements-rapidocr.txt
             requirements-dev.txt
 
       - name: Set up Node LTS
@@ -46,8 +48,13 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-beta.txt
           python -m pip install -r requirements-dev.txt
+
+      # No requirements file can forbid a package, and pip does not report that
+      # opencv-python and opencv-contrib-python ship the same `cv2` directory.
+      - name: Check Beta runtime profile
+        run: python scripts/check_runtime_profile.py
 
       - name: Confirm network smokes are disabled
         run: |

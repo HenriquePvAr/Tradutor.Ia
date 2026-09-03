@@ -12,6 +12,11 @@ Instale a dependência de desenvolvimento antes de usar pytest:
 python -m pip install -r requirements-dev.txt
 ```
 
+A suíte roda sobre o perfil de runtime da Beta (`requirements-beta.txt`): RapidOCR presente,
+PaddleOCR ausente. Os testes que exercitam o caminho Paddle injetam um módulo falso com
+`patch.dict(sys.modules, ...)` ou fazem patch de `_get_paddle`, então nenhum deles depende da
+biblioteca estar instalada e nenhum passa a pular fora do perfil Beta.
+
 O comando padrão garantido para a suíte hermética é:
 
 ```powershell
@@ -47,8 +52,9 @@ executa scripts manuais nem usa segredo NVIDIA.
 O equivalente local da CI é:
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-beta.txt
 python -m pip install -r requirements-dev.txt
+python scripts/check_runtime_profile.py
 python -m pytest --collect-only -q
 python -m pytest -q
 node --check static/tradutor_ui.js
@@ -63,6 +69,24 @@ A mesma base também roda pelo runner do `unittest`:
 ```powershell
 python -m unittest discover
 ```
+
+## Testes que dependem de artefatos locais não versionados
+
+Alguns testes medem uma execução real persistida em vez de uma fixture. Eles leem
+`.cache/processed`, `output/<capítulo>/…/smart_input_pages/*.png` ou modelos locais — nada
+disso está no Git, e nada disso deve entrar: são dados de runtime do usuário.
+
+A maioria se protege com `skipTest` quando o artefato falta, e por isso a contagem de
+`skipped` varia de checkout para checkout sem que nada tenha regredido. A exceção é
+`test_84f15_word_sense_disambiguation.NoFalsePositiveExplosion`: ele pula quando o corpus
+está **ausente**, mas quando o corpus existe e não contém mais a evidência esperada
+(p046 `BALAO_1`) ele **falha**. O resultado depende do que a última execução real daquela
+máquina deixou no cache — não do código.
+
+Correção recomendada (fora do escopo de packaging, não implementada): substituir a leitura
+do cache por uma fixture mínima determinística e versionável com as poucas regiões que a
+asserção realmente examina, mantendo a varredura do corpus como um teste `integration`
+separado e opt-in. Não copie `.cache/processed` para o Git para deixar a suíte verde.
 
 ## Suítes de frontend (`.mjs`)
 

@@ -47,21 +47,29 @@ Nos comandos seguintes, substitua `python` por `.\.venv\Scripts\python.exe` e `p
 
 ## 3. Instalar as dependências
 
-O projeto separa o núcleo das dependências de RapidOCR e da interface:
+`requirements-beta.txt` é o perfil de runtime da Beta 1. Ele compõe os manifests existentes,
+então instalar por ele é o caminho suportado:
 
 ```powershell
-pip install -r requirements.txt
-pip install -r requirements-rapidocr.txt
-pip install -r requirements-ui.txt
-pip install -r requirements-dev.txt
+# -s desabilita o site-packages do usuário, que já mascarou o cv2 carregado.
+python -s -m pip install -r requirements-beta.txt
+python -s -m pip install -r requirements-dev.txt
+python -s scripts/check_runtime_profile.py
 ```
 
 Os arquivos têm responsabilidades diferentes:
 
-- `requirements.txt`: processamento de imagem, Selenium, PaddleOCR, tradução e monitoramento;
+- `requirements-beta.txt`: perfil de runtime da Beta 1 (`requirements.txt` + `requirements-rapidocr.txt`);
+- `requirements.txt`: processamento de imagem, Selenium, tradução e monitoramento;
 - `requirements-rapidocr.txt`: RapidOCR e ONNX Runtime usados como OCR primário do fluxo Beta
   nos modos `fast` e `quality`;
-- `requirements-ui.txt`: NiceGUI para a interface local.
+- `requirements-paddle.txt`: PaddleOCR **opcional**, fora da Beta — ver o aviso de OpenCV abaixo;
+- `requirements-ui.txt`: NiceGUI para a interface local (o pin já vem em `requirements.txt`).
+
+`scripts/check_runtime_profile.py` é o portão: nenhum arquivo de requisitos consegue proibir
+um pacote, então o script falha quando existe mais de uma distribuição de OpenCV, quando
+qualquer distribuição Paddle está instalada, ou quando o `cv2` realmente importado não é o
+declarado.
 
 **OpenCV — instale exatamente uma variante.** O projeto requer `opencv-python`, fixado em
 `requirements.txt` na versão auditada. Nenhum módulo `contrib` é usado, então
@@ -72,22 +80,21 @@ opencv` mostrar mais de uma linha, desinstale as variantes extras antes de confi
 qualquer resultado de qualidade. Ver `OPENCV-THRESHOLD-SENSITIVITY-001` em
 [Qualidade e validação](QUALITY_AND_VALIDATION.md).
 
-> **Inconsistência aberta, não resolvida.** No ambiente de desenvolvimento que produziu a
-> baseline atual as três variantes coexistem, e foi observado que o `cv2` efetivamente
-> importado vem do site-packages **do usuário** — onde está a variante `-headless` — e não do
-> pacote declarado como contratual. A suíte passa inteira porque as duas distribuições
-> 5.0.0.93 expõem a mesma versão de `cv2`; isso não é evidência de que o contrato está sendo
-> respeitado em runtime. Registrado como `OPENCV-VARIANT-SHADOWING-001` em
-> [Desenvolvimento](DEVELOPMENT.md#riscos-conhecidos). Verifique com:
+> **Não instale `requirements-paddle.txt` no mesmo ambiente.** `paddleocr` depende de
+> `paddlex`, que fixa `opencv-contrib-python==4.10.0.84`. As duas distribuições instalam o
+> mesmo diretório `cv2/`: pip não reporta conflito, `pip check` fica limpo, e quem escreve por
+> último vence — o `cv2` efetivamente importado vira 4.10.0 sem nenhum aviso. Foi exatamente
+> isso que aconteceu no venv de desenvolvimento. Registrado como
+> `OPENCV-VARIANT-SHADOWING-001` em [Desenvolvimento](DEVELOPMENT.md#riscos-conhecidos).
+> Verifique com:
 >
 > ```powershell
-> python -m pip list | Select-String opencv
-> python -c "import cv2; print(cv2.__version__, cv2.__file__)"
+> python -s scripts/check_runtime_profile.py
 > ```
 
-Para o fluxo completo recomendado, instale os três conjuntos. Se pretende usar somente a CLI,
-NiceGUI é opcional. PaddleOCR continua útil para fallbacks de maior qualidade, mas não é
-requisito para executar o modo `quality` quando RapidOCR está disponível.
+Se pretende usar somente a CLI, NiceGUI é opcional. PaddleOCR **não** é requisito para o modo
+`quality`: RapidOCR é o engine primário nos dois modos e a escalação Paddle é apenas uma
+recuperação opcional, que é simplesmente pulada quando a biblioteca não está instalada.
 
 ## 4. Criar a configuração local
 
@@ -107,14 +114,17 @@ Não versione `.env`, não cole a chave em comandos e não a inclua em relatóri
 
 ## 5. Modelos de OCR
 
-PaddleOCR é instalado pelo arquivo principal de requisitos. Na primeira inicialização de uma variante de modelo, a biblioteca pode buscar os arquivos oficiais correspondentes. O código usa:
+O perfil Beta instala apenas RapidOCR. Seus modelos ONNX vêm dentro da própria wheel
+`rapidocr-onnxruntime`, então não há download na primeira execução do OCR. O código usa:
 
 - RapidOCR/ONNX Runtime como OCR primário dos modos `fast` e `quality`;
 - recuperação regional limitada, também com RapidOCR, para regiões duvidosas;
 - PaddleOCR apenas como compatibilidade legacy, opt-in por `OCR_LEGACY_PADDLE_FALLBACK`
-  (desligado por padrão) — ele não roda automaticamente em regiões suspeitas;
+  (desligado por padrão) e **não instalado na Beta** — quando a biblioteca está ausente a
+  escalação é pulada e a leitura do RapidOCR é mantida;
 
-Planeje a primeira execução com conexão disponível e espaço em disco. O projeto não exige que modelos sejam copiados manualmente para uma pasta interna do repositório.
+O projeto não exige que modelos sejam copiados manualmente para uma pasta interna do
+repositório.
 
 Tesseract está presente apenas como caminho opcional de compatibilidade. Ele não é o OCR principal e não precisa ser instalado para os modos documentados no README.
 
@@ -161,7 +171,7 @@ python test_ocr_quality_regressions.py
 Para uma verificação rápida das bibliotecas:
 
 ```powershell
-python -c "import cv2, paddle, PIL, selenium; print('dependências principais: OK')"
+python -s scripts/check_runtime_profile.py
 python -c "from rapidocr_onnxruntime import RapidOCR; print('RapidOCR: OK')"
 python -c "import nicegui; print('NiceGUI: OK')"
 ```

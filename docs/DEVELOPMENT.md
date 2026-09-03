@@ -1,6 +1,6 @@
 # Desenvolvimento
 
-> **Base verificada:** `a6a46e4` (branch `fix/main-e2e-findings`) · **Revisado em:** 2026-09-03
+> **Base verificada:** `5ebd77e` (branch `beta/packaging`) · **Revisado em:** 2026-09-03
 >
 > [Voltar ao índice](README.md)
 
@@ -22,6 +22,7 @@ geral do produto está no [README](../README.md); o desenho interno está em
 - [Dependências externas](#dependências-externas)
 - [Empacotamento e distribuição](#empacotamento-e-distribuição)
 - [Riscos conhecidos](#riscos-conhecidos)
+- [Windows venv launcher e identidade de processo](#windows-venv-launcher-e-identidade-de-processo)
 
 ---
 
@@ -48,22 +49,30 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip setuptools wheel
 
-python -m pip install -r requirements.txt
-python -m pip install -r requirements-rapidocr.txt
-python -m pip install -r requirements-ui.txt
-python -m pip install -r requirements-dev.txt      # somente para rodar os testes
+# `-s` desabilita o site-packages do usuário, que já mascarou o cv2 carregado.
+python -s -m pip install -r requirements-beta.txt
+python -s -m pip install -r requirements-dev.txt   # somente para rodar os testes
+
+python -s scripts/check_runtime_profile.py         # prova o perfil antes de confiar nele
 ```
 
 Os manifests são a fonte de verdade das dependências. Não replique a lista aqui:
 
 | Manifest | Conteúdo |
 | --- | --- |
-| `requirements.txt` | stack principal, incluindo os pins de imagem/CV (`numpy`, `Pillow`, `opencv-python`) e `nicegui` |
-| `requirements-rapidocr.txt` | RapidOCR + onnxruntime (engine de OCR padrão) |
+| `requirements-beta.txt` | **perfil de runtime da Beta 1**; compõe `requirements.txt` + `requirements-rapidocr.txt` sem repetir pins |
+| `requirements.txt` | stack principal, incluindo os pins de imagem/CV (`numpy`, `Pillow`, `opencv-python`) e `nicegui`. **Não** contém PaddleOCR |
+| `requirements-rapidocr.txt` | RapidOCR + onnxruntime (engine de OCR primário, obrigatório) |
+| `requirements-paddle.txt` | **opcional, fora da Beta** — PaddleOCR/PaddlePaddle. Instalar isto quebra o contrato de OpenCV (ver abaixo) |
 | `requirements-ui.txt` | pin de NiceGUI espelhado, para as duas listas não divergirem |
 | `requirements-dev.txt` | pytest e o cliente ASGI offline usado pela bateria de segurança |
 | `requirements-optional.txt` | transportes opcionais, importados de forma preguiçosa e desligados por padrão |
 | `apps/auth-service/package.json` | serviço Better Auth (Node/TypeScript) |
+
+Nenhum arquivo de requisitos consegue dizer "este pacote não pode estar instalado". Quem
+impõe essa parte do contrato é `scripts/check_runtime_profile.py`, que falha quando existe
+mais de uma distribuição de OpenCV, quando qualquer distribuição Paddle está presente, ou
+quando o `cv2` realmente importado não é o declarado.
 
 ## Variáveis de ambiente
 
@@ -226,30 +235,42 @@ parte do contrato de qualidade, não preferência de versão: a decisão
 `open_light_art_caption` compara razões de pixel contra limiares literais calibrados contra
 a saída de `cv2` no ambiente congelado.
 
-### Estado real observado no ambiente de desenvolvimento
+### Causa raiz (apurada em #84F53 / #84F53R)
 
-**Isto é uma inconsistência aberta e não resolvida.** No ambiente que produziu a baseline do
-freeze coexistem três distribuições que fornecem o mesmo módulo `cv2`:
+A explicação anterior — instalação manual acidental de variantes, resolvida por ordem de
+`sys.path` entre site-packages do usuário e do sistema — estava **incorreta**. A colisão é
+determinística e vem de uma aresta de dependência declarada:
 
-| Distribuição | Versão | Local |
-| --- | --- | --- |
-| `opencv-python` (contratual) | 5.0.0.93 | site-packages do sistema |
-| `opencv-python-headless` | 5.0.0.93 | site-packages **do usuário** |
-| `opencv-contrib-python` | 4.10.0.84 | site-packages do sistema |
+```text
+paddleocr  ->  paddlex 3.7.2  ->  opencv-contrib-python==4.10.0.84   (extras cv/ocr/base/...)
+requirements.txt (antes)  ->  opencv-python==5.0.0.93
+```
 
-Como o site-packages do usuário precede o do sistema em `sys.path`, o `cv2` efetivamente
-importado vem da árvore onde está instalado o pacote **headless** — não necessariamente o
-pacote declarado como contratual. As duas distribuições 5.0.0.93 expõem a mesma versão de
-`cv2`, e é por isso que a suíte passa inteira; isso **não** prova que a variante correta está
-sendo carregada.
+`opencv-python` e `opencv-contrib-python` são distribuições diferentes que instalam o
+**mesmo** diretório de topo `cv2/`. pip não trata isso como conflito: `pip check` fica limpo,
+`pip list` mostra as duas com suas versões declaradas, e quem escreve os arquivos por último
+vence. Nada é reportado ao usuário.
+
+Efeito medido no venv de desenvolvimento que produziu a baseline do freeze:
+
+| Fonte | O que diz |
+| --- | --- |
+| `pip list` | `opencv-python 5.0.0.93` **e** `opencv-contrib-python 4.10.0.84` |
+| `pip check` | sem conflitos |
+| `import cv2; cv2.__version__` | **`4.10.0`** |
+
+Ou seja: a baseline de qualidade congelada foi produzida sobre **cv2 4.10.0**, enquanto o
+manifest declarava 5.0.0.93. Isso também explica, sem coincidência, por que `afe0e03`
+precisou de um shim de compatibilidade para as semânticas de traço do `putText` do OpenCV 5.
 
 Consequências:
 
 - a suíte verde não é evidência de que o contrato de OpenCV está sendo respeitado em runtime;
-- nenhum pacote foi removido e nenhum manifest foi alterado para "consertar" isso — fazer
-  isso durante o Quality Freeze invalidaria a evidência de qualidade existente;
-- o empacotamento **deve** convergir para uma única distribuição de OpenCV selecionada e
-  provar isso com instalação limpa + E2E, não com a suíte.
+- "reinstalar `opencv-python` por último" **não** é solução: é uma ordem de instalação frágil,
+  não um contrato;
+- a correção arquitetural é remover a aresta, não reordenar a instalação — PaddleOCR sai do
+  perfil de runtime (`requirements-paddle.txt`, opcional) e um preflight de build recusa
+  ambiente ambíguo (`scripts/check_runtime_profile.py`).
 
 Registrado como `OPENCV-VARIANT-SHADOWING-001` em [Riscos conhecidos](#riscos-conhecidos).
 
@@ -284,9 +305,31 @@ empacotamento; remover um pacote muda o ambiente resolvido e invalida a baseline
 
 ## Empacotamento e distribuição
 
+### `BETA1_OCR_RUNTIME_CONTRACT`
+
+Perfil de runtime que a Beta 1 empacota. Declarado em `requirements-beta.txt`, imposto por
+`scripts/check_runtime_profile.py`.
+
+| Componente | Contrato | Onde |
+| --- | --- | --- |
+| Python | 3.11 | runtime relocável/embutido no pacote; venv apenas em desenvolvimento |
+| OCR primário | **RapidOCR obrigatório** (`rapidocr-onnxruntime` + `onnxruntime`), modelos dentro da wheel | `requirements-rapidocr.txt` |
+| OpenCV | **exatamente uma** distribuição: `opencv-python==5.0.0.93` | `requirements.txt` |
+| PaddleOCR / PaddlePaddle / PaddleX | **não empacotados** — capacidade opcional, código preservado | `requirements-paddle.txt` |
+| `opencv-contrib-python`, `opencv-python-headless` e variantes | **proibidos** — mesmo diretório `cv2/` | recusado pelo preflight |
+| Fallback de navegador (Selenium/Chrome) | separado/opcional; a descoberta HTTP não depende dele | `requirements.txt` + Chrome do sistema |
+
+Não empacotar Paddle **não** remove o suporte: `ocr_engine` importa `paddleocr` de forma
+preguiçosa, a disponibilidade é sondada por `importlib.util.find_spec` e
+`run_webtoon._configure_mode` trata a escalação Paddle como recuperação opcional nos dois
+modos. Sem a biblioteca, a escalação é pulada e a leitura do RapidOCR é mantida; quando o
+próprio gate do RapidOCR recusa a página, a falha é fechada e contabilizada
+(`paddle_error:ModuleNotFoundError`), nunca silenciosa.
+
 | Item | Estado |
 | --- | --- |
 | Baseline de empacotamento | **PRONTA** — pipeline congelado, manifests pinados, evidência de E2E registrada |
+| Perfil de runtime Beta | **DEFINIDO E PROVADO EM AMBIENTE LIMPO** — `requirements-beta.txt`, uma única distribuição de OpenCV, `pip check` limpo, preflight verde |
 | Instalação limpa em Windows | **NÃO PROVADA** — não existe validação em máquina limpa |
 | Instalador para usuário final | **NÃO EXISTE** — não há spec de build nem `Setup.exe` no repositório |
 | Modelo de atualização | **PARCIAL** — `update_installer.py`/`update_manifest.py`/`update_transport.py` implementam staging, ativação atômica e rollback; canal assinado e superfície de UI pendentes |
@@ -300,12 +343,40 @@ em Windows limpo, updater e distribuição Beta controlada. Nada disso é implem
 | ID | Risco | Estado |
 | --- | --- | --- |
 | `OPENCV-THRESHOLD-SENSITIVITY-001` | Limiares literais de pixel calibrados contra o `cv2` congelado; outra versão pode virar a classificação em regiões de fronteira. Trocar versão **ou variante** exige reexecutar o E2E de qualidade, não só a suíte. | **aberto** — detalhe em [Qualidade e validação](QUALITY_AND_VALIDATION.md) |
-| `OPENCV-VARIANT-SHADOWING-001` | Três variantes de OpenCV coexistem; shadowing de `sys.path` faz a variante `-headless` fornecer `cv2`, não a declarada como contratual. | **aberto** — ver [seção acima](#opencv-contrato-e-inconsistência-conhecida) |
-| `CLEAN-INSTALL-NOT-YET-PROVEN` | Nenhuma instalação limpa em Windows foi validada a partir dos manifests. | **aberto** |
+| `OPENCV-VARIANT-SHADOWING-001` | `paddleocr` → `paddlex` fixa `opencv-contrib-python==4.10.0.84`, que sobrescreve o mesmo diretório `cv2/` do `opencv-python==5.0.0.93` sem que o pip reporte conflito. A baseline do freeze foi produzida sobre **cv2 4.10.0**, não sobre o pin declarado. | **causa raiz identificada; corrigida no perfil Beta** — o perfil sem Paddle carrega cv2 5.0.0; a troca de versão ainda exige novo E2E por `OPENCV-THRESHOLD-SENSITIVITY-001`. Ver [seção acima](#opencv-contrato-e-inconsistência-conhecida) |
+| `CLEAN-INSTALL-NOT-YET-PROVEN` | Nenhuma instalação limpa em Windows foi validada a partir dos manifests. | **aberto** — o perfil de runtime já instala e roda limpo (`requirements-beta.txt`); falta a máquina limpa |
+| `WINDOWS-VENV-LAUNCHER-PID-001` | Em venv de Windows, `Scripts\python.exe` é o *venvlauncher*: ele executa o interpretador base como **processo filho**. `Popen(sys.executable).pid` devolve o PID do stub, enquanto o processo Python real tem outro PID. Isso quebra qualquer contabilidade por PID (lease de worker, supervisão, identidade de runtime na UI). | **ambiente de desenvolvimento apenas** — ver [abaixo](#windows-venv-launcher-e-identidade-de-processo) |
 | Chrome/Selenium × TPM | Em máquinas afetadas por problemas de Microsoft Platform Crypto Provider / TPM, o Chrome pode falhar ao iniciar, inutilizando o fallback de navegador. A descoberta HTTP evita essa dependência para as fontes que a suportam. | **aberto, ambiente de desenvolvimento** — não altere TPM/BIOS/Windows Hello por causa disto |
 | Reconstrução de arte em textura | Regiões texturizadas/open-art podem render sob revisão de fidelidade. | **aberto** |
 | Naturalidade semântica PT-BR | Tradução gramatical mas semanticamente errada não é detectada por gate automático. | **aberto** |
 | Dependências declaradas e não usadas | Ver [candidatos a limpeza](#candidatos-a-limpeza-de-dependência). | **aberto, adiado para empacotamento** |
+
+## Windows venv launcher e identidade de processo
+
+Num venv de Windows, `Scripts\python.exe` não é o interpretador: é o `venvlauncher`
+(274 KB contra 103 KB do `python.exe` base), que **executa o interpretador base como
+processo filho**. Consequência medida:
+
+| Interpretador | `Popen(sys.executable).pid` vs `os.getpid()` do filho |
+| --- | --- |
+| `.venv\Scripts\python.exe` | divergem |
+| `.venv-beta\Scripts\python.exe` | divergem |
+| `python.exe` base (sem stub) | iguais |
+
+Qualquer contabilidade por PID — o lease do worker em `job_store`, a supervisão em
+`worker_supervisor`, a identidade de runtime exposta na UI — registra o PID do processo
+Python real e compara com o PID devolvido pelo `Popen`. Sob o stub, os dois nunca batem.
+
+Isso reprova cinco testes (`test_worker_process_loss`, `test_worker_supervision`,
+`test_runtime_forensics_contract`) em **qualquer** venv desta máquina, incluindo o `.venv`
+anterior a esta mudança. Executados por um interpretador sem stub, os mesmos cinco passam
+sem nenhuma alteração de código.
+
+**Isto não afeta o runtime da Beta.** O empacotamento previsto usa Python relocável/embutido,
+onde `sys.executable` é o interpretador de verdade e não existe stub — exatamente a linha
+"sem stub" da tabela. Copiar o `python.exe` base sobre `Scripts\python.exe` foi um
+instrumento de investigação em #84F53/#84F53R e **não** é requisito de packaging nem de
+desenvolvimento: não faça disso um passo de instalação.
 
 ## Troubleshooting
 

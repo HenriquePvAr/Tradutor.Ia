@@ -7,6 +7,12 @@
 # and NOT `opencv-python-headless`. The codebase only calls core/imgproc/photo/
 # imgcodecs APIs - no contrib module is used - so installing a contrib or headless
 # variant alongside this one only creates a conflicting `cv2` on sys.path.
+#
+# PaddleOCR is NOT declared here. It is an optional legacy fallback and lives in
+# `requirements-paddle.txt`, because `paddleocr` -> `paddlex[ocr]` hard-pins
+# `opencv-contrib-python==4.10.0.84`. Both distributions ship the same `cv2/`
+# directory, pip does not report the collision, and whichever installs last wins:
+# declaring both in one file silently replaces the contractual OpenCV build.
 numpy==2.3.5
 Pillow==12.3.0
 opencv-python==5.0.0.93
@@ -17,8 +23,6 @@ openai
 requests
 tqdm
 deep-translator
-paddlepaddle==3.2.2
-paddleocr
 torch
 transformers
 sentencepiece

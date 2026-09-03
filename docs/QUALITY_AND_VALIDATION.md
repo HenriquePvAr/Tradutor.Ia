@@ -799,20 +799,20 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   `opencv-python==5.0.0.93` — o pin é parte do contrato de qualidade, não uma preferência
   de versão. Enquanto o limiar não for substituído por uma medida normalizada, **trocar a
   versão ou a variante do OpenCV exige reexecutar o E2E de qualidade**, não apenas a suíte.
-- `OPENCV-VARIANT-SHADOWING-001` (**aberto, não corrigido**): o manifest declara
-  `opencv-python==5.0.0.93` como contratual e exclui explicitamente `opencv-contrib-python` e
-  `opencv-python-headless`. No ambiente de desenvolvimento que produziu a baseline do freeze,
-  porém, **as três variantes coexistem** — `opencv-python 5.0.0.93` e
-  `opencv-contrib-python 4.10.0.84` no site-packages do sistema, `opencv-python-headless
-  5.0.0.93` no site-packages do usuário. Como o site-packages do usuário precede o do sistema
-  em `sys.path`, foi observado que o módulo `cv2` efetivamente importado vem da árvore da
-  variante **headless**, não necessariamente do pacote declarado como contratual. As duas
-  distribuições 5.0.0.93 expõem a mesma versão de `cv2`, e é por isso que a suíte inteira
-  passa; **isso não é evidência de que o contrato está sendo respeitado em runtime**. Nada
-  foi removido e nenhum manifest foi alterado: fazer isso sob Quality Freeze invalidaria a
-  evidência de qualidade existente. O empacotamento **deve** convergir para uma única
-  distribuição de OpenCV selecionada e prová-lo com instalação limpa + E2E, não com a suíte.
-  Ver [Desenvolvimento](DEVELOPMENT.md#opencv-contrato-e-inconsistência-conhecida).
+- `OPENCV-VARIANT-SHADOWING-001` (**causa raiz identificada em #84F53/#84F53R; efeito sobre a
+  qualidade ainda não reexecutado**): o manifest declara `opencv-python==5.0.0.93` como
+  contratual, mas `paddleocr` depende de `paddlex`, que fixa
+  `opencv-contrib-python==4.10.0.84`. As duas distribuições instalam o **mesmo** diretório
+  `cv2/`; pip não reporta conflito algum (`pip check` limpo) e quem escreve por último vence.
+  Medição no venv que produziu a baseline do freeze: `pip list` mostra as duas, e
+  `cv2.__version__` responde **`4.10.0`**. Ou seja, **a baseline congelada foi produzida sobre
+  cv2 4.10.0**, não sobre o 5.0.0.93 declarado. A explicação anterior — shadowing entre
+  site-packages do usuário e do sistema — estava incorreta. O perfil Beta
+  (`requirements-beta.txt`) remove a aresta e `scripts/check_runtime_profile.py` recusa
+  ambiente ambíguo, mas isso **troca** a versão de `cv2` efetivamente carregada, o que por
+  `OPENCV-THRESHOLD-SENSITIVITY-001` acima exige um novo E2E real antes de considerar a
+  baseline preservada. Ver
+  [Desenvolvimento](DEVELOPMENT.md#opencv-contrato-e-inconsistência-conhecida).
 
 O comportamento de produção está atualmente congelado: ver [Quality Freeze](QUALITY_FREEZE.md).
 

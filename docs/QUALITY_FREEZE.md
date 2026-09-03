@@ -1,6 +1,6 @@
 # Quality Freeze
 
-> **Base verificada:** `a6a46e4` (branch `fix/main-e2e-findings`) · **Revisado em:** 2026-09-03
+> **Base verificada:** `5ebd77e` (branch `beta/packaging`) · **Revisado em:** 2026-09-03
 >
 > [Voltar ao índice](README.md) · [Qualidade e validação](QUALITY_AND_VALIDATION.md)
 
@@ -72,5 +72,19 @@ O freeze não é levantado por uma suíte verde. Ele é levantado quando:
 2. existir instalação limpa em Windows reproduzível a partir dos manifests;
 3. um novo E2E real for executado sobre essa instalação limpa e comparado com a evidência
    acima.
+
+### Estado em `beta/packaging` (#84F53R)
+
+| Condição | Estado |
+| --- | --- |
+| 1 — OpenCV único e igual ao declarado | **ATENDIDA no perfil Beta** — `requirements-beta.txt` resolve uma única distribuição (`opencv-python==5.0.0.93`), `pip check` limpo, `scripts/check_runtime_profile.py` verde, `cv2.__version__ == 5.0.0` |
+| 2 — instalação limpa reproduzível | **PARCIAL** — o perfil instala e roda limpo a partir dos manifests; falta a máquina Windows limpa |
+| 3 — novo E2E real sobre essa instalação | **NÃO EXECUTADO** |
+
+**O freeze continua ATIVO.** A condição 1 foi atendida *trocando* o `cv2` efetivamente
+carregado de 4.10.0 para 5.0.0 — exatamente a mudança que
+`OPENCV-THRESHOLD-SENSITIVITY-001` diz exigir um E2E real. Até esse E2E existir, a baseline
+de qualidade **não** está provada sob o runtime Beta, e a suíte verde não substitui essa
+prova.
 
 Até lá, qualquer mudança de comportamento de produção precisa carregar seu próprio E2E.

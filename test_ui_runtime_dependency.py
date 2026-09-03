@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent
 APP_UI_SOURCE = (ROOT / "app_ui.py").read_text(encoding="utf-8")
 REQUIREMENTS_TXT = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 REQUIREMENTS_DEV_TXT = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+REQUIREMENTS_BETA_TXT = (ROOT / "requirements-beta.txt").read_text(encoding="utf-8")
 WORKFLOW = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
 
 _PIN_RE = re.compile(r"(?im)^\s*nicegui\s*==\s*([^\s#]+)\s*$")
@@ -62,11 +63,18 @@ class UiRuntimeDependencyTests(unittest.TestCase):
                 "requirements.txt.",
             )
 
-    def test_ci_installs_requirements_txt(self) -> None:
+    def test_ci_installs_a_manifest_that_resolves_requirements_txt(self) -> None:
+        # CI installs the Beta runtime profile, which composes requirements.txt rather
+        # than restating it. What this guard protects is the chain, not the filename:
+        # the nicegui pin must still reach the runner.
         self.assertIn(
-            "pip install -r requirements.txt", WORKFLOW,
-            "Hermetic Tests workflow must install requirements.txt for the nicegui "
-            "pin to reach the CI runner.",
+            "pip install -r requirements-beta.txt", WORKFLOW,
+            "Hermetic Tests workflow must install the Beta runtime profile.",
+        )
+        self.assertIn(
+            "-r requirements.txt", REQUIREMENTS_BETA_TXT,
+            "requirements-beta.txt must include requirements.txt for the nicegui pin "
+            "to reach the CI runner.",
         )
 
     def test_nicegui_is_importable_in_this_interpreter(self) -> None:
