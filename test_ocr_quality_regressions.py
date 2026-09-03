@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 import cv2
 import numpy as np
+
+from test_support import cv_text
 import config
 
 from ocr_balloon import (
@@ -418,8 +420,8 @@ class OCRQualityRegressionTests(unittest.TestCase):
         image = np.full((260, 420, 3), 255, dtype=np.uint8)
         boxes = []
         for text, (x, y) in rows:
-            cv2.putText(image, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                        (10, 10, 10), 2)
+            cv_text.putText(image, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                            (10, 10, 10), 2)
             boxes.append((x, y - 22, 12 * len(text), 28))
         return image, boxes
 
@@ -3333,8 +3335,8 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertIn(group, get_translatable_groups([group]))
 
         image = np.full((220, 420, 3), 255, dtype=np.uint8)
-        cv2.putText(image, "AGH", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 2,
-                    (0, 0, 0), 4)
+        cv_text.putText(image, "AGH", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 2,
+                        (0, 0, 0), 4)
         original = image.copy()
         final, _ = render_analyzed_image(original, [], [], [group])
 
@@ -3352,8 +3354,8 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertTrue(group.translation_valid, group.translation_validation_reason)
 
         image = np.full((220, 420, 3), 255, dtype=np.uint8)
-        cv2.putText(image, "GET UP", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 2,
-                    (0, 0, 0), 4)
+        cv_text.putText(image, "GET UP", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 2,
+                        (0, 0, 0), 4)
         original = image.copy()
         render_analyzed_image(original, [], [], [group])
 
@@ -3370,8 +3372,8 @@ class OCRQualityRegressionTests(unittest.TestCase):
         self.assertTrue(group.translation_valid, group.translation_validation_reason)
 
         image = np.full((220, 420, 3), 255, dtype=np.uint8)
-        cv2.putText(image, "No", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 2,
-                    (0, 0, 0), 4)
+        cv_text.putText(image, "No", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 2,
+                        (0, 0, 0), 4)
         render_analyzed_image(image.copy(), [], [], [group])
         self.assertTrue(group.redrawn)
 
@@ -3624,7 +3626,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
     def test_visual_guard_ignores_cleaned_text_edges_near_safe_boundary(self):
         original = np.full((120, 260, 3), 255, dtype=np.uint8)
-        cv2.putText(
+        cv_text.putText(
             original,
             "STORY",
             (70, 42),
@@ -3813,12 +3815,16 @@ class OCRQualityRegressionTests(unittest.TestCase):
     def test_white_balloon_with_dark_styled_border_remains_white(self):
         image = np.full((240, 320, 3), 255, dtype=np.uint8)
         cv2.ellipse(image, (160, 120), (112, 72), 0, 0, 360, (0, 0, 0), 10)
-        cv2.putText(
+        # 0.95 under OpenCV 5 reproduces the ink profile OpenCV 4 drew at
+        # 0.72 (dark .092, white .871, std 73, edge .065): OpenCV 5's Hershey
+        # glyphs are smaller and tracked tighter for the same fontScale.
+        # See test_support/cv_text.py.
+        cv_text.putText(
             image,
             "STORY TEXT",
             (82, 128),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.72,
+            0.95,
             (0, 0, 0),
             2,
             cv2.LINE_AA,
@@ -3846,12 +3852,15 @@ class OCRQualityRegressionTests(unittest.TestCase):
         image = np.zeros((240, 320, 3), dtype=np.uint8)
         cv2.ellipse(image, (160, 120), (86, 68), 0, 0, 360, (255, 255, 255), -1)
         cv2.ellipse(image, (160, 120), (86, 68), 0, 0, 360, (15, 15, 15), 18)
-        cv2.putText(
+        # 0.95 under OpenCV 5 reproduces the ink profile OpenCV 4 drew at
+        # 0.72 (dark .087, white .897, std 69, edge .038).
+        # See test_support/cv_text.py.
+        cv_text.putText(
             image,
             "I CAN!",
             (112, 130),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.72,
+            0.95,
             (0, 0, 0),
             2,
             cv2.LINE_AA,
@@ -3899,7 +3908,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
     def test_open_white_narration_is_detected_without_balloon_flag(self):
         image = np.full((180, 640, 3), 255, dtype=np.uint8)
-        cv2.putText(
+        cv_text.putText(
             image,
             "I DID NOT CHANGE MYSELF",
             (90, 100),
@@ -4016,11 +4025,11 @@ class OCRQualityRegressionTests(unittest.TestCase):
         image = np.full((180, 360, 3), (95, 125, 155), dtype=np.uint8)
         for x in range(0, 360, 18):
             cv2.line(image, (x, 0), (min(359, x + 80), 179), (50, 70, 90), 2)
-        cv2.putText(
+        cv_text.putText(
             image, "SPOKEN TEXT", (40, 100), cv2.FONT_HERSHEY_SIMPLEX,
             1.0, (0, 0, 0), 7, cv2.LINE_AA,
         )
-        cv2.putText(
+        cv_text.putText(
             image, "SPOKEN TEXT", (40, 100), cv2.FONT_HERSHEY_SIMPLEX,
             1.0, (255, 255, 255), 2, cv2.LINE_AA,
         )
@@ -4066,19 +4075,19 @@ class OCRQualityRegressionTests(unittest.TestCase):
     def test_caption_overlay_is_limited_to_separate_line_polygons(self):
         image = np.full((180, 360, 3), (110, 145, 175), dtype=np.uint8)
         cv2.line(image, (0, 160), (350, 10), (40, 70, 90), 3)
-        cv2.putText(
+        cv_text.putText(
             image, "TEXT OVER", (48, 72), cv2.FONT_HERSHEY_SIMPLEX,
             0.75, (0, 0, 0), 6, cv2.LINE_AA,
         )
-        cv2.putText(
+        cv_text.putText(
             image, "TEXT OVER", (48, 72), cv2.FONT_HERSHEY_SIMPLEX,
             0.75, (255, 255, 255), 2, cv2.LINE_AA,
         )
-        cv2.putText(
+        cv_text.putText(
             image, "TEXTURE", (75, 126), cv2.FONT_HERSHEY_SIMPLEX,
             0.75, (0, 0, 0), 6, cv2.LINE_AA,
         )
-        cv2.putText(
+        cv_text.putText(
             image, "TEXTURE", (75, 126), cv2.FONT_HERSHEY_SIMPLEX,
             0.75, (255, 255, 255), 2, cv2.LINE_AA,
         )
@@ -4123,7 +4132,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
     def test_short_unknown_text_with_white_context_uses_light_region_cleanup(self):
         image = np.full((180, 360, 3), 255, dtype=np.uint8)
-        cv2.putText(
+        cv_text.putText(
             image,
             "WAIT",
             (138, 99),
@@ -4714,7 +4723,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
     def test_open_dark_semantic_text_is_a_safe_narration_region(self):
         image = np.zeros((220, 700, 3), dtype=np.uint8)
-        cv2.putText(
+        cv_text.putText(
             image,
             "CONTENT WARNING FOR READERS",
             (80, 120),
@@ -4737,7 +4746,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
     def test_short_phrase_on_clean_white_context_is_not_treated_as_art(self):
         image = np.full((220, 500, 3), 255, dtype=np.uint8)
-        cv2.putText(
+        cv_text.putText(
             image,
             "GO NOW",
             (160, 120),
@@ -4814,7 +4823,7 @@ class OCRQualityRegressionTests(unittest.TestCase):
 
     def test_uniform_dark_line_mask_covers_light_antialias_pixels(self):
         image = np.zeros((120, 260, 3), dtype=np.uint8)
-        cv2.putText(
+        cv_text.putText(
             image,
             "STORY",
             (72, 72),
@@ -4967,7 +4976,7 @@ def _open_narration_group(text="THE NIGHT WAS ALREADY OVER"):
 def _dark_narration_image(background):
     """Light narration lettering drawn on ``background``."""
     image = background
-    cv2.putText(
+    cv_text.putText(
         image,
         "THE NIGHT WAS",
         (96, 285),
@@ -5058,7 +5067,7 @@ class UniformDarkOpenRegionTests(unittest.TestCase):
 
     def test_open_light_region_classification_is_not_changed(self):
         image = np.full((700, 700, 3), 255, dtype=np.uint8)
-        cv2.putText(
+        cv_text.putText(
             image,
             "THE NIGHT WAS",
             (96, 285),
@@ -5236,7 +5245,7 @@ def _dark_dialogue_fixture(text):
     """An ordinary dark speech balloon: light lettering on a flat dark fill."""
     image = np.full((400, 520, 3), 240, dtype=np.uint8)
     cv2.ellipse(image, (260, 200), (170, 95), 0, 0, 360, (26, 26, 26), -1)
-    cv2.putText(
+    cv_text.putText(
         image,
         "ABCD",
         (205, 214),

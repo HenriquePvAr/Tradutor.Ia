@@ -21,6 +21,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from test_support import cv_text
+
 import human_translation_decisions as htd
 import linguistic_triage as lt
 import preview_gates as pg
@@ -49,8 +51,12 @@ def _page(width=400, height=300, *, dark=False):
 def _draw_text(page, box, text, *, dark_text=True):
     x, y, w, h = box
     colour = (20, 20, 20) if dark_text else (245, 245, 245)
-    cv2.putText(page, text, (x + 6, y + h - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                0.6, colour, 2, cv2.LINE_AA)
+    # 0.79 under OpenCV 5 spans the width OpenCV 4 drew at 0.6: OpenCV 5's
+    # Hershey glyphs and tracking are ~18% tighter for the same fontScale, and
+    # the residual-expansion gates below measure where the lettering reaches.
+    # See test_support/cv_text.py.
+    cv_text.putText(page, text, (x + 6, y + h - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.79, colour, 2, cv2.LINE_AA)
     return page
 
 
@@ -312,8 +318,8 @@ class PreviewGates(unittest.TestCase):
         draft[y:y + h, x:x + w] = 30 if dark else 240
         if clip:
             # Text that runs to the very edge of its own box.
-            cv2.putText(draft, new_text, (x, y + h - 2), cv2.FONT_HERSHEY_SIMPLEX,
-                        1.4, (245, 245, 245) if dark else (20, 20, 20), 3, cv2.LINE_AA)
+            cv_text.putText(draft, new_text, (x, y + h - 2), cv2.FONT_HERSHEY_SIMPLEX,
+                            1.4, (245, 245, 245) if dark else (20, 20, 20), 3, cv2.LINE_AA)
         else:
             _draw_text(draft, box, new_text, dark_text=not dark)
         if draw_outside:

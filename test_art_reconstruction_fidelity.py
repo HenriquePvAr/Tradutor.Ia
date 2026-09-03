@@ -25,6 +25,8 @@ import unittest
 import cv2
 import numpy as np
 
+from test_support import cv_text
+
 import ocr_balloon as ob
 import ocr_line_provenance
 from ocr_engine import OCRLine
@@ -65,10 +67,10 @@ def _texture_canvas(shape=(320, 900), seed=11, base=150, amplitude=45):
 def _outlined_lettering(canvas, text, origin, *, glyph=(20, 20, 20),
                         outline=(255, 255, 255), scale=2.6):
     """Draw the two visual components of outlined lettering: outline then body."""
-    cv2.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale,
-                outline, 20, cv2.LINE_AA)
-    cv2.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale,
-                glyph, 7, cv2.LINE_AA)
+    cv_text.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale,
+                    outline, 20, cv2.LINE_AA)
+    cv_text.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale,
+                    glyph, 7, cv2.LINE_AA)
     return canvas
 
 
@@ -117,10 +119,10 @@ def _dark_display_lettered_case():
         cv2.circle(image, (int(x), int(y)), 1, (125, 180, 190), -1)
     text = "STORY LINE HERE"
     origin = (100, 450)
-    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 2.0,
-                (255, 245, 190), 18, cv2.LINE_AA)
-    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 2.0,
-                (255, 120, 40), 6, cv2.LINE_AA)
+    cv_text.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 2.0,
+                    (255, 245, 190), 18, cv2.LINE_AA)
+    cv_text.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 2.0,
+                    (255, 120, 40), 6, cv2.LINE_AA)
     (tw, th), baseline = cv2.getTextSize(
         text, cv2.FONT_HERSHEY_SIMPLEX, 2.0, 18)
     group = _group(
@@ -480,8 +482,8 @@ class ArtFidelityEvidenceContract(unittest.TestCase):
     def test_flat_balloon_reconstruction_is_not_marked_uncertain(self):
         image = np.full((320, 900, 3), 252, dtype=np.uint8)
         text = "REAL COFFEE."
-        cv2.putText(image, text, (60, 200), cv2.FONT_HERSHEY_SIMPLEX, 2.6,
-                    (20, 20, 20), 7, cv2.LINE_AA)
+        cv_text.putText(image, text, (60, 200), cv2.FONT_HERSHEY_SIMPLEX, 2.6,
+                        (20, 20, 20), 7, cv2.LINE_AA)
         (tw, th), baseline = cv2.getTextSize(
             text, cv2.FONT_HERSHEY_SIMPLEX, 2.6, 7)
         group = _group([_line(text, (52, 200 - th - 12, tw + 16,

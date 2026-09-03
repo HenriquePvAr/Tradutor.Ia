@@ -16,6 +16,8 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
+from test_support import cv_text
+
 import config
 import ocr_balloon
 import source_completeness
@@ -76,7 +78,7 @@ def _textured_dark_panel(shape=(1400, 800)):
 
 
 def _write_light_text(image, text, origin, scale=0.9):
-    cv2.putText(
+    cv_text.putText(
         image,
         text,
         origin,
@@ -201,9 +203,16 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
     def test_uniform_background_speech_still_uses_normal_strategy(self):
         image = np.full((240, 320, 3), 255, dtype=np.uint8)
         cv2.ellipse(image, (160, 120), (112, 72), 0, 0, 360, (0, 0, 0), 10)
-        cv2.putText(
+        # OpenCV 5's Hershey glyphs are smaller and tracked tighter for the
+        # same fontScale, so this balloon interior carries less ink than the
+        # one OpenCV 4 drew and lands close enough to the textured_art gate to
+        # flip part way through the strategy sequence.  0.95/3 reproduces
+        # OpenCV 4's outcome on all five strategies and stays on the uniform
+        # side across 0.85-1.05, rather than balancing on the gate.
+        # See test_support/cv_text.py.
+        cv_text.putText(
             image, "STORY TEXT", (82, 128), cv2.FONT_HERSHEY_SIMPLEX,
-            0.72, (0, 0, 0), 2, cv2.LINE_AA,
+            0.95, (0, 0, 0), 3, cv2.LINE_AA,
         )
         group = _speech_group([_line("STORY TEXT", (78, 92, 164, 50))], "STORY TEXT")
         group.inside_balloon_like_region = True
@@ -366,7 +375,7 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
             [np.array([[360, 0], [800, 0], [800, 220], [430, 220]], dtype=np.int32)],
             (204, 204, 204),
         )
-        cv2.putText(
+        cv_text.putText(
             image,
             "IT COST ME",
             (92, 92),
@@ -376,7 +385,7 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
             5,
             cv2.LINE_AA,
         )
-        cv2.putText(
+        cv_text.putText(
             image,
             "EVERYTHING",
             (60, 155),
