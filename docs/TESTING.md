@@ -58,6 +58,50 @@ O `pytest.ini` exclui os marcadores `network` e `manual` por padrão. Os
 marcadores disponíveis são `unit`, `integration`, `network`, `manual` e
 `slow`.
 
+A mesma base também roda pelo runner do `unittest`:
+
+```powershell
+python -m unittest discover
+```
+
+## Suítes de frontend (`.mjs`)
+
+As 14 suítes `test_*.mjs` na raiz cobrem o frontend: leitor de capítulo, ciclo de vida de
+sessão, comunidade, health e caminhos de publicação. Elas não usam DOM real, timers nem rede.
+
+```powershell
+node --experimental-vm-modules test_chapter_reader.mjs
+```
+
+Rodar todas:
+
+```powershell
+Get-ChildItem test_*.mjs | ForEach-Object { node --experimental-vm-modules $_.Name }
+```
+
+> **A flag `--experimental-vm-modules` é obrigatória.** Onze das quatorze suítes montam os
+> módulos do frontend com `vm.SourceTextModule`, que só existe sob essa flag. Sem ela o Node
+> não falha na importação: cada teste falha individualmente com
+> `vm.SourceTextModule is not a constructor`, o que parece defeito de produto e é apenas erro
+> de invocação. `test_chapter_reader.mjs` e `test_service_health.mjs` rodam sem a flag
+> (documentam `// Run: node <arquivo>.mjs` no cabeçalho); usar a flag em todas é o caminho
+> uniforme.
+
+A versão de Node auditada é a **24**, a mesma da CI.
+
+**A CI não executa as suítes `.mjs`** — ela roda apenas `node --check` de sintaxe sobre os
+arquivos de `static/`. As suítes de frontend são responsabilidade da execução local.
+
+## Serviço Better Auth
+
+```powershell
+cd apps/auth-service
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
+
 ## Smokes de rede: somente manual e opt-in
 
 Os smokes não usam prefixo `test_` e não participam de discovery, CI, IDE ou

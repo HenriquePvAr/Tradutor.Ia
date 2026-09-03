@@ -1076,7 +1076,7 @@ ambíguo é indistinguível de uma tradução correta.
 `evaluate_local_fidelity()`, alimentado por `TextGroup.page_context_texts` (as demais regiões
 da mesma página, montado uma vez em `validate_and_retry_translations`). Contrato de três
 evidências obrigatórias, descrito em
-[QUALITY_AND_VALIDATION.md](../QUALITY_AND_VALIDATION.md) e em
+[QUALITY_AND_VALIDATION.md](QUALITY_AND_VALIDATION.md) e em
 [DOCUMENTACAO_TECNICA.md](technical/DOCUMENTACAO_TECNICA.md). Nenhum
 literal de capítulo, nenhuma condição por página, nenhum ramo por termo: a tabela é o dado, e
 o teste `test_the_rule_is_the_table_and_nothing_else` prova que remover a entrada apaga o achado.

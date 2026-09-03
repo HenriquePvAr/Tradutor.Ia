@@ -1,8 +1,11 @@
 # Instalação
 
-Este guia prepara o ambiente local do Tradutor.IA no cenário atualmente auditado: Windows 64 bits, Python 3.11 e execução com Chrome.
+Este guia prepara o ambiente local do Tradutor.IA no cenário atualmente auditado: Windows 64 bits e Python 3.11.
 
-> [Voltar ao README](../README.md)
+> [Voltar ao README](../README.md) · [Desenvolvimento](DEVELOPMENT.md)
+>
+> Para setup de desenvolvimento, comandos de teste, dependências externas por tipo e riscos
+> conhecidos, use [Desenvolvimento](DEVELOPMENT.md). Este guia cobre a instalação em si.
 
 ## Pré-requisitos
 
@@ -11,10 +14,11 @@ Este guia prepara o ambiente local do Tradutor.IA no cenário atualmente auditad
 | Sistema operacional | Windows 11, 64 bits | É a plataforma validada pelo projeto |
 | Python | 3.11, 64 bits | O ambiente atual foi auditado com Python 3.11.9 |
 | Git | Versão recente | Usado para clonar e atualizar o repositório |
-| Google Chrome | Versão recente | Necessário para a coleta via Selenium |
-| Memória | 16 GB recomendados | PaddleOCR pode elevar bastante o uso de RAM e memória virtual |
+| Google Chrome | Versão recente | **Opcional/fallback.** A descoberta de fonte é HTTP-first; o Chrome só é iniciado quando esse caminho não se aplica à fonte |
+| Node.js | 24 | **Somente desenvolvimento**: suítes de frontend `.mjs` e serviço Better Auth. O pipeline não precisa dele |
+| Memória | 16 GB recomendados | Modelos de OCR e reconstrução podem elevar bastante o uso de RAM e memória virtual |
 | Disco | Espaço para modelos, caches e outputs | Capítulos completos podem gerar muitos arquivos intermediários |
-| NVIDIA API | Chave válida | Necessária para o provedor de tradução padrão |
+| Chave do provedor de tradução | `DEEPL_API_KEY` | DeepL é o provedor de tradução padrão. NVIDIA (Riva/Nemotron) só é necessária se você selecionar esses providers |
 
 O suporte end-to-end de Linux e macOS ainda não foi validado. O launcher possui um caminho POSIX para grupos de processos, mas isso não equivale a suporte integral do pipeline nessas plataformas.
 
@@ -68,6 +72,19 @@ opencv` mostrar mais de uma linha, desinstale as variantes extras antes de confi
 qualquer resultado de qualidade. Ver `OPENCV-THRESHOLD-SENSITIVITY-001` em
 [Qualidade e validação](QUALITY_AND_VALIDATION.md).
 
+> **Inconsistência aberta, não resolvida.** No ambiente de desenvolvimento que produziu a
+> baseline atual as três variantes coexistem, e foi observado que o `cv2` efetivamente
+> importado vem do site-packages **do usuário** — onde está a variante `-headless` — e não do
+> pacote declarado como contratual. A suíte passa inteira porque as duas distribuições
+> 5.0.0.93 expõem a mesma versão de `cv2`; isso não é evidência de que o contrato está sendo
+> respeitado em runtime. Registrado como `OPENCV-VARIANT-SHADOWING-001` em
+> [Desenvolvimento](DEVELOPMENT.md#riscos-conhecidos). Verifique com:
+>
+> ```powershell
+> python -m pip list | Select-String opencv
+> python -c "import cv2; print(cv2.__version__, cv2.__file__)"
+> ```
+
 Para o fluxo completo recomendado, instale os três conjuntos. Se pretende usar somente a CLI,
 NiceGUI é opcional. PaddleOCR continua útil para fallbacks de maior qualidade, mas não é
 requisito para executar o modo `quality` quando RapidOCR está disponível.
@@ -78,11 +95,13 @@ requisito para executar o modo `quality` quando RapidOCR está disponível.
 Copy-Item .env.example .env
 ```
 
-Abra `.env` e substitua apenas o placeholder da chave:
+Abra `.env` e substitua o placeholder da chave do provedor de tradução padrão:
 
 ```dotenv
-NVIDIA_API_KEY=sua_chave_real
+DEEPL_API_KEY=<sua-chave>
 ```
+
+`NVIDIA_API_KEY` só é necessária se você selecionar os providers Riva ou Nemotron.
 
 Não versione `.env`, não cole a chave em comandos e não a inclua em relatórios. Os demais defaults são documentados em [Configuração](CONFIGURATION.md).
 
@@ -91,8 +110,9 @@ Não versione `.env`, não cole a chave em comandos e não a inclua em relatóri
 PaddleOCR é instalado pelo arquivo principal de requisitos. Na primeira inicialização de uma variante de modelo, a biblioteca pode buscar os arquivos oficiais correspondentes. O código usa:
 
 - RapidOCR/ONNX Runtime como OCR primário dos modos `fast` e `quality`;
-- PaddleOCR completo como fallback opcional de maior qualidade;
-- `PP-OCRv4_mobile_det` e reconhecimento mobile nos fallbacks leves;
+- recuperação regional limitada, também com RapidOCR, para regiões duvidosas;
+- PaddleOCR apenas como compatibilidade legacy, opt-in por `OCR_LEGACY_PADDLE_FALLBACK`
+  (desligado por padrão) — ele não roda automaticamente em regiões suspeitas;
 
 Planeje a primeira execução com conexão disponível e espaço em disco. O projeto não exige que modelos sejam copiados manualmente para uma pasta interna do repositório.
 
@@ -100,7 +120,17 @@ Tesseract está presente apenas como caminho opcional de compatibilidade. Ele n�
 
 ## 6. Chrome e ChromeDriver
 
-O downloader inicia o Chrome em modo headless. A resolução do driver segue esta ordem:
+O Chrome é o **caminho de fallback**, não o principal. Para fontes cujo adapter suporta
+descoberta por HTTP, o pipeline resolve as páginas com um GET limitado e sem cookies e não
+inicia navegador nenhum. Consulte
+[Arquitetura § Descoberta de fonte](ARCHITECTURE.md#descoberta-de-fonte).
+
+> Problema conhecido em máquina de desenvolvimento: em sistemas afetados por problemas de
+> Microsoft Platform Crypto Provider / TPM, o Chrome pode falhar ao iniciar e inutilizar o
+> fallback. A descoberta HTTP evita essa dependência para as fontes que a suportam.
+
+Quando o fallback é usado, o downloader inicia o Chrome em modo headless. A resolução do
+driver segue esta ordem:
 
 1. `CHROMEDRIVER_PATH`, quando configurado e válido;
 2. `chromedriver` ou `chromedriver.exe` já disponível no `PATH`;
@@ -154,7 +184,9 @@ Abra `http://127.0.0.1:8080`. A UI valida a existência do `.env` e da `NVIDIA_A
 python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast --no-context
 ```
 
-O modo `fast` seleciona RapidOCR com salvaguardas e fallback Paddle. Para iniciar diretamente com PaddleOCR:
+RapidOCR é o engine primário nos dois modos. O modo `fast` mantém os fallbacks pesados
+desativados; o modo `quality` habilita os caminhos de recuperação e validação mais caros,
+incluindo validação de OCR pós-render:
 
 ```powershell
 python run_webtoon.py "<URL_DO_CAPITULO>" --mode quality --no-context

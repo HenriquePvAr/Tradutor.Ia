@@ -1,6 +1,8 @@
 # Documentação do Tradutor IA
 
-> **Base verificada:** branch `fix/main-e2e-findings` · **Revisado em:** 2026-08-20
+> **Base verificada:** `a6a46e4` (branch `fix/main-e2e-findings`) · **Revisado em:** 2026-09-03
+>
+> O comportamento de produção está sob **[Quality Freeze](QUALITY_FREEZE.md)**.
 
 Esta é a página inicial da documentação. Comece pelo documento certo para o seu papel.
 
@@ -39,7 +41,8 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 
 ### Arquitetura e execução
 
-- [Arquitetura](ARCHITECTURE.md) — módulos, fluxos, cache, launcher e artefatos
+- [Arquitetura](ARCHITECTURE.md) — módulos, fluxos, descoberta de fonte, OCR, tradução, entidades, reconstrução, render e artefatos
+- [Desenvolvimento](DEVELOPMENT.md) — setup, execução, testes, dependências externas, empacotamento e riscos conhecidos
 - [Fila de worker persistente](WORKER_QUEUE.md) — processos, estados, cancelamento e recuperação
 
 ### Fontes de capítulo
@@ -51,7 +54,8 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 
 ### Qualidade
 
-- [Qualidade e validação](QUALITY_AND_VALIDATION.md) — gates, fallbacks, retries e estados terminais
+- [Qualidade e validação](QUALITY_AND_VALIDATION.md) — gates, fallbacks, retries, estados terminais e riscos abertos
+- [Quality Freeze](QUALITY_FREEZE.md) — o que está congelado, a evidência e como sair do freeze
 - [Taxonomia semântica e auditoria linguística](../SEMANTIC_CLASSIFICATION_AUDIT.md)
 
 ### Comunidade, autenticação e armazenamento
@@ -87,23 +91,32 @@ em que foram escritos e **não** substituem os documentos primários:
 
 | Área | Estado |
 | --- | --- |
-| Pipeline ponta a ponta | ✅ implementado |
+| Pipeline ponta a ponta | ✅ implementado, sob [Quality Freeze](QUALITY_FREEZE.md) |
+| Descoberta de fonte HTTP-first | ✅ implementado — usada pelas fontes cujo adapter a suporta |
+| Fallback de navegador (Chrome/Selenium) | ✅ implementado — caminho normal das demais fontes |
+| OCR RapidOCR como engine primário | ✅ implementado |
+| PaddleOCR | ⛔ desligado por padrão — compatibilidade legacy opt-in |
+| Tradução DeepL como provider padrão | ✅ implementado |
+| Ledger de terminologia e registro de personagens | ✅ implementado |
 | Fila persistente e worker independente | ✅ implementado |
 | Detecção de crash duro e reconciliação | ✅ implementado |
 | Supervisão do worker pelo launcher | ✅ implementado |
 | Isolamento hermético dos testes | ✅ implementado |
-| Cobertura story-text / resíduo físico | ✅ **CLOSED** no TDD #76: `ordinary_story_physical_residual_count=0`, 100 story regions renderizadas limpas, 4 reviews preservados como SFX/OCR ambíguo não-story |
-| Reconstrução visual de arte | ⚠️ aberta — ghost text e patches planos sobre textura viram alvo do TDD #80 |
-| Qualidade semântica/natural PT-BR | ⚠️ aberta — tradução em português ainda pode perder sentido; alvo do TDD #81 |
-| Leitor PDF integrado | ✅ implementado — TDD #83 (aba **Leitor**, ação **LER** no Histórico) |
+| Reconstrução visual de arte | ⚠️ funcional; fidelidade em regiões texturizadas continua eixo aberto |
+| Qualidade semântica/natural PT-BR | ⚠️ aberta — tradução gramatical pode perder sentido sem gate automático |
+| Refinamento natural PT-BR (Nemotron) | ⚠️ **não automático** — sugestão manual e explicitamente autorizada na revisão |
+| Leitor PDF integrado | ✅ implementado (aba **Leitor**, ação **LER** no Histórico) |
+| Histórico | ✅ implementado |
 | Comunidade (Supabase + Drive) | ✅ implementado, fail-closed se não configurado |
-| Licenciamento de tester | ✅ schema/RLS/RPC remotos aplicados no TDD #78; primeiro tester real ainda não criado |
+| Licenciamento de tester | ✅ schema/RLS/RPC remotos aplicados; primeiro tester real ainda não criado |
 | Retomada de job interrompido pela UI | ⚠️ parcial — API existe, controle na interface não |
-| Instalador para usuário final | ⏳ em desenvolvimento |
-| Atualizador assinado | ⚠️ parcial — canal/chave/UI pendentes |
-| Validação em VM Windows limpa | ⏳ em desenvolvimento |
+| Instalador para usuário final | ⛔ não existe — sem spec de build no repositório |
+| Atualizador | ⚠️ parcial — staging/ativação atômica/rollback existem; canal assinado e UI pendentes |
+| Validação em Windows limpo | ⛔ não provada |
+| Variante única de OpenCV em runtime | ⛔ não convergida — ver `OPENCV-VARIANT-SHADOWING-001` |
 
-Detalhamento em [Documentação Técnica §2](technical/DOCUMENTACAO_TECNICA.md#2-escopo-atual-do-produto)
+Detalhamento em [Desenvolvimento](DEVELOPMENT.md),
+[Documentação Técnica §2](technical/DOCUMENTACAO_TECNICA.md#2-escopo-atual-do-produto)
 e [§29 Dívida técnica](technical/DOCUMENTACAO_TECNICA.md#29-dívida-técnica-conhecida).
 
 ---

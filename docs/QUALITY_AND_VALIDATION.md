@@ -773,6 +773,15 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   é o resíduo do tiling. Sem lexicon PT-BR o erro pende para o lado seguro: um cognato pode
   segurar a região, que então recebe o retry seletivo sobre a fonte recuperada antes de
   qualquer descarte.
+- **Tipos de gate em vigor.** Um candidato precisa sobreviver, em sequência, a: qualidade
+  lexical do texto traduzido; resíduo de texto-fonte; fidelidade semântica
+  (`semantic_fidelity.py`, com `REVIEW_UNUSABLE` bloqueando o render); conflito de
+  terminologia contra o ledger do capítulo; consistência de nome próprio/entidade contra o
+  registro de personagens; proveniência de OCR (`ocr_line_provenance.py`); validação de
+  render (overflow, borda de balão, alteração fora da máscara, componente novo sobre arte
+  texturizada); segurança e fidelidade de reconstrução; e propagação de `review_required`
+  para o estado terminal do capítulo. Nenhum gate reescreve a resposta do provider: cada um
+  só decide entre aceitar, pedir retry, marcar revisão ou preservar os pixels de origem.
 - **Política Beta RapidOCR/Paddle (#84F25):** o padrão `quality_optimized` usa RapidOCR como
   engine primário e RapidOCR para recovery regional/local. Paddle é compatibilidade legacy
   explicitamente opt-in por `OCR_LEGACY_PADDLE_FALLBACK`; ele não roda automaticamente em
@@ -790,5 +799,21 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   `opencv-python==5.0.0.93` — o pin é parte do contrato de qualidade, não uma preferência
   de versão. Enquanto o limiar não for substituído por uma medida normalizada, **trocar a
   versão ou a variante do OpenCV exige reexecutar o E2E de qualidade**, não apenas a suíte.
+- `OPENCV-VARIANT-SHADOWING-001` (**aberto, não corrigido**): o manifest declara
+  `opencv-python==5.0.0.93` como contratual e exclui explicitamente `opencv-contrib-python` e
+  `opencv-python-headless`. No ambiente de desenvolvimento que produziu a baseline do freeze,
+  porém, **as três variantes coexistem** — `opencv-python 5.0.0.93` e
+  `opencv-contrib-python 4.10.0.84` no site-packages do sistema, `opencv-python-headless
+  5.0.0.93` no site-packages do usuário. Como o site-packages do usuário precede o do sistema
+  em `sys.path`, foi observado que o módulo `cv2` efetivamente importado vem da árvore da
+  variante **headless**, não necessariamente do pacote declarado como contratual. As duas
+  distribuições 5.0.0.93 expõem a mesma versão de `cv2`, e é por isso que a suíte inteira
+  passa; **isso não é evidência de que o contrato está sendo respeitado em runtime**. Nada
+  foi removido e nenhum manifest foi alterado: fazer isso sob Quality Freeze invalidaria a
+  evidência de qualidade existente. O empacotamento **deve** convergir para uma única
+  distribuição de OpenCV selecionada e prová-lo com instalação limpa + E2E, não com a suíte.
+  Ver [Desenvolvimento](DEVELOPMENT.md#opencv-contrato-e-inconsistência-conhecida).
+
+O comportamento de produção está atualmente congelado: ver [Quality Freeze](QUALITY_FREEZE.md).
 
 Para investigar uma execução sem apagar evidências, consulte [Troubleshooting](TROUBLESHOOTING.md).
