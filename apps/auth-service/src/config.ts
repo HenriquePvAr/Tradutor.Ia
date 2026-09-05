@@ -40,9 +40,12 @@ export function loadConfig(): AuthServiceConfig {
   }
   const port = parsePort(env("TRADUTOR_AUTH_SERVICE_PORT", "8787"));
   const baseUrl = env("BETTER_AUTH_URL", "http://127.0.0.1:8080");
+  const defaultUserRoot = process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, "TradutorIA")
+    : path.join(process.env.HOME || repoRoot, ".tradutoria");
   const db = env(
     "BETTER_AUTH_DATABASE_PATH",
-    path.join(repoRoot, ".cache", "runtime", "better-auth.sqlite3"),
+    path.join(defaultUserRoot, "runtime", "better-auth.sqlite3"),
   );
   const trustedOrigins = env("BETTER_AUTH_TRUSTED_ORIGINS", baseUrl)
     .split(",")
@@ -58,4 +61,3 @@ export function loadConfig(): AuthServiceConfig {
     googleEnabled: Boolean(env("GOOGLE_CLIENT_ID") && env("GOOGLE_CLIENT_SECRET")),
   };
 }
-

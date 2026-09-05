@@ -17,11 +17,12 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from output_manifest import MANIFEST_FILENAME, sanitize_run_slug, sanitize_source_url
+from runtime_paths import output_root, runtime_root
 
 
 REPO_ROOT = Path(__file__).resolve().parent
-OUTPUT_ROOT = REPO_ROOT / "output"
-HISTORY_PATH = REPO_ROOT / ".cache" / "ui_history.json"
+OUTPUT_ROOT = output_root()
+HISTORY_PATH = runtime_root() / "ui_history.json"
 
 # The canonical set of selectable translation providers, in one place.  It used
 # to be a `{"nemotron", "riva"}` literal repeated across six modules, which is

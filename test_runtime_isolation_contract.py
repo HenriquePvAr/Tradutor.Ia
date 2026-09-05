@@ -39,6 +39,7 @@ from hermetic_runtime import (
 )
 from job_store import JobStatus, JobStore
 from ui_history import UIHistoryStore
+from runtime_paths import default_user_data_root
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -97,10 +98,10 @@ class RealJobsDatabaseTripwireTests(unittest.TestCase):
         with self.assertRaises(RealRuntimeAccess):
             JobStore(REAL_JOBS_DB)
 
-    def test_the_module_default_still_names_the_real_db_so_the_guard_is_load_bearing(self):
-        """Production semantics are unchanged; only the test process refuses the path."""
-        self.assertEqual(ui_bridge.JOBS_DB_PATH, REAL_JOBS_DB)
-        self.assertTrue(is_real_runtime_path(ui_bridge.JOBS_DB_PATH))
+    def test_the_module_default_uses_user_data_not_the_legacy_repo_db(self):
+        """Beta defaults must be writable outside the installation directory."""
+        self.assertEqual(ui_bridge.JOBS_DB_PATH, Path(os.environ["TRADUTOR_TEST_RUNTIME_ROOT"]) / "jobs.sqlite3")
+        self.assertFalse(is_real_runtime_path(ui_bridge.JOBS_DB_PATH))
 
 
 class SqliteUriTripwireTests(unittest.TestCase):
@@ -193,11 +194,10 @@ class RealOutputTripwireTests(unittest.TestCase):
         with self.assertRaises(RealRuntimeAccess):
             REAL_UI_HISTORY_PATHS[0].write_text("[]", encoding="utf-8")
 
-    def test_a_default_history_store_cannot_discover_real_runs(self):
+    def test_a_default_history_store_no_longer_discovers_legacy_repo_runs(self):
         with tempfile.TemporaryDirectory(prefix="tradutor-history-") as folder:
             store = UIHistoryStore(Path(folder) / "ui_history.json")
-            with self.assertRaises(RealRuntimeAccess):
-                store.discover_outputs()
+            self.assertFalse(is_real_user_state_path(store.output_root))
 
     def test_an_isolated_output_root_discovers_its_own_runs_and_only_those(self):
         """Real discovery semantics, isolated data — not a mocked-away history."""
@@ -212,11 +212,11 @@ class RealOutputTripwireTests(unittest.TestCase):
             slugs = [record["slug"] for record in store.discover_outputs()]
         self.assertEqual(slugs, ["isolated_chapter_01"])
 
-    def test_production_construction_still_resolves_the_canonical_output_root(self):
+    def test_production_construction_resolves_the_user_data_output_root(self):
         """Name only — resolving the root does not enumerate it."""
         self.assertEqual(
             UIHistoryStore(Path(tempfile.gettempdir()) / "ui_history.json").output_root,
-            REAL_OUTPUT_ROOT,
+            default_user_data_root() / "output",
         )
 
     def test_the_real_output_root_was_never_read_or_modified(self):
@@ -270,21 +270,16 @@ class RealWorkerSpawnTripwireTests(unittest.TestCase):
         with self.assertRaises(RealRuntimeAccess):
             subprocess.Popen([sys.executable, "-c", "pass", "--db", str(REAL_JOBS_DB)])
 
-    def test_ensure_worker_cannot_start_the_real_worker(self):
-        """``ensure_worker`` routes to ``start_tradutor.start_worker`` (real DB + real spawn).
+    def test_ensure_worker_uses_the_isolated_runtime_inside_tests(self):
+        """``ensure_worker`` must never route tests to user runtime state.
 
-        It reports the failure instead of raising, so assert the refusal was recorded rather
-        than a worker having been started.
+        The launcher module resolves its DB at import time, so the hermetic runtime root
+        has to be visible to ``runtime_paths`` before the module is imported.
         """
-        def total() -> int:
-            return sum(len(values) for values in hermetic_runtime.ATTEMPTS.values())
-
-        before = total()
         import start_tradutor
 
-        with self.assertRaises(RealRuntimeAccess):
-            start_tradutor.start_worker()
-        self.assertGreater(total(), before)
+        self.assertEqual(start_tradutor.DB_PATH, Path(os.environ["TRADUTOR_TEST_RUNTIME_ROOT"]) / "jobs.sqlite3")
+        self.assertFalse(is_real_runtime_path(start_tradutor.DB_PATH))
 
 
 class IsolatedRuntimeVisibilityTests(unittest.TestCase):
@@ -292,6 +287,27 @@ class IsolatedRuntimeVisibilityTests(unittest.TestCase):
 
     def _bridge_root(self) -> Path:
         return Path(os.environ["TRADUTOR_TEST_RUNTIME_ROOT"])
+
+    def test_all_default_mutable_paths_stay_inside_test_root(self):
+        import runtime_paths
+
+        overrides = {key: "" for key in (
+            "CACHE_ROOT", "TEMP_FOLDER", "TEMP_OUT", "TRADUTOR_OUTPUT_ROOT",
+            "TRADUTOR_USER_DATA_ROOT", "TRADUTOR_RUNTIME_ROOT")}
+        with patch.dict(os.environ, overrides):
+            for resolver in (runtime_paths.runtime_root, runtime_paths.cache_root,
+                             runtime_paths.output_root, runtime_paths.temp_input_root,
+                             runtime_paths.temp_output_root):
+                resolved = resolver().resolve()
+                self.assertTrue(resolved == self._bridge_root() or self._bridge_root() in resolved.parents)
+
+    def test_installed_beta_runtime_and_output_are_guarded(self):
+        root = hermetic_runtime.REAL_BETA_USER_ROOT
+        self.assertTrue(is_real_runtime_path(root / "runtime" / "jobs.sqlite3"))
+        for name in ("cache", "output", "temp"):
+            self.assertTrue(is_real_user_state_path(root / name / "sentinel"))
+        with self.assertRaises(RealRuntimeAccess):
+            sqlite3.connect((root / "runtime" / "jobs.sqlite3").as_uri() + "?mode=ro", uri=True)
 
     def test_the_suite_runs_with_a_temporary_runtime_root(self):
         root = self._bridge_root()
@@ -358,32 +374,35 @@ class FailClosedConstructionTests(unittest.TestCase):
                 ui_bridge.UiBridge()
         self.assertEqual(str(caught.exception), "hermetic_test_runtime_root_required")
 
-    def test_production_runtime_resolution_semantics_are_unchanged(self):
-        """Outside the hermetic marker, resolution still points at the real runtime.
+    def test_production_runtime_resolution_uses_writable_user_data(self):
+        """Outside the hermetic marker, resolution no longer points into the repo.
 
         Read-only source inspection: no bridge is constructed, so nothing is opened.
         """
         source = (REPO_ROOT / "ui_bridge.py").read_text(encoding="utf-8")
-        self.assertIn('JOBS_DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"', source)
-        self.assertIn('(REPO_ROOT / ".cache" / "runtime").resolve()', source)
+        self.assertIn('JOBS_DB_PATH = DEFAULT_RUNTIME_ROOT / "jobs.sqlite3"', source)
+        self.assertIn('DEFAULT_RUNTIME_ROOT.resolve()', source)
         launcher = (REPO_ROOT / "start_tradutor.py").read_text(encoding="utf-8")
-        self.assertIn('DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"', launcher)
+        self.assertIn('DB_PATH = RUNTIME_ROOT / "jobs.sqlite3"', launcher)
 
-    def test_a_clean_production_interpreter_keeps_the_real_runtime_root(self):
+    def test_a_clean_production_interpreter_uses_user_data_runtime_root(self):
         environment = {
             key: value for key, value in os.environ.items()
             if key not in {
                 "TRADUTOR_TEST_RUNTIME_ROOT",
                 "TRADUTOR_IA_HERMETIC_TEST_ENV",
                 "TRADUTOR_IA_OFFLINE_TEST_GUARD",
+                "TRADUTOR_IA_RUNTIME_ISOLATION_GUARD",
+                "TRADUTOR_USER_DATA_ROOT",
+                "TRADUTOR_RUNTIME_ROOT",
                 "PYTHONPATH",
             }
         }
         completed = subprocess.run(
             [
                 sys.executable, "-c",
-                "import ui_bridge, hermetic_runtime;"
-                "print(hermetic_runtime.is_real_runtime_path(ui_bridge.JOBS_DB_PATH))",
+                "import runtime_paths;"
+                "print(runtime_paths.runtime_root() == runtime_paths.default_user_data_root() / 'runtime')",
             ],
             cwd=REPO_ROOT, env=environment, capture_output=True, text=True, timeout=120,
         )

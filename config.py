@@ -1,6 +1,7 @@
 import os
 
 from local_environment import load_local_environment
+from runtime_paths import cache_root, temp_input_root, temp_output_root
 
 
 load_local_environment()
@@ -59,8 +60,8 @@ except ImportError:
 FONT_PATH = _env_str("FONT_PATH", None)
 
 # Temporary folders. They are created/cleaned by the pipeline modules.
-TEMP_FOLDER = _env_str("TEMP_FOLDER", "capitulo_temp")
-TEMP_OUT = _env_str("TEMP_OUT", TEMP_FOLDER + "_out")
+TEMP_FOLDER = str(temp_input_root())
+TEMP_OUT = str(temp_output_root())
 
 # Download/OCR parameters.
 MAX_RETRIES_DOWNLOAD = _env_int("MAX_RETRIES_DOWNLOAD", 5)
@@ -224,7 +225,7 @@ ENABLE_OCR_CACHE = _env_bool("ENABLE_OCR_CACHE", True)
 ENABLE_TRANSLATION_CACHE = _env_bool("ENABLE_TRANSLATION_CACHE", True)
 ENABLE_IMAGE_PROCESS_CACHE = _env_bool("ENABLE_IMAGE_PROCESS_CACHE", True)
 ENABLE_DOWNLOAD_CACHE = _env_bool("ENABLE_DOWNLOAD_CACHE", True)
-CACHE_ROOT = _env_str("CACHE_ROOT", ".cache")
+CACHE_ROOT = str(cache_root())
 
 OCR_PARALLEL = _env_bool("OCR_PARALLEL", True)
 # Model-backed OCR is conservative by default. The legacy names remain

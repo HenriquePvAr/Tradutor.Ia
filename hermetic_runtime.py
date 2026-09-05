@@ -89,10 +89,20 @@ def _canonical_forms(value: str) -> tuple[str, ...]:
     return tuple(forms)
 
 
-_REAL_FORMS = _canonical_forms(str(REAL_RUNTIME_ROOT))
+# Keep the installed Beta's mutable data protected as well as legacy repo state.
+# Do not call runtime_paths here: its test-aware resolver intentionally redirects.
+REAL_BETA_USER_ROOT = (
+    Path(os.environ["LOCALAPPDATA"]) / "TradutorIA"
+    if os.environ.get("LOCALAPPDATA") else
+    Path(os.environ["XDG_STATE_HOME"]) / "TradutorIA"
+    if os.environ.get("XDG_STATE_HOME") else Path.home() / ".tradutoria"
+)
+_REAL_FORMS = (_canonical_forms(str(REAL_RUNTIME_ROOT))
+               + _canonical_forms(str(REAL_BETA_USER_ROOT / "runtime")))
 _REAL_USER_STATE_FORMS = _canonical_forms(str(REAL_OUTPUT_ROOT)) + tuple(
     form for path in REAL_UI_HISTORY_PATHS for form in _canonical_forms(str(path))
-)
+) + tuple(form for name in ("cache", "output", "temp")
+          for form in _canonical_forms(str(REAL_BETA_USER_ROOT / name)))
 
 
 def sqlite_uri_path(text: str) -> str | None:
@@ -147,7 +157,7 @@ def is_real_runtime_path(value: object) -> bool:
     """
 
     text = _as_text(value)
-    if text is None or ".cache" not in text.casefold():
+    if text is None or not any(part in text.casefold() for part in (".cache", "tradutoria")):
         return False  # cheap reject keeps the guard off the hot path of ordinary file I/O
     return _matches(text, _REAL_FORMS)
 
@@ -159,7 +169,7 @@ def is_real_user_state_path(value: object) -> bool:
     if text is None:
         return False
     lowered = text.casefold()
-    if "output" not in lowered and "ui_history" not in lowered and "ui_hidden_history" not in lowered:
+    if not any(part in lowered for part in ("output", "ui_history", "ui_hidden_history", "tradutoria")):
         return False
     return _matches(text, _REAL_USER_STATE_FORMS)
 

@@ -50,8 +50,15 @@ from ui_helpers import (
 from ui_history import UIHistoryStore, utc_now
 from chapter_quality_revision import (REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision,
                                       read_json, write_json)
-from beta_license import BetaAccessDecision, LicenseState, LocalDevelopmentBetaAuthorizer
+from beta_license import (
+    BetaAccessDecision,
+    LicenseState,
+    LocalDevelopmentBetaAuthorizer,
+    build_beta_license_authorizer,
+    stable_install_fingerprint_hash,
+)
 from review_rerun import build_pending_region_plan
+from runtime_paths import runtime_root
 import audit_registry
 import human_translation_decisions
 import human_mask_decisions
@@ -77,11 +84,12 @@ def _utc_now_iso() -> str:
 from audit_decisions import AuditDecisionStore
 
 
-PROFILE_PATH = REPO_ROOT / ".cache" / "ui_profile.json"
-PROFILE_MEDIA_DIR = REPO_ROOT / ".cache" / "ui_profile"
-JOBS_DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
+DEFAULT_RUNTIME_ROOT = runtime_root()
+PROFILE_PATH = DEFAULT_RUNTIME_ROOT / "ui_profile.json"
+PROFILE_MEDIA_DIR = DEFAULT_RUNTIME_ROOT / "ui_profile"
+JOBS_DB_PATH = DEFAULT_RUNTIME_ROOT / "jobs.sqlite3"
 WORKER_ENV_COMPATIBILITY_KEYS = ("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "CHROMEDRIVER_PATH")
-JOB_LOG_DIR = REPO_ROOT / ".cache" / "runtime" / "logs"
+JOB_LOG_DIR = DEFAULT_RUNTIME_ROOT / "logs"
 MAX_LOG_LINES = 3000
 SOURCE_ANALYSIS_TIMEOUT_SECONDS = 180
 REVIEW_RERUN_CANCEL_TIMEOUT_SECONDS = 15.0
@@ -113,6 +121,56 @@ _UI_STAGE_LABELS = {
     "review_rerun": "Rerun de pendências",
     "final": "Finalizado",
 }
+
+
+def _beta_license_provider_name(env: dict[str, str] | None = None) -> str:
+    values = os.environ if env is None else env
+    return str(values.get("BETA_LICENSE_PROVIDER", "") or "").strip().casefold()
+
+
+def _read_or_create_install_id(runtime_root: Path, env: dict[str, str] | None = None) -> str:
+    values = os.environ if env is None else env
+    configured = str(values.get("TRADUTOR_INSTALL_ID", "") or "").strip()
+    if configured:
+        return configured
+    path = Path(runtime_root) / "install_id"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        install_id = uuid.uuid4().hex
+        path.write_text(install_id + "\n", encoding="utf-8")
+        return install_id
+    except OSError as exc:
+        raise RuntimeError("install_id_unavailable") from exc
+
+
+def _build_ui_beta_access_authorizer(
+    runtime_root: Path,
+    *,
+    env: dict[str, str] | None = None,
+    transport=None,
+):
+    """Compose the Beta authorizer once, at the UI runtime boundary.
+
+    Local development remains explicit. Remote/provider-aware modes get a stable,
+    non-reversible device fingerprint and fail closed when their public config is
+    missing; they never silently downgrade to the local development authorizer.
+    """
+
+    provider = _beta_license_provider_name(env)
+    if provider in {"", "local_development", "local-dev"}:
+        return build_beta_license_authorizer(env, transport=transport)
+    install_id = _read_or_create_install_id(runtime_root, env)
+    machine_hint = platform.node() if provider == "supabase" else ""
+    return build_beta_license_authorizer(
+        env,
+        device_fingerprint_hash=stable_install_fingerprint_hash(
+            install_id, machine_hint),
+        transport=transport,
+    )
 MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
 PROFILE_MEDIA_TYPES = {
     ".jpeg": "image/jpeg",
@@ -360,7 +418,7 @@ class UiBridge:
             raise RuntimeError("hermetic_test_runtime_root_required")
         self.runtime_root = (
             Path(requested_root).expanduser().resolve()
-            if requested_root else (REPO_ROOT / ".cache" / "runtime").resolve()
+            if requested_root else DEFAULT_RUNTIME_ROOT.resolve()
         )
         self.output_root = (
             (self.runtime_root / "output").resolve()
@@ -396,7 +454,8 @@ class UiBridge:
                 db_path))
         self.visual_reviews = visual_review_decisions.VisualReviewDecisionStore(db_path)
         self.history_revision = 1
-        self.beta_access_authorizer = LocalDevelopmentBetaAuthorizer()
+        self.beta_access_authorizer = _build_ui_beta_access_authorizer(
+            self.runtime_root)
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
         self.store.reconcile_confirmed_reviews()
@@ -2278,7 +2337,7 @@ class UiBridge:
         token = hashlib.sha256(
             f"{job_id}:{run_id}:{revision_id}:{region_id}:{source_hash}".encode("utf-8")
         ).hexdigest()[:24]
-        return REPO_ROOT / ".cache" / "runtime" / "human_font_candidates" / token
+        return self.runtime_root / "human_font_candidates" / token
 
     @staticmethod
     def _render_font_candidate_crop(base_crop: Any, text: str, candidate: dict[str, Any]) -> Any:
@@ -2493,7 +2552,7 @@ class UiBridge:
         token = hashlib.sha256(
             f"{job_id}:{run_id}:{revision_id}:{region_id}:{source_hash}".encode("utf-8")
         ).hexdigest()[:24]
-        return REPO_ROOT / ".cache" / "runtime" / "human_mask_editor" / token
+        return self.runtime_root / "human_mask_editor" / token
 
     def human_mask_editor_state(self, job_id: str, run_id: str, *, region_id: str,
                                 user_id: str) -> dict[str, Any]:
@@ -2555,9 +2614,8 @@ class UiBridge:
         final_mask_asset = str(
             (latest_mask_revision or {}).get("final_mask_asset") or "")
         if final_mask_asset:
-            candidate_path = (
-                REPO_ROOT / ".cache" / "runtime" / final_mask_asset).resolve()
-            runtime_root = (REPO_ROOT / ".cache" / "runtime").resolve()
+            runtime_root = self.runtime_root.resolve()
+            candidate_path = (runtime_root / final_mask_asset).resolve()
             if runtime_root in candidate_path.parents and candidate_path.is_file():
                 loaded = cv2.imread(str(candidate_path), cv2.IMREAD_GRAYSCALE)
                 if loaded is not None and loaded.shape == combined_mask.shape:
@@ -2680,9 +2738,9 @@ class UiBridge:
         }
 
     def human_mask_editor_asset(self, asset: str) -> Path:
-        root = (REPO_ROOT / ".cache" / "runtime").resolve()
+        root = self.runtime_root.resolve()
         path = (root / str(asset or "")).resolve()
-        allowed = (REPO_ROOT / ".cache" / "runtime" / "human_mask_editor").resolve()
+        allowed = (root / "human_mask_editor").resolve()
         if allowed not in path.parents or not path.is_file() or root not in path.parents:
             raise ValueError("human_mask_asset_not_found")
         return path
@@ -3324,7 +3382,7 @@ class UiBridge:
 
         from PIL import Image
 
-        cache_dir = Path(".cache/runtime/preview_crops") / str(ctx["revision_id"])
+        cache_dir = self.runtime_root / "preview_crops" / str(ctx["revision_id"])
         cache_dir.mkdir(parents=True, exist_ok=True)
         target = cache_dir / f"{hashlib.sha256(f'{region_id}:{kind}'.encode()).hexdigest()[:16]}.png"
         with Image.open(source) as image:
@@ -3374,7 +3432,7 @@ class UiBridge:
 
         from PIL import Image
 
-        cache_dir = Path(".cache/runtime/region_crops") / str(ctx["revision_id"])
+        cache_dir = self.runtime_root / "region_crops" / str(ctx["revision_id"])
         cache_dir.mkdir(parents=True, exist_ok=True)
         target = cache_dir / f"{hashlib.sha256(str(region_id).encode()).hexdigest()[:16]}.png"
         with Image.open(source) as image:
@@ -5618,7 +5676,10 @@ class UiBridge:
 
         authorizer = getattr(self, "beta_access_authorizer", None)
         if authorizer is None:
-            authorizer = LocalDevelopmentBetaAuthorizer()
+            if os.getenv("TRADUTOR_IA_HERMETIC_TEST_ENV") == "1":
+                authorizer = LocalDevelopmentBetaAuthorizer()
+            else:
+                raise ValueError("license_authorizer_unconfigured")
         try:
             decision = authorizer.authorize(
                 principal=principal, operation=operation, access_token=access_token)

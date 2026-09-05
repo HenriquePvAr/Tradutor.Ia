@@ -29,11 +29,13 @@ import process_tree
 from job_store import JobStatus, JobStore
 from local_environment import load_local_environment_for_entrypoint
 from process_options import build_background_process_options
+from runtime_paths import runtime_root
 from ui_helpers import sanitize_diagnostic_text
 
 REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_DB = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
-LOG_DIR = REPO_ROOT / ".cache" / "runtime" / "logs"
+DEFAULT_RUNTIME_ROOT = runtime_root()
+DEFAULT_DB = DEFAULT_RUNTIME_ROOT / "jobs.sqlite3"
+LOG_DIR = DEFAULT_RUNTIME_ROOT / "logs"
 POLL_SECONDS = 1.5
 WORKER_HEARTBEAT_SECONDS = 3.0
 STALE_SECONDS = 30.0

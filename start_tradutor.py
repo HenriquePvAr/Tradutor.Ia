@@ -35,9 +35,11 @@ import update_bootstrap
 import worker_supervisor
 from local_environment import load_local_environment_for_entrypoint
 from process_options import background_python_executable, build_background_process_options
+from runtime_paths import runtime_root
 
 REPO_ROOT = Path(__file__).resolve().parent
-DB_PATH = REPO_ROOT / ".cache" / "runtime" / "jobs.sqlite3"
+RUNTIME_ROOT = runtime_root()
+DB_PATH = RUNTIME_ROOT / "jobs.sqlite3"
 
 #: Supervision belongs to the launcher instance that started the worker, so it lives for
 #: exactly as long as this process. A launcher that finds a healthy worker it did not start
@@ -115,7 +117,7 @@ def supervise_worker(process: subprocess.Popen) -> worker_supervisor.WorkerSuper
 def start_ui() -> int:
     """Run the UI without inheriting a visible Windows console window."""
 
-    log_path = REPO_ROOT / ".cache" / "runtime" / "ui.log"
+    log_path = RUNTIME_ROOT / "ui.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as log_handle:
         kwargs = build_background_process_options(

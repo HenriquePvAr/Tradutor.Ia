@@ -18,6 +18,7 @@ import ui_bridge
 from beta_license import (
     BetaAccessDecision,
     LicenseState,
+    LocalDevelopmentBetaAuthorizer,
     SQLiteBetaLicenseStore,
     StaticBetaAuthorizer,
     SupabaseBetaLicenseAuthorizer,
@@ -348,6 +349,39 @@ class SupabaseBetaLicenseAuthorizerTests(unittest.TestCase):
     def test_production_fail_closed_provider_never_allows_by_default(self):
         with self.assertRaisesRegex(RuntimeError, "remote provider required"):
             build_beta_license_authorizer({"BETA_LICENSE_PROVIDER": "production"})
+
+
+class UiBetaAuthorizerCompositionTests(unittest.TestCase):
+    def test_ui_defaults_to_explicit_local_development_authorizer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            authorizer = ui_bridge._build_ui_beta_access_authorizer(
+                Path(folder), env={})
+        self.assertIsInstance(authorizer, LocalDevelopmentBetaAuthorizer)
+
+    def test_ui_uses_provider_aware_supabase_authorizer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            authorizer = ui_bridge._build_ui_beta_access_authorizer(
+                Path(folder),
+                env={
+                    "BETA_LICENSE_PROVIDER": "supabase",
+                    "SUPABASE_URL": "https://example.supabase.co",
+                    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test",
+                    "TRADUTOR_INSTALL_ID": "test-install-id",
+                },
+                transport=_FakeTransport(_FakeResponse(200, {})),
+            )
+        self.assertIsInstance(authorizer, SupabaseBetaLicenseAuthorizer)
+
+    def test_ui_supabase_provider_fails_closed_when_public_config_missing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(RuntimeError, "missing: SUPABASE_URL"):
+                ui_bridge._build_ui_beta_access_authorizer(
+                    Path(folder),
+                    env={
+                        "BETA_LICENSE_PROVIDER": "supabase",
+                        "TRADUTOR_INSTALL_ID": "test-install-id",
+                    },
+                )
 
 
 class RemoteSqlContractTests(unittest.TestCase):
