@@ -85,6 +85,11 @@ _DIALOGUE_MEMORY_ENGLISH_RESIDUAL_WORDS = {
     "TRYING",
 }
 _CONTRACTION_RE = re.compile(r"[A-Z]+(?:'[A-Z]+)+$")
+_TARGET_BINDING_FUNCTION_WORDS = {
+    "A", "AS", "AO", "AOS", "DA", "DAS", "DE", "DO", "DOS", "E", "EM",
+    "NA", "NAS", "NO", "NOS", "O", "OS", "PARA", "PELA", "PELAS",
+    "PELO", "PELOS", "POR", "PRA", "UM", "UMA", "UNS", "UMAS",
+}
 
 # --- chapter character registry ---------------------------------------------
 # The ledger above preserves *text*: which target form a source term was bound
@@ -327,6 +332,12 @@ def _binding_authority(entry):
     if not isinstance(entry, dict):
         return TERM_AUTHORITY_NON_AUTHORITATIVE
     explicit = str(entry.get("authority") or "").strip()
+    if (
+        explicit == TERM_AUTHORITY_LEARNED_TERM
+        and str(entry.get("provenance") or "") == "recurring_region_alignment"
+        and not _has_unambiguous_recurring_alignment_evidence(entry)
+    ):
+        return TERM_AUTHORITY_NON_AUTHORITATIVE
     if explicit:
         return explicit
     return _source_term_authority(
@@ -338,6 +349,18 @@ def _binding_authority(entry):
 
 def _binding_is_authoritative(entry):
     return _binding_authority(entry) in _AUTHORITATIVE_TERM_AUTHORITIES
+
+
+def _has_unambiguous_recurring_alignment_evidence(entry):
+    alignment = str(entry.get("alignment_type") or "")
+    if alignment != "recurring_region_alignment_with_single_target_support":
+        return False
+    try:
+        evidence_count = int(entry.get("evidence_count") or 0)
+    except (TypeError, ValueError):
+        evidence_count = 0
+    target = _fold(entry.get("target") or "")
+    return evidence_count >= 2 and target not in _TARGET_BINDING_FUNCTION_WORDS
 
 
 def _target_family_forms(target):
@@ -614,7 +637,15 @@ class SessionContextStore:
         if weakest:
             bindings.pop(sorted(weakest)[0], None)
 
-    def _establish(self, entry, target, provenance):
+    def _establish(
+        self,
+        entry,
+        target,
+        provenance,
+        *,
+        alignment_type="",
+        evidence_count=1,
+    ):
         current = str(entry.get("target") or "")
         if current:
             if _fold(current) != _fold(target):
@@ -626,6 +657,8 @@ class SessionContextStore:
             return
         entry["target"] = target
         entry["provenance"] = provenance
+        entry["alignment_type"] = alignment_type or provenance
+        entry["evidence_count"] = int(evidence_count or 0)
         entry["authority"] = _source_term_authority(
             entry.get("source") or "",
             kind=entry.get("kind") or KIND_TERMINOLOGY,
@@ -647,7 +680,13 @@ class SessionContextStore:
         if len(surfaces) == 1:
             # Unambiguous evidence, in both directions: it either establishes the
             # binding or contradicts the one already established.
-            self._establish(entry, surfaces[0], "single_target_word_region")
+            self._establish(
+                entry,
+                surfaces[0],
+                "single_target_word_region",
+                alignment_type="single_target_word_region",
+                evidence_count=1,
+            )
             return
         if entry.get("target"):
             return
@@ -662,9 +701,23 @@ class SessionContextStore:
         if len(common) != 1:
             return
         folded = next(iter(common))
+        if folded in _TARGET_BINDING_FUNCTION_WORDS:
+            self._bump("ambiguous_compound_alignments")
+            return
+        if not any(len(observation) == 1 for observation in entry["observations"]):
+            self._bump("ambiguous_compound_alignments")
+            return
         for word in surfaces:
             if _fold(word) == folded:
-                self._establish(entry, word, "recurring_region_alignment")
+                self._establish(
+                    entry,
+                    word,
+                    "recurring_region_alignment",
+                    alignment_type=(
+                        "recurring_region_alignment_with_single_target_support"
+                    ),
+                    evidence_count=len(entry["observations"]),
+                )
                 return
 
     def _learn_from_group(self, group):
@@ -1210,6 +1263,12 @@ class SessionContextStore:
             ),
             "binding_conflicts": int(stats.get("binding_conflicts") or 0),
             "bindings_reused": int(stats.get("bindings_reused") or 0),
+            "term_binding_prompt_only": int(
+                stats.get("term_binding_prompt_only") or 0
+            ),
+            "ambiguous_compound_alignments": int(
+                stats.get("ambiguous_compound_alignments") or 0
+            ),
         }
 
     def save(self):

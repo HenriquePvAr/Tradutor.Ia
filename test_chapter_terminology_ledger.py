@@ -471,6 +471,57 @@ class ConflictPolicyTests(unittest.TestCase):
 class TerminologyAuthorityPolicyTests(unittest.TestCase):
     """TDD #8: ordinary lexical observations are prompt hints, not hard law."""
 
+    def test_ambiguous_compound_alignment_does_not_create_hard_token_binding(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = _store(folder)
+            store.prepare([])
+            store.record_translations(
+                [
+                    _group("VOID ARCANUM", "FEITIÇO DO VAZIO", group_id="G000"),
+                    _group("DREAM ARCANUM", "MAGIA DO SONHO", group_id="G001"),
+                ]
+            )
+
+            self.assertEqual(store.binding_for("ARCANUM"), "")
+            self.assertEqual(
+                store.drift_reason("THE ARCANUM IS ACTIVE", "O FEITIÇO ESTÁ ATIVO"),
+                "",
+            )
+
+    def test_legacy_ambiguous_recurring_binding_is_prompt_only_not_hard_conflict(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session_context.json"
+            canonical_chapter_url = _store(folder).chapter_url
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": "chapter-session-v2",
+                        "chapter_url": canonical_chapter_url,
+                        "term_bindings": {
+                            "ARCANUM": {
+                                "source": "ARCANUM",
+                                "target": "DO",
+                                "kind": "terminology",
+                                "authority": "learned_term",
+                                "provenance": "recurring_region_alignment",
+                                "observations": [],
+                                "conflicts": 0,
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            store = _store(folder)
+            store.prepare([])
+
+            self.assertEqual(
+                store.drift_reason("THE ARCANUM IS ACTIVE", "O FEITIÇO ESTÁ ATIVO"),
+                "",
+            )
+            self.assertEqual(store.summary()["term_binding_prompt_only"], 1)
+
     def test_contraction_youre_does_not_hard_fail_contextual_portuguese(self):
         with tempfile.TemporaryDirectory() as folder:
             store = _store(folder)
