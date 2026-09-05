@@ -44,6 +44,11 @@ class UiPersistentQueueTests(unittest.TestCase):
             patch.object(ui_bridge, "_current_commit", lambda: "deadbeef"),
             patch.object(ui_bridge, "_current_branch", lambda: "main"),
             patch.object(ui_bridge.UiBridge, "_run_source_analysis", new=fake_source_analysis),
+            # Queue tests own persistence, not worker lifecycle. The real method
+            # launches a detached worker against the launcher's import-time DB.
+            patch.object(ui_bridge.UiBridge, "ensure_worker", return_value={"online": True}),
+            patch("start_tradutor.spawn_worker_process",
+                  side_effect=AssertionError("queue unit test must not spawn a worker")),
         ]
         for p in self._patches:
             p.start()

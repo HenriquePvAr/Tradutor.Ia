@@ -265,26 +265,60 @@ class WordSenseAccounting(unittest.TestCase):
 
 
 class NoFalsePositiveExplosion(unittest.TestCase):
-    """#84F15-7 - measured against every persisted region, not asserted."""
+    """#84F15-7 - measured against a small hermetic corpus, not user cache."""
 
-    def test_the_persisted_corpus_flags_only_the_precinct_region(self):
-        import json
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parent / ".cache" / "processed"
-        if not root.is_dir():
-            self.skipTest("no persisted run in this checkout")
-        pages, flagged = {}, []
-        for path in sorted(root.glob("*.json")):
-            try:
-                debug = json.loads(path.read_text(encoding="utf-8"))["debug_data"]
-            except Exception:  # noqa: BLE001 - a stale cache entry is not a failure.
-                continue
-            for item in debug.get("items") or []:
-                key = (item.get("page"), item.get("id"), item.get("clean_text"))
-                pages.setdefault(item.get("page"), {})[key] = item
-        if not pages:
-            self.skipTest("no persisted regions in this checkout")
+    def test_the_hermetic_corpus_flags_only_the_precinct_region(self):
+        pages = {
+            46: {
+                (46, "BALAO_1", PRECINCT_SOURCE): {
+                    "page": 46,
+                    "id": "BALAO_1",
+                    "clean_text": PRECINCT_SOURCE,
+                    "translation": PRECINCT_BAD,
+                },
+                (46, "BALAO_2", "EMERGENCY CONTAINMENT VAULT"): {
+                    "page": 46,
+                    "id": "BALAO_2",
+                    "clean_text": "EMERGENCY CONTAINMENT VAULT",
+                    "translation": "COFRE DE CONTENCAO DE EMERGENCIA",
+                },
+                (46, "BALAO_3", "GRRR..."): {
+                    "page": 46,
+                    "id": "BALAO_3",
+                    "clean_text": "GRRR...",
+                    "translation": "GRRR...",
+                },
+            },
+            47: {
+                (47, "BALAO_1", "THE VOTERS QUEUED AT PRECINCT 7."): {
+                    "page": 47,
+                    "id": "BALAO_1",
+                    "clean_text": "THE VOTERS QUEUED AT PRECINCT 7.",
+                    "translation": "OS ELEITORES FIZERAM FILA NO DISTRITO ELEITORAL 7.",
+                },
+                (47, "BALAO_2", "COUNT THE BALLOTS."): {
+                    "page": 47,
+                    "id": "BALAO_2",
+                    "clean_text": "COUNT THE BALLOTS.",
+                    "translation": "CONTE AS CEDULAS.",
+                },
+            },
+            48: {
+                (48, "BALAO_1", "GET BACK IN YOUR CELL."): {
+                    "page": 48,
+                    "id": "BALAO_1",
+                    "clean_text": "GET BACK IN YOUR CELL.",
+                    "translation": "VOLTE PARA SUA CELA.",
+                },
+                (48, "BALAO_2", "THE GUARD LOCKED THE PRISONER IN."): {
+                    "page": 48,
+                    "id": "BALAO_2",
+                    "clean_text": "THE GUARD LOCKED THE PRISONER IN.",
+                    "translation": "O GUARDA TRANCOU O PRISIONEIRO.",
+                },
+            },
+        }
+        flagged = []
         for page, items in pages.items():
             texts = [str(item.get("clean_text") or "") for item in items.values()]
             for key, item in items.items():

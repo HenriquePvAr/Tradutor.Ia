@@ -12,6 +12,7 @@ closed in ``tearDown``. No real worker, UI, launcher, provider, network or Drive
 """
 
 import _test_bootstrap  # noqa: F401
+from _test_processes import assert_owned_pid, stop_owned_process
 
 import os
 import subprocess
@@ -225,8 +226,7 @@ class HardExitProcessTests(unittest.TestCase):
         for proc in self._children:
             if proc.poll() is None:
                 try:
-                    proc.kill()
-                    proc.wait(timeout=10)
+                    stop_owned_process(proc)
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     pass
         self.store.close()
@@ -247,11 +247,12 @@ class HardExitProcessTests(unittest.TestCase):
             store.register_worker("crashed", os.getpid(),
                                   create_time=snapshot.get("create_time"))
             store.worker_heartbeat("crashed")
+            print(os.getpid(), flush=True)
             os._exit(9)
             """
         ) % (str(REPO), str(self.db))
         proc = subprocess.Popen([sys.executable, "-c", script], cwd=str(REPO),
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL)
         self._children.append(proc)
         self.assertEqual(proc.wait(timeout=60), 9, "child did not hard-exit")
@@ -259,7 +260,9 @@ class HardExitProcessTests(unittest.TestCase):
 
         lease = self.store.get_worker("crashed")
         self.assertIsNotNone(lease, "the lease row survives the process, as expected")
-        self.assertEqual(lease["pid"], proc.pid)
+        self.assertEqual(lease["pid"], int(proc.stdout.read().strip()))
+        proc.stdout.close()
+        self.assertTrue(process_tree.wait_gone(lease["pid"], timeout=15))
         # Heartbeat freshness says "alive"; the process says otherwise, and the process wins.
         self.assertGreater(lease["heartbeat_at"], time.time() - 15)
         self.assertIsNone(self.store.healthy_worker(stale_seconds=15))
@@ -416,7 +419,7 @@ class WorkerCrashRecoveryIntegrationTests(unittest.TestCase):
             timeout=60, label="replacement worker never became healthy"))
         self.assertIsNone(replacement.poll(), "replacement exited on a dead worker's lease")
         healthy = self.store.healthy_worker(stale_seconds=15)
-        self.assertEqual(healthy["pid"], replacement.pid)
+        assert_owned_pid(self, replacement, healthy["pid"])
         if crashed_lease:
             self.assertNotEqual(healthy["worker_id"], crashed_lease["worker_id"])
 

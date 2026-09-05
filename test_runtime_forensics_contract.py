@@ -5,6 +5,7 @@ only socket use is loopback, so the tests can prove local runtime provenance.
 """
 
 import _test_bootstrap  # noqa: F401
+from _test_processes import assert_owned_pid, stop_owned_process
 
 import hashlib
 import json
@@ -110,7 +111,7 @@ class RuntimeUiForensicsTests(unittest.TestCase):
             self.assertIsNotNone(match)
             identity = json.loads(match.group(1))
             self.assertEqual(current_head, identity["git_head"])
-            self.assertEqual(proc.pid, identity["pid"])
+            assert_owned_pid(self, proc, identity["pid"])
             self.assertEqual(
                 hashlib.sha256((ROOT / "ui" / "ui_shell.html").read_bytes()).hexdigest(),
                 identity["shell_sha256"],
@@ -126,12 +127,7 @@ class RuntimeUiForensicsTests(unittest.TestCase):
             self.assertNotIn(str(Path.home()), html)
             self.assertNotIn(str(ROOT), html)
         finally:
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=10)
+            stop_owned_process(proc)
 
 
 class DownloadCountConservationTests(unittest.TestCase):

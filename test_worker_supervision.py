@@ -12,6 +12,7 @@ queue, worker, UI and runtime root are never touched.
 """
 
 import _test_bootstrap  # noqa: F401
+from _test_processes import assert_owned_pid, stop_owned_process
 
 import itertools
 import os
@@ -325,8 +326,7 @@ class RealProcessSupervisionTests(unittest.TestCase):
         for proc in self._children:
             if proc.poll() is None:
                 try:
-                    proc.kill()
-                    proc.wait(timeout=10)
+                    stop_owned_process(proc)
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     pass
         for supervisor in self._supervisors:
@@ -388,7 +388,7 @@ class RealProcessSupervisionTests(unittest.TestCase):
                               timeout=30, label="health never returned"))
         healthy = self.store.healthy_worker(stale_seconds=15)
         self.assertEqual(healthy["worker_id"], "worker-b")
-        self.assertEqual(healthy["pid"], worker_b.pid)
+        assert_owned_pid(self, worker_b, healthy["pid"])
         self.assertNotEqual(healthy["create_time"],
                             (self.store.get_worker("worker-a") or {}).get("create_time"))
 
@@ -403,8 +403,7 @@ class RealProcessSupervisionTests(unittest.TestCase):
                               timeout=30, label="worker never reached running"))
 
         supervisor.request_stop()          # launcher declares intent *before* terminating
-        worker_a.kill()
-        worker_a.wait(timeout=30)
+        stop_owned_process(worker_a)
 
         supervisor.thread.join(timeout=30)
         self.assertFalse(supervisor.thread.is_alive())
@@ -543,7 +542,7 @@ class SupervisedRecoveryIntegrationTests(unittest.TestCase):
             lambda: self.store.healthy_worker(stale_seconds=15) is not None,
             timeout=60, label="health never returned after the supervised restart"))
         healthy = self.store.healthy_worker(stale_seconds=15)
-        self.assertEqual(healthy["pid"], worker_b.pid)
+        assert_owned_pid(self, worker_b, healthy["pid"])
         self.assertIsNotNone(self.store.get_job(queued_id))
 
 
