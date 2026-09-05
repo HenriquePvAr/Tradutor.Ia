@@ -267,7 +267,12 @@
   }
 
   .panel-view{display:none;}
-  .panel-view.active{display:block; animation:panelIn .52s cubic-bezier(.2,.9,.25,1) both;}
+  .panel-view.active{
+    display:block;
+    opacity:1;
+    transform:none;
+    clip-path:inset(0 0 0 0);
+  }
   .panel-view.leaving{display:block; position:absolute; inset:30px 42px auto; pointer-events:none; animation:panelOut .2s ease both;}
   @keyframes panelIn{
     from{opacity:0; clip-path:inset(0 100% 0 0);}
