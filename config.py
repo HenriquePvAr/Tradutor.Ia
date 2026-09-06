@@ -136,6 +136,11 @@ PRIORITIZE_ENCLOSED_TEXT = _env_bool("PRIORITIZE_ENCLOSED_TEXT", True)
 TRANSLATION_MODE = _env_str("TRANSLATION_MODE", "nvidia").lower()
 PTBR_NATURALIZATION_MODE = _env_str("PTBR_NATURALIZATION_MODE", "selective").lower()
 
+# Optional local semantic contradiction trial. Disabled by default so the beta
+# runtime has no Torch/Transformers requirement and preserves current behavior.
+SEMANTIC_NLI_ENABLED = _env_bool("SEMANTIC_NLI_ENABLED", False)
+SEMANTIC_NLI_MODEL_PATH = _env_str("SEMANTIC_NLI_MODEL_PATH", "")
+
 # HuggingFace/local translation settings.
 HF_MODEL = _env_str("HF_MODEL", "Helsinki-NLP/opus-mt-mul-pt")
 NLLB_MODEL_DIR = _env_str("NLLB_MODEL_DIR", r"C:\Users\Henrique\Downloads\NLLB_200")
