@@ -531,6 +531,9 @@ class TranslatorNvidiaBatch:
                 "A tentativa anterior alterou ou inventou uma relacao de tempo (antes, "
                 "depois, ate) que nao esta no original; preserve exatamente a ordem "
                 "temporal do original e nao acrescente nenhuma.",
+            semantic_fidelity.MODALITY_TENSE_CHANGED:
+                "A tentativa anterior alterou a modalidade ou o tempo verbal; preserve "
+                "possibilidade, obrigacao e aspecto temporal do original.",
             semantic_fidelity.SOURCE_OCR_SUSPICIOUS:
                 "O texto original contem um trecho ilegivel que sobreviveu sem "
                 "traducao; traduza apenas o que o original realmente diz, sem inventar "

@@ -49,6 +49,7 @@ NEGATION_CHANGED = "negation_changed"
 STATE_ACTION_CHANGED = "state_action_changed"
 ACTOR_RELATION_CHANGED = "actor_relation_changed"
 TEMPORAL_RELATION_CHANGED = "temporal_relation_changed"
+MODALITY_TENSE_CHANGED = "modality_tense_changed"
 MEANING_MISMATCH = "meaning_mismatch"
 FIDELITY_UNCERTAIN = "fidelity_uncertain"
 # Review-only: the defect is upstream of the provider, or in the surface form.
@@ -107,7 +108,7 @@ def is_review_unusable(reason):
     return review_usability(reason) == REVIEW_UNUSABLE
 BLOCKING_FIDELITY_REASON_CODES = frozenset({
     QUANTITY_CHANGED, ENTITY_CHANGED, NEGATION_CHANGED, STATE_ACTION_CHANGED,
-    ACTOR_RELATION_CHANGED, TEMPORAL_RELATION_CHANGED, MEANING_MISMATCH,
+    ACTOR_RELATION_CHANGED, TEMPORAL_RELATION_CHANGED, MODALITY_TENSE_CHANGED, MEANING_MISMATCH,
     FIDELITY_UNCERTAIN,
 })
 FIDELITY_REASON_CODES = BLOCKING_FIDELITY_REASON_CODES | REVIEW_ONLY_FIDELITY_REASON_CODES
@@ -121,6 +122,7 @@ FIDELITY_RETRY_CONSTRAINTS = {
     STATE_ACTION_CHANGED: "preserve_intent",
     ACTOR_RELATION_CHANGED: "preserve_actor_relationship",
     TEMPORAL_RELATION_CHANGED: "preserve_temporal_relation",
+    MODALITY_TENSE_CHANGED: "preserve_modality_and_tense",
     MEANING_MISMATCH: "preserve_meaning",
     FIDELITY_UNCERTAIN: "preserve_meaning",
     SOURCE_OCR_SUSPICIOUS: "preserve_meaning",
@@ -415,6 +417,19 @@ def _temporal_relation_change(source, candidate):
     if not (source_before or source_after) and (target_before or target_after):
         return "introduced"
     return ""
+
+
+def _modality_tense_change(source, candidate):
+    """Detect a narrow, generic drift from prospective obligation to past state."""
+    source_words = set(_words(source))
+    target_words = set(_words(candidate))
+    prospective = ("might" in source_words or "may" in source_words or "could" in source_words) and (
+        "have" in source_words or "has" in source_words or "had" in source_words
+    )
+    past_obligation = {"tido", "teve", "tinham", "tinha"}.intersection(target_words) and (
+        "que" in target_words
+    )
+    return bool(prospective and past_obligation)
 
 
 # --- can the source be read at all ------------------------------------------
@@ -924,6 +939,8 @@ def evaluate_local_fidelity(
 
     if _negation_asymmetry(source, target):
         return FidelityFinding(VERIFY, (NEGATION_CHANGED,))
+    if _modality_tense_change(source, target):
+        return FidelityFinding(VERIFY, (MODALITY_TENSE_CHANGED,))
     temporal = _temporal_relation_change(source, target)
     if temporal == "inverted":
         return FidelityFinding(BLOCKED, (TEMPORAL_RELATION_CHANGED,), (temporal,))
