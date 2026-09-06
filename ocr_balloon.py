@@ -14271,6 +14271,57 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "cleanup_line_boxes": [
                     list(line.box) for line in group.cleanup_lines
                 ],
+                "quality_trace": {
+                    "schema_version": "1",
+                    "ocr": {
+                        "engine": group.source_engine or _group_engine(group),
+                        "confidence": round(group.confidence, 6),
+                        "raw_text": " ".join(line.raw_text for line in group.lines),
+                        "normalized_text": group.text,
+                        "line_ids": [getattr(line, "line_id", "") for line in group.lines if getattr(line, "line_id", "")],
+                        "boxes": [list(line.box) for line in group.lines],
+                        "source_completeness": dict(group.source_completeness),
+                        "source_recovery": dict(getattr(group, "source_recovery", {}) or {}),
+                        "repair_reason": group.repair_reason,
+                    },
+                    "source_transformations": {
+                        "original_text": group.original_text,
+                        "repaired_text": group.repaired_text,
+                        "grouped_text": group.text,
+                        "repair_reason": group.repair_reason,
+                    },
+                    "translation_attempts": [{
+                        "attempt_number": int(group.translation_retry_count or 0) + 1,
+                        "source_text": group.text,
+                        "initial_candidate": group.raw_provider_candidate,
+                        "retry_candidate": group.retry_candidate,
+                        "selected_candidate": group.translation_candidate,
+                        "validation_reason": group.translation_validation_reason,
+                    }] if group.sent_to_translation else [],
+                    "entity": {
+                        "detected_proper_names": list(group.detected_proper_names),
+                        "preserve_as_name": bool(group.preserve_as_name),
+                    },
+                    "validators": {
+                        "semantic_review_reason": str(group.semantic_review_reason),
+                        "quality_reasons": list(group.quality_reasons),
+                        "source_completeness_status": str(group.source_completeness.get("status", "")),
+                    },
+                    "render": {
+                        "disposition": str(group.render_disposition),
+                        "visual_validation": group.visual_validation,
+                        "physical_residual_checked": bool(
+                            isinstance(group.visual_validation, dict)
+                            and group.visual_validation.get("post_render_ocr")
+                        ),
+                    },
+                    "final_decision": {
+                        "translation_final_state": group.translation_final_state,
+                        "translation_final_reason": group.translation_final_reason,
+                        "manual_review_required": bool(group.manual_review_required),
+                        "release_relevant_render": str(group.render_disposition),
+                    },
+                },
             }
         )
 
