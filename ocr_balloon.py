@@ -5256,6 +5256,68 @@ def apply_rapidocr_region_recovery(
                 candidate.quality_reasons,
             )
         )
+        # Preserve the rejected primary/recovery evidence for downstream
+        # safety review.  The pairwise signatures deliberately reuse the
+        # source-recovery helpers so the safety gate can distinguish an
+        # unresolved variant without guessing which read is correct.
+        primary_raw = str(group.text or "")
+        recovery_raw = " ".join(str(item.text or "") for item in region_groups)
+        pair_attempts = [
+            {
+                "text": primary_raw,
+                "normalized_text": _source_recovery_normalized(primary_raw),
+                "word_signature": _source_recovery_word_signature(primary_raw),
+                "confidence": float(getattr(group, "confidence", 0.0) or 0.0),
+            },
+            {
+                "text": recovery_raw,
+                "normalized_text": _source_recovery_normalized(recovery_raw),
+                "word_signature": _source_recovery_word_signature(recovery_raw),
+                "confidence": float(getattr(candidate, "confidence", 0.0) or 0.0),
+            },
+        ]
+        agreement = _source_recovery_agreement(pair_attempts)
+        record["rejected_recovery_observation"] = {
+            "attempted": True,
+            "accepted": False,
+            "rejection_reason": "rapidocr_retry_not_better",
+            "primary": {
+                "raw_text": primary_raw,
+                "word_signature": pair_attempts[0]["word_signature"],
+                "compact_signature": pair_attempts[0]["normalized_text"],
+                "quality_score": float(group.quality_score),
+                "quality_reasons": list(group.quality_reasons or []),
+                "confidence": pair_attempts[0]["confidence"],
+            },
+            "recovery": {
+                "raw_text": recovery_raw,
+                "word_signature": pair_attempts[1]["word_signature"],
+                "compact_signature": pair_attempts[1]["normalized_text"],
+                "quality_score": float(candidate.quality_score),
+                "quality_reasons": list(candidate.quality_reasons or []),
+                "confidence": pair_attempts[1]["confidence"],
+            },
+            "agreement": agreement,
+        }
+        # A rejected read can still be credible evidence that the primary is
+        # not safe to trust.  Downgrade only when the two reads have different
+        # boundary/lexical signatures, preserve the same compact characters,
+        # and the alternative is not lower quality.  This deliberately does
+        # not select or rewrite the recovery; the existing P32 source-trust
+        # gate will route it to review on the next gate pass.
+        materially_variant = (
+            pair_attempts[0]["word_signature"]
+            != pair_attempts[1]["word_signature"]
+        )
+        credible_alternative = float(candidate.quality_score) >= float(group.quality_score)
+        if materially_variant and credible_alternative:
+            record["rejected_recovery_observation"]["unresolved_material_disagreement"] = True
+            group.source_recovery = {
+                **(getattr(group, "source_recovery", {}) or {}),
+                "trusted": False,
+                "reason": "material_variant_disagreement",
+                "rejected_recovery": record["rejected_recovery_observation"],
+            }
         # Attempt 1 already failed the policy, so there is no "both acceptable"
         # tie to break: attempt 2 wins only by clearing the same bar attempt 1
         # could not. Nothing is preferred merely for being newer.
