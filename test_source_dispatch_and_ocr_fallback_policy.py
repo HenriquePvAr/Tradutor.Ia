@@ -243,7 +243,7 @@ class QualityModeOcrPolicyTests(unittest.TestCase):
         self.assertTrue(config.RAPIDOCR_ENABLED)
         self.assertFalse(config.FAST_OCR_MODE)
 
-    def test_paddle_stays_the_declared_optional_fallback(self):
+    def test_beta_quality_has_no_cross_engine_fallback(self):
         import config
 
         with patch.object(
@@ -251,8 +251,8 @@ class QualityModeOcrPolicyTests(unittest.TestCase):
         ):
             run_webtoon._configure_mode("quality")
 
-        self.assertEqual(config.OCR_FALLBACK_ENGINE, "paddle")
-        self.assertTrue(config.OCR_HYBRID_FALLBACK)
+        self.assertEqual(config.OCR_FALLBACK_ENGINE, "")
+        self.assertFalse(config.OCR_HYBRID_FALLBACK)
 
     def test_missing_paddle_is_skipped_not_fatal_when_rapidocr_answered(self):
         engine = ocr_engine.OCREngine("en", engine="rapidocr", fallback_engine="paddle")
@@ -351,15 +351,12 @@ class QualityModeOcrPolicyTests(unittest.TestCase):
         self.assertEqual(caught.exception.engine, "rapidocr")
         self.assertEqual(caught.exception.reason_class, "dependency_unavailable")
 
-    def test_explicit_paddle_override_still_requires_paddle(self):
+    def test_explicit_paddle_override_is_ignored(self):
         with patch.dict("os.environ", {"TRADUTOR_OCR_ENGINE_OVERRIDE": "paddle"}):
             with patch.object(
                 ocr_engine.importlib.util, "find_spec", side_effect=self._only_rapidocr
             ):
-                with self.assertRaises(ocr_engine.OCREngineUnavailableError) as caught:
-                    run_webtoon._configure_mode("quality")
-
-        self.assertEqual(caught.exception.engine, "paddle")
+                self.assertEqual(run_webtoon._configure_mode("quality"), "rapidocr")
 
 
 class OptionalFallbackGuardTests(unittest.TestCase):

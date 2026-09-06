@@ -48,6 +48,46 @@ class SettingsReorganizationTests(unittest.TestCase):
 
 
 class I18nTests(unittest.TestCase):
+    def test_bootstrap_resolves_every_visible_shell_label(self):
+        import ast
+        import subprocess
+
+        # Execute the production bootstrap builder without importing the UI host
+        # (which also configures authentication and mutable runtime state).
+        module = ast.parse(read("app_ui.py"))
+        function = next(n for n in module.body if isinstance(n, ast.FunctionDef)
+                        and n.name == "_i18n_bootstrap_html")
+        names = ["pt-BR", "en-US", "es-ES", "fr-FR", "ja-JP", "ko-KR", "index"]
+        scope = {"I18N_ASSETS": [ROOT / "static" / "i18n" / f"{n}.js" for n in names]}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "app_ui.py", "exec"), scope)
+        bootstrap = scope["_i18n_bootstrap_html"]()
+        self.assertEqual(bootstrap.count("<script>"), 1)
+        script = r'''
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const html = fs.readFileSync('ui/ui_shell.html', 'utf8');
+const nodes = [...html.matchAll(/data-i18n(?:-placeholder|-aria-label)?="([^"]+)"/g)]
+  .map(m => ({key:m[1], textContent:'', getAttribute(){return this.key},
+             setAttribute(name,value){this.textContent=value}}));
+assert.ok(nodes.length > 40);
+const sandbox = {window:{}, navigator:{languages:['pt-BR']},
+ localStorage:{getItem(){return null}},
+ document:{readyState:'complete',documentElement:{},querySelectorAll(){return nodes}},
+ Intl, CustomEvent:class {}};
+vm.runInNewContext(fs.readFileSync(0,'utf8'),sandbox);
+for (const node of nodes) {
+ assert.notEqual(node.textContent,node.key,`Unresolved visible key: ${node.key}`);
+ assert.ok(node.textContent.trim());
+}
+assert.equal(sandbox.window.TradutorI18n.t('settings.title'),'Configurações');
+'''
+        result = subprocess.run(["node", "-e", script],
+                                input=bootstrap[len("<script>"):-len("</script>")],
+                                cwd=ROOT, text=True, encoding="utf-8",
+                                capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def catalog_keys(self, rel: str) -> set[str]:
         return set(re.findall(r"'([^']+)'\s*:", read(rel)))
 

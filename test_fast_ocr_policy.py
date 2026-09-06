@@ -184,7 +184,7 @@ class FastOCRPolicyTests(unittest.TestCase):
             self.assertFalse(config.RAPIDOCR_PAGE_FALLBACK)
             self.assertFalse(config.OCR_REGION_SELECTIVE_FALLBACK)
 
-    def test_quality_mode_restores_its_own_fallback_policy(self):
+    def test_quality_mode_keeps_rapidocr_single_engine_policy(self):
         # Quality mode resolves to PaddleOCR, which _configure_mode now requires
         # to be installed before it configures anything.  This test is about the
         # fallback policy, not about this machine's dependencies, so the engine
@@ -193,7 +193,7 @@ class FastOCRPolicyTests(unittest.TestCase):
 
         with patch.object(ocr_engine, "require_available_engine", lambda engine: engine):
             run_webtoon._configure_mode("quality")
-        self.assertTrue(config.OCR_HYBRID_FALLBACK)
+        self.assertFalse(config.OCR_HYBRID_FALLBACK)
         self.assertTrue(config.RAPIDOCR_PAGE_FALLBACK)
         self.assertTrue(config.OCR_REGION_SELECTIVE_FALLBACK)
 

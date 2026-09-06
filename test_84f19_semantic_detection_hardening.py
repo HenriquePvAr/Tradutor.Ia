@@ -355,11 +355,11 @@ class OcrEngineProvenanceTests(unittest.TestCase):
     def test_the_beta_default_engine_is_rapidocr(self):
         self.assertEqual(BETA_OCR_ENGINE, "rapidocr")
 
-    def test_an_explicit_supported_override_is_honoured(self):
+    def test_unsupported_paddle_override_is_ignored(self):
         with mock.patch.dict(
             os.environ, {"TRADUTOR_OCR_ENGINE_OVERRIDE": "paddle"}, clear=False
         ):
-            self.assertEqual(effective_ocr_engine(), "paddle")
+            self.assertEqual(effective_ocr_engine(), "rapidocr")
 
     def test_an_unsupported_override_falls_back_to_the_beta_engine(self):
         with mock.patch.dict(

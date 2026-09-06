@@ -77,6 +77,11 @@ class UiPersistentQueueTests(unittest.TestCase):
         self.assertFalse(hasattr(self.bridge, "process") and self.bridge.process)
         # The command was recorded but not executed.
         self.assertIn("run_webtoon.py", " ".join(jobs[0]["command"]))
+        command = jobs[0]["command"]
+        self.assertEqual(
+            Path(command[command.index("--output") + 1]).resolve(),
+            Path(jobs[0]["output_dir"]).resolve(),
+        )
         self.assertEqual(jobs[0]["configuration"]["job_type"], "translation")
         self.assertNotIn("community_owner_id", jobs[0]["configuration"])
 

@@ -245,7 +245,7 @@ class SubmitTests(unittest.TestCase):
         )
         self.assertEqual(Path(job["output_dir"]).name, job["run_id"])
         output_arg = job["command"][job["command"].index("--output") + 1]
-        self.assertEqual(output_arg, f"daytime_in_the_bunker_episode_17_smoke_9/{job['run_id']}")
+        self.assertEqual(Path(output_arg), Path(job["output_dir"]))
 
     def test_legacy_output_field_does_not_replace_slug(self):
         result = self.start(
@@ -844,7 +844,7 @@ class SourceReviewTests(unittest.TestCase):
         self.assertIn("--open-output", job["command"])
         self.assertFalse(job["source_selection"]["automatic"])
         output_arg = job["command"][job["command"].index("--output") + 1]
-        self.assertEqual(output_arg, f"reader_1/{job['run_id']}")
+        self.assertEqual(Path(output_arg), Path(job["output_dir"]))
         self.assertEqual(Path(job["output_dir"]).name, job["run_id"])
 
     def test_confirmation_records_explicit_manual_page_order(self):
