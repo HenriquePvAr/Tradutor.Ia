@@ -20,6 +20,7 @@ import ocr_line_provenance
 import source_completeness
 import semantic_fidelity
 import semantic_nli_adapter
+from cleanup_forensic_capture import CleanupForensicCapture
 from classification_profiler import profile_step, record_count, record_group
 from json_utils import dump_json
 from ocr_engine import (
@@ -2171,6 +2172,7 @@ def render_analyzed_image(
     page_index=1,
     image_path=None,
     stage_timings=None,
+    forensic_capture_root=None,
 ):
     with ocr_line_provenance.page(page_index):
         return _render_analyzed_image(
@@ -2183,6 +2185,7 @@ def render_analyzed_image(
             page_index=page_index,
             image_path=image_path,
             stage_timings=stage_timings,
+            forensic_capture_root=forensic_capture_root,
         )
 
 
@@ -2196,7 +2199,13 @@ def _render_analyzed_image(
     page_index=1,
     image_path=None,
     stage_timings=None,
+    forensic_capture_root=None,
 ):
+    forensic_capture = (
+        CleanupForensicCapture(forensic_capture_root)
+        if forensic_capture_root
+        else None
+    )
     original = original_bgr.copy()
     valid_groups = get_translatable_groups(groups)
     final = original.copy()
@@ -2296,11 +2305,14 @@ def _render_analyzed_image(
             "source_scoped",
         ):
             inpaint_started = time.perf_counter()
+            cleanup_kwargs = {"strategy": strategy}
+            if forensic_capture is not None:
+                cleanup_kwargs["forensic_capture"] = forensic_capture
             cleaned, cleanup_mask, mask_metrics = _remove_text_for_group(
                 before_group,
                 original,
                 group,
-                strategy=strategy,
+                **cleanup_kwargs,
             )
             inpaint_seconds += time.perf_counter() - inpaint_started
             group.mask_metrics = mask_metrics
@@ -2319,6 +2331,12 @@ def _render_analyzed_image(
                 continue
 
             redraw_started = time.perf_counter()
+            if forensic_capture is not None:
+                forensic_capture.record_pre_typography(
+                    group,
+                    strategy=strategy,
+                    canvas=cleaned,
+                )
             rendered = _draw_group_translation(
                 cleaned,
                 group,
@@ -10006,7 +10024,13 @@ def _build_display_source_evidence_mask(image_shape, group):
     return mask
 
 
-def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary"):
+def _remove_text_for_group(
+    current_bgr,
+    original_bgr,
+    group,
+    strategy="primary",
+    forensic_capture=None,
+):
     background_type, background_metrics = _classify_background_region(
         original_bgr,
         group,
@@ -10567,6 +10591,15 @@ def _remove_text_for_group(current_bgr, original_bgr, group, strategy="primary")
         metrics["reason"] = "residual_source_text_after_cleanup"
     elif strategy in {"glyph_overlay", "caption_overlay", "source_scoped"}:
         metrics["residual_validation_deferred_to_post_render_ocr"] = True
+    if forensic_capture is not None:
+        forensic_capture.capture_cleanup(
+            group,
+            strategy=strategy,
+            pre_cleanup=current_bgr,
+            mask=cleanup_mask,
+            post_cleanup=cleaned,
+            metrics=metrics,
+        )
     return cleaned, cleanup_mask, metrics
 
 
