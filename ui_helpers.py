@@ -242,6 +242,7 @@ def build_run_command(
     download_only: bool = False,
     translation_provider: str | None = None,
     python_executable: str | None = None,
+    output_path: Path | None = None,
 ) -> list[str]:
     from chapter_source import select_adapter
 
@@ -276,6 +277,8 @@ def build_run_command(
         if proposed == Path(proposed).name and re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", proposed):
             runner = proposed
 
+    if output_path is not None and not output_path.is_absolute():
+        raise ValueError("authoritative_output_path_must_be_absolute")
     command = [
         python_executable or sys.executable,
         str(REPO_ROOT / runner),
@@ -283,9 +286,11 @@ def build_run_command(
         "--mode",
         mode,
         "--output",
-        build_run_output_slug(*str(output).split("/", 1))
-        if "/" in str(output)
-        else sanitize_output_name(output),
+        str(output_path.resolve()) if output_path is not None else (
+            build_run_output_slug(*str(output).split("/", 1))
+            if "/" in str(output)
+            else sanitize_output_name(output)
+        ),
     ]
     if force:
         command.append("--force")

@@ -6384,7 +6384,10 @@ def _recovered_text_is_acceptable(text, confidence):
     return _text_has_lexical_word(text)
 
 
-_REOCR_ENGINES = ("paddle", "rapidocr")
+# Recovery is deliberately a second RapidOCR read with deterministic crop
+# variants.  Cross-engine retries made the Beta runtime probe Paddle even when
+# RapidOCR was healthy.
+_REOCR_ENGINES = ("rapidocr",)
 
 
 def _reocr_engines_for(ocr_lang):

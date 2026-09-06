@@ -5092,10 +5092,16 @@ class UiBridge:
                     )
                 )
         normalized = self._normalize_payload(payload, require_environment=require_environment)
+        output_folder = resolve_run_output_folder(
+            getattr(self, "output_root", OUTPUT_ROOT),
+            normalized["slug"],
+            normalized["id"],
+        )
         command = build_run_command(
             url=normalized["url"],
             mode=normalized["mode"],
             output=f"{normalized['slug']}/{normalized['id']}",
+            output_path=output_folder,
             full=normalized["full"],
             max_images=normalized.get("max_images"),
             use_cache=normalized["use_cache"],
@@ -5106,11 +5112,6 @@ class UiBridge:
             download_only=normalized["download_only"],
             translation_provider=normalized["translation_provider"],
             python_executable=sys.executable,
-        )
-        output_folder = resolve_run_output_folder(
-            getattr(self, "output_root", OUTPUT_ROOT),
-            normalized["slug"],
-            normalized["id"],
         )
         details = suggest_chapter_details(normalized["url"])
         configuration = {

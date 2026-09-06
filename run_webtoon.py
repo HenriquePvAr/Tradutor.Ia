@@ -438,15 +438,19 @@ def _configure_mode(mode):
 
     require_available_engine(engine)
     os.environ["OCR_ENGINE"] = engine
-    os.environ["OCR_FALLBACK_ENGINE"] = "paddle"
-    os.environ["OCR_HYBRID_FALLBACK"] = "True"
+    # Beta production is intentionally single-engine: RapidOCR owns both the
+    # primary read and its bounded recovery variants.  Cross-engine fallback
+    # is not part of the product contract (legacy benchmark code may still
+    # expose the old seam for offline compatibility).
+    os.environ["OCR_FALLBACK_ENGINE"] = ""
+    os.environ["OCR_HYBRID_FALLBACK"] = "False"
     os.environ["RAPIDOCR_ENABLED"] = "True" if engine == "rapidocr" else "False"
 
     import config
 
     config.OCR_ENGINE = engine
-    config.OCR_FALLBACK_ENGINE = "paddle"
-    config.OCR_HYBRID_FALLBACK = True
+    config.OCR_FALLBACK_ENGINE = ""
+    config.OCR_HYBRID_FALLBACK = False
     config.RAPIDOCR_ENABLED = engine == "rapidocr"
     config.RAPIDOCR_PAGE_FALLBACK = True
     config.OCR_REGION_SELECTIVE_FALLBACK = True
@@ -460,8 +464,7 @@ def _configure_mode(mode):
         # available only through the explicit heavy-fallback budget.
         config.OCR_REGION_SELECTIVE_FALLBACK = False
         config.RAPIDOCR_PAGE_FALLBACK = False
-        if not config.FAST_OCR_HEAVY_FALLBACK:
-            config.OCR_HYBRID_FALLBACK = False
+        config.OCR_HYBRID_FALLBACK = False
         # The heavy cross-engine paths are off, so RapidOCR's own quality signal
         # is what keeps a corrupted region out of the translation: one extra
         # RapidOCR read of that region only, never a second engine.
@@ -472,12 +475,17 @@ def _configure_mode(mode):
 
 
 def _resolve_output_folder(value, url):
+    from runtime_paths import output_root
+
+    root = output_root().resolve()
     if not value:
-        return (Path("output") / _chapter_slug(url)).resolve()
+        return (root / _chapter_slug(url)).resolve()
     path = Path(value).expanduser()
-    if path.is_absolute() or (path.parts and path.parts[0].lower() == "output"):
+    if path.is_absolute():
         return path.resolve()
-    return (Path("output") / path).resolve()
+    if path.parts and path.parts[0].lower() == "output":
+        path = Path(*path.parts[1:])
+    return (root / path).resolve()
 
 
 def _chapter_slug(url):

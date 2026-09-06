@@ -74,7 +74,7 @@ SELENIUM_CLEANUP_TIMEOUT_SECONDS = min(
     max(0.25, _env_float("SELENIUM_CLEANUP_TIMEOUT_SECONDS", 3.0)),
 )
 OCR_CONF_THRESHOLD = _env_int("OCR_CONF_THRESHOLD", 15)
-OCR_ENGINE = _env_str("OCR_ENGINE", "paddle").lower()
+OCR_ENGINE = _env_str("OCR_ENGINE", "rapidocr").lower()
 
 # The engine a run will *really* use, as opposed to the one this process happens
 # to hold. ``OCR_ENGINE`` above is an *output* of the decision below: the job
@@ -83,7 +83,7 @@ OCR_ENGINE = _env_str("OCR_ENGINE", "paddle").lower()
 # settings panel came to show "paddle . Ativo" for a chapter read by RapidOCR.
 # Anything that displays or records the engine asks here instead.
 BETA_OCR_ENGINE = "rapidocr"
-BETA_OCR_ENGINES = frozenset({"rapidocr", "paddle", "paddle_mobile"})
+BETA_OCR_ENGINES = frozenset({"rapidocr"})
 
 
 def effective_ocr_engine():
@@ -92,13 +92,13 @@ def effective_ocr_engine():
     return override if override in BETA_OCR_ENGINES else BETA_OCR_ENGINE
 
 
-OCR_FALLBACK_ENGINE = _env_str("OCR_FALLBACK_ENGINE", "paddle").lower()
-OCR_HYBRID_FALLBACK = _env_bool("OCR_HYBRID_FALLBACK", True)
+OCR_FALLBACK_ENGINE = _env_str("OCR_FALLBACK_ENGINE", "").lower()
+OCR_HYBRID_FALLBACK = _env_bool("OCR_HYBRID_FALLBACK", False)
 # Paddle remains available only for explicit legacy diagnostics. The Beta
 # default is RapidOCR primary plus bounded RapidOCR recovery, then fail-closed
 # review if evidence is still unusable.
 OCR_LEGACY_PADDLE_FALLBACK = _env_bool("OCR_LEGACY_PADDLE_FALLBACK", False)
-RAPIDOCR_ENABLED = _env_bool("RAPIDOCR_ENABLED", False)
+RAPIDOCR_ENABLED = _env_bool("RAPIDOCR_ENABLED", True)
 RAPIDOCR_MIN_CONFIDENCE = _env_float("RAPIDOCR_MIN_CONFIDENCE", 0.55)
 RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK = _env_bool(
     "RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK",

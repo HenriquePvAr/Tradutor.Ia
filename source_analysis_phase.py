@@ -162,6 +162,7 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
         url=str(job.get("source_url") or ""),
         mode=str(config.get("mode") or "fast"),
         output=output_identity,
+        output_path=output_dir.resolve(),
         full=bool(config.get("full", True)),
         max_images=config.get("max_images"),
         use_cache=bool(config.get("use_cache")),

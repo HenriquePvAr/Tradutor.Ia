@@ -93,6 +93,17 @@ def _asset_url(path: Path) -> str:
     return f"/static/{rel}?v={version}"
 
 
+def _i18n_bootstrap_html() -> str:
+    """Install catalogs and resolver atomically before any UI consumer.
+
+    Only repository-owned JavaScript is included. No user/session data enters this
+    bootstrap. Keeping the dependency graph in one script prevents an incomplete
+    catalog load from turning every label into a raw translation key.
+    """
+    source = "\n;\n".join(asset.read_text(encoding="utf-8") for asset in I18N_ASSETS)
+    return '<script>' + source.replace('</script', '<\\/script') + '</script>'
+
+
 def _runtime_asset_identity() -> dict[str, Any]:
     """Safe local provenance for proving which source tree serves the UI.
 
@@ -2074,8 +2085,7 @@ def index() -> None:
         f"window.__tradutorVisualTestEnabled = {'true' if visual_test_enabled else 'false'};"
         "</script>"
     )
-    for asset in I18N_ASSETS:
-        ui.add_body_html(f'<script src="{_asset_url(asset)}" defer></script>')
+    ui.add_body_html(_i18n_bootstrap_html())
     # The view model must exist before the renderer, and both before the main
     # bundle. All are deferred, so source order is execution order.
     ui.add_body_html(f'<script src="{_asset_url(LOADING_VIEW_ASSET)}" defer></script>')
