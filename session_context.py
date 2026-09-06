@@ -666,7 +666,7 @@ class SessionContextStore:
         )
         entry["observations"] = []
 
-    def _observe_terminology(self, entry, target_surfaces):
+    def _observe_terminology(self, entry, target_surfaces, occurrence_id=""):
         """Accumulate evidence until exactly one target word explains the term.
 
         One observation is only enough when the region carries a single target
@@ -677,7 +677,20 @@ class SessionContextStore:
         surfaces = list(dict.fromkeys(target_surfaces))[:LEDGER_MAX_TOKENS_PER_OBSERVATION]
         if not surfaces:
             return
+        occurrence_id = str(occurrence_id or "").strip()
+        seen = entry.setdefault("evidence_occurrences", [])
+        if occurrence_id and occurrence_id in seen:
+            return
+        if occurrence_id:
+            seen.append(occurrence_id)
         if len(surfaces) == 1:
+            if entry.get("target") and occurrence_id:
+                if any(_fold(word) != _fold(entry.get("target")) for word in surfaces):
+                    entry["conflicts"] = int(entry.get("conflicts") or 0) + 1
+                    self._bump("binding_conflicts")
+                else:
+                    entry["evidence_count"] = int(entry.get("evidence_count") or 0) + 1
+                return
             # Unambiguous evidence, in both directions: it either establishes the
             # binding or contradicts the one already established.
             self._establish(
@@ -761,7 +774,10 @@ class SessionContextStore:
             candidates = [word for word in target_surfaces if _fold(word) != _fold(key)]
             entry = self._entry(key, key, KIND_TERMINOLOGY, "first_validated_translation")
             if entry is not None:
-                self._observe_terminology(entry, candidates)
+                self._observe_terminology(
+                    entry, candidates,
+                    occurrence_id=str(getattr(group, "group_id", "") or ""),
+                )
 
     def _merge_proper_name(self, name_text):
         """Add a newly proven name without disturbing one already recorded."""
