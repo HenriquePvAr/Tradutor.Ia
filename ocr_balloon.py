@@ -5329,6 +5329,24 @@ def enforce_rapidocr_quality_gate(groups, page_index=None):
     warning_accepted = 0
     recoverable = 0
     for group in groups:
+        recovery = getattr(group, "source_recovery", {}) or {}
+        # A material variant disagreement is source-authority failure, not a
+        # cosmetic warning.  Do not send an explicitly untrusted reconstruction
+        # into the normal provider path; preserve it for review instead.
+        if (
+            recovery.get("trusted") is False
+            and str(recovery.get("reason") or "") == "material_variant_disagreement"
+        ):
+            group.ocr_quality_blocked = True
+            group.ocr_quality_block_reason = "source_recovery_untrusted:material_variant_disagreement"
+            group.manual_review_required = True
+            group.quality_evidence = {
+                **(group.quality_evidence or {}),
+                "source_recovery_untrusted": True,
+                "source_recovery_reason": str(recovery.get("reason") or ""),
+            }
+            blocked.append(group)
+            continue
         decision = rapidocr_region_decision(group)
         if group.ocr_quality_blocked or decision == "accept":
             if (
