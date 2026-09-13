@@ -89,7 +89,7 @@ def build_parser():
     )
     parser.add_argument(
         "--translation-provider",
-        choices=tuple(sorted(TRANSLATION_PROVIDERS)),
+        choices=tuple(sorted(TRANSLATION_PROVIDERS | {"yomu_backend"})),
         help=(
             "Provider de traducao exigido para esta execucao. "
             "Quando informado, a execucao falha fechada se outro provider for efetivado."
@@ -100,6 +100,7 @@ def build_parser():
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    print("PIPELINE_MAIN_ENTER", flush=True)
     parser = build_parser()
     if not argv:
         args = _interactive_args(parser)
@@ -149,16 +150,27 @@ def main(argv=None):
         local_manifest_path=str(getattr(args, "local_manifest_path", "") or ""),
         job_run_id=str(os.getenv("TRADUTOR_JOB_RUN_ID", "") or ""),
     )
+    print(
+        f"PIPELINE_CONFIG_READY force={bool(benchmark_args.force)} "
+        f"output_dir={Path(benchmark_args.output_folder).name}", flush=True,
+    )
 
     print(f"Capitulo: {sanitize_source_url(args.url)}")
     print(f"Modo: {args.mode} ({engine})")
     print(f"Cache: {'ignorado' if args.force else 'ativado'}")
     print(f"Contexto: {'desativado' if args.no_context else context_path}")
-    if args.translation_provider:
+    translation_enabled = str(os.getenv("TRANSLATION_ENABLED", "true") or "").strip().lower() not in {
+        "0", "false", "no", "off", "disabled"
+    }
+    if args.translation_provider and translation_enabled:
         print(f"Provider de traducao solicitado: {args.translation_provider}")
     print(f"Saida: {output_folder}")
 
     report = _run_benchmark(benchmark_args)
+    print(
+        f"PIPELINE_MAIN_RESULT status={'success' if report.get('pdf_path') else 'failed'} "
+        f"report_type={type(report).__name__}", flush=True,
+    )
     pdf_path = Path(report.get("pdf_path") or "")
     if args.delete_context_after and pdf_path.is_file() and context_path.exists():
         context_path.unlink()
