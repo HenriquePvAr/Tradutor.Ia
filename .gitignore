@@ -52,6 +52,20 @@ env/
 *.dmp
 *.etl
 
+# Local audit outputs: keep authored audit notes under artifacts/audit,
+# but ignore regenerable logs and inventory manifests.
+artifacts/audit/*.log
+artifacts/audit/*-manifest.csv
+artifacts/audit/runtime/*.log
+artifacts/generated/
+artifacts/outputs/
+artifacts/diagnostics/
+
+# Local performance/release outputs (the source repo keeps tooling, not runs).
+performance_outputs/
+diagnostics_outputs/
+snapshots/
+
 # Personal IDE state.
 .idea/
 .vscode/
