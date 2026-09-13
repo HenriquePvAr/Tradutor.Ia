@@ -4,8 +4,8 @@
 
 - [x] Pipeline, quality, provenance, PDF e accounting validados
 - [x] Testes herméticos e launcher verdes
-- [ ] Excluir harness/debug da build de produção
-- [ ] Alinhar versão, installer e manifests
+- [x] Excluir harness/debug da build de produção
+- [x] Alinhar versão, installer e manifests
 
 ## RC
 
@@ -25,6 +25,6 @@
 
 ## Pós-beta
 
-- [ ] Cloudflare/Edge hardening, se necessário
+- [ ] Cloudflare/Edge hardening, se necessário (decisão: não obrigatório para a primeira beta)
 - [ ] Otimização de grouping/classification
 - [ ] Investigação histórica se os inputs forem recuperados
