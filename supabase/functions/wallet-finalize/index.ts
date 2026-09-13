@@ -1,0 +1,2 @@
+import { json } from "../_shared/http.ts"; import { requireAuth } from "../_shared/auth.ts"; import { callRpc } from "../_shared/rpc.ts";
+Deno.serve(async(req)=>{const d=requireAuth(req);if(d)return d;try{const b:any=await req.json();const r=await callRpc(req,'finalize_yk_reservation',{p_reservation_id:b?.reservation_id,p_release:Boolean(b?.release)});if(r.error)return json({code:r.error},503);return r.response!.ok?json(r.payload):json({code:'reservation_not_found'},409);}catch{return json({code:'wallet_finalize_failed'},503);}});

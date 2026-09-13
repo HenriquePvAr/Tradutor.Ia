@@ -7,6 +7,13 @@ ASGI app and injected offline storage/auth providers.
 from __future__ import annotations
 
 import hmac
+import logging
+import os
+import re
+import threading
+import time
+import json
+from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
@@ -32,6 +39,27 @@ from community_service import CommunityError
 from community_storage import StorageError
 
 _NO_STORE_HEADERS = {"Cache-Control": "private, no-store", "Vary": "Cookie"}
+_LOGGER = logging.getLogger(__name__)
+
+
+def _persist_auth_diagnostic(event: str, **fields: Any) -> None:
+    """Persist minimal canonical-auth evidence when diagnostics are enabled."""
+    if os.getenv("TRADUTOR_AUTH_DIAGNOSTICS", "").strip() != "1":
+        return
+    root = os.getenv("TRADUTOR_DIAGNOSTICS_ROOT", "").strip()
+    if not root:
+        return
+    record = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event}
+    for key, value in fields.items():
+        if isinstance(value, (str, int, float, bool)) and key.lower() not in {"token", "authorization", "password", "secret"}:
+            record[key] = value
+    try:
+        path = Path(root) / "app_current.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        return
 
 
 class CommunityNetworkBoundaryMiddleware:
@@ -133,7 +161,10 @@ def _community_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> 
         ) from exc
     except CommunityError as exc:
         raise HTTPException(
-            status_code=400, detail=str(exc), headers=_NO_STORE_HEADERS
+            status_code=400,
+            detail=(str(exc) if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,79}", str(exc))
+                    else "community_operation_failed"),
+            headers=_NO_STORE_HEADERS,
         ) from exc
     except StorageError as exc:
         raise HTTPException(
@@ -235,17 +266,42 @@ def create_community_router(community, auth) -> APIRouter:
 
     @router.get("/auth/session")
     def session(request: Request) -> JSONResponse:
+        started = time.monotonic()
+        token_present = bool(str(request.headers.get("authorization", "") or "").strip())
+        caller = str(request.headers.get("x-yomu-auth-caller", "unknown") or "unknown")[:60]
+        window_role = str(request.headers.get("x-yomu-window-role", "unknown") or "unknown")[:30]
+        request_trace_id = str(request.headers.get("x-yomu-request-trace", "") or "").strip()
+        if not request_trace_id or len(request_trace_id) > 80 or not all(ch.isalnum() or ch in "-_." for ch in request_trace_id):
+            request_trace_id = "missing"
+        session_fingerprint = str(request.headers.get("x-yomu-session-fingerprint", "") or "")[:12]
+        _persist_auth_diagnostic(
+            "AUTH_SESSION_REQUEST_RECEIVED",
+            request_trace_id=request_trace_id,
+            caller=caller or "missing",
+            window_role=window_role or "unknown",
+            pid=os.getpid(), thread_ident=threading.get_ident(),
+            has_bearer=token_present, method=request.method, path=request.url.path,
+            session_fingerprint=session_fingerprint or None,
+        )
+        _LOGGER.info(
+            "AUTH_SESSION_REQUEST_STARTED token_present=%s caller=%s window_role=%s pid=%s thread=%s",
+            token_present, caller, window_role, os.getpid(), threading.get_ident(),
+        )
         try:
+            _LOGGER.info("AUTH_SESSION_BEARER_PRESENT value=%s", token_present)
+            _LOGGER.info("AUTH_SESSION_VERIFY_STARTED")
             principal = auth.authenticate_request(request)
         except AuthenticationRequired as exc:
             # Keep the canonical endpoint useful to the UI without exposing
             # credentials: the reason code identifies JWT/config transport failures.
+            _LOGGER.info("AUTH_SESSION_FAILED status=401 reason=%s elapsed_ms=%d", str(exc)[:80], int((time.monotonic() - started) * 1000))
             return JSONResponse({
                 "authenticated": False,
                 "user_id": "",
                 "auth_source": getattr(auth, "auth_source", "unknown"),
                 "reason_code": str(exc) or "authentication_required",
             }, status_code=401, headers=no_store_headers)
+        _LOGGER.info("AUTH_SESSION_RESPONSE_READY status=200 authenticated=%s elapsed_ms=%d", principal.authenticated, int((time.monotonic() - started) * 1000))
         return JSONResponse({
             "authenticated": principal.authenticated,
             "user_id": principal.user_id if principal.authenticated else "",
