@@ -25,6 +25,7 @@ the launcher proceeds exactly as it always did.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import time
@@ -58,6 +59,125 @@ def _detached_flags() -> int:
     )
 
 
+def build_child_command(role: str, *, frozen: bool | None = None) -> list[str]:
+    """Build the worker/UI child command for Python and frozen runtimes."""
+    if role not in {"worker", "ui"}:
+        raise ValueError(f"unknown child role: {role}")
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    if frozen:
+        return [sys.executable, "--internal-child", role]
+    script = REPO_ROOT / ("worker_service.py" if role == "worker" else "app_ui.py")
+    return [background_python_executable(), "-u", str(script)]
+
+
+def _run_internal_child(role: str, argv: list[str]) -> int:
+    print(f"CHILD_BOOT role={role}", flush=True)
+    if role == "worker":
+        import worker_service
+        return worker_service.main(argv)
+    if role == "ui":
+        import app_ui
+        return app_ui.main()
+    if role == "pipeline":
+        print("CHILD_POST_BOOT_BEGIN role=pipeline", flush=True)
+        try:
+            print("PIPELINE_MODULE_IMPORT_BEGIN", flush=True)
+            import run_webtoon
+            print("PIPELINE_MODULE_IMPORT_RESULT status=success", flush=True)
+            print("PIPELINE_MAIN_CALL_BEGIN", flush=True)
+            result = run_webtoon.main(argv)
+            print(
+                f"PIPELINE_MAIN_CALL_RETURN result_type={type(result).__name__}",
+                flush=True,
+            )
+            # run_webtoon returns its structured report on successful completion;
+            # only numeric returns represent an explicit process exit code.  The
+            # frozen child must not crash while converting the report dict to int.
+            code = 0 if isinstance(result, dict) else int(result or 0)
+            print(f"CHILD_EXIT exit_code={code}", flush=True)
+            return code
+        except BaseException as exc:  # noqa: BLE001 - preserve real child failure
+            print(
+                f"CHILD_STARTUP_EXCEPTION exception_class={type(exc).__name__} "
+                "stage=pipeline_startup exit_code=1",
+                flush=True,
+            )
+            print("CHILD_EXIT exit_code=1", flush=True)
+            raise
+    if role == "performance-validation":
+        # Private CLI-only harness.  It is deliberately not reachable from the
+        # normal desktop/UI command surface and owns no production job state.
+        try:
+            # PyInstaller's windowed bootloader may expose a console stream
+            # whose flush raises EINVAL.  Keep diagnostics file-backed while
+            # making routine pipeline logging non-fatal in that environment.
+            class _FrozenSafeStream:
+                def __init__(self, stream): self.stream = stream
+                def write(self, value):
+                    try: return self.stream.write(value) if self.stream is not None else len(value)
+                    except OSError: return len(value)
+                def flush(self):
+                    try:
+                        if self.stream is not None: self.stream.flush()
+                    except OSError:
+                        pass
+            if getattr(sys, "frozen", False):
+                sys.stdout = _FrozenSafeStream(getattr(sys, "stdout", None))
+                sys.stderr = _FrozenSafeStream(getattr(sys, "stderr", None))
+            from performance_validation_harness import main as performance_validation_main
+            return int(performance_validation_main(argv) or 0)
+        except BaseException as exc:  # noqa: BLE001 - preserve technical failure
+            # Frozen GUI builds have no console, so preserve a sanitized failure
+            # artifact at the requested output boundary instead of silently
+            # terminating after snapshot creation.
+            output_value = ""
+            for index, value in enumerate(argv):
+                if value == "--output-folder" and index + 1 < len(argv):
+                    output_value = str(argv[index + 1])
+                    break
+            if output_value:
+                try:
+                    from pathlib import Path
+                    import json
+                    import traceback
+                    target = Path(output_value).expanduser().resolve()
+                    target.mkdir(parents=True, exist_ok=True)
+                    frames = []
+                    for frame in traceback.extract_tb(exc.__traceback__)[-12:]:
+                        frames.append({"file": str(frame.filename), "function": str(frame.name),
+                                       "line": int(frame.lineno), "operation": str(frame.line or "")[:240]})
+                    (target / "frozen_failure.json").write_text(
+                        json.dumps({
+                            "status": "technical_failure",
+                            "exception_type": type(exc).__name__,
+                            "message": str(exc).splitlines()[0][:300],
+                            "boundary": "performance_validation_child",
+                            "traceback": frames,
+                        }, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+            print(
+                f"PERFORMANCE_VALIDATION_EXCEPTION type={type(exc).__name__} "
+                f"message={str(exc).splitlines()[0][:200]}",
+                flush=True,
+            )
+            return 1
+    if role == "job-runner":
+        import job_runner
+        return int(job_runner.main(argv) or 0)
+    if role == "community-publish-runner":
+        import community_publish_runner
+        return int(community_publish_runner.main(argv) or 0)
+    if role == "review-rerun-runner":
+        import review_rerun_runner
+        return int(review_rerun_runner.main(argv) or 0)
+    print(f"unknown internal child role: {role}", file=sys.stderr)
+    return 2
+
+
 def spawn_worker_process() -> subprocess.Popen:
     """Start one detached worker child and return its handle.
 
@@ -78,7 +198,7 @@ def spawn_worker_process() -> subprocess.Popen:
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen(
-        [background_python_executable(), "-u", str(REPO_ROOT / "worker_service.py"), "--db", str(DB_PATH)],
+        build_child_command("worker") + ["--db", str(DB_PATH)],
         **kwargs,
     )
 
@@ -128,7 +248,7 @@ def start_ui() -> int:
             new_session=True,
         )
         proc = subprocess.Popen(
-            [background_python_executable(), "-u", str(REPO_ROOT / "app_ui.py")],
+            build_child_command("ui"),
             **kwargs,
         )
         return proc.wait()
@@ -217,6 +337,51 @@ def selftest() -> int:
     return 0
 
 
+def internal_selftest(name: str) -> int:
+    if name == "request-shape-writer":
+        import tempfile
+        from yomu_backend_provider import _persist_translation_execute_shape, _translation_execute_shape
+        previous = os.environ.get("TRADUTOR_RUNTIME_ROOT")
+        root = tempfile.mkdtemp(prefix="yomu-request-shape-selftest-")
+        try:
+            os.environ["TRADUTOR_RUNTIME_ROOT"] = root
+            payload = {
+                "request_id": "selftest-frozen-request", "job_id": "selftest-frozen-job",
+                "source_lang": "JA", "target_lang": "PT-BR",
+                "device_id": "550e8400-e29b-41d4-a716-446655440000",
+                "reservation_id": "550e8400-e29b-41d4-a716-446655440001",
+                "items": [{"item_id": f"item-{i}", "text": "x" * (254 if i == 0 else 1)} for i in range(9)],
+            }
+            shape = _translation_execute_shape(payload)
+            _persist_translation_execute_shape(shape)
+            path = Path(root) / "diagnostics" / "translation_execute_request_shape.jsonl"
+            lines = path.read_text(encoding="utf-8").splitlines()
+            if len(lines) < 1 or json.loads(lines[-1]).get("event") != "TRANSLATION_EXECUTE_REQUEST_SHAPE":
+                return 1
+            if any(secret in lines[-1].lower() for secret in ("authorization", "bearer", "jwt", "access_token", "refresh_token", "deepl_api_key", '"items"')):
+                return 1
+            print(json.dumps({"event": "FROZEN_REQUEST_SHAPE_WRITER_SELFTEST", "jsonl": str(path), "items_count": 9, "total_chars": 262}, separators=(",", ":")))
+            return 0
+        except Exception as exc:
+            print(f"request-shape writer selftest failed: {type(exc).__name__}", file=sys.stderr)
+            return 1
+        finally:
+            if previous is None:
+                os.environ.pop("TRADUTOR_RUNTIME_ROOT", None)
+            else:
+                os.environ["TRADUTOR_RUNTIME_ROOT"] = previous
+    if name != "rapidocr":
+        print(f"unknown internal selftest: {name}", file=sys.stderr)
+        return 2
+    try:
+        from ocr_engine import rapidocr_runtime_smoke
+        print(json.dumps(rapidocr_runtime_smoke(), ensure_ascii=False, sort_keys=True))
+        return 0
+    except Exception as exc:
+        print(f"rapidocr selftest failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+
 def run_update_check() -> update_bootstrap.UpdateStatus:
     """Check for a signed update before any part of the application is running."""
     status = update_bootstrap.check_before_start(REPO_ROOT)
@@ -240,9 +405,19 @@ def handoff(payload_dir: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "--internal-child":
+        if len(args) < 2:
+            print("missing internal child role", file=sys.stderr)
+            return 2
+        return _run_internal_child(args[1], args[2:])
+    if args and args[0] == "--internal-selftest":
+        if len(args) < 2:
+            print("missing internal selftest name", file=sys.stderr)
+            return 2
+        return internal_selftest(args[1])
     if not load_local_environment_for_entrypoint():
         return 2
-    args = list(sys.argv[1:] if argv is None else argv)
     command = args[0] if args else "all"
     if command == "worker":
         start_worker(force="--force" in args)
