@@ -1,3 +1,25 @@
-import { json } from "../_shared/http.ts";
+import { json, preflight } from "../_shared/http.ts";
 import { bearer, requireAuth } from "../_shared/auth.ts";
-Deno.serve(async (req) => { const denied = requireAuth(req); if (denied) return denied; try{const b:any=await req.json(); const u=Deno.env.get('SUPABASE_URL'),k=Deno.env.get('SUPABASE_ANON_KEY'),t=bearer(req); if(!u||!k||!t)return json({code:'control_plane_not_configured'},503); const nonce=crypto.randomUUID()+crypto.randomUUID(); const dig=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(nonce)); const hash=Array.from(new Uint8Array(dig)).map(x=>x.toString(16).padStart(2,'0')).join(''); const r=await fetch(`${u}/rest/v1/rpc/create_device_challenge`,{method:'POST',headers:{apikey:k,Authorization:`Bearer ${t}`,'content-type':'application/json'},body:JSON.stringify({p_device_uuid:b?.device_uuid,p_nonce_hash:hash,p_ttl_seconds:60})}); const p=await r.json().catch(()=>({code:'challenge_unavailable'})); return r.ok?json({...p,nonce,single_use:true}):json({code:'device_not_found'},r.status>=500?503:400);}catch{return json({code:'challenge_unavailable'},503);} });
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight();
+  const denied = requireAuth(req);
+  if (denied) return denied;
+  try {
+    const b: any = await req.json();
+    const u = Deno.env.get('SUPABASE_URL'), k = Deno.env.get('SUPABASE_ANON_KEY'), t = bearer(req);
+    if (!u || !k || !t) return json({ code: 'control_plane_not_configured' }, 503);
+    const nonce = crypto.randomUUID() + crypto.randomUUID();
+    const dig = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(nonce));
+    const hash = Array.from(new Uint8Array(dig)).map(x => x.toString(16).padStart(2, '0')).join('');
+    const r = await fetch(`${u}/rest/v1/rpc/create_device_challenge`, {
+      method: 'POST',
+      headers: { apikey: k, Authorization: `Bearer ${t}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ p_device_uuid: b?.device_uuid, p_nonce_hash: hash, p_ttl_seconds: 60 })
+    });
+    const p = await r.json().catch(() => ({ code: 'challenge_unavailable' }));
+    return r.ok ? json({ ...p, nonce, single_use: true }) : json({ code: 'device_not_found' }, r.status >= 500 ? 503 : 400);
+  } catch {
+    return json({ code: 'challenge_unavailable' }, 503);
+  }
+});

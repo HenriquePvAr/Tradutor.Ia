@@ -15,6 +15,16 @@ async function serverRpc(name: string, body: unknown) {
   return { configured: true, ok: response.ok, payload: await response.json().catch(() => ({})) };
 }
 
+function resultMetadata(result: any, fallbackCharacterCount: number) {
+  const metadata = result && typeof result.metadata === "object" && result.metadata ? result.metadata : {};
+  const billedRaw = Number(metadata.billed_characters);
+  return {
+    billed_characters: Number.isFinite(billedRaw) ? billedRaw : fallbackCharacterCount,
+    detected_source_language: metadata.detected_source_language ? String(metadata.detected_source_language) : null,
+    model_type_used: metadata.model_type_used ? String(metadata.model_type_used) : null,
+  };
+}
+
 Deno.serve(async (req) => {
   const denied = requireAuth(req); if (denied) return denied;
   let body: any; try { body = await req.json(); } catch { return json({ code: "invalid_json" }, 400); }
@@ -36,11 +46,16 @@ Deno.serve(async (req) => {
     if (begin.payload.status === "completed") return json({ request_id: requestId, status: "completed", items: begin.payload.result?.items || [], idempotent_replay: true }, 200);
     if (begin.payload.status === "provider_succeeded" && begin.payload.result) {
       const recovered = begin.payload.result;
-      const metadata = recovered?.metadata || {};
-      const replayBody = { p_request_id: requestId, p_billed_characters: metadata.billed_characters ?? characterCount, p_detected_source_language: metadata.detected_source_language || String(body?.source_lang || "JA"), p_model_type_used: metadata.model_type_used || recovered.provider || "unknown", p_result: recovered };
-      const replayCommit = await serverRpc("commit_translation_success", replayBody);
-      if (!replayCommit.configured || !replayCommit.ok) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
-      return json({ request_id: requestId, status: "completed", items: recovered.items || [], idempotent_replay: true }, 200);
+      const metadata = resultMetadata(recovered, characterCount);
+      const committed = await serverRpc("commit_translation_success", {
+        p_request_id: requestId,
+        p_billed_characters: metadata.billed_characters,
+        p_detected_source_language: metadata.detected_source_language,
+        p_model_type_used: metadata.model_type_used,
+        p_result: recovered,
+      });
+      if (!committed.configured || !committed.ok) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
+      return json({ request_id: requestId, status: "completed", provider: recovered.provider || "deepl", items: recovered.items || [], idempotent_replay: true }, 200);
     }
     if (begin.payload.status === "provider_outcome_unknown") return json({ code: "provider_outcome_unknown", request_id: requestId }, 409);
     return json({ code: begin.payload.status === "failed" ? "translation_failed" : "translation_in_progress", request_id: requestId }, 409);
@@ -67,7 +82,15 @@ Deno.serve(async (req) => {
     if (faultMode === "unknown") resultItems = [{ item_id: "unknown", translated_text: "[MOCK] unknown" }];
     if (faultMode === "malformed") resultItems = [{ item_id: mockItems[0]?.item_id, translated_text: null }];
     if (["partial", "extra", "duplicate", "unknown", "malformed"].includes(faultMode)) return json({ code: "invalid_provider_response", request_id: requestId }, 502);
-    const result = { items: resultItems, provider: "mock" };
+    const result = {
+      items: resultItems,
+      provider: "mock",
+      metadata: {
+        billed_characters: characterCount,
+        detected_source_language: String(body?.source_lang || "JA"),
+        model_type_used: "mock",
+      },
+    };
     const persisted = await serverRpc("persist_translation_result", { p_request_id: requestId, p_result: result, p_claim_token: claimToken });
     if (!persisted.configured || !persisted.ok) return json({ code: "translation_result_persist_failed", request_id: requestId }, 503);
     if (faultMode === "crash_after_result") return json({ code: "test_crash_after_result", request_id: requestId }, 503);
@@ -95,19 +118,29 @@ Deno.serve(async (req) => {
     await serverRpc("record_translation_failure", { p_request_id: requestId, p_error_code: "provider_malformed_response", p_release_reservation: false });
     return json({ code: "provider_malformed_response", request_id: requestId }, 502);
   }
-  const translation = translations[0];
+  const resultItems = translations.map((t: any, index: number) => ({ item_id: items[index].item_id, translated_text: t.text }));
+  const firstTranslation = translations[0];
+  const billedValues = translations.map((t: any) => Number(t?.billed_characters)).filter((n: number) => Number.isFinite(n));
+  const billedCharacters = billedValues.length ? billedValues.reduce((sum: number, n: number) => sum + n, 0) : null;
+  const detectedSourceLanguage = firstTranslation?.detected_source_language || null;
   const result = {
+    items: resultItems,
     provider: "deepl",
-    items: translations.map((t: any, index: number) => ({ item_id: items[index].item_id, translated_text: t.text })),
     metadata: {
-      detected_source_language: translation.detected_source_language || null,
-      billed_characters: Number.isFinite(Number(translation.billed_characters)) ? Number(translation.billed_characters) : null,
+      billed_characters: billedCharacters,
+      detected_source_language: detectedSourceLanguage,
       model_type_used: "quality_optimized",
     },
   };
   const persisted = await serverRpc("persist_translation_result", { p_request_id: requestId, p_result: result, p_claim_token: claimToken });
   if (!persisted.configured || !persisted.ok) return json({ code: "translation_result_persist_failed", request_id: requestId }, 503);
-  const committed = await serverRpc("commit_translation_success", { p_request_id: requestId, p_billed_characters: result.metadata.billed_characters, p_detected_source_language: result.metadata.detected_source_language, p_model_type_used: result.metadata.model_type_used, p_result: result });
+  const committed = await serverRpc("commit_translation_success", {
+    p_request_id: requestId,
+    p_billed_characters: billedCharacters,
+    p_detected_source_language: detectedSourceLanguage,
+    p_model_type_used: "quality_optimized",
+    p_result: result,
+  });
   if (!committed.configured || !committed.ok) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
-  return json({ request_id: requestId, status: "completed", provider: "deepl", items: result.items, idempotent_replay: false, detected_source_language: result.metadata.detected_source_language || null }, 200);
+  return json({ request_id: requestId, status: "completed", provider: "deepl", items: resultItems, idempotent_replay: false, detected_source_language: detectedSourceLanguage }, 200);
 });

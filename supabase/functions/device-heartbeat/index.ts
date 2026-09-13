@@ -1,2 +1,22 @@
-import { json } from "../_shared/http.ts"; import { bearer, requireAuth } from "../_shared/auth.ts";
-Deno.serve(async (req)=>{const d=requireAuth(req); if(d)return d; try{const b:any=await req.json(); const u=Deno.env.get('SUPABASE_URL'),k=Deno.env.get('SUPABASE_ANON_KEY'),t=bearer(req); if(!u||!k||!t)return json({code:'control_plane_not_configured'},503); const r=await fetch(`${u}/rest/v1/rpc/device_heartbeat`,{method:'POST',headers:{apikey:k,Authorization:`Bearer ${t}`,'content-type':'application/json'},body:JSON.stringify({p_device_uuid:b?.device_uuid})}); const p=await r.json().catch(()=>({code:'heartbeat_unavailable'})); return r.ok?json(p):json({code:String(p?.message||'heartbeat_denied').includes('license_revoked')?'license_revoked':'heartbeat_denied'},r.status>=500?503:403);}catch{return json({code:'heartbeat_unavailable'},503);}});
+import { json, preflight } from "../_shared/http.ts";
+import { bearer, requireAuth } from "../_shared/auth.ts";
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight();
+  const d = requireAuth(req);
+  if (d) return d;
+  try {
+    const b: any = await req.json();
+    const u = Deno.env.get('SUPABASE_URL'), k = Deno.env.get('SUPABASE_ANON_KEY'), t = bearer(req);
+    if (!u || !k || !t) return json({ code: 'control_plane_not_configured' }, 503);
+    const r = await fetch(`${u}/rest/v1/rpc/device_heartbeat`, {
+      method: 'POST',
+      headers: { apikey: k, Authorization: `Bearer ${t}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ p_device_uuid: b?.device_uuid })
+    });
+    const p = await r.json().catch(() => ({ code: 'heartbeat_unavailable' }));
+    return r.ok ? json(p) : json({ code: String(p?.message || 'heartbeat_denied').includes('license_revoked') ? 'license_revoked' : 'heartbeat_denied' }, r.status >= 500 ? 503 : 403);
+  } catch {
+    return json({ code: 'heartbeat_unavailable' }, 503);
+  }
+});
