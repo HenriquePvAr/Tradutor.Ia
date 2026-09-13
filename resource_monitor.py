@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from process_options import hidden_console_options
+
 try:  # pragma: no cover - exercised through the no-psutil unit test path.
     import psutil  # type: ignore
 except Exception:  # pragma: no cover
@@ -406,6 +408,7 @@ def detect_gpu_basic() -> dict[str, Any]:
             text=True,
             timeout=5,
             check=False,
+            **hidden_console_options(),
         )
         if result.returncode != 0 or not result.stdout.strip():
             return {"available": False, "reason": "gpu_query_unavailable"}

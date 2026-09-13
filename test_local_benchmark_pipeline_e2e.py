@@ -41,6 +41,7 @@ class _OfflineTranslator:
             "api_requests": 0,
             "cache_hits": 0,
             "failed_batches": 0,
+            "provider_name": "yomu_backend",
         }
 
     def translate_many(self, texts, force=False):
@@ -279,6 +280,7 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
                 TRANSLATION_RETRY_ON_MIXED_LANGUAGE=True,
                 TRANSLATE_SFX=False,
             ),
+            mock.patch.dict("os.environ", {"TRANSLATION_ENABLED": "true", "YOMU_ENV": "test", "YOMU_TEST_BACKEND": "mock"}, clear=False),
         ):
             report = benchmark_pipeline.run_benchmark(self._args(reference))
 
