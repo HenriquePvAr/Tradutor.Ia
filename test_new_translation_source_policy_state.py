@@ -459,6 +459,17 @@ class FrontendSourceStateContracts(unittest.TestCase):
         self.assertNotIn("source_not_validated", reasons)
         self.assertNotIn("source_analysis_result_missing", reasons)
 
+    def test_new_translation_defaults_to_force_reprocessing_without_overriding_active_choice(self):
+        self.assertIn("const wasFreshDraft = appState.newTranslationDraft;", UI)
+        self.assertIn("$('#forceToggle').checked = true;", UI)
+        self.assertIn("$('#cacheToggle').checked = false;", UI)
+        self.assertIn("if (!wasFreshDraft)", UI)
+
+    def test_force_payload_remains_explicit_operator_decision(self):
+        payload = UI[UI.index("function formPayload") : UI.index("\n  function workspacePolicyAllowsProcessing", UI.index("function formPayload"))]
+        self.assertIn("force: $('#forceToggle').checked", payload)
+        self.assertNotIn("force: true", payload)
+
     def test_auto_analysis_failure_releases_start_busy_lock(self):
         start = UI[UI.index("async function runStartTranslation"):]
         start = start[:start.index("\n  async function cancelTranslation")]

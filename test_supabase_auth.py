@@ -7,6 +7,8 @@ No network, no real Supabase, no import-time I/O.
 import _test_bootstrap  # noqa: F401
 
 import json
+import concurrent.futures
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -63,6 +65,16 @@ class _FakeJwksTransport:
         if self.raw is not None:
             return _Resp(self.status, self.raw)
         return _Resp(self.status, self._doc)
+
+
+class _SlowJwksTransport(_FakeJwksTransport):
+    def __init__(self, keys, delay=0.2):
+        super().__init__(keys)
+        self.delay = delay
+
+    def request(self, method, url, *, headers=None, data=None, stream=False):
+        time.sleep(self.delay)
+        return super().request(method, url, headers=headers, data=data, stream=stream)
 
 
 class _Req:
@@ -158,6 +170,28 @@ class SupabaseTokenTests(unittest.TestCase):
         self.assertTrue(p.authenticated)
         self.assertGreater(self.transport.calls, calls_before)
 
+    def test_concurrent_first_load_is_single_flight_without_lock_convoy(self):
+        transport = _SlowJwksTransport([self.jwk], delay=0.2)
+        cache = JwksCache(JWKS_URL, transport=transport, ttl_seconds=60)
+        started = time.monotonic()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            keys = list(pool.map(lambda _: cache.get_key("kid-1"), range(10)))
+        elapsed = time.monotonic() - started
+        self.assertTrue(all(keys))
+        self.assertEqual(transport.calls, 1)
+        # The first diagnostic sink import may initialize the local app lazily;
+        # the invariant is one refresh and no serialized network convoy.
+        self.assertLess(elapsed, 4.0)
+
+    def test_slow_physical_fetch_has_hard_wall_deadline(self):
+        transport = _SlowJwksTransport([self.jwk], delay=9.0)
+        cache = JwksCache(JWKS_URL, transport=transport, ttl_seconds=60)
+        started = time.perf_counter()
+        with self.assertRaises(AuthConfigurationError):
+            cache.get_key("kid-1")
+        self.assertLess(time.perf_counter() - started, 5.5)
+        self.assertLessEqual(transport.calls, 1)
+
     def test_unknown_kid_does_not_refresh_loop(self):
         # Repeated unknown kids must be rate limited, not a fetch per attempt.
         self.provider = _provider(self.transport)
@@ -179,9 +213,33 @@ class SupabaseTokenTests(unittest.TestCase):
         with self.assertRaises(AuthenticationRequired):
             self._auth(_token(self.private, "kid-1", exp_delta=-3600))
 
+    def test_expired_token_within_clock_skew_is_allowed(self):
+        self.assertTrue(self._auth(_token(self.private, "kid-1", exp_delta=-10)).authenticated)
+
+    def test_expired_token_beyond_clock_skew_is_rejected(self):
+        with self.assertRaises(AuthenticationRequired):
+            self._auth(_token(self.private, "kid-1", exp_delta=-31))
+
     def test_future_nbf_rejected(self):
         with self.assertRaises(AuthenticationRequired):
             self._auth(_token(self.private, "kid-1", nbf_delta=3600))
+
+    def test_small_future_iat_is_allowed_with_explicit_clock_skew(self):
+        token = _token(self.private, "kid-1", extra={"iat": int(time.time()) + 20})
+        principal = self._auth(token)
+        self.assertTrue(principal.authenticated)
+
+    def test_future_iat_beyond_clock_skew_is_rejected(self):
+        token = _token(self.private, "kid-1", extra={"iat": int(time.time()) + 31})
+        with self.assertRaises(AuthenticationRequired):
+            self._auth(token)
+
+    def test_nbf_within_clock_skew_is_allowed(self):
+        self.assertTrue(self._auth(_token(self.private, "kid-1", nbf_delta=20)).authenticated)
+
+    def test_nbf_beyond_clock_skew_is_rejected(self):
+        with self.assertRaises(AuthenticationRequired):
+            self._auth(_token(self.private, "kid-1", nbf_delta=31))
 
     def test_missing_sub_rejected(self):
         with self.assertRaises(AuthenticationRequired):
@@ -286,6 +344,58 @@ class JwksCacheTests(unittest.TestCase):
         transport = _FakeJwksTransport([self.jwk])
         SupabaseAuthProvider(CONFIG, transport=transport)
         self.assertEqual(transport.calls, 0)
+
+    def test_deadline_is_wall_clock_and_does_not_wait_for_late_transport(self):
+        class _Slow:
+            def request(self, *a, **k):
+                import time
+                time.sleep(0.2)
+                raise RuntimeError("late transport")
+
+        old_deadline = supabase_auth.JWKS_TOTAL_DEADLINE_SECONDS
+        try:
+            supabase_auth.JWKS_TOTAL_DEADLINE_SECONDS = 0.05
+            cache = JwksCache(JWKS_URL, transport=_Slow())
+            started = time.monotonic()
+            with self.assertRaises(AuthConfigurationError):
+                cache.get_key("kid-1")
+            self.assertLess(time.monotonic() - started, 0.15)
+        finally:
+            supabase_auth.JWKS_TOTAL_DEADLINE_SECONDS = old_deadline
+
+    def test_slow_initial_fetch_has_one_physical_attempt(self):
+        class _Slow:
+            def __init__(self):
+                self.calls = 0
+                self.lock = threading.Lock()
+
+            def request(self, *a, **k):
+                import time
+                with self.lock:
+                    self.calls += 1
+                time.sleep(0.15)
+                raise RuntimeError("late transport")
+
+        old_deadline = supabase_auth.JWKS_TOTAL_DEADLINE_SECONDS
+        try:
+            supabase_auth.JWKS_TOTAL_DEADLINE_SECONDS = 0.03
+            transport = _Slow()
+            cache = JwksCache(JWKS_URL, transport=transport)
+            threads = [threading.Thread(target=lambda: self._ignore_auth_error(cache)) for _ in range(3)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(1)
+            self.assertEqual(transport.calls, 1)
+        finally:
+            supabase_auth.JWKS_TOTAL_DEADLINE_SECONDS = old_deadline
+
+    @staticmethod
+    def _ignore_auth_error(cache):
+        try:
+            cache.get_key("kid-1")
+        except AuthConfigurationError:
+            pass
 
 
 class ProviderSelectionTests(unittest.TestCase):

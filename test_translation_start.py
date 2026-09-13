@@ -28,6 +28,11 @@ WEBTOON_URL = "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer?title_no=1&
 
 
 class SourceSelectionTests(unittest.TestCase):
+    def test_frozen_ui_restarts_worker_from_another_build(self):
+        current = {"worker_id": "0.9.0-beta.19:legacy-worker", "pid": os.getpid()}
+        with mock.patch.object(ui_bridge.sys, "frozen", True, create=True):
+            self.assertFalse(ui_bridge._worker_environment_matches_current(current))
+
     def test_known_host_selects_its_adapter(self):
         self.assertEqual(select_adapter(WEBTOON_URL).name, "webtoons")
         self.assertEqual(select_adapter("https://webtoons.com/x").name, "webtoons")

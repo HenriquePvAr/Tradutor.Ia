@@ -388,7 +388,7 @@ class RemoteSqlContractTests(unittest.TestCase):
     def test_authorization_rpc_is_hardened_and_atomic(self):
         root = Path(__file__).resolve().parent
         sql = (root / "supabase" / "migrations" /
-               "20260824130000_beta_tester_authorization_rpc.sql").read_text(
+               "20260824192601_beta_tester_authorization_rpc.sql").read_text(
                    encoding="utf-8")
         lowered = sql.lower()
         self.assertIn("create or replace function public.authorize_beta_tester_device", lowered)
@@ -407,7 +407,7 @@ class RemoteSqlContractTests(unittest.TestCase):
     def test_grants_hardening_revokes_raw_table_privileges(self):
         root = Path(__file__).resolve().parent
         sql = (root / "supabase" / "migrations" /
-               "20260824140000_beta_tester_grants_hardening.sql").read_text(
+               "20260824192729_beta_tester_grants_hardening.sql").read_text(
                    encoding="utf-8").lower()
         self.assertIn(
             "revoke all privileges on public.beta_tester_entitlements from anon, authenticated",

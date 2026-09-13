@@ -142,6 +142,14 @@ class WorkspaceAuthorizedTransitionTests(unittest.TestCase):
             reason_code="workspace_policy_resolution_pending")
         return job_id, result
 
+    def test_worker_handoff_keeps_claim_nonclaimable(self):
+        job_id, _ = self.create_ready()
+        self.jobs.update_fields(job_id, worker_id="worker-a", worker_pid=101)
+        outcome = self.ready.resolve_ready_pipeline(job_id, handoff_worker_id="worker-a")
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(outcome["status"], JobStatus.CLAIMING)
+        self.assertIsNone(self.jobs.claim_next_job("worker-b", 202))
+
     def test_ready_pipeline_is_authorized_and_enqueued_atomically(self):
         job_id, result = self.create_ready()
         outcome = self.ready.resolve_ready_pipeline(job_id)

@@ -66,6 +66,42 @@ class LauncherTests(unittest.TestCase):
     def test_main_unknown_command(self):
         self.assertEqual(start_tradutor.main(["bogus"]), 2)
 
+    def test_child_commands_preserve_dev_interpreter_contract(self):
+        worker = start_tradutor.build_child_command("worker", frozen=False)
+        ui = start_tradutor.build_child_command("ui", frozen=False)
+        self.assertIn("-u", worker)
+        self.assertTrue(worker[-1].endswith("worker_service.py"))
+        self.assertIn("-u", ui)
+        self.assertTrue(ui[-1].endswith("app_ui.py"))
+
+    def test_child_commands_use_internal_roles_when_frozen(self):
+        with patch.object(start_tradutor.sys, "executable", "TradutorIA.exe"):
+            worker = start_tradutor.build_child_command("worker", frozen=True)
+            ui = start_tradutor.build_child_command("ui", frozen=True)
+        self.assertEqual(worker, ["TradutorIA.exe", "--internal-child", "worker"])
+        self.assertEqual(ui, ["TradutorIA.exe", "--internal-child", "ui"])
+        self.assertNotIn("-u", worker + ui)
+        self.assertFalse(any(arg.endswith(".py") for arg in worker + ui))
+
+    def test_internal_child_dispatches_exactly_one_entrypoint(self):
+        with patch.object(start_tradutor, "load_local_environment_for_entrypoint") as load, \
+                patch("worker_service.main", return_value=7) as worker:
+            self.assertEqual(start_tradutor.main(["--internal-child", "worker", "--once"]), 7)
+        load.assert_not_called()
+        worker.assert_called_once_with(["--once"])
+
+    def test_invalid_internal_child_role_fails_without_falling_through(self):
+        with patch.object(start_tradutor, "load_local_environment_for_entrypoint") as load:
+            self.assertEqual(start_tradutor.main(["--internal-child", "nonsense"]), 2)
+        load.assert_not_called()
+
+    def test_internal_rapidocr_selftest_dispatches_without_launcher(self):
+        with patch.object(start_tradutor, "load_local_environment_for_entrypoint") as load, \
+                patch.object(start_tradutor, "internal_selftest", return_value=0) as smoke:
+            self.assertEqual(start_tradutor.main(["--internal-selftest", "rapidocr"]), 0)
+        load.assert_not_called()
+        smoke.assert_called_once_with("rapidocr")
+
     def test_start_ui_uses_hidden_background_options_and_captured_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

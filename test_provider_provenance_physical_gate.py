@@ -60,6 +60,37 @@ def _manifest(*, folder=None, quality_validation=None, quality_passed=False):
 
 
 class ProviderProvenanceTests(unittest.TestCase):
+    def test_deepl_remote_engine_maps_to_yomu_backend_internal_provider(self):
+        class Translator:
+            stats = {"provider_name": "yomu_backend"}
+
+        provenance = benchmark_pipeline.resolve_provider_provenance(
+            Translator(), "deepl", translation_enabled=True
+        )
+        self.assertEqual(provenance["remote_engine"], "deepl")
+        self.assertEqual(provenance["internal_provider"], "yomu_backend")
+        self.assertEqual(provenance["provider_class"], "YomuBackendTranslationProvider")
+        self.assertEqual(provenance["provenance_status"], "valid")
+        self.assertFalse(provenance["provider_mismatch"])
+
+    def test_unsupported_remote_engine_rejects_yomu_backend(self):
+        class Translator:
+            stats = {"provider_name": "yomu_backend"}
+
+        with self.assertRaisesRegex(RuntimeError, "provider_mismatch"):
+            benchmark_pipeline.resolve_provider_provenance(
+                Translator(), "riva", translation_enabled=True
+            )
+
+    def test_disabled_translation_accepts_missing_provider(self):
+        provenance = benchmark_pipeline.resolve_provider_provenance(
+            None, "deepl", translation_enabled=False
+        )
+
+        self.assertEqual(provenance["provider_source"], "disabled")
+        self.assertEqual(provenance["provider_effective"], "")
+        self.assertFalse(provenance["provider_mismatch"])
+
     def test_requested_riva_cannot_silently_execute_nemotron(self):
         class Translator:
             stats = {

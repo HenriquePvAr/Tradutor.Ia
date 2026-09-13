@@ -70,6 +70,35 @@ class AdvancedArtInpaintingIntegrityTests(unittest.TestCase):
 
                 self.assertEqual(inpainter.verify_integrity(), digest)
                 self.assertIsNone(inpainter._model)
+                self.assertEqual(inpainter.metrics["hash_count"], 1)
+                # Repeated stage-boundary verification must use the cached
+                # digest while the model file is unchanged.
+                self.assertEqual(inpainter.verify_integrity(), digest)
+                self.assertEqual(inpainter.metrics["hash_count"], 1)
+                self.assertEqual(inpainter.metrics["verify_count"], 2)
+        finally:
+            config.ADVANCED_ART_INPAINT_MODEL_SHA256 = old_hash
+
+    def test_file_change_invalidates_integrity_cache(self):
+        old_hash = config.ADVANCED_ART_INPAINT_MODEL_SHA256
+        first = b"hash-only fixture"
+        second = b"changed fixture"
+        first_digest = hashlib.sha256(first).hexdigest()
+        second_digest = hashlib.sha256(second).hexdigest()
+        try:
+            config.ADVANCED_ART_INPAINT_MODEL_SHA256 = first_digest
+            with tempfile.TemporaryDirectory() as temp_dir:
+                model = Path(temp_dir) / "model.pt"
+                model.write_bytes(first)
+                inpainter = advanced_art_inpainting.AdvancedArtInpainter(
+                    model_path=model,
+                )
+                self.assertEqual(inpainter.verify_integrity(), first_digest)
+                self.assertEqual(inpainter.metrics["hash_count"], 1)
+                model.write_bytes(second)
+                config.ADVANCED_ART_INPAINT_MODEL_SHA256 = second_digest
+                self.assertEqual(inpainter.verify_integrity(), second_digest)
+                self.assertEqual(inpainter.metrics["hash_count"], 2)
         finally:
             config.ADVANCED_ART_INPAINT_MODEL_SHA256 = old_hash
 

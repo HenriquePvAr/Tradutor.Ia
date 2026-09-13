@@ -10,6 +10,7 @@ Hermetic: fake analyses, no browser, no network, no child process.
 import _test_bootstrap  # noqa: F401
 
 import os
+import json
 import tempfile
 import threading
 import time
@@ -299,7 +300,7 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertIn(canonical, row["command"])
         self.assertNotIn(URL, row["command"])
 
-    def test_workspace_policy_authorizes_and_requeues_without_spawning_runner(self):
+    def test_workspace_policy_authorizes_and_keeps_worker_claim_until_runner_spawn(self):
         workspace_id = default_workspace_id(self.store.db_path)
         readiness = SourceReadinessStore(self.store.db_path)
         try:
@@ -324,9 +325,9 @@ class WorkerPhaseTests(unittest.TestCase):
 
         prepared = worker._prepare_source(job)
 
-        self.assertIsNone(prepared)
+        self.assertIsNotNone(prepared)
         row = self.store.get_job(job["id"])
-        self.assertEqual(row["status"], JobStatus.QUEUED)
+        self.assertEqual(row["status"], JobStatus.CLAIMING)
         self.assertEqual(row["stage"], "preparing_download")
         self.assertEqual(row["configuration"]["authorization_resolution"], "workspace_policy")
         self.assertEqual(worker.spawns, 0)
@@ -411,6 +412,49 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertEqual(row["status"], JobStatus.FAILED)
         self.assertEqual(row["stage"], "source_selection")
         self.assertEqual(row["reason_code"], "missing_source_selection")
+
+    def test_recent_preflight_is_reused_without_reopening_source(self):
+        analysis = FakeAnalysis(specific_outcome(), accepted=2)
+        job = self.queued_url_job(
+            source_analysis_json=json.dumps(analysis.public()))
+        from source_readiness import source_result_from_analysis
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            persisted = readiness.persist_analysis(source_result_from_analysis(job, analysis))
+        finally:
+            readiness.close()
+        self.store.update_fields(
+            job["id"], configuration_json=json.dumps({
+                "job_type": "translation", "source_analysis_result_id": persisted.analysis_id}),
+            source_analysis_json=json.dumps({"outcome": specific_outcome(), "accepted": []}))
+        worker = _Worker(self.store, error=AssertionError("full analysis must not run"))
+        reused = worker._reuse_persisted_source_analysis(self.store.get_job(job["id"]))
+        self.assertIsNotNone(reused)
+        self.assertEqual([candidate.id for candidate in reused.accepted], ["c000", "c001"])
+
+    def test_ready_persisted_preflight_overrides_stale_pending_snapshot(self):
+        analysis = FakeAnalysis(specific_outcome(), accepted=2)
+        job = self.queued_url_job(
+            source_analysis_json=json.dumps({
+                "outcome": "source_analysis_pending", "accepted": [
+                    {"id": "c000"}, {"id": "c001"}
+                ]}))
+        from source_readiness import source_result_from_analysis
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            persisted = readiness.persist_analysis(source_result_from_analysis(job, analysis))
+        finally:
+            readiness.close()
+        self.store.update_fields(
+            job["id"], configuration_json=json.dumps({
+                "job_type": "translation",
+                "preflight_source_analysis_result_id": persisted.analysis_id}),
+            source_analysis_json=json.dumps({"outcome": "source_analysis_pending", "accepted": []}))
+        worker = _Worker(self.store, error=AssertionError("full analysis must not run"))
+        reused = worker._reuse_persisted_source_analysis(self.store.get_job(job["id"]))
+        self.assertIsNotNone(reused)
+        self.assertEqual(reused.outcome, specific_outcome())
+        self.assertEqual(len(reused.accepted), 2)
 
 
 class SelectionReuseTests(unittest.TestCase):

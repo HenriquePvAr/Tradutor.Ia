@@ -204,6 +204,14 @@ class ReconcileTests(unittest.TestCase):
         alive = ui_bridge._runner_still_alive(self.store.get_job(job["id"]))
         self.assertFalse(alive)
 
+    def test_frozen_runner_uses_executable_fingerprint(self):
+        job = self.make_running(runner_pid=4242)
+        import process_tree
+        with mock.patch.object(ui_bridge.sys, "frozen", True, create=True), \
+             mock.patch.object(process_tree, "is_alive", return_value=True) as alive:
+            self.assertTrue(ui_bridge._runner_still_alive(self.store.get_job(job["id"])))
+        self.assertEqual(alive.call_args.kwargs["substrings"], ["YomuSekai.exe", job["id"]])
+
     def test_dead_without_manifest_is_never_marked_finished(self):
         job = self.make_running(exit_code=0, output_dir=self.tmp / "empty")
         (self.tmp / "empty").mkdir(exist_ok=True)
