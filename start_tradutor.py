@@ -73,6 +73,11 @@ def build_child_command(role: str, *, frozen: bool | None = None) -> list[str]:
 
 def _run_internal_child(role: str, argv: list[str]) -> int:
     print(f"CHILD_BOOT role={role}", flush=True)
+    if role in {"performance-validation", "worker", "ui", "pipeline"}:
+        import build_profile
+        if build_profile.is_production() and role == "performance-validation":
+            print("REJECTED_BY_PRODUCTION_PROFILE child=performance-validation", file=sys.stderr, flush=True)
+            return 2
     if role == "worker":
         import worker_service
         return worker_service.main(argv)

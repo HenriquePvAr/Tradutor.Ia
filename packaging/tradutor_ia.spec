@@ -19,6 +19,7 @@ elif _spec_path.is_file():
 else:
     ROOT = _spec_path.parent
 RAPIDOCR_ROOT = ROOT / ".venv-beta/Lib/site-packages/rapidocr_onnxruntime"
+VALIDATION_BUILD = bool(globals().get("VALIDATION_BUILD", False))
 
 datas = [
     (str(ROOT / "ui"), "ui"),
@@ -30,13 +31,14 @@ datas = [
 ]
 
 hiddenimports = [
-    "performance_validation_harness",
     "rapidocr_onnxruntime",
     # Selenium resolves the Chrome WebDriver lazily through __getattr__; keep
     # the concrete driver module in the frozen bundle for source adapters.
     "selenium.webdriver.chrome.webdriver",
     *collect_submodules("rapidocr_onnxruntime"),
 ]
+if VALIDATION_BUILD:
+    hiddenimports.append("performance_validation_harness")
 
 a = Analysis(
     [str(ROOT / "desktop_app.py")],
@@ -46,10 +48,11 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(ROOT / "packaging" / ("runtime_profile_validation.py" if VALIDATION_BUILD else "runtime_profile_production.py"))],
     excludes=[
         "paddle", "paddleocr", "paddlex", "torch", "transformers",
         "test", "pytest", "pytest_cov", "coverage",
+        "performance_validation_harness" if not VALIDATION_BUILD else "__never_exclude__",
     ],
     noarchive=False,
 )
