@@ -13,6 +13,7 @@ import html
 import json
 import statistics
 import time
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,24 +21,30 @@ from typing import Any
 
 
 _ACTIVE_PROFILER: "ClassificationProfiler | None" = None
+_ACTIVE_LOCAL = threading.local()
 
 
 def set_active_profiler(profiler: "ClassificationProfiler | None") -> None:
     global _ACTIVE_PROFILER
-    _ACTIVE_PROFILER = profiler
+    _ACTIVE_LOCAL.profiler = profiler
+    # Keep the legacy process-wide value for the main thread and callers that
+    # inspect it outside a worker. Worker pages use the thread-local value.
+    if threading.current_thread() is threading.main_thread():
+        _ACTIVE_PROFILER = profiler
 
 
 def get_active_profiler() -> "ClassificationProfiler | None":
-    return _ACTIVE_PROFILER
+    return getattr(_ACTIVE_LOCAL, "profiler", _ACTIVE_PROFILER)
 
 
 def profiling_enabled() -> bool:
-    return bool(_ACTIVE_PROFILER and _ACTIVE_PROFILER.enabled)
+    profiler = get_active_profiler()
+    return bool(profiler and profiler.enabled)
 
 
 @contextmanager
 def profile_step(name: str, *, page_index: int | None = None, items: int = 0, metadata: dict | None = None):
-    profiler = _ACTIVE_PROFILER
+    profiler = get_active_profiler()
     if not profiler or not profiler.enabled:
         yield
         return
@@ -55,7 +62,7 @@ def profile_step(name: str, *, page_index: int | None = None, items: int = 0, me
 
 
 def record_count(name: str, count: int = 1, *, page_index: int | None = None) -> None:
-    profiler = _ACTIVE_PROFILER
+    profiler = get_active_profiler()
     if profiler and profiler.enabled:
         profiler.record_count(name, count=count, page_index=page_index)
 
@@ -137,6 +144,26 @@ class ClassificationProfiler:
         self.page_records: dict[int, dict[str, Any]] = {}
         self.group_records: list[dict[str, Any]] = []
         self.classification_total_seconds: float = 0.0
+
+    def merge_from(self, other: "ClassificationProfiler") -> None:
+        """Merge metrics from a completed page-scoped profiler."""
+        if not self.enabled or not other.enabled:
+            return
+        for name, stats in other.steps.items():
+            target = self.steps.setdefault(name, StepStats())
+            target.calls += stats.calls
+            target.total_seconds += stats.total_seconds
+            target.durations.extend(stats.durations)
+            target.items += stats.items
+            if stats.max_seconds >= target.max_seconds:
+                target.max_seconds = stats.max_seconds
+                target.max_metadata = dict(stats.max_metadata)
+        for name, count in other.counts.items():
+            self.counts[name] = int(self.counts.get(name, 0)) + int(count)
+        for index, record in other.page_records.items():
+            self.page_records[index] = record
+        self.group_records.extend(other.group_records)
+        self.classification_total_seconds += other.classification_total_seconds
 
     def start_page(self, page_index: int, *, raw_line_count: int = 0) -> None:
         if not self.enabled:

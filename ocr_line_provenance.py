@@ -121,6 +121,19 @@ class ProvenanceRecorder:
         self.pages = {}
         self._current = None
 
+    def merge_from(self, other: "ProvenanceRecorder"):
+        """Merge a completed page-scoped recorder into this run recorder."""
+        for index in sorted(other.pages):
+            source = other.pages[index]
+            target = self._page(index)
+            target["raw_lines"].extend(source.get("raw_lines", []))
+            target["events"].extend(source.get("events", []))
+            target["render_inputs"].extend(source.get("render_inputs", []))
+            target["_seen"].update(source.get("_seen", set()))
+            target["_pass"] = max(target.get("_pass", 0), source.get("_pass", 0))
+            for group_id, group in source.get("groups", {}).items():
+                target["groups"].setdefault(group_id, group)
+
     def _page(self, index):
         key = int(index) if index is not None else 0
         return self.pages.setdefault(

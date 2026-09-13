@@ -1,5 +1,3 @@
-from deep_translator import GoogleTranslator
-
 import config
 
 
@@ -52,18 +50,22 @@ class TranslatorNLLB:
 class TranslatorGoogle:
     def __init__(self, src_lang_code):
         self.source = src_lang_code
-        self.translator = GoogleTranslator(source=self.source, target="pt")
+        # Legacy compatibility object. The shipped product path is DeepL; the
+        # unmaintained deep-translator package is intentionally not installed.
+        self.translator = None
 
     def translate(self, text):
         text = str(text or "").strip()
         if not text:
             return ""
 
-        try:
-            return self.translator.translate(text)
-        except Exception as exc:
-            print(f"Erro no Google Translate. Mantendo original: {exc}")
-            return text
+        print("Google Translator legado indisponível; mantendo original.")
+        return text
+
+
+def ocr_code_for_choice(choice):
+    """Return the OCR language code without constructing a translator."""
+    return {"1": "jpn", "2": "kor"}.get(str(choice).strip(), "eng")
 
 
 def get_translator(choice, *, translation_provider=None):
@@ -87,6 +89,11 @@ def get_translator(choice, *, translation_provider=None):
 
     mode = (config.TRANSLATION_MODE or "google").lower()
 
+    # The desktop backend provider is injected by the job runner with its
+    # job-scoped auth/runtime context.  Never construct a local provider here.
+    if translation_provider is not None and hasattr(translation_provider, "translate_batch"):
+        return translation_provider, ocr_code
+
     from ui_helpers import DEFAULT_TRANSLATION_PROVIDER, normalize_translation_provider
 
     provider = normalize_translation_provider(translation_provider)
@@ -96,6 +103,9 @@ def get_translator(choice, *, translation_provider=None):
     # provider default it never opted into.
     if not provider and mode == "nvidia":
         provider = DEFAULT_TRANSLATION_PROVIDER
+
+    if provider in {"yomu_backend", "backend", "yomu"}:
+        raise ValueError("yomu_backend_provider_requires_injected_instance")
 
     # An explicitly requested provider identifies its own backend, so DeepL is
     # resolved before TRANSLATION_MODE (which only ever selected between the

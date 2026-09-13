@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from job_store import JobStatus
+
 SOURCE_ANALYSIS_SCHEMA_VERSION = 1
 DOWNLOAD_AUTHORIZATION_SCHEMA_VERSION = 1
 ASSET_MANIFEST_SCHEMA_VERSION = 1
@@ -61,6 +63,30 @@ def _safe_id(value: Any, field: str) -> str:
     if not text or len(text) > 160 or not all(c.isalnum() or c in "._:@-" for c in text):
         raise ValueError(f"invalid_{field}")
     return text
+
+
+def _append_readiness_trace(db_path: str | Path, event: str, *, job_id: str,
+                            trace_id: str = "", **fields: Any) -> None:
+    """Persist compact source-readiness boundary events without touching SQLite."""
+    try:
+        safe_job = hashlib.sha256(str(job_id).encode("utf-8")).hexdigest()[:12]
+        path = Path(db_path).resolve().parent / "diagnostics" / f"job_{safe_job}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "timestamp": time.time(), "event": str(event),
+            "trace_id": str(trace_id or "")[:80], "job_id": safe_job,
+        }
+        for key, value in fields.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                payload[key] = value
+            else:
+                payload[key] = str(value)[:200]
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+            handle.flush()
+    except (OSError, TypeError, ValueError):
+        # Diagnostics must never alter authorization semantics.
+        pass
 
 
 def _owner_for_job(job: dict[str, Any]) -> str:
@@ -104,9 +130,14 @@ class SourceAnalysisResult:
     created_at: float
     completed_at: float
     result_hash: str
+    # Deterministic adapter-owned selection.  Older rows omit this field and remain
+    # readable; workers safely fall back to the legacy full-analysis path.
+    resolved_selection: tuple[str, ...] = ()
 
     def public(self) -> dict[str, Any]:
-        return dict(self.__dict__)
+        payload = dict(self.__dict__)
+        payload["resolved_selection"] = list(self.resolved_selection)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -397,6 +428,9 @@ class SourceReadinessStore:
         body["access_restricted"] = bool(body.get("access_restricted"))
         body["reason_code"] = str(body.get("reason_code") or "")
         body["policy_hash"] = str(body.get("policy_hash") or "")
+        body["resolved_selection"] = tuple(
+            str(value) for value in (body.get("resolved_selection") or []) if str(value)
+        )
         now = float(body.get("completed_at") or time.time())
         body["created_at"] = float(body.get("created_at") or now)
         body["completed_at"] = now
@@ -518,9 +552,22 @@ class SourceReadinessStore:
             (_safe_id(owner, "owner"), str(analysis_result_id or "")),
         ).fetchone()[0])
 
-    def resolve_ready_pipeline(self, job_id: str) -> dict[str, Any]:
-        """Atomically resolve policy, persist one authorization, and enqueue once."""
+    def resolve_ready_pipeline(
+        self, job_id: str, *, handoff_worker_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically resolve policy and persist one authorization.
+
+        UI callers retain the historical ``queued`` result.  A worker that is already
+        holding the claim may pass ``handoff_worker_id`` so the authorization transition
+        keeps the row in ``claiming`` under that same owner until the runner is spawned.
+        This closes the requeue window in which a second worker could claim the job while
+        the first worker was already handing it off.
+        """
         job_id = str(job_id or "")
+        _append_readiness_trace(
+            self.db_path, "RESOLVE_READY_PIPELINE_BEGIN", job_id=job_id,
+            handoff_worker_id=handoff_worker_id or "",
+        )
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             row = self._conn.execute(
@@ -528,6 +575,13 @@ class SourceReadinessStore:
             if row is None:
                 raise ValueError("job_not_found")
             config = json.loads(row["configuration_json"] or "{}")
+            trace_id = str(config.get("trace_id") or "")
+            _append_readiness_trace(
+                self.db_path, "RESOLVE_READY_PIPELINE_INPUT_STATE", job_id=job_id,
+                trace_id=trace_id, status=str(row["status"] or ""),
+                stage=str(row["stage"] or ""), worker_id=str(row["worker_id"] or ""),
+                authorization_present=bool(config.get("download_authorization")),
+            )
             existing = config.get("download_authorization") or {}
             if row["status"] == "queued" and existing.get("authorization_id"):
                 self._conn.execute("COMMIT")
@@ -641,21 +695,39 @@ class SourceReadinessStore:
                 "download_authorization": serializable,
                 "authorization_resolution": "workspace_policy",
             })
+            final_status = JobStatus.CLAIMING if handoff_worker_id else JobStatus.QUEUED
+            worker_guard = " AND worker_id=?" if handoff_worker_id else ""
+            _append_readiness_trace(
+                self.db_path, "RESOLVE_READY_PIPELINE_DECISION", job_id=job_id,
+                trace_id=trace_id, final_status=final_status,
+                authorization_id=authorization_id, handoff=bool(handoff_worker_id),
+            )
+            update_params = [_canonical(config), time.time(), time.time(), job_id]
+            if handoff_worker_id:
+                update_params.append(str(handoff_worker_id))
             updated = self._conn.execute(
-                """UPDATE jobs SET status='queued',stage='preparing_download',
+                f"""UPDATE jobs SET status=?,stage='preparing_download',
                    reason_code='workspace_policy_authorized',configuration_json=?,
                    queued_at=COALESCE(queued_at,?),updated_at=?
-                   WHERE id=? AND status='source_analysis_ready'""",
-                (_canonical(config), time.time(), time.time(), job_id),
+                   WHERE id=? AND status='source_analysis_ready'{worker_guard}""",
+                [final_status, *update_params],
             )
             if updated.rowcount != 1:
                 raise RuntimeError("workspace_policy_concurrent_transition")
+            _append_readiness_trace(
+                self.db_path, "RESOLVE_READY_PIPELINE_STATE_WRITE_RESULT", job_id=job_id,
+                trace_id=trace_id, status=final_status, rowcount=int(updated.rowcount),
+            )
             self._conn.execute("COMMIT")
-            return {"ok": True, "job_id": job_id, "status": "queued",
+            return {"ok": True, "job_id": job_id, "status": final_status,
                     "authorization_id": authorization_id, "duplicate": False}
-        except BaseException:
+        except BaseException as exc:
             if self._conn.in_transaction:
                 self._conn.execute("ROLLBACK")
+            _append_readiness_trace(
+                self.db_path, "RESOLVE_READY_PIPELINE_EXCEPTION", job_id=job_id,
+                exception_type=type(exc).__name__,
+            )
             raise
 
     def require_operation(self, *, owner: str, analysis_result_id: str,
@@ -768,6 +840,8 @@ def source_result_from_analysis(job: dict[str, Any], analysis: Any, *,
         "status": "source_analysis_ready",
         "reason_code": "source_structure_compatible",
         "policy_hash": str(preflight.get("policy_hash") or ""),
+        "resolved_selection": [str(candidate.id) for candidate in (getattr(analysis, "accepted", []) or [])
+                               if str(getattr(candidate, "id", "") or "")],
     }
 
 

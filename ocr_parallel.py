@@ -173,6 +173,75 @@ def _detect_sequential(jobs, ocr_lang, result_callback=None, progress_callback=N
     return results
 
 
+def _page_result_to_payload(index, page_result, telemetry_pages_by_index, mode):
+    """Convert an ``ocr_contract.OCRPageResult`` (from ocr_hybrid_scheduler) into
+    the same per-page payload shape ``_detect_sequential``/``_detect_in_worker``
+    already produce, so downstream grouping/translation/recovery never sees a
+    different contract depending on OCR_EXECUTION_MODE."""
+    record = telemetry_pages_by_index.get(index)
+    duration_ms = record["duration_ms"] if record else 0.0
+    engine_name = page_result.engine if page_result is not None else mode
+    error = getattr(page_result, "error", None) if page_result is not None else "ocr_provider_outcome_unknown"
+    lines = page_result.to_ocr_lines() if page_result is not None else []
+    return {
+        "index": index,
+        "error": error,
+        "elapsed_seconds": duration_ms / 1000.0,
+        "lines": lines,
+        "ocr_metadata": {
+            "full_page_engine": engine_name,
+            "full_page_duration_ms": duration_ms,
+            "region_count": page_result.region_count if page_result is not None else 0,
+        },
+        "pid": os.getpid(),
+    }
+
+
+def _detect_via_execution_mode(jobs, ocr_lang, mode, result_callback=None, progress_callback=None):
+    """OCR_EXECUTION_MODE=nvidia|hybrid: delegate the full-page OCR call to the
+    dynamic-queue scheduler (ocr_hybrid_scheduler), then reshape its output
+    into the exact same per-page payload contract the rapidocr path returns.
+    Nothing downstream of detect_ocr_jobs needs to know which mode ran."""
+    from ocr_hybrid_scheduler import run_ocr
+
+    if progress_callback:
+        for job in jobs:
+            progress_callback(job, "started")
+
+    page_results, telemetry = run_ocr(jobs, ocr_lang, mode=mode)
+    telemetry_pages_by_index = {record["page"]: record for record in telemetry.get("pages", [])}
+
+    results = {}
+    for job in jobs:
+        index = job["index"]
+        payload = _page_result_to_payload(
+            index, page_results.get(index), telemetry_pages_by_index, mode
+        )
+        results[index] = payload
+        if result_callback:
+            result_callback(payload)
+        if progress_callback:
+            progress_callback(payload, "completed")
+
+    run_stats = dict(telemetry)
+    run_stats.pop("pages", None)
+    run_stats.update(
+        {
+            "parallel_requested": mode == "hybrid",
+            "parallel_used": mode == "hybrid",
+            "workers_requested": (
+                getattr(config, "RAPIDOCR_WORKERS", 1) + getattr(config, "NVIDIA_OCR_WORKERS", 1)
+                if mode == "hybrid"
+                else 1
+            ),
+            "worker_pids": [os.getpid()],
+            "fallback_reason": None,
+            "memory_policy": None,
+        }
+    )
+    return results, run_stats
+
+
 def detect_ocr_jobs(
     jobs,
     ocr_lang,
@@ -189,6 +258,17 @@ def detect_ocr_jobs(
             "worker_pids": [],
             "fallback_reason": None,
         }
+
+    ocr_execution_mode = str(getattr(config, "OCR_EXECUTION_MODE", "rapidocr") or "rapidocr").strip().lower()
+    if ocr_execution_mode != "rapidocr":
+        # rapidocr (default) falls through to the untouched code below --
+        # zero behavior change. nvidia/hybrid are the only modes that switch
+        # the full-page OCR call site; everything after detect_ocr_jobs
+        # (grouping, translation-item builder, cleanup, render, PDF) is
+        # unaffected because the returned payload shape is identical.
+        return _detect_via_execution_mode(
+            jobs, ocr_lang, ocr_execution_mode, result_callback, progress_callback
+        )
 
     workers = max(1, int(workers or 1))
     largest_pixels = 0

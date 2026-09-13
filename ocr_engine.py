@@ -2,6 +2,7 @@ import importlib.util
 import re
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -108,6 +109,44 @@ class OCRLine:
     original_text: str = ""
     repaired_text: str = ""
     repair_reason: str = ""
+
+
+# --- OCR provenance (which engine first read a line, whether a later pass
+# recovered/replaced it) -------------------------------------------------
+# Additive metadata only: ``OCRLine.engine`` keeps meaning "current engine"
+# for every existing reader; these four keys live in ``line.metadata`` so no
+# downstream consumer of ``.engine`` needs to change.
+
+
+def stamp_initial_ocr_provenance(lines):
+    """Tag freshly full-page-OCRed lines with their initial engine.
+
+    Idempotent: a line that already carries ``initial_ocr_engine`` (stamped by
+    an earlier recovery pass, e.g. a same-call regional retry) is left alone.
+    """
+    for line in lines or []:
+        metadata = dict(line.metadata or {})
+        if "initial_ocr_engine" not in metadata:
+            metadata["initial_ocr_engine"] = line.engine or None
+            metadata["current_ocr_engine"] = line.engine or None
+            metadata.setdefault("recovery_engine", None)
+            metadata.setdefault("recovered", False)
+            line.metadata = metadata
+
+
+def mark_ocr_line_recovered(line, recovery_engine, *, initial_ocr_engine=None):
+    """Record that ``line`` is the product of a recovery/re-OCR pass.
+
+    Preserves whatever ``initial_ocr_engine`` the line already carries; a
+    genuinely new line (no prior reading) falls back to the ``initial_ocr_engine``
+    kwarg (``None`` when the region had no earlier engine at all).
+    """
+    metadata = dict(line.metadata or {})
+    metadata.setdefault("initial_ocr_engine", initial_ocr_engine)
+    metadata["current_ocr_engine"] = recovery_engine
+    metadata["recovery_engine"] = recovery_engine
+    metadata["recovered"] = True
+    line.metadata = metadata
 
 
 class OCREngine:
@@ -248,6 +287,8 @@ class OCREngine:
             lines,
             page,
         )
+        for recovered_line in recovery_lines:
+            mark_ocr_line_recovered(recovered_line, "rapidocr", initial_ocr_engine="rapidocr")
         lines = _dedupe_ocr_lines(list(lines or []) + recovery_lines)
         story_regions = int(rapid_metrics.get("estimated_story_text_regions") or 0)
         recovered_regions = sum(
@@ -563,6 +604,7 @@ class OCREngine:
             print("Inicializando RapidOCR / ONNX Runtime...")
             self._rapidocr_instances[cache_key] = RapidOCR()
         return self._rapidocr_instances[cache_key]
+
 
     def _annotate_lines(self, lines, page, engine):
         metadata = dict(self.last_run_metadata)
@@ -1761,3 +1803,37 @@ def _box_from_poly(poly):
     x2 = int(xs.max())
     y2 = int(ys.max())
     return x1, y1, max(1, x2 - x1), max(1, y2 - y1)
+
+
+def rapidocr_runtime_smoke() -> dict:
+    """Run one deterministic in-memory smoke through the production RapidOCR factory."""
+    import hashlib
+    import rapidocr_onnxruntime
+
+    image = np.full((128, 320, 3), 255, dtype=np.uint8)
+    cv2.putText(image, "TEST 123", (12, 78), cv2.FONT_HERSHEY_SIMPLEX, 1.6,
+                (0, 0, 0), 3, cv2.LINE_AA)
+    engine = OCREngine("rapidocr")
+    output = engine._get_rapidocr()(image)
+    results = output[0] if isinstance(output, tuple) else output
+    if results is None or not isinstance(results, list):
+        raise RuntimeError("RapidOCR returned malformed output")
+    package_root = Path(rapidocr_onnxruntime.__file__).resolve().parent
+    expected = {
+        "detector": "ch_PP-OCRv4_det_infer.onnx",
+        "recognizer": "ch_PP-OCRv4_rec_infer.onnx",
+        "classifier": "ch_ppocr_mobile_v2.0_cls_infer.onnx",
+    }
+    assets = {}
+    for role, filename in expected.items():
+        matches = list(package_root.rglob(filename))
+        if not matches:
+            raise FileNotFoundError(filename)
+        path = matches[0]
+        assets[role] = {"filename": filename,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "packaged_path": str(path)}
+    return {"status": "ok", "rapidocr_version": getattr(rapidocr_onnxruntime, "__version__", "unknown"),
+            "opencv_version": cv2.__version__, "inference_completed": True,
+            "result_count": len(results), "model_assets": assets,
+            "onnxruntime_provider": "CPU", "network_attempted": False}

@@ -1,4 +1,5 @@
 import json
+import copy
 import hashlib
 import math
 import os
@@ -8,6 +9,8 @@ import shutil
 import subprocess
 import time
 import traceback
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -19,6 +22,7 @@ import config
 import region_taxonomy
 from classification_profiler import (
     ClassificationProfiler,
+    get_active_profiler,
     profile_step,
     set_active_profiler,
 )
@@ -50,7 +54,7 @@ import ocr_line_provenance
 import semantic_fidelity
 import source_completeness
 from ocr_parallel import detect_ocr_jobs
-from ocr_engine import OCREngine
+from ocr_engine import OCREngine, stamp_initial_ocr_provenance
 from fast_ocr_policy import FastOCRBudget
 from pdf import (
     create_split_boundary_contact_sheet,
@@ -76,6 +80,137 @@ from pipeline_cache import (
     valid_image,
 )
 from session_context import SessionContextStore
+
+_RAPIDOCR_INFERENCE_LOCK = threading.BoundedSemaphore(1)
+_PERF_JOB_ORIGIN_NS = None
+_PERF_EVENTS = []
+
+
+def _perf_offset_ns() -> int | None:
+    """Return a monotonic offset from the single active job origin."""
+    if _PERF_JOB_ORIGIN_NS is None:
+        return None
+    return max(0, time.perf_counter_ns() - int(_PERF_JOB_ORIGIN_NS))
+
+
+def _record_perf_event(stage, phase, start_ns, end_ns, *, page_index=None, worker="main"):
+    if start_ns is None or end_ns is None:
+        return
+    _PERF_EVENTS.append({"stage": str(stage), "phase": str(phase), "page_index": page_index,
+                         "worker": str(worker), "start_offset_ns": int(start_ns),
+                         "end_offset_ns": int(end_ns)})
+
+
+def _pipeline_page_workers():
+    raw = os.environ.get("PIPELINE_PAGE_WORKERS", str(getattr(config, "PIPELINE_PAGE_WORKERS", 1)))
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("PIPELINE_PAGE_WORKERS must be 1 or 2") from exc
+    if value not in (1, 2):
+        raise ValueError("PIPELINE_PAGE_WORKERS must be 1 or 2")
+    return value
+
+
+def process_pre_translation_pages(
+    page_states,
+    *,
+    image_paths,
+    ocr_lang,
+    fast_ocr_budget,
+    errors_folder,
+):
+    """Run page-local pre-translation work with a bounded executor.
+
+    Results are returned in page order; all aggregate merging remains with the
+    caller thread. workers=1 intentionally uses the legacy direct call path.
+    """
+    workers = _pipeline_page_workers()
+
+    def run_one(state):
+        perf_start = _perf_offset_ns()
+        context = PageProcessingContext(
+            page_index=int(state["index"]),
+            source_path=str(state.get("image_path", "")),
+            ocr_result=state.get("raw_lines", []),
+        )
+        result = process_pre_translation_page(
+            context,
+            page_state=state,
+            image_paths=image_paths,
+            ocr_lang=ocr_lang,
+            fast_ocr_budget=fast_ocr_budget,
+            errors_folder=errors_folder,
+        )
+        perf_end = _perf_offset_ns()
+        if isinstance(result.page_state, dict):
+            result.page_state.setdefault("_performance_events", []).append({
+                "stage": "pre_translation", "phase": "pre", "page_index": int(state["index"]),
+                "worker": threading.current_thread().name,
+                "start_offset_ns": perf_start, "end_offset_ns": perf_end,
+            })
+        return result
+
+    if workers == 1:
+        return [run_one(state) for state in page_states]
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pre-page") as executor:
+        futures = [executor.submit(run_one, state) for state in page_states]
+        results = [future.result() for future in as_completed(futures)]
+    return sorted(results, key=lambda result: result.page_index)
+
+
+def process_post_translation_page(state, *, diagnostic_folder=None, targeted_regression=False):
+    """Render and save one page, returning only page-owned state."""
+    local = dict(state)
+    timings = {}
+    perf_start = _perf_offset_ns()
+    previous_recorder = ocr_line_provenance.active()
+    page_recorder = ocr_line_provenance.ProvenanceRecorder()
+    ocr_line_provenance.activate(page_recorder)
+    try:
+        debug_folder = None
+        if targeted_regression and diagnostic_folder is not None:
+            debug_folder = str(Path(diagnostic_folder) / f"page_{int(local['index']):03}")
+        final, debug_data = render_analyzed_image(
+            local["original_bgr"], local.get("raw_lines", []), local["candidates"],
+            local["groups"], font_path=config.FONT_PATH, debug_folder=debug_folder,
+            page_index=local["index"], image_path=local["image_path"], stage_timings=timings,
+        )
+        Path(local["output_path"]).parent.mkdir(parents=True, exist_ok=True)
+        save_started = time.perf_counter()
+        if not cv2.imwrite(local["output_path"], final):
+            raise RuntimeError("cv2.imwrite retornou False")
+        timings["image_save"] = time.perf_counter() - save_started
+        if not valid_image(local["output_path"]):
+            raise RuntimeError("imagem final invalida")
+        local["timings"] = dict(timings)
+        local["status"] = "completed"
+        local["cache_source"] = "fresh"
+        debug_data["ocr_metadata"] = local.get("ocr_metadata", {})
+        debug_data["selective_ocr_fallbacks"] = local.get("selective_ocr_fallbacks", [])
+        debug_data["text_repairs"] = _applied_text_repairs(local.get("ocr_metadata", {})) + local.get("group_text_repairs", [])
+        debug_data["rejected_text_repairs"] = _rejected_text_repairs(local.get("ocr_metadata", {}))
+        local["debug_data"] = debug_data
+        _save_page_processed_cache(local)
+        local.setdefault("_performance_events", []).append({
+            "stage": "post_translation", "phase": "post", "page_index": int(local["index"]),
+            "worker": threading.current_thread().name,
+            "start_offset_ns": perf_start, "end_offset_ns": _perf_offset_ns(),
+        })
+        return PostTranslationPageResult(page_index=int(local["index"]), output_path=str(local["output_path"]), timings=dict(timings), page_state=local, page_recorder=page_recorder)
+    except Exception as exc:
+        return PostTranslationPageResult(page_index=int(local["index"]), timings=dict(timings), page_state=local, page_recorder=page_recorder, error=f"{type(exc).__name__}: {exc}")
+    finally:
+        ocr_line_provenance.activate(previous_recorder)
+
+
+def process_post_translation_pages(page_states, *, diagnostic_folder=None, targeted_regression=False):
+    workers = _pipeline_page_workers()
+    if workers == 1:
+        return [process_post_translation_page(state, diagnostic_folder=diagnostic_folder, targeted_regression=targeted_regression) for state in page_states]
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="post-page") as executor:
+        futures = [executor.submit(process_post_translation_page, state, diagnostic_folder=diagnostic_folder, targeted_regression=targeted_regression) for state in page_states]
+        return sorted((future.result() for future in as_completed(futures)), key=lambda result: result.page_index)
 from output_manifest import (
     build_run_manifest,
     sanitize_source_provenance,
@@ -86,10 +221,74 @@ from pdf_naming import (
     episode_number_from_url,
     series_slug_from_url,
 )
+from page_processing_contracts import (
+    PageProcessingContext,
+    PageProgressAggregator,
+    PageProgressEvent,
+    PreTranslationPageAccumulator,
+    PreTranslationPageResult,
+    PostTranslationPageResult,
+)
 from translator_nllb import get_translator
+
+
+def _build_translation_provider(requested_provider: str, *, translation_enabled: bool):
+    """Resolve the server-authoritative provider only at the real pipeline boundary.
+
+    Disabled runs retain the existing provider-neutral path.  The local/test
+    backend is deliberately injectable and unavailable in production-like mode;
+    production transport is supplied by the deployed backend integration.
+    """
+    provider = str(requested_provider or "").strip().lower()
+    if provider != "yomu_backend" or not translation_enabled:
+        return None
+    from runtime_paths import runtime_root
+    from yomu_backend_provider import HttpBackendClient, MockBackendClient, YomuBackendTranslationProvider
+
+    env = str(os.getenv("YOMU_ENV", "")).strip().lower()
+    test_backend = str(os.getenv("YOMU_TEST_BACKEND", "mock")).strip().lower()
+    if env in {"local", "test"} and test_backend in {"", "mock"}:
+        backend = MockBackendClient()
+    else:
+        backend = HttpBackendClient.from_environment()
+    return YomuBackendTranslationProvider(
+        runtime_root=runtime_root(), backend=backend
+    )
+
+
+def _resolve_translation_runtime(requested_provider: str, *, translation_enabled: bool):
+    """Resolve translation and OCR language at the pipeline boundary.
+
+    A disabled job must not call the legacy ``get_translator`` factory: that
+    factory intentionally honors historical config/provider values and can
+    initialize DeepL, Google, or NLLB.  The OCR language mapping is pure and
+    remains available for the disabled path.
+    """
+    from translator_nllb import ocr_code_for_choice
+
+    if not translation_enabled:
+        print("TRANSLATION_STAGE_CONFIGURED disabled provider_init=0", flush=True)
+        return None, ocr_code_for_choice("3")
+    # An enabled production job always crosses the server-authoritative bridge.
+    # Legacy CLI provider labels remain metadata only and must never select the
+    # desktop DeepL/NLLB factories for an enabled job.
+    injected_provider = _build_translation_provider(
+        "yomu_backend", translation_enabled=True
+    )
+    if injected_provider is None:
+        raise RuntimeError("yomu_backend_provider_unavailable")
+    print("TRANSLATION_PROVIDER_INIT provider=yomu_backend", flush=True)
+    return get_translator("3", translation_provider=injected_provider)
 from translator_nvidia import PROMPT_VERSION
 from resource_monitor import ResourceMonitor, detect_gpu_basic
 from ui_helpers import derive_final_run_status, sanitize_diagnostic_text
+
+
+def _hidden_subprocess_options():
+    """Keep diagnostic helper subprocesses console-free on Windows."""
+    from process_options import hidden_console_options
+
+    return hidden_console_options()
 
 
 BASELINE_SECONDS = 2129.41
@@ -112,6 +311,7 @@ def _git_metadata():
                 capture_output=True,
                 text=True,
                 check=False,
+                **_hidden_subprocess_options(),
             )
         except OSError:
             return ""
@@ -208,14 +408,36 @@ def _source_manifest_provenance(download_report):
     return sanitize_source_provenance(raw_provenance)
 
 
-def resolve_provider_provenance(translator, requested_provider=""):
+def resolve_provider_provenance(
+    translator, requested_provider="", *, translation_enabled=True
+):
     from ui_helpers import normalize_translation_provider
 
     requested = normalize_translation_provider(requested_provider)
-    stats = getattr(translator, "stats", {})
+    stats = getattr(translator, "stats", {}) if translator is not None else {}
+    if not isinstance(stats, dict):
+        stats = {}
+
+    # A disabled translation stage deliberately has no provider instance.  Keep
+    # provenance first-class without asking the legacy provider validation to
+    # compare a requested CLI default with an intentionally absent provider.
+    if not translation_enabled:
+        stats["provider_requested"] = ""
+        stats["provider_effective"] = ""
+        stats["provider_source"] = "disabled"
+        stats["provider_disabled"] = True
+        stats["provider_fallback_used"] = False
+        stats["provider_fallback_reason"] = ""
+        return report_provider_provenance(stats)
+
     effective = str(stats.get("provider_name") or "").strip().lower()
-    if requested and effective != requested:
-        raise RuntimeError("provider_mismatch")
+    provenance = normalize_translation_provider_provenance(
+        requested, effective, translation_enabled=translation_enabled
+    )
+    stats["remote_engine"] = provenance["remote_engine"]
+    stats["internal_provider"] = provenance["internal_provider"]
+    stats["provider_class"] = provenance["provider_class"]
+    stats["provenance_status"] = provenance["status"]
     if requested:
         stats["provider_requested"] = requested
         stats["provider_source"] = "run_argument"
@@ -228,6 +450,53 @@ def resolve_provider_provenance(translator, requested_provider=""):
     stats["provider_fallback_used"] = False
     stats["provider_fallback_reason"] = ""
     return report_provider_provenance(stats)
+
+
+def normalize_translation_provider_provenance(
+    requested_provider: str,
+    effective_provider: str,
+    *,
+    translation_enabled: bool = True,
+):
+    """Validate the boundary between the selected remote engine and runtime transport.
+
+    ``deepl`` is the user-facing/remote engine selection.  In the commercial
+    desktop path it is intentionally implemented by the internal
+    ``yomu_backend`` transport, which then calls the server-side provider.  Do
+    not compare those identifiers as if they were the same namespace.
+    """
+    from ui_helpers import normalize_translation_provider
+
+    requested = normalize_translation_provider(requested_provider)
+    effective = str(effective_provider or "").strip().lower()
+    if not translation_enabled:
+        return {
+            "remote_engine": "",
+            "internal_provider": "",
+            "provider_class": "",
+            "status": "disabled",
+        }
+    if not effective:
+        raise RuntimeError("provider_mismatch")
+    if effective == "yomu_backend":
+        if requested not in {"", "deepl"}:
+            raise RuntimeError("provider_mismatch")
+        return {
+            "remote_engine": requested or "deepl",
+            "internal_provider": "yomu_backend",
+            "provider_class": "YomuBackendTranslationProvider",
+            "status": "valid",
+        }
+    # Legacy providers remain valid only when the selected label and runtime
+    # implementation are the same namespace (e.g. explicit nemotron->nemotron).
+    if requested and requested != effective:
+        raise RuntimeError("provider_mismatch")
+    return {
+        "remote_engine": requested,
+        "internal_provider": effective,
+        "provider_class": "",
+        "status": "valid",
+    }
 
 
 def report_provider_provenance(translator_stats):
@@ -246,9 +515,18 @@ def report_provider_provenance(translator_stats):
         "provider_effective": effective,
         "provider_model": stats.get("model", config.NVIDIA_TRANSLATION_MODEL),
         "provider_source": stats.get("provider_source", ""),
+        "provider_disabled": bool(stats.get("provider_disabled", False)),
         "provider_fallback_used": bool(stats.get("provider_fallback_used", False)),
         "provider_fallback_reason": str(stats.get("provider_fallback_reason", "")),
-        "provider_mismatch": bool(requested and effective and requested != effective),
+        "provider_mismatch": bool(
+            stats.get("provenance_status") == "invalid"
+            or (requested and effective and requested != effective
+                and not (requested == "deepl" and effective == "yomu_backend"))
+        ),
+        "remote_engine": str(stats.get("remote_engine") or "").strip().lower(),
+        "internal_provider": str(stats.get("internal_provider") or effective).strip().lower(),
+        "provider_class": str(stats.get("provider_class") or "").strip(),
+        "provenance_status": "disabled" if stats.get("provider_disabled") else "valid",
     }
     # Reported only when the provider actually publishes them, so a run can never
     # invent a model type it never asked for or was never told about.  DeepL is
@@ -520,8 +798,443 @@ def _finalize_immutable_file(temp_path, final_path):
     return {"status": "created", "sha256": final_hash, "size": final_size}
 
 
+def process_pre_translation_page(
+    context: PageProcessingContext,
+    *,
+    page_state,
+    image_paths,
+    ocr_lang,
+    fast_ocr_budget,
+    errors_folder,
+) -> PreTranslationPageResult:
+    """Process exactly one page and return only page-owned state/results."""
+    if not isinstance(context, PageProcessingContext):
+        raise TypeError("context must be PageProcessingContext")
+    if int(context.page_index) != int(page_state.get("index", -1)):
+        raise ValueError("page context/index mismatch")
+    state = page_state
+    page_acc = PreTranslationPageAccumulator(page_index=int(state["index"]))
+    # Isolate page-owned writes from the aggregate list entry.  Nested
+    # timing state is copied explicitly; large image references remain
+    # shared read-only until the page produces its final result.
+    global_page_state = state
+    state = dict(state)
+    index = int(state["index"])
+    # Keep the page-local accumulator complete even when an early OCR/image
+    # failure takes the error path before ordinary stages have been entered.
+    stage_seconds = {"image_save": 0.0}
+    state["timings"] = dict(global_page_state.get("timings", {}) or {})
+    # OCR lines are page-owned mutable input once recovery/classification
+    # starts; do not let a future worker alias the aggregate state's list.
+    if isinstance(state.get("raw_lines"), list):
+        state["raw_lines"] = list(state["raw_lines"])
+    # Copy small nested page metadata so local mutation cannot alias the
+    # aggregate state. Large image/model objects are intentionally shared
+    # as read-only references.
+    for field in (
+        "precheck", "ocr_metadata", "debug_data", "fast_ocr_fallback_metadata",
+        "speech_container_reocr", "rapidocr_region_recovery",
+        "selective_ocr_fallbacks", "group_text_repairs",
+    ):
+        if field in state and state[field] is not None:
+            state[field] = copy.deepcopy(state[field])
+    run_recorder = ocr_line_provenance.active()
+    page_recorder = ocr_line_provenance.ProvenanceRecorder()
+    ocr_line_provenance.activate(page_recorder)
+    run_profiler = get_active_profiler()
+    page_profiler = ClassificationProfiler(
+        enabled=bool(run_profiler and run_profiler.enabled)
+    )
+    classification_profiler = page_profiler
+    set_active_profiler(page_profiler)
+
+    def finish_page_provenance():
+        ocr_line_provenance.activate(run_recorder)
+        set_active_profiler(run_profiler)
+        page_acc.ocr_line_provenance.extend(
+            page_recorder.to_dict().get("pages", [])
+        )
+
+    if state.get("status") == "completed":
+        page_acc.page_state = state
+        page_acc.page_recorder = page_recorder
+        page_acc.page_profiler = page_profiler
+        finish_page_provenance()
+        return page_acc.to_result()
+
+    if state.get("ocr_error"):
+        _complete_page_with_error(
+            state,
+            state["ocr_error"],
+            errors_folder,
+            stage_seconds,
+            stage="ocr",
+        )
+        page_acc.counters["pages_with_error"] = (
+            page_acc.counters.get("pages_with_error", 0) + 1
+        )
+        page_acc.progress_events.append(PageProgressEvent(
+            page_index=index, stage="pre_translation", completed_units=1,
+            total_units=1, code="page_error",
+        ))
+        page_acc.timings.update(stage_seconds)
+        page_acc.error = str(state.get("page_error", {}).get("message", "ocr_error"))
+        page_acc.page_state = state
+        page_acc.page_recorder = page_recorder
+        page_acc.page_profiler = page_profiler
+        finish_page_provenance()
+        return page_acc.to_result()
+
+    original = cv2.imread(state["image_path"])
+    if original is None:
+        _complete_page_with_error(
+            state,
+            "image_load_failed_before_classification",
+            errors_folder,
+            stage_seconds,
+            stage="image_load",
+        )
+        page_acc.counters["pages_with_error"] = (
+            page_acc.counters.get("pages_with_error", 0) + 1
+        )
+        page_acc.progress_events.append(PageProgressEvent(
+            page_index=index, stage="pre_translation", completed_units=1,
+            total_units=1, code="page_error",
+        ))
+        page_acc.timings.update(stage_seconds)
+        page_acc.error = str(state.get("page_error", {}).get("message", "image_load_failed_before_classification"))
+        page_acc.page_state = state
+        page_acc.page_recorder = page_recorder
+        page_acc.page_profiler = page_profiler
+        finish_page_provenance()
+        return page_acc.to_result()
+
+    classification_profiler.start_page(
+        state["index"],
+        raw_line_count=len(state.get("raw_lines", []) or []),
+    )
+    classify_started = time.perf_counter()
+    with profile_step(
+        "pipeline.analyze_initial",
+        page_index=state["index"],
+        items=len(state.get("raw_lines", []) or []),
+    ):
+        candidates, groups = analyze_image_array(
+            original,
+            state.get("raw_lines", []),
+            page_index=state["index"],
+        )
+    reocr_started = time.perf_counter()
+    with profile_step(
+        "pipeline.speech_container_reocr",
+        page_index=state["index"],
+        items=len(state.get("raw_lines", []) or []),
+    ):
+        reocr_lines, reocr_records = apply_speech_container_reocr(
+            original,
+            state.get("raw_lines", []),
+            ocr_lang,
+            state["index"],
+        )
+    reocr_elapsed = time.perf_counter() - reocr_started
+    if reocr_records:
+        state["speech_container_reocr"] = reocr_records
+        page_acc.timings["ocr_selective_fallback"] = (
+            page_acc.timings.get("ocr_selective_fallback", 0.0) + reocr_elapsed
+        )
+        if any(record.get("accepted") for record in reocr_records):
+            with ocr_line_provenance.page(state["index"]):
+                ocr_line_provenance.record_replacement(
+                    state.get("raw_lines", []),
+                    reocr_lines,
+                    reason="speech_container_reocr",
+                )
+            state["raw_lines"] = reocr_lines
+            with profile_step(
+                "pipeline.analyze_after_speech_container_reocr",
+                page_index=state["index"],
+                items=len(reocr_lines),
+            ):
+                candidates, groups = analyze_image_array(
+                    original,
+                    reocr_lines,
+                    page_index=state["index"],
+                )
+    recovery_started = time.perf_counter()
+    with profile_step(
+        "pipeline.rapidocr_region_recovery",
+        page_index=state["index"],
+        items=len(groups),
+    ):
+        with _RAPIDOCR_INFERENCE_LOCK:
+            recovery_lines, recovery_records = apply_rapidocr_region_recovery(
+                original,
+                state.get("raw_lines", []),
+                groups,
+                ocr_lang,
+                state["index"],
+            )
+    if recovery_records:
+        state["rapidocr_region_recovery"] = recovery_records
+        recovery_elapsed = time.perf_counter() - recovery_started
+        page_acc.timings["ocr_selective_fallback"] = (
+            page_acc.timings.get("ocr_selective_fallback", 0.0) + recovery_elapsed
+        )
+        if any(record.get("selection") == "attempt_2" for record in recovery_records):
+            with ocr_line_provenance.page(state["index"]):
+                ocr_line_provenance.record_replacement(
+                    state.get("raw_lines", []),
+                    recovery_lines,
+                    reason="rapidocr_region_recovery",
+                )
+            state["raw_lines"] = recovery_lines
+            with profile_step(
+                "pipeline.analyze_after_rapidocr_recovery",
+                page_index=state["index"],
+                items=len(recovery_lines),
+            ):
+                candidates, groups = analyze_image_array(
+                    original,
+                    recovery_lines,
+                    page_index=state["index"],
+                )
+    selective_started = time.perf_counter()
+    with profile_step(
+        "pipeline.selective_ocr_fallbacks",
+        page_index=state["index"],
+        items=len(groups),
+    ):
+        with _RAPIDOCR_INFERENCE_LOCK:
+            fallback_lines, selective_records = apply_selective_ocr_fallbacks(
+                original,
+                state.get("raw_lines", []),
+                groups,
+                ocr_lang,
+                state["index"],
+                fast_ocr_budget=fast_ocr_budget if fast_ocr_budget.enabled else None,
+            )
+    selective_elapsed = time.perf_counter() - selective_started
+    if selective_records:
+        state["selective_ocr_fallbacks"] = selective_records
+        page_acc.timings["ocr_selective_fallback"] = (
+            page_acc.timings.get("ocr_selective_fallback", 0.0) + selective_elapsed
+        )
+        state["timings"]["ocr_selective_fallback"] = selective_elapsed
+        used_records = [
+            record for record in selective_records if record.get("fallback_used")
+        ]
+        if used_records:
+            with ocr_line_provenance.page(state["index"]):
+                ocr_line_provenance.record_replacement(
+                    state.get("raw_lines", []),
+                    fallback_lines,
+                    reason="selective_ocr_fallback",
+                )
+            state["raw_lines"] = fallback_lines
+            with profile_step(
+                "pipeline.analyze_after_selective_fallback",
+                page_index=state["index"],
+                items=len(fallback_lines),
+            ):
+                candidates, groups = analyze_image_array(
+                    original,
+                    fallback_lines,
+                    page_index=state["index"],
+                )
+            state["ocr_metadata"] = {
+                **state.get("ocr_metadata", {}),
+                "selective_fallbacks": selective_records,
+            }
+    grouping_fallback_reason = _grouping_fallback_reason(state, groups)
+    if grouping_fallback_reason and fast_ocr_budget.enabled:
+        allowed, budget_reason = fast_ocr_budget.allow(
+            kind="paddle_full_page", page=state["index"]
+        )
+        if not allowed:
+            _mark_fast_ocr_review(state, budget_reason, grouping_fallback_reason)
+            print(
+                f"OCR: pagina {state['index']}/{len(image_paths)} - "
+                f"fallback pesado preservado ({budget_reason})",
+                flush=True,
+            )
+            grouping_fallback_reason = ""
+    if grouping_fallback_reason:
+        fallback_started = time.perf_counter()
+        with profile_step(
+            "pipeline.full_page_paddle_fallback",
+            page_index=state["index"],
+            metadata={"reason": grouping_fallback_reason},
+        ):
+            if fast_ocr_budget.enabled:
+                from fast_ocr_policy import run_ocr_with_timeout
+
+                fallback_lines, fallback_metadata = run_ocr_with_timeout(
+                    original,
+                    lang=ocr_lang,
+                    engine_name="paddle",
+                    page=state["index"],
+                    timeout_seconds=fast_ocr_budget.page_timeout_seconds,
+                )
+                if fallback_metadata.get("timeout"):
+                    _mark_fast_ocr_review(
+                        state,
+                        "fast_ocr_page_timeout",
+                        grouping_fallback_reason,
+                    )
+                state["fast_ocr_fallback_metadata"] = fallback_metadata
+            else:
+                paddle = OCREngine(
+                    ocr_lang,
+                    engine="paddle",
+                    fallback_engine="",
+                )
+                fallback_lines = paddle.detect_lines(
+                    original,
+                    page=state["index"],
+                )
+            fallback_lines, preserved_regional_count = (
+                _preserve_selected_regional_ocr(
+                    fallback_lines,
+                    state.get("raw_lines", []),
+                )
+            )
+        fallback_elapsed = time.perf_counter() - fallback_started
+        if fast_ocr_budget.enabled:
+            fast_ocr_budget.record(
+                kind="paddle_full_page",
+                elapsed=fallback_elapsed,
+                page=state["index"],
+            )
+        state["timings"]["ocr"] = (
+            float(state["timings"].get("ocr", 0.0))
+            + fallback_elapsed
+        )
+        page_acc.timings["ocr"] = page_acc.timings.get("ocr", 0.0) + fallback_elapsed
+        page_acc.timings["ocr_cpu"] = page_acc.timings.get("ocr_cpu", 0.0) + fallback_elapsed
+        if _fallback_discards_source_text(
+            state.get("raw_lines", []), fallback_lines
+        ):
+            # Keep the read we already have. Taking this answer would leave
+            # the page with no groups at all, and an untranslated source
+            # page is a worse defect than the badly-read region that asked
+            # for the escalation.
+            state["ocr_metadata"] = {
+                **state.get("ocr_metadata", {}),
+                "fallback_used": False,
+                "fallback_attempted_reason": grouping_fallback_reason,
+                "fallback_rejected_reason": "fallback_discards_source_text",
+                "fallback_variant": "paddle_full",
+            }
+        else:
+            with ocr_line_provenance.page(state["index"]):
+                ocr_line_provenance.record_replacement(
+                    state.get("raw_lines", []),
+                    fallback_lines,
+                    reason="full_page_paddle_fallback",
+                )
+            state["raw_lines"] = fallback_lines
+            state["ocr_metadata"] = {
+                **state.get("ocr_metadata", {}),
+                "fallback_used": True,
+                "fallback_reason": grouping_fallback_reason,
+                "original_engine": "rapidocr",
+                "final_engine": (
+                    "hybrid" if preserved_regional_count else "paddle"
+                ),
+                "fallback_variant": "paddle_full",
+                "preserved_regional_line_count": preserved_regional_count,
+            }
+            with profile_step(
+                "pipeline.analyze_after_full_page_fallback",
+                page_index=state["index"],
+                items=len(fallback_lines),
+            ):
+                candidates, groups = analyze_image_array(
+                    original,
+                    fallback_lines,
+                    page_index=state["index"],
+                )
+            if config.ENABLE_OCR_CACHE:
+                save_ocr_cache(
+                    state["ocr_cache_key"],
+                    state["image_hash"],
+                    ocr_lang,
+                    fallback_lines,
+                    state["timings"]["ocr"],
+                    state.get("precheck", {}),
+                    ocr_metadata=state["ocr_metadata"],
+                )
+    with profile_step(
+        "pipeline.collect_group_text_repairs",
+        page_index=state["index"],
+        items=len(groups),
+    ):
+        state["group_text_repairs"] = _group_text_repairs(groups)
+    classify_elapsed = time.perf_counter() - classify_started
+    classification_profiler.record_step(
+        "classification_grouping.page_total",
+        classify_elapsed,
+        page_index=state["index"],
+        items=len(groups),
+    )
+    page_acc.timings["classification_grouping"] = (
+        page_acc.timings.get("classification_grouping", 0.0) + classify_elapsed
+    )
+    state["timings"]["classification_grouping"] = classify_elapsed
+    state["original_bgr"] = original
+    state["candidates"] = candidates
+    state["groups"] = groups
+    page_acc.provenance.update(
+        {
+            "page_index": int(state["index"]),
+            "ocr_metadata": dict(state.get("ocr_metadata", {}) or {}),
+            "initial_ocr_engine": (state.get("ocr_metadata", {}) or {}).get("initial_engine"),
+            "current_ocr_engine": (state.get("ocr_metadata", {}) or {}).get("final_engine"),
+        }
+    )
+    # Last gate before the translation list is built: a region RapidOCR could
+    # not read acceptably, even after its one selective retry, goes to review
+    # instead of to the translator.
+    enforce_rapidocr_quality_gate(groups, page_index=state["index"])
+    with profile_step(
+        "pipeline.get_translatable_groups",
+        page_index=state["index"],
+        items=len(groups),
+    ):
+        state["translatable_groups"] = get_translatable_groups(groups)
+    # Keep page-owned translation items isolated until the page has
+    # completed.  The ordered merge below preserves the legacy serial
+    # translation barrier and avoids mutating the job list mid-page.
+    page_acc.translation_items.extend(state["translatable_groups"])
+    page_acc.progress_events.append(PageProgressEvent(
+        page_index=index, stage="pre_translation", completed_units=1,
+        total_units=1, code="page_ready_for_translation",
+    ))
+    state["structural_snapshot"] = _structural_page_snapshot(state, groups)
+    classification_profiler.finish_page(
+        state["index"],
+        group_count=len(groups),
+        translatable_groups=len(state["translatable_groups"]),
+        fallback_count=sum(
+            1 for record in state.get("selective_ocr_fallbacks", []) if record.get("fallback_used")
+        )
+        + (1 if grouping_fallback_reason else 0),
+        repair_count=len(state.get("group_text_repairs", []) or []),
+        classification_grouping_seconds=classify_elapsed,
+    )
+    page_acc.page_state = state
+    page_acc.analyzable = True
+    page_acc.page_recorder = page_recorder
+    page_acc.page_profiler = page_profiler
+    finish_page_provenance()
+    return page_acc.to_result()
+
 def run_benchmark(args):
     started = time.perf_counter()
+    monotonic_origin_ns = time.perf_counter_ns()
+    global _PERF_JOB_ORIGIN_NS, _PERF_EVENTS
+    _PERF_JOB_ORIGIN_NS = monotonic_origin_ns
+    _PERF_EVENTS = []
     # Line provenance is collected for the whole run: raw OCR lines, every list
     # replacement between passes, group membership and the exact renderer input.
     ocr_line_provenance.activate()
@@ -634,6 +1347,7 @@ def run_benchmark(args):
     print(f"Saida: {output_folder}", flush=True)
 
     resource_monitor.set_stage("downloading")
+    print("DOWNLOAD_STAGE_STARTED", flush=True)
     download_started = time.perf_counter()
     all_image_paths, download_report, download_cache_hit = _download_with_cache(
         args.url,
@@ -644,6 +1358,11 @@ def run_benchmark(args):
         local_manifest_path=local_manifest_path,
     )
     download_wall_seconds = time.perf_counter() - download_started
+    print(
+        "DOWNLOAD_STAGE_RESULT "
+        f"status=success downloaded_count={len(all_image_paths)} "
+        f"duration_ms={int(download_wall_seconds * 1000)}", flush=True,
+    )
     if not all_image_paths:
         raise RuntimeError("Nenhuma imagem valida encontrada para o benchmark.")
     download_gate = download_report.get("download_gate") or {}
@@ -725,6 +1444,12 @@ def run_benchmark(args):
         )
         image_entries = source_entries
     image_paths = [entry["path"] for entry in image_entries]
+    print(
+        "DOWNLOAD_TO_OCR_BUILD_RESULT "
+        f"downloaded_records={len(all_image_paths)} physical_files={sum(1 for p in all_image_paths if Path(p).is_file())} "
+        f"image_entries={len(image_entries)} image_paths={len(image_paths)}",
+        flush=True,
+    )
     resource_monitor.set_progress(pages_done=0, pages_total=len(image_paths))
 
     previous_progress = load_json(progress_path, default={})
@@ -740,12 +1465,19 @@ def run_benchmark(args):
 
     requested_provider = normalize_translation_provider(
         getattr(args, "translation_provider", ""))
-    translator, ocr_lang = get_translator(
-        "3", translation_provider=requested_provider or None
+    translation_enabled = str(os.getenv("TRANSLATION_ENABLED", "true") or "").strip().lower() not in {
+        "0", "false", "no", "off", "disabled"
+    }
+    translator, ocr_lang = _resolve_translation_runtime(
+        requested_provider, translation_enabled=translation_enabled
     )
     if hasattr(translator, "force_cache"):
         translator.force_cache = bool(args.force)
-    resolve_provider_provenance(translator, requested_provider)
+    resolve_provider_provenance(
+        translator,
+        requested_provider,
+        translation_enabled=translation_enabled,
+    )
 
     counters = {
         "images_skipped_by_cache": 0,
@@ -777,6 +1509,10 @@ def run_benchmark(args):
         "translation": 0.0,
         "inpainting": 0.0,
         "redraw": 0.0,
+        "cleanup": 0.0,
+        "typography": 0.0,
+        "quality": 0.0,
+        "render": 0.0,
         "image_save": 0.0,
         "pdf": 0.0,
         "cache_load": 0.0,
@@ -885,6 +1621,23 @@ def run_benchmark(args):
             state["ocr_source"] = "run"
         page_states.append(state)
 
+    # A positive download must never collapse into an empty OCR stage solely because
+    # the conservative no-text precheck classified every page as blank.  Keep the
+    # precheck as an optimization, but fail open to real RapidOCR when it would
+    # otherwise discard the entire downloaded set.
+    if image_paths and not ocr_jobs and counters["images_skipped_by_no_text_precheck"]:
+        print(
+            "OCR_INPUT_DISCOVERY fallback=precheck_all_skipped "
+            f"downloaded_count={len(image_paths)} accepted_count={len(image_paths)}",
+            flush=True,
+        )
+        for state in page_states:
+            state["status"] = "pending"
+            state["ocr_completed"] = False
+            state["cache_source"] = ""
+            state["ocr_source"] = "run"
+            ocr_jobs.append({"index": int(state["index"]), "image_path": state["image_path"]})
+
     state_by_index = {state["index"]: state for state in page_states}
 
     def _persist_ocr_result(result):
@@ -893,6 +1646,7 @@ def run_benchmark(args):
         if state is None:
             return
         state["raw_lines"] = result.get("lines", [])
+        stamp_initial_ocr_provenance(state["raw_lines"])
         state["ocr_metadata"] = result.get("ocr_metadata", {})
         state["ocr_completed"] = True
         elapsed = float(result.get("elapsed_seconds", 0.0))
@@ -908,6 +1662,10 @@ def run_benchmark(args):
         _write_progress(progress_path, run_signature, args, len(image_paths), page_states)
 
     resource_monitor.set_stage("ocr")
+    print(
+        f"OCR_STAGE_STARTED input_count={len(ocr_jobs)} engine={config.OCR_ENGINE}",
+        flush=True,
+    )
     print(
         f"OCR: iniciando {len(ocr_jobs)} páginas com engine={config.OCR_ENGINE}",
         flush=True,
@@ -966,6 +1724,7 @@ def run_benchmark(args):
         progress_callback=_ocr_progress,
     )
     stage_seconds["ocr"] = time.perf_counter() - ocr_wall_started
+    _record_perf_event("ocr", "ocr", int((ocr_wall_started - started) * 1_000_000_000), int((time.perf_counter() - started) * 1_000_000_000))
     counters["ocr_runs"] = len(ocr_jobs)
     resource_monitor.register_worker_roles(
         ocr_parallel_info.get("worker_pids", []),
@@ -980,6 +1739,14 @@ def run_benchmark(args):
             ocr_workers=policy.get("workers", 0),
         )
     resource_monitor.set_progress(queue_depth=0, active_workers=0)
+    ocr_failed_count = sum(1 for result in ocr_results.values() if result.get("error"))
+    print(
+        "OCR_STAGE_RESULT "
+        f"status={'success' if ocr_failed_count == 0 else 'failed'} "
+        f"input_count={len(ocr_jobs)} processed_count={len(ocr_results) - ocr_failed_count} "
+        f"failed_count={ocr_failed_count} duration_ms={int(stage_seconds['ocr'] * 1000)}",
+        flush=True,
+    )
 
     for index, result in ocr_results.items():
         state = state_by_index[index]
@@ -987,6 +1754,7 @@ def run_benchmark(args):
         state["timings"]["ocr"] = elapsed
         stage_seconds["ocr_cpu"] += elapsed
         state["raw_lines"] = result.get("lines", [])
+        stamp_initial_ocr_provenance(state["raw_lines"])
         state["ocr_metadata"] = result.get("ocr_metadata", {})
         if result.get("error"):
             state["ocr_error"] = result["error"]
@@ -994,332 +1762,47 @@ def run_benchmark(args):
 
     translation_targets = []
     analyzable_states = []
+    pre_page_results = []
     resource_monitor.set_stage("classification")
-    for state in page_states:
-        if state.get("status") == "completed":
-            continue
-
-        if state.get("ocr_error"):
-            _complete_page_with_error(
-                state,
-                state["ocr_error"],
-                errors_folder,
-                stage_seconds,
-                stage="ocr",
-            )
-            counters["pages_with_error"] += 1
-            _write_progress(
-                progress_path,
-                run_signature,
-                args,
-                len(image_paths),
-                page_states,
-            )
-            continue
-
-        original = cv2.imread(state["image_path"])
-        if original is None:
-            _complete_page_with_error(
-                state,
-                "image_load_failed_before_classification",
-                errors_folder,
-                stage_seconds,
-                stage="image_load",
-            )
-            counters["pages_with_error"] += 1
-            continue
-
-        classification_profiler.start_page(
-            state["index"],
-            raw_line_count=len(state.get("raw_lines", []) or []),
+    run_recorder = ocr_line_provenance.active()
+    run_profiler = get_active_profiler()
+    page_state_by_index = {
+        int(state.get("index", position)): state
+        for position, state in enumerate(page_states)
+    }
+    pre_translation_wall_started = time.perf_counter()
+    configured_page_workers = _pipeline_page_workers()
+    page_results = process_pre_translation_pages(
+        page_states,
+        image_paths=image_paths,
+        ocr_lang=ocr_lang,
+        fast_ocr_budget=fast_ocr_budget,
+        errors_folder=errors_folder,
+    )
+    pre_translation_wall_seconds = time.perf_counter() - pre_translation_wall_started
+    stage_seconds["pre_translation"] = pre_translation_wall_seconds
+    _record_perf_event("pre_translation", "pre", int((pre_translation_wall_started - started) * 1_000_000_000), int((time.perf_counter() - started) * 1_000_000_000))
+    for page_result in page_results:
+        global_page_state = page_state_by_index[page_result.page_index]
+        if run_recorder is not None and page_result.page_recorder is not None:
+            run_recorder.merge_from(page_result.page_recorder)
+        if run_profiler is not None and page_result.page_profiler is not None:
+            run_profiler.merge_from(page_result.page_profiler)
+        global_page_state.update(page_result.page_state)
+        for stage_name, elapsed in page_result.timings.items():
+            stage_seconds[stage_name] = stage_seconds.get(stage_name, 0.0) + float(elapsed)
+        counters["pages_with_error"] += int(page_result.counters.get("pages_with_error", 0))
+        pre_page_results.append(page_result)
+        _write_progress(
+            progress_path,
+            run_signature,
+            args,
+            len(image_paths),
+            page_states,
         )
-        classify_started = time.perf_counter()
-        with profile_step(
-            "pipeline.analyze_initial",
-            page_index=state["index"],
-            items=len(state.get("raw_lines", []) or []),
-        ):
-            candidates, groups = analyze_image_array(
-                original,
-                state.get("raw_lines", []),
-                page_index=state["index"],
-            )
-        reocr_started = time.perf_counter()
-        with profile_step(
-            "pipeline.speech_container_reocr",
-            page_index=state["index"],
-            items=len(state.get("raw_lines", []) or []),
-        ):
-            reocr_lines, reocr_records = apply_speech_container_reocr(
-                original,
-                state.get("raw_lines", []),
-                ocr_lang,
-                state["index"],
-            )
-        reocr_elapsed = time.perf_counter() - reocr_started
-        if reocr_records:
-            state["speech_container_reocr"] = reocr_records
-            stage_seconds["ocr_selective_fallback"] += reocr_elapsed
-            if any(record.get("accepted") for record in reocr_records):
-                with ocr_line_provenance.page(state["index"]):
-                    ocr_line_provenance.record_replacement(
-                        state.get("raw_lines", []),
-                        reocr_lines,
-                        reason="speech_container_reocr",
-                    )
-                state["raw_lines"] = reocr_lines
-                with profile_step(
-                    "pipeline.analyze_after_speech_container_reocr",
-                    page_index=state["index"],
-                    items=len(reocr_lines),
-                ):
-                    candidates, groups = analyze_image_array(
-                        original,
-                        reocr_lines,
-                        page_index=state["index"],
-                    )
-        recovery_started = time.perf_counter()
-        with profile_step(
-            "pipeline.rapidocr_region_recovery",
-            page_index=state["index"],
-            items=len(groups),
-        ):
-            recovery_lines, recovery_records = apply_rapidocr_region_recovery(
-                original,
-                state.get("raw_lines", []),
-                groups,
-                ocr_lang,
-                state["index"],
-            )
-        if recovery_records:
-            state["rapidocr_region_recovery"] = recovery_records
-            recovery_elapsed = time.perf_counter() - recovery_started
-            stage_seconds["ocr_selective_fallback"] += recovery_elapsed
-            if any(record.get("selection") == "attempt_2" for record in recovery_records):
-                with ocr_line_provenance.page(state["index"]):
-                    ocr_line_provenance.record_replacement(
-                        state.get("raw_lines", []),
-                        recovery_lines,
-                        reason="rapidocr_region_recovery",
-                    )
-                state["raw_lines"] = recovery_lines
-                with profile_step(
-                    "pipeline.analyze_after_rapidocr_recovery",
-                    page_index=state["index"],
-                    items=len(recovery_lines),
-                ):
-                    candidates, groups = analyze_image_array(
-                        original,
-                        recovery_lines,
-                        page_index=state["index"],
-                    )
-        selective_started = time.perf_counter()
-        with profile_step(
-            "pipeline.selective_ocr_fallbacks",
-            page_index=state["index"],
-            items=len(groups),
-        ):
-            fallback_lines, selective_records = apply_selective_ocr_fallbacks(
-                original,
-                state.get("raw_lines", []),
-                groups,
-                ocr_lang,
-                state["index"],
-                fast_ocr_budget=fast_ocr_budget if fast_ocr_budget.enabled else None,
-            )
-        selective_elapsed = time.perf_counter() - selective_started
-        if selective_records:
-            state["selective_ocr_fallbacks"] = selective_records
-            stage_seconds["ocr_selective_fallback"] += selective_elapsed
-            state["timings"]["ocr_selective_fallback"] = selective_elapsed
-            used_records = [
-                record for record in selective_records if record.get("fallback_used")
-            ]
-            if used_records:
-                with ocr_line_provenance.page(state["index"]):
-                    ocr_line_provenance.record_replacement(
-                        state.get("raw_lines", []),
-                        fallback_lines,
-                        reason="selective_ocr_fallback",
-                    )
-                state["raw_lines"] = fallback_lines
-                with profile_step(
-                    "pipeline.analyze_after_selective_fallback",
-                    page_index=state["index"],
-                    items=len(fallback_lines),
-                ):
-                    candidates, groups = analyze_image_array(
-                        original,
-                        fallback_lines,
-                        page_index=state["index"],
-                    )
-                state["ocr_metadata"] = {
-                    **state.get("ocr_metadata", {}),
-                    "selective_fallbacks": selective_records,
-                }
-        grouping_fallback_reason = _grouping_fallback_reason(state, groups)
-        if grouping_fallback_reason and fast_ocr_budget.enabled:
-            allowed, budget_reason = fast_ocr_budget.allow(
-                kind="paddle_full_page", page=state["index"]
-            )
-            if not allowed:
-                _mark_fast_ocr_review(state, budget_reason, grouping_fallback_reason)
-                print(
-                    f"OCR: pagina {state['index']}/{len(image_paths)} - "
-                    f"fallback pesado preservado ({budget_reason})",
-                    flush=True,
-                )
-                grouping_fallback_reason = ""
-        if grouping_fallback_reason:
-            fallback_started = time.perf_counter()
-            with profile_step(
-                "pipeline.full_page_paddle_fallback",
-                page_index=state["index"],
-                metadata={"reason": grouping_fallback_reason},
-            ):
-                if fast_ocr_budget.enabled:
-                    from fast_ocr_policy import run_ocr_with_timeout
-
-                    fallback_lines, fallback_metadata = run_ocr_with_timeout(
-                        original,
-                        lang=ocr_lang,
-                        engine_name="paddle",
-                        page=state["index"],
-                        timeout_seconds=fast_ocr_budget.page_timeout_seconds,
-                    )
-                    if fallback_metadata.get("timeout"):
-                        _mark_fast_ocr_review(
-                            state,
-                            "fast_ocr_page_timeout",
-                            grouping_fallback_reason,
-                        )
-                    state["fast_ocr_fallback_metadata"] = fallback_metadata
-                else:
-                    paddle = OCREngine(
-                        ocr_lang,
-                        engine="paddle",
-                        fallback_engine="",
-                    )
-                    fallback_lines = paddle.detect_lines(
-                        original,
-                        page=state["index"],
-                    )
-                fallback_lines, preserved_regional_count = (
-                    _preserve_selected_regional_ocr(
-                        fallback_lines,
-                        state.get("raw_lines", []),
-                    )
-                )
-            fallback_elapsed = time.perf_counter() - fallback_started
-            if fast_ocr_budget.enabled:
-                fast_ocr_budget.record(
-                    kind="paddle_full_page",
-                    elapsed=fallback_elapsed,
-                    page=state["index"],
-                )
-            state["timings"]["ocr"] = (
-                float(state["timings"].get("ocr", 0.0))
-                + fallback_elapsed
-            )
-            stage_seconds["ocr"] += fallback_elapsed
-            stage_seconds["ocr_cpu"] += fallback_elapsed
-            if _fallback_discards_source_text(
-                state.get("raw_lines", []), fallback_lines
-            ):
-                # Keep the read we already have. Taking this answer would leave
-                # the page with no groups at all, and an untranslated source
-                # page is a worse defect than the badly-read region that asked
-                # for the escalation.
-                state["ocr_metadata"] = {
-                    **state.get("ocr_metadata", {}),
-                    "fallback_used": False,
-                    "fallback_attempted_reason": grouping_fallback_reason,
-                    "fallback_rejected_reason": "fallback_discards_source_text",
-                    "fallback_variant": "paddle_full",
-                }
-            else:
-                with ocr_line_provenance.page(state["index"]):
-                    ocr_line_provenance.record_replacement(
-                        state.get("raw_lines", []),
-                        fallback_lines,
-                        reason="full_page_paddle_fallback",
-                    )
-                state["raw_lines"] = fallback_lines
-                state["ocr_metadata"] = {
-                    **state.get("ocr_metadata", {}),
-                    "fallback_used": True,
-                    "fallback_reason": grouping_fallback_reason,
-                    "original_engine": "rapidocr",
-                    "final_engine": (
-                        "hybrid" if preserved_regional_count else "paddle"
-                    ),
-                    "fallback_variant": "paddle_full",
-                    "preserved_regional_line_count": preserved_regional_count,
-                }
-                with profile_step(
-                    "pipeline.analyze_after_full_page_fallback",
-                    page_index=state["index"],
-                    items=len(fallback_lines),
-                ):
-                    candidates, groups = analyze_image_array(
-                        original,
-                        fallback_lines,
-                        page_index=state["index"],
-                    )
-                if config.ENABLE_OCR_CACHE:
-                    save_ocr_cache(
-                        state["ocr_cache_key"],
-                        state["image_hash"],
-                        ocr_lang,
-                        fallback_lines,
-                        state["timings"]["ocr"],
-                        state.get("precheck", {}),
-                        ocr_metadata=state["ocr_metadata"],
-                    )
-        with profile_step(
-            "pipeline.collect_group_text_repairs",
-            page_index=state["index"],
-            items=len(groups),
-        ):
-            state["group_text_repairs"] = _group_text_repairs(groups)
-        classify_elapsed = time.perf_counter() - classify_started
-        classification_profiler.record_step(
-            "classification_grouping.page_total",
-            classify_elapsed,
-            page_index=state["index"],
-            items=len(groups),
-        )
-        stage_seconds["classification_grouping"] += classify_elapsed
-        state["timings"]["classification_grouping"] = classify_elapsed
-        state["original_bgr"] = original
-        state["candidates"] = candidates
-        state["groups"] = groups
-        # Last gate before the translation list is built: a region RapidOCR could
-        # not read acceptably, even after its one selective retry, goes to review
-        # instead of to the translator.
-        enforce_rapidocr_quality_gate(groups, page_index=state["index"])
-        with profile_step(
-            "pipeline.get_translatable_groups",
-            page_index=state["index"],
-            items=len(groups),
-        ):
-            state["translatable_groups"] = get_translatable_groups(groups)
-        state["structural_snapshot"] = _structural_page_snapshot(state, groups)
-        classification_profiler.finish_page(
-            state["index"],
-            group_count=len(groups),
-            translatable_groups=len(state["translatable_groups"]),
-            fallback_count=sum(
-                1 for record in state.get("selective_ocr_fallbacks", []) if record.get("fallback_used")
-            )
-            + (1 if grouping_fallback_reason else 0),
-            repair_count=len(state.get("group_text_repairs", []) or []),
-            classification_grouping_seconds=classify_elapsed,
-        )
-        analyzable_states.append(state)
-        for group in state["translatable_groups"]:
-            translation_targets.append(group)
-
+        if page_result.analyzable:
+            translation_targets.extend(page_result.translation_items)
+            analyzable_states.append(page_result.page_state)
     all_analyzed_groups = [
         group
         for state in analyzable_states
@@ -1352,12 +1835,18 @@ def run_benchmark(args):
     )
     if hasattr(translator, "set_detected_names"):
         translator.set_detected_names(detected_names)
-    translation_targets = []
+    # Reuse the page-local result objects after chapter-level name repair.  The
+    # contained group references are the same production objects, so repairs
+    # remain visible while the global list is rebuilt deterministically.
+    translation_targets = [
+        item
+        for result in sorted(pre_page_results, key=lambda value: value.page_index)
+        for item in result.translation_items
+    ]
     for state in analyzable_states:
         state["translatable_groups"] = get_translatable_groups(
             state.get("groups", [])
         )
-        translation_targets.extend(state["translatable_groups"])
 
     resource_monitor.set_stage("translation")
     # Stage identity is provider-neutral: which provider actually ran is recorded
@@ -1368,16 +1857,48 @@ def run_benchmark(args):
         session_context.prepare(all_analyzed_groups)
         if hasattr(translator, "set_session_context"):
             translator.set_session_context(session_context)
-    translations = translator.translate_many(
-        [group.text for group in translation_targets],
-        force=args.force,
-    )
+    # The local/Fase-18 kill switch is evaluated immediately before the provider
+    # boundary.  This keeps OCR and all preparation stages real while guaranteeing
+    # that a disabled translation run never initializes or calls a provider.
+    translator_stats = {}
+    if not translation_enabled:
+        print("PROVIDER_GATE_CHECKED translation_enabled=false allow_translation=false", flush=True)
+        print("DEEPL_REQUEST_ATTEMPTED=NO", flush=True)
+        print("TRANSLATION_STAGE_SKIPPED reason=disabled", flush=True)
+        translations = [""] * len(translation_targets)
+        if translator is not None:
+            translator_stats = getattr(translator, "stats", {})
+        translator_stats["provider_gate_checked"] = True
+        translator_stats["translation_enabled"] = False
+        translator_stats["allow_translation"] = False
+        translator_stats["provider_requested"] = ""
+        translator_stats["provider_effective"] = ""
+        translator_stats["provider_source"] = "disabled"
+        translator_stats["provider_disabled"] = True
+    else:
+        translations = translator.translate_many(
+            [group.text for group in translation_targets],
+            force=args.force,
+        )
     stage_seconds["translation"] = time.perf_counter() - translation_started
-    translator_stats = getattr(translator, "stats", {})
+    if translator is not None:
+        translator_stats = getattr(translator, "stats", {})
     translator_stats["translation_candidates"] = len(translation_targets)
     translator_stats["translation_results_received"] = len(translations or [])
     translator_stats["translation_results_nonempty"] = sum(
         1 for item in (translations or []) if str(item or "").strip()
+    )
+    # A translation-enabled job with translatable content cannot complete as a
+    # successful-looking untranslated PDF.  This invariant is intentionally
+    # evaluated from the effective job policy, so OCR-only/disabled runs remain
+    # valid while provider misconfiguration fails explicitly.
+    if translation_enabled and translation_targets and not any(
+        str(item or "").strip() for item in (translations or [])
+    ):
+        translator_stats["translation_execution_invariant"] = "failed"
+        raise RuntimeError("translation_not_executed")
+    translator_stats["translation_execution_invariant"] = (
+        "passed" if translation_enabled and translation_targets else "not_applicable"
     )
     apply_group_translations(translation_targets, translations)
     translator_stats["translated_groups_after_apply"] = sum(
@@ -1393,36 +1914,57 @@ def run_benchmark(args):
         and bool(getattr(group, "translation_valid", False))
     )
     retry_started = time.perf_counter()
-    if session_context is not None:
+    if session_context is not None and translator is not None:
         # Learn the chapter's terminology from the first pass *before* retrying,
         # so a region near the end is judged against the decisions taken at the
         # start instead of against whatever survived the rolling window.
         session_context.record_translations(translation_targets)
         if hasattr(translator, "set_session_context"):
             translator.set_session_context(session_context)
-    translation_retry_records = validate_and_retry_translations(
-        translation_targets,
-        translator,
-        force=args.force,
-        terminology_ledger=session_context,
-        fidelity_verifier=getattr(translator, "fidelity_verifier", None),
-        fidelity_stats=translator_stats,
-        ptbr_naturalizer=getattr(translator, "ptbr_naturalizer", None),
-        source_recovery_context={
-            id(group): {
-                "original_bgr": state["original_bgr"],
-                "ocr_lang": ocr_lang,
-                "page_index": state["index"],
-            }
-            for state in analyzable_states
-            for group in state.get("translatable_groups", [])
-        },
-    )
+    if translation_enabled and translator is not None:
+        translation_retry_records = validate_and_retry_translations(
+            translation_targets,
+            translator,
+            force=args.force,
+            terminology_ledger=session_context,
+            fidelity_verifier=getattr(translator, "fidelity_verifier", None),
+            fidelity_stats=translator_stats,
+            ptbr_naturalizer=getattr(translator, "ptbr_naturalizer", None),
+            source_recovery_context={
+                id(group): {
+                    "original_bgr": state["original_bgr"],
+                    "ocr_lang": ocr_lang,
+                    "page_index": state["index"],
+                }
+                for state in analyzable_states
+                for group in state.get("translatable_groups", [])
+            },
+        )
+    else:
+        translation_retry_records = []
     if session_context is not None:
         session_context.record_translations(translation_targets)
     stage_seconds["translation"] += time.perf_counter() - retry_started
 
     resource_monitor.set_stage("rendering")
+    # Page completion is reduced by the serial/job owner.  The page body only
+    # records a local event; this keeps future out-of-order workers from
+    # deriving global progress from page indexes and prevents regressions.
+    render_progress = PageProgressAggregator(
+        total_pages=len(image_paths),
+        emit=lambda payload: resource_monitor.set_progress(
+            pages_done=payload["completed_pages"],
+            pages_total=payload["total_pages"],
+        ),
+    )
+    post_parallel_results = None
+    if _pipeline_page_workers() == 2:
+        post_parallel_results = process_post_translation_pages(
+            analyzable_states,
+            diagnostic_folder=diagnostic_folder,
+            targeted_regression=targeted_regression,
+        )
+        analyzable_states = []
     for state in analyzable_states:
         if state.get("status") == "completed":
             continue
@@ -1454,6 +1996,8 @@ def run_benchmark(args):
                     > config.MAX_TEXT_OVERFLOW_RATIO
                 ]
                 if (
+                    translator is None
+                    or
                     not overflow_groups
                     or layout_retry_attempt >= config.TRANSLATION_MAX_RETRIES
                     or not hasattr(translator, "translate_strict")
@@ -1471,7 +2015,7 @@ def run_benchmark(args):
                 if not retried:
                     break
                 layout_retry_attempt += 1
-            for name in ("inpainting", "redraw"):
+            for name in ("inpainting", "redraw", "cleanup", "typography", "quality", "render"):
                 elapsed = float(render_timings.get(name, 0.0))
                 state["timings"][name] = elapsed
                 stage_seconds[name] += elapsed
@@ -1503,13 +2047,14 @@ def run_benchmark(args):
             )
             state["debug_data"] = debug_data
             _save_page_processed_cache(state)
-            resource_monitor.set_progress(
-                pages_done=sum(
-                    1
-                    for item in page_states
-                    if item.get("status") in {"completed", "completed_with_error"}
-                ),
-                pages_total=len(image_paths),
+            render_progress.consume((PageProgressEvent(
+                page_index=int(state["index"]),
+                stage="rendering",
+                completed_units=1,
+                total_units=1,
+                code="page_completed",
+            ),),
+                terminal=False,
             )
             print(
                 f"Pagina {state['index']}/{len(image_paths)}: concluida",
@@ -1536,6 +2081,13 @@ def run_benchmark(args):
             trace = _page_error_traceback(exc)
             if trace:
                 print(trace, flush=True)
+            render_progress.consume((PageProgressEvent(
+                page_index=int(state["index"]),
+                stage="rendering",
+                completed_units=1,
+                total_units=1,
+                code="page_completed_with_error",
+            ),), terminal=False)
         finally:
             state.pop("original_bgr", None)
             state.pop("candidates", None)
@@ -1549,6 +2101,28 @@ def run_benchmark(args):
                 len(image_paths),
                 page_states,
             )
+
+    if post_parallel_results is not None:
+        for result in post_parallel_results:
+            state = state_by_index[result.page_index]
+            if run_recorder is not None and result.page_recorder is not None:
+                run_recorder.merge_from(result.page_recorder)
+            if result.error:
+                _complete_page_with_error(state, result.error, errors_folder, stage_seconds, stage="page_processing")
+                counters["pages_with_error"] += 1
+                continue
+            state.update(result.page_state)
+            for name, elapsed in result.timings.items():
+                if isinstance(elapsed, (int, float)):
+                    stage_seconds[name] += float(elapsed)
+            render_progress.consume((PageProgressEvent(page_index=result.page_index, stage="rendering", completed_units=1, total_units=1, code="page_completed"),), terminal=False)
+
+    # Rendering still operates on the page-local dictionaries.  Publish their
+    # final page results back to the aggregate list before PDF aggregation.
+    for local_state in analyzable_states:
+        aggregate_state = state_by_index.get(local_state.get("index"))
+        if aggregate_state is not None:
+            aggregate_state.update(local_state)
 
     completed_states = [
         state
@@ -1585,6 +2159,7 @@ def run_benchmark(args):
         except OSError:
             pass
     stage_seconds["pdf"] = time.perf_counter() - pdf_started
+    _record_perf_event("pdf", "pdf", int((pdf_started - started) * 1_000_000_000), int((time.perf_counter() - started) * 1_000_000_000))
     artifact_sha256 = artifact["sha256"]
     artifact_size_bytes = artifact["size"]
 
@@ -1674,7 +2249,15 @@ def run_benchmark(args):
         quality.get("passed") and quality["no_mixed_language_items"]
     )
     total_seconds = time.perf_counter() - started
-    translator_stats = getattr(translator, "stats", {})
+    for _stage_name, _stage_value in stage_seconds.items():
+        print(
+            "PIPELINE_STAGE_TIMING "
+            f"stage={_stage_name} duration_ms={int(float(_stage_value) * 1000)} "
+            f"pid={os.getpid()}",
+            flush=True,
+        )
+    if translator is not None:
+        translator_stats = getattr(translator, "stats", {})
     quality["translation_batches_succeeded"] = (
         translator_stats.get("failed_batches", 0) == 0
     )
@@ -1724,6 +2307,25 @@ def run_benchmark(args):
     )
     source_provenance = _source_manifest_provenance(download_report)
 
+    page_timings = {
+        str(int(state.get("index") or 0)): {
+            **{
+                key: round(float(value), 6)
+                for key, value in (state.get("timings") or {}).items()
+                if isinstance(value, (int, float))
+            },
+            "cleanup_substages": {
+                name: {
+                    "call_count": int(entry.get("call_count", 0)),
+                    "total_ms": round(float(entry.get("total_ms", 0.0)), 3),
+                    "max_single_call_ms": round(float(entry.get("max_single_call_ms", 0.0)), 3),
+                }
+                for name, entry in ((state.get("timings") or {}).get("cleanup_substages") or {}).items()
+            },
+            "performance_events": list(state.get("_performance_events") or []),
+        }
+        for state in sorted(completed_states, key=lambda item: int(item.get("index") or 0))
+    }
     report = {
         "url": sanitize_source_url(args.url),
         "source_type": str(download_report.get("source_type") or "url"),
@@ -1900,6 +2502,17 @@ def run_benchmark(args):
             "groups_ignored_sfx_decorative"
         ],
         "classification_counts": summary["classification_counts"],
+        "ocr_hybrid_provenance": {
+            "NVIDIA_INITIAL_REGIONS": summary["NVIDIA_INITIAL_REGIONS"],
+            "RAPIDOCR_INITIAL_REGIONS": summary["RAPIDOCR_INITIAL_REGIONS"],
+            "NVIDIA_REGIONS_RECOVERED_BY_RAPIDOCR": summary[
+                "NVIDIA_REGIONS_RECOVERED_BY_RAPIDOCR"
+            ],
+            "RAPIDOCR_INITIAL_REGIONS_RECOVERED": summary[
+                "RAPIDOCR_INITIAL_REGIONS_RECOVERED"
+            ],
+            "MIXED_ENGINE_GROUPS": summary["MIXED_ENGINE_GROUPS"],
+        },
         "ocr_engine": config.OCR_ENGINE,
         "ocr_fallback_engine": config.OCR_FALLBACK_ENGINE,
         "download_cache_hit": download_cache_hit,
@@ -1918,6 +2531,11 @@ def run_benchmark(args):
         "translation_workers": translator_stats.get(
             "workers", config.TRANSLATION_WORKERS
         ),
+        "pipeline_page_workers": configured_page_workers,
+        "pre_translation_parallel": configured_page_workers > 1,
+        "pre_translation_wall_seconds": round(pre_translation_wall_seconds, 6),
+        "page_timings": page_timings,
+        "performance_events": list(_PERF_EVENTS),
         "stage_seconds": {
             key: round(float(value), 6) for key, value in stage_seconds.items()
         },
@@ -1999,6 +2617,15 @@ def run_benchmark(args):
         pdf_path=str(pdf_path),
     )
 
+    print(
+        f"PDF_STAGE_RESULT status={'success' if pdf_path.is_file() else 'failed'} "
+        f"pages={len(page_states)}", flush=True,
+    )
+    print(
+        f"PIPELINE_FINAL_STATE status={final_status} "
+        f"pdf_generated={pdf_path.is_file()}", flush=True,
+    )
+
     console_report = {
         **report,
         "smart_pdf_split": {
@@ -2006,6 +2633,13 @@ def run_benchmark(args):
             for key, value in (report.get("smart_pdf_split") or {}).items()
             if key != "splits"
         },
+    }
+    report["performance_clock"] = {
+        "clock": "perf_counter_ns",
+        "origin": "job_start",
+        "job_start_offset_ns": 0,
+        "job_end_offset_ns": max(0, time.perf_counter_ns() - monotonic_origin_ns),
+        "absolute_offsets_available": False,
     }
     print(dumps_json(console_report, ensure_ascii=False, indent=2), flush=True)
     return report
@@ -2278,6 +2912,12 @@ def _resolve_download_max_images(
     if approved_ids:
         # A submitted source_selection is already a concrete reader snapshot. Keep bounded
         # runs bounded instead of expanding them to a full smart-split chapter download.
+        return max_images
+    # An explicit bounded request is an execution contract even when the source
+    # adapter supports smart PDF splitting.  Analysis may still inspect all
+    # candidates, but the downloader must not expand ``max_images=5`` to the
+    # complete chapter.
+    if max_images is not None:
         return max_images
     if config.SMART_WEBTOON_PDF_SPLIT and not local_manifest_path:
         return None
@@ -4306,6 +4946,11 @@ def _aggregate_debug_data(states):
         "mixed_language_items": 0,
         "text_overflow_items": 0,
         "visual_validation_failures": 0,
+        "NVIDIA_INITIAL_REGIONS": 0,
+        "RAPIDOCR_INITIAL_REGIONS": 0,
+        "NVIDIA_REGIONS_RECOVERED_BY_RAPIDOCR": 0,
+        "RAPIDOCR_INITIAL_REGIONS_RECOVERED": 0,
+        "MIXED_ENGINE_GROUPS": 0,
         "classification_counts": {
             "speech": 0,
             "narration": 0,
@@ -4409,6 +5054,17 @@ def _aggregate_debug_data(states):
                 result["manual_review_required_groups"] += 1
             if item.get("sent_to_nvidia") and not item.get("redrawn"):
                 result["groups_reverted_for_visual_safety"] += 1
+            provenance_engines = item.get("ocr_provenance_engines") or []
+            if item.get("mixed_ocr_provenance"):
+                result["MIXED_ENGINE_GROUPS"] += 1
+            elif provenance_engines == ["nvidia"]:
+                result["NVIDIA_INITIAL_REGIONS"] += 1
+                if item.get("recovered") and item.get("recovery_engine") == "rapidocr":
+                    result["NVIDIA_REGIONS_RECOVERED_BY_RAPIDOCR"] += 1
+            elif provenance_engines == ["rapidocr"]:
+                result["RAPIDOCR_INITIAL_REGIONS"] += 1
+                if item.get("recovered") and item.get("recovery_engine") == "rapidocr":
+                    result["RAPIDOCR_INITIAL_REGIONS_RECOVERED"] += 1
     return result
 
 

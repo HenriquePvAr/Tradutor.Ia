@@ -4,6 +4,7 @@ import hashlib
 import math
 import os
 import re
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass, field, replace
@@ -20,6 +21,8 @@ import ocr_line_provenance
 import source_completeness
 import semantic_fidelity
 import semantic_nli_adapter
+
+_LAMA_INFERENCE_LOCK = threading.BoundedSemaphore(1)
 from cleanup_forensic_capture import CleanupForensicCapture
 from classification_profiler import profile_step, record_count, record_group
 from json_utils import dump_json
@@ -29,6 +32,7 @@ from ocr_engine import (
     OCRLine,
     assess_ocr_repair,
     clean_ocr_text,
+    mark_ocr_line_recovered,
     repair_ocr_text,
     segment_compact_english_word,
     suggest_english_word,
@@ -507,6 +511,12 @@ class TextGroup:
     region_type: str = "unknown"
     parent_balloon_id: str = ""
     source_engine: str = ""
+    # Provenance across the group's member lines (mission: hybrid OCR
+    # provenance). ``ocr_provenance_engines`` is every distinct
+    # ``initial_ocr_engine`` among the lines; ``mixed_ocr_provenance`` is
+    # explicit rather than inventing one false shared origin.
+    ocr_provenance_engines: tuple = ()
+    mixed_ocr_provenance: bool = False
     quality_score: float = 1.0
     quality_reasons: list[str] = field(default_factory=list)
     fallback_used: bool = False
@@ -2201,6 +2211,19 @@ def _render_analyzed_image(
     stage_timings=None,
     forensic_capture_root=None,
 ):
+    def timed_substage(name, fn, *args, **kwargs):
+        started = time.perf_counter()
+        value = fn(*args, **kwargs)
+        elapsed = time.perf_counter() - started
+        if stage_timings is not None:
+            bucket = stage_timings.setdefault("cleanup_substages", {})
+            entry = bucket.setdefault(name, {"call_count": 0, "total_ms": 0.0, "max_single_call_ms": 0.0})
+            ms = elapsed * 1000.0
+            entry["call_count"] += 1
+            entry["total_ms"] += ms
+            entry["max_single_call_ms"] = max(entry["max_single_call_ms"], ms)
+        return value
+
     forensic_capture = (
         CleanupForensicCapture(forensic_capture_root)
         if forensic_capture_root
@@ -2214,6 +2237,10 @@ def _render_analyzed_image(
     allowed_mask = np.zeros(original.shape[:2], dtype=np.uint8)
     inpaint_seconds = 0.0
     redraw_seconds = 0.0
+    cleanup_seconds = 0.0
+    typography_seconds = 0.0
+    quality_seconds = 0.0
+    render_started = time.perf_counter()
 
     for group in valid_groups:
         # Boundary immediately before inpainting/redraw consume the group: this is
@@ -2314,7 +2341,9 @@ def _render_analyzed_image(
                 group,
                 **cleanup_kwargs,
             )
-            inpaint_seconds += time.perf_counter() - inpaint_started
+            cleanup_elapsed = time.perf_counter() - inpaint_started
+            cleanup_seconds += cleanup_elapsed
+            inpaint_seconds += cleanup_elapsed
             group.mask_metrics = mask_metrics
             if strategy == "source_scoped":
                 advanced_fallback_mask = cleanup_mask
@@ -2344,24 +2373,28 @@ def _render_analyzed_image(
                 strategy=strategy,
                 source_bgr=original,
             )
-            translated_occupancy = _translated_text_occupancy_metrics(
+            translated_occupancy = timed_substage("translated_text_occupancy", _translated_text_occupancy_metrics,
                 cleaned,
                 rendered,
                 group,
             )
-            redraw_seconds += time.perf_counter() - redraw_started
+            redraw_elapsed = time.perf_counter() - redraw_started
+            typography_seconds += redraw_elapsed
+            redraw_seconds += redraw_elapsed
             group_allowed = _draw_allowed_group_mask(
                 original.shape,
                 group,
                 cleanup_mask=cleanup_mask,
             )
-            rendered, visual_summary = _enforce_visual_bounds(
+            quality_started = time.perf_counter()
+            rendered, visual_summary = timed_substage("enforce_visual_bounds", _enforce_visual_bounds,
                 before_group,
                 rendered,
                 group_allowed,
                 group=group,
                 mask_metrics=mask_metrics,
             )
+            quality_seconds += time.perf_counter() - quality_started
             # Art findings that do not withhold the render still have to travel
             # with the attempt that ships, or the verdict cannot see them.
             for finding in ("art_fidelity_uncertain",
@@ -2440,6 +2473,7 @@ def _render_analyzed_image(
                 group,
                 advanced_fallback_mask,
                 advanced_fallback_metrics or {},
+                stage_timings,
             )
             inpaint_seconds += time.perf_counter() - inpaint_started
             group.visual_attempts.append(advanced_attempt)
@@ -2453,18 +2487,20 @@ def _render_analyzed_image(
                     strategy="source_scoped",
                     source_bgr=original,
                 )
-                translated_occupancy = _translated_text_occupancy_metrics(
+                translated_occupancy = timed_substage("translated_text_occupancy", _translated_text_occupancy_metrics,
                     advanced_cleaned,
                     rendered,
                     group,
                 )
-                redraw_seconds += time.perf_counter() - redraw_started
+                redraw_elapsed = time.perf_counter() - redraw_started
+                typography_seconds += redraw_elapsed
+                redraw_seconds += redraw_elapsed
                 group_allowed = _draw_allowed_group_mask(
                     original.shape,
                     group,
                     cleanup_mask=advanced_fallback_mask,
                 )
-                rendered, visual_summary = _enforce_visual_bounds(
+                rendered, visual_summary = timed_substage("enforce_visual_bounds", _enforce_visual_bounds,
                     before_group,
                     rendered,
                     group_allowed,
@@ -2594,10 +2630,14 @@ def _render_analyzed_image(
     if stage_timings is not None:
         stage_timings["inpainting"] = stage_timings.get("inpainting", 0.0) + inpaint_seconds
         stage_timings["redraw"] = stage_timings.get("redraw", 0.0) + redraw_seconds
+        stage_timings["cleanup"] = stage_timings.get("cleanup", 0.0) + cleanup_seconds
+        stage_timings["typography"] = stage_timings.get("typography", 0.0) + typography_seconds
+        stage_timings["quality"] = stage_timings.get("quality", 0.0) + quality_seconds
+        stage_timings["render"] = stage_timings.get("render", 0.0) + (time.perf_counter() - render_started)
 
     page_visual_summary = {}
     if config.VISUAL_DIFF_VALIDATION:
-        validated, page_visual_summary = _enforce_visual_bounds(
+        validated, page_visual_summary = timed_substage("enforce_visual_bounds", _enforce_visual_bounds,
             original,
             final,
             allowed_mask,
@@ -4070,12 +4110,29 @@ def _ignored_decorative_requires_review(group, reasons):
     )
 
 
+def _group_ocr_provenance_engines(group):
+    """Every distinct ``initial_ocr_engine`` among a group's lines.
+
+    Falls back to the line's current ``engine`` for a line OCRed before
+    provenance stamping existed (e.g. a legacy/replayed artifact).
+    """
+    engines = []
+    for line in group.lines:
+        metadata = getattr(line, "metadata", None) or {}
+        initial = metadata.get("initial_ocr_engine") or line.engine or None
+        if initial and initial not in engines:
+            engines.append(initial)
+    return tuple(sorted(engines))
+
+
 def _assign_region_metadata(groups):
     for index, group in enumerate(groups, start=1):
         group.region_id = f"REGION_{index:03}"
         group.region_type = group.classification
         group.parent_balloon_id = group.region_id if group.classification == "speech" else ""
         group.source_engine = _group_engine(group)
+        group.ocr_provenance_engines = _group_ocr_provenance_engines(group)
+        group.mixed_ocr_provenance = len(group.ocr_provenance_engines) > 1
 
 
 def score_group_ocr_quality(group):
@@ -4928,6 +4985,9 @@ def recover_source_with_rapidocr_variants(
         group.canonical_source_text = str(record.get("canonical_source") or "")
         group.source_repairs = tuple()
         group.source_recovery = dict(record)
+        for line in group.lines:
+            initial_engine = (line.metadata or {}).get("initial_ocr_engine") or line.engine
+            mark_ocr_line_recovered(line, "rapidocr", initial_ocr_engine=initial_engine)
     elif owned_engine:
         group.source_recovery = dict(record)
     return record
@@ -5387,6 +5447,14 @@ def apply_rapidocr_region_recovery(
         record_count("rapidocr_recovery.retry_selected", page_index=page_index)
         replaced = {id(line) for line in predecessors}
         lines = [line for line in lines if id(line) not in replaced]
+        predecessor_initial_engine = next(
+            (
+                (predecessor.metadata or {}).get("initial_ocr_engine")
+                for predecessor in predecessors
+                if (predecessor.metadata or {}).get("initial_ocr_engine")
+            ),
+            "rapidocr",
+        )
         for line in reconciled:
             line.metadata = {
                 **(line.metadata or {}),
@@ -5396,6 +5464,9 @@ def apply_rapidocr_region_recovery(
                 "original_group_id": group.group_id,
                 "original_text": group.text,
             }
+            mark_ocr_line_recovered(
+                line, "rapidocr", initial_ocr_engine=predecessor_initial_engine
+            )
             lines.append(line)
 
     lines.sort(key=lambda line: (line.box[1], line.box[0]))
@@ -6628,11 +6699,17 @@ def apply_speech_container_reocr(
             record["selected_engine"] = engine_name
             record["selected_confidence"] = round(float(confidence), 4)
             record["new_text"] = text
+            previous_initial_engine = (line.metadata or {}).get(
+                "initial_ocr_engine"
+            ) or line.engine
             line.original_text = line.original_text or line.raw_text or line.text
             line.text = text
             line.raw_text = text
             line.confidence = confidence
             line.engine = f"{engine_name}+reocr"
+            mark_ocr_line_recovered(
+                line, engine_name, initial_ocr_engine=previous_initial_engine
+            )
         record["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
         records.append(record)
 
@@ -6689,20 +6766,22 @@ def apply_speech_container_reocr(
                         {"text": text, "reason": "overlaps_existing_line"}
                     )
                     continue
-                lines.append(
-                    OCRLine(
-                        text=text,
-                        confidence=confidence,
-                        polygon=_polygon_from_box(recovered_box),
-                        box=recovered_box,
-                        raw_text=text,
-                        engine=f"{engine_name}+reocr",
-                        page=page_index,
-                        metadata={
-                            "selective_reocr": "speech_container_uncovered_text",
-                        },
-                    )
+                new_line = OCRLine(
+                    text=text,
+                    confidence=confidence,
+                    polygon=_polygon_from_box(recovered_box),
+                    box=recovered_box,
+                    raw_text=text,
+                    engine=f"{engine_name}+reocr",
+                    page=page_index,
+                    metadata={
+                        "selective_reocr": "speech_container_uncovered_text",
+                    },
                 )
+                # No prior line covered this box -- there is no earlier engine
+                # to preserve, only the one that found it just now.
+                mark_ocr_line_recovered(new_line, engine_name, initial_ocr_engine=None)
+                lines.append(new_line)
                 record["accepted"] = True
                 record["reason"] = "selective_reocr_recovered_text"
                 record["selected_engine"] = engine_name
@@ -9116,7 +9195,7 @@ def _advanced_art_fallback_eligible(group, mask_metrics=None):
     return True
 
 
-def _try_advanced_art_fallback(current_bgr, original_bgr, group, cleanup_mask, mask_metrics):
+def _try_advanced_art_fallback(current_bgr, original_bgr, group, cleanup_mask, mask_metrics, stage_timings=None):
     attempt = {
         "strategy": "lama_large",
         "advanced_fallback_attempted": True,
@@ -9127,7 +9206,29 @@ def _try_advanced_art_fallback(current_bgr, original_bgr, group, cleanup_mask, m
     }
     try:
         inpainter = advanced_art_inpainting.get_default_inpainter()
-        cleaned, telemetry = inpainter.reconstruct(current_bgr, cleanup_mask)
+        lama_metrics = (stage_timings if isinstance(stage_timings, dict) else None)
+        lama_bucket = lama_metrics.setdefault("lama", {}) if lama_metrics is not None else None
+        queue_enter = time.perf_counter()
+        request_started = queue_enter
+        acquired_at = None
+        _LAMA_INFERENCE_LOCK.acquire()
+        acquired_at = time.perf_counter()
+        if lama_bucket is not None:
+            lama_bucket["queue_wait_ms"] = lama_bucket.get("queue_wait_ms", 0.0) + (acquired_at - request_started) * 1000.0
+            lama_bucket["call_count"] = lama_bucket.get("call_count", 0) + 1
+        try:
+            cleaned, telemetry = inpainter.reconstruct(current_bgr, cleanup_mask)
+        finally:
+            _LAMA_INFERENCE_LOCK.release()
+        if lama_bucket is not None:
+            lama_bucket["hash_lookup_count"] = int(telemetry.get("hash_lookup_count", 0) or 0)
+            lama_bucket["hash_cache_hit_count"] = int(telemetry.get("hash_cache_hit_count", 0) or 0)
+            lama_bucket["hash_cache_miss_count"] = int(telemetry.get("hash_cache_miss_count", 0) or 0)
+            lama_bucket["real_hash_compute_count"] = int(telemetry.get("real_hash_compute_count", 0) or 0)
+            lama_bucket["hash_ms"] = float(telemetry.get("hash_total_ms", 0) or 0)
+            lama_bucket["load_ms"] = float(telemetry.get("load_ms", 0) or 0)
+            lama_bucket["inference_ms"] = float(telemetry.get("inference_ms", 0) or 0)
+            lama_bucket["resource_wait_ms"] = lama_bucket.get("queue_wait_ms", 0.0)
         attempt.update(telemetry)
         advanced_metrics = _advanced_art_reconstruction_metrics(
             original_bgr,
@@ -14295,6 +14396,24 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                     None,
                 ),
                 "metadata": _group_ocr_metadata(group),
+                # Diagnostics correlation (translation_item_id=id, region=region_id,
+                # page=above): initial/recovery engine provenance without the
+                # full source/translation text this record already carries above.
+                "ocr_provenance_engines": list(
+                    group.ocr_provenance_engines or _group_ocr_provenance_engines(group)
+                ),
+                "mixed_ocr_provenance": bool(group.mixed_ocr_provenance),
+                "recovery_engine": next(
+                    (
+                        (line.metadata or {}).get("recovery_engine")
+                        for line in group.lines
+                        if (line.metadata or {}).get("recovery_engine")
+                    ),
+                    None,
+                ),
+                "recovered": any(
+                    (line.metadata or {}).get("recovered") for line in group.lines
+                ),
                 "original_text": group.original_text or " ".join(
                     line.original_text or line.raw_text for line in group.lines
                 ),
@@ -14462,6 +14581,16 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
         for name in ("speech", "narration", "sfx", "decorative", "unknown")
     }
 
+    initial_engines = [
+        (line.metadata or {}).get("initial_ocr_engine")
+        for line in raw_lines
+        if (line.metadata or {}).get("initial_ocr_engine")
+    ]
+    recovered_lines = [line for line in raw_lines if (line.metadata or {}).get("recovered")]
+    recovery_engines = [
+        (line.metadata or {}).get("recovery_engine") for line in recovered_lines
+    ]
+
     return {
         "image_path": image_path,
         "ocr_line_count": len(raw_lines),
@@ -14476,6 +14605,19 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
         "redrawn_group_count": sum(1 for group in groups if group.redrawn),
         "classification_counts": classification_counts,
         "items": group_records + ignored_lines,
+        # Per-page OCR provenance (mission: hybrid OCR provenance/telemetry).
+        "initial_full_page_engine": (
+            initial_engines[0] if initial_engines and len(set(initial_engines)) == 1 else (
+                "mixed" if len(set(initial_engines)) > 1 else None
+            )
+        ),
+        "regional_recovery_calls": len(recovered_lines),
+        "regional_recovery_engine": (
+            recovery_engines[0] if recovery_engines and len(set(recovery_engines)) == 1 else (
+                "mixed" if len(set(recovery_engines)) > 1 else None
+            )
+        ),
+        "recovered_region_count": len(recovered_lines),
     }
 
 

@@ -75,21 +75,50 @@ class AdvancedArtInpainter:
         self._model = None
         self._lock = threading.Lock()
         self.last_load_seconds: float | None = None
+        self._verified_file_key: tuple[int, int] | None = None
+        self._verified_digest: str | None = None
+        self.metrics = {
+            "load_count": 0,
+            "hash_count": 0,
+            "hash_seconds": 0.0,
+            "inference_count": 0,
+            "inference_seconds": 0.0,
+            "verify_count": 0,
+            "hash_lookup_count": 0,
+            "hash_cache_hit_count": 0,
+            "hash_cache_miss_count": 0,
+            "real_hash_compute_count": 0,
+        }
 
     def available(self) -> bool:
         return self.model_path.exists()
 
     def verify_integrity(self) -> str:
+        self.metrics["hash_lookup_count"] += 1
         if not self.model_path.exists():
             raise AdvancedInpaintUnavailable("MODEL_UNAVAILABLE")
+        stat = self.model_path.stat()
+        key = (int(stat.st_size), int(stat.st_mtime_ns))
+        if key == self._verified_file_key and self._verified_digest:
+            self.metrics["verify_count"] += 1
+            self.metrics["hash_cache_hit_count"] += 1
+            return self._verified_digest
+        self.metrics["hash_cache_miss_count"] += 1
+        hash_started = time.perf_counter()
         digest = _sha256_file(self.model_path)
+        self.metrics["hash_count"] += 1
+        self.metrics["real_hash_compute_count"] += 1
+        self.metrics["hash_seconds"] += time.perf_counter() - hash_started
         expected = str(
             config.ADVANCED_ART_INPAINT_MODEL_SHA256
             or self.descriptor.expected_sha256
         ).lower()
         if digest.lower() != expected:
             raise AdvancedInpaintIntegrityError("MODEL_INTEGRITY_FAILED")
-        return digest.lower()
+        self._verified_file_key = key
+        self._verified_digest = digest.lower()
+        self.metrics["verify_count"] += 1
+        return self._verified_digest
 
     def load(self):
         with self._lock:
@@ -106,6 +135,7 @@ class AdvancedArtInpainter:
                 ).eval()
                 self._model = model
                 self.last_load_seconds = time.perf_counter() - started
+                self.metrics["load_count"] += 1
                 return self._model
             except Exception as exc:  # pragma: no cover - exact torch errors vary
                 raise AdvancedInpaintUnavailable("MODEL_LOAD_FAILED") from exc
@@ -152,6 +182,8 @@ class AdvancedArtInpainter:
         with torch.no_grad():
             pred = model(img_t, mask_t)
         inference_seconds = time.perf_counter() - started
+        self.metrics["inference_count"] += 1
+        self.metrics["inference_seconds"] += inference_seconds
         pred_rgb = pred[0].permute(1, 2, 0).detach().cpu().numpy()
         pred_rgb = np.clip(pred_rgb * 255, 0, 255).astype(np.uint8)
         pred_rgb = pred_rgb[:original_h, :original_w]
@@ -175,6 +207,12 @@ class AdvancedArtInpainter:
             "device": self.device,
             "backend": self.descriptor.backend,
             "inference_ms": int(round(inference_seconds * 1000)),
+            "hash_count": int(self.metrics["hash_count"]),
+            "hash_lookup_count": int(self.metrics["hash_lookup_count"]),
+            "hash_cache_hit_count": int(self.metrics["hash_cache_hit_count"]),
+            "hash_cache_miss_count": int(self.metrics["hash_cache_miss_count"]),
+            "real_hash_compute_count": int(self.metrics["real_hash_compute_count"]),
+            "hash_total_ms": int(round(self.metrics["hash_seconds"] * 1000)),
             "load_ms": (
                 int(round(self.last_load_seconds * 1000))
                 if self.last_load_seconds is not None else None
