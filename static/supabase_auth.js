@@ -1,10 +1,12 @@
-// Supabase authentication for the local Tradutor.Ia UI.
+// Supabase authentication for the local Tradutor.Ia UI. SDK pinned to
+// @supabase/supabase-js@2.58.0 and bundled locally (no CDN runtime dependency).
 //
 // Only the browser-safe public config reaches this file: SUPABASE_URL and the
 // publishable key, both fetched from the backend. The secret key never touches the
 // frontend. The official SDK (pinned) owns token storage and refresh; we never persist
 // tokens ourselves and never log a session or token.
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.58.0';
+import supabaseSdk from '/static/vendor/supabase-js.ef0ba14c445fdc3b.js';
+const { createClient } = supabaseSdk || {};
 
 let clientPromise = null;
 let publicConfigPromise = null;
@@ -16,6 +18,10 @@ const SESSION_RESTORE_TIMEOUT_MS = 7000;
 function transportTrace(event, fields = {}) {
   try { window.__tradutorAuthTraceEvent?.(event, fields); } catch (_) { /* diagnostics never affect auth */ }
 }
+
+window.__tradutorSupabaseAuthBuild = `supabase_auth:${new URL(import.meta.url).searchParams.get('v') || 'unversioned'}`;
+transportTrace('SUPABASE_AUTH_BUILD_LOADED', {source: window.__tradutorSupabaseAuthBuild});
+transportTrace('SDK_VENDOR_BUILD_LOADED', {source: 'supabase_sdk:ef0ba14c445fdc3b'});
 
 async function fetchPublicConfig() {
   const response = await fetch('/api/community/auth/config', { credentials: 'same-origin' });
@@ -39,24 +45,39 @@ function stableStorageKey(supabaseUrl) {
 
 // Resolves to a configured Supabase client, or null when the backend is not running
 // the Supabase provider (e.g. local-session mode). Cached so the SDK loads once.
-export function getSupabaseClient() {
+export function getSupabaseClient(options = {}) {
   if (clientPromise) return clientPromise;
   clientPromise = (async () => {
+    transportTrace('SUPABASE_CONFIG_LOAD_STARTED', {source: 'supabase_auth'});
     const cfg = await publicConfig();
-    if (cfg.provider !== 'supabase' || !cfg.supabase_url || !cfg.publishable_key) {
-      return null;
+    transportTrace('SUPABASE_CONFIG_LOAD_SUCCESS', {source: 'supabase_auth'});
+    if (cfg.provider !== 'supabase' || !cfg.supabase_url || !cfg.publishable_key) return null;
+    transportTrace('SUPABASE_CONFIG_VALIDATE_SUCCESS', {source: 'supabase_auth'});
+    transportTrace('SUPABASE_CREATE_CLIENT_STARTED', {source: 'supabase_auth'});
+    const storage = window.localStorage;
+    if (!storage || typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function' || typeof storage.removeItem !== 'function') {
+      const error = new TypeError('auth_storage_adapter_invalid');
+      error.code = 'auth_storage_adapter_invalid';
+      throw error;
     }
-    return createClient(cfg.supabase_url, cfg.publishable_key, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true,
-        flowType: 'pkce',
-        storage: window.localStorage,
-        storageKey: stableStorageKey(cfg.supabase_url),
-      },
+    // Official storage contract (equivalent to `storage: window.localStorage`).
+    const client = createClient(cfg.supabase_url, cfg.publishable_key, {
+      auth: {persistSession: true, autoRefreshToken: true,
+        detectSessionInUrl: options.detectSessionInUrl !== false,
+        flowType: 'pkce', storage, storageKey: stableStorageKey(cfg.supabase_url)},
     });
-  })();
+    transportTrace('SUPABASE_CREATE_CLIENT_SUCCESS', {source: 'supabase_auth'});
+    transportTrace('SUPABASE_CLIENT_READY', {source: 'supabase_auth'});
+    return client;
+  })().catch((error) => {
+    transportTrace('SUPABASE_CREATE_CLIENT_FAILED', {
+      name: String(error?.name || 'AuthError').slice(0, 80),
+      code: String(error?.code || error?.name || 'client_create_failed').slice(0, 80),
+      status: Number(error?.status || 0), source: 'supabase_auth',
+    });
+    clientPromise = null;
+    throw error;
+  });
   return clientPromise;
 }
 
@@ -67,6 +88,14 @@ export async function currentAccessToken() {
   if (!client) return '';
   const { data } = await client.auth.getSession();
   return data?.session?.access_token || '';
+}
+
+export async function exchangeCodeForSession(code) {
+  const client = await getSupabaseClient({detectSessionInUrl: false});
+  if (!client) return null;
+  const {data, error} = await client.auth.exchangeCodeForSession(String(code || ''));
+  if (error) throw error;
+  return data;
 }
 
 // Canonical asynchronous source used by all community requests.
@@ -199,6 +228,24 @@ export async function signIn(email, password, { signal } = {}) {
     }
   }
   return memorySession;
+}
+
+// Official Supabase password-recovery primitives.  The browser SDK owns the
+// recovery session and token handling; this module never stores or logs either.
+export async function resetPasswordForEmail(email, redirectTo = `${window.location.origin}/auth/callback`) {
+  const client = await getSupabaseClient();
+  if (!client) throw new Error('supabase not configured');
+  const { data, error } = await client.auth.resetPasswordForEmail(email, { redirectTo });
+  if (error) throw error;
+  return data;
+}
+
+export async function updatePassword(password) {
+  const client = await getSupabaseClient();
+  if (!client) throw new Error('supabase not configured');
+  const { data, error } = await client.auth.updateUser({ password });
+  if (error) throw error;
+  return data;
 }
 
 export async function signOut() {

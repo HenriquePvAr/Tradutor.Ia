@@ -21,6 +21,9 @@ function authTrace(event, fields = {}) {
   try { window.__tradutorAuthTraceEvent?.(event, fields); } catch (_) { /* diagnostics only */ }
 }
 
+window.__tradutorAuthProviderBuild = `auth_provider:${new URL(import.meta.url).searchParams.get('v') || 'unversioned'}`;
+authTrace('AUTH_PROVIDER_BUILD_LOADED', {source: window.__tradutorAuthProviderBuild});
+
 async function requestJson(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -73,6 +76,21 @@ function betterAuthAdapter(config) {
       authTrace('sign_in_response_received', {status: 200, source: 'better_auth_password'});
       return payload;
     },
+    async exchangeCodeForSession(code) {
+      const error = new Error('auth_not_configured');
+      error.status = 501; error.code = 'auth_not_configured';
+      throw error;
+    },
+    async resetPasswordForEmail() {
+      const error = new Error('password_recovery_not_available');
+      error.status = 501; error.code = 'password_recovery_not_available';
+      throw error;
+    },
+    async updatePassword() {
+      const error = new Error('password_update_not_available');
+      error.status = 501; error.code = 'password_update_not_available';
+      throw error;
+    },
     async signOut() {
       try {
         await requestJson(`${base}/sign-out`, {method: 'POST', body: '{}'});
@@ -85,6 +103,7 @@ function betterAuthAdapter(config) {
         const session = await fetch('/api/community/auth/session', {
           credentials: 'same-origin',
           cache: 'no-store',
+          headers: {'X-Yomu-Auth-Caller': 'auth-provider-initial-session', 'X-Yomu-Window-Role': 'auth'},
         }).then((response) => response.ok ? response.json() : null);
         handler(session?.authenticated ? {provider: 'better_auth'} : null, 'INITIAL_SESSION');
       } catch (_) {
@@ -132,6 +151,19 @@ function localTestAdapter() {
       authTrace('sign_in_response_received', {status: 200, source: 'local_test_password'});
       return payload;
     },
+    async exchangeCodeForSession() {
+      throw new Error('auth_not_configured');
+    },
+    async resetPasswordForEmail() {
+      const error = new Error('password_recovery_not_available');
+      error.status = 501; error.code = 'password_recovery_not_available';
+      throw error;
+    },
+    async updatePassword() {
+      const error = new Error('password_update_not_available');
+      error.status = 501; error.code = 'password_update_not_available';
+      throw error;
+    },
     async signOut() {
       const csrf = csrfToken();
       await requestJson('/api/community/auth/logout', {
@@ -145,6 +177,7 @@ function localTestAdapter() {
         const session = await fetch('/api/community/auth/session', {
           credentials: 'same-origin',
           cache: 'no-store',
+          headers: {'X-Yomu-Auth-Caller': 'auth-provider-local-test-initial-session', 'X-Yomu-Window-Role': 'auth'},
         }).then((response) => response.ok ? response.json() : null);
         handler(session?.authenticated ? {provider: 'local_test'} : null, 'INITIAL_SESSION');
       } catch (_) {
@@ -180,6 +213,10 @@ export async function currentAccessToken() {
   return (await provider()).currentAccessToken();
 }
 
+export async function exchangeCodeForSession(code) {
+  return (await provider()).exchangeCodeForSession(code);
+}
+
 export async function getCanonicalAccessToken() {
   return (await provider()).getCanonicalAccessToken();
 }
@@ -194,6 +231,14 @@ export async function signUp(email, password, options = {}) {
 
 export async function signIn(email, password, options = {}) {
   return (await provider()).signIn(email, password, options);
+}
+
+export async function resetPasswordForEmail(email, redirectTo) {
+  return (await provider()).resetPasswordForEmail(email, redirectTo);
+}
+
+export async function updatePassword(password) {
+  return (await provider()).updatePassword(password);
 }
 
 export async function signOut() {

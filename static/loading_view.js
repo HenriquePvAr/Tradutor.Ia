@@ -174,12 +174,12 @@
     source_analysis: ['Validando a origem', 'Verificando se a página está disponível e compatível.'],
     awaiting_source_review: ['Aguardando sua confirmação', 'Revise as páginas encontradas para continuar.'],
     download: ['Obtendo páginas', 'Baixando as páginas autorizadas.'],
-    validation: ['Identificando regiões', 'Detectando áreas que podem conter texto.'],
-    ocr: ['Identificando textos', 'Lendo o conteúdo das regiões detectadas.'],
+    validation: ['Identificando regiões', 'Localizando áreas que podem conter texto.'],
+    ocr: ['Lendo textos', 'Preparando o conteúdo das regiões encontradas.'],
     translate: ['Traduzindo', 'Preparando o texto em português brasileiro.'],
-    render: ['Reconstruindo páginas', 'Aplicando o texto traduzido às páginas.'],
-    pdf: ['Gerando PDF', 'Montando o documento final.'],
-    quality_review: ['Verificando qualidade', 'Executando as verificações finais.']
+    render: ['Reconstruindo páginas', 'Aplicando o texto traduzido e preservando a arte.'],
+    pdf: ['Preparando documento', 'Montando o documento final.'],
+    quality_review: ['Verificando resultado', 'Conferindo se o resultado está pronto para leitura.']
   };
 
   var TERMINAL_COPY = {
@@ -211,7 +211,7 @@
       description = terminal[1] || String(state.message || '');
       tone = terminal[2];
     } else if (mode === MODE_BOOTSTRAP) {
-      title = status === 'finished' ? 'Tradutor.IA pronto' : 'Preparando o Tradutor.IA';
+      title = status === 'finished' ? 'Yomu Sekai pronto' : 'Preparando o Yomu Sekai';
       description = status === 'finished'
         ? 'Sessão, ambiente e interface preparados.'
         : 'Restaurando sua sessão e preparando o ambiente.';

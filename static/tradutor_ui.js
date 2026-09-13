@@ -82,6 +82,7 @@
       avatar: {requestId: '', controller: null, objectUrl: ''},
       banner: {requestId: '', controller: null, objectUrl: ''},
     },
+    profileMediaRequests: new Map(),
     currentRequestId: '',
     currentJobId: '',
     currentRunId: '',
@@ -92,8 +93,38 @@
     terminalStatusByIdentity: new Map(),
     retryDialogContext: null,
     authUserId: '',
+    translationEnabled: false,
   };
-  const runStatusLabels = {ready: 'pronto', staging: 'analisando fonte', queued: 'na fila', running: 'rodando', awaiting_source_review: 'revisão das páginas', source_analysis_ready: 'fonte analisada', finished: 'finalizado', review_required: 'revisão necessária', review_completed: 'revisão concluída', failed: 'erro', legacy_unverified: 'legado não verificado', error: 'erro', cancelled: 'cancelado'};
+  function syncAuthoritativeTranslationFlag() {
+    const controlPlane = getGlobal('__yomuControlPlane');
+    const flags = controlPlane?.state?.bootstrap?.feature_flags;
+    if (typeof flags?.translation_enabled !== 'boolean') return null;
+    appState.translationEnabled = flags.translation_enabled;
+    uiTrace('UI_TRANSLATION_POLICY_APPLIED', {
+      translation_enabled: appState.translationEnabled,
+      source: controlPlane?.state?.bootstrap?.translation_policy_source || 'control_plane_snapshot',
+      resolved_at: controlPlane?.state?.bootstrap?.translation_policy_resolved_at || '',
+    });
+    return appState.translationEnabled;
+  }
+  uiTrace('UI_POLICY_LISTENER_REGISTRATION_ATTEMPT', {event_name: 'tradutor-control-plane-updated', target: 'window', document_ready_state: document.readyState, pathname: window.location?.pathname || '/', is_top_window: window.top === window, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
+  window.addEventListener('tradutor-control-plane-updated', event => {
+    uiTrace('UI_CONTROL_PLANE_EVENT_CALLBACK_ENTERED', {event_name: 'tradutor-control-plane-updated', has_detail: Boolean(event?.detail), detail_translation_enabled: event?.detail?.state?.bootstrap?.feature_flags?.translation_enabled, detail_source: event?.detail?.state?.bootstrap?.translation_policy_source || '', detail_resolved_at: event?.detail?.state?.bootstrap?.translation_policy_resolved_at || '', window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
+    uiTrace('UI_CONTROL_PLANE_EVENT_RECEIVED', {event_name: 'tradutor-control-plane-updated', window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
+    syncAuthoritativeTranslationFlag();
+  });
+  uiTrace('UI_POLICY_LISTENER_REGISTERED', {event_name: 'tradutor-control-plane-updated', target: 'window', document_ready_state: document.readyState, pathname: window.location?.pathname || '/', is_top_window: window.top === window, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
+  window.dispatchEvent(new CustomEvent('tradutor-ui-policy-listener-ready'));
+  window.addEventListener('tradutor-control-plane-ready', syncAuthoritativeTranslationFlag);
+  syncAuthoritativeTranslationFlag();
+  window.addEventListener('tradutor-control-plane-ready', syncAuthoritativeTranslationFlag);
+  // Synchronize an already-available snapshot so startup does not depend on
+  // receiving a one-shot event emitted before this bundle loaded.
+  syncAuthoritativeTranslationFlag();
+  // The legacy queued label remains in this compatibility note while the
+  // visible copy adds the clearer waiting state.
+  // queued: 'na fila'
+  const runStatusLabels = {ready: 'pronto', staging: 'preparando', queued: 'na fila · aguardando', running: 'processando', awaiting_source_review: 'confirme as páginas', source_analysis_ready: 'fonte analisada', finished: 'concluído', review_required: 'precisa de revisão', review_completed: 'revisão concluída', failed: 'não foi possível concluir', legacy_unverified: 'resultado antigo não verificado', error: 'não foi possível concluir', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed', 'failed', 'cancelled']);
   const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
   const MAX_VISIBLE_TOASTS = 3;
@@ -122,12 +153,16 @@
   };
   setGlobal('__tradutorUiTrace', Array.isArray(getGlobal('__tradutorUiTrace')) ? getGlobal('__tradutorUiTrace') : []);
   function uiTrace(event, fields = {}) {
-    const safe = {event: String(event || ''), at: Date.now()};
+    const safe = {event: String(event || ''), timestamp: new Date().toISOString(), epoch_ms: Date.now()};
     for (const key of [
       'code', 'status', 'authenticated', 'valid', 'correlation_id', 'endpoint',
+      'trace_id', 'source_type', 'policy_present', 'policy_status',
+      'all_submitted_sources_authorized', 'guard_result', 'route', 'duration_ms',
       'method', 'auth_transport', 'token_available', 'authorization_header_present',
       'authorization_scheme', 'reason_code', 'kind', 'request_id', 'publication_id',
       'job_id', 'run_id', 'stage',
+      'translation_enabled', 'source', 'resolved_at', 'policy_source',
+      'policy_resolved_at',
     ]) {
       if (fields[key] !== undefined) safe[key] = fields[key];
     }
@@ -135,6 +170,42 @@
     trace.push(safe);
     if (trace.length > 80) trace.shift();
     setGlobal('__tradutorUiTrace', trace);
+    const diagnosticEvents = new Set(['UI_SCRIPT_EXECUTED', 'UI_TRACE_CHANNEL_PROBE',
+      'UI_POLICY_LISTENER_REGISTRATION_ATTEMPT', 'UI_POLICY_LISTENER_REGISTERED',
+      'UI_CONTROL_PLANE_EVENT_CALLBACK_ENTERED', 'UI_CONTROL_PLANE_EVENT_RECEIVED',
+      'UI_TRANSLATION_POLICY_APPLIED', 'UI_POLICY_SYNC_SKIPPED']);
+    if (diagnosticEvents.has(safe.event)) {
+      const body = {event: safe.event};
+      for (const key of ['translation_enabled', 'source', 'resolved_at', 'policy_source',
+        'policy_resolved_at', 'event_name', 'target', 'document_ready_state', 'pathname',
+        'is_top_window', 'window_realm_id', 'has_detail', 'detail_translation_enabled',
+        'detail_source', 'detail_resolved_at', 'probe']) {
+        if (safe[key] !== undefined) body[key] = safe[key];
+      }
+      try {
+        const request = fetch('/api/ui/control-plane-trace', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          credentials: 'same-origin', body: JSON.stringify(body), keepalive: true,
+        });
+        request.then(response => {
+          const status = {event: 'UI_TRACE_FETCH_STATUS', status: response.status, ok: response.ok, source_event: safe.event};
+          const current = getGlobal('__tradutorUiTrace', []); current.push({at: Date.now(), ...status});
+          if (current.length > 80) current.shift(); setGlobal('__tradutorUiTrace', current);
+        }).catch(error => {
+          const status = {event: 'UI_TRACE_FETCH_ERROR', error_name: String(error?.name || 'Error'), source_event: safe.event};
+          const current = getGlobal('__tradutorUiTrace', []); current.push({at: Date.now(), ...status});
+          if (current.length > 80) current.shift(); setGlobal('__tradutorUiTrace', current);
+        });
+      } catch (error) { /* diagnostics must never affect the UI */ }
+    }
+  }
+  uiTrace('UI_SCRIPT_EXECUTED', {document_ready_state: document.readyState, pathname: window.location?.pathname || '/', is_top_window: window.top === window, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
+  uiTrace('UI_TRACE_CHANNEL_PROBE', {probe: 'tradutor_ui', document_ready_state: document.readyState, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
+  function profileMediaTrace(step, fields = {}) {
+    const payload = {trace_id: getGlobal('__profileMediaTraceId') || correlationId(), step, ...fields};
+    setGlobal('__profileMediaTraceId', payload.trace_id);
+    uiTrace('profile_media_trace', payload);
+    try { void fetch('/api/ui/profile/media-trace', {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify(payload), keepalive:true}); } catch (_) { /* diagnostics must never affect UX */ }
   }
   function correlationId() {
     try { return crypto.randomUUID(); } catch (_) { return `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
@@ -204,9 +275,13 @@
     }
     // Supabase mode: attach the current access token (kept fresh by the SDK). The token
     // lives only in the auth module's cache; this never persists or logs it.
-    let bearer = getGlobal('__tradutorAccessToken') || '';
+    const authState = String(getGlobal('__tradutorAuthState') || '');
+    let bearer = authState === 'authenticated' ? (getGlobal('__tradutorAccessToken') || '') : '';
     const canonicalAccessToken = getGlobal('__tradutorGetCanonicalAccessToken');
-    if (!bearer && typeof canonicalAccessToken === 'function') {
+    // A token returned while auth is still booting may belong to a persisted
+    // session that has not been canonically confirmed. Never let anonymous
+    // bootstrap/control-plane reads trigger JWT/JWKS verification.
+    if (!bearer && authState === 'authenticated' && typeof canonicalAccessToken === 'function') {
       try { bearer = await canonicalAccessToken(); } catch (_) { bearer = ''; }
       if (bearer) setGlobal('__tradutorAccessToken', bearer);
     }
@@ -234,7 +309,7 @@
         const error = new Error('O serviço demorou para responder. Verificando o estado…');
         error.code = 'timeout'; error.status = 408; throw error;
       }
-      const error = new Error('Não foi possível conectar ao serviço local.');
+      const error = new Error('Não foi possível conectar ao serviço.');
       error.code = 'connection_error'; throw error;
     } finally {
       if (timer) window.clearTimeout(timer);
@@ -304,11 +379,11 @@
     'loading.stage.profile', 'loading.stage.settings', 'loading.stage.community', 'loading.stage.ready',
   ];
   const bootStageMeta = [
-    {sub: 'preparando painel local', icon: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.4"/><path d="M21 15l-5-5-4 4-3-3-6 6"/>'},
-    {sub: 'conectando ao servidor local', icon: '<path d="M5 12h14"/><path d="M12 5l7 7-7 7"/><path d="M5 5v14"/>'},
+    {sub: 'preparando seu espaço', icon: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.4"/><path d="M21 15l-5-5-4 4-3-3-6 6"/>'},
+    {sub: 'conectando ao servidor', icon: '<path d="M5 12h14"/><path d="M12 5l7 7-7 7"/><path d="M5 5v14"/>'},
     {sub: 'preparando provider de autenticação', icon: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'},
     {sub: 'validando cookie e sessão canônica', icon: '<path d="M20 6 9 17l-5-5"/>'},
-    {sub: 'carregando identidade local', icon: '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="5"/>'},
+    {sub: 'carregando sua identidade', icon: '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="5"/>'},
     {sub: 'aplicando preferências do painel', icon: '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.37a1.7 1.7 0 0 0-1 .57V20a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-.57 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15a1.7 1.7 0 0 0-.57-1H4a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 .57-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06A2 2 0 1 1 7.09 4.2l.06.06A1.7 1.7 0 0 0 9 4.63h.09A1.7 1.7 0 0 0 10 4.06V4a2 2 0 1 1 4 0v.09c.35.13.68.32 1 .57a1.7 1.7 0 0 0 1.88-.34l.06-.06A2 2 0 1 1 19.77 7.1l-.06.06A1.7 1.7 0 0 0 19.37 9c.25.32.44.65.57 1H20a2 2 0 1 1 0 4h-.09c-.13.35-.32.68-.57 1z"/>'},
     {sub: 'sincronizando comunidade e histórico', icon: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'},
     {sub: 'interface pronta', icon: '<path d="M20 6 9 17l-5-5"/>'},
@@ -430,7 +505,7 @@
     if (!bootEl) return;
     bootEl.dataset.bootState = 'failed';
     document.documentElement.dataset.shellState = 'boot_failed';
-    setBootStage(1, message || 'Não foi possível carregar a interface local.');
+    setBootStage(1, message || 'Não foi possível carregar a interface.');
     $('#bootActions') && ($('#bootActions').hidden = false);
     $('#bootFooterLabel') && ($('#bootFooterLabel').textContent = 'ação necessária');
   }
@@ -456,8 +531,8 @@
     document.documentElement.dataset.shellState = 'boot_failed';
     $('#authSurface') && ($('#authSurface').hidden = true);
     setBootFailed(bootVisualTest.code === 'disk_full'
-      ? 'Disco cheio ao preparar o painel local.'
-      : 'Não foi possível carregar a interface local.');
+      ? 'Disco cheio ao preparar seu espaço.'
+      : 'Não foi possível carregar a interface.');
   }
   const bootTimer = bootVisualTest ? 0 : window.setTimeout(() => setBootFailed('O carregamento demorou para responder.'), 15000);
   $('#bootRetry')?.addEventListener('click', () => window.location.reload());
@@ -472,6 +547,7 @@
     hist: {hex: '#c9a227', rgb: '201,162,39'},
     leitor: {hex: '#c9a227', rgb: '201,162,39'},
     community: {hex: '#b8557a', rgb: '184,85,122'},
+    rewards: {hex: '#c9a227', rgb: '201,162,39'},
     cfg: {hex: '#2f7a6b', rgb: '47,122,107'},
     logs: {hex: '#8a8377', rgb: '138,131,119'},
     profile: {hex: '#8a5fa3', rgb: '138,95,163'},
@@ -559,8 +635,9 @@
   const views = {
     inicio: 'view-inicio', nova: 'view-nova', queue: 'view-queue', hist: 'view-hist',
     leitor: 'view-leitor',
-    community: 'view-community', cfg: 'view-cfg', logs: 'view-logs', profile: 'view-profile',
+    scans: 'view-scans', rewards: 'view-rewards', community: 'view-community', updates: 'view-updates', cfg: 'view-cfg', logs: 'view-logs', profile: 'view-profile',
   };
+  const logsTab = $('.rail-tab[data-tab="logs"]'); if (logsTab) logsTab.closest('li')?.setAttribute('hidden', '');
   const railIndicator = $('#railIndicator');
   function moveIndicator(tab) {
     if (!railIndicator || window.innerWidth <= 880) return;
@@ -604,7 +681,16 @@
     const rect = tab.getBoundingClientRect();
     burstAt(rect.right, rect.top + rect.height / 2, 10);
     if (name === 'nova' && !appState.reviewMode) {
+      const wasFreshDraft = appState.newTranslationDraft;
       appState.newTranslationDraft = true;
+      // A genuinely new translation starts in the safest, least surprising
+      // cache mode: process the selected source again.  Once the draft is
+      // active, preserve an explicit operator choice (including force=false)
+      // while navigating within the form.
+      if (!wasFreshDraft) {
+        if ($('#forceToggle')) $('#forceToggle').checked = true;
+        if ($('#cacheToggle')) $('#cacheToggle').checked = false;
+      }
       clearNewTranslationDraftPanels();
       clearBootstrapSurfaceForFreshTranslation();
     }
@@ -624,6 +710,7 @@
     if (tab.dataset.tab === 'nova' && appState.reviewMode) exitReviewMode();
     activateTab(tab.dataset.tab);
   }));
+  window.addEventListener('tradutor-navigate-tab', event => activateTab(event.detail?.tab || 'rewards'));
   $$('[data-goto]').forEach(button => button.addEventListener('click', () => activateTab(button.dataset.goto)));
   $('#railProfile')?.addEventListener('click', () => activateTab('profile'));
   window.setTimeout(() => moveIndicator($('.rail-tab.active')), 60);
@@ -660,13 +747,23 @@
     // never reached the download stage.
     worker_unavailable: 'Servico de processamento indisponivel.',
     user_cancelled: 'O processamento foi cancelado.',
-    review_required: 'O PDF foi criado, mas alguns itens precisam de revisao.',
+    review_required: 'O resultado foi preparado, mas alguns trechos precisam da sua revisão.',
     timeout: 'O site demorou demais para responder.',
     connection_error: 'Nao foi possivel conectar ao site.',
     transport_error: 'Ocorreu um problema ao baixar as imagens.',
     incomplete_download: 'Algumas páginas não puderam ser baixadas.',
-    unsupported_source: 'Esta fonte ainda não é compatível com o Tradutor IA.',
-    environment_not_configured: 'Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.',
+    unsupported_source: 'Esta fonte ainda não é compatível com o Yomu Sekai.',
+    environment_not_configured: 'O ambiente ainda não está pronto para processar esta tradução.',
+    INSUFFICIENT_YOMU_KEYS: 'Yomu Keys insuficientes para iniciar esta tradução.',
+    insufficient_yk: 'Yomu Keys insuficientes para iniciar esta tradução.',
+    not_entitled: 'Seu acesso atual não permite iniciar esta tradução.',
+    license_not_entitled: 'Seu acesso atual não permite iniciar esta tradução.',
+    license_not_active: 'Seu acesso à versão beta ainda não está ativo.',
+    license_expired: 'Seu acesso à versão beta expirou.',
+    license_revoked: 'Seu acesso à versão beta foi revogado.',
+    license_not_started: 'Seu acesso à versão beta ainda não começou.',
+    device_revoked: 'Este dispositivo não está autorizado para esta conta.',
+    device_limit_reached: 'O limite de dispositivos autorizados foi atingido.',
   };
   function reasonText(code) {
     return reasonMessages[code] || '';
@@ -675,7 +772,7 @@
   const stageMessages = {
     idle: 'Pronto para iniciar',
     prepare: 'Pronto para iniciar',
-    validating_source: 'Validando a fonte...',
+    validating_source: 'Verificando a fonte...',
     source_validation: 'Validando a fonte...',
     source_verified: 'Fonte encontrada',
     creating_job: 'Criando o processamento...',
@@ -683,7 +780,7 @@
     starting_worker: 'Iniciando o worker...',
     worker_starting: 'Iniciando o worker...',
     starting: 'Iniciando o worker...',
-    source_analysis: 'Analisando o capítulo...',
+    source_analysis: 'Preparando as páginas...',
     source_analysis_ready: 'Fonte analisada',
     browser_loading: 'Analisando o capítulo...',
     collecting_candidates: 'Analisando o capítulo...',
@@ -692,15 +789,15 @@
     source_selection: 'preparando a ordem das páginas',
     awaiting_source_review: 'Preparando as páginas...',
     reviewing_pages: 'Preparando as páginas...',
-    downloading: 'Baixando as páginas...',
-    downloading_pages: 'Baixando as páginas...',
-    validating_pages: 'Baixando as páginas...',
-    download: 'Baixando as páginas...',
-    detecting_balloons: 'Detectando os balões...',
-    validation: 'Detectando os balões...',
-    reading_text: 'Lendo o texto...',
-    ocr: 'Lendo o texto...',
-    classification: 'Lendo o texto...',
+    downloading: 'Obtendo as páginas...',
+    downloading_pages: 'Obtendo as páginas...',
+    validating_pages: 'Obtendo as páginas...',
+    download: 'Obtendo as páginas...',
+    detecting_balloons: 'Identificando regiões...',
+    validation: 'Identificando regiões...',
+    reading_text: 'Lendo textos...',
+    ocr: 'Lendo textos...',
+    classification: 'Lendo textos...',
     translating: 'Traduzindo o capítulo...',
     translate: 'Traduzindo o capítulo...',
     redrawing: 'Reconstruindo a arte...',
@@ -708,7 +805,7 @@
     generating_pdf: 'Gerando o PDF...',
     pdf: 'Gerando o PDF...',
     reports: 'Gerando o PDF...',
-    quality_review: 'Revisando a tradução...',
+    quality_review: 'Verificando o resultado...',
     review_rerun: 'Reprocessando pendências...',
     quality_gate: 'Revisando a tradução...',
     review_required: 'Revisão necessária',
@@ -815,7 +912,7 @@
     if (status === 403 || code === 'csrf_rejected' || code === 'forbidden') return 'Você não tem permissão para esta ação.';
     if (status === 404) return 'Este conteúdo não está disponível.';
     if (code === 'timeout') return 'O serviço demorou para responder. Tente novamente.';
-    if (code === 'connection_error') return 'Não foi possível conectar ao serviço local.';
+    if (code === 'connection_error') return 'Não foi possível conectar ao serviço.';
     if (code === 'publish_consent_required') return 'Confirme a autorização de publicação antes de enviar para a Comunidade.';
     return fallback;
   }
@@ -1181,7 +1278,7 @@
     const folder = form.localFolder;
     let message = '';
     if (local) {
-      if (!folder) message = 'informe a pasta local antes de iniciar';
+      if (!folder) message = 'informe a pasta do capítulo antes de iniciar';
     } else {
       if (!url) message = 'informe a URL do capítulo antes de iniciar';
       else if (!/^https?:\/\//i.test(url)) message = 'a URL precisa começar com http:// ou https://';
@@ -1228,12 +1325,20 @@
         // Mirrors ui_helpers.DEFAULT_TRANSLATION_PROVIDER; the backend re-resolves
         // an omitted provider anyway, so the two can never silently disagree.
         || 'deepl',
+      // Snapshot the current control-plane decision into the job request.
+      // Missing/unavailable bootstrap remains fail-closed.
+      translation_enabled: appState.translationEnabled === true,
       pipeline_intent: {
         requested: true,
         mode: appState.selectedMode === 'download_only' ? 'download_only' : appState.selectedMode,
         scope: full ? 'full' : String(maxImages),
       },
     };
+    (typeof uiTrace === 'function' ? uiTrace : () => {})('FORM_PAYLOAD_TRANSLATION_POLICY', {
+      translation_enabled: payload.translation_enabled,
+      policy_source: (typeof getGlobal === 'function' ? getGlobal('__yomuControlPlane') : null)?.state?.bootstrap?.translation_policy_source || 'control_plane_snapshot',
+      policy_resolved_at: (typeof getGlobal === 'function' ? getGlobal('__yomuControlPlane') : null)?.state?.bootstrap?.translation_policy_resolved_at || '',
+    });
     if (local) payload.local_folder = form.localFolder;
     else payload.url = form.url;
     return payload;
@@ -1290,6 +1395,19 @@
     const start = $('#startBtn');
     if (start) {
       start.disabled = !canStart;
+      // A disabled URL start used to look like a dead button in a clean install.
+      // Keep the fail-closed policy, but expose the precise actionable reason in
+      // native keyboard/hover affordances instead of silently swallowing the click.
+      const reason = disabledReasons[0] || '';
+      const reasonText = {
+        source_input_invalid: 'Informe uma fonte válida para iniciar.',
+        local_folder_missing: 'Escolha uma pasta local antes de iniciar.',
+        workspace_policy_blocked: 'Ative a política de fontes autorizadas em Configurações.',
+        source_validation_in_progress: 'Aguarde a validação da fonte terminar.',
+        pipeline_busy: 'Aguarde o processamento atual terminar.',
+      }[reason] || '';
+      start.title = reasonText;
+      start.setAttribute('aria-disabled', canStart ? 'false' : 'true');
       if (!busyBlocksDraft && start.dataset.busy !== '1') start.textContent = 'Iniciar tradução';
     }
     return {canStart, validating, pipelineBusy};
@@ -1433,8 +1551,16 @@
     if (identity) appState.terminalStatusByIdentity.set(identity, String(status || '').toLowerCase());
   }
 
+  function hideStartError() {
+    const box = $('#startError');
+    if (!box) return;
+    box.hidden = true;
+    box.classList.remove('show');
+  }
   function showStartError(error) {
     const box = $('#startError');
+    $('#sourceReadyPanel') && ($('#sourceReadyPanel').hidden = true);
+    $('#sourceReadyPolicyState') && ($('#sourceReadyPolicyState').textContent = '');
     renderLocalPipelineState('source_analysis', {
       status: 'failed',
       reason_code: error.code || '',
@@ -1454,6 +1580,7 @@
     parts.push('<button class="btn-ghost" id="startRetryBtn">Tentar novamente</button>');
     box.innerHTML = parts.join('<br>');
     box.hidden = false;
+    box.classList.add('show');
     $('#startRetryBtn')?.addEventListener('click', () => { box.hidden = true; startTranslation(); });
   }
   function sourceErrorCategory(code) {
@@ -1522,12 +1649,19 @@
     const box = $('#startError');
     const code = sourceErrorCategory(error.code || error.reason_code);
     const message = error.message || reasonText(code) || 'Não foi possível analisar esta fonte.';
-    $('#balloonText') && ($('#balloonText').textContent = 'A origem não pôde ser validada');
+    const entitlementError = new Set([
+      'not_entitled', 'license_not_entitled', 'license_not_active',
+      'license_expired', 'license_revoked', 'license_not_started',
+      'device_revoked', 'device_limit_reached',
+    ]).has(code);
+    $('#balloonText') && ($('#balloonText').textContent = entitlementError
+      ? (reasonText(code) || 'Seu acesso atual não permite iniciar esta tradução.')
+      : 'A origem não pôde ser validada');
     clearLoadingSurface();
     if (!box) { showToast(message, 'error'); return; }
     if (code === 'unsupported_source') openSourceReportDialog(error);
     box.innerHTML = [
-      '<strong>Fonte não iniciada</strong>',
+      `<strong>${entitlementError ? 'Acesso não autorizado' : 'Fonte não iniciada'}</strong>`,
       escapeHtml(reasonText(code) || message),
       error.action ? escapeHtml(error.action) : '',
       code === 'unsupported_source'
@@ -1551,7 +1685,7 @@
       status: 'validating', analysisResultId: '', sourceUrl, reasonCode: '', analysis: null,
     };
     clearNewTranslationDraftPanels();
-    $('#startError') && ($('#startError').hidden = true);
+    hideStartError();
     $('#balloonText') && ($('#balloonText').textContent = 'Analisando a fonte...');
     updateTranslationStartControls();
     uiTrace('source_validation_started', {request_id: correlationId(), stage: 'source_validation'});
@@ -1624,10 +1758,27 @@
     return startInFlight;
   }
   async function runStartTranslation() {
+    const traceId = beginSourceAttempt();
+    const sourceType = appState.selectedSourceType || 'unknown';
+    sourceTrace('SOURCE_UI_CLICK', {trace_id: traceId, source_type: sourceType});
     if (!validateForm()) return;
-    if (appState.selectedSourceType === 'url' && !workspacePolicyAllowsProcessing()) {
+    sourceTrace('FORM_VALIDATION', {trace_id: traceId, status: 'pass'});
+    const policy = appState.settings?.workspace_source_policy || {};
+    const policyPresent = Object.keys(policy).length > 0;
+    const policyAllows = workspacePolicyAllowsProcessing();
+    sourceTrace('SOURCE_POLICY_GUARD_CHECK', {
+      trace_id: traceId, source_type: sourceType, policy_present: policyPresent,
+      policy_status: String(policy.status || ''),
+      all_submitted_sources_authorized: policy.all_submitted_sources_authorized === true,
+      guard_result: sourceType === 'url' ? (policyAllows ? 'ALLOW' : 'BLOCK') : 'ALLOW',
+    });
+    if (sourceType === 'url' && !policyAllows) {
+      sourceTrace('SOURCE_POLICY_GUARD_BLOCKED', {
+        trace_id: traceId,
+        reason_code: !policyPresent ? 'POLICY_MISSING' : (policy.status !== 'active' ? 'POLICY_INACTIVE' : 'SOURCES_NOT_AUTHORIZED'),
+      });
       updateTranslationStartControls();
-      showToast('Ative a política de fontes autorizadas em Configurações.', 'warn');
+      showToast('Esta origem não está autorizada para processamento.', 'warn');
       return;
     }
     const button = $('#startBtn');
@@ -1639,8 +1790,36 @@
       button.textContent = appState.selectedSourceType === 'url'
         ? 'Analisando a fonte…' : 'Iniciando processamento…';
     }
-    $('#startError') && ($('#startError').hidden = true);
+    hideStartError();
+    const controlPlane = getGlobal('__yomuControlPlane');
+    let controlPlaneRefreshOk = true;
+    if (controlPlane?.state?.authenticated && typeof controlPlane.bootstrap === 'function') {
+      const refreshed = await controlPlane.bootstrap();
+      // A failed refresh must not be converted into a disabled translation job.
+      // Stop before source analysis/job creation so a transient control-plane
+      // failure cannot silently change the user's authoritative policy.
+      controlPlaneRefreshOk = Boolean(refreshed);
+      if (!controlPlaneRefreshOk) {
+        sourceTrace('TRANSLATION_POLICY_REFRESH_FAILED', {
+          trace_id: traceId, reason_code: 'control_plane_refresh_failed',
+        });
+        const error = new Error('Não foi possível confirmar a política de tradução.');
+        error.code = 'control_plane_refresh_failed';
+        showStartError(error);
+        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
+        if (button) delete button.dataset.busy;
+        updateTranslationStartControls();
+        return;
+      }
+    }
+    if (controlPlaneRefreshOk) syncAuthoritativeTranslationFlag();
     const payload = formPayload();
+    if (appState.selectedSourceType === 'url' && payload.pipeline_intent
+        && typeof payload.pipeline_intent === 'object') {
+      // Explicitly distinguish the Start action from the standalone source
+      // preflight control.  The server may auto-continue only this one-click path.
+      payload.pipeline_intent.continue_after_analysis = true;
+    }
     if (appState.selectedSourceType === 'url') {
       appState.sourceValidation = {
         status: 'validating', analysisResultId: '', sourceUrl: String(payload.url || ''),
@@ -1654,17 +1833,32 @@
       });
       let analysisResult;
       try {
+        sourceTrace('START_REQUEST', {trace_id: traceId, route: '/api/ui/source/analyze', source_type: sourceType});
+        sourceTrace('SOURCE_ANALYZE_REQUEST_STARTED', {trace_id: traceId, route: '/api/ui/source/analyze', source_type: sourceType});
+        const startedAt = performance.now();
         analysisResult = await api('/api/ui/source/analyze', {
-          method: 'POST', body: JSON.stringify(payload), timeoutMs: 190000,
+          method: 'POST', body: JSON.stringify({...payload, trace_id: traceId}), timeoutMs: 190000,
         });
+        sourceTrace('SOURCE_ANALYZE_REQUEST_FINISHED', {trace_id: traceId, status: 'ok', ready: analysisResult?.ready === true, duration_ms: Math.round(performance.now() - startedAt)});
       } catch (error) {
+        sourceTrace('SOURCE_ANALYZE_REQUEST_FAILED', {trace_id: traceId, reason_code: String(error.code || 'source_analyze_failed')});
         showSourceValidationError(error);
         if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
         if (button) delete button.dataset.busy;
         updateTranslationStartControls();
         return;
       }
-      const ready = analysisResult?.status === 'source_analysis_ready' && analysisResult?.ready === true;
+      // `ready` is the semantic authorization for the next stage.  Older clients
+      // incorrectly treated a non-canonical status string as a block even when the
+      // backend had returned ready=true, which stranded the one-click flow after
+      // source analysis.  Keep status informational; require the analysis id for
+      // a usable continuation payload.
+      const ready = analysisResult?.ready === true
+        && Boolean(String(analysisResult?.analysis_result_id || ''));
+      sourceTrace('AUTO_CONTINUE_DECISION', {
+        trace_id: traceId, route: '/api/ui/run', status: ready ? 'continue' : 'blocked',
+        reason_code: String(analysisResult?.reason_code || ''),
+      });
       appState.sourceValidation = {
         status: ready ? 'ready' : 'blocked',
         analysisResultId: ready ? String(analysisResult.analysis_result_id || '') : '',
@@ -1698,8 +1892,13 @@
       message: 'Criando job de processamento',
     });
 
+    let runStartedAt = performance.now();
     try {
-      const result = await api('/api/ui/run', {method: 'POST', body: JSON.stringify(payload)});
+      sourceTrace('AUTO_CONTINUE_BEGIN', {trace_id: getGlobal('__sourceTraceId') || '', route: '/api/ui/run'});
+      sourceTrace('SOURCE_RUN_REQUEST_STARTED', {trace_id: traceId, route: '/api/ui/run', source_type: sourceType});
+      runStartedAt = performance.now();
+      const result = await api('/api/ui/run', {method: 'POST', body: JSON.stringify({...payload, trace_id: traceId})});
+      sourceTrace('RUN_REQUEST_FINISHED', {trace_id: traceId, route: '/api/ui/run', status: 'ok', reason_code: String(result?.reason_code || ''), duration_ms: Math.round(performance.now() - runStartedAt)});
       if (!result || result.ok === false) {
         const error = new Error((result && (result.message || result.reason_code)) || 'Não foi possível analisar esta fonte com segurança.');
         error.code = result && result.reason_code;
@@ -1740,6 +1939,7 @@
       activateTab('nova');
       return result;
     } catch (error) {
+      sourceTrace('RUN_REQUEST_FAILED', {trace_id: traceId, route: '/api/ui/run', status: 'error', reason_code: String(error.code || 'run_failed'), duration_ms: Math.round(performance.now() - runStartedAt)});
       // The backend rejected it: return control to the user with a readable reason.
       if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
       showStartError(error);
@@ -2214,6 +2414,40 @@
     }
   }
 
+  async function dismissInterruptedJob(jobId, button) {
+    if (appState.resumeBusyJobId) return;
+    const id = String(jobId || '');
+    if (!/^[0-9a-f]{32}$/i.test(id)) return;
+    if (!window.confirm('Descartar esta tentativa interrompida? O histórico será preservado.')) return;
+    appState.resumeBusyJobId = id;
+    if (button) { button.disabled = true; button.textContent = 'Descartando…'; }
+    try {
+      await api('/api/ui/resume/dismiss', {method: 'POST', body: JSON.stringify({job_id: id})});
+      showToast('Tentativa removida da lista de retomáveis.', 'ok');
+    } catch (error) {
+      showToast(error.message || 'Não foi possível descartar esta tentativa.', 'error');
+    } finally {
+      appState.resumeBusyJobId = '';
+      pollState();
+    }
+  }
+  function sourceTrace(event = 'SOURCE_UI_CLICK', fields = {}) {
+    const traceId = getGlobal('__sourceTraceId') || correlationId();
+    setGlobal('__sourceTraceId', traceId);
+    uiTrace(event, {trace_id: traceId, ...fields});
+    try { void fetch('/api/ui/source-trace', {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({trace_id: traceId, event, ...fields}), keepalive:true}); } catch (_) { /* diagnostics must never affect UX */ }
+    return traceId;
+  }
+
+  function beginSourceAttempt() {
+    const traceId = correlationId();
+    setGlobal('__sourceTraceId', traceId);
+    appState.sourceValidation = {status: 'idle', analysisResultId: '', sourceUrl: '', reasonCode: '', analysis: null};
+    hideStartError();
+    $('#balloonText') && ($('#balloonText').textContent = 'Pronto para iniciar');
+    return traceId;
+  }
+
   function renderResumableJobs(records) {
     const panel = $('#interruptedJobsPanel');
     const list = $('#interruptedJobsList');
@@ -2241,7 +2475,13 @@
         button.textContent = 'Retomando…';
       }
       button.addEventListener('click', () => resumeInterruptedJob(jobId, button));
-      row.append(label, button);
+      const dismiss = document.createElement('button');
+      dismiss.type = 'button';
+      dismiss.className = 'btn-ghost interrupted-job-dismiss';
+      dismiss.textContent = 'Descartar';
+      dismiss.setAttribute('aria-label', `Descartar ${label.textContent}`);
+      dismiss.addEventListener('click', () => dismissInterruptedJob(jobId, dismiss));
+      row.append(label, button, dismiss);
       return row;
     }));
   }
@@ -2259,11 +2499,11 @@
   // Full sentence shown as each item's status, per the review spec.
   const VISUAL_STATE_STATUS = {
     applied: 'Alteração aplicada',
-    rejected_visual_regression: 'Alteração rejeitada por segurança visual',
-    manual_review: 'Revisão humana necessária',
+    rejected_visual_regression: 'Alternativa não aplicada',
+    manual_review: 'Precisa de revisão',
     unchanged: 'Sem alteração',
-    pending: 'Aguardando o gate visual',
-    report_only: 'Não vinculado à revisão',
+    pending: 'Aguardando sua decisão',
+    report_only: 'Informativo',
   };
 
   // Why the visual gate refused a region, in plain pt-BR. Unknown codes fall
@@ -2289,7 +2529,7 @@
   function visualReasonLabel(code) {
     const key = String(code || '');
     if (!key) return '';
-    return VISUAL_REASON_LABELS[key] || key;
+    return VISUAL_REASON_LABELS[key] || 'O resultado precisa de uma verificação adicional.';
   }
 
   function updateQualityReviewFilterControls(items, activeFilter) {
@@ -2365,7 +2605,7 @@
     $('#qualityReviewMeta').textContent = `${review.pending_count || 0} pendentes · ${items.length} itens · LOW ${counts.LOW || 0} · MEDIUM ${counts.MEDIUM || 0} · HIGH ${counts.HIGH || 0}${visualParts.length ? ` · gate visual: ${visualParts.join(' · ')}` : ''} · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
     const chapter = review.chapter_counts || {};
     const decisions = review.decision_counts || {};
-    $('#qualityReviewMeta').textContent = `Capítulo: ${Number(chapter.total || 0)} regiões · aprovadas ${Number(chapter.approved || 0)} · pendentes ${Number(chapter.pending || 0)} · rejeitadas ${Number(chapter.rejected || 0)} · sem alteração ${Number(chapter.unchanged || 0)} · manuais ${Number(chapter.manual || 0)} · Painel de decisões: aguardando ${Number(decisions.pending || 0)} · registradas ${Number(decisions.completed || 0)} · Filtro atual: ${visible.length} exibidos · LOW ${counts.LOW || 0} · MEDIUM ${counts.MEDIUM || 0} · HIGH ${counts.HIGH || 0}${visualParts.length ? ` · gate visual: ${visualParts.join(' · ')}` : ''} · ${review.confirmed ? 'Revisão concluída' : 'confirmação necessária'}`;
+    $('#qualityReviewMeta').textContent = `${Number(chapter.pending || review.pending_count || 0)} itens aguardando sua decisão · ${visible.length} exibidos${review.confirmed ? ' · revisão concluída' : ''}`;
     renderReviewPreviewAccess();
     // Separate, clearly labelled action for the reviewed PDF; shown only when the
     // revision manifest points to a real reviewed file (never a glob).
@@ -2395,18 +2635,20 @@
       const visualNote = visualState === 'rejected_visual_regression' && visualReason
         ? `<div class="quality-review-visual-reason">${escapeHtml(visualReason)}</div>` : '';
       const compare = visualState && item.page_url
-        ? `<button type="button" class="btn-ghost review-compare show" data-review-compare="${escapeAttr(item.page)}">ABRIR COMPARAÇÃO</button>`
-          + `<button type="button" class="btn-ghost review-compare show" data-revise-page="${escapeAttr(item.page)}">REVISAR ESTA PÁGINA</button>` : '';
+        ? `<button type="button" class="btn-ghost review-compare show" data-review-compare="${escapeAttr(item.page)}">Abrir comparação</button>`
+          + `<button type="button" class="btn-ghost review-compare show" data-revise-page="${escapeAttr(item.page)}">Revisar esta página</button>` : '';
       const isSmartSplit = String(item.type || '') === 'smart_split';
       const splitMeta = isSmartSplit
-        ? `<div class="quality-review-visual-reason">Tipo: smart_split · boundary: ${escapeHtml(item.boundary || '—')} · motivo: ${escapeHtml(item.reason_code || item.visual_reason_code || 'requires_review')}</div>`
+        ? `<details class="technical-details"><summary>Ver detalhes técnicos</summary><div class="quality-review-visual-reason">Tipo interno: smart_split · limite: ${escapeHtml(item.boundary || '—')} · motivo: ${escapeHtml(item.reason_code || item.visual_reason_code || 'requires_review')}</div></details>`
         : '';
+      const humanReason = item.reason && !/^[A-Z0-9_]+$/.test(String(item.reason).trim())
+        ? item.reason : 'Este trecho precisa de atenção antes de confirmar o resultado.';
       // Report-only items are not part of the revision: no checkbox, no
       // mark/preserve actions, so they can never enter a bulk operation.
       const isReportOnly = visualState === 'report_only' || isSmartSplit;
       const selectBox = isReportOnly ? '' : `<input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> `;
       const reviewActions = isReportOnly ? '' : `<textarea class="quality-review-editor" data-review-translation data-review-version="${escapeAttr(item.version || 0)}" aria-label="Tradução revisada">${escapeHtml(item.translation || '')}</textarea><input class="quality-review-reason-input" data-review-reason placeholder="Motivo da decisão" aria-label="Motivo da revisão"><div class="cta-row"><button type="button" class="btn-ghost show" data-review-deep-action="edited">Salvar edição</button><button type="button" class="btn-ghost show" data-review-deep-action="reviewed">Aprovar</button><button type="button" class="btn-ghost show" data-review-deep-action="rejected">Rejeitar</button><button type="button" class="btn-ghost show" data-review-deep-action="preserved_original">Manter original</button><button type="button" class="btn-ghost show" data-review-deep-action="manual_review">Revisar novamente</button></div>`;
-      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-type="${escapeAttr(item.type || 'region')}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Pagina ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'pendente' : item.state === 'rejected' ? 'rejeitado' : item.state === 'preserved_original' ? 'original mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(item.reason)}</div>${splitMeta}${visualNote}<div class="quality-review-text"><div><small>Original</small>${escapeHtml(item.original || '—')}</div><div><small>Traducao atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Proposta</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da pagina ${escapeAttr(item.page)}" loading="lazy">` : ''}<div class="quality-review-actions">${reviewActions}${compare}</div></article>`;
+      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-type="${escapeAttr(item.type || 'region')}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Página ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'aguardando sua decisão' : item.state === 'rejected' ? 'não aplicada' : item.state === 'preserved_original' ? 'resultado atual mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(humanReason)}</div>${splitMeta}${visualNote}<div class="quality-review-text"><div><small>Contexto original</small>${escapeHtml(item.original || '—')}</div><div><small>Resultado atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Alternativa</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da página ${escapeAttr(item.page)}" loading="lazy">` : ''}<details class="technical-details"><summary>Ver detalhes técnicos</summary><div>Identificação interna e evidências disponíveis neste item.</div></details><div class="quality-review-actions">${reviewActions}${compare}</div></article>`;
     }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
     const confirm = $('#confirmQualityReview');
     if (confirm) {
@@ -2467,7 +2709,7 @@
     const meta = $('#qualityReviewMeta');
     if (meta) meta.textContent = 'Carregando revisão deste capítulo…';
     updateQualityReviewFilterControls([], appState.qualityReviewFilter || 'pending');
-    list.innerHTML = '<div class="muted">Abrindo revisão local existente…</div>';
+    list.innerHTML = '<div class="muted">Abrindo revisão existente…</div>';
     setQualityReviewBulkMessage('', '');
     updateQualityReviewSelectionUi();
   }
@@ -2826,7 +3068,7 @@
       const pages = Array.from(new Set((appState.qualityReview.items || []).filter(item => selected.includes(String(item.key))).map(item => item.page))).sort((a, b) => Number(a) - Number(b));
       const ok = window.confirm(`Você está prestes a aceitar ${selected.length} itens pendentes em ${pages.length} páginas. Alto risco: ${highCount}. Esta ação não publica o capítulo.`);
       if (!ok) return;
-      if (highCount > 0 && !window.confirm('Esta seleção inclui itens de alto risco. Confirme novamente para aceitar TODOS; caso contrário use Aceitar baixo risco.')) {
+      if (highCount > 0 && !window.confirm('Esta seleção inclui itens de alto risco. Confirme novamente para continuar.')) {
         setQualityReviewBulkMessage('Ação cancelada: itens de alto risco não foram aceitos.', 'warn');
         return;
       }
@@ -4408,13 +4650,6 @@
     else keys.forEach(key => appState.qualityReviewSelection.delete(key));
     renderQualityReview(appState.qualityReview);
   });
-  $('#acceptLowRiskReview')?.addEventListener('click', () => {
-    const lowKeys = visibleQualityReviewKeys({risk: 'LOW'});
-    const selectedLow = lowKeys.filter(key => appState.qualityReviewSelection.has(key));
-    const keys = selectedLow.length ? selectedLow : lowKeys;
-    qualityReviewBulkAction({action: 'reviewed', keys, riskFilter: 'LOW', confirmation: false});
-  });
-  $('#acceptAllReview')?.addEventListener('click', () => qualityReviewBulkAction({action: 'reviewed', confirmation: true}));
   $('#undoBulkReview')?.addEventListener('click', async () => {
     if (!appState.qualityReview?.job_id || appState.qualityReviewBulkBusy || !appState.qualityReviewUndo.length) return;
     const last = appState.qualityReviewUndo.pop();
@@ -5006,6 +5241,7 @@
     if (minutes) return `${minutes}min ${String(whole % 60).padStart(2, '0')}s`;
     return `${whole}s`;
   }
+  // Compatibility copy retained for the local confirmation dialog: Excluir capítulo local.
   function actionButton(label, action, path = '') {
     if (!path && !['reprocess','delete'].includes(action)) return '';
     const icons = {
@@ -5028,7 +5264,7 @@
     const jobId = String(record.job_id || '');
     if (!jobId) return '';
     const title = record.chapter_name || record.slug || 'capítulo';
-    return `<button class="btn-ghost hm-read-action" data-action="read" data-job-id="${escapeAttr(jobId)}" title="Ler dentro do Tradutor IA" aria-label="${escapeAttr(`Ler: ${title}`)}">LER</button>`;
+    return `<button class="btn-ghost hm-read-action" data-action="read" data-job-id="${escapeAttr(jobId)}" title="Ler dentro do Yomu Sekai" aria-label="${escapeAttr(`Ler: ${title}`)}">LER</button>`;
   }
   function retryAction(record) {
     const status = String(record?.status || '').toLowerCase();
@@ -5481,7 +5717,7 @@
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span>${snapshotBadge}${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
-      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${actionButton('Abrir externamente', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo local', 'delete')}</div>
+      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${actionButton('Abrir externamente', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>
     </div>`;
   }
   function renderHistory() {
@@ -5492,7 +5728,7 @@
     const records = appState.history.filter(record => !query || `${record.chapter_name || ''} ${record.slug || ''}`.toLowerCase().includes(query));
     $('#histCount').textContent = query ? `${records.length} de ${appState.history.length}` : `${records.length} ${records.length === 1 ? 'capítulo' : 'capítulos'}`;
     if (!records.length) {
-      list.innerHTML = `<div class="empty-real-state">${appState.history.length ? 'nenhum capítulo corresponde à busca' : 'nenhum capítulo real no histórico local'}</div>`;
+      list.innerHTML = `<div class="empty-real-state">${appState.history.length ? 'nenhum capítulo corresponde à busca' : 'nenhum capítulo disponível no histórico'}</div>`;
       return;
     }
     const groups = new Map();
@@ -5577,6 +5813,7 @@
     clearPrivateUiForAuthTransition(state, userId);
     if (state !== 'authenticated') clearCommunityObjectUrls();
     applyCanonicalAuthSurface(state);
+    syncAuthoritativeTranslationFlag();
     renderHistory();
     // The initial bootstrap may race the SDK/backend session check. Refresh the
     // authoritative local records once authentication settles.
@@ -5710,13 +5947,13 @@
     ].map(([label, value]) => `<div class="pub-meta"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('');
     $('#localDeleteNotice').textContent = published
       ? 'Este capítulo já possui publicação na Comunidade. A exclusão local não removerá a publicação, e os arquivos usados por ela não serão apagados por este fluxo.'
-      : 'Esta ação remove o item selecionado do histórico. Marque a opção de arquivos apenas para apagar a pasta local deste capítulo.';
+      : 'Esta ação remove o item selecionado do histórico. Marque a opção de arquivos apenas para apagar a pasta deste capítulo.';
     $('#localDeleteFiles').checked = false;
     $('#localDeleteFiles').disabled = published;
     $('#localDeleteConfirm').value = '';
     $('#localDeleteError').hidden = true;
     $('#localDeleteSubmit').disabled = false;
-    $('#localDeleteSubmit').textContent = 'Excluir localmente';
+    $('#localDeleteSubmit').textContent = 'Excluir capítulo';
     overlay.classList.add('show');
     overlay.setAttribute('aria-hidden', 'false');
     $('#localDeleteConfirm')?.focus();
@@ -5744,11 +5981,11 @@
       });
       uiTrace('local_delete_completed', {code: result.code});
       closeLocalDeleteModal();
-      showToast(result.deleted_files ? 'Capítulo local e arquivos apagados.' : 'Capítulo removido do histórico local.', 'ok');
+      showToast(result.deleted_files ? 'Capítulo e arquivos apagados.' : 'Capítulo removido do histórico.', 'ok');
       await refreshBootstrap();
     } catch (errorValue) {
       appState.localDeleteBusy = false;
-      if (submit) { submit.disabled = false; submit.textContent = 'Excluir localmente'; }
+      if (submit) { submit.disabled = false; submit.textContent = 'Excluir capítulo'; }
       if (error) { error.textContent = humanCommunityError(errorValue, 'Não foi possível excluir este capítulo local.'); error.hidden = false; }
     }
   }
@@ -6512,7 +6749,7 @@
   function renderDashboard() {
     renderPendingPreviewSurfaces();
     const hour = new Date().getHours();
-    $('#dashGreeting').textContent = `${hour < 12 ? 'Bom dia' : hour < 18 ? 'Boa tarde' : 'Boa noite'}. Seu painel mostra somente dados locais reais.`;
+    $('#dashGreeting').textContent = `${hour < 12 ? 'Bom dia' : hour < 18 ? 'Boa tarde' : 'Boa noite'}. Acompanhe seus projetos e traduções em um só lugar.`;
     $('#dashStreak').textContent = '';
     const series = new Map();
     appState.history.forEach(record => {
@@ -6563,6 +6800,14 @@
     activateTab('hist');
   });
   $('#dashGotoHistory')?.addEventListener('click', () => activateTab('hist'));
+  $('#checkUpdatesBtn')?.addEventListener('click', async event => {
+    const button = event.currentTarget; const title = $('#updateStatusTitle'); button.disabled = true;
+    if (title) title.textContent = 'Verificando atualizações…';
+    if ($('#updateStatus')) $('#updateStatus').textContent = 'Consultando o canal beta com segurança.';
+    try { const response = await fetch('/api/update/manifest', {cache:'no-store'}); $('#updateLastChecked').textContent = new Date().toLocaleString('pt-BR'); if (title) title.textContent = response.ok ? 'Você está usando a versão mais recente.' : 'Não foi possível verificar agora'; if ($('#updateStatus')) $('#updateStatus').textContent = response.ok ? 'Nenhuma atualização está disponível neste momento.' : 'Tente novamente mais tarde.'; }
+    catch (_) { if (title) title.textContent = 'Não foi possível verificar agora'; if ($('#updateStatus')) $('#updateStatus').textContent = 'Tente novamente mais tarde.'; }
+    finally { button.disabled = false; }
+  });
 
   /* ---------- settings ---------- */
   function trueValue(value) { return String(value).toLowerCase() === 'true'; }
@@ -6575,7 +6820,9 @@
     // and will not claim CONNECTED without a recent successful health probe.
     document.documentElement.dataset.tradutorApiConfigured = apiReady ? '1' : '0';
     window.dispatchEvent(new CustomEvent('tradutor:api-configured-changed'));
-    $('#settingServiceFriendly').textContent = apiReady ? 'Conectado' : 'Não configurado';
+    $('#settingServiceFriendly').textContent = apiReady ? 'Pronto' : 'Indisponível';
+    const serviceSummary = $('#settingServiceSummary');
+    if (serviceSummary) serviceSummary.hidden = true;
     $('#settingModeFriendly').textContent = 'Qualidade';
     $('#settingReadingFriendly').textContent = settings.rapidocr_available ? 'Disponível' : 'Indisponível';
     $('#settingParallelFriendly').textContent = trueValue(settings.ocr_parallel) ? 'Ativo' : 'Automático';
@@ -6612,6 +6859,8 @@
     option.textContent = !id || id === 'rapidocr' ? 'RapidOCR · Ativo' : `${id} · Ativo`;
   }
   function renderWorkspaceSourcePolicy(policy = {}) {
+    const policyPanel = $('#workspaceSourcePolicyPanel');
+    if (policyPanel) policyPanel.hidden = true;
     const active = policy.status === 'active'
       && policy.all_submitted_sources_authorized === true;
     const toggle = $('#workspaceSourcePolicyToggle');
@@ -6851,9 +7100,18 @@
   async function loadAuthenticatedMediaElement(element, source, mediaType, fallback) {
     const requestKey = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     element.dataset.mediaRequest = requestKey;
+    const kind = element?.id?.toLowerCase().includes('banner') ? 'banner' : 'avatar';
+    const dedupeKey = `${kind}:${String(source)}`;
+    const activeRequest = appState.profileMediaRequests.get(dedupeKey);
+    if (activeRequest) return activeRequest;
+    let releaseRequest;
+    const requestGate = new Promise(resolve => { releaseRequest = resolve; });
+    appState.profileMediaRequests.set(dedupeKey, requestGate);
+    profileMediaTrace('PROFILE_MEDIA_REQUEST_STARTED', {kind, route: String(source).split('?')[0], auth_present: Boolean(getGlobal('__tradutorAuthState'))});
     try {
       const response = await api(source, {rawResponse: true, timeoutMs: 12000});
       const blob = await response.blob();
+      profileMediaTrace('PROFILE_MEDIA_RESPONSE', {kind, status: Number(response.status || 200), mime: String(blob.type || mediaType || ''), size: Number(blob.size || 0)});
       if (!String(blob.type || mediaType || '').startsWith('image/')) throw new Error('invalid_media_type');
       if (element.dataset.mediaRequest !== requestKey) return;
       const objectUrl = URL.createObjectURL(blob);
@@ -6862,6 +7120,7 @@
       const image = document.createElement('img');
       image.src = objectUrl; image.alt = '';
       image.addEventListener('load', () => {
+        profileMediaTrace('PROFILE_MEDIA_LOAD_EVENT', {kind, success: true});
         window.setTimeout(() => {
           try { URL.revokeObjectURL(objectUrl); } catch (_) { /* best effort */ }
           appState.communityObjectUrls.delete(objectUrl);
@@ -6871,13 +7130,18 @@
       element.innerHTML = '';
       element.appendChild(image);
       element.dataset.loadedSource = source;
+      profileMediaTrace('PROFILE_MEDIA_DOM_SRC_SET', {kind, success: true});
       uiTrace('profile_media_loaded', {status: 200});
     } catch (errorValue) {
+      profileMediaTrace('PROFILE_MEDIA_LOAD_FAILURE', {kind, status: Number(errorValue?.status || 0), reason: String(errorValue?.code || errorValue?.message || 'media_load_failed').slice(0,80), success: false});
       if (element.dataset.mediaRequest === requestKey) { element.textContent = fallback || ''; delete element.dataset.loadedSource; }
       uiTrace('profile_media_load_failed', {
         status: errorValue?.status || 0,
         code: errorValue?.code || errorValue?.message || 'media_load_failed',
       });
+    } finally {
+      if (appState.profileMediaRequests.get(dedupeKey) === requestGate) appState.profileMediaRequests.delete(dedupeKey);
+      releaseRequest?.();
     }
   }
   function revokeElementMedia(element) {
@@ -6888,8 +7152,12 @@
     delete element.dataset.objectUrl;
   }
   function renderProfile(profile = profileFromForm()) {
+    profileMediaTrace('PROFILE_HYDRATION_STARTED', {
+      avatar_ref_present: Boolean(profile.avatar_media_url),
+      banner_ref_present: Boolean(profile.banner_media_url),
+    });
     const authenticated = String(getGlobal('__tradutorAuthState') || '') === 'authenticated';
-    const name = authenticated ? (profile.display_name || 'você') : 'Visitante';
+    const name = authenticated ? (profile.display_name || 'Carregando perfil…') : 'Visitante';
     const avatar = name.slice(0, 1).toUpperCase();
     const avatarData = profile.avatar_mode === 'image' ? profile.avatar_media_url : '';
     [$('#pcAvatar'), $('#rpAvatar')].forEach(element => {
@@ -6905,10 +7173,10 @@
     $('#pcTitleRole').textContent = profile.title || '';
     $('#pcPronouns').textContent = profile.pronouns || '';
     $('#pcStatusLine').textContent = [statusLabels[profile.status] || 'online', profile.status_text].filter(Boolean).join(' · ');
-    $('#pcBio').textContent = profile.bio || 'Seu perfil local ainda não tem bio.';
+    $('#pcBio').textContent = profile.bio || 'Seu perfil ainda não tem bio.';
     $('#pcBadges').innerHTML = '';
     const since = profile.created_at ? new Date(profile.created_at).toLocaleDateString('pt-BR') : 'hoje';
-    $('#pcSince').textContent = `perfil local desde ${since}`;
+    $('#pcSince').textContent = `Membro desde ${since}`;
     [$('#pcStatusDot'), $('#rpStatusDot')].forEach(dot => { dot.className = `${dot.id === 'pcStatusDot' ? 'pc-status-dot' : 'rp-dot'} ${profile.status || 'online'}`; });
     $('#rpStatusLabel').textContent = statusLabels[profile.status] || 'online';
   }
@@ -6943,8 +7211,18 @@
     if (!card) return;
     card.hidden = !source;
     if (!source) return;
-    $(`#${kind}MediaName`).textContent = profile[`${kind}_media_name`] || 'mídia local';
-    $(`#${kind}MediaMeta`).textContent = `${formatBytes(profile[`${kind}_media_size`])} · ${profile[`${kind}_media_type`] || 'arquivo'}`;
+    // A remote Drive-backed profile intentionally does not expose a local
+    // filename/size.  Do not misclassify that state as a local zero-byte file:
+    // the authenticated /api/... source is the source of truth after reload.
+    const remoteSource = Boolean(profile.remote_source)
+      && String(profile[`${kind}_media_url`] || '').startsWith('/api/');
+    const mediaName = profile[`${kind}_media_name`];
+    const mediaSize = Number(profile[`${kind}_media_size`] || 0);
+    const mediaType = profile[`${kind}_media_type`] || 'arquivo';
+    $(`#${kind}MediaName`).textContent = remoteSource && !mediaName ? 'Mídia remota' : (mediaName || 'mídia local');
+    $(`#${kind}MediaMeta`).textContent = remoteSource && !mediaName && !mediaSize
+      ? mediaType
+      : `${formatBytes(mediaSize)} · ${mediaType}`;
     setMedia($(`#${kind}MediaPreview`), source, profile[`${kind}_media_type`], '');
   }
   function revokeProfileMediaPreview(kind) {
@@ -6967,11 +7245,15 @@
     }
   }
   async function uploadProfileMedia(kind, file) {
+    profileMediaTrace('FILE_INPUT_CHANGE', {kind, file_present: Boolean(file), size: Number(file?.size || 0), mime: String(file?.type || '')});
     if (!file) return;
     if (!['avatar', 'banner'].includes(kind)) return;
     const allowed = new Set(['image/png','image/jpeg','image/webp']);
-    if (!allowed.has(file.type) || file.size > 12 * 1024 * 1024) {
-      showToast('Use PNG, JPG ou WEBP de até 12 MB.', 'error');
+    const maxBytes = kind === 'avatar' ? 5 * 1024 * 1024 : 12 * 1024 * 1024;
+    if (!allowed.has(file.type) || file.size > maxBytes) {
+      showToast(kind === 'avatar'
+        ? 'Use PNG, JPG ou WEBP de até 5 MB para o avatar.'
+        : 'Use PNG, JPG ou WEBP de até 12 MB para o banner.', 'error');
       return;
     }
     const state = appState.profileMedia[kind];
@@ -6991,6 +7273,7 @@
       });
     }
     uiTrace('profile_media_upload_started', {kind, request_id: requestId});
+    profileMediaTrace('REMOTE_UPLOAD_FUNCTION_ENTER', {kind, file_present:true, size:Number(file.size||0), mime:String(file.type||'')});
     const timeout = window.setTimeout(() => state.controller?.abort(), 20000);
     try {
       const payload = await api(`/api/ui/profile/media/${kind}?filename=${encodeURIComponent(file.name)}&content_type=${encodeURIComponent(file.type)}`, {
@@ -7003,7 +7286,11 @@
       revokeProfileMediaPreview(kind);
       mergeProfileMediaPayload(kind, payload.profile || {});
       applyProfileToForm(appState.profile);
-      showToast(kind === 'avatar' ? 'Avatar salvo neste computador.' : 'Banner salvo neste computador.', 'ok');
+      profileMediaTrace('REMOTE_UPLOAD_SUCCESS', {kind, success:true, status:200});
+      showToast(kind === 'avatar' ? 'Avatar atualizado.' : 'Banner atualizado.', 'ok');
+    } catch (errorValue) {
+      profileMediaTrace('REMOTE_UPLOAD_FAILURE', {kind, success:false, status:Number(errorValue?.status || 0), reason:String(errorValue?.code || errorValue?.message || 'upload_failed').slice(0,80)});
+      throw errorValue;
     } finally {
       window.clearTimeout(timeout);
       if (state.requestId === requestId) state.controller = null;
@@ -7053,11 +7340,12 @@
   bindDropzone('banner');
   $('#bannerMediaTrigger')?.addEventListener('click', () => $('#bannerImageInput')?.click());
   $('#profileSave')?.addEventListener('click', async () => {
+    profileMediaTrace('SAVE_BUTTON_CLICK', {kind:'profile'});
     try {
       const result = await api('/api/ui/profile', {method: 'POST', body: JSON.stringify(profileFromForm())});
       appState.profile = result.profile;
       applyProfileToForm(appState.profile);
-      showToast('Perfil salvo neste computador.', 'ok');
+      showToast('Perfil salvo.', 'ok');
     } catch (error) { showToast(error.message, 'error'); }
   });
 
@@ -7140,7 +7428,7 @@
       window.setTimeout(closeBoot, 250);
     } catch (error) {
       window.clearTimeout(bootTimer);
-      setBootFailed('Não foi possível carregar a interface local.');
+      setBootFailed('Não foi possível carregar a interface.');
       showToast(`Interface local: ${error.message}`, 'error');
     }
   }

@@ -24,10 +24,11 @@ const FORBIDDEN = new Set([
 ]);
 
 export class SocialApiError extends Error {
-  constructor(status, code) {
+  constructor(status, code, details = {}) {
     super(code || `social_error_${status}`);
     this.status = status;
     this.code = code || '';
+    this.suggestions = Array.isArray(details.suggestions) ? details.suggestions.slice(0, 5) : [];
   }
 }
 
@@ -36,13 +37,14 @@ const MESSAGES = {
   401: 'Sua sessão expirou. Entre novamente.',
   403: 'Você não tem acesso a este conteúdo.',
   404: 'Este conteúdo não está disponível.',
-  409: 'Este nome já está em uso.',
+  409: 'Esse nome já está em uso.',
   422: 'Revise os campos informados.',
   429: 'Muitas tentativas. Aguarde um momento.',
   503: 'A comunidade está temporariamente indisponível.',
 };
 
 export function messageForError(err) {
+  if (err instanceof SocialApiError && err.code === 'display_name_taken') return 'Esse nome já está em uso.';
   if (err instanceof SocialApiError && MESSAGES[err.status]) return MESSAGES[err.status];
   return 'Não foi possível concluir a ação. Tente novamente.';
 }
@@ -73,8 +75,9 @@ async function request(method, path, { body, signal } = {}) {
   let payload = null;
   try { payload = await resp.json(); } catch (_) { /* empty */ }
   if (!resp.ok) {
-    const code = payload && typeof payload.detail === 'string' ? payload.detail : '';
-    throw new SocialApiError(resp.status, code);
+    const detail = payload && payload.detail;
+    const code = typeof detail === 'string' ? detail : detail && typeof detail.code === 'string' ? detail.code : '';
+    throw new SocialApiError(resp.status, code, detail && typeof detail === 'object' ? detail : {});
   }
   return payload;
 }

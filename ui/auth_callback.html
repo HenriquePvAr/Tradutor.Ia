@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tradutor.Ia · Autenticação</title>
+  <title>Yomu Sekai · Autenticação</title>
   <style>
     body { font-family: system-ui, sans-serif; background: #14110f; color: #f3ede4;
            display: grid; place-items: center; height: 100vh; margin: 0; }
@@ -25,20 +25,100 @@
     // destination is a constant, never taken from any URL parameter (no open redirect).
     import { getSupabaseClient } from '/static/supabase_auth.js';
     const msg = document.getElementById('msg');
+    const callbackDiagnosticKey = 'tradutor_auth_callback_last_error';
+    const sanitize = (value) => String(value ?? '')
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
+      .replace(/https?:\/\/[^\s]+/gi, '[url]')
+      .slice(0, 240);
+    const persistCallbackError = (error) => {
+      try {
+        localStorage.setItem(callbackDiagnosticKey, JSON.stringify({
+          timestamp: new Date().toISOString(),
+          operation: 'password_recovery_callback',
+          name: error?.name ?? 'AuthError',
+          status: error?.status ?? null,
+          code: error?.code ?? null,
+          message: sanitize(error?.message || 'callback_failed'),
+        }));
+      } catch (_) {}
+    };
+    let recoveryHandoffPending = false;
     try {
-      const client = await getSupabaseClient();
+      const params = new URLSearchParams(location.search);
+      const code = params.get('code');
+      const desktopHandoff = params.get('desktop') === '1';
+      const handoffId = params.get('handoff') || '';
+      const recoveryHint = params.get('recovery') === '1';
+      // The email may open this callback in a new tab.  sessionStorage is
+      // tab-scoped, so also consult the short-lived localStorage handoff marker.
+      const pendingAt = Number(sessionStorage.getItem('yomu_recovery_pending_at')
+        || localStorage.getItem('yomu_recovery_pending_at_durable') || 0);
+      const recoveryPending = recoveryHint || Boolean(pendingAt && Date.now() - pendingAt < 10 * 60 * 1000);
+      recoveryHandoffPending = recoveryPending;
+      if (desktopHandoff && handoffId && code) {
+        const response = await fetch(`/api/auth/desktop/handoff/${encodeURIComponent(handoffId)}/callback`, {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          cache: 'no-store', body: JSON.stringify({code}),
+        });
+        if (!response.ok) throw new Error('desktop_handoff_rejected');
+        history.replaceState(null, '', '/auth/callback');
+        msg.textContent = 'Solicitação recebida. Você pode voltar ao Yomu Sekai para continuar.';
+        return;
+      }
+      // Mark intent before exchanging the PKCE code so INITIAL_SESSION cannot
+      // race ahead and open the authenticated shell.
+      if (code && recoveryPending) {
+        sessionStorage.setItem('yomu_recovery_intent', '1');
+        localStorage.setItem('yomu_recovery_intent', '1');
+      }
+      // The callback performs the PKCE exchange explicitly. Disable the SDK's
+      // automatic URL detection here so the one-use code is not exchanged twice.
+      const client = await getSupabaseClient({detectSessionInUrl: false});
       if (client) {
-        // detectSessionInUrl handles the token exchange; give it a tick to persist.
-        await client.auth.getSession();
+        // The callback page is intentionally tiny and does not mount auth_ui.js.
+        // Persist the recovery intent before returning to the shell so an
+        // INITIAL_SESSION/SIGNED_IN event cannot be mistaken for normal login.
+        const subscription = client.auth.onAuthStateChange((event) => {
+          if (event === 'PASSWORD_RECOVERY') {
+            try {
+              sessionStorage.setItem('yomu_recovery_intent', '1');
+              localStorage.setItem('yomu_recovery_intent', '1');
+            } catch (_) {}
+          }
+        });
+        if (code) {
+          const exchanged = await client.auth.exchangeCodeForSession(code);
+          if (exchanged?.error) throw exchanged.error;
+        }
+        const current = await client.auth.getSession();
+        if (code && recoveryPending && !current?.data?.session) throw new Error('recovery_session_not_established');
+        if (recoveryPending) {
+          sessionStorage.removeItem('yomu_recovery_pending_at');
+          // Keep the intent until the password screen consumes it; only the
+          // pending timestamp is cleared after a successful exchange.
+          localStorage.removeItem('yomu_recovery_pending_at_durable');
+        }
+        subscription?.data?.subscription?.unsubscribe?.();
       }
       history.replaceState(null, '', '/auth/callback');
+      try { localStorage.removeItem(callbackDiagnosticKey); } catch (_) {}
       msg.textContent = 'Autenticado. Redirecionando…';
-      setTimeout(() => { window.location.replace('/'); }, 600);
+      // The ordinary post-auth destination is the fixed root (window.location.replace('/'));
+      // recovery uses the equally fixed shell route with an explicit mode marker.
+      setTimeout(() => { window.location.replace(recoveryHandoffPending ? '/?auth_mode=recovery_password' : '/'); }, 600);
     } catch (err) {
+      persistCallbackError(err);
+      try {
+        sessionStorage.removeItem('yomu_recovery_intent');
+        sessionStorage.removeItem('yomu_recovery_pending_at');
+        localStorage.removeItem('yomu_recovery_intent');
+        localStorage.removeItem('yomu_recovery_pending_at_durable');
+        sessionStorage.setItem('yomu_recovery_invalid', '1');
+      } catch (_) {}
       msg.textContent = 'Não foi possível concluir a autenticação. ';
       const back = document.createElement('a');
       back.href = '/';
-      back.textContent = 'Voltar ao painel';
+      back.textContent = recoveryHandoffPending ? 'Voltar para entrar' : 'Voltar ao painel';
       msg.appendChild(back);
     }
   </script>

@@ -3,15 +3,29 @@
 from __future__ import annotations
 
 import os
+import json
+from collections import deque
+import re
+import secrets
 import socket
+import ssl
+import threading
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
+try:
+    import certifi
+except ImportError:  # pragma: no cover - packaged builds include certifi
+    certifi = None
+
 from fastapi import Body, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from nicegui import app, ui
 
 from community_auth import (
@@ -53,8 +67,36 @@ if not load_local_environment_for_entrypoint():
     raise SystemExit(2)
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _https_context() -> ssl.SSLContext:
+    """Use the packaged CA bundle when available; never disable verification."""
+    return ssl.create_default_context(cafile=certifi.where() if certifi else None)
+
+
+def _supabase_csp_origin() -> str:
+    """Return the exact configured Supabase HTTPS origin, or empty fail-closed."""
+    raw = os.getenv("SUPABASE_URL", "").strip()
+    if not raw:
+        try:
+            payload = json.loads((ROOT / "config" / "public-runtime.json").read_text(encoding="utf-8"))
+            raw = str(payload.get("supabase_url", "")).strip() if isinstance(payload, dict) else ""
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            raw = ""
+    parsed = urllib_parse.urlparse(raw)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        return ""
+    return f"https://{parsed.hostname}{(':' + str(parsed.port)) if parsed.port else ''}"
+
+
+_SUPABASE_CSP_ORIGIN = _supabase_csp_origin()
+_AUTH_DIAGNOSTICS_ENABLED = os.getenv("TRADUTOR_AUTH_DIAGNOSTICS", "").strip() == "1"
+_AUTH_DIAGNOSTIC_EVENTS: deque[dict[str, Any]] = deque(maxlen=200)
 _SERVER_STARTED_AT = __import__("datetime").datetime.now(
     __import__("datetime").timezone.utc).isoformat()
+_RUNTIME_INSTANCE_ID = secrets.token_urlsafe(16)
+_MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
+_PROFILE_MEDIA_MAX_BYTES = {"avatar": 5 * 1024 * 1024, "banner": 12 * 1024 * 1024}
 STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
 AUTH_UI_ASSET = ROOT / "static" / "auth_ui.js"
@@ -68,6 +110,7 @@ PROCESSING_SURFACE_ASSET = ROOT / "static" / "processing_surface.js"
 SOCIAL_COMMUNITY_ASSET = ROOT / "static" / "social_community.js"
 SERVICE_HEALTH_ASSET = ROOT / "static" / "service_health.js"
 CHAPTER_READER_ASSET = ROOT / "static" / "chapter_reader.js"
+FAVICON_ASSET = ROOT / "static" / "assets" / "branding" / "yomu-sekai.ico"
 I18N_ASSETS = [
     ROOT / "static" / "i18n" / "pt-BR.js",
     ROOT / "static" / "i18n" / "en-US.js",
@@ -79,13 +122,122 @@ I18N_ASSETS = [
 ]
 
 
+class SecurityHeadersMiddleware:
+    """Apply conservative headers to every local UI response.
+
+    The loopback desktop runtime is HTTP by design, so HSTS is intentionally omitted.
+    Inline UI bootstrap is currently required by the NiceGUI shell and is constrained
+    to this same-origin application; no external script sources are allowed.
+    """
+
+    _HEADERS = {
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "X-Frame-Options": "DENY",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+        "Content-Security-Policy": (
+            "default-src 'self'; base-uri 'self'; object-src 'none'; "
+            "frame-ancestors 'none'; form-action 'self'; "
+            "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob: https:; font-src 'self' data:; "
+            "connect-src 'self' ws: wss: " + (_SUPABASE_CSP_ORIGIN + "; " if _SUPABASE_CSP_ORIGIN else "") +
+            "frame-src 'self'" + (" " + _SUPABASE_CSP_ORIGIN if _SUPABASE_CSP_ORIGIN else "")
+        ),
+    }
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def secured_send(message):
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                existing = {k.lower() for k, _ in headers}
+                # Auth modules are mutable critical code in the desktop app. Do
+                # not allow a stable module URL to remain fresh for an hour in
+                # WebView2; the entry point already uses content-hash URLs, and
+                # these dependency modules are defensively no-store as well.
+                if scope.get("path", "") in {
+                    "/static/auth_ui.js", "/static/auth_provider.js",
+                    "/static/supabase_auth.js", "/static/auth_presentation.js",
+                }:
+                    headers = [(k, v) for k, v in headers if k.lower() != b"cache-control"]
+                    headers.append((b"cache-control", b"no-store"))
+                    existing = {k.lower() for k, _ in headers}
+                for name, value in self._HEADERS.items():
+                    key = name.lower().encode("latin-1")
+                    if key not in existing:
+                        headers.append((key, value.encode("latin-1")))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, secured_send)
+
+
+class MutationRateLimitMiddleware:
+    """Bound accidental mutation bursts without treating loopback as identity."""
+
+    _WINDOW = 60.0
+    _MAX_ENTRIES = 2048
+    _LIMITS = {
+        "/api/auth/desktop/handoff/start": (10, 600.0),
+        "/api/auth/desktop/handoff/": (120, 60.0),
+        "/api/ui/profile": (60, 60.0),
+        "/api/community": (120, 60.0),
+        "/api/ui/": (240, 60.0),
+    }
+
+    def __init__(self, app):
+        self.app = app
+        self._events: dict[tuple[str, str], list[float]] = {}
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") not in {"POST", "PUT", "PATCH", "DELETE"}:
+            await self.app(scope, receive, send)
+            return
+        path = str(scope.get("path") or "")
+        rule = next(((prefix, limit, window) for prefix, (limit, window) in self._LIMITS.items()
+                     if path.startswith(prefix)), None)
+        if rule is None:
+            await self.app(scope, receive, send)
+            return
+        prefix, limit, window = rule
+        client = scope.get("client") or ("unknown", 0)
+        key = (str(client[0]), prefix)
+        now = time.monotonic()
+        events = [stamp for stamp in self._events.get(key, []) if now - stamp < window]
+        if len(events) >= limit:
+            response = JSONResponse({"detail": "rate_limited"}, status_code=429,
+                                    headers={"Cache-Control": "no-store", "Retry-After": str(int(window))})
+            await response(scope, receive, send)
+            return
+        events.append(now)
+        self._events[key] = events
+        if len(self._events) > self._MAX_ENTRIES:
+            oldest = sorted(self._events.items(), key=lambda item: item[1][-1] if item[1] else 0)
+            for stale_key, _ in oldest[: max(1, len(oldest) - self._MAX_ENTRIES)]:
+                self._events.pop(stale_key, None)
+        await self.app(scope, receive, send)
+
+
 def _asset_url(path: Path) -> str:
-    """Version local static assets so a restarted UI cannot reuse stale auth code."""
+    """Version local static assets by content so WebView cannot reuse stale code."""
 
     try:
-        version = str(path.stat().st_mtime_ns)
+        # Keep the mtime fallback for missing/unreadable files, but prefer a
+        # content identity: a changed file always receives a different URL even
+        # when filesystem timestamp granularity is coarse.
+        import hashlib
+        version = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
     except OSError:
-        version = "0"
+        try:
+            version = str(path.stat().st_mtime_ns)
+        except OSError:
+            version = "0"
     try:
         rel = path.relative_to(STATIC_DIR).as_posix()
     except ValueError:
@@ -147,6 +299,9 @@ def _runtime_asset_identity() -> dict[str, Any]:
         "tradutor_ui_js_mtime_ns": mtime(TRADUTOR_UI_ASSET),
         "tradutor_ui_css_sha256": sha(TRADUTOR_CSS_ASSET),
         "tradutor_ui_css_mtime_ns": mtime(TRADUTOR_CSS_ASSET),
+        "auth_ui_js_sha256": sha(AUTH_UI_ASSET),
+        "auth_provider_js_sha256": sha(AUTH_PROVIDER_ASSET),
+        "auth_ui_build_id": f"auth_ui:{sha(AUTH_UI_ASSET)[:16]}",
     }
 
 
@@ -173,13 +328,53 @@ def _assert_startup_port_available(host: str, port: int) -> None:
             ) from exc
 APP_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
 APP_HOST = configured_bind_host()
+_DESKTOP_HANDOFF_TTL_SECONDS = 600
+_DESKTOP_HANDOFFS: dict[str, dict[str, Any]] = {}
+_DESKTOP_HANDOFF_LOCK = threading.Lock()
+_DESKTOP_CLIENT_DIAGNOSTICS: dict[str, Any] = {}
 BRIDGE = UiBridge()
+
+# Canonical, per-user diagnostics root.  These records are deliberately small,
+# UTF-8 JSONL entries and never contain credentials or request bodies.
+DIAGNOSTICS_ROOT = BRIDGE.runtime_root / "diagnostics"
+DIAGNOSTICS_ROOT.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("TRADUTOR_DIAGNOSTICS_ROOT", str(DIAGNOSTICS_ROOT))
+
+
+def _append_diagnostic_log(filename: str, event: str, **fields: Any) -> None:
+    now = datetime.now(timezone.utc)
+    safe = {"timestamp": now.isoformat().replace("+00:00", "Z"), "at": int(now.timestamp() * 1000), "event": event}
+    for key, value in fields.items():
+        if isinstance(value, (str, int, float, bool)) and key.lower() not in {"token", "password", "authorization", "secret", "body"}:
+            safe[key] = value
+    try:
+        with (DIAGNOSTICS_ROOT / filename).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(safe, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
+
+_append_diagnostic_log("app_current.jsonl", "APP_BOOT", product="Yomu Sekai", port=APP_PORT)
+
+
+def _source_trace_id(payload: dict[str, Any]) -> str:
+    """Return a bounded client correlation id, or create an explicit fallback."""
+    raw = str((payload or {}).get("trace_id") or "").strip()
+    if raw and len(raw) <= 80 and all(ch.isalnum() or ch in "-_." for ch in raw):
+        return raw
+    fallback = uuid.uuid4().hex
+    _append_diagnostic_log("app_current.jsonl", "TRACE_ID_FALLBACK_GENERATED", trace_id=fallback, route="source")
+    return fallback
+
 COMMUNITY = CommunityApi(
     BRIDGE.store,
     community_db_path=BRIDGE.runtime_root / "community.sqlite3",
     output_root=BRIDGE.output_root,
     storage_root=BRIDGE.runtime_root / "community_storage",
 )
+# Profile media deliberately reuses the Community provider factory.  The desktop only
+# invokes authenticated backend routes; Drive credentials remain server-side.
+BRIDGE.profile_media_provider_factory = COMMUNITY._read_provider_factory
 class _LazyAuthProvider:
     """Stands in for the real auth provider between import and application startup.
 
@@ -256,10 +451,12 @@ def _sync_public_profile(principal: RequestPrincipal) -> dict[str, Any]:
     the profile row.  Media keys are opaque local markers, not filesystem paths.
     """
     profile = _profile_for_principal(principal)
+    avatar_ref = str(profile.get("avatar_media_path") or "")
+    banner_ref = str(profile.get("banner_media_path") or "")
     return COMMUNITY.store.upsert_profile(principal.user_id, {
         "display_name": profile.get("display_name") or "Usuário",
-        "avatar_object_key": "local:avatar" if BRIDGE.profile_media_path("avatar", user_id=principal.user_id) else "",
-        "banner_object_key": "local:banner" if BRIDGE.profile_media_path("banner", user_id=principal.user_id) else "",
+        "avatar_object_key": avatar_ref if avatar_ref.startswith("drive:") else ("local:avatar" if BRIDGE.profile_media_path("avatar", user_id=principal.user_id) else ""),
+        "banner_object_key": banner_ref if banner_ref.startswith("drive:") else ("local:banner" if BRIDGE.profile_media_path("banner", user_id=principal.user_id) else ""),
         "public_role": profile.get("title") or "",
         "pronouns": profile.get("pronouns") or "",
         "status": profile.get("status") or "online",
@@ -282,6 +479,59 @@ def _profile_for_principal(principal: RequestPrincipal) -> dict[str, Any]:
             profile["display_name"] = str(identity["display_name"])
     profile["user_id"] = principal.user_id
     return profile
+
+
+def _remote_profile_for_principal(principal: RequestPrincipal, request: Request) -> dict[str, Any]:
+    """Adapt the shared Supabase social DTO to the main Profile form."""
+    repo = globals().get("_SOCIAL_REPO")
+    if repo is None or _SOCIAL_STATUS.get("provider") != "supabase" or not _SOCIAL_STATUS.get("available"):
+        raise RuntimeError("remote_profile_unavailable")
+    token = _license_bearer_token(request)
+    if not token:
+        raise AuthenticationRequired()
+    remote = repo.get_my_profile(token, principal.user_id)
+    local = BRIDGE.profile_for_user(principal.user_id)
+    avatar_ref = str(local.get("avatar_media_path") or "")
+    banner_ref = str(local.get("banner_media_path") or "")
+    # Profile media is owned by the existing Drive-backed bridge even when the
+    # social/profile DTO comes from Supabase. Keep the opaque local reference in
+    # the presentation payload so a remote profile refresh cannot erase it.
+    avatar_media_present = bool(remote.get("avatar_object_key") or avatar_ref)
+    banner_media_present = bool(remote.get("banner_object_key") or banner_ref)
+    return {
+        "user_id": principal.user_id,
+        "display_name": remote.get("display_name") or "",
+        "title": remote.get("public_role") or "",
+        "pronouns": remote.get("pronouns") or "",
+        "status": remote.get("status") or "online",
+        "status_text": remote.get("status_message") or "",
+        "bio": remote.get("bio") or "",
+        "avatar_mode": "image" if avatar_media_present else "letter",
+        "avatar_color": remote.get("accent_color") or "#c5372c",
+        "banner": "custom" if banner_media_present else "ink",
+        # Remote Drive refs do not always carry MIME metadata in the social DTO.  A
+        # non-empty ref is nevertheless an image by this endpoint's contract; defaulting
+        # to an image MIME lets the client fetch the authenticated bytes and validate the
+        # actual response type instead of falling back to initials.
+        "avatar_media_url": "/api/ui/profile/media/avatar?v=remote" if avatar_media_present else "",
+        "banner_media_url": "/api/ui/profile/media/banner?v=remote" if banner_media_present else "",
+        "avatar_media_type": local.get("avatar_media_type") or remote.get("avatar_media_type") or "image/jpeg",
+        "banner_media_type": local.get("banner_media_type") or remote.get("banner_media_type") or "image/jpeg",
+        "profile_configured": bool(remote.get("profile_configured")),
+        "remote_source": True,
+    }
+
+
+def _remote_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "display_name": payload.get("display_name"),
+        "public_role": payload.get("title"),
+        "pronouns": payload.get("pronouns"),
+        "status": payload.get("status"),
+        "status_message": payload.get("status_text"),
+        "bio": payload.get("bio"),
+        "accent_color": payload.get("avatar_color"),
+    }
 
 
 def _enrich_history_publications(history: list[dict[str, Any]]) -> None:
@@ -307,6 +557,8 @@ def _enrich_history_publications(history: list[dict[str, Any]]) -> None:
             "published_at": post.get("published_at") or "",
         })
 
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(MutationRateLimitMiddleware)
 app.add_middleware(CommunityNetworkBoundaryMiddleware, auth=AUTH)
 app.add_middleware(
     StructuredRequestAuditMiddleware,
@@ -392,7 +644,9 @@ def _api_call(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     try:
         return callback(*args, **kwargs)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raw = str(exc)
+        code = raw if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,79}", raw) else "operation_failed"
+        raise HTTPException(status_code=400, detail=code) from exc
 
 
 def _job_principal(request: Request) -> RequestPrincipal:
@@ -453,13 +707,219 @@ def _local_folder_submit_allowed(request: Request) -> bool:
 
 
 @app.get("/auth/callback")
-def auth_callback() -> FileResponse:
+def auth_callback(request: Request) -> Response:
     """Supabase e-mail confirmation/login landing page.
 
     Static file, no query/hash parameter is ever echoed back, and the page always
     returns to the fixed local root — no open redirect surface.
     """
+    params = request.query_params
+    desktop = params.get("desktop") == "1"
+    handoff_id = str(params.get("handoff") or "")
+    code = str(params.get("code") or "")
+    if desktop and handoff_id and code and len(code) <= 4096:
+        with _DESKTOP_HANDOFF_LOCK:
+            _handoff_cleanup()
+            item = _DESKTOP_HANDOFFS.get(handoff_id)
+            if item and not item.get("consumed"):
+                item["code"] = code
+                item["ready"] = True
+        # Finish server-side immediately. The external browser must not need
+        # JavaScript or a PKCE client; only the WebView2 instance exchanges the
+        # one-use code after polling this local handoff.
+        return HTMLResponse(
+            "<!doctype html><html lang='pt-BR'><meta charset='utf-8'>"
+            "<title>Yomu Sekai</title><style>body{font-family:system-ui;"
+            "background:#14110f;color:#f3ede4;display:grid;place-items:center;"
+            "height:100vh;margin:0}.card{text-align:center;padding:2rem}"
+            "</style><main class='card'><h1>Solicitação recebida</h1>"
+            "<p>Você pode voltar ao Yomu Sekai para continuar.</p>"
+            "<p>Esta janela pode ser fechada.</p></main></html>",
+            headers={"Cache-Control": "no-store"},
+        )
     return FileResponse(ROOT / "ui" / "auth_callback.html", media_type="text/html")
+
+
+@app.get("/api/runtime")
+def runtime_metadata() -> JSONResponse:
+    """Non-sensitive identity used by the desktop launcher to avoid stale runtimes."""
+    return JSONResponse({
+        "mode": "desktop" if os.getenv("TRADUTOR_RUNTIME_MODE") == "desktop" else "browser",
+        "instance": _RUNTIME_INSTANCE_ID,
+    }, headers={"Cache-Control": "no-store"})
+
+
+def _handoff_cleanup(now: float | None = None) -> None:
+    cutoff = time.time() if now is None else now
+    for key, value in list(_DESKTOP_HANDOFFS.items()):
+        if cutoff - float(value.get("created_at", 0)) > _DESKTOP_HANDOFF_TTL_SECONDS:
+            _DESKTOP_HANDOFFS.pop(key, None)
+
+
+@app.post("/api/auth/desktop/handoff/start")
+def desktop_handoff_start() -> JSONResponse:
+    handoff_id = secrets.token_urlsafe(32)
+    with _DESKTOP_HANDOFF_LOCK:
+        _handoff_cleanup()
+        _DESKTOP_HANDOFFS[handoff_id] = {
+            "created_at": time.time(), "flow_type": "PASSWORD_RECOVERY",
+            "code": None, "consumed": False,
+        }
+    return JSONResponse({"handoff_id": handoff_id, "ttl_seconds": _DESKTOP_HANDOFF_TTL_SECONDS}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/auth/desktop/handoff/{handoff_id}/callback")
+async def desktop_handoff_callback(handoff_id: str, request: Request) -> JSONResponse:
+    body = await request.json()
+    code = str(body.get("code") or "")
+    if not code or len(code) > 4096:
+        raise HTTPException(status_code=400, detail="invalid_callback")
+    with _DESKTOP_HANDOFF_LOCK:
+        _handoff_cleanup()
+        item = _DESKTOP_HANDOFFS.get(handoff_id)
+        if not item or item.get("consumed"):
+            raise HTTPException(status_code=404, detail="handoff_not_found")
+        item["code"] = code
+    return JSONResponse({"status": "received"}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/auth/desktop/handoff/{handoff_id}/status")
+def desktop_handoff_status(handoff_id: str) -> JSONResponse:
+    with _DESKTOP_HANDOFF_LOCK:
+        _handoff_cleanup()
+        item = _DESKTOP_HANDOFFS.get(handoff_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="handoff_not_found")
+        return JSONResponse({"ready": bool(item.get("code")), "flow_type": item.get("flow_type")}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/auth/desktop/handoff/diagnostics")
+def desktop_handoff_diagnostics() -> JSONResponse:
+    """Sanitized DEV diagnostics; capability IDs and codes are never returned."""
+    with _DESKTOP_HANDOFF_LOCK:
+        _handoff_cleanup()
+        now = time.time()
+        values = list(_DESKTOP_HANDOFFS.values())
+        ready = [item for item in values if item.get("code") and not item.get("consumed")]
+        waiting = [item for item in values if not item.get("code") and not item.get("consumed")]
+        return JSONResponse({
+            "active_count": len(values),
+            "total_count": len(values),
+            "waiting_count": len(waiting),
+            "ready_count": len(ready),
+            "consumed_count": 0,
+            "oldest_age_seconds": max((int(now - float(item.get("created_at", now))) for item in values), default=0),
+            "has_auth_code": bool(ready),
+            "flow_type": "PASSWORD_RECOVERY" if values else "NONE",
+            "current_runtime_pending": bool(values),
+            "current_runtime_state": "READY" if ready else "WAITING" if waiting else "NONE",
+            "client": dict(_DESKTOP_CLIENT_DIAGNOSTICS),
+        }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/auth/desktop/client-state")
+async def desktop_client_state(request: Request) -> JSONResponse:
+    """Accept only sanitized client-state diagnostics in desktop development mode."""
+    if os.getenv("TRADUTOR_RUNTIME_MODE") != "desktop":
+        raise HTTPException(status_code=404, detail="not_found")
+    body = await request.json()
+    allowed = {"pending", "polling", "lastStatus", "consumed", "authMode", "sessionState", "idPresent", "ageSeconds", "error", "errorStatus"}
+    snapshot: dict[str, Any] = {}
+    for key in allowed:
+        value = body.get(key)
+        if key in {"pending", "polling", "consumed", "idPresent"}:
+            snapshot[key] = bool(value)
+        elif key in {"ageSeconds", "errorStatus"}:
+            snapshot[key] = max(0, min(int(value or 0), _DESKTOP_HANDOFF_TTL_SECONDS))
+        else:
+            snapshot[key] = str(value or "")[:40]
+    _DESKTOP_CLIENT_DIAGNOSTICS.clear()
+    _DESKTOP_CLIENT_DIAGNOSTICS.update(snapshot)
+    return JSONResponse({"status": "accepted"}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/internal/auth-diagnostics")
+def auth_diagnostics_get() -> JSONResponse:
+    if not _AUTH_DIAGNOSTICS_ENABLED:
+        raise HTTPException(status_code=404, detail="not_found")
+    return JSONResponse({"events": list(_AUTH_DIAGNOSTIC_EVENTS)}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/internal/auth-diagnostics")
+async def auth_diagnostics_post(request: Request) -> JSONResponse:
+    if not _AUTH_DIAGNOSTICS_ENABLED:
+        raise HTTPException(status_code=404, detail="not_found")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="invalid_event")
+    allowed = {"event", "at", "seq", "status", "code", "name", "message", "authenticated", "source", "token_present", "token_length", "elapsed_ms", "reason", "destination", "auth_event", "session_present_before_login", "app_open_reason", "caller", "window_role", "session_fingerprint", "session_present", "user_present", "build_id", "request_trace_id", "daily", "subscription", "permanent", "reserved", "active_yk", "top_text", "rewards_text", "http_status"}
+    event: dict[str, Any] = {}
+    for key in allowed:
+        if key not in body:
+            continue
+        value = body[key]
+        if key in {"authenticated", "token_present", "session_present_before_login", "session_present", "user_present"}:
+            event[key] = bool(value)
+        elif key == "seq":
+            try: event[key] = max(0, min(int(value), 2**63 - 1))
+            except (TypeError, ValueError): continue
+        elif key == "at":
+            event[key] = str(value or "")[:40]
+        elif key in {"status", "token_length", "elapsed_ms", "daily", "subscription", "permanent", "reserved", "active_yk", "http_status"}:
+            try: event[key] = max(0, min(int(value), 2**63 - 1))
+            except (TypeError, ValueError): continue
+        else:
+            event[key] = str(value or "")[:160]
+    if not event.get("event"):
+        raise HTTPException(status_code=400, detail="invalid_event")
+    _AUTH_DIAGNOSTIC_EVENTS.append(event)
+    return JSONResponse({"status": "accepted"}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/internal/jwks-exact-diagnostics")
+def jwks_exact_diagnostics() -> JSONResponse:
+    """Read-only same-process JWKS timing probe, available only with auth diagnostics."""
+    if not _AUTH_DIAGNOSTICS_ENABLED:
+        raise HTTPException(status_code=404, detail="not_found")
+    provider = get_auth_provider()
+    jwks = getattr(provider, "_jwks", None)
+    transport = getattr(jwks, "_transport", None)
+    if jwks is None:
+        raise HTTPException(status_code=503, detail="jwks_cache_unavailable")
+    started = time.perf_counter()
+    try:
+        jwks._fetch()
+        cache_status = "ok"
+    except Exception as exc:
+        cache_status = type(exc).__name__
+    cache_ms = int((time.perf_counter() - started) * 1000)
+    direct_ms = None
+    direct_status = "not_run"
+    if transport is not None:
+        started = time.perf_counter()
+        try:
+            response = transport.request("GET", jwks._jwks_url, headers={"Accept": "application/json"})
+            direct_status = f"http_{response.status}"
+        except Exception as exc:
+            direct_status = type(exc).__name__
+        direct_ms = int((time.perf_counter() - started) * 1000)
+    return JSONResponse({"transport_direct_ms": direct_ms, "transport_status": direct_status,
+                         "jwks_cache_ms": cache_ms, "jwks_cache_status": cache_status,
+                         "generation": getattr(jwks, "_generation", 0)},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/auth/desktop/handoff/{handoff_id}/consume")
+def desktop_handoff_consume(handoff_id: str) -> JSONResponse:
+    with _DESKTOP_HANDOFF_LOCK:
+        _handoff_cleanup()
+        item = _DESKTOP_HANDOFFS.get(handoff_id)
+        if not item or item.get("consumed") or not item.get("code"):
+            raise HTTPException(status_code=404, detail="handoff_not_ready")
+        code = item["code"]
+        item["consumed"] = True
+        _DESKTOP_HANDOFFS.pop(handoff_id, None)
+    return JSONResponse({"code": code}, headers={"Cache-Control": "no-store"})
 
 
 @app.api_route("/api/auth/{auth_path:path}", methods=["GET", "POST"])
@@ -535,9 +995,17 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
                 COMMUNITY.requires_canonical_publication_identity()
             ),
         }
-        payload["profile"] = _profile_for_principal(principal)
+        if _SOCIAL_STATUS.get("provider") == "supabase" and _SOCIAL_STATUS.get("available"):
+            try:
+                payload["profile"] = _remote_profile_for_principal(principal, request)
+            except Exception:
+                payload["profile"] = {"profile_error": True, "remote_source": True}
+                payload["community"]["profile_load_failed"] = True
+        else:
+            payload["profile"] = _profile_for_principal(principal)
         try:
-            _sync_public_profile(principal)
+            if _SOCIAL_STATUS.get("provider") != "supabase":
+                _sync_public_profile(principal)
         except Exception:
             # Profile projection is optional presentation data. A duplicate display
             # name or unavailable community store must not invalidate a verified
@@ -576,9 +1044,19 @@ async def api_source_analyze(
     """Validate a URL without creating a translation job or queue item."""
     from chapter_source import SourceError, supported_hosts
 
+    trace_id = _source_trace_id(payload)
+    _append_diagnostic_log("routes_current.jsonl", "START_ROUTE_ENTER", trace_id=trace_id, route="/api/ui/source/analyze", method="POST")
+    _append_diagnostic_log("app_current.jsonl", "SOURCE_ACTION_BEGIN", trace_id=trace_id, action="source_analyze")
+
     try:
-        return await BRIDGE.analyze_source_candidate(
-            payload, principal=_ui_principal(request, mutate=True))
+        principal = _ui_principal(request, mutate=True)
+        result = await BRIDGE.analyze_source_candidate(payload, principal=principal)
+        _append_diagnostic_log("routes_current.jsonl", "SOURCE_ANALYSIS_RESULT", trace_id=trace_id, route="/api/ui/source/analyze", status="ready" if result.get("ready") is True else "blocked", ready=result.get("ready") is True, reason_code=str(result.get("reason_code") or "")[:80])
+        _append_diagnostic_log("app_current.jsonl", "SOURCE_ACTION_RESULT", trace_id=trace_id, action="source_analyze", result="ready" if result.get("ready") is True else "blocked")
+        # Analysis is deliberately side-effect free.  Job creation belongs exclusively to
+        # /api/ui/run; keeping that ownership in one route prevents a one-click request
+        # from creating one job here and another when the client continues explicitly.
+        return result
     except SourceError as exc:
         raise HTTPException(status_code=422, detail={
             "code": exc.code,
@@ -652,6 +1130,23 @@ async def api_run(
     from chapter_source import SourceError, supported_hosts
 
     try:
+        trace_id = _source_trace_id(payload)
+        _append_diagnostic_log("routes_current.jsonl", "SOURCE_RUN_ROUTE_ENTER", trace_id=trace_id, route="/api/ui/run", method="POST")
+        _append_diagnostic_log("app_current.jsonl", "WALLET_CHECK_STARTED", trace_id=trace_id, required_yk=1)
+        # Wallet entitlement is enforced by the remote lifecycle RPC, not by this local
+        # queue boundary. Record that fact explicitly instead of implying a local balance.
+        _append_diagnostic_log("app_current.jsonl", "WALLET_CHECK_RESULT", trace_id=trace_id, result="DEFERRED_REMOTE", sufficient=None, required_yk=1)
+        translation_enabled = payload.get("translation_enabled") is True
+        _append_diagnostic_log(
+            "app_current.jsonl", "TRANSLATION_POLICY_RESOLVED", trace_id=trace_id,
+            source="control_plane_snapshot" if "translation_enabled" in payload else "fail_closed_default",
+            translation_enabled=translation_enabled, allow_translation=translation_enabled,
+        )
+        _append_diagnostic_log(
+            "app_current.jsonl", "TRANSLATION_KILL_SWITCH_CHECKED", trace_id=trace_id,
+            result="ENABLED" if translation_enabled else "DISABLED",
+            translation_enabled=translation_enabled, allow_translation=translation_enabled,
+        )
         requested_type = str(payload.get("source_type") or "").strip().casefold()
         requests_local_folder = requested_type == "local_folder" or bool(
             str(payload.get("local_folder") or "").strip())
@@ -669,12 +1164,31 @@ async def api_run(
             # The normal UI now obtains this analysis inside the Start click. Direct URL
             # submissions without that fresh result still fail before job creation.
             guarded_payload["source_validation_required"] = True
-        return await BRIDGE.start(
+        _append_diagnostic_log(
+            "app_current.jsonl", "FORCE_REPROCESSING_DECISION", trace_id=trace_id,
+            source="ui_payload" if "force" in payload else "backend_default",
+            force=bool(payload.get("force", False)),
+        )
+        _append_diagnostic_log(
+            "app_current.jsonl", "RUN_REQUEST_PAYLOAD_READY", trace_id=trace_id,
+            route="/api/ui/run", force=bool(guarded_payload.get("force", False)),
+        )
+        _append_diagnostic_log("app_current.jsonl", "JOB_CREATE_BEGIN", trace_id=trace_id, route="/api/ui/run")
+        _append_diagnostic_log("app_current.jsonl", "QUEUE_INSERT_BEGIN", trace_id=trace_id, mode="persistent_local_queue")
+        result = await BRIDGE.start(
             guarded_payload,
             principal=_ui_principal(request, mutate=True),
             local_folder_allowed=requests_local_folder,
             license_access_token=_license_bearer_token(request),
         )
+        _append_diagnostic_log(
+            "routes_current.jsonl", "SOURCE_RUN_ROUTE_RESULT", trace_id=trace_id,
+            route="/api/ui/run", status="ok", reason_code=str(result.get("reason_code") or "")[:80],
+        )
+        _append_diagnostic_log("app_current.jsonl", "JOB_CREATE_RESULT", trace_id=trace_id, status="success" if result.get("job_id") else "not_created", job_created=bool(result.get("job_id")))
+        if result.get("job_id"):
+            _append_diagnostic_log("app_current.jsonl", "QUEUE_INSERT_RESULT", trace_id=trace_id, status="success", job_created=True)
+        return result
     except SourceError as exc:
         # Source diagnostics are coded and deliberately generic: URL fragments, headers,
         # cookies and provider responses never reach the browser.
@@ -709,6 +1223,18 @@ async def api_run(
         }) from exc
     except ValueError as exc:
         reason_code = str(exc)
+        _append_diagnostic_log(
+            "routes_current.jsonl", "SOURCE_RUN_ROUTE_RESULT", trace_id=_source_trace_id(payload),
+            route="/api/ui/run", status="error", reason_code=reason_code[:80],
+        )
+        _append_diagnostic_log("app_current.jsonl", "JOB_CREATE_RESULT", trace_id=_source_trace_id(payload), status="failure", reason_code=reason_code[:80])
+        if reason_code == "insufficient_yk":
+            _append_diagnostic_log("app_current.jsonl", "WALLET_FETCH_RESULT", result="INSUFFICIENT_BALANCE")
+            raise HTTPException(status_code=402, detail={
+                "code": "INSUFFICIENT_YOMU_KEYS",
+                "stage": "wallet",
+                "message": "Yomu Keys insuficientes para iniciar esta tradução.",
+            }) from exc
         if reason_code in {
             "download_authorization_required",
             "explicit_download_request_required",
@@ -737,10 +1263,28 @@ async def api_run(
                 "message": message,
                 "action": "Abra Configurações para revisar a política das fontes.",
             }) from exc
+        if reason_code == "device_limit_reached":
+            raise HTTPException(status_code=409, detail={
+                "code": reason_code,
+                "stage": "dispositivo",
+                "message": "O limite de dispositivos autorizados foi atingido.",
+                "action": "Gerencie os dispositivos autorizados e tente novamente.",
+            }) from exc
         raise HTTPException(status_code=400, detail={
             "code": "invalid_request", "stage": "validacao",
             "message": reason_code, "action": "Corrija os campos e tente novamente.",
         }) from exc
+    except BaseException as exc:
+        _append_diagnostic_log(
+            "routes_current.jsonl", "SOURCE_RUN_ROUTE_EXCEPTION",
+            trace_id=_source_trace_id(payload), route="/api/ui/run",
+            exception_type=type(exc).__name__,
+        )
+        _append_diagnostic_log(
+            "app_current.jsonl", "JOB_CREATE_EXCEPTION",
+            trace_id=_source_trace_id(payload), exception_type=type(exc).__name__,
+        )
+        raise
 
 
 @app.post("/api/ui/cancel")
@@ -1860,7 +2404,8 @@ async def api_queue_start(request: Request) -> dict[str, Any]:
         principal = _ui_principal(request, mutate=True)
         return await BRIDGE.start_queue_for_owner(principal.owner_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        code = str(exc) if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,79}", str(exc)) else "operation_failed"
+        raise HTTPException(status_code=400, detail=code) from exc
 
 
 @app.post("/api/ui/resume")
@@ -1877,16 +2422,48 @@ def api_resume(
     )
 
 
+@app.post("/api/ui/resume/dismiss")
+def api_resume_dismiss(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    """Dismiss an interrupted card while preserving the attempt in local history."""
+    job_id = str(payload.get("job_id") or payload.get("id") or "")
+    principal = _owned_ui_job(request, job_id, mutate=True)
+    try:
+        return BRIDGE.dismiss_resumable_job_for_owner(principal.owner_id, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="job_not_dismissible") from exc
+
+
 @app.post("/api/ui/profile")
 def api_profile(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     principal = _ui_principal(request, mutate=True)
     try:
-        profile = BRIDGE.save_profile(payload, user_id=principal.user_id)
-        _sync_public_profile(principal)
+        if _SOCIAL_STATUS.get("provider") == "supabase" and _SOCIAL_STATUS.get("available"):
+            repo = globals().get("_SOCIAL_REPO")
+            if repo is None:
+                raise RuntimeError("remote_profile_unavailable")
+            token = _license_bearer_token(request)
+            if not token:
+                raise AuthenticationRequired()
+            repo.update_my_profile(token, principal.user_id, _remote_profile_payload(payload))
+            profile = _remote_profile_for_principal(principal, request)
+        else:
+            profile = BRIDGE.save_profile(payload, user_id=principal.user_id)
+            _sync_public_profile(principal)
     except ValueError as exc:
         if str(exc) == "display_name_taken":
             raise HTTPException(status_code=409, detail={"code": "display_name_taken", "message": "Este nome de exibição já está em uso."}) from exc
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        code = str(exc) if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,79}", str(exc)) else "profile_update_failed"
+        raise HTTPException(status_code=400, detail=code) from exc
+    except AuthenticationRequired as exc:
+        raise HTTPException(status_code=401, detail="authentication_required") from exc
+    except Exception as exc:
+        social_status = int(getattr(exc, "status", 0) or 0)
+        social_code = str(getattr(exc, "code", "") or "")
+        if 400 <= social_status < 500:
+            raise HTTPException(status_code=social_status, detail=social_code or "profile_update_failed") from exc
+        raise HTTPException(status_code=503, detail="profile_remote_unavailable") from exc
     return {"ok": True, "profile": profile}
 
 
@@ -1898,7 +2475,46 @@ async def api_profile_media_upload(
     content_type: str = Query(..., min_length=3, max_length=80),
 ) -> dict[str, Any]:
     principal = _ui_principal(request, mutate=True)
-    content = await request.body()
+    if kind not in _PROFILE_MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=422, detail="invalid_profile_media_kind")
+    max_bytes = _PROFILE_MEDIA_MAX_BYTES[kind]
+    content_length = request.headers.get("content-length")
+    try:
+        if content_length is not None and int(content_length) > max_bytes:
+            raise HTTPException(status_code=413, detail="profile_media_too_large")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_content_length") from exc
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="profile_media_too_large")
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    bearer = _license_bearer_token(request)
+    remote_base = str(os.getenv("SUPABASE_URL", "") or "").rstrip("/")
+    if bearer and remote_base:
+        endpoint = f"{remote_base}/functions/v1/profile-media?kind={urllib_parse.quote(kind)}"
+        upstream = urllib_request.Request(endpoint, data=content, method="POST", headers={"Authorization": f"Bearer {bearer}", "Content-Type": content_type})
+        try:
+            with urllib_request.urlopen(upstream, timeout=20, context=_https_context()) as raw:  # noqa: S310 - configured Supabase origin
+                payload = json.loads(raw.read(64 * 1024).decode("utf-8"))
+                _sync_public_profile(principal)
+                return {"ok": True, "profile": {**BRIDGE.profile_for_user(principal.user_id), **payload}}
+        except urllib_error.HTTPError as exc:
+            try:
+                remote_error = json.loads(exc.read(16 * 1024).decode("utf-8"))
+                remote_detail = str(remote_error.get("error") or "profile_media_upload_unavailable")
+                remote_stage = str(remote_error.get("stage") or "")
+                if remote_stage: remote_detail = f"{remote_detail}:{remote_stage}"
+            except Exception:
+                remote_detail = "profile_media_upload_unavailable"
+            if exc.code in {400, 413}: raise HTTPException(status_code=exc.code, detail="invalid_profile_media") from exc
+            if exc.code in {401, 403}: raise HTTPException(status_code=401, detail="authentication_required") from exc
+            raise HTTPException(status_code=502, detail=remote_detail) from exc
+        except (urllib_error.URLError, TimeoutError, ValueError) as exc:
+            raise HTTPException(status_code=502, detail="profile_media_upload_unavailable") from exc
     profile = _api_call(
         BRIDGE.save_profile_media,
         kind,
@@ -1914,13 +2530,153 @@ async def api_profile_media_upload(
     }
 
 
+@app.post("/api/ui/profile/media-trace")
+async def api_profile_media_trace(request: Request) -> dict[str, bool]:
+    """Store a bounded, sanitized diagnostic trace for the current UI session."""
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid_trace")
+    _append_diagnostic_log(
+        "app_current.jsonl", "UI_TRACE_HTTP_REQUEST_RECEIVED",
+        event_name=str(payload.get("event") or "")[:80],
+        method=str(getattr(request, "method", "POST")),
+        content_type=str(getattr(request, "headers", {}).get("content-type", "application/json") if getattr(request, "headers", None) is not None else "application/json")[:80],
+        has_json_body=True,
+        top_level_keys=','.join(sorted(str(key)[:40] for key in payload.keys())[:30]),
+    )
+    allowed = {"trace_id", "step", "kind", "status", "route", "reason", "mime", "size", "auth_present", "file_present", "success", "avatar_ref_present", "banner_ref_present"}
+    safe = {k: payload[k] for k in allowed if k in payload and isinstance(payload[k], (str, int, bool, float))}
+    safe["at"] = int(time.time() * 1000)
+    # Trace output is mutable runtime state.  In a frozen install ROOT/_internal is
+    # read-only and must contain assets only; keep diagnostics under the per-user
+    # runtime root instead.
+    trace_dir = DIAGNOSTICS_ROOT
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = trace_dir / "profile_media_current.jsonl"
+    with trace_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(safe, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return {"ok": True}
+
+
+@app.post("/api/ui/source-trace")
+async def api_source_trace(request: Request) -> dict[str, bool]:
+    """Persist a sanitized source-action trace, starting at the click."""
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid_trace")
+    trace_id = str(payload.get("trace_id") or "")
+    if not trace_id or len(trace_id) > 80:
+        raise HTTPException(status_code=400, detail="invalid_trace_id")
+    safe = {"timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "trace_id": trace_id, "event": str(payload.get("event") or "SOURCE_UI_CLICK")[:80]}
+    for key in ("status", "reason_code", "stage", "authenticated", "license_ready", "source_type", "policy_present", "policy_status", "all_submitted_sources_authorized", "guard_result", "route", "ready", "duration_ms"):
+        value = payload.get(key)
+        if isinstance(value, (str, int, bool, float)):
+            safe[key] = value
+    path = DIAGNOSTICS_ROOT / f"source_{trace_id}.jsonl"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(safe, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return {"ok": True}
+
+
+@app.post("/api/ui/control-plane-trace")
+async def api_control_plane_trace(request: Request) -> dict[str, bool]:
+    """Persist a bounded, allow-listed control-plane event from the desktop UI.
+
+    This endpoint is intentionally best-effort: diagnostics must never change the
+    authentication/device-registration flow.  Credentials, request bodies and
+    cryptographic material are not accepted fields.
+    """
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid_trace")
+    allowed = {
+        "step", "status", "http_status", "reason_code", "error_code", "error_name",
+        "user_id", "license_id", "license_status", "device_uuid", "device_id_prefix", "public_key_present",
+        "identity_exists", "bridge_available", "authenticated", "attempt", "duration_ms",
+        "ok", "license_present", "verified", "challenge_id", "ttl_available",
+        "daily", "subscription", "permanent", "reserved", "active_yk", "top_text", "rewards_text", "source",
+        "project_ref", "function_slug", "translation_enabled", "maintenance_mode",
+        "keys_present", "snapshot_updated", "policy_valid", "top_level_keys",
+        "data_keys", "payload_keys", "body_keys", "feature_flags_present",
+        "feature_flags_type", "policy_source", "policy_resolved_at", "resolved_at",
+        "event_name", "event_target", "target", "window_realm_id", "is_top_window", "pathname",
+        "has_detail", "detail_translation_enabled", "detail_source", "detail_resolved_at", "probe",
+    }
+    event = str(payload.get("event") or "CONTROL_PLANE_EVENT")[:80]
+    safe: dict[str, Any] = {"event": event}
+    for key in allowed:
+        value = payload.get(key)
+        if isinstance(value, str):
+            safe[key] = value[:120]
+        elif isinstance(value, (int, float, bool)):
+            safe[key] = value
+    _append_diagnostic_log("app_current.jsonl", event, **{k: v for k, v in safe.items() if k != "event"})
+    return {"ok": True}
+
+
 @app.get("/api/ui/profile/media/{kind}")
-def api_profile_media(request: Request, kind: str) -> FileResponse:
+def api_profile_media(request: Request, kind: str) -> Response:
+    route_started = time.perf_counter()
     principal = _ui_principal(request)
+    if kind not in {"avatar", "banner"}:
+        raise HTTPException(status_code=404, detail="Mídia não encontrada.")
+    # Drive-backed media is served by the authenticated Edge Function.  The
+    # desktop process forwards only the user's bearer token; Drive credentials
+    # never enter the client or the packaged application.
+    profile = BRIDGE.profile_for_user(principal.user_id)
+    # Remote profile rows are authoritative for Drive-backed media.  The local
+    # bridge profile may intentionally contain only presentation metadata after a
+    # restart, which previously made this route return a misleading local 404.
+    remote_profile: dict[str, Any] = {}
+    social_repo = globals().get("_SOCIAL_REPO")
+    if (_SOCIAL_STATUS.get("provider") == "supabase"
+            and _SOCIAL_STATUS.get("available") and social_repo is not None):
+        token = _license_bearer_token(request)
+        if token:
+            try:
+                remote_profile = social_repo.get_my_profile(token, principal.user_id) or {}
+            except Exception:
+                remote_profile = {}
+    stored_ref = str(
+        remote_profile.get(f"{kind}_object_key")
+        or profile.get(f"{kind}_media_path")
+        or profile.get(f"{kind}_object_key")
+        or ""
+    )
+    bearer = _license_bearer_token(request)
+    remote_base = str(os.getenv("SUPABASE_URL", "") or "").rstrip("/")
+    if stored_ref.startswith("drive:") and bearer and remote_base:
+        endpoint = f"{remote_base}/functions/v1/profile-media?kind={urllib_parse.quote(kind)}"
+        upstream = urllib_request.Request(endpoint, headers={"Authorization": f"Bearer {bearer}"})
+        try:
+            host = urllib_parse.urlparse(remote_base).hostname or ""
+            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_NETWORK", route=f"/api/ui/profile/media/{kind}", remote_scheme="https", remote_host=host, remote_port=443, dns_resolution="started")
+            socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            with urllib_request.urlopen(upstream, timeout=15, context=_https_context()) as raw:  # noqa: S310 - configured Supabase origin
+                content = raw.read(12 * 1024 * 1024 + 1)
+                if len(content) > 12 * 1024 * 1024:
+                    raise HTTPException(status_code=502, detail="media_too_large")
+                media_type = raw.headers.get_content_type() or profile.get(f"{kind}_media_type") or "application/octet-stream"
+                _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=200, duration_ms=int((time.perf_counter() - route_started) * 1000), edge_http_status=200)
+                return Response(content=content, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+        except urllib_error.HTTPError as exc:
+            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=exc.code, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="profile_media_upstream_http")
+            if exc.code in {401, 403}:
+                raise HTTPException(status_code=401, detail="authentication_required") from exc
+            if exc.code == 404:
+                raise HTTPException(status_code=404, detail="Mídia não encontrada.") from exc
+            raise HTTPException(status_code=502, detail="profile_media_unavailable") from exc
+        except (urllib_error.URLError, TimeoutError) as exc:
+            reason = getattr(exc, "reason", exc)
+            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=502, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="profile_media_network", exception_class=type(exc).__name__, exception_module=type(exc).__module__, safe_message=type(reason).__name__, timeout=isinstance(exc, TimeoutError), dns_error=isinstance(reason, socket.gaierror), connection_error=isinstance(reason, OSError))
+            raise HTTPException(status_code=502, detail="profile_media_unavailable") from exc
     path = BRIDGE.profile_media_path(kind, user_id=principal.user_id)
     if not path:
+        stream = BRIDGE.profile_media_stream(kind, user_id=principal.user_id)
+        if stream:
+            return StreamingResponse(stream.iter_chunks(), media_type=profile.get(f"{kind}_media_type") or "application/octet-stream", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+        _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=404, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="media_ref_missing")
         raise HTTPException(status_code=404, detail="Mídia não encontrada.")
-    profile = BRIDGE.profile_for_user(principal.user_id)
     return FileResponse(path, media_type=profile.get(f"{kind}_media_type") or None)
 
 
@@ -1943,6 +2699,10 @@ def api_community_profile_media(user_id: str, kind: str, request: Request) -> Fi
         raise HTTPException(status_code=404, detail="media_not_found")
     path = BRIDGE.profile_media_path(kind, user_id=user_id)
     if not path:
+        stream = BRIDGE.profile_media_stream(kind, user_id=user_id)
+        if stream:
+            profile = BRIDGE.profile_for_user(user_id)
+            return StreamingResponse(stream.iter_chunks(), media_type=profile.get(f"{kind}_media_type") or "application/octet-stream", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
         raise HTTPException(status_code=404, detail="media_not_found")
     profile = BRIDGE.profile_for_user(user_id)
     return FileResponse(path, media_type=profile.get(f"{kind}_media_type") or None,
@@ -2078,11 +2838,13 @@ def index() -> None:
     # page perform an unexpected external request on every reload.
     ui.add_head_html(f'<link rel="stylesheet" href="{_asset_url(TRADUTOR_CSS_ASSET)}">')
     ui.add_head_html(f'<link rel="stylesheet" href="{_asset_url(LOADING_SURFACE_CSS_ASSET)}">')
+    ui.add_head_html(f'<link rel="icon" type="image/x-icon" href="{_asset_url(FAVICON_ASSET)}">')
     ui.add_body_html(shell)
     ui.add_body_html(
         "<script>"
         f"window.__tradutorRuntimeIdentity = {runtime_identity};"
         f"window.__tradutorVisualTestEnabled = {'true' if visual_test_enabled else 'false'};"
+        f"window.__tradutorAuthDiagnosticsEnabled = {'true' if _AUTH_DIAGNOSTICS_ENABLED else 'false'};"
         "</script>"
     )
     ui.add_body_html(_i18n_bootstrap_html())
@@ -2094,7 +2856,11 @@ def index() -> None:
     if visual_test_enabled:
         ui.add_body_html(f'<script src="{_asset_url(PIPELINE_HARNESS_ASSET)}" defer></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(SERVICE_HEALTH_ASSET)}"></script>')
-    ui.add_body_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
+    ui.add_head_html(f'<script type="module" src="{_asset_url(STATIC_DIR / "control_plane_client.js")}"></script>')
+    # Keep the auth module in the document head so it is parsed/executed by the
+    # browser independently of body-fragment hydration and the NiceGUI websocket.
+    # Unlike add_body_html, this is part of the page head before the shell starts.
+    ui.add_head_html(f'<script type="module" src="{_asset_url(AUTH_UI_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(SOCIAL_COMMUNITY_ASSET)}"></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(CHAPTER_READER_ASSET)}"></script>')
 
@@ -2111,7 +2877,9 @@ async def _build_auth_provider_at_startup() -> None:
     returns None, which would otherwise clobber this module-level name and make
     it impossible for tests to invoke the handler directly.
     """
+    _append_diagnostic_log("app_current.jsonl", "LOCAL_SERVER_READY", port=APP_PORT)
     get_auth_provider()
+    _append_diagnostic_log("app_current.jsonl", "LICENSE_PROVIDER_READY", available=True)
 
 
 app.on_startup(_build_auth_provider_at_startup)
@@ -2119,15 +2887,18 @@ app.on_startup(_build_auth_provider_at_startup)
 
 @app.on_shutdown
 async def shutdown_processes() -> None:
+    _append_diagnostic_log("app_current.jsonl", "APP_SHUTDOWN_BEGIN")
     await BRIDGE.shutdown()
+    _append_diagnostic_log("app_current.jsonl", "APP_SHUTDOWN_END")
 
 
-if __name__ in {"__main__", "__mp_main__"}:
+def main() -> int:
     try:
         bind_host = validate_bind_security(APP_HOST, AUTH)
     except AuthConfigurationError as exc:
         raise SystemExit(f"configuration_error: {exc}") from exc
     _assert_startup_port_available(bind_host, APP_PORT)
+    _append_diagnostic_log("app_current.jsonl", "LOCAL_SERVER_START_BEGIN", host=bind_host, port=APP_PORT)
     ui.run(
         host=bind_host,
         port=APP_PORT,
@@ -2138,3 +2909,8 @@ if __name__ in {"__main__", "__mp_main__"}:
         reload=False,
         show_welcome_message=False,
     )
+    return 0
+
+
+if __name__ in {"__main__", "__mp_main__"}:
+    raise SystemExit(main())

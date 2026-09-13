@@ -21,6 +21,10 @@ const TABS = [
   { id: 'notifications', label: 'Notificações' },
 ];
 
+// Public community experience is intentionally paused while the feature is
+// being completed. The implementation below remains intact for re-enabling.
+const COMMUNITY_ENABLED = false;
+
 const state = {
   session: null,
   profile: null,
@@ -52,6 +56,9 @@ function toast(msg, kind = 'ok') {
 
 function fail(err) {
   toast(api.messageForError(err), 'err');
+  if (err instanceof api.SocialApiError && err.code === 'display_name_taken' && err.suggestions.length) {
+    toast(`Tente: ${err.suggestions.join(', ')}`, 'err');
+  }
   if (err instanceof api.SocialApiError && err.status === 401) handleExpired();
 }
 
@@ -84,12 +91,26 @@ function render() {
   const host = root();
   if (!host) return;
   host.replaceChildren();
+  host.classList.remove('community-dev-only');
   if (state.pendingAuth) { host.appendChild(sectionShell(null).wrap); return; }
   if (!state.session) { host.appendChild(loginGate()); return; }
   host.appendChild(header());
+  if (!COMMUNITY_ENABLED) { host.classList.add('community-dev-only'); host.appendChild(developmentState()); return; }
   const body = el('div', { class: 'sc-body', attrs: { id: 'scBody' } });
   host.appendChild(body);
   renderTab(body);
+}
+
+function developmentState() {
+  return el('section', { class: 'sc-development-state', attrs: { role: 'status', 'aria-live': 'polite' } }, [
+    el('div', { class: 'sc-development-icon', text: '共', attrs: { 'aria-hidden': 'true' } }),
+    el('div', { class: 'sc-development-kicker', text: 'COMUNIDADE' }),
+    el('span', { class: 'sc-development-badge', text: 'EM DESENVOLVIMENTO' }),
+    el('h2', { text: 'Um novo espaço para suas histórias.' }),
+    el('p', { text: 'Estamos preparando um espaço para descobrir, acompanhar e compartilhar histórias com a comunidade Yomu Sekai.' }),
+    el('div', { class: 'sc-development-rule' }),
+    el('small', { text: 'A comunidade ainda não está disponível nesta versão.' }),
+  ]);
 }
 
 function loginGate() {
@@ -111,7 +132,7 @@ function openAuth(mode) {
 }
 
 function header() {
-  const displayName = String(window.__tradutorDisplayName || state.profile?.display_name || 'Usuário').trim() || 'Usuário';
+  const displayName = String(window.__tradutorDisplayName || state.profile?.display_name || 'Carregando perfil…').trim() || 'Carregando perfil…';
   const nav = el('nav', { class: 'sc-nav', attrs: { 'aria-label': 'Comunidade' } });
   for (const t of TABS) {
     nav.appendChild(el('button', {
@@ -249,7 +270,7 @@ function workCard(w, { showFav = true } = {}) {
   ]);
   card.appendChild(meta);
   if (showFav) {
-    const favBtn = el('button', { class: 'sc-fav', text: '☆', attrs: { 'aria-label': 'Favoritar', title: 'Favoritar' },
+    const favBtn = el('button', { class: 'sc-fav', text: 'Favoritar', attrs: { 'aria-label': 'Favoritar', title: 'Favoritar' },
       on: { click: (e) => { e.stopPropagation(); toggleFavorite(w.id, favBtn); } } });
     card.appendChild(favBtn);
   }
@@ -267,13 +288,13 @@ async function toggleFavorite(workId, btn) {
   if (btn.dataset.busy) return;
   btn.dataset.busy = '1';
   const wasFav = btn.dataset.fav === '1';
-  btn.textContent = wasFav ? '☆' : '★'; // optimistic
+  btn.textContent = wasFav ? 'Favoritar' : 'Favoritado'; // optimistic
   btn.dataset.fav = wasFav ? '' : '1';
   try {
     if (wasFav) await api.unfavoriteWork(workId); else await api.favoriteWork(workId);
     invalidateSection('favorites');
   } catch (err) {
-    btn.textContent = wasFav ? '★' : '☆'; // rollback
+    btn.textContent = wasFav ? 'Favoritado' : 'Favoritar'; // rollback
     btn.dataset.fav = wasFav ? '1' : '';
     fail(err);
   } finally { delete btn.dataset.busy; }
@@ -307,7 +328,7 @@ async function renderWork(body, workId) {
     ]));
     // actions
     const actions = el('div', { class: 'sc-actions' });
-    const fav = el('button', { class: 'btn-ghost', text: '☆ Favoritar',
+    const fav = el('button', { class: 'btn-ghost', text: 'Favoritar',
       on: { click: () => api.favoriteWork(w.id).then(() => { invalidateSection('favorites'); toast('Adicionado aos favoritos.'); }).catch(fail) } });
     actions.appendChild(fav);
     actions.appendChild(el('button', { class: 'btn-ghost', text: 'Denunciar',

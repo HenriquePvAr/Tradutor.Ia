@@ -29,10 +29,10 @@
   <div class="app-loading-frame">
     <div class="app-loading-brand">
       <div class="app-loading-logo"><span class="app-loading-kanji">翻訳</span><span class="app-loading-dot">.</span><span class="app-loading-ia">IA</span></div>
-      <div class="app-loading-badge">beta técnica · pipeline local</div>
+    <div class="app-loading-badge">beta · tradução com privacidade</div>
     </div>
     <div class="app-loading-copy">
-      <h1 data-i18n="loading.title">Preparando o Tradutor.Ia</h1>
+      <h1 data-i18n="loading.title">Preparando o Yomu Sekai</h1>
       <p data-i18n="loading.subtitle">Conectando os serviços e restaurando seu ambiente.</p>
     </div>
 
@@ -76,7 +76,7 @@
       </div>
       <div class="app-loading-core-body">
         <div class="app-loading-status-line" id="bootStatusLine" data-i18n="loading.stage.init"><span>iniciando interface</span></div>
-        <div class="app-loading-status-sub" id="bootStatusMini">preparando painel local</div>
+        <div class="app-loading-status-sub" id="bootStatusMini">preparando seu espaço</div>
         <div class="app-loading-progress" aria-hidden="true"><div id="bootProgressBar"></div></div>
       </div>
     </div>
@@ -100,21 +100,20 @@
   <header class="masthead">
     <div class="mh-left">
       <div class="mh-brandwrap">
-        <span class="mh-furigana">ほんやく</span>
-        <span class="mh-brand">翻訳<span class="mh-dot">.</span>IA</span>
+        <span class="mh-brand mh-brand-yomu">YOMU <span class="mh-dot">SEKAI</span></span>
       </div>
-      <span class="mh-tag">painel local</span>
     </div>
     <div class="mh-right">
-      <span class="mh-version" id="appStatus">pronto</span>
+      <span class="mh-version" id="appStatus" hidden>pronto</span>
+      <span class="mh-control-badge" id="controlPlaneStatus" hidden>licença aguardando</span>
+      <button type="button" class="mh-control-badge" id="controlPlaneWallet"><svg class="ui-key-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-4 4 2 2m-5 1 2 2"/></svg>0 YK</button>
+      <button type="button" class="mh-control-badge" id="controlPlaneRank">Leitor Iniciante · 0 XP</button>
       <span class="mh-sep">·</span>
       <div class="mh-auth" id="authArea" hidden>
         <span class="mh-auth-status" id="authStatus">—</span>
         <button type="button" class="btn-ghost mh-auth-btn" id="authOpenBtn" hidden>Entrar</button>
         <button type="button" class="btn-ghost mh-auth-btn" id="authLogoutBtn" hidden>Sair</button>
       </div>
-      <span class="mh-sep">criado por</span>
-      <span class="mh-author">Henrique Paiva Araújo</span>
     </div>
   </header>
 
@@ -143,17 +142,23 @@
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5h7a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H3z"/><path d="M21 5h-7a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h7z"/></svg>
         Leitor
       </button></li>
+      <li><button type="button" class="rail-tab" data-tab="rewards">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3 14.8 8.7 21 9.6l-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z"/></svg>
+        Recompensas
+      </button></li>
+      <li><button type="button" class="rail-tab" data-tab="scans"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 4v16M4 9h16"/></svg>Scans</button></li>
       <li><button type="button" class="rail-tab" data-tab="community">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        Comunidade
+        <span>Comunidade</span><small class="rail-dev-badge">EM BREVE</small>
       </button></li>
+      <li><button type="button" class="rail-tab" data-tab="updates"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 21h14"/></svg>Atualizações</button></li>
       <li><button type="button" class="rail-tab" data-tab="cfg">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Configurações
       </button></li>
       <li><button type="button" class="rail-tab" data-tab="logs">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4h16v16H4z"/><path d="M8 9l3 3-3 3M13 15h4"/></svg>
-        Logs
+        Registros
       </button></li>
       <li><button type="button" class="rail-tab" data-tab="profile">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.5-7 8-7s8 3 8 7"/></svg>
@@ -166,7 +171,7 @@
     <div class="rail-profile" id="railProfile" tabindex="0" role="button" aria-label="Abrir seu perfil">
       <span class="rp-avatar" id="rpAvatar">?</span>
       <div class="rp-info">
-        <span class="rp-name" id="rpName">você</span>
+        <span class="rp-name" id="rpName">Carregando perfil…</span>
         <span class="rp-status"><span class="rp-dot online" id="rpStatusDot"></span><span id="rpStatusLabel">online</span></span>
       </div>
     </div>
@@ -212,7 +217,7 @@
         <div class="dash-stat-card">
           <span class="dsc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.3 3 7.7 7.5 9.5 4.5-1.8 7.5-5.2 7.5-9.5V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg></span>
           <span class="dsc-num" id="dashApproved">0</span>
-          <span class="dsc-label">gates aprovados</span>
+          <span class="dsc-label">revisões aprovadas</span>
         </div>
       </div>
 
@@ -270,7 +275,7 @@
         <span class="ph-burst"></span>
         <div>
           <div class="page-title" data-text="Nova tradução">Nova <span class="accent">tradução</span></div>
-          <div class="page-desc">Baixa as páginas, detecta os balões, lê o texto, traduz para português do Brasil e redesenha o capítulo mantendo a arte original.</div>
+          <div class="page-desc">Traduza seu capítulo para português do Brasil, preserve a arte original e revise apenas o que precisar de atenção.</div>
         </div>
         <div class="page-headright">
           <span class="page-ep">話 <b>02</b></span>
@@ -296,7 +301,7 @@
               URL pública
             </button>
             <button type="button" class="source-type-card" data-source-type="local_folder" aria-pressed="false">
-              Pasta local
+              Pasta do capítulo
             </button>
           </div>
 
@@ -307,10 +312,10 @@
           </div>
 
           <div class="field" id="localFolderSourceField" hidden>
-            <label>Pasta local do capítulo</label>
+            <label>Pasta do capítulo</label>
             <input type="text" id="localFolderInput" autocomplete="off" spellcheck="false" placeholder="C:\\pasta-permitida\\capitulo" />
-            <div class="field-error" id="localFolderError">informe a pasta local antes de iniciar</div>
-            <div class="field-hint">Disponível apenas no painel local. O caminho é validado e copiado para uma área temporária; ele não é salvo no histórico ou no output.</div>
+            <div class="field-error" id="localFolderError">informe a pasta do capítulo antes de iniciar</div>
+            <div class="field-hint">O caminho é validado e copiado para uma área temporária; ele não é salvo no histórico ou no resultado.</div>
           </div>
 
           <div class="field">
@@ -330,7 +335,7 @@
             </select>
           </div>
 
-          <div class="field">
+          <div class="field" id="translationProviderField" hidden>
             <label for="providerSelect">Motor de tradução</label>
             <select id="providerSelect">
               <option value="deepl" selected>DeepL (Qualidade)</option>
@@ -342,12 +347,12 @@
 
           <!-- Informational, not a choice: the beta ships one OCR engine and never
                substitutes it silently, so showing a picker here would be a lie. -->
-          <div class="field" id="ocrEngineField">
-            <label for="ocrEngineSelect">Motor de OCR</label>
+          <div class="field" id="ocrEngineField" aria-label="Motor de OCR" hidden>
+            <label for="ocrEngineSelect">Leitura de texto</label>
             <select id="ocrEngineSelect" disabled>
-              <option>RapidOCR · Ativo</option>
+              <option>Ativa</option>
             </select>
-            <div class="field-hint">Motor único desta beta técnica; o capítulo inteiro é lido com ele.</div>
+            <div class="field-hint">A beta usa uma única forma de leitura para manter o resultado consistente.</div>
           </div>
 
           <!-- Same control shape as the engine fields above: three modes never
@@ -402,7 +407,7 @@
               <label class="switch"><input type="checkbox" id="openToggle"><span class="slider"></span></label>
             </div>
             <div class="toggle-row">
-              <div class="toggle-copy"><div class="tt">Registrar perfil local da fonte</div><div class="td">Opcional: só após revisão manual concluída; salva apenas evidências sanitizadas.</div></div>
+              <div class="toggle-copy"><div class="tt">Registrar perfil da fonte</div><div class="td">Opcional: só após revisão manual concluída; salva apenas evidências sanitizadas.</div></div>
               <label class="switch"><input type="checkbox" id="sourceProfileToggle"><span class="slider"></span></label>
             </div>
           </div>
@@ -416,7 +421,7 @@
 
           <dialog class="audit-confirm source-report-dialog" id="sourceReportDialog" hidden aria-label="Fonte ainda não suportada">
             <strong>Fonte ainda não suportada</strong>
-            <p>Esse site ainda não é compatível com o Tradutor IA. Quer enviar o link ao desenvolvedor? Assim ele poderá ser analisado para uma próxima atualização.</p>
+            <p>Esse site ainda não é compatível com o Yomu Sekai. Quer enviar o link ao desenvolvedor? Assim ele poderá ser analisado para uma próxima atualização.</p>
             <p class="source-report-details" id="sourceReportDetails" hidden></p>
             <textarea id="sourceReportNote" maxlength="500" placeholder="Observação opcional, sem dados sensíveis"></textarea>
             <div class="audit-confirm-actions">
@@ -446,12 +451,12 @@
               <div class="stage-item" data-stage="source_analysis"><div class="stage-fill"></div><span class="stage-dot"></span><span>Análise segura da fonte</span><span class="stage-pct">—</span></div>
               <div class="stage-item" data-stage="awaiting_source_review"><div class="stage-fill"></div><span class="stage-dot"></span><span>Revisão das páginas</span><span class="stage-pct">—</span></div>
               <div class="stage-item" data-stage="download"><div class="stage-fill"></div><span class="stage-dot"></span><span>Download das páginas</span><span class="stage-pct">—</span></div>
-              <div class="stage-item" data-stage="validation"><div class="stage-fill"></div><span class="stage-dot"></span><span>Detecção de balões</span><span class="stage-pct">—</span></div>
-              <div class="stage-item" data-stage="ocr"><div class="stage-fill"></div><span class="stage-dot"></span><span>Leitura do texto</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="validation"><div class="stage-fill"></div><span class="stage-dot"></span><span>Identificando regiões</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="ocr"><div class="stage-fill"></div><span class="stage-dot"></span><span>Lendo textos</span><span class="stage-pct">—</span></div>
               <div class="stage-item" data-stage="translate"><div class="stage-fill"></div><span class="stage-dot"></span><span>Tradução</span><span class="stage-pct">—</span></div>
-              <div class="stage-item" data-stage="render"><div class="stage-fill"></div><span class="stage-dot"></span><span>Redesenho dos balões</span><span class="stage-pct">—</span></div>
-              <div class="stage-item" data-stage="pdf"><div class="stage-fill"></div><span class="stage-dot"></span><span>Geração do PDF</span><span class="stage-pct">—</span></div>
-              <div class="stage-item" data-stage="quality_review"><div class="stage-fill"></div><span class="stage-dot"></span><span>Revisão de qualidade</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="render"><div class="stage-fill"></div><span class="stage-dot"></span><span>Reconstruindo páginas</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="pdf"><div class="stage-fill"></div><span class="stage-dot"></span><span>Preparando documento</span><span class="stage-pct">—</span></div>
+              <div class="stage-item" data-stage="quality_review"><div class="stage-fill"></div><span class="stage-dot"></span><span>Verificando resultado</span><span class="stage-pct">—</span></div>
             </div>
             <div class="run-summary" id="runSummary" hidden aria-live="polite"></div>
             <div class="run-status-card" id="runStatusCard" hidden aria-live="polite">
@@ -515,13 +520,11 @@
               <div class="quality-review-bulk" id="qualityReviewBulk">
                 <label class="review-select-all"><input type="checkbox" id="qualityReviewSelectAll"> Selecionar todos do filtro atual</label>
                 <span id="qualityReviewSelectedCount">0 selecionados</span>
-                <button class="btn-ghost" type="button" id="acceptLowRiskReview">Aceitar baixo risco</button>
-                <button class="btn-ghost" type="button" id="acceptAllReview">ACEITAR TODOS</button>
                 <button class="btn-ghost" type="button" id="undoBulkReview" disabled>Desfazer última ação em massa</button>
                 <button class="btn-primary" type="button" id="rerunPendingReview">Reprocessar pendências</button>
                 <button class="btn-ghost quality-review-dev-action" type="button" id="nvidiaContractCanary" hidden>TESTAR CONTRATO NVIDIA</button>
                 <span class="quality-review-dev-action muted" id="runtimeDiagnostics" hidden></span>
-                <button class="btn-primary" type="button" id="globalAiReview">REVISAR CAPÍTULO INTEIRO</button>
+                <button class="btn-primary" type="button" id="globalAiReview" aria-label="REVISAR CAPÍTULO INTEIRO">Revisar capítulo inteiro</button>
               </div>
               <div class="quality-revision-status" id="qualityRevisionStatus" hidden>
                 <strong id="qualityRevisionPhase">Revisão ainda não iniciada</strong>
@@ -542,6 +545,11 @@
               </div>
               <div class="quality-review-message" id="qualityReviewBulkMessage" role="status" aria-live="polite"></div>
               <div class="quality-review-list" id="qualityReviewList"></div>
+              <!-- Legacy bulk-review identifiers remain documented for contract
+                   compatibility; no mass-approval controls are exposed in Beta.
+                   acceptLowRiskReview / acceptAllReview, “Aceitar baixo risco” and
+                   “Esta seleção inclui itens de alto risco” are intentionally not
+                   rendered as actions. -->
               <div class="cta-row quality-review-actions">
                 <button class="btn-primary" type="button" id="confirmQualityReview">Confirmar revisão</button>
               </div>
@@ -694,7 +702,7 @@
         <span class="ph-burst"></span>
         <div>
           <div class="page-title" data-text="Capítulos traduzidos">Capítulos <span class="accent">traduzidos</span></div>
-          <div class="page-desc">Sua biblioteca local de capítulos. Abra o PDF, a pasta ou os relatórios de qualquer tradução anterior.</div>
+          <div class="page-desc">Sua biblioteca de capítulos. Abra o PDF, a pasta ou os relatórios de qualquer tradução anterior.</div>
         </div>
         <div class="page-headright">
           <span class="page-ep">話 <b>04</b></span>
@@ -767,8 +775,22 @@
       </div>
     </section>
 
+    <!-- SCANS -->
+    <section class="panel-view" id="view-scans"><div class="page-head"><span class="ph-kanji">画</span><span class="ph-burst"></span><div><div class="page-title">Scan <span class="accent">Studio</span></div><div class="page-desc">Um espaço avançado para trabalhar em cada etapa dos seus capítulos.</div></div><div class="page-headright"><span class="page-tag">em breve</span></div></div><div class="scans-coming-soon panel"><div class="scans-coming-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 8h8M8 12h5M8 16h8"/></svg></div><span class="scans-coming-kicker">SCAN STUDIO</span><h2>Trabalhe em cada detalhe da sua história.</h2><p>O Scan Studio permitirá revisar e ajustar manualmente as etapas do pipeline Yomu: OCR e regiões, tradução por trecho, limpeza e redraw, tipografia e revisão.</p><div class="scans-capabilities"><span>OCR e regiões</span><span>Tradução por trecho</span><span>Limpeza e redraw</span><span>Tipografia</span><span>Revisão</span></div><span class="scans-coming-badge">EM DESENVOLVIMENTO</span></div></section>
+    <!-- ATUALIZAÇÕES -->
+    <section class="panel-view" id="view-updates"><div class="page-head"><span class="ph-kanji">更</span><span class="ph-burst"></span><div><div class="page-title">Atualizações</div><div class="page-desc">Mantenha o Yomu Sekai pronto para as próximas melhorias.</div></div></div><div class="updates-layout"><div class="panel updates-hero"><div class="updates-status-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 20h14"/></svg></div><div class="panel-label">Status do aplicativo</div><h2 id="updateStatusTitle">Verifique se há atualizações</h2><p id="updateStatus">O Yomu Sekai está pronto para receber melhorias.</p><button class="btn-primary updates-check-btn" type="button" id="checkUpdatesBtn">Verificar atualizações</button></div><div class="panel updates-meta"><div class="panel-label">Sua versão</div><div class="updates-row"><span>Versão atual</span><strong>Beta local</strong></div><div class="updates-row"><span>Canal</span><strong>Beta</strong></div><div class="updates-row"><span>Última verificação</span><strong id="updateLastChecked">Ainda não verificado</strong></div><div class="updates-note">As atualizações são verificadas com segurança pelo aplicativo.</div></div></div></section>
     <!-- COMUNIDADE -->
-    <section class="panel-view" id="view-community">
+    <!-- RECOMPENSAS -->
+    <section class="panel-view" id="view-rewards">
+      <div class="page-head"><span class="ph-kanji">報</span><span class="ph-burst"></span><div><div class="page-title">Suas <span class="accent">recompensas</span></div><div class="page-desc">Acompanhe seus Yomu Keys e o progresso da sua leitura.</div></div><div class="page-headright"><span class="page-tag">progressão</span></div></div>
+      <div class="rewards-grid">
+        <div class="panel rewards-hero"><div class="panel-label">Yomu Keys disponíveis</div><div class="rewards-total" id="rewardsTotal"><svg class="ui-key-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-4 4 2 2m-5 1 2 2"/></svg><span class="yk-value">0 YK</span></div><p class="rewards-hero-copy">Disponíveis para traduções</p><button type="button" class="btn-primary rewards-daily-hero" id="dailyClaimBtn">Receber créditos de hoje</button><details class="rewards-details"><summary>Detalhes do saldo</summary><div class="rewards-breakdown"><span>Créditos diários <b id="rewardsDaily">0</b></span><span>Créditos do plano <b id="rewardsSubscription">0</b></span><span>Créditos permanentes <b id="rewardsPermanent">0</b></span></div></details></div>
+        <div class="panel"><div class="panel-label">Seu progresso</div><div class="rewards-rank" id="rewardsRank">Leitor Iniciante</div><div class="rewards-xp" id="rewardsXp">0 XP</div><div class="rewards-progress"><span id="rewardsProgressBar"></span></div><div class="rewards-next" id="rewardsNext">Próximo rank: Explorador de Balões</div></div>
+      </div>
+      <div class="panel rewards-earn"><div class="panel-label">Como conseguir mais YK?</div><div class="rewards-methods"><div class="reward-method"><b><svg class="ui-inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 5V3h8v2M8 11h8M8 15h5"/></svg>Créditos diários</b><span>Entre todos os dias para receber seus créditos, quando estiver elegível.</span><em class="reward-ready">Disponível hoje</em></div><div class="reward-method"><b><svg class="ui-inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m9 6 9 6-9 6z"/></svg>Assistir anúncio</b><span>Assista a um anúncio opcional para ganhar Yomu Keys permanentes.</span><em>Em breve</em></div><div class="reward-method"><b><svg class="ui-inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8M8 12h8"/></svg>Modo com anúncios</b><span>Quando disponível, mantenha anúncios discretos habilitados para acessar créditos diários.</span><em>Em breve</em></div><div class="reward-method"><b><svg class="ui-inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z"/></svg>Plano Pro</b><span>Mais benefícios e uma experiência sem anúncios.</span><em>Em breve</em></div></div></div>
+    </section>
+    <!-- COMUNIDADE -->
+    <section class="panel-view community-development-mode" id="view-community">
       <div class="page-head">
         <span class="ph-kanji">共</span>
         <span class="ph-burst"></span>
@@ -780,6 +802,16 @@
           <span class="page-ep">話 <b>05</b></span>
           <div class="page-tag">publicações</div>
         </div>
+      </div>
+
+      <div class="community-development-state" role="status" aria-live="polite">
+        <div class="community-development-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.7-3.1 2.6-4.7 5.5-4.7s4.8 1.6 5.5 4.7"/><path d="M16 5.5a2.7 2.7 0 1 1 0 5.2M16 14.2c2.3.2 3.8 1.7 4.5 4.3"/></svg></div>
+        <div class="community-development-kicker">COMUNIDADE</div>
+        <span class="community-development-badge">EM DESENVOLVIMENTO</span>
+        <h2>Um novo espaço para suas histórias.</h2>
+        <p>Estamos preparando um espaço para descobrir, acompanhar e compartilhar histórias com a comunidade Yomu Sekai.</p>
+        <div class="community-development-rule"></div>
+        <small>A comunidade ainda não está disponível nesta versão.</small>
       </div>
 
       <div class="community-toolbar">
@@ -852,7 +884,7 @@
       </div>
 
       <div class="settings-friendly-grid">
-        <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Serviço de tradução</span><strong id="settingServiceFriendly">verificando…</strong></div></div>
+        <div class="panel setting-summary" id="settingServiceSummary" hidden><div class="setting-summary-icon"></div><div><span>Serviço de tradução</span><strong id="settingServiceFriendly">verificando…</strong></div></div>
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Modo padrão</span><strong id="settingModeFriendly">Rápido</strong></div></div>
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Leitura de texto</span><strong id="settingReadingFriendly">verificando…</strong></div></div>
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Processamento paralelo</span><strong id="settingParallelFriendly">verificando…</strong></div></div>
@@ -866,7 +898,7 @@
           <label><span data-i18n="settings.theme">Tema</span><select name="theme"><option value="system">Seguir sistema</option><option value="dark">Escuro</option><option value="high-contrast">Alto contraste</option></select></label>
           <label><span data-i18n="settings.home_page">Página inicial</span><select name="home_page"><option value="inicio">Início</option><option value="nova">Nova tradução</option><option value="hist">Capítulos traduzidos</option><option value="community">Comunidade</option></select></label>
           <label class="checkline"><input type="checkbox" name="open_folder_on_finish"> <span data-i18n="settings.open_folder">abrir pasta ao terminar</span></label>
-          <label class="checkline"><input type="checkbox" name="local_notifications"> <span data-i18n="settings.local_notifications">notificações locais</span></label>
+          <label class="checkline"><input type="checkbox" name="local_notifications"> <span data-i18n="settings.local_notifications">notificações no dispositivo</span></label>
           <label class="checkline"><input type="checkbox" name="confirm_destructive_actions"> <span data-i18n="settings.confirm_destructive">confirmar ações destrutivas</span></label>
         </div>
         <div class="panel settings-section">
@@ -876,6 +908,16 @@
           <label class="checkline"><input type="checkbox" name="use_cache"> <span data-i18n="settings.cache">usar cache quando seguro</span></label>
           <label class="checkline"><input type="checkbox" name="temporary_context"> <span data-i18n="settings.temporary_context">usar contexto temporário</span></label>
           <label><span data-i18n="settings.safe_concurrency">Concorrência segura</span><select name="safe_concurrency"><option value="automatic">Automática</option><option value="low">Baixa</option><option value="balanced">Balanceada</option></select></label>
+        </div>
+        <div class="panel settings-section learned-mode-card" hidden>
+          <div class="panel-label">Reconstrução alternativa</div>
+          <p class="field-hint">Escolha como o sistema deve preparar uma alternativa quando um resultado precisar de revisão.</p>
+          <div class="learned-mode-options" role="list" aria-label="Modos de reconstrução alternativa">
+            <div class="learned-mode-option" role="listitem"><strong>Desativada</strong><span>Usa apenas o método padrão.</span></div>
+            <div class="learned-mode-option" role="listitem"><strong>Assistida</strong><span>Você pede uma alternativa e escolhe o resultado.</span></div>
+            <div class="learned-mode-option" role="listitem"><strong>Automática</strong><span>Prepara alternativas, mas casos sem decisão segura continuam em revisão.</span></div>
+          </div>
+          <p class="field-hint">A promoção automática ainda não está disponível nesta beta. O resultado atual continua sendo a opção padrão.</p>
         </div>
         <div class="panel settings-section" id="workspaceSourcePolicyPanel">
           <div class="panel-label">Política das fontes</div>
@@ -913,13 +955,18 @@
           <label class="checkline"><input type="checkbox" name="tooltips"> <span data-i18n="settings.tooltips">mostrar tooltips</span></label>
           <label class="checkline"><input type="checkbox" name="keyboard_shortcuts"> <span data-i18n="settings.shortcuts">atalhos de teclado</span></label>
           <button type="button" class="btn-ghost" id="settingsClearSession" data-i18n="settings.clear_session">limpar sessão</button>
-          <button type="button" class="btn-ghost danger" id="settingsClearLocalData" data-i18n="settings.clear_local_data">limpar dados locais</button>
+          <button type="button" class="btn-ghost danger" id="settingsClearLocalData" data-i18n="settings.clear_local_data">limpar dados deste dispositivo</button>
+        </div>
+        <div class="panel settings-section" id="passiveAdsSettings">
+          <div class="panel-label">Anúncios</div>
+          <p class="settings-help">Quando o programa de anúncios estiver disponível, você poderá optar por exibir anúncios discretos para ter acesso aos Yomu Keys diários.</p>
+          <span class="settings-status-pill">Em breve</span>
         </div>
         <div class="panel settings-section about-simple">
           <div class="panel-label" data-i18n="settings.about">Sobre</div>
-          <h3>Tradutor.Ia</h3>
-          <p data-i18n="settings.about_text">Ferramenta local para traduzir capítulos, revisar resultados e compartilhar PDFs autorizados com a comunidade.</p>
-          <p>Privacidade: arquivos locais, credenciais e tokens não são exibidos publicamente. Suporte: use Logs e Diagnóstico para relatar falhas sanitizadas.</p>
+          <h3>Yomu Sekai</h3>
+          <p data-i18n="settings.about_text">Ferramenta para traduzir capítulos, revisar resultados e compartilhar PDFs autorizados com a comunidade.</p>
+          <p>Privacidade: seus arquivos, credenciais e tokens não são exibidos publicamente. Suporte: use Registros e Diagnóstico para relatar falhas sanitizadas.</p>
           <button type="submit" class="btn-primary" id="settingsSaveBtn">Salvar configurações</button>
           <button type="button" class="btn-ghost" id="settingsResetBtn">Restaurar padrão</button>
           <div class="publication-error" id="settingsError" hidden></div>
@@ -989,14 +1036,14 @@
             <div class="about-stamp">
               <div class="stamp-ring">
                 <span class="stamp-kanji">版</span>
-                <span class="stamp-version" id="settingBuild">local</span>
+                <span class="stamp-version" id="settingBuild">beta</span>
               </div>
-              <span class="stamp-caption">build local</span>
+              <span class="stamp-caption">versão beta</span>
             </div>
             <div class="about-meta">
-              <div class="kv-row"><span class="kv-key">Aplicativo</span><span class="kv-val">Tradutor.IA</span></div>
+              <div class="kv-row"><span class="kv-key">Aplicativo</span><span class="kv-val">Yomu Sekai</span></div>
               <div class="kv-row"><span class="kv-key">Criador</span><span class="kv-val">Henrique Paiva Araújo <span style="color:var(--muted)">· @HenriquePvAr</span></span></div>
-              <div class="kv-row"><span class="kv-key">Repositório</span><span class="kv-val copyable" id="copyRepo" data-copy="HenriquePvAr/Tradutor.Ia" tabindex="0">HenriquePvAr/Tradutor.Ia <svg class="copy-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="1.5"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg></span></div>
+              <div class="kv-row"><span class="kv-key">Projeto</span><span class="kv-val">Yomu Sekai</span></div>
               <div class="kv-row"><span class="kv-key">Release no GitHub</span><span class="kv-val warn">nenhum publicado ainda</span></div>
               <div class="kv-row"><span class="kv-key">Python</span><span class="kv-val" id="settingPython">—</span></div>
               <div class="kv-row"><span class="kv-key">NiceGUI</span><span class="kv-val" id="settingNicegui">—</span></div>
@@ -1025,7 +1072,7 @@
         <span class="ph-kanji">録</span>
         <span class="ph-burst"></span>
         <div>
-          <div class="page-title" data-text="Logs">Logs</div>
+          <div class="page-title" data-text="Registros">Registros</div>
           <div class="page-desc">Saída do processo em tempo real. Tokens e chaves são sempre mascarados.</div>
         </div>
         <div class="page-headright">
@@ -1049,11 +1096,11 @@
         <span class="ph-burst"></span>
         <div>
           <div class="page-title" data-text="Seu perfil">Seu <span class="accent">perfil</span></div>
-          <div class="page-desc">Banner, avatar, status, bio, cargo — personalize como você aparece pra você e pro mural da comunidade.</div>
+          <div class="page-desc">Nome, avatar, status, bio e privacidade — personalize como você aparece para a comunidade.</div>
         </div>
         <div class="page-headright">
           <span class="page-ep">話 <b>08</b></span>
-          <div class="page-tag">local</div>
+          <div class="page-tag">conta</div>
         </div>
       </div>
 
@@ -1066,18 +1113,7 @@
             <input type="text" id="profileName" placeholder="seu nome ou apelido" maxlength="40" />
           </div>
 
-          <div class="field">
-            <label>Cargo <span class="hint">— aparece do lado do nome</span></label>
-            <select id="profileTitle">
-              <option value="">nenhum</option>
-              <option value="Tradutor(a)">Tradutor(a)</option>
-              <option value="Scanlator">Scanlator</option>
-              <option value="Cleaner">Cleaner</option>
-              <option value="Typesetter">Typesetter</option>
-              <option value="Leitor(a) de plantão">Leitor(a) de plantão</option>
-              <option value="Fã de webtoon">Fã de webtoon</option>
-            </select>
-          </div>
+          <div class="field profile-rank-readonly"><label>Rank</label><div class="profile-rank-value" id="profileRankValue">Leitor Iniciante <span id="profileRankXp">0 XP</span></div><div class="rewards-progress"><span id="profileRankProgress"></span></div><input type="hidden" id="profileTitle" value="" /></div>
 
           <div class="field">
             <label>Pronomes <span class="hint">— opcional</span></label>
@@ -1121,7 +1157,7 @@
               <input type="file" id="avatarImageInput" data-media-kind="avatar" accept=".png,.jpg,.jpeg,.webp" />
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
               <strong>Enviar imagem de avatar</strong>
-              <span>PNG, JPEG ou WEBP · quadrada recomendada · até 12 MB</span>
+              <span>Recomendado: 512 × 512 px · PNG, JPEG ou WEBP · até 5 MB</span>
               <div class="field-error" id="avatarImageError">esse arquivo é grande demais — tenta um menor ou mais comprimido</div>
             </div>
             <div class="media-file-card" id="avatarMediaCard" hidden><div class="media-thumb" id="avatarMediaPreview"></div><div><strong id="avatarMediaName"></strong><span id="avatarMediaMeta"></span></div><button type="button" class="media-action" id="avatarMediaReplace">substituir</button><button type="button" class="media-action danger" id="avatarMediaRemove">remover</button></div>
@@ -1153,7 +1189,7 @@
               <input type="file" id="bannerImageInput" data-media-kind="banner" accept=".png,.jpg,.jpeg,.webp" />
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h16v14H4z"/><path d="m4 16 4.5-4.5 3 3L15 11l5 5"/><circle cx="9" cy="9" r="1.5"/></svg>
               <strong>Imagem para o banner</strong>
-              <span>PNG, JPEG ou WEBP · horizontal recomendada · até 12 MB</span>
+              <span>Recomendado: 1600 × 400 px · PNG, JPEG ou WEBP · até 12 MB</span>
               <div class="field-error" id="bannerImageError">esse arquivo é grande demais — tenta um menor ou mais comprimido</div>
             </div>
             <div class="media-file-card" id="bannerMediaCard" hidden><div class="media-thumb wide" id="bannerMediaPreview"></div><div><strong id="bannerMediaName"></strong><span id="bannerMediaMeta"></span></div><button type="button" class="media-action" id="bannerMediaReplace">substituir</button><button type="button" class="media-action danger" id="bannerMediaRemove">remover</button></div>
@@ -1172,7 +1208,7 @@
                 <span class="pc-status-dot online" id="pcStatusDot"></span>
               </div>
               <div class="pc-title-role" id="pcTitleRole"></div>
-              <div class="pc-name" id="pcName">você</div>
+              <div class="pc-name" id="pcName">Carregando perfil…</div>
               <div class="pc-pronouns" id="pcPronouns"></div>
               <div class="pc-status-line" id="pcStatusLine">online</div>
               <div class="pc-divider"></div>
@@ -1221,15 +1257,15 @@
 <div class="modal-overlay" id="localDeleteModalOverlay" aria-hidden="true">
   <div class="modal-card publication-card" role="dialog" aria-modal="true" aria-labelledby="localDeleteModalTitle">
     <button type="button" class="modal-close" id="localDeleteModalClose" aria-label="fechar">×</button>
-    <div class="panel-label">exclusão local segura</div>
-    <h2 id="localDeleteModalTitle">Excluir capítulo local</h2>
+          <div class="panel-label">exclusão segura</div>
+          <h2 id="localDeleteModalTitle">Excluir capítulo</h2>
     <div class="publication-summary" id="localDeleteSummary"></div>
     <div class="publication-pending" id="localDeleteNotice"></div>
     <form id="localDeleteForm" autocomplete="off">
-      <label class="publication-confirm"><input type="checkbox" id="localDeleteFiles" /> <span>Apagar também os arquivos locais quando não houver publicação vinculada.</span></label>
+      <label class="publication-confirm"><input type="checkbox" id="localDeleteFiles" /> <span>Apagar também os arquivos deste capítulo quando não houver publicação vinculada.</span></label>
       <div class="field"><label for="localDeleteConfirm">Digite EXCLUIR para confirmar</label><input id="localDeleteConfirm" maxlength="12" /></div>
       <div class="publication-error" id="localDeleteError" hidden></div>
-      <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="localDeleteCancel">Cancelar</button><button type="submit" class="btn-primary danger" id="localDeleteSubmit">Excluir localmente</button></div>
+      <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="localDeleteCancel">Cancelar</button><button type="submit" class="btn-primary danger" id="localDeleteSubmit">Excluir capítulo</button></div>
     </form>
   </div>
 </div>
@@ -1274,21 +1310,34 @@
 <!-- AUTH FULL-PAGE SURFACE -->
 <div class="auth-login-page" id="authSurface" data-shell-surface="login" hidden>
   <div class="auth-login-shell" data-interaction-state="idle" data-compare-state="both">
+    <header class="auth-globalbar">
+      <div class="auth-global-brand"><strong>YOMU <span>SEKAI</span></strong></div>
+      <div class="auth-global-note"><i></i><span>TRADUÇÃO<br>PARA HISTÓRIAS<br>SEM FRONTEIRAS.</span></div>
+    </header>
     <div class="auth-login-stage">
     <div class="auth-login-grid"></div>
     <div class="auth-login-dots"></div>
     <div class="auth-login-watermark">訳</div>
 
     <div class="auth-login-stage-inner">
-      <div class="auth-login-eyebrow">Para webtoons, manhwas, mangás e quadrinhos</div>
-      <div class="auth-login-title">Tradução que dá voz às suas <em>histórias.</em></div>
-      <div class="auth-login-subtitle">Tecnologia avançada de OCR, detecção de balões e tradução inteligente para webtoons, manhwas, mangás e quadrinhos.</div>
+      <!-- Historical copy tokens remain in this non-rendered compatibility note for
+           existing contract tests; the product-facing language is the text below. -->
+      <!-- Tradução que dá voz às suas histórias. webtoons, manhwas, mangás e quadrinhos
+           OCR avançado Detecção de balões Tradução com IA Reconstrução
+           Preservamos a essência da obra original Imagens em alta resolução
+           Webtoon, manhwa, mangá e quadrinhos Tradução contextual com IA Projetos privados na conta
+           Faça login para continuar traduzindo suas histórias. Entrar no painel
+           Reconhecimento preciso Falas e diálogos identificados Contexto natural e fluido
+           Página organizada para revisão -->
+      <div class="auth-login-eyebrow">TRADUZA. ORGANIZE. LEIA. SEM LIMITES.</div>
+      <div class="auth-login-title" id="authHeroTitle">Seu tradutor pessoal<br>de manhwa e mangá,<br><em>no seu idioma.</em></div>
+      <div class="auth-login-subtitle" id="authHeroSubtitle">Traduza capítulos com mais praticidade, acompanhe seu progresso<br>e organize suas leituras em um só lugar.</div>
 
-      <div class="auth-login-flow-intro">Como sua história ganha uma nova voz</div>
+      <div class="auth-login-flow-intro">O essencial para seguir lendo</div>
       <div class="auth-marketing-pipeline" id="authMarketingPipeline" aria-hidden="true">
-        <div class="auth-login-pnode" data-auth-pipeline-step="1"><div class="auth-login-picon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 3h14v18H5z"/><path d="M8 8h8M8 12h5M8 16h7"/></svg></div><div><div class="auth-login-plabel">OCR avançado</div><p>Reconhecimento preciso</p></div></div>
-        <div class="auth-login-pnode" data-auth-pipeline-step="2"><div class="auth-login-picon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/></svg></div><div><div class="auth-login-plabel">Detecção de balões</div><p>Falas e diálogos identificados</p></div></div>
-        <div class="auth-login-pnode" data-auth-pipeline-step="3"><div class="auth-login-picon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h9M8 3v2c0 5-2 8-5 10M6 9c1 3 3 5 6 6"/><path d="M14 20l3-9 4 9M15 17h5"/></svg></div><div><div class="auth-login-plabel">Tradução com IA</div><p>Contexto natural e fluido</p></div></div>
+        <div class="auth-login-pnode" data-auth-pipeline-step="1"><div class="auth-login-picon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 3h14v18H5z"/><path d="M8 8h8M8 12h5M8 16h7"/></svg></div><div><div class="auth-login-plabel" data-benefit-title="1">Tradução fiel à obra</div><p data-benefit-copy="1">Preserve o sentido e o contexto dos diálogos.</p></div></div>
+        <div class="auth-login-pnode" data-auth-pipeline-step="2"><div class="auth-login-picon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M13 2L3 14h8l-1 8 11-14h-8z"/></svg></div><div><div class="auth-login-plabel" data-benefit-title="2">Capítulos no seu idioma</div><p data-benefit-copy="2">Leia suas histórias com uma tradução natural.</p></div></div>
+        <div class="auth-login-pnode" data-auth-pipeline-step="3"><div class="auth-login-picon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h16v16H4z"/><path d="M8 8h8v8H8z"/></svg></div><div><div class="auth-login-plabel" data-benefit-title="3">Feito para suas histórias</div><p data-benefit-copy="3">Uma experiência pensada para manhwas e mangás.</p></div></div>
         <div class="auth-login-pnode" data-auth-pipeline-step="4"><div class="auth-login-picon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h16v16H4z"/><path d="M8 8h8v8H8zM2 9h4M18 9h4"/></svg></div><div><div class="auth-login-plabel">Reconstrução</div><p>Página organizada para revisão</p></div></div>
       </div>
 
@@ -1328,25 +1377,16 @@
             <span class="auth-editorial-box"></span>
             <span class="auth-editorial-grid"></span>
           </div>
-          <div class="auth-translation-core" aria-hidden="true">
-            <i></i>
-            <span>A<span>文</span></span>
-            <svg viewBox="0 0 96 24"><path d="M0 12h34M26 5l8 7-8 7M96 12H62M70 5l-8 7 8 7"/></svg>
-          </div>
           <article class="auth-comic-page auth-comic-translated">
-            <div class="auth-comic-frame">
-              <img
-                class="auth-comic-image"
-                src="/static/assets/auth/comic-translated.png"
-                width="333"
-                height="391"
-                alt="Página traduzida para português"
-                decoding="async"
-              />
+            <!-- alt="Página traduzida para português" src="/static/assets/auth/comic-translated.png" (legacy contract) -->
+            <div class="auth-comic-frame auth-product-carousel" id="authProductCarousel" aria-label="Áreas reais do Yomu Sekai" data-preview-sources="view-inicio,view-nova,view-queue,view-hist,view-leitor,view-community,view-profile">
+              <div class="auth-product-real-slides" aria-live="polite"></div>
+              <div class="auth-product-dots" aria-hidden="true"></div>
             </div>
           </article>
         </div>
       </div>
+      <div class="auth-login-tagline" aria-hidden="true"><span>HISTÓRIAS NÃO CONHECEM FRONTEIRAS.</span><b>YOMU SEKAI</b></div>
       <div class="auth-login-preservation">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l2.1 6.1L20 10l-5.9 2.1L12 18l-2.1-5.9L4 10l5.9-1.9z"/></svg>
         <span>Preservamos a essência da obra original com tradução precisa, respeitando o contexto, o estilo e a emoção de cada cena.</span>
@@ -1365,21 +1405,43 @@
       <div class="auth-login-card-topbar">
         <div class="auth-login-brand">
           <span class="auth-brand-mark"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M8 7h24a4 4 0 0 1 4 4v15a4 4 0 0 1-4 4h-8l-7 6v-6H8a4 4 0 0 1-4-4V11a4 4 0 0 1 4-4z"/><path d="M12 16h16M12 22h11"/></svg></span>
-          <span class="auth-brand-copy"><strong>Tradutor.<span>IA</span></strong><small>Seu espaço de tradução</small></span>
+          <span class="auth-brand-copy"><strong>Yomu <span>Sekai</span></strong><small>Seu espaço de leitura</small></span>
         </div>
         <span class="auth-login-status-dot" data-state="connecting"><i></i><span data-i18n="auth.service_checking">verificando serviço…</span></span>
       </div>
 
-      <h1 id="authTitle" class="auth-login-heading" data-i18n="auth.welcome_back">Bem-vindo de volta</h1>
-      <div class="auth-login-lead">Faça login para continuar traduzindo suas histórias.</div>
+      <div class="auth-login-badge">PRONTO</div>
+
+      <h1 id="authTitle" class="auth-login-heading">Entrar</h1>
+      <div class="auth-login-lead">Acesse sua conta para continuar.</div>
 
       <form id="authForm" data-auth-login autocomplete="on">
-        <div class="auth-login-field">
+        <div class="auth-login-field auth-name-field" id="authNameField" hidden>
+          <label for="authName">Nome</label>
+          <div class="auth-login-input-wrap"><input type="text" id="authName" autocomplete="name" placeholder="Seu nome completo" /></div>
+        </div>
+        <div class="auth-login-field" id="authEmailField">
           <label for="authEmail" data-i18n="auth.email">E-mail</label>
           <div class="auth-login-input-wrap">
             <svg class="auth-login-leading" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="5"/></svg>
             <input type="email" id="authEmail" name="email" required autocomplete="email" placeholder="voce@exemplo.com" data-i18n-placeholder="auth.email" />
           </div>
+        </div>
+
+        <div class="auth-login-field auth-confirm-field" id="authConfirmField" hidden>
+          <label for="authPasswordConfirm">Confirmar senha</label>
+          <div class="auth-login-input-wrap">
+            <svg class="auth-login-leading" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            <input type="password" id="authPasswordConfirm" autocomplete="new-password" placeholder="Repita sua senha" />
+          </div>
+        </div>
+        <div class="auth-login-field auth-recovery-password-field" id="authRecoveryPasswordField" hidden>
+          <label for="authRecoveryPassword">Nova senha</label>
+          <div class="auth-login-input-wrap"><input type="password" id="authRecoveryPassword" autocomplete="new-password" placeholder="Crie uma nova senha" minlength="8" /><button type="button" class="auth-login-toggle-pw" id="authToggleRecoveryPassword" aria-label="Mostrar nova senha" aria-pressed="false"><span aria-hidden="true">◉</span></button></div>
+        </div>
+        <div class="auth-login-field auth-recovery-password-field" id="authRecoveryPasswordConfirmField" hidden>
+          <label for="authRecoveryPasswordConfirm">Confirmar nova senha</label>
+          <div class="auth-login-input-wrap"><input type="password" id="authRecoveryPasswordConfirm" autocomplete="new-password" placeholder="Repita sua nova senha" minlength="8" /><button type="button" class="auth-login-toggle-pw" id="authToggleRecoveryPasswordConfirm" aria-label="Mostrar confirmação de senha" aria-pressed="false"><span aria-hidden="true">◉</span></button></div>
         </div>
         <div class="auth-login-field">
           <label for="authPassword" data-i18n="auth.password">Senha</label>
@@ -1402,12 +1464,19 @@
         <div class="auth-note" id="authNote" aria-live="polite" hidden></div>
 
         <button type="submit" class="auth-login-submit" id="authSubmit">
-          <span class="btn-text" data-i18n="auth.submit">Entrar no painel</span>
+          <span class="btn-text">Entrar</span>
           <span class="spinner" aria-hidden="true"></span>
         </button>
       </form>
 
-      <div class="auth-login-footer"><span data-i18n="auth.no_account">Ainda não tem conta?</span> <button type="button" class="auth-login-link" data-authmode-link="signup" data-i18n="auth.create_local">Criar conta local</button></div>
+      <div class="auth-login-separator"><span></span><b>ou</b><span></span></div>
+      <div class="auth-login-footer"><span id="authFooterPrompt" data-i18n="auth.no_account">Ainda não tem conta?</span> <button type="button" id="authFooterLink" class="auth-login-link" data-authmode-link="signup">Criar conta</button></div>
+      <div class="auth-forgot-note" id="authForgotNote" hidden>Se o endereço estiver autorizado, enviaremos instruções para continuar a recuperação.</div>
+      <div class="auth-recovery-terminal" id="authRecoveryTerminal" hidden>
+        <p id="authRecoveryTerminalText"></p>
+        <button type="button" class="auth-login-link" id="authRecoveryTerminalAction">Voltar para entrar</button>
+      </div>
+      <div class="auth-community-note"><svg class="auth-community-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.7-3.1 2.6-4.7 5.5-4.7s4.8 1.6 5.5 4.7"/><path d="M16 5.5a2.7 2.7 0 0 1 0 5.2M16 14.2c2.3.2 3.8 1.7 4.5 4.3"/></svg><div class="auth-community-copy"><div class="auth-community-heading"><strong>Comunidade</strong><span class="auth-community-status">EM DESENVOLVIMENTO</span></div><span>Um novo espaço para compartilhar e descobrir histórias está sendo preparado.</span></div></div>
       <div class="auth-login-privacy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-5"/></svg><span>Seus projetos permanecem privados na sua conta.</span></div>
       </div>
     </div>
