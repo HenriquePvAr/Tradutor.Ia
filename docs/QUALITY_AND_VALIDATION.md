@@ -1,5 +1,12 @@
 # Qualidade e validação
 
+## Política operacional da closed beta
+
+`finished` indica execução técnica concluída e quality gate aprovado. `review_required` indica
+PDF disponível e completo, mas com regiões que exigem inspeção humana; pode ser entregue ao
+tester quando a revisão for opcional e o artefato estiver íntegro. Resultado deve ser bloqueado
+quando houver `failed`, `REVIEW_UNUSABLE`, página ausente, provenance inválida ou PDF incompleto.
+
 Este documento descreve como o Tradutor.IA decide entre aceitar um resultado, tentar outra estratégia ou solicitar revisão humana.
 
 > [Voltar ao README](../README.md)

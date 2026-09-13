@@ -76,6 +76,18 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 - [Testes herméticos e smokes manuais](TESTING.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
 
+### Release e closed beta
+
+- [Release](RELEASE.md)
+- [Checklist de release](RELEASE_CHECKLIST.md)
+- [Update e signing](UPDATE_AND_SIGNING.md)
+- [E2E em máquina limpa](CLEAN_VM_E2E.md)
+- [Guia do tester](CLOSED_BETA_TESTER_GUIDE.md)
+- [Bug reporting](BUG_REPORTING.md)
+- [Known issues](KNOWN_ISSUES.md)
+- [Privacidade e dados](PRIVACY_AND_DATA.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
+
 ### Auditorias históricas
 
 Documentos de auditoria pontual, preservados como registro. Descrevem o estado no momento

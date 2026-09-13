@@ -1,5 +1,9 @@
 # Testes herméticos e smokes manuais
 
+> `test_cleanup_fixed_mask_reconstruction_red.py` é um `KNOWN_INTENTIONAL_RED` documentado.
+> Ele permanece como alarme de qualidade visual e não deve ser interpretado como falha comum
+> da suíte de regressão.
+
 ## Padrão: offline
 
 Os arquivos `test_*.py` são testes unitários ou integrações offline. A proteção
