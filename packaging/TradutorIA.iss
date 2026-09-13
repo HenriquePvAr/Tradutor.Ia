@@ -6,11 +6,14 @@
 #ifndef OutputDir
   #error OutputDir must point to the dedicated local installer artifact directory
 #endif
+#ifndef ProductVersion
+  #error ProductVersion must be supplied from app_version.BUILD_VERSION by the release tool
+#endif
 
 [Setup]
 AppId={{cff6c710-2b7d-4a09-8f25-e32ea363430f}
 AppName=Yomu Sekai
-AppVersion=0.9.0-beta.20
+AppVersion={#ProductVersion}
 SetupIconFile={#SourcePath}\..\assets\branding\generated\yomu-sekai.ico
 DefaultDirName={localappdata}\Programs\YomuSekai
 DefaultGroupName=Yomu Sekai
@@ -18,7 +21,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 OutputDir={#OutputDir}
-OutputBaseFilename=YomuSekai-0.9.0-Beta20-Setup-x64
+OutputBaseFilename=YomuSekai-{#ProductVersion}-Setup-x64
 Compression=lzma2
 SolidCompression=yes
 CloseApplications=yes

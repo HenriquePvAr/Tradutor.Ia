@@ -25,6 +25,13 @@ from __future__ import annotations
 #: Version of the application payload this code belongs to. Single source of truth.
 PRODUCT_VERSION = "0.9.0"
 
+# Build identity is intentionally separate from the semver payload used by update
+# comparisons; diagnostics and installers must identify the exact beta artifact.
+BUILD_VERSION = "0.9.0-beta.32"
+
+# Human-facing prerelease identifier derived from the canonical build value.
+DISPLAY_VERSION = BUILD_VERSION
+
 #: Identifier of the product itself; kept next to the version because both name the artifact.
 PRODUCT_NAME = "tradutor-ia"
 

@@ -31,10 +31,9 @@ def test_uninstaller_cleans_volatile_state_without_removing_device_identity():
 
 def test_installer_version_matches_single_beta_version_source():
     script = ISS.read_text(encoding="utf-8")
-    version = re.search(r"^AppVersion=(0\.9\.0-beta\.[0-9]+)$", script, re.MULTILINE)
-    assert version is not None
-    beta_number = version.group(1).rsplit(".", 1)[-1]
-    assert f"OutputBaseFilename=YomuSekai-0.9.0-Beta{beta_number}-Setup-x64" in script
+    assert "#ifndef ProductVersion" in script
+    assert "AppVersion={#ProductVersion}" in script
+    assert "OutputBaseFilename=YomuSekai-{#ProductVersion}-Setup-x64" in script
 
 
 def test_installer_copies_onedir_contents_to_app_root():

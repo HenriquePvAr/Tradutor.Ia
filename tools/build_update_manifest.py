@@ -2,10 +2,11 @@
 from __future__ import annotations
 import argparse, hashlib, json
 from pathlib import Path
+from app_version import PRODUCT_VERSION
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("artifact", type=Path); p.add_argument("--version", required=True)
+    p.add_argument("artifact", type=Path); p.add_argument("--version", default=PRODUCT_VERSION)
     p.add_argument("--channel", default="beta"); p.add_argument("--release-notes", default="")
     p.add_argument("--mandatory", action="store_true"); p.add_argument("--min-supported-version", default="0")
     p.add_argument("--output", type=Path, required=True); a = p.parse_args()
