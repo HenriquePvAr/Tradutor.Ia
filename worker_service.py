@@ -15,6 +15,7 @@ Commands::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -26,6 +27,7 @@ import uuid
 from pathlib import Path
 
 import process_tree
+import app_version
 from job_store import JobStatus, JobStore
 from local_environment import load_local_environment_for_entrypoint
 from process_options import build_background_process_options
@@ -36,8 +38,11 @@ REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_RUNTIME_ROOT = runtime_root()
 DEFAULT_DB = DEFAULT_RUNTIME_ROOT / "jobs.sqlite3"
 LOG_DIR = DEFAULT_RUNTIME_ROOT / "logs"
+DIAGNOSTICS_DIR = DEFAULT_RUNTIME_ROOT / "diagnostics"
 POLL_SECONDS = 1.5
 WORKER_HEARTBEAT_SECONDS = 3.0
+SOURCE_VALIDATION_TIMEOUT_SECONDS = 180.0
+SOURCE_ANALYSIS_REUSE_TTL_SECONDS = 15 * 60
 STALE_SECONDS = 30.0
 STAGING_GRACE_SECONDS = 5.0
 COMMUNITY_RUNNER_MAX_ATTEMPTS = 3
@@ -47,7 +52,12 @@ COMMUNITY_RUNNER_RETRY_BACKOFF_SECONDS = 2.0
 class Worker:
     def __init__(self, db_path: Path, *, poll_seconds: float = POLL_SECONDS,
                  stale_seconds: float = STALE_SECONDS, log_dir: Path | None = None):
-        self.worker_id = uuid.uuid4().hex
+        # Include the artifact build in the lease identity.  A detached worker can outlive
+        # an in-place installer upgrade; reusing that lease would run old worker code
+        # against a new UI/database and can silently stop after source validation.
+        build_tag = str(getattr(app_version, "BUILD_VERSION", "dev") or "dev")
+        build_tag = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in build_tag)
+        self.worker_id = f"{build_tag}:{uuid.uuid4().hex}"
         self.pid = os.getpid()
         self.db_path = Path(db_path)
         # Production keeps its established runtime log directory. A worker pointed at a
@@ -111,6 +121,19 @@ class Worker:
             # crash the worker loop out from under a job it still owns.
             return
         self.store.update_fields(job_id, log_path=str(path))
+        try:
+            row = self.store.get_job(job_id) or {}
+            trace_id = str((row.get("configuration") or {}).get("trace_id") or "")[:80]
+            safe_job = hashlib.sha256(str(job_id).encode("utf-8")).hexdigest()[:12]
+            trace_path = DIAGNOSTICS_DIR / f"job_{safe_job}.jsonl"
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            with trace_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "timestamp": time.time(), "event": safe_stage.upper(),
+                    "trace_id": trace_id, "job_id": safe_job,
+                    "message": safe_message[:500]}, separators=(",", ":")) + "\n")
+        except (OSError, TypeError, ValueError):
+            pass
 
     # Runner script per job type. Only translation is the default; more handlers register
     # here without spreading job-type ifs through the worker loop.
@@ -125,6 +148,8 @@ class Worker:
         # filename for every job would misclassify a live community upload as a reused
         # PID and could permit a second concurrent attempt.
         current = job or self.store.get_job(job_id) or {}
+        if getattr(sys, "frozen", False):
+            return ["YomuSekai.exe", str(job_id)]
         job_type = (current.get("configuration") or {}).get("job_type", "translation")
         runner = self._RUNNERS.get(job_type, "job_runner.py")
         return [runner, job_id]
@@ -135,14 +160,27 @@ class Worker:
         job_type = (job.get("configuration") or {}).get("job_type", "translation")
         runner = self._RUNNERS.get(job_type, "job_runner.py")
         gate_path = self.log_dir / f".{job['id']}.{uuid.uuid4().hex}.start"
-        command = [
-            sys.executable, "-u", str(REPO_ROOT / runner),
+        if bool(getattr(sys, "frozen", False)):
+            role = {
+                "job_runner.py": "job-runner",
+                "community_publish_runner.py": "community-publish-runner",
+                "review_rerun_runner.py": "review-rerun-runner",
+            }.get(runner, "job-runner")
+            command = [sys.executable, "--internal-child", role]
+        else:
+            command = [sys.executable, "-u", str(REPO_ROOT / runner)]
+        command.extend([
             "--job-id", job["id"],
             "--db", str(self.db_path),
             "--worker-id", self.worker_id,
             "--log", str(log_path),
             "--start-gate", str(gate_path),
-        ]
+        ])
+        self._append_job_log(
+            job["id"], "runner", "RUNNER_SPAWN_REQUEST "
+            f"frozen={bool(getattr(sys, 'frozen', False))} "
+            f"hide_window={os.name == 'nt'} shell=false"
+        )
         # The runner writes everything worth keeping to its own per-job log file, so its
         # stdout/stderr are silenced. Inheriting them would hand the runner (and the
         # pipeline it spawns) a handle to whatever console launched the worker, and a
@@ -152,6 +190,7 @@ class Worker:
             cwd=str(REPO_ROOT), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         ))
+        self._append_job_log(job["id"], "runner", f"PROCESS_CREATED pid={proc.pid}")
         proc._tradutor_start_gate = gate_path  # type: ignore[attr-defined]
         return proc
 
@@ -184,6 +223,82 @@ class Worker:
         from down import discover_chapter_source
 
         return discover_chapter_source(url, cancel_check=cancel_check, on_progress=on_progress)
+
+    def _reuse_persisted_source_analysis(self, job: dict):
+        """Rehydrate a recent UI preflight without reopening the remote reader."""
+        config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        analysis_id = str(config.get("preflight_source_analysis_result_id")
+                          or config.get("source_analysis_result_id")
+                          or config.get("analysis_result_id") or "").strip()
+        if not analysis_id:
+            return None
+        from source_readiness import SourceReadinessStore
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            result = readiness.get_analysis("local", analysis_id)
+        finally:
+            readiness.close()
+        if result is None or result.status != "source_analysis_ready":
+            self._append_job_log(job["id"], "source_validation", "SOURCE_REUSE_SKIPPED reason=missing_or_not_ready")
+            return None
+        age = max(0.0, time.time() - float(result.created_at or 0.0))
+        if age > SOURCE_ANALYSIS_REUSE_TTL_SECONDS:
+            self._append_job_log(job["id"], "source_validation", "SOURCE_REUSE_SKIPPED reason=expired")
+            return None
+        expected_hash = hashlib.sha256(str(job.get("source_url") or "").encode("utf-8")).hexdigest()
+        if result.normalized_url_hash != expected_hash:
+            self._append_job_log(job["id"], "source_validation", "SOURCE_REUSE_SKIPPED reason=lineage_mismatch")
+            return None
+        try:
+            public = json.loads(job.get("source_analysis_json") or "{}")
+            selection = json.loads(job.get("source_selection_json") or "{}")
+        except (TypeError, ValueError):
+            public, selection = {}, {}
+        ids = [str(v) for v in (getattr(result, "resolved_selection", ()) or []) if str(v)]
+        if not ids:
+            ids = [str(v) for v in (selection.get("candidate_ids") or []) if str(v)]
+        if not ids:
+            ids = [str(item.get("id")) for item in (public.get("accepted") or [])
+                   if isinstance(item, dict) and str(item.get("id") or "")]
+        if not ids:
+            self._append_job_log(job["id"], "source_validation", "SOURCE_REUSE_SKIPPED reason=missing_selection")
+            return None
+        from universal_chapter_adapter import ImageCandidate, SourceAnalysis
+        accepted_public = {str(item.get("id")): item for item in (public.get("accepted") or [])
+                           if isinstance(item, dict)}
+        accepted = []
+        for order, candidate_id in enumerate(ids):
+            item = accepted_public.get(candidate_id, {})
+            accepted.append(ImageCandidate(
+                id=candidate_id, url=str(job.get("source_url") or ""),
+                source=str(item.get("source") or "persisted_preflight"), order=order,
+                width=int(item.get("width") or 0), height=int(item.get("height") or 0),
+                visible=bool(item.get("visible", True))))
+        # The preflight JSON on the job is a UI-facing snapshot and may retain the
+        # provisional ``source_analysis_pending`` outcome even after the durable
+        # SourceAnalysisResult has been persisted as ready.  Once the durable row has
+        # passed the status/TTL/lineage checks above and contains a resolved selection,
+        # its ready status is authoritative for this worker rehydration.  Do not let the
+        # stale presentation field send a validated job down the unsupported/pending
+        # branch in apply_source_analysis; genuinely pending rows never reach here.
+        from universal_chapter_adapter import (
+            SUPPORTED_GENERIC_HIGH_CONFIDENCE,
+            SUPPORTED_SPECIFIC_ADAPTER,
+        )
+        outcome = str(public.get("outcome") or "")
+        if outcome not in {SUPPORTED_SPECIFIC_ADAPTER, SUPPORTED_GENERIC_HIGH_CONFIDENCE}:
+            outcome = SUPPORTED_SPECIFIC_ADAPTER
+        analysis = SourceAnalysis(
+            adapter=result.adapter, final_host="", outcome=str(
+                outcome),
+            confidence=1.0, adapter_version=str(public.get("adapter_version") or ""),
+            accepted=accepted, warnings=list(public.get("warnings") or []),
+            collection_strategy="persisted_preflight", coverage_strategy="persisted_preflight")
+        self._append_job_log(job["id"], "source_validation",
+                             f"SOURCE_REUSE_RESULT status=success age_ms={int(age * 1000)} candidates={len(accepted)}")
+        self._append_job_log(job["id"], "source_validation",
+                             f"SOURCE_REUSE_USED analysis_result_id_present=true candidates={len(accepted)}")
+        return analysis
 
     def _prepare_source(self, job: dict) -> dict | None:
         """Run the source phase when needed. Returns None when no runner may start.
@@ -219,12 +334,20 @@ class Worker:
             return not row or bool(row.get("cancel_requested")) or row.get("status") in (
                 JobStatus.CANCELLED, JobStatus.FAILED)
 
+        validation_started = time.monotonic()
+        self._append_job_log(job["id"], "source_validation", "SOURCE_VALIDATION_STARTED")
         self.store.update_progress(
             job["id"], stage="source_validation", message="Validando fonte…",
             counter_stage="source_validation")
         self._append_job_log(job["id"], "source_validation", "Validando fonte")
         self.store.heartbeat(job["id"])
         try:
+            analysis = self._reuse_persisted_source_analysis(current)
+            if analysis is not None:
+                self._append_job_log(job["id"], "source_validation", "SOURCE_VALIDATION_PATH=persisted_preflight")
+            else:
+                self._append_job_log(job["id"], "source_validation", "SOURCE_VALIDATION_PATH=full_analysis")
+
             def progress(event: dict) -> None:
                 payload = event if isinstance(event, dict) else {}
                 stage = str(payload.get("stage") or "source_lazy_resolution")
@@ -240,7 +363,7 @@ class Worker:
                     job["id"], stage, str(payload.get("message") or ""))
                 self.store.worker_heartbeat(self.worker_id)
 
-            result: dict[str, object] = {}
+            result: dict[str, object] = {"analysis": analysis} if analysis is not None else {}
 
             def run_analysis() -> None:
                 try:
@@ -251,25 +374,81 @@ class Worker:
                 except BaseException as exc:  # noqa: BLE001 - re-raised on worker thread
                     result["error"] = exc
 
-            thread = threading.Thread(target=run_analysis, daemon=True)
-            thread.start()
-            while thread.is_alive():
-                self.store.worker_heartbeat(self.worker_id)
-                self.store.heartbeat(job["id"])
-                thread.join(timeout=min(WORKER_HEARTBEAT_SECONDS, 1.0))
-            if "error" in result:
-                raise result["error"]  # type: ignore[misc]
-            analysis = result.get("analysis")
+            if analysis is None:
+                thread = threading.Thread(target=run_analysis, daemon=True)
+                thread.start()
+                deadline = time.monotonic() + SOURCE_VALIDATION_TIMEOUT_SECONDS
+                while thread.is_alive():
+                    self.store.worker_heartbeat(self.worker_id)
+                    self.store.heartbeat(job["id"])
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("source_validation_timeout")
+                    thread.join(timeout=min(WORKER_HEARTBEAT_SECONDS, 1.0, remaining))
+                if "error" in result:
+                    raise result["error"]  # type: ignore[misc]
+                analysis = result.get("analysis")
+            if analysis is None:
+                raise RuntimeError("source_validation_no_result")
         except Exception as exc:  # noqa: BLE001 - coded, sanitized terminal outcome
+            self._append_job_log(
+                job["id"], "source_validation",
+                f"SOURCE_VALIDATION_FAILED reason_code={self._source_failure_code(exc)} "
+                f"duration_ms={int((time.monotonic() - validation_started) * 1000)}")
             return self._fail_source(job["id"], exc)
-        if cancelled():
+        # The analysis runs in a helper thread while the worker owns a CLAIMING row.
+        # A shutdown/crash reconciliation can mark that row INTERRUPTED while the
+        # helper is finishing.  Never apply a late result to that new lifecycle state:
+        # doing so used to attempt the illegal ``interrupted -> source_analysis_ready``
+        # transition.  A resumed attempt will use its durable selection/checkpoint (or
+        # safely re-run analysis) through the normal claim path.
+        latest = self.store.get_job(job["id"])
+        if (
+            latest is None
+            or latest.get("status") != JobStatus.CLAIMING
+            or latest.get("worker_id") != self.worker_id
+            or cancelled()
+        ):
             return None
         canonical_url = str(getattr(analysis, "canonical_url", "") or "")
         if canonical_url and canonical_url != str(current.get("source_url") or ""):
             # The official metadata decision becomes the sole URL used by the runner.
             # The public analysis persists only the sanitized identity fields.
             self.store.update_fields(job["id"], source_url=canonical_url)
-        return self._apply_phase(job["id"])(analysis)
+        self._append_job_log(
+            job["id"], "source_validation",
+            f"SOURCE_VALIDATION_RESULT status=success duration_ms={int((time.monotonic() - validation_started) * 1000)}")
+        self._append_job_log(job["id"], "runner", "POST_VALIDATION_DECISION branch=apply_source_analysis")
+        try:
+            prepared = self._apply_phase(job["id"])(analysis)
+            current_after = self.store.get_job(job["id"])
+            self._append_job_log(
+                job["id"], "runner",
+                f"POST_VALIDATION_RETURN prepared={bool(prepared)} "
+                f"status={str((prepared or current_after or {}).get('status') or '')} "
+                f"stage={str((prepared or current_after or {}).get('stage') or '')} "
+                f"reason_code={str((prepared or current_after or {}).get('reason_code') or '')}")
+            return prepared
+        except Exception as exc:  # noqa: BLE001 - phase boundary must be explicit
+            self._append_job_log(
+                job["id"], "runner",
+                f"POST_VALIDATION_EXCEPTION type={type(exc).__name__} "
+                f"reason_code={self._source_failure_code(exc)}")
+            self._append_job_log(
+                job["id"], "source_validation",
+                f"SOURCE_VALIDATION_FAILED reason_code={self._source_failure_code(exc)} "
+                f"duration_ms={int((time.monotonic() - validation_started) * 1000)}")
+            return self._fail_source(job["id"], exc)
+
+    @staticmethod
+    def _source_failure_code(exc: BaseException) -> str:
+        if isinstance(exc, TimeoutError):
+            return "source_validation_timeout"
+        try:
+            from down import _pipeline_exception_code
+            return str(_pipeline_exception_code(exc) or "source_validation_failed")[:80]
+        except Exception:  # noqa: BLE001
+            return "source_validation_failed"
 
     def _apply_phase(self, job_id: str):
         """Apply the shared decision and translate it into a runner/no-runner answer."""
@@ -277,7 +456,10 @@ class Worker:
 
         def apply(analysis):
             row = self.store.get_job(job_id)
-            if row is None:
+            # Source analysis is only valid for the worker's active claim.  In
+            # particular, an interrupted row may be reconciled while an analysis
+            # callback is still unwinding; applying it would violate the state machine.
+            if row is None or row.get("status") != JobStatus.CLAIMING:
                 return None
             result = apply_source_analysis(self.store, row, analysis)
             if result.outcome == "source_analysis_ready":
@@ -285,14 +467,28 @@ class Worker:
 
                 readiness = SourceReadinessStore(self.store.db_path)
                 try:
-                    resolution = readiness.resolve_ready_pipeline(job_id)
+                    resolution = readiness.resolve_ready_pipeline(
+                        job_id, handoff_worker_id=self.worker_id)
                 finally:
                     readiness.close()
+                self._append_job_log(
+                    job_id, "runner",
+                    f"POST_VALIDATION_JOB_STATE resolution_status={str(resolution.get('status') or '')} "
+                    f"ok={bool(resolution.get('ok'))} reason_code={str(resolution.get('reason_code') or '')}")
                 # The current claim ends here. A successful atomic resolution requeues
                 # the same job, which the normal claim loop will acquire exactly once.
                 # A disabled/revoked policy leaves it visibly fail-closed at readiness.
-                if resolution.get("status") == JobStatus.QUEUED:
-                    return None
+                if resolution.get("status") in {JobStatus.QUEUED, JobStatus.CLAIMING}:
+                    # The worker-owned path keeps the row CLAIMING, preventing another
+                    # worker from winning a second claim during runner creation.  The
+                    # queued case remains accepted for compatibility with older stores.
+                    self._append_job_log(job_id, "runner", "RUNNER_HANDOFF_BEGIN")
+                    return self.store.get_job(job_id)
+                self._append_job_log(
+                    job_id, "runner",
+                    f"POST_VALIDATION_RESOLUTION_FAILED reason_code="
+                    f"{str(resolution.get('reason_code') or 'workspace_pipeline_resolution_failed')}")
+                return None
             if not result.should_spawn_runner:
                 return None
             return self.store.get_job(job_id)
@@ -410,6 +606,7 @@ class Worker:
             finally:
                 self._active = None
             return
+        self._append_job_log(job["id"], "runner", "RUNNER_HANDOFF_RESULT status=success")
         try:
             # Keep the worker's lease alive while the runner owns the job's heartbeat.
             while proc.poll() is None:
@@ -480,6 +677,7 @@ class Worker:
                 expected_worker=self.worker_id,
                 interrupted_reason="runner_exited_before_terminal",
                 recoverable=recoverable,
+                writer_component="worker_service._reconcile_runner_exit",
             )
             return
 
@@ -910,6 +1108,8 @@ class Worker:
                     time.sleep(self.poll_seconds)
                     continue
                 idle = 0
+                self._append_job_log(job["id"], "worker_job_discovered", "WORKER_JOB_DISCOVERED")
+                self._append_job_log(job["id"], "worker_job_claim_result", "WORKER_JOB_CLAIM_RESULT status=success")
                 self._run_one(job)
                 if once:
                     return

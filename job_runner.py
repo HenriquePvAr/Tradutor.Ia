@@ -15,6 +15,7 @@ Invoked as::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -31,6 +32,7 @@ from process_options import build_background_process_options
 from output_manifest import sanitize_source_url
 from beta_license import LicenseState
 from runner_start_gate import wait_for_start_gate
+from runtime_paths import runtime_root
 from ui_helpers import (
     ProgressSnapshot,
     derive_final_run_status,
@@ -49,6 +51,23 @@ _PROVENANCE_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 # Set when the runner is signalled to stop (by the worker or the OS); the poll loop
 # observes it, stops the pipeline tree and interrupts the job instead of finishing.
 _STOP_REQUESTED = False
+
+
+def _append_pipeline_trace(job: dict, event: str, **fields: object) -> None:
+    """Write bounded, secret-free runner lifecycle evidence for diagnostics export."""
+    try:
+        # Resolve through the shared runtime-path policy so hermetic tests and
+        # frozen runs never leak diagnostics into the developer's real profile.
+        root = runtime_root() / "diagnostics"
+        safe_job = hashlib.sha256(str(job.get("id") or "").encode()).hexdigest()[:12]
+        payload = {"timestamp": time.time(), "event": str(event),
+                   "trace_id": str((job.get("configuration") or {}).get("trace_id") or "")[:80],
+                   "job_id": safe_job, **fields}
+        root.mkdir(parents=True, exist_ok=True)
+        with (root / f"pipeline_{safe_job}.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def _install_stop_handlers() -> None:
@@ -237,6 +256,7 @@ def _safe_manifest_configuration(configuration: object) -> dict:
     allowed = {
         "job_type", "mode", "full", "max_images", "use_cache", "force",
         "use_context", "chapter_name", "open_output", "create_source_profile",
+        "translation_provider", "translation_request_id",
     }
     safe = {key: configuration[key] for key in allowed if key in configuration}
     if "create_source_profile" in safe:
@@ -321,7 +341,12 @@ def _terminate(proc: subprocess.Popen) -> None:
             proc.send_signal(signal.CTRL_BREAK_EVENT)
         else:
             proc.terminate()
-    except (OSError, ValueError):
+    except (OSError, ValueError, SystemError):
+        # Windows can surface an already-closed process handle as
+        # ``SystemError: kill returned a result with an exception set``
+        # (WinError 6).  The poll-before-signal check above makes this an
+        # idempotent cleanup outcome; do not replace the job's primary
+        # cancellation/failure state with a teardown exception.
         pass
     try:
         proc.wait(timeout=CANCEL_GRACE_SECONDS)
@@ -341,14 +366,29 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
     store = JobStore(db_path)
     try:
         job = store.get_job(job_id)
+        _append_pipeline_trace(job or {"id": job_id}, "JOB_LOAD_STARTED")
+        print(f"JOB_LOAD_RESULT found={job is not None}", flush=True)
+        _append_pipeline_trace(job or {"id": job_id}, "JOB_LOAD_RESULT", found=job is not None)
         if job is None:
             return 2
+        _append_pipeline_trace(job, "CHILD_BOOT", frozen=bool(getattr(sys, "frozen", False)))
+        _append_pipeline_trace(
+            job, "CHILD_POST_BOOT_BEGIN",
+            status=str(job.get("status") or ""),
+            worker_id_present=bool(job.get("worker_id")),
+        )
         if worker_id and job.get("worker_id") not in (worker_id, None):
+            _append_pipeline_trace(job, "CHILD_POST_BOOT_REJECTED", reason_code="worker_ownership_mismatch")
             print(f"job {job_id} not owned by {worker_id}", file=sys.stderr)
             return 2
         if job["status"] not in {JobStatus.CLAIMING, JobStatus.STARTING}:
+            _append_pipeline_trace(
+                job, "CHILD_POST_BOOT_REJECTED",
+                reason_code="job_not_startable", status=str(job.get("status") or ""),
+            )
             print(f"job {job_id} not startable from {job['status']}", file=sys.stderr)
             return 2
+        _append_pipeline_trace(job, "JOB_STATE_BEFORE_PIPELINE", status=str(job.get("status") or ""))
         if store.cancel_requested(job_id):
             store.transition(job_id, JobStatus.CANCELLING, expected_worker=job.get("worker_id"))
             store.transition(job_id, JobStatus.CANCELLED, expected_worker=job.get("worker_id"),
@@ -357,14 +397,17 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
 
         output_dir = Path(job["output_dir"]).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+        _append_pipeline_trace(job, "RUNTIME_CONTEXT_READY", output_dir=str(output_dir))
         command = list(job.get("command") or [])
         if not command:
+            _append_pipeline_trace(job, "CHILD_POST_BOOT_REJECTED", reason_code="invalid_job_command")
             store.transition(job_id, JobStatus.FAILED, error_type="config",
                              error_message="invalid_job_command",
                              reason_code="invalid_job_command")
             return 2
         beta_error = _assert_beta_authorization_metadata(job)
         if beta_error:
+            _append_pipeline_trace(job, "CHILD_POST_BOOT_REJECTED", reason_code=str(beta_error))
             store.transition(job_id, JobStatus.FAILED, error_type="authorization",
                              error_message=beta_error, reason_code=beta_error)
             return 2
@@ -375,8 +418,11 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         from ui_helpers import assert_command_provider
 
         try:
+            _append_pipeline_trace(job, "PIPELINE_IMPORT_BEGIN")
             assert_command_provider(command, job.get("configuration"))
+            _append_pipeline_trace(job, "PIPELINE_IMPORT_RESULT", status="success")
         except ValueError as exc:
+            _append_pipeline_trace(job, "PIPELINE_IMPORT_RESULT", status="failed", reason_code=str(exc))
             reason_code = str(exc)
             store.transition(job_id, JobStatus.FAILED, error_type="config",
                              error_message=reason_code, reason_code=reason_code)
@@ -388,7 +434,9 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         # including the venv launcher shim. The runner does not set them, to avoid racing
         # the worker with its own (child) PID.
         if job["status"] == JobStatus.CLAIMING:
+            _append_pipeline_trace(job, "FIRST_DB_WRITE", transition="starting")
             job = store.transition(job_id, JobStatus.STARTING, expected_worker=job.get("worker_id"))
+        _append_pipeline_trace(job, "FIRST_DB_WRITE", transition="running")
         job = store.transition(
             job_id, JobStatus.RUNNING, expected_worker=job.get("worker_id"),
             log_path=log_path, stage="created",
@@ -401,18 +449,35 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         env["PYTHONUNBUFFERED"] = "1"
         env["TRADUTOR_JOB_ID"] = str(job.get("id") or "")
         env["TRADUTOR_JOB_RUN_ID"] = str(job.get("run_id") or "")
+        # Stable logical translation request identity; credentials remain in the
+        # encrypted job envelope and never cross this process boundary.
+        configuration = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        env["TRADUTOR_REQUEST_ID"] = str(
+            configuration.get("translation_request_id") or f"translation:{job.get('id') or ''}"
+        )[:220]
+        # Persisted control-plane authority crosses the process boundary explicitly.
+        # Missing/legacy metadata is fail-closed and cannot re-enable a provider.
+        env["TRANSLATION_ENABLED"] = (
+            "1" if configuration.get("translation_enabled") is True else "0"
+        )
+        # The wallet RPC expects the verified license_devices row UUID, never
+        # the commercial install identifier.  It is read from the persisted
+        # authorization snapshot at this process boundary.
+        env["TRADUTOR_DEVICE_UUID"] = str(configuration.get("device_uuid") or "")
 
         with log_file.open("a", encoding="utf-8") as handle:
             # The command contains the submitted URL and can contain signed query values.
             # Keep an auditable event without persisting protected process arguments.
             handle.write(f"{time.strftime('%H:%M:%S')} pipeline iniciado (argumentos protegidos)\n")
             handle.flush()
+            _append_pipeline_trace(job, "PIPELINE_SPAWN_BEGIN")
             try:
                 proc = subprocess.Popen(command, **build_background_process_options(
                     cwd=str(Path.cwd()), stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, env=env,
                 ))
             except OSError:
+                _append_pipeline_trace(job, "PIPELINE_SPAWN_FAILED", reason_code="runner_start_failed")
                 failed = store.transition(
                     job_id, JobStatus.FAILED, expected_worker=job.get("worker_id"),
                     exit_code=127, error_type="runner", error_message="runner_start_failed",
@@ -422,6 +487,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                                 exit_code=127, reason_code="runner_start_failed")
                 return 2
             store.update_fields(job_id, runner_pid=os.getpid())
+            _append_pipeline_trace(job, "PROCESS_CREATED", pid=proc.pid)
             pump = _OutputPump(proc.stdout, handle, store, job_id)
             pump.start()
 
@@ -592,7 +658,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not wait_for_start_gate(args.start_gate):
         return 3
-    return run_job(args.job_id, args.db, args.worker_id, args.log)
+    try:
+        return run_job(args.job_id, args.db, args.worker_id, args.log)
+    except BaseException as exc:  # noqa: BLE001 - preserve exit code and diagnostics
+        _append_pipeline_trace(
+            {"id": args.job_id, "configuration": {}}, "PIPELINE_MAIN_EXCEPTION",
+            exception_class=type(exc).__name__, reason_code="runner_unhandled_exception",
+        )
+        raise
 
 
 if __name__ == "__main__":

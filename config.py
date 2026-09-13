@@ -107,6 +107,22 @@ RAPIDOCR_SUSPICIOUS_TEXT_FALLBACK = _env_bool(
 RAPIDOCR_PAGE_FALLBACK = _env_bool("RAPIDOCR_PAGE_FALLBACK", True)
 OCR_TEXT_REPAIR = _env_bool("OCR_TEXT_REPAIR", True)
 OCR_TEXT_REPAIR_MODE = _env_str("OCR_TEXT_REPAIR_MODE", "conservative").lower()
+
+# Learned reconstruction is an optional review-only shadow feature.  It is
+# deliberately disabled by default; enabling it never changes the authoritative
+# baseline unless a future human-decision phase explicitly applies a candidate.
+LEARNED_RESCUE_ENABLED = _env_bool("LEARNED_RESCUE_ENABLED", False)
+LEARNED_RESCUE_MODEL_PATH = _env_str("LEARNED_RESCUE_MODEL_PATH", "")
+_learned_rescue_mode_raw = os.getenv("LEARNED_RESCUE_MODE")
+if _learned_rescue_mode_raw is None:
+    LEARNED_RESCUE_MODE = "manual" if LEARNED_RESCUE_ENABLED else "off"
+else:
+    LEARNED_RESCUE_MODE = _learned_rescue_mode_raw.strip().lower()
+    if LEARNED_RESCUE_MODE not in {"off", "manual", "auto"}:
+        LEARNED_RESCUE_MODE = "off"
+# This is a qualification result, not a user setting.  It remains false until
+# an independently validated policy is approved in a later phase.
+AUTO_ACCEPT_POLICY_QUALIFIED = False
 # Fast mode has an explicit heavy-fallback budget.  The safe default keeps the
 # predictable RapidOCR path and requires an opt-in before loading native Paddle
 # fallbacks that can take minutes on a single page.
@@ -201,6 +217,44 @@ NVIDIA_CIRCUIT_FAILURE_THRESHOLD = _env_int("NVIDIA_CIRCUIT_FAILURE_THRESHOLD", 
 NVIDIA_CIRCUIT_RECOVERY_SECONDS = _env_float("NVIDIA_CIRCUIT_RECOVERY_SECONDS", 60.0)
 NVIDIA_CIRCUIT_HALF_OPEN_MAX_CALLS = _env_int("NVIDIA_CIRCUIT_HALF_OPEN_MAX_CALLS", 1)
 NVIDIA_CIRCUIT_SUCCESS_THRESHOLD = _env_int("NVIDIA_CIRCUIT_SUCCESS_THRESHOLD", 1)
+
+# --- NVIDIA OCR (reconhecimento óptico remoto -- NÃO é o LLM de tradução) ---
+# Reaproveita apenas NVIDIA_API_KEY (mesma conta NVIDIA da tradução) como
+# credencial. NVIDIA_BASE_URL (host generico OpenAI-compatible da traducao
+# LLM) NUNCA e reaproveitado aqui -- o OCR hosted tem host/rota proprios
+# porque e um contrato de visao (Build/NIM), nao chat/completions.
+# Modelo e endpoint de OCR sao proprios e nunca podem apontar para
+# NVIDIA_TRANSLATION_MODEL/NVIDIA_RIVA_TRANSLATION_MODEL (LLMs de traducao);
+# nvidia_ocr_provider.py falha fechado se isso acontecer.
+# OCR_EXECUTION_MODE: rapidocr (padrao, comportamento atual) | nvidia | hybrid.
+OCR_EXECUTION_MODE = _env_str("OCR_EXECUTION_MODE", "rapidocr").strip().lower()
+NVIDIA_OCR_ENABLED = _env_bool("NVIDIA_OCR_ENABLED", False)
+NVIDIA_OCR_MODEL = _env_str("NVIDIA_OCR_MODEL", "nvidia/nemotron-ocr-v2")
+# hosted (NVIDIA-hosted Build/NIM endpoint, usa NVIDIA_API_KEY) | self_hosted
+# (NIM rodando localmente/on-prem). Contratos nao se misturam.
+NVIDIA_OCR_DEPLOYMENT = _env_str("NVIDIA_OCR_DEPLOYMENT", "hosted").strip().lower()
+# URL completa de invoke do endpoint hosted -- usada AS-IS, sem concatenacao
+# (ver nvidia_ocr_provider._resolve_invoke_url). Host permitido: ai.api.nvidia.com.
+NVIDIA_OCR_INVOKE_URL = _env_str(
+    "NVIDIA_OCR_INVOKE_URL",
+    "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2",
+)
+# Self-hosted: base URL do NIM local (ex.: http://localhost:8000); o provider
+# monta base + "/v1/ocr". NVIDIA_OCR_ENDPOINT, se definido, sobrescreve com a
+# URL completa (compat com deploys existentes).
+NVIDIA_OCR_SELF_HOSTED_BASE_URL = _env_str("NVIDIA_OCR_SELF_HOSTED_BASE_URL", "http://localhost:8000")
+NVIDIA_OCR_ENDPOINT = _env_str("NVIDIA_OCR_ENDPOINT", "")
+NVIDIA_OCR_CONNECT_TIMEOUT_SECONDS = _env_float("NVIDIA_OCR_CONNECT_TIMEOUT_SECONDS", 10.0)
+NVIDIA_OCR_READ_TIMEOUT_SECONDS = _env_float("NVIDIA_OCR_READ_TIMEOUT_SECONDS", 30.0)
+NVIDIA_OCR_MAX_RETRIES = max(0, _env_int("NVIDIA_OCR_MAX_RETRIES", 2))
+NVIDIA_OCR_RETRY_BACKOFF_SECONDS = _env_float("NVIDIA_OCR_RETRY_BACKOFF_SECONDS", 1.0)
+# Nemotron OCR v2 "merge_levels" request field: word | sentence | paragraph.
+# nvidia_ocr_provider.py fails closed on any other value (never guessed/defaulted
+# downstream). "sentence" is the value used for the first Yomu comparative test.
+NVIDIA_OCR_MERGE_LEVEL = _env_str("NVIDIA_OCR_MERGE_LEVEL", "sentence").strip().lower()
+# Workers do scheduler hibrido (fila dinamica); RapidOCR e CPU-bound, NVIDIA e I/O-bound.
+RAPIDOCR_WORKERS = max(1, _env_int("RAPIDOCR_WORKERS", 1))
+NVIDIA_OCR_WORKERS = max(1, _env_int("NVIDIA_OCR_WORKERS", 1))
 NVIDIA_REVISION_REGION_TIMEOUT_SECONDS = _env_float("NVIDIA_REVISION_REGION_TIMEOUT_SECONDS", 120.0)
 NVIDIA_REVISION_DIAGNOSTIC_MODE = _env_bool("NVIDIA_REVISION_DIAGNOSTIC_MODE", False)
 
@@ -236,6 +290,10 @@ OCR_PARALLEL = _env_bool("OCR_PARALLEL", True)
 # Model-backed OCR is conservative by default. The legacy names remain
 # supported; TRADUTOR_* is the explicit public policy surface.
 OCR_WORKERS = max(1, _env_int("TRADUTOR_OCR_WORKERS", _env_int("OCR_WORKERS", 1)))
+# Page-level pre/post parallelism defaults to two after controlled A/B runs
+# showed semantic/provenance/quality equivalence. RapidOCR and LaMa remain
+# independently capped at one; the runtime helper validates overrides again.
+PIPELINE_PAGE_WORKERS = _env_int("PIPELINE_PAGE_WORKERS", 2)
 ADAPTIVE_PARALLELISM = _env_bool("ADAPTIVE_PARALLELISM", True)
 RESOURCE_MONITORING = _env_bool("RESOURCE_MONITORING", False)
 RESOURCE_MONITOR_INTERVAL_SECONDS = max(

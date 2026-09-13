@@ -12,6 +12,7 @@ writer (worker/runner) work concurrently without a global lock.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 import time
@@ -19,8 +20,36 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
+
+
+def _append_transition_trace(db_path: str | Path, *, job_id: str, trace_id: str,
+                             state_before: str, state_after: str,
+                             stage_before: str, stage_after: str,
+                             worker_before: str, worker_after: str,
+                             fields: dict[str, Any]) -> None:
+    """Best-effort state-machine trace; never changes transition semantics."""
+    try:
+        safe_job = hashlib.sha256(str(job_id).encode("utf-8")).hexdigest()[:12]
+        path = Path(db_path).resolve().parent / "diagnostics" / f"job_{safe_job}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "timestamp": time.time(), "event": "JOB_STATE_TRANSITION",
+            "trace_id": str(trace_id or "")[:80], "job_id": safe_job,
+            "state_before": state_before, "state_after": state_after,
+            "stage_before": stage_before, "stage_after": stage_after,
+            "worker_before": worker_before, "worker_after": worker_after,
+        }
+        payload["writer_component"] = str(fields.get("writer_component") or "unknown")[:120]
+        for key in ("reason_code", "error_type", "worker_pid", "runner_pid", "interrupted_reason"):
+            if key in fields and fields[key] is not None:
+                payload[key] = str(fields[key])[:160]
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+            handle.flush()
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 class JobStatus:
@@ -233,6 +262,8 @@ class JobStore:
             self._migrate_v9()
         if version < 10:
             self._migrate_v10()
+        if version < 11:
+            self._migrate_v11()
         self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
@@ -259,6 +290,33 @@ class JobStore:
         self._migrate_v8()
         self._migrate_v9()
         self._migrate_v10()
+        self._migrate_v11()
+
+    def _migrate_v11(self) -> None:
+        """Atomically deduplicate one explicit UI attempt.
+
+        The key is supplied by the caller as ``trace_id:analysis_result_id``.  It is
+        intentionally separate from the chapter index: two legitimate attempts for the
+        same chapter must remain possible, while a retried request for one attempt must
+        resolve to the original row even when requests race in separate processes.
+        """
+        active = (
+            JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
+            JobStatus.SOURCE_ANALYSIS_READY, JobStatus.CLAIMING, JobStatus.STARTING,
+            JobStatus.RUNNING, JobStatus.CANCELLING,
+        )
+        statuses = ",".join(f"'{status}'" for status in active)
+        key = "json_extract(configuration_json,'$.idempotency_key')"
+        try:
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_active_idempotency_key "
+                f"ON jobs({key}) WHERE operation_kind='chapter' AND {key} IS NOT NULL "
+                f"AND {key} != '' AND status IN ({statuses})"
+            )
+        except sqlite3.IntegrityError:
+            # Existing historical duplicates are preserved.  New attempts still use the
+            # constraint once the conflicting rows become terminal.
+            pass
 
     def _migrate_v10(self) -> None:
         """At most one active translation per owner and *chapter*.
@@ -910,10 +968,13 @@ class JobStore:
     ) -> dict[str, Any]:
         if target not in JobStatus.ALL:
             raise TransitionError(f"unknown status: {target}")
+        writer_component = str(fields.pop("writer_component", "unknown"))
         row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if row is None:
             raise TransitionError(f"unknown job: {job_id}")
         current = row["status"]
+        stage_before = str(row["stage"] or "")
+        worker_before = str(row["worker_id"] or "")
         if not transition_allowed(current, target):
             raise TransitionError(f"illegal transition {current} -> {target}")
         if expected_worker is not None and row["worker_id"] != expected_worker:
@@ -950,7 +1011,19 @@ class JobStore:
         if cur.rowcount != 1:
             # Someone changed the row between the read and the write.
             raise TransitionError(f"job {job_id} changed concurrently during {current}->{target}")
-        return self.get_job(job_id)  # type: ignore[return-value]
+        updated = self.get_job(job_id)  # type: ignore[assignment]
+        updated = updated or {}
+        config = updated.get("configuration") if isinstance(updated, dict) else {}
+        trace_fields = {**fields, "writer_component": writer_component}
+        _append_transition_trace(
+            self.db_path, job_id=job_id,
+            trace_id=str((config or {}).get("trace_id") or ""),
+            state_before=str(current), state_after=str(updated.get("status") or target),
+            stage_before=stage_before, stage_after=str(updated.get("stage") or ""),
+            worker_before=worker_before, worker_after=str(updated.get("worker_id") or ""),
+            fields=trace_fields,
+        )
+        return updated  # type: ignore[return-value]
 
     def update_fields(self, job_id: str, **fields: Any) -> None:
         if not fields:

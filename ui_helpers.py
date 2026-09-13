@@ -32,6 +32,7 @@ HISTORY_PATH = runtime_root() / "ui_history.json"
 # choices.  This constant is the single source of truth: UI, job creation and
 # the runner read it instead of repeating a provider literal.
 TRANSLATION_PROVIDERS = frozenset({"nemotron", "riva", "deepl"})
+INTERNAL_TRANSLATION_PROVIDERS = frozenset({"yomu_backend"})
 DEFAULT_TRANSLATION_PROVIDER = "deepl"
 
 
@@ -44,7 +45,7 @@ def normalize_translation_provider(value: object) -> str:
     provider = str(value or "").strip().lower()
     if not provider:
         return ""
-    if provider not in TRANSLATION_PROVIDERS:
+    if provider not in TRANSLATION_PROVIDERS and provider not in INTERNAL_TRANSLATION_PROVIDERS:
         raise ValueError("nvidia_translation_provider_invalid")
     return provider
 
@@ -279,19 +280,22 @@ def build_run_command(
 
     if output_path is not None and not output_path.is_absolute():
         raise ValueError("authoritative_output_path_must_be_absolute")
-    command = [
-        python_executable or sys.executable,
-        str(REPO_ROOT / runner),
-        cleaned_url,
-        "--mode",
-        mode,
-        "--output",
+    executable = python_executable or sys.executable
+    # A frozen desktop executable cannot execute a source-file path as its second
+    # argument.  Route the pipeline through the launcher’s internal-child dispatcher;
+    # this keeps the exact same argv while avoiding the invalid
+    # ``YomuSekai.exe run_webtoon.py`` shape seen in packaged runs.
+    if bool(getattr(sys, "frozen", False)):
+        command = [executable, "--internal-child", "pipeline", cleaned_url, "--mode", mode, "--output"]
+    else:
+        command = [executable, str(REPO_ROOT / runner), cleaned_url, "--mode", mode, "--output"]
+    command.extend([
         str(output_path.resolve()) if output_path is not None else (
             build_run_output_slug(*str(output).split("/", 1))
             if "/" in str(output)
             else sanitize_output_name(output)
         ),
-    ]
+    ])
     if force:
         command.append("--force")
     elif use_cache:

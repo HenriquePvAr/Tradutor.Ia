@@ -57,6 +57,7 @@ from beta_license import (
     build_beta_license_authorizer,
     stable_install_fingerprint_hash,
 )
+from commercial_device import CommercialDeviceAuthorizer, UnavailableCommercialDeviceAuthorizer, CommercialDeviceAuthorizationError, CommercialDeviceContext
 from review_rerun import build_pending_region_plan
 from runtime_paths import runtime_root
 import audit_registry
@@ -128,6 +129,17 @@ def _beta_license_provider_name(env: dict[str, str] | None = None) -> str:
     return str(values.get("BETA_LICENSE_PROVIDER", "") or "").strip().casefold()
 
 
+def _build_commercial_device_authorizer(runtime_root: Path):
+    values = dict(os.environ)
+    if _beta_license_provider_name(values) != "supabase":
+        return None
+    url = str(values.get("SUPABASE_URL", "") or "").strip()
+    key = str(values.get("SUPABASE_PUBLISHABLE_KEY", "") or "").strip()
+    if not url or not key:
+        return UnavailableCommercialDeviceAuthorizer()
+    return CommercialDeviceAuthorizer(runtime_root, supabase_url=url, publishable_key=key)
+
+
 def _read_or_create_install_id(runtime_root: Path, env: dict[str, str] | None = None) -> str:
     values = os.environ if env is None else env
     configured = str(values.get("TRADUTOR_INSTALL_ID", "") or "").strip()
@@ -161,17 +173,28 @@ def _build_ui_beta_access_authorizer(
     """
 
     provider = _beta_license_provider_name(env)
+    values = dict(os.environ if env is None else env)
+    # The source checkout keeps its hermetic local authorizer for development/tests, but
+    # a desktop/frozen runtime must never silently grant the distributable a
+    # ``local-development`` entitlement.  Missing/invalid remote configuration therefore
+    # fails closed at construction time.
+    packaged = bool(getattr(sys, "frozen", False)) or str(
+        values.get("TRADUTOR_RUNTIME_MODE", "") or "").strip().casefold() == "desktop"
+    if provider in {"", "local_development", "local-dev"} and packaged:
+        values["BETA_LICENSE_PROVIDER"] = "production"
+        return build_beta_license_authorizer(values, transport=transport)
     if provider in {"", "local_development", "local-dev"}:
-        return build_beta_license_authorizer(env, transport=transport)
+        return build_beta_license_authorizer(values, transport=transport)
     install_id = _read_or_create_install_id(runtime_root, env)
     machine_hint = platform.node() if provider == "supabase" else ""
     return build_beta_license_authorizer(
-        env,
+        values,
         device_fingerprint_hash=stable_install_fingerprint_hash(
             install_id, machine_hint),
         transport=transport,
     )
 MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
+PROFILE_MEDIA_MAX_BYTES = {"avatar": 5 * 1024 * 1024, "banner": 12 * 1024 * 1024}
 PROFILE_MEDIA_TYPES = {
     ".jpeg": "image/jpeg",
     ".jpg": "image/jpeg",
@@ -293,6 +316,18 @@ def _worker_environment_matches_current(worker: dict[str, Any] | None) -> bool:
     require a value, any worker is compatible.  If the worker environment cannot be read,
     fail open rather than terminating an otherwise healthy process without proof.
     """
+    # Frozen installs may be upgraded in place while the detached worker from the prior
+    # artifact is still alive.  Its PID/path remain valid, so environment checks alone
+    # cannot detect the stale code.  Build-tagged worker leases make this mismatch explicit.
+    if bool(getattr(sys, "frozen", False)):
+        try:
+            import app_version
+            build_tag = str(getattr(app_version, "BUILD_VERSION", "") or "")
+            worker_id = str((worker or {}).get("worker_id") or "")
+            if build_tag and not worker_id.startswith(f"{build_tag}:"):
+                return False
+        except Exception:  # noqa: BLE001 - compatibility check must remain fail-open
+            pass
     required = {
         key: os.environ.get(key, "")
         for key in WORKER_ENV_COMPATIBILITY_KEYS
@@ -327,6 +362,12 @@ def _runner_still_alive(job: dict[str, Any]) -> bool:
     except Exception:  # noqa: BLE001 - process checks are best-effort in the UI
         return False
     operation_kind = str(job.get("operation_kind") or "translation")
+    if getattr(sys, "frozen", False):
+        return process_tree.is_alive(
+            job.get("runner_pid"),
+            create_time=job.get("runner_create_time"),
+            substrings=["YomuSekai.exe", str(job["id"])],
+        )
     runner_script = {
         "translation": "job_runner.py",
         "community_publish": "community_publish_runner.py",
@@ -345,10 +386,11 @@ def _worker_still_alive(job: dict[str, Any]) -> bool:
         import process_tree
     except Exception:  # noqa: BLE001 - process checks are best-effort in the UI
         return False
+    fingerprint = "YomuSekai.exe" if getattr(sys, "frozen", False) else "worker_service.py"
     return process_tree.is_alive(
         job.get("worker_pid"),
         create_time=job.get("worker_create_time"),
-        substrings=["worker_service.py"],
+        substrings=[fingerprint],
     )
 
 
@@ -432,6 +474,10 @@ class UiBridge:
             self.runtime_root / "profile_media"
             if requested_root else PROFILE_MEDIA_DIR
         )
+        # The application wires the existing Community StorageProvider after startup.
+        # Keeping the factory optional preserves hermetic/local tests without creating a
+        # second Drive credential or OAuth path.
+        self.profile_media_provider_factory = None
         self.legacy_profile_path = PROFILE_PATH
         db_path = self.runtime_root / "jobs.sqlite3" if requested_root else JOBS_DB_PATH
         self.history_store = (
@@ -442,6 +488,13 @@ class UiBridge:
         self.history = self.history_store.discover_outputs()
         self.profile = self._load_profile()
         self.store = JobStore(db_path)
+        # A clean production install must be usable immediately.  The source-policy
+        # engine is safety infrastructure (supported sources remain allowlisted and
+        # unknown sources still deny); it is not a technical toggle the user should
+        # have to discover.  Seed it once for a brand-new workspace only.  An explicit
+        # later revocation remains authoritative and is never silently re-enabled.
+        if not requested_root:
+            self._ensure_default_workspace_policy(db_path)
         self.audit_decisions = AuditDecisionStore(db_path)
         self.human_translations = human_translation_decisions.HumanTranslationDecisionStore(db_path)
         self.human_typography = human_typography_decisions.HumanTypographyDecisionStore(db_path)
@@ -456,12 +509,32 @@ class UiBridge:
         self.history_revision = 1
         self.beta_access_authorizer = _build_ui_beta_access_authorizer(
             self.runtime_root)
+        self.commercial_device_authorizer = _build_commercial_device_authorizer(self.runtime_root)
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
         self.store.reconcile_confirmed_reviews()
         # A job left in flight by a crash must not come back as PROCESSANDO after a restart.
         self._recover_staged_source_analyses()
         self.reconcile_orphans()
+
+    @staticmethod
+    def _ensure_default_workspace_policy(db_path: Path) -> None:
+        from source_readiness import SourceReadinessStore, default_workspace_id
+
+        readiness = SourceReadinessStore(db_path)
+        try:
+            workspace_id = default_workspace_id(db_path)
+            if readiness.workspace_policy_history(owner="local", workspace_id=workspace_id):
+                return
+            readiness.activate_workspace_policy(
+                owner="local", workspace_id=workspace_id, created_by="system_default",
+                authorization_statement=(
+                    "Processamento local de fontes suportadas; fontes desconhecidas "
+                    "ou sem autorização explícita permanecem bloqueadas."
+                ),
+            )
+        finally:
+            readiness.close()
 
     # ---- orphan reconciliation ----------------------------------------------
     def _recover_staged_source_analyses(self) -> None:
@@ -554,7 +627,8 @@ class UiBridge:
                 target, reason = JobStatus.INTERRUPTED, "process_not_found"
             try:
                 self.store.transition(job_id, target, interrupted_reason=reason,
-                                      finished_at=frozen, recoverable=1)
+                                      finished_at=frozen, recoverable=1,
+                                      writer_component="ui_bridge.reconcile_orphans")
             except Exception:  # noqa: BLE001 - a concurrent owner wins; leave the row alone
                 continue
             reconciled.append({"job_id": job_id, "status": target, "reason": reason})
@@ -4355,9 +4429,15 @@ class UiBridge:
     ) -> dict[str, Any]:
         self.store.reconcile_confirmed_reviews()
         self.reconcile_orphans()
-        beta_decision = self._require_beta_access(
-            principal=principal, operation="start_translation",
-            access_token=license_access_token)
+        commercial_context = None
+        if getattr(self, "commercial_device_authorizer", None) is not None:
+            commercial_context = self._require_commercial_device_access(
+                principal=principal, operation="start_translation", access_token=license_access_token)
+            beta_decision = None
+        else:
+            beta_decision = self._require_beta_access(
+                principal=principal, operation="start_translation",
+                access_token=license_access_token)
         source_type = self._requested_source_type(payload)
         if source_type == "local_folder":
             # The HTTP boundary calculates this from both the bind address and the peer.
@@ -4366,7 +4446,8 @@ class UiBridge:
             if local_folder_allowed is not True:
                 raise ValueError("local_folder_requires_loopback_ui")
             return await self._start_local_folder(
-                payload, principal=principal, beta_decision=beta_decision)
+                payload, principal=principal, beta_decision=beta_decision,
+                commercial_context=commercial_context)
         self._require_validated_source(payload)
         stale_resolution = (
             None
@@ -4393,16 +4474,48 @@ class UiBridge:
         # reader does — measured at 93-101s — so running it here held the HTTP request open
         # and left the UI on one static message for the whole time. The worker owns it now,
         # and the browser never starts inside the web process.
-        job = self._create_job(
-            {**payload, "source_candidate_ids": []}, principal=principal,
-            require_environment=False, initial_status=JobStatus.QUEUED,
-            source_analysis={"adapter": "", "outcome": "source_analysis_pending", "accepted": []},
-            beta_decision=beta_decision,
-        )
+        try:
+            job = self._create_job(
+                {**payload, "source_candidate_ids": []}, principal=principal,
+                require_environment=False, initial_status=JobStatus.QUEUED,
+                source_analysis={"adapter": "", "outcome": "source_analysis_pending", "accepted": []},
+                beta_decision=beta_decision, commercial_context=commercial_context,
+            )
+        except sqlite3.IntegrityError:
+            duplicate = self._pending_duplicate(payload)
+            if duplicate is None:
+                raise
+            return {"ok": True, "duplicate": True, "created_new_job": False,
+                    "reused_existing_job": True, "run_id": duplicate.get("run_id") or "",
+                    "job_id": duplicate["id"], "status": duplicate.get("status")}
         self.store.update_fields(
             job["id"], source_type="url", stage="queued", reason_code="",
             heartbeat_at=time.time(),
         )
+        # Seal the authenticated session before handing the durable job to the
+        # worker.  The frozen pipeline may spend minutes downloading/OCRing before
+        # its first provider call, so creating this context in the UI response path
+        # (or after worker spawn) is too late and races cleanup/process boundaries.
+        if bool(job.get("configuration", {}).get("translation_enabled")):
+            access_token = str(license_access_token or "").strip()
+            if not access_token:
+                raise ValueError("auth_handoff_unavailable")
+            from runtime_paths import runtime_root
+            from secure_auth_context import AuthEnvelopeStore
+
+            auth_path = AuthEnvelopeStore(runtime_root()).seal(
+                job["id"], access_token,
+                user_id=getattr(principal, "user_id", "") if principal else "",
+            )
+            job_configuration = dict(job.get("configuration") or {})
+            job_configuration.update({
+                "auth_context_id": str(job["id"]),
+                "auth_context_ref": "auth/" + auth_path.name,
+            })
+            self.store.update_fields(
+                job["id"],
+                configuration_json=json.dumps(job_configuration, ensure_ascii=False),
+            )
         # Only after the payload is durably persisted: a worker that claimed earlier could
         # otherwise analyse a row that is still missing fields it needs.
         worker = self.ensure_worker()
@@ -4592,6 +4705,7 @@ class UiBridge:
         *,
         principal: RequestPrincipal | None,
         beta_decision: BetaAccessDecision | None = None,
+        commercial_context: CommercialDeviceContext | None = None,
     ) -> dict[str, Any]:
         """Snapshot a loopback-only folder selection and queue its opaque reference.
 
@@ -4602,7 +4716,8 @@ class UiBridge:
 
         normalized = self._normalize_local_payload(payload)
         job = self._create_local_folder_staging_job(
-            normalized, principal=principal, beta_decision=beta_decision)
+            normalized, principal=principal, beta_decision=beta_decision,
+            commercial_context=commercial_context)
         self.store.update_fields(
             job["id"], stage="validating_local_source", reason_code="",
             started_at=time.time(), heartbeat_at=time.time(),
@@ -4736,6 +4851,7 @@ class UiBridge:
         *,
         principal: RequestPrincipal | None,
         beta_decision: BetaAccessDecision | None = None,
+        commercial_context: CommercialDeviceContext | None = None,
     ) -> dict[str, Any]:
         if principal is not None and not isinstance(principal, RequestPrincipal):
             raise TypeError("principal must be a RequestPrincipal")
@@ -4765,6 +4881,14 @@ class UiBridge:
         }
         if beta_decision is not None:
             configuration["beta_license_authorization"] = beta_decision.to_safe_job_metadata()
+        if commercial_context is not None:
+            configuration["commercial_device_authorization"] = {
+                "authority": "license_devices", "device_uuid": commercial_context.device_uuid,
+                "device_id": commercial_context.device_id, "license_id": commercial_context.license_id,
+                "user_id": commercial_context.user_id, "status": commercial_context.status,
+                "verified": commercial_context.verified,
+            }
+            configuration["device_uuid"] = commercial_context.device_uuid
         if principal is not None and principal.authenticated:
             configuration["community_owner_id"] = principal.user_id
         staging_owner_pid = os.getpid()
@@ -4818,6 +4942,8 @@ class UiBridge:
         max_images = None if full else int(payload.get("max_images") or 0)
         force = bool(payload.get("force", False))
         use_cache = bool(payload.get("use_cache", not force))
+        # Translation is a server/control-plane decision. Absence is fail-closed
+        # (disabled), so a legacy provider value cannot enable DeepL implicitly.
         if mode not in {"fast", "quality"}:
             raise ValueError("O modo precisa ser fast ou quality.")
         if use_cache and force:
@@ -4867,6 +4993,14 @@ class UiBridge:
 
     def _pending_duplicate(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """An identical chapter already queued or in flight, if any."""
+        idempotency_key = self._idempotency_key(payload)
+        if idempotency_key:
+            pending = self.store.list_jobs(
+                statuses=[JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
+                          JobStatus.SOURCE_ANALYSIS_READY, *JobStatus.IN_FLIGHT], limit=None)
+            for job in pending:
+                if str((job.get("configuration") or {}).get("idempotency_key") or "") == idempotency_key:
+                    return job
         try:
             url = clean_url(str(payload.get("url") or "")).strip()
             slug = sanitize_output_name(str(payload.get("slug") or ""))
@@ -4886,6 +5020,16 @@ class UiBridge:
             if same_slug or (same_url and not slug):
                 return job
         return None
+
+    @staticmethod
+    def _idempotency_key(payload: dict[str, Any]) -> str:
+        """Stable identity for one analyzed UI attempt, never based on URL/title."""
+        trace_id = str(payload.get("trace_id") or "").strip()
+        analysis_id = str(payload.get("source_analysis_result_id") or payload.get("analysis_result_id") or "").strip()
+        if not trace_id or not analysis_id:
+            return ""
+        key = f"{trace_id[:80]}:{analysis_id[:120]}"
+        return key if re.fullmatch(r"[A-Za-z0-9._:-]{3,220}", key) else ""
 
     def confirm_source_pages(self, job_id: str, candidate_ids: list[str]) -> dict[str, Any]:
         """Queue a medium-confidence reader only after an explicit, validated selection.
@@ -5075,6 +5219,7 @@ class UiBridge:
         source_analysis: dict[str, Any] | None = None,
         source_selection: dict[str, Any] | None = None,
         beta_decision: BetaAccessDecision | None = None,
+        commercial_context: CommercialDeviceContext | None = None,
     ) -> dict[str, Any]:
         if principal is not None and not isinstance(principal, RequestPrincipal):
             raise TypeError("principal must be a RequestPrincipal")
@@ -5116,6 +5261,9 @@ class UiBridge:
         details = suggest_chapter_details(normalized["url"])
         configuration = {
             "job_type": "translation",
+            # Correlates the UI request with worker/runner diagnostics without retaining
+            # any request URL or credential material.
+            "trace_id": str(payload.get("trace_id") or "")[:80],
             # Distinguish newly-created jobs from pre-ownership legacy artifacts.
             "ownership_schema_version": 1,
             "mode": normalized["mode"],
@@ -5139,12 +5287,35 @@ class UiBridge:
                 "provider_fallback_reason": "",
             },
             "translation_provider": normalized["translation_provider"],
+            "translation_enabled": normalized["translation_enabled"],
+            "translation_policy_source": "control_plane_snapshot"
+            if "translation_enabled" in payload else "fail_closed_default",
+            "translation_policy_resolved_at": time.time(),
+            "translation_request_id": str(
+                payload.get("translation_request_id")
+                or payload.get("request_id")
+                or f"translation:{payload.get('trace_id') or normalized['id']}"
+            )[:220],
             "source_analysis": source_analysis or {},
             "source_selection": source_selection or {},
             "chapter_slug": normalized["slug"],
         }
+        idempotency_key = self._idempotency_key(payload)
+        if idempotency_key:
+            configuration["idempotency_key"] = idempotency_key
+            configuration["analysis_result_id"] = str(
+                payload.get("source_analysis_result_id") or payload.get("analysis_result_id") or ""
+            )[:120]
         if beta_decision is not None:
             configuration["beta_license_authorization"] = beta_decision.to_safe_job_metadata()
+        if commercial_context is not None:
+            configuration["commercial_device_authorization"] = {
+                "authority": "license_devices", "device_uuid": commercial_context.device_uuid,
+                "device_id": commercial_context.device_id, "license_id": commercial_context.license_id,
+                "user_id": commercial_context.user_id, "status": commercial_context.status,
+                "verified": commercial_context.verified,
+            }
+            configuration["device_uuid"] = commercial_context.device_uuid
         validated_analysis_id = str(payload.get("source_analysis_result_id") or "")
         if validated_analysis_id:
             configuration["preflight_source_analysis_result_id"] = validated_analysis_id
@@ -5666,6 +5837,42 @@ class UiBridge:
         self.history_revision += 1
         return {"ok": True, "job_id": new_id}
 
+    def dismiss_resumable_job_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        """Hide one interrupted attempt without deleting history or output files.
+
+        This is deliberately limited to resumable translation rows.  Terminal and
+        active jobs remain protected, while legacy interrupted cards can be dismissed
+        from the UI without touching remote data.
+        """
+        job = self.store.get_job_for_owner(owner_id, str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_dismissible")
+        if job.get("status") not in {JobStatus.INTERRUPTED, JobStatus.RESUMABLE}:
+            raise ValueError("job_not_dismissible")
+        if not job.get("recoverable"):
+            return {"ok": True, "dismissed": True}
+        self.store.update_fields(
+            str(job["id"]), recoverable=0, interrupted_reason="dismissed_by_user"
+        )
+        self.history_revision += 1
+        return {"ok": True, "dismissed": True}
+
+    def _require_commercial_device_access(
+        self, *, principal: RequestPrincipal | None, operation: str, access_token: str = ""
+    ) -> CommercialDeviceContext:
+        authorizer = getattr(self, "commercial_device_authorizer", None)
+        if authorizer is None:
+            raise ValueError("commercial_device_authorizer_unconfigured")
+        try:
+            context = authorizer.authorize(principal=principal, operation=operation, access_token=access_token)
+        except CommercialDeviceAuthorizationError as exc:
+            raise ValueError(exc.code) from exc
+        if not isinstance(context, CommercialDeviceContext):
+            raise ValueError("malformed_commercial_device_context")
+        if principal is None or not principal.authenticated or context.user_id != principal.user_id:
+            raise ValueError("device_user_mismatch")
+        return context
+
     def _require_beta_access(
         self,
         *,
@@ -5829,8 +6036,43 @@ class UiBridge:
         signature = PROFILE_MEDIA_SIGNATURES.get(expected_type)
         if signature is None or not signature(content[:32]):
             raise ValueError("invalid_image_signature")
-        if not content or len(content) > MAX_PROFILE_MEDIA_BYTES:
-            raise ValueError("A mídia deve ter no máximo 12 MB.")
+        max_bytes = PROFILE_MEDIA_MAX_BYTES[kind]
+        if not content or len(content) > max_bytes:
+            raise ValueError(f"A imagem do {kind} pode ter até {max_bytes // (1024 * 1024)} MB.")
+
+        provider_factory = getattr(self, "profile_media_provider_factory", None)
+        try:
+            provider = provider_factory() if callable(provider_factory) else None
+        except Exception as exc:
+            raise ValueError("profile_media_storage_unavailable") from exc
+        if provider is not None and getattr(provider, "name", "") == "google_drive":
+            from community_storage import StorageError
+            import hashlib as _hashlib
+            try:
+                root = provider.ensure_folder("profile-media", "root")
+                owner = provider.ensure_folder(_hashlib.sha256(normalized_user_id.encode("utf-8")).hexdigest()[:24], root)
+                folder = provider.ensure_folder(kind, owner)
+                session = provider.create_resumable_session(
+                    filename=f"{kind}{suffix}", mime_type=expected_type,
+                    size=len(content), parent_id=folder, sha256=_hashlib.sha256(content).hexdigest())
+                result = provider.upload_chunk(session, 0, content)
+                if not result.completed or not result.file_id:
+                    raise StorageError("profile_media_upload_incomplete")
+            except Exception as exc:
+                raise ValueError("profile_media_storage_unavailable") from exc
+            previous = str(profile.get(f"{kind}_media_path") or "")
+            profile[f"{kind}_media_path"] = f"drive:{result.file_id}"
+            profile[f"{kind}_media_type"] = expected_type
+            profile[f"{kind}_media_name"] = Path(filename).name[:120]
+            profile[f"{kind}_media_size"] = len(content)
+            profile[f"{kind}_media_updated_at"] = utc_now()
+            if kind == "avatar": profile["avatar_mode"] = "image"
+            else: profile["banner"] = "custom"
+            self._write_profile(profile, user_id=normalized_user_id)
+            if previous.startswith("drive:"):
+                try: provider.move_to_trash(previous[6:])
+                except Exception: pass
+            return self._profile_payload(profile, user_id=normalized_user_id)
 
         media_root = getattr(self, "profile_media_root", PROFILE_MEDIA_DIR)
         media_root.mkdir(parents=True, exist_ok=True)
@@ -5873,7 +6115,16 @@ class UiBridge:
             raise ValueError("Tipo de mídia de perfil inválido.")
         profile = self._load_profile_for_user(normalized_user_id)
         path = self.profile_media_path(kind, user_id=normalized_user_id)
-        if path:
+        provider_factory = getattr(self, "profile_media_provider_factory", None)
+        try:
+            provider = provider_factory() if callable(provider_factory) else None
+        except Exception:
+            provider = None
+        stored_ref = str(profile.get(f"{kind}_media_path") or "")
+        if provider is not None and getattr(provider, "name", "") == "google_drive" and stored_ref.startswith("drive:"):
+            try: provider.move_to_trash(stored_ref[6:])
+            except Exception: pass
+        elif path:
             path.unlink(missing_ok=True)
         for key in ("path", "type", "name", "size", "updated_at"):
             profile.pop(f"{kind}_media_{key}", None)
@@ -5896,13 +6147,29 @@ class UiBridge:
             return None
         profile = self._load_profile_for_user(normalized_user_id)
         raw_path = str(profile.get(f"{kind}_media_path") or "")
-        if not raw_path:
+        if not raw_path or raw_path.startswith("drive:"):
             return None
         path = Path(raw_path).resolve()
         media_root = getattr(self, "profile_media_root", PROFILE_MEDIA_DIR).resolve()
         if media_root not in path.parents or not path.is_file():
             return None
         return path
+
+    def profile_media_stream(self, kind: str, *, user_id: str = ""):
+        if kind not in {"avatar", "banner"} or not user_id:
+            return None
+        profile = self._load_profile_for_user(user_id)
+        ref = str(profile.get(f"{kind}_media_path") or "")
+        if not ref.startswith("drive:"):
+            return None
+        factory = getattr(self, "profile_media_provider_factory", None)
+        provider = factory() if callable(factory) else None
+        if provider is None or getattr(provider, "name", "") != "google_drive":
+            return None
+        try:
+            return provider.open_stream(ref[6:])
+        except Exception:
+            return None
 
     def _open_artifact_path(self, path_value: str, *, select: bool = False) -> None:
         path = Path(str(path_value or "")).expanduser().resolve()
@@ -6163,6 +6430,9 @@ class UiBridge:
         max_images = None if full else int(payload.get("max_images") or 0)
         force = bool(payload.get("force", False))
         use_cache = bool(payload.get("use_cache", not force))
+        # Translation is a server/control-plane decision. Absence is fail-closed
+        # (disabled), so a legacy provider value cannot enable DeepL implicitly.
+        translation_enabled = payload.get("translation_enabled") is True
         slug = sanitize_output_name(str(payload.get("slug") or details["slug"]))
         build_run_command(
             url=url,
@@ -6191,6 +6461,7 @@ class UiBridge:
             "open_output": bool(payload.get("open_output", False)),
             "create_source_profile": payload.get("create_source_profile") is True,
             "translation_provider": self._normalize_translation_provider(payload),
+            "translation_enabled": translation_enabled,
         }
 
     @staticmethod
@@ -6208,7 +6479,7 @@ class UiBridge:
             provider = "nemotron"
         if not provider:
             provider = DEFAULT_TRANSLATION_PROVIDER
-        if provider not in TRANSLATION_PROVIDERS:
+        if provider not in (TRANSLATION_PROVIDERS | {"yomu_backend"}):
             raise ValueError("nvidia_translation_provider_invalid")
         return provider
 
@@ -6272,10 +6543,11 @@ class UiBridge:
         payload = dict(profile)
         for kind in ("avatar", "banner"):
             path = self.profile_media_path(kind, user_id=user_id)
+            has_remote = str(payload.get(f"{kind}_media_path") or "").startswith("drive:")
             updated = str(payload.get(f"{kind}_media_updated_at") or "")
             payload[f"{kind}_media_url"] = (
                 f"/api/ui/profile/media/{kind}?v={updated}"
-                if path
+                if path or has_remote
                 else ""
             )
         return payload
