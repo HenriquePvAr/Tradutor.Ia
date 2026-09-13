@@ -16,5 +16,5 @@ def test_installer_uses_release_define_not_stale_beta20():
 
 
 def test_update_manifest_defaults_to_canonical_product_version():
-    source = Path("tools/build_update_manifest.py").read_text(encoding="utf-8")
+    source = Path("tools/release/build_update_manifest.py").read_text(encoding="utf-8")
     assert "default=PRODUCT_VERSION" in source
