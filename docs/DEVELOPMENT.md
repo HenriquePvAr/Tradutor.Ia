@@ -389,3 +389,10 @@ Pontos rápidos:
 - suíte `.mjs` falha com `vm.SourceTextModule is not a constructor`: falta a flag
   `--experimental-vm-modules`;
 - `review_required` não é falha: veja [Filosofia de qualidade](../README.md#filosofia-de-qualidade).
+# Estrutura durante a closed beta
+
+Durante a closed beta, o runtime permanece na estrutura atual para evitar
+regressões em imports, entrypoints e PyInstaller. Os tools internos estão
+separados em `tools/release/`, `tools/admin/` e `tools/dev/`. A migração ampla
+para um pacote `src/yomu_sekai/` fica adiada para o pós-beta e só deve ocorrer
+com atualização controlada de imports, testes e especificações de packaging.

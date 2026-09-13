@@ -52,8 +52,10 @@ env/
 *.dmp
 *.etl
 
-# Local audit outputs: keep authored audit notes under artifacts/audit,
-# but ignore regenerable logs and inventory manifests.
+# Local audit outputs remain in private local storage. Authoritative
+# documentation belongs under docs/; artifacts/ is not part of the product
+# source tree.
+artifacts/
 artifacts/audit/*.log
 artifacts/audit/*-manifest.csv
 artifacts/audit/runtime/*.log
