@@ -52,6 +52,9 @@ import linguistic_triage
 import region_taxonomy
 import natural_ptbr_refinement
 import refinement_selection_decisions
+import update_manifest
+import update_transport
+from app_version import BUILD_VERSION
 from translator_nvidia import TranslatorNvidiaBatch
 from chapter_quality_revision import REVIEW_SCHEMA_VERSION
 from local_environment import load_local_environment_for_entrypoint
@@ -1474,6 +1477,30 @@ def _page_revision_error(exc: ValueError) -> HTTPException:
         "message": "Não foi possível concluir a ação da revisão da página.",
         "action": "Confira job, run e a revisão da página e tente novamente.",
     })
+
+@app.get("/api/update/manifest")
+def api_update_manifest() -> JSONResponse:
+    """Read-only signed-manifest check used by the in-app Atualizações surface."""
+    installed = BUILD_VERSION
+    manifest_url = os.getenv("TRADUTOR_IA_UPDATE_MANIFEST_URL", "").strip()
+    if not manifest_url:
+        return JSONResponse({"state": "not_configured", "version": installed,
+                             "channel": update_manifest.CLIENT_UPDATE_CHANNEL,
+                             "can_install": False}, headers={"Cache-Control": "no-store"})
+    try:
+        raw = update_transport.UpdateTransport().fetch_manifest(manifest_url)
+        manifest = update_manifest.verify_manifest(raw, trusted_keys=update_manifest.load_trusted_keys())
+        decision = update_manifest.decide_update(installed, manifest)
+        return JSONResponse({"state": decision.state, "version": installed,
+                             "available_version": manifest.version_text, "channel": manifest.channel,
+                             "published_at": manifest.published_at.isoformat(),
+                             "package_size": manifest.package.size, "mandatory": decision.mandatory,
+                             "can_install": decision.should_install}, headers={"Cache-Control": "no-store"})
+    except (update_manifest.UpdateError, update_transport.TransportError) as exc:
+        return JSONResponse({"state": "error", "version": installed,
+                             "channel": update_manifest.CLIENT_UPDATE_CHANNEL,
+                             "can_install": False, "error": type(exc).__name__}, status_code=502,
+                            headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/ui/page-revision/regions")

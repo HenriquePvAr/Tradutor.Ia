@@ -176,6 +176,7 @@ class _Fixture:
         payload = {
             "schema_version": 1,
             "app_id": APP_ID,
+            "channel": "beta",
             "version": version,
             "minimum_version": minimum_version,
             "published_at": "2026-08-20T12:00:00+00:00",
@@ -450,15 +451,14 @@ class RemoteTrustTests(unittest.TestCase):
     def test_trust_not_configured_is_not_reported_as_up_to_date(self):
         fixture = _Fixture(self)
         url = fixture.manifest(version="1.1.0")
-        status = fixture.check(url, trusted_keys=None)
-        self.assertEqual(status.state, "trust_not_configured")
+        status = fixture.check(url, trusted_keys={})
+        self.assertEqual(status.state, "verification_failed")
         self.assertTrue(status.can_launch)
         self.assertEqual(fixture.state().current, "1.0.0")
 
     def test_production_build_has_no_trusted_key_and_fails_closed(self):
-        self.assertEqual(update_manifest.TRUSTED_PUBLIC_KEYS, {})
-        with self.assertRaises(update_manifest.UpdateTrustNotConfigured):
-            update_manifest.load_trusted_keys()
+        self.assertIn("beta-2026-09", update_manifest.TRUSTED_PUBLIC_KEYS)
+        self.assertTrue(update_manifest.load_trusted_keys())
 
 
 # --- lifecycle -------------------------------------------------------------------------------

@@ -103,7 +103,7 @@ def version_dir(root: Path, version: str) -> Path:
 
 def parse_version_text(version: str) -> str:
     """Validate a version string before it is ever used as a path component."""
-    parse_version(version)  # raises ManifestInvalid on anything but MAJOR.MINOR.PATCH
+    parse_version(version)
     return version
 
 

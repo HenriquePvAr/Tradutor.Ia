@@ -12,12 +12,8 @@ imported by name. A file that has to be parsed at runtime would need a parser an
 ``from app_version import PRODUCT_VERSION`` needs neither, and the future Setup can read it with
 one import.
 
-**0.9.0** is deliberate. The format is strict ``MAJOR.MINOR.PATCH`` because
-``update_manifest.parse_version`` compares releases as integer tuples and rejects pre-release
-suffixes — a version that cannot be ordered cannot gate an update. ``0.x`` carries the
-pre-release meaning instead: this is external Scan Beta preparation, not a public stable 1.0,
-and claiming ``1.0.0`` would say something false. The first public stable release is what turns
-this into ``1.0.0``.
+**0.9.0** remains the product line, while ``BUILD_VERSION`` carries the ordered beta payload.
+The updater's strict SemVer parser understands prereleases such as ``0.9.0-beta.33``.
 """
 
 from __future__ import annotations
@@ -27,7 +23,7 @@ PRODUCT_VERSION = "0.9.0"
 
 # Build identity is intentionally separate from the semver payload used by update
 # comparisons; diagnostics and installers must identify the exact beta artifact.
-BUILD_VERSION = "0.9.0-beta.32"
+BUILD_VERSION = "0.9.0-beta.33"
 
 # Human-facing prerelease identifier derived from the canonical build value.
 DISPLAY_VERSION = BUILD_VERSION

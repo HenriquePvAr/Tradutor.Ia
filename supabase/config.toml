@@ -12,3 +12,8 @@ schema_paths = []
 
 [test]
 # `supabase test db` runs every *.sql under this folder as pgTAP (requires Docker).
+
+# The update manifest contains public, signed metadata only. Its signature and hash are
+# verified by the client; no Supabase JWT is required for a pre-login update check.
+[functions.update-manifest]
+verify_jwt = false

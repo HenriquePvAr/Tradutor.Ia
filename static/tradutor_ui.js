@@ -6801,11 +6801,24 @@
   });
   $('#dashGotoHistory')?.addEventListener('click', () => activateTab('hist'));
   $('#checkUpdatesBtn')?.addEventListener('click', async event => {
-    const button = event.currentTarget; const title = $('#updateStatusTitle'); button.disabled = true;
-    if (title) title.textContent = 'Verificando atualizações…';
-    if ($('#updateStatus')) $('#updateStatus').textContent = 'Consultando o canal beta com segurança.';
-    try { const response = await fetch('/api/update/manifest', {cache:'no-store'}); $('#updateLastChecked').textContent = new Date().toLocaleString('pt-BR'); if (title) title.textContent = response.ok ? 'Você está usando a versão mais recente.' : 'Não foi possível verificar agora'; if ($('#updateStatus')) $('#updateStatus').textContent = response.ok ? 'Nenhuma atualização está disponível neste momento.' : 'Tente novamente mais tarde.'; }
-    catch (_) { if (title) title.textContent = 'Não foi possível verificar agora'; if ($('#updateStatus')) $('#updateStatus').textContent = 'Tente novamente mais tarde.'; }
+    const button = event.currentTarget; const title = $('#updateStatusTitle'); const status = $('#updateStatus'); button.disabled = true;
+    const setState = (state, heading, copy) => { if (title) title.textContent = heading; if (status) status.textContent = copy; button.dataset.updateState = state; };
+    setState('checking', 'Verificando atualizações…', 'Consultando o canal beta com segurança.');
+    try {
+      const response = await fetch('/api/update/manifest', {cache:'no-store'});
+      const data = await response.json().catch(() => ({}));
+      $('#updateLastChecked').textContent = new Date().toLocaleString('pt-BR');
+      if (!response.ok || data.state === 'error') setState('error', 'Não foi possível verificar agora', 'O canal de atualização não respondeu de forma válida.');
+      else if (data.state === 'update_available' || data.state === 'mandatory_update') {
+        setState('update_available', `Versão ${data.available_version} disponível`, `Uma atualização segura está pronta para download (${Math.round(Number(data.package_size || 0) / 1024)} KB).`);
+        let download = $('#downloadUpdateBtn');
+        if (!download) { download = document.createElement('button'); download.id = 'downloadUpdateBtn'; download.type = 'button'; download.className = 'btn-ghost'; button.parentNode.appendChild(download); }
+        download.hidden = false; download.disabled = false; download.textContent = 'Baixar atualização';
+        download.onclick = () => { download.disabled = true; setState('downloading', 'Preparando atualização…', 'O download só será iniciado após a publicação do artifact assinado.'); setTimeout(() => setState('error', 'Atualização indisponível', 'O canal beta ainda não publicou um artifact para download.'), 250); };
+      }
+      else if (data.state === 'not_configured') setState('error', 'Atualizações ainda não publicadas', 'O canal beta será habilitado quando a próxima versão for publicada.');
+      else setState('up_to_date', 'Você está usando a versão mais recente.', 'Nenhuma atualização está disponível neste momento.');
+    } catch (_) { setState('error', 'Não foi possível verificar agora', 'Tente novamente mais tarde.'); }
     finally { button.disabled = false; }
   });
 

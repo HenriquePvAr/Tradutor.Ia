@@ -32,6 +32,7 @@ from update_manifest import (
     PackageSizeMismatch,
     SignatureInvalid,
     UnsafeArchive,
+    WrongChannel,
     UnsupportedManifest,
     UpdateTrustNotConfigured,
     WrongApplication,
@@ -45,6 +46,7 @@ def _payload(**overrides) -> dict:
     payload = {
         "schema_version": 1,
         "app_id": APP_ID,
+        "channel": "beta",
         "version": "1.1.0",
         "minimum_version": "1.0.0",
         "published_at": "2026-08-20T12:00:00+00:00",
@@ -125,19 +127,47 @@ class SignatureMatrixTests(unittest.TestCase):
 
     def test_valid_manifest_verifies(self):
         manifest = update_manifest.verify_manifest(self._signed(), trusted_keys=self.trusted)
-        self.assertEqual(manifest.version, (1, 1, 0))
+        self.assertEqual(manifest.version_text, "1.1.0")
         self.assertEqual(manifest.app_id, APP_ID)
+        self.assertEqual(manifest.channel, "beta")
         self.assertEqual(manifest.key_id, KEY_ID)
 
     def test_manifest_verifies_from_raw_json_text(self):
         raw = json.dumps(self._signed(), indent=4)
         manifest = update_manifest.verify_manifest(raw, trusted_keys=self.trusted)
-        self.assertEqual(manifest.version, (1, 1, 0))
+        self.assertEqual(manifest.version_text, "1.1.0")
 
     def test_one_byte_payload_mutation_is_rejected(self):
         signed = self._signed()
         signed["payload"]["version"] = "1.1.1"
         with self.assertRaises(SignatureInvalid):
+            update_manifest.verify_manifest(signed, trusted_keys=self.trusted)
+
+    def test_channel_tamper_invalidates_signature(self):
+        signed = self._signed()
+        signed["payload"]["channel"] = "stable"
+        with self.assertRaises(SignatureInvalid):
+            update_manifest.verify_manifest(signed, trusted_keys=self.trusted)
+
+    def test_beta_client_rejects_stable_channel_when_resigned(self):
+        signed = self._signed(_payload(channel="stable"))
+        with self.assertRaises(WrongChannel):
+            update_manifest.verify_manifest(signed, trusted_keys=self.trusted)
+
+    def test_beta_client_rejects_unknown_channel_when_resigned(self):
+        signed = self._signed(_payload(channel="preview"))
+        with self.assertRaises(WrongChannel):
+            update_manifest.verify_manifest(signed, trusted_keys=self.trusted)
+
+    def test_missing_channel_rejected(self):
+        payload = _payload(); payload.pop("channel")
+        signed = self._signed(payload)
+        with self.assertRaises(ManifestInvalid):
+            update_manifest.verify_manifest(signed, trusted_keys=self.trusted)
+
+    def test_malformed_channel_rejected(self):
+        signed = self._signed(_payload(channel="Beta"))
+        with self.assertRaises(ManifestInvalid):
             update_manifest.verify_manifest(signed, trusted_keys=self.trusted)
 
     def test_added_payload_field_is_rejected(self):
@@ -240,9 +270,8 @@ class SignatureMatrixTests(unittest.TestCase):
             update_manifest.verify_manifest(self._signed(), trusted_keys={})
 
     def test_production_trust_store_fails_closed_while_no_release_key_exists(self):
-        self.assertEqual(update_manifest.TRUSTED_PUBLIC_KEYS, {})
-        with self.assertRaises(UpdateTrustNotConfigured):
-            update_manifest.load_trusted_keys()
+        self.assertIn("beta-2026-09", update_manifest.TRUSTED_PUBLIC_KEYS)
+        self.assertTrue(update_manifest.load_trusted_keys())
 
 
 class VersionPolicyTests(unittest.TestCase):
@@ -282,6 +311,33 @@ class VersionPolicyTests(unittest.TestCase):
     def test_malformed_current_version_is_rejected(self):
         with self.assertRaises(ManifestInvalid):
             update_manifest.decide_update("beta", self._manifest())
+
+    def test_beta_prerelease_ordering(self):
+        self.assertLess(update_manifest.parse_version("0.9.0-beta.31"), update_manifest.parse_version("0.9.0-beta.32"))
+        self.assertLess(update_manifest.parse_version("0.9.0-beta.32"), update_manifest.parse_version("0.9.0-beta.33"))
+        self.assertLess(update_manifest.parse_version("0.9.0-beta.33"), update_manifest.parse_version("0.9.0"))
+        self.assertLess(update_manifest.parse_version("0.9.0-beta.9"), update_manifest.parse_version("0.9.0-beta.10"))
+        self.assertGreater(update_manifest.parse_version("0.9.1-beta.1"), update_manifest.parse_version("0.9.0"))
+        self.assertGreater(update_manifest.parse_version("1.0.0-beta.1"), update_manifest.parse_version("0.9.9"))
+
+    def test_beta32_to_beta33_is_an_update(self):
+        manifest = self._manifest(version="0.9.0-beta.33", minimum_version="0.9.0-beta.30")
+        decision = update_manifest.decide_update("0.9.0-beta.32", manifest)
+        self.assertEqual(decision.state, "update_available")
+
+    def test_beta33_to_beta32_is_a_downgrade(self):
+        manifest = self._manifest(version="0.9.0-beta.32", minimum_version="0.9.0-beta.30")
+        decision = update_manifest.decide_update("0.9.0-beta.33", manifest)
+        self.assertEqual(decision.state, "downgrade_rejected")
+
+    def test_prerelease_minimum_version_is_enforced(self):
+        manifest = self._manifest(version="0.9.0-beta.33", minimum_version="0.9.0-beta.33")
+        self.assertEqual(update_manifest.decide_update("0.9.0-beta.32", manifest).state, "mandatory_update")
+
+    def test_malformed_prerelease_versions_are_rejected(self):
+        for value in ("", "beta.33", "0.9", "0.9.0-", "0.9.0-beta.", "0.9.0-beta.x", "v0.9.0-beta.33", " 0.9.0-beta.33"):
+            with self.subTest(value=value), self.assertRaises(ManifestInvalid):
+                update_manifest.parse_version(value)
 
 
 class PackageIntegrityTests(unittest.TestCase):

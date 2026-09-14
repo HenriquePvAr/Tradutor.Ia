@@ -42,6 +42,7 @@ import stat
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
+from functools import total_ordering
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -53,6 +54,7 @@ log = logging.getLogger(__name__)
 #: The application this client accepts updates for. A validly signed manifest for a different
 #: product must never install here, even if it was signed by the same release key.
 APP_ID = "tradutor-ia"
+CLIENT_UPDATE_CHANNEL = "beta"
 
 #: Only this manifest schema is understood. An unknown schema fails closed rather than being
 #: interpreted with guessed semantics.
@@ -68,15 +70,20 @@ _BOOTSTRAP_VERSION_DEFAULT = "0.0.0"
 SIGNATURE_ALGORITHM = "ed25519"
 _SIGNATURE_LENGTH = 64
 _KEY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-_VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+_CHANNEL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+_VERSION_PATTERN = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 #: Local trust root: ``key_id -> base64 raw Ed25519 public key``. Public material only; nothing
-#: here is secret. It is **intentionally empty**: no production release key exists yet, and
-#: shipping an invented placeholder as the final trust root would be worse than shipping none.
-#: ``load_trusted_keys`` therefore fails closed, and tests inject their own ephemeral key
-#: explicitly instead of a flag that weakens the production gate.
-TRUSTED_PUBLIC_KEYS: dict[str, str] = {}
+#: here is secret. The corresponding private release key remains outside this repository.
+TRUSTED_PUBLIC_KEYS: dict[str, str] = {
+    # Public half of the Yomu Sekai beta release key. The matching private key is held
+    # outside this repository in the secure publication environment.
+    "beta-2026-09": "XTimQMUs/c20b2IEJnKZHJqqym7zhRtW+ufplfc2dNQ=",
+}
 
 
 class UpdateError(Exception):
@@ -93,6 +100,10 @@ class UnsupportedManifest(UpdateError):
 
 class WrongApplication(UpdateError):
     """Signed for a different ``app_id``."""
+
+
+class WrongChannel(UpdateError):
+    """Signed for a release channel this client does not consume."""
 
 
 class SignatureInvalid(UpdateError):
@@ -148,21 +159,76 @@ def canonical_payload_bytes(payload: Mapping[str, Any]) -> bytes:
         raise ManifestInvalid(f"manifest payload is not serializable: {exc}") from exc
 
 
-def parse_version(text: Any) -> tuple[int, int, int]:
-    """Parse a strict ``MAJOR.MINOR.PATCH`` version into a comparable tuple.
+@total_ordering
+@dataclass(frozen=True)
+class SemanticVersion:
+    """Strict SemVer value with the precedence rules required by release updates."""
 
-    Tuple comparison is what makes ``1.10.0 > 1.9.0`` true; string comparison would get that
-    backwards. The format is deliberately narrow (no pre-release, no build metadata) because
-    the Beta has exactly one channel and an unparseable version must fail, never sort oddly.
-    """
-    if not isinstance(text, str) or not _VERSION_PATTERN.match(text):
+    major: int
+    minor: int
+    patch: int
+    prerelease: tuple[str, ...] = ()
+    build: tuple[str, ...] = ()
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SemanticVersion):
+            return NotImplemented
+        # SemVer build metadata does not participate in precedence.
+        return (self.major, self.minor, self.patch, self.prerelease) == (
+            other.major, other.minor, other.patch, other.prerelease
+        )
+
+    def _precedence(self) -> tuple:
+        core = (self.major, self.minor, self.patch)
+        if not self.prerelease:
+            return core, 1, ()
+        identifiers = tuple(
+            (0, int(item)) if item.isdigit() else (1, item) for item in self.prerelease
+        )
+        return core, 0, identifiers
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, SemanticVersion):
+            return NotImplemented
+        left, right = self._precedence(), other._precedence()
+        if left[:2] != right[:2]:
+            return left[:2] < right[:2]
+        if not self.prerelease or not other.prerelease:
+            return False
+        for a, b in zip(left[2], right[2]):
+            if a != b:
+                return a < b
+        return len(left[2]) < len(right[2])
+
+
+def parse_version(text: Any) -> SemanticVersion:
+    """Parse strict SemVer, including prereleases such as ``0.9.0-beta.33``."""
+    if not isinstance(text, str) or not text or text != text.strip():
         raise ManifestInvalid(f"invalid version: {text!r}")
-    major, minor, patch = text.split(".")
-    return int(major), int(minor), int(patch)
+    match = _VERSION_PATTERN.fullmatch(text)
+    if not match:
+        raise ManifestInvalid(f"invalid version: {text!r}")
+    major, minor, patch, prerelease_raw, build_raw = match.groups()
+    prerelease = tuple(prerelease_raw.split(".")) if prerelease_raw else ()
+    if any(item.isdigit() and len(item) > 1 and item.startswith("0") for item in prerelease):
+        raise ManifestInvalid(f"invalid version: {text!r}")
+    # Product beta builds use the explicit ``beta.N`` form; do not accept an ambiguous
+    # ``beta``/``beta.x`` label that cannot be ordered as a release sequence.
+    if prerelease and prerelease[0] == "beta" and (
+        len(prerelease) != 2 or not prerelease[1].isdigit()
+    ):
+        raise ManifestInvalid(f"invalid version: {text!r}")
+    build = tuple(build_raw.split(".")) if build_raw else ()
+    return SemanticVersion(int(major), int(minor), int(patch), prerelease, build)
 
 
-def format_version(version: tuple[int, int, int]) -> str:
-    return "{}.{}.{}".format(*version)
+def format_version(version: SemanticVersion) -> str:
+    value = f"{version.major}.{version.minor}.{version.patch}"
+    if version.prerelease:
+        value += "-" + ".".join(version.prerelease)
+    if version.build:
+        value += "+" + ".".join(version.build)
+    return value
 
 
 # --- manifest ----------------------------------------------------------------------------
@@ -179,14 +245,15 @@ class UpdatePackage:
 class UpdateManifest:
     schema_version: int
     app_id: str
-    version: tuple[int, int, int]
-    minimum_version: tuple[int, int, int]
+    channel: str
+    version: SemanticVersion
+    minimum_version: SemanticVersion
     published_at: datetime
     package: UpdatePackage
     key_id: str
     #: Oldest bootstrap/launcher that may host this payload. Optional in the schema and
     #: defaulting to ``0.0.0`` (see ``_BOOTSTRAP_VERSION_DEFAULT``).
-    minimum_bootstrap_version: tuple[int, int, int] = (0, 0, 0)
+    minimum_bootstrap_version: SemanticVersion = SemanticVersion(0, 0, 0)
 
     @property
     def version_text(self) -> str:
@@ -306,6 +373,12 @@ def verify_manifest(
     if manifest_app_id != app_id:
         raise WrongApplication(f"manifest is for {manifest_app_id!r}, not {app_id!r}")
 
+    channel = _require(payload, "channel", str)
+    if not _CHANNEL_PATTERN.fullmatch(channel):
+        raise ManifestInvalid("manifest channel is malformed")
+    if channel != CLIENT_UPDATE_CHANNEL:
+        raise WrongChannel(f"manifest channel {channel!r} is not accepted by this client")
+
     version = parse_version(payload.get("version"))
     minimum_version = parse_version(payload.get("minimum_version"))
     if minimum_version > version:
@@ -320,6 +393,7 @@ def verify_manifest(
     manifest = UpdateManifest(
         schema_version=schema_version,
         app_id=manifest_app_id,
+        channel=channel,
         version=version,
         minimum_version=minimum_version,
         published_at=published_at,
