@@ -325,10 +325,10 @@ Ordenados por dependência. Nenhum é trabalho de qualidade de pipeline — o
 | # | Bloqueador | Estado hoje | Registro |
 | --- | --- | --- | --- |
 | 1 | Convergir para **uma** distribuição de OpenCV em runtime | três variantes coexistem; `cv2` vem da `-headless` | `OPENCV-VARIANT-SHADOWING-001` |
-| 2 | Empacotar runtime + instalador para usuário final | nenhum spec de build, builder ou `Setup.exe` | `PACKAGING-PENDING` |
-| 3 | Provisionamento de configuração do tester | tester precisaria criar `.env` à mão | `TESTER-CONFIG-PROVISIONING-PENDING` |
-| 4 | Ligar o authorizer de licença Beta à configuração | `ui_bridge.py` fixa o authorizer de desenvolvimento local | `BETA-AUTHORIZER-NOT-WIRED` |
-| 5 | Conceder o primeiro entitlement real de tester | schema/RLS/RPC existem; nenhum grant real | `FIRST-TESTER-GRANT-PENDING` |
+| 2 | Finalizar installer e distribuição controlada | runtime/spec de produção existem; installer final e distribuição ainda não foram validados | `INSTALLER-FINAL-PENDING` |
+| 3 | Provisionamento de configuração do tester | configuração pública e contratos locais existem; fluxo de entrega ao tester ainda não foi validado em máquina limpa | `TESTER-CONFIG-PROVISIONING-PENDING` |
+| 4 | Ativar e validar o authorizer remoto de licença Beta | implementação local corrigida; deploy e validação remotos ainda pendentes | `BETA-AUTHORIZER-REMOTE-PENDING` |
+| 5 | Validar o primeiro entitlement real de tester | schema/RLS/RPC e correção local existem; LIC-001 remoto ainda não foi executado | `FIRST-TESTER-GRANT-PENDING` |
 | 6 | Canal de release assinado: hospedagem, chave pública e UI de atualização | núcleo de confiança fechado; `TRUSTED_PUBLIC_KEYS` e `DEFAULT_MANIFEST_URL` vazios de propósito | `UPDATER-RELEASE-CHANNEL-PENDING`, `UPDATE-TRUST-ROOT-EMPTY` |
 | 7 | Provar instalação limpa em Windows + E2E real sobre ela | nenhuma validação em máquina limpa | `CLEAN-INSTALL-NOT-YET-PROVEN`, `CLEAN-VM-VALIDATION-PENDING` |
 
