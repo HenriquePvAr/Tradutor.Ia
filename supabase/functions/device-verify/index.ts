@@ -38,7 +38,9 @@ Deno.serve(async (req) => {
     } catch {
       return json({ code: 'device_signature_invalid' }, 401);
     }
-    if (!await crypto.subtle.verify({ name: 'Ed25519' }, key, sig, new TextEncoder().encode(nonce))) {
+    const signatureBytes = new Uint8Array(sig).buffer as ArrayBuffer;
+    const nonceBytes = new TextEncoder().encode(nonce).buffer as ArrayBuffer;
+    if (!await crypto.subtle.verify({ name: 'Ed25519' }, key, signatureBytes, nonceBytes)) {
       return json({ code: 'device_signature_invalid' }, 401);
     }
     const consume = await fetch(`${u}/rest/v1/rpc/consume_device_challenge`, {
