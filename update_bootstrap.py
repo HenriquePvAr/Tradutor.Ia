@@ -61,10 +61,9 @@ log = logging.getLogger(__name__)
 #: two launchers cannot bounce updates back and forth.
 HANDOFF_ENV = "TRADUTOR_IA_UPDATE_CHECKED"
 
-#: Where the signed manifest lives. Empty in this build: no release channel is configured yet,
-#: and inventing a URL would be a fake production channel.
+#: Public beta manifest endpoint. Test/dev callers may still override it with the environment.
 MANIFEST_URL_ENV = "TRADUTOR_IA_UPDATE_MANIFEST_URL"
-DEFAULT_MANIFEST_URL = ""
+DEFAULT_MANIFEST_URL = "https://raw.githubusercontent.com/HenriquePvAr/YomuSekai-Releases/main/updates/beta/latest.json"
 
 #: Overrides install-root detection; the future Setup can point at the real install location.
 INSTALL_ROOT_ENV = "TRADUTOR_IA_INSTALL_ROOT"

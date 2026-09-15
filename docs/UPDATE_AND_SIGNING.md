@@ -13,6 +13,6 @@ O installer recebe `ProductVersion` por define do `tools/build_installer.py`; ne
 é gerado nesta fase.
 
 O canal da closed beta ainda não está publicado (o endpoint remoto permanece placeholder).
-A primeira atualização segura em campo será `0.9.0-beta.34` → `0.9.0-beta.35`, pois a beta.32
+A primeira atualização segura em campo será `0.9.0-beta.35` → `0.9.0-beta.36`, pois a beta.34
 precede a inclusão do trust root e do parser SemVer. Manifesto, canal ausente ou incorreto,
 hash, assinatura inválida e downgrade falham fechado antes de qualquer instalação.
