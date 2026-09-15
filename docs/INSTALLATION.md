@@ -127,6 +127,7 @@ O projeto não exige que modelos sejam copiados manualmente para uma pasta inter
 repositório.
 
 Tesseract está presente apenas como caminho opcional de compatibilidade. Ele não é o OCR principal e não precisa ser instalado para os modos documentados no README.
+Planeje a primeira execução com conexão disponível e espaço em disco.
 
 ## 6. Chrome e ChromeDriver
 
@@ -155,7 +156,7 @@ Se a resolução automática falhar, defina um caminho genérico no `.env`:
 CHROMEDRIVER_PATH=C:\ferramentas\chromedriver.exe
 ```
 
-Não copie caminhos pessoais da documentação para sua máquina; use o local real da sua instalação.
+
 
 ## 7. Verificar a instalação
 
