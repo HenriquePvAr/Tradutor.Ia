@@ -55,6 +55,7 @@ import refinement_selection_decisions
 import update_manifest
 import update_transport
 import installer_update
+from update_bootstrap import DEFAULT_MANIFEST_URL
 from app_version import BUILD_VERSION
 from translator_nvidia import TranslatorNvidiaBatch
 from chapter_quality_revision import REVIEW_SCHEMA_VERSION
@@ -1485,7 +1486,7 @@ def _page_revision_error(exc: ValueError) -> HTTPException:
 def api_update_manifest() -> JSONResponse:
     """Read-only signed-manifest check used by the in-app Atualizações surface."""
     installed = BUILD_VERSION
-    manifest_url = os.getenv("TRADUTOR_IA_UPDATE_MANIFEST_URL", "").strip()
+    manifest_url = os.getenv("TRADUTOR_IA_UPDATE_MANIFEST_URL", DEFAULT_MANIFEST_URL).strip()
     if not manifest_url:
         return JSONResponse({"state": "not_configured", "version": installed,
                              "channel": update_manifest.CLIENT_UPDATE_CHANNEL,
@@ -1510,7 +1511,7 @@ def api_update_manifest() -> JSONResponse:
 @app.post("/api/update/download")
 def api_update_download() -> JSONResponse:
     """Download a verified Windows installer into user-scoped staging."""
-    manifest_url = os.getenv("TRADUTOR_IA_UPDATE_MANIFEST_URL", "").strip()
+    manifest_url = os.getenv("TRADUTOR_IA_UPDATE_MANIFEST_URL", DEFAULT_MANIFEST_URL).strip()
     if not manifest_url:
         return JSONResponse({"state": "not_configured", "can_install": False}, status_code=409)
     try:
