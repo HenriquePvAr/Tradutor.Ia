@@ -2983,6 +2983,7 @@ def index() -> None:
         "<script>"
         f"window.__tradutorRuntimeIdentity = {runtime_identity};"
         f"window.__tradutorBuildVersion = {dumps_json(BUILD_VERSION)};"
+        f"window.__yomuPassiveAdsProviderEnabled = {dumps_json(os.getenv('YOMU_PASSIVE_ADS_PROVIDER_ENABLED', '').strip() == '1')};"
         f"window.__tradutorVisualTestEnabled = {'true' if visual_test_enabled else 'false'};"
         f"window.__tradutorAuthDiagnosticsEnabled = {'true' if _AUTH_DIAGNOSTICS_ENABLED else 'false'};"
         "</script>"
@@ -2997,6 +2998,7 @@ def index() -> None:
         ui.add_body_html(f'<script src="{_asset_url(PIPELINE_HARNESS_ASSET)}" defer></script>')
     ui.add_body_html(f'<script type="module" src="{_asset_url(SERVICE_HEALTH_ASSET)}"></script>')
     ui.add_head_html(f'<script type="module" src="{_asset_url(STATIC_DIR / "control_plane_client.js")}"></script>')
+    ui.add_head_html(f'<script src="{_asset_url(STATIC_DIR / "passive_ad_slot.js")}"></script>')
     # Keep the auth module in the document head so it is parsed/executed by the
     # browser independently of body-fragment hydration and the NiceGUI websocket.
     # Unlike add_body_html, this is part of the page head before the shell starts.
