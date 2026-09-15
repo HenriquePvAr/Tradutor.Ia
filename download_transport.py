@@ -323,8 +323,14 @@ class RequestsTransport:
                 raise ChallengeRequired("http_%d" % status)
             raise SourceError(SOURCE_ACCESS_DENIED, str(status))
         if status in (429, 503):
+            retry_after = response.headers.get("Retry-After")
             response.close()
-            raise SourceError(SOURCE_RATE_LIMITED, str(status))
+            error = SourceError(SOURCE_RATE_LIMITED, str(status))
+            try:
+                error.retry_after = float(retry_after) if retry_after is not None else None
+            except (TypeError, ValueError):
+                error.retry_after = None
+            raise error
         if status != 200:
             response.close()
             raise SourceError(INVALID_IMAGE_RESPONSE, f"status_{status}")

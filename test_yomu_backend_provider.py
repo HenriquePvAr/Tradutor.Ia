@@ -85,6 +85,90 @@ def test_translate_many_splits_large_logical_batch_and_reuses_reservation(tmp_pa
     assert backend.reserve_count == 1
 
 
+def test_translate_many_marks_only_last_batch_for_job_finalization(tmp_path: Path, monkeypatch):
+    class FinalizationCaptureBackend(MockBackendClient):
+        def __init__(self):
+            super().__init__()
+            self.finalize_flags = []
+            self.debit_count = 0
+            self.xp_count = 0
+
+        def translate_batch(self, request, *, reservation_id, auth_token, finalize_job=True):
+            self.finalize_flags.append(bool(finalize_job))
+            if finalize_job:
+                self.debit_count += 1
+                self.xp_count += 1
+            return super().translate_batch(request, reservation_id=reservation_id,
+                                            auth_token=auth_token, finalize_job=finalize_job)
+
+    job_id = "job-finalize"
+    AuthEnvelopeStore(tmp_path).seal(job_id, tok())
+    monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
+    monkeypatch.setenv("TRADUTOR_REQUEST_ID", "translation:finalize")
+    backend = FinalizationCaptureBackend()
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+    provider.translate_many(["x" * 4000] * 35)
+    assert backend.reserve_count == 1
+    assert backend.finalize_flags == [False, True]
+    assert backend.debit_count == 1
+    assert backend.xp_count == 1
+
+
+def test_multi_batch_failure_never_consumes_chapter_reservation(tmp_path: Path, monkeypatch):
+    class FailingBatchBackend(MockBackendClient):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+            self.finalize_flags = []
+            self.debit_count = 0
+
+        def translate_batch(self, request, *, reservation_id, auth_token, finalize_job=True):
+            self.calls += 1
+            self.finalize_flags.append(bool(finalize_job))
+            if self.calls == 2:
+                raise BackendTranslationError("provider_failed")
+            response = super().translate_batch(request, reservation_id=reservation_id,
+                                               auth_token=auth_token, finalize_job=finalize_job)
+            if finalize_job:
+                self.debit_count += 1
+            return response
+
+    job_id = "job-failure"
+    AuthEnvelopeStore(tmp_path).seal(job_id, tok())
+    monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
+    monkeypatch.setenv("TRADUTOR_REQUEST_ID", "translation:failure")
+    backend = FailingBatchBackend()
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+    with pytest.raises(BackendTranslationError, match="provider_failed"):
+        provider.translate_many(["x" * 4000] * 35)
+    assert backend.reserve_count == 1
+    assert backend.finalize_flags == [False, True]
+    assert backend.debit_count == 0
+
+
+def test_legacy_per_batch_consumption_reproduces_multi_batch_bug(tmp_path: Path, monkeypatch):
+    class LegacyConsumingBackend(MockBackendClient):
+        def __init__(self):
+            super().__init__()
+            self.consumed = False
+
+        def translate_batch(self, request, *, reservation_id, auth_token, finalize_job=True):
+            if self.consumed:
+                raise BackendTranslationError("reservation_invalid")
+            response = super().translate_batch(request, reservation_id=reservation_id,
+                                               auth_token=auth_token, finalize_job=finalize_job)
+            self.consumed = True  # models the pre-fix RPC consuming on every request
+            return response
+
+    job_id = "job-legacy-repro"
+    AuthEnvelopeStore(tmp_path).seal(job_id, tok())
+    monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
+    monkeypatch.setenv("TRADUTOR_REQUEST_ID", "translation:legacy-repro")
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=LegacyConsumingBackend())
+    with pytest.raises(BackendTranslationError, match="reservation_invalid"):
+        provider.translate_many(["x" * 4000] * 35)
+
+
 def test_provider_uses_verified_license_device_row_uuid_for_reservation(tmp_path: Path, monkeypatch):
     class CaptureBackend(MockBackendClient):
         def reserve(self, *, job_id, request_id, auth_token, device_id=""):
@@ -111,9 +195,10 @@ def test_invalid_install_device_id_fails_before_remote(tmp_path: Path, monkeypat
 
 def test_translation_execute_contract_carries_device_and_reservation(tmp_path: Path, monkeypatch):
     class CaptureBackend(MockBackendClient):
-        def translate_batch(self, request, *, reservation_id, auth_token):
-            self.captured = (request, reservation_id)
-            return super().translate_batch(request, reservation_id=reservation_id, auth_token=auth_token)
+        def translate_batch(self, request, *, reservation_id, auth_token, finalize_job=True):
+            self.captured = (request, reservation_id, finalize_job)
+            return super().translate_batch(request, reservation_id=reservation_id,
+                                            auth_token=auth_token, finalize_job=finalize_job)
 
     device = "550e8400-e29b-41d4-a716-446655440000"
     monkeypatch.setenv("TRADUTOR_DEVICE_UUID", device)
@@ -149,6 +234,7 @@ def test_http_translation_execute_payload_contains_device_and_reservation(monkey
     assert payload["reservation_id"] == reservation_id
     assert payload["request_id"] == "req-1"
     assert payload["job_id"] == "job-1"
+    assert payload["finalize_job"] is True
     assert [item["item_id"] for item in payload["items"]] == ["a", "b"]
 
 

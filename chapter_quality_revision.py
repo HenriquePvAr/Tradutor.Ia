@@ -8,12 +8,14 @@ revision run is a separate audit/review workspace tied to a parent job/run.
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -398,6 +400,7 @@ class ContextualNvidiaReviewer:
         self.api_key = config.NVIDIA_API_KEY
         self.requests = 0
         self.duration_seconds = 0.0
+        self._state_lock = threading.Lock()
         self.connect_timeout_seconds = float(getattr(config, "NVIDIA_CONNECT_TIMEOUT_SECONDS", 10.0) or 10.0)
         self.read_timeout_seconds = float(getattr(config, "NVIDIA_READ_TIMEOUT_SECONDS", 120.0) or 120.0)
         self.total_timeout_seconds = float(getattr(config, "NVIDIA_TOTAL_TIMEOUT_SECONDS", 150.0) or 150.0)
@@ -407,6 +410,10 @@ class ContextualNvidiaReviewer:
     @property
     def configured(self) -> bool:
         return bool(self.api_key and self.api_key != "sua_chave_aqui")
+
+    def _inc_counter(self, name: str, amount: int = 1) -> None:
+        with self._state_lock:
+            setattr(self, name, int(getattr(self, name, 0)) + amount)
 
     def review_batch(
         self,
@@ -439,15 +446,15 @@ class ContextualNvidiaReviewer:
                 {},
             )
             self._write_raw_response(raw_dir, batch_id, "review", records, response, parsed)
-            self.invalid_batches += 1
+            self._inc_counter("invalid_batches")
             return self._manual_reviews(records, str(response.get("provider_error") or "nvidia_review_request_failed"), parsed.categories)
         parsed = self._parse_contract_response(response.get("content", ""), records, batch_id)
         self._write_raw_response(raw_dir, batch_id, "review", records, response, parsed)
         if parsed.valid:
-            self.valid_batches += 1
+            self._inc_counter("valid_batches")
             return parsed.items
         if diagnostic:
-            self.invalid_batches += 1
+            self._inc_counter("invalid_batches")
             return self._manual_reviews(records, "diagnostic_contract_parse_failed", parsed.categories)
 
         repair = self._send_repair_request(records, batch_id, response.get("content", ""), parsed)
@@ -465,12 +472,12 @@ class ContextualNvidiaReviewer:
         repair_parsed.repaired = repair_parsed.valid
         self._write_raw_response(raw_dir, batch_id, "repair", records, repair, repair_parsed)
         if repair_parsed.valid:
-            self.repaired_batches += 1
+            self._inc_counter("repaired_batches")
             for item in repair_parsed.items:
                 item["contract_path"] = "repaired"
             return repair_parsed.items
 
-        self.invalid_batches += 1
+        self._inc_counter("invalid_batches")
         if len(records) > 1 and (request_budget is None or self.requests + len(records) <= request_budget):
             results: list[dict[str, Any]] = []
             for offset, record in enumerate(records, start=1):
@@ -479,8 +486,8 @@ class ContextualNvidiaReviewer:
                 individual_parsed = self._parse_contract_response(individual.get("content", ""), [record], individual_id)
                 self._write_raw_response(raw_dir, individual_id, "individual_fallback", [record], individual, individual_parsed)
                 if individual_parsed.valid:
-                    self.valid_batches += 1
-                    self.fallback_individual += 1
+                    self._inc_counter("valid_batches")
+                    self._inc_counter("fallback_individual")
                     for item in individual_parsed.items:
                         item["contract_path"] = "individual_fallback"
                     results.extend(individual_parsed.items)
@@ -693,7 +700,7 @@ class ContextualNvidiaReviewer:
         *,
         request_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self.requests += 1
+        self._inc_counter("requests")
         try:
             python_executable = self._subprocess_python_executable()
             completed = subprocess.run(
@@ -778,7 +785,8 @@ class ContextualNvidiaReviewer:
                 "request_meta": request_meta or {},
             }
         finally:
-            self.duration_seconds += time.perf_counter() - started
+            with self._state_lock:
+                self.duration_seconds += time.perf_counter() - started
         text = (((response_payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
         finish_reason = ((response_payload.get("choices") or [{}])[0].get("finish_reason") or None)
         return {
@@ -2411,6 +2419,16 @@ class ChapterQualityRevision:
             cache = RevisionResponseCache(self.output_dir / "revision_request_cache.jsonl")
         pending_cache: dict[str, tuple[str, dict[str, str]]] = {}
         batch_size = self._revision_batch_size(reviewable, canary=canary)
+        # Independent one-region reviews may run concurrently; the legacy loop
+        # below remains the exact path for concurrency=1.
+        revision_concurrency = min(4, max(1, int(getattr(config, "QUALITY_REVISION_CONCURRENCY", 1))))
+        if revision_concurrency > 1 and len(reviewable) > 1:
+            reviews.extend(self._review_concurrent_batches(
+                reviewable, reviewer, glossary, paths, manifest, cache,
+                canary=canary, cache_only=cache_only,
+                request_budget=max(1, len(reviewable) * 3),
+            ))
+            reviewable = []
         for start in range(0, len(reviewable), batch_size):
             # Stop before issuing another provider request; everything already
             # answered stays in the checkpoint so the revision can be resumed.
@@ -2597,6 +2615,104 @@ class ChapterQualityRevision:
         # ponytail: fixed bs=1; only re-enable batching if repeated tests prove the
         # provider returns 100% of the requested IDs per batch.
         return 1
+
+    def _review_concurrent_batches(self, records, reviewer, glossary, paths, manifest,
+                                   cache, *, canary=False, cache_only=False,
+                                   request_budget=None):
+        """Review independent single-region batches with bounded concurrency.
+
+        Cache hits are resolved before scheduling. Results are collected by their
+        logical index, so completion order cannot affect provenance or output order.
+        """
+        ordered = [None] * len(records)
+        pending = []
+        pending_cache: dict[int, tuple[str, str, dict[str, str]]] = {}
+        for index, record in enumerate(records):
+            cached = None
+            if cache is not None:
+                prompt_record = record
+                if hasattr(reviewer, "_prompt_record"):
+                    try: prompt_record = reviewer._prompt_record(record)
+                    except Exception: prompt_record = record
+                key, hashes = cache.build_key(prompt_record, provider="nvidia",
+                    model=getattr(reviewer, "model", "unknown"), endpoint=str(getattr(reviewer, "base_url", "") or ""),
+                    glossary=ContextualNvidiaReviewer._compact_glossary(glossary, [record]),
+                    ocr_text=str(record.get("source_text") or ""))
+                cached = cache.lookup(key, str(record.get("region_id") or ""))
+                if cached:
+                    ordered[index] = {**cached, "contract_path": "cache"}
+                    continue
+                if cache_only:
+                    ordered[index] = self._normalize_reviews([record], []) [0]
+                    continue
+                pending_cache[index] = (key, str(record.get("region_id") or ""), hashes)
+            pending.append((index, record))
+
+        limit = min(4, max(1, int(getattr(config, "QUALITY_REVISION_CONCURRENCY", 2))))
+        budget_lock = threading.Lock()
+        budget_used = 0
+        cancel_event = threading.Event()
+
+        def claim_budget() -> bool:
+            nonlocal budget_used
+            with budget_lock:
+                if request_budget is not None and budget_used >= int(request_budget):
+                    return False
+                budget_used += 1
+                return True
+
+        def run(item):
+            index, record = item
+            batch_id = f"{manifest.get('revision_id', 'revision')}-concurrent-{index + 1:03d}"
+            raw = reviewer.review_batch([record], glossary, batch_id=batch_id,
+                raw_response_dir=paths.raw_responses, request_budget=1,
+                diagnostic_mode=canary)
+            return index, self._normalize_reviews([record], raw)[0]
+        with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="quality-revision") as pool:
+            pending_iter = iter(pending)
+            futures = {}
+
+            def schedule_one() -> bool:
+                if cancel_event.is_set() or self.cancel_requested():
+                    cancel_event.set()
+                    return False
+                try:
+                    item = next(pending_iter)
+                except StopIteration:
+                    return False
+                if not claim_budget():
+                    return False
+                futures[pool.submit(run, item)] = item
+                return True
+
+            for _ in range(limit):
+                if not schedule_one():
+                    break
+            while futures:
+                done = next(as_completed(tuple(futures)))
+                item = futures.pop(done)
+                try:
+                    index, result = done.result()
+                    ordered[index] = result
+                    if cache is not None and index in pending_cache:
+                        key, region_id, hashes = pending_cache.pop(index)
+                        cache.store(key, region_id, result, hashes)
+                except Exception as exc:  # noqa: BLE001 - match serial fail-closed policy
+                    index, record = item
+                    ordered[index] = self._normalize_reviews([record], [{
+                        "region_id": record.get("region_id"),
+                        "action": "manual_review",
+                        "reason_code": "reviewer_exception",
+                        "error": type(exc).__name__,
+                    }])[0]
+                if not cancel_event.is_set() and not self.cancel_requested():
+                    while len(futures) < limit and schedule_one():
+                        pass
+                else:
+                    cancel_event.set()
+                    for future in futures:
+                        future.cancel()
+        return [item for item in ordered if item is not None]
 
     def _normalize_reviews(self, batch: list[dict[str, Any]], raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         expected = {item["region_id"]: item for item in batch}

@@ -25,6 +25,25 @@ function resultMetadata(result: any, fallbackCharacterCount: number) {
   };
 }
 
+async function commitBatchAndMaybeFinalize(requestId: string, jobId: string, reservationId: string,
+  metadata: { billed_characters: number | null; detected_source_language: string | null; model_type_used: string | null },
+  result: unknown, finalizeJob: boolean) {
+  const committed = await serverRpc("commit_translation_batch_success", {
+    p_request_id: requestId,
+    p_billed_characters: metadata.billed_characters,
+    p_detected_source_language: metadata.detected_source_language,
+    p_model_type_used: metadata.model_type_used,
+    p_result: result,
+  });
+  if (!committed.configured || !committed.ok) return false;
+  if (!finalizeJob) return true;
+  const finalized = await serverRpc("finalize_translation_job", {
+    p_job_id: jobId,
+    p_reservation_id: reservationId,
+  });
+  return finalized.configured && finalized.ok;
+}
+
 Deno.serve(async (req) => {
   const denied = requireAuth(req); if (denied) return denied;
   let body: any; try { body = await req.json(); } catch { return json({ code: "invalid_json" }, 400); }
@@ -34,6 +53,7 @@ Deno.serve(async (req) => {
   const requestId = String(body?.request_id || "");
   const deviceId = body?.device_id;
   const reservationId = body?.reservation_id;
+  const finalizeJob = body?.finalize_job !== false;
   if (!requestId || !deviceId || !reservationId || !items.length || items.length > 100 || items.some((i: any) => !i.item_id || !i.text || i.text.length > 100000) || new Set(items.map((i: any) => i.item_id)).size !== items.length || items.reduce((n: number, i: any) => n + i.text.length, 0) > 100000) return json({ code: "invalid_translation_request" }, 400);
   const characterCount = items.reduce((n: number, i: any) => n + i.text.length, 0);
   const hashInput = JSON.stringify({ job_id: body?.job_id || null, source_lang: body?.source_lang || "", target_lang: body?.target_lang || "", items });
@@ -43,18 +63,21 @@ Deno.serve(async (req) => {
   if (begin.error) return json({ code: begin.error }, 503);
   if (!begin.response?.ok) return json({ code: safeCode(begin.payload?.message || begin.payload?.code, "translation_begin_failed") }, 409);
   if (begin.payload?.idempotent) {
-    if (begin.payload.status === "completed") return json({ request_id: requestId, status: "completed", items: begin.payload.result?.items || [], idempotent_replay: true }, 200);
+    if (begin.payload.status === "completed") {
+      if (finalizeJob) {
+        const finalized = await serverRpc("finalize_translation_job", {
+          p_job_id: String(body?.job_id || ""),
+          p_reservation_id: String(reservationId),
+        });
+        if (!finalized.configured || !finalized.ok) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
+      }
+      return json({ request_id: requestId, status: "completed", items: begin.payload.result?.items || [], idempotent_replay: true }, 200);
+    }
     if (begin.payload.status === "provider_succeeded" && begin.payload.result) {
       const recovered = begin.payload.result;
       const metadata = resultMetadata(recovered, characterCount);
-      const committed = await serverRpc("commit_translation_success", {
-        p_request_id: requestId,
-        p_billed_characters: metadata.billed_characters,
-        p_detected_source_language: metadata.detected_source_language,
-        p_model_type_used: metadata.model_type_used,
-        p_result: recovered,
-      });
-      if (!committed.configured || !committed.ok) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
+      const committed = await commitBatchAndMaybeFinalize(requestId, String(body?.job_id || ""), String(reservationId), metadata, recovered, finalizeJob);
+      if (!committed) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
       return json({ request_id: requestId, status: "completed", provider: recovered.provider || "deepl", items: recovered.items || [], idempotent_replay: true }, 200);
     }
     if (begin.payload.status === "provider_outcome_unknown") return json({ code: "provider_outcome_unknown", request_id: requestId }, 409);
@@ -94,9 +117,8 @@ Deno.serve(async (req) => {
     const persisted = await serverRpc("persist_translation_result", { p_request_id: requestId, p_result: result, p_claim_token: claimToken });
     if (!persisted.configured || !persisted.ok) return json({ code: "translation_result_persist_failed", request_id: requestId }, 503);
     if (faultMode === "crash_after_result") return json({ code: "test_crash_after_result", request_id: requestId }, 503);
-    const commitBody = { p_request_id: requestId, p_billed_characters: characterCount, p_detected_source_language: String(body?.source_lang || "JA"), p_model_type_used: "mock", p_result: result };
-    const committed = faultMode === "commit_fail_once" ? { configured: true, ok: false, payload: {} } : await serverRpc("commit_translation_success", commitBody);
-    if (!committed.configured || !committed.ok) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
+    const committed = faultMode === "commit_fail_once" ? false : await commitBatchAndMaybeFinalize(requestId, String(body?.job_id || ""), String(reservationId), { billed_characters: characterCount, detected_source_language: String(body?.source_lang || "JA"), model_type_used: "mock" }, result, finalizeJob);
+    if (!committed) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
     if (faultMode === "crash_after_commit") return json({ code: "test_response_lost", request_id: requestId }, 503);
     return json({ request_id: requestId, status: "completed", provider: "mock", items: resultItems, idempotent_replay: false }, 200);
   }
@@ -134,13 +156,7 @@ Deno.serve(async (req) => {
   };
   const persisted = await serverRpc("persist_translation_result", { p_request_id: requestId, p_result: result, p_claim_token: claimToken });
   if (!persisted.configured || !persisted.ok) return json({ code: "translation_result_persist_failed", request_id: requestId }, 503);
-  const committed = await serverRpc("commit_translation_success", {
-    p_request_id: requestId,
-    p_billed_characters: billedCharacters,
-    p_detected_source_language: detectedSourceLanguage,
-    p_model_type_used: "quality_optimized",
-    p_result: result,
-  });
-  if (!committed.configured || !committed.ok) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
+  const committed = await commitBatchAndMaybeFinalize(requestId, String(body?.job_id || ""), String(reservationId), { billed_characters: billedCharacters, detected_source_language: detectedSourceLanguage, model_type_used: "quality_optimized" }, result, finalizeJob);
+  if (!committed) return json({ code: "translation_commit_failed", request_id: requestId }, 503);
   return json({ request_id: requestId, status: "completed", provider: "deepl", items: resultItems, idempotent_replay: false, detected_source_language: detectedSourceLanguage }, 200);
 });

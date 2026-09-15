@@ -12,6 +12,7 @@ import stat
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
@@ -28,6 +29,7 @@ from config import (
     SELENIUM_CLEANUP_TIMEOUT_SECONDS,
     SELENIUM_QUIT_TIMEOUT_SECONDS,
     TEMP_FOLDER,
+    DOWNLOAD_WORKERS,
 )
 from download_transport import (
     inspect_source_preflight,
@@ -87,6 +89,8 @@ def download_images(
     target_folder=None,
     force=True,
     approved_candidate_ids=None,
+    cancel_event=None,
+    parallel_diagnostics=None,
 ):
     from chapter_source import SourceError, select_adapter
     from http_source_discovery import discover_via_http
@@ -299,6 +303,8 @@ def download_images(
             referer=current_url,
             target_folder=target_folder,
             transports=transports,
+            cancel_event=cancel_event,
+            parallel_diagnostics=parallel_diagnostics,
         )
         if not report.get("download_valid"):
             raise SourceError("incomplete_download", "download_gate")
@@ -2230,6 +2236,8 @@ def _download_candidates(
     referer,
     target_folder,
     transports=None,
+    cancel_event=None,
+    parallel_diagnostics=None,
 ):
     saved = []
     content_hashes: set[str] = set()
@@ -2246,6 +2254,52 @@ def _download_candidates(
     if max_images and viewer_total:
         viewer_total = min(viewer_total, int(max_images))
     total = viewer_total or len(candidates)
+
+    # HTTP transports are thread-safe; browser-backed transports are not. Fetch
+    # bytes in a bounded pool only when every configured transport is plain HTTP,
+    # then process/save strictly in candidate order below.
+    parallel_payloads = {}
+    transport_names = {type(t).__name__ for t in (transports or [])}
+    http_only = bool(transports) and not (transport_names & {"BrowserSessionTransport", "SeleniumTransport"})
+    has_existing_slots = any(
+        os.path.isfile(os.path.join(target_folder, f"{slot:03}.png"))
+        for slot in range(1, min(len(candidates), int(max_images or len(candidates))) + 1)
+    )
+    # Reuse/resume semantics must inspect existing slots before scheduling any
+    # request; retain the legacy serial path for that case.
+    parallel_workers = (
+        min(int(DOWNLOAD_WORKERS), max(1, len(candidates)))
+        if http_only and not has_existing_slots else 1
+    )
+    if parallel_workers > 1:
+        def fetch_slot(item):
+            slot, candidate = item
+            url = candidate["url"]
+            data = _download_url(url, referer, max_retries, transports=transports)
+            return slot, data, getattr(_download_url, "last_transport_name", "")
+        with ThreadPoolExecutor(max_workers=parallel_workers, thread_name_prefix="yomu-download") as pool:
+            pending = {}
+            next_slot = 0
+            while next_slot < len(candidates) and len(pending) < parallel_workers:
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                if not _candidate_skip_reason(candidates[next_slot]):
+                    pending[pool.submit(fetch_slot, (next_slot, candidates[next_slot]))] = next_slot
+                next_slot += 1
+            while pending:
+                for future in as_completed(tuple(pending)):
+                    slot = pending.pop(future)
+                    result = future.result()
+                    parallel_diagnostics and parallel_diagnostics.setdefault("completion_order", []).append(slot)
+                    parallel_payloads[slot] = (result[1], result[2])
+                    if cancel_event is not None and cancel_event.is_set():
+                        continue
+                    while next_slot < len(candidates) and (cancel_event is None or not cancel_event.is_set()):
+                        slot = next_slot; next_slot += 1
+                        if _candidate_skip_reason(candidates[slot]):
+                            continue
+                        pending[pool.submit(fetch_slot, (slot, candidates[slot]))] = slot
+                        break
 
     for idx, candidate in enumerate(candidates, start=1):
         if max_images and len(saved) >= max_images:
@@ -2281,8 +2335,11 @@ def _download_candidates(
             reserve_local_content(transports, len(data))
             used_transport = "canvas"
         else:
-            data = _download_url(url, referer, max_retries, transports=transports)
-            used_transport = getattr(_download_url, "last_transport_name", "")
+            if parallel_payloads:
+                data, used_transport = parallel_payloads.get(idx - 1, (b"", ""))
+            else:
+                data = _download_url(url, referer, max_retries, transports=transports)
+                used_transport = getattr(_download_url, "last_transport_name", "")
         report["timings"]["download_seconds"] += time.perf_counter() - download_started
 
         if not data:
@@ -2488,9 +2545,12 @@ def _download_url(url, referer, max_retries, transports=None):
                 last_attempt = _download_attempt_diagnostics(
                     url, referer, transport, error=exc)
                 _download_url.last_diagnostics = last_attempt
-                if exc.code != "invalid_image_response":
-                    break                 # denied/rate-limited: retrying will not help
-                time.sleep(0.3)
+                if exc.code not in {"invalid_image_response", "source_rate_limited"}:
+                    break
+                # Respect bounded Retry-After for rate limiting; malformed or
+                # absent values fall back to the existing small backoff.
+                delay = getattr(exc, "retry_after", None) if exc.code == "source_rate_limited" else None
+                time.sleep(min(5.0, max(0.05, float(delay))) if delay is not None else 0.3)
             except Exception as exc:  # noqa: BLE001 - transport-level fault, try the next
                 last_error = exc
                 last_attempt = _download_attempt_diagnostics(

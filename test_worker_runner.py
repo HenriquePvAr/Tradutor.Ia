@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 import os
+from unittest import mock
 from pathlib import Path
 
 from job_store import JobStatus, JobStore
@@ -168,6 +169,104 @@ class CancelAndRecoveryTests(unittest.TestCase):
         self.assertEqual(job["status"], JobStatus.CANCELLED)
         # The partial output dir is preserved, not deleted.
         self.assertTrue(out.is_dir())
+
+    def test_cooperative_cancel_crosses_runner_child_boundary(self):
+        out = self.tmp / "cooperative-cancel"
+        cmd = _fake_command(out, steps=80, sleep=0.02)
+        jid = self.store.create_job(source_url="https://example/x",
+                                    output_dir=str(out), command=cmd)
+        worker = Worker(self.db, poll_seconds=0.02, stale_seconds=30)
+        import threading
+        thread = threading.Thread(target=lambda: worker.run(once=True), daemon=True)
+        thread.start()
+        log_path = self.tmp / "logs" / f"{jid}.log"
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if log_path.is_file() and "OCR" in log_path.read_text(encoding="utf-8"):
+                break
+            time.sleep(0.05)
+        self.assertIn("OCR", log_path.read_text(encoding="utf-8"))
+        cancel_started = time.monotonic()
+        self.store.request_cancel(jid)
+        thread.join(timeout=30)
+        worker.close()
+        job = self.store.get_job(jid)
+        self.assertEqual(job["status"], JobStatus.CANCELLED)
+        log_text = log_path.read_text(encoding="utf-8")
+        self.assertIn("CANCEL_OBSERVED", log_text)
+        self.assertFalse((out / ".cancel.requested").exists())
+        self.assertFalse((out / ".cancel.observed").exists())
+        self.assertFalse((out / "the_fake_chapter.pdf").exists())
+        self.assertLess(time.monotonic() - cancel_started, 10)
+
+    def test_real_pipeline_ocr_cancel_crosses_run_webtoon_boundary(self):
+        """The real runner/CLI/benchmark/OCR chain observes cancellation before translation."""
+        source = self.tmp / "input"
+        source.mkdir()
+        try:
+            import cv2
+            import numpy as np
+            for index in range(5):
+                image = np.full((32, 480, 3), 255, dtype=np.uint8)
+                image[:, index:index + 2, :] = index * 20
+                self.assertTrue(cv2.imwrite(str(source / f"page-{index}.png"), image))
+        except Exception as exc:  # pragma: no cover - environment diagnostic
+            self.skipTest(f"image fixture unavailable: {exc}")
+
+        import local_folder_input
+        local_folder_input.LOCAL_SNAPSHOT_ROOT = self.tmp / "runtime" / "local_sources"
+        from local_folder_input import snapshot_workspace_root
+        with mock.patch.dict(os.environ, {
+            "TRADUTOR_TEST_RUNTIME_ROOT": str(self.tmp / "runtime"),
+            "LOCAL_INPUT_ROOTS": str(self.tmp),
+        }, clear=False):
+            from local_folder_source import LocalFolderChapterAdapter
+            snapshot = LocalFolderChapterAdapter().snapshot(str(source), snapshot_workspace_root())
+
+        marker_dir = self.tmp / "markers"
+        out = self.tmp / "real-pipeline-cancel"
+        cmd = [sys.executable, "-u", str(REPO / "run_webtoon.py"),
+               "--input-manifest", str(snapshot.manifest_path), "--output", "output/test_real_pipeline_cancel",
+               "--mode", "fast", "--force", "--max-images", "5",
+               "--no-context", "--translation-provider", "yomu_backend"]
+        jid = self.store.create_job(
+            source_url="local-folder:test-canonical-input",
+            output_dir=str(out), command=cmd,
+            configuration={"job_type": "translation", "translation_enabled": False,
+                            "translation_provider": "yomu_backend"},
+        )
+        worker = Worker(self.db, poll_seconds=0.02, stale_seconds=30)
+        with mock.patch.dict(os.environ, {
+            "YOMU_CANCEL_TEST_MARKER_DIR": str(marker_dir),
+            "YOMU_CANCEL_TEST_OCR_STUB": "1",
+            "TRADUTOR_TEST_RUNTIME_ROOT": str(self.tmp / "runtime"),
+            "LOCAL_INPUT_ROOTS": str(self.tmp),
+            "OCR_EXECUTION_MODE": "rapidocr",
+        }, clear=False):
+            import threading
+            thread = threading.Thread(target=lambda: worker.run(once=True), daemon=True)
+            thread.start()
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                if (marker_dir / "ocr_task_started_1").exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue((marker_dir / "run_webtoon_entered").exists())
+            self.assertTrue((marker_dir / "benchmark_pipeline_entered").exists())
+            self.assertTrue((marker_dir / "ocr_parallel_entered").exists())
+            self.assertTrue((marker_dir / "ocr_task_started_1").exists())
+            self.store.request_cancel(jid)
+            thread.join(timeout=30)
+        worker.close()
+        job = self.store.get_job(jid)
+        self.assertEqual(job["status"], JobStatus.CANCELLED)
+        self.assertTrue((marker_dir / "benchmark_cancel_observed").exists())
+        self.assertTrue((marker_dir / "ocr_parallel_cancel_observed").exists())
+        self.assertEqual((marker_dir / "ocr_tasks_before_cancel").read_text(), "1")
+        self.assertEqual((marker_dir / "ocr_pending_skipped").read_text(), "4")
+        self.assertFalse((out / ".cancel.requested").exists())
+        self.assertFalse((out / ".cancel.observed").exists())
+        self.assertFalse((out / "the_fake_chapter.pdf").exists())
 
     def test_interrupted_job_recovers_and_resumes_reusing_checkpoints(self):
         # First attempt stops cleanly after 'download' (simulating a partial run), then

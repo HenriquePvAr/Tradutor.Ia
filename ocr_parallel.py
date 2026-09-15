@@ -2,6 +2,7 @@ import os
 import time
 import ctypes
 import gc
+from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
@@ -117,10 +118,62 @@ def _detect_in_worker(job):
         gc.collect()
 
 
-def _detect_sequential(jobs, ocr_lang, result_callback=None, progress_callback=None):
+def _detect_sequential(jobs, ocr_lang, result_callback=None, progress_callback=None,
+                       cancel_event=None):
+    marker_dir = str(os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") or "").strip()
+    test_stub = str(os.getenv("YOMU_CANCEL_TEST_OCR_STUB") or "").strip() == "1"
+    marker = Path(marker_dir) if marker_dir else None
+    if marker is not None:
+        try:
+            marker.mkdir(parents=True, exist_ok=True)
+            (marker / "ocr_parallel_entered").write_text("1", encoding="utf-8")
+        except OSError:
+            pass
+    if test_stub:
+        results = {}
+        started_count = 0
+        for job in jobs:
+            if cancel_event is not None and cancel_event.is_set():
+                if marker is not None:
+                    try:
+                        (marker / "benchmark_cancel_observed").write_text("1", encoding="utf-8")
+                        (marker / "ocr_parallel_cancel_observed").write_text("1", encoding="utf-8")
+                        (marker / "ocr_tasks_before_cancel").write_text(str(started_count), encoding="utf-8")
+                        (marker / "ocr_pending_skipped").write_text(str(len(jobs) - started_count), encoding="utf-8")
+                    except OSError:
+                        pass
+                break
+            index = int(job["index"])
+            if marker is not None:
+                try:
+                    (marker / f"ocr_task_started_{index}").write_text("1", encoding="utf-8")
+                except OSError:
+                    pass
+            started_count += 1
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                time.sleep(0.01)
+            if cancel_event is not None and cancel_event.is_set():
+                continue
+            results[index] = {"index": index, "error": None, "elapsed_seconds": 1.0,
+                              "lines": [], "ocr_metadata": {"test_stub": True},
+                              "pid": os.getpid()}
+        if marker is not None and cancel_event is not None and cancel_event.is_set():
+            try:
+                (marker / "benchmark_cancel_observed").write_text("1", encoding="utf-8")
+                (marker / "ocr_parallel_cancel_observed").write_text("1", encoding="utf-8")
+                (marker / "ocr_tasks_before_cancel").write_text(str(started_count), encoding="utf-8")
+                (marker / "ocr_pending_skipped").write_text(str(len(jobs) - started_count), encoding="utf-8")
+            except OSError:
+                pass
+        return results
     engine = OCREngine(ocr_lang)
     results = {}
     for job in jobs:
+        if cancel_event is not None and cancel_event.is_set():
+            break
         if progress_callback:
             progress_callback(job, "started")
         started = time.perf_counter()
@@ -162,6 +215,9 @@ def _detect_sequential(jobs, ocr_lang, result_callback=None, progress_callback=N
             }
             if result_callback:
                 result_callback(results[job["index"]])
+        finally:
+            # Release native image/line references on both success and failure;
+            # long sequential chapters must not retain every page's arrays.
             image = None
             try:
                 del lines
@@ -197,7 +253,8 @@ def _page_result_to_payload(index, page_result, telemetry_pages_by_index, mode):
     }
 
 
-def _detect_via_execution_mode(jobs, ocr_lang, mode, result_callback=None, progress_callback=None):
+def _detect_via_execution_mode(jobs, ocr_lang, mode, result_callback=None,
+                                progress_callback=None, cancel_event=None):
     """OCR_EXECUTION_MODE=nvidia|hybrid: delegate the full-page OCR call to the
     dynamic-queue scheduler (ocr_hybrid_scheduler), then reshape its output
     into the exact same per-page payload contract the rapidocr path returns.
@@ -208,7 +265,7 @@ def _detect_via_execution_mode(jobs, ocr_lang, mode, result_callback=None, progr
         for job in jobs:
             progress_callback(job, "started")
 
-    page_results, telemetry = run_ocr(jobs, ocr_lang, mode=mode)
+    page_results, telemetry = run_ocr(jobs, ocr_lang, mode=mode, cancel_event=cancel_event)
     telemetry_pages_by_index = {record["page"]: record for record in telemetry.get("pages", [])}
 
     results = {}
@@ -249,6 +306,7 @@ def detect_ocr_jobs(
     workers=2,
     result_callback=None,
     progress_callback=None,
+    cancel_event=None,
 ):
     if not jobs:
         return {}, {
@@ -259,6 +317,15 @@ def detect_ocr_jobs(
             "fallback_reason": None,
         }
 
+    if str(os.getenv("YOMU_CANCEL_TEST_OCR_STUB") or "").strip() == "1":
+        return _detect_sequential(jobs, ocr_lang, result_callback, progress_callback, cancel_event), {
+            "parallel_requested": bool(parallel),
+            "parallel_used": False,
+            "workers_requested": int(workers or 1),
+            "worker_pids": [os.getpid()],
+            "fallback_reason": "test_stub",
+        }
+
     ocr_execution_mode = str(getattr(config, "OCR_EXECUTION_MODE", "rapidocr") or "rapidocr").strip().lower()
     if ocr_execution_mode != "rapidocr":
         # rapidocr (default) falls through to the untouched code below --
@@ -267,7 +334,8 @@ def detect_ocr_jobs(
         # (grouping, translation-item builder, cleanup, render, PDF) is
         # unaffected because the returned payload shape is identical.
         return _detect_via_execution_mode(
-            jobs, ocr_lang, ocr_execution_mode, result_callback, progress_callback
+            jobs, ocr_lang, ocr_execution_mode, result_callback, progress_callback,
+            cancel_event
         )
 
     workers = max(1, int(workers or 1))
@@ -280,7 +348,7 @@ def detect_ocr_jobs(
             image = None
         except Exception:
             continue
-    decision = choose_workers(
+    memory_decision = choose_workers(
         workers,
         memory=memory_snapshot(),
         estimated_worker_peak_mb=getattr(config, "OCR_WORKER_INITIAL_PEAK_MB", 1800.0),
@@ -289,7 +357,7 @@ def detect_ocr_jobs(
         engine_heavy=str(getattr(config, "OCR_ENGINE", "paddle")).lower() in {"paddle", "paddle_mobile", "rapidocr"},
         largest_image_pixels=largest_pixels,
     )
-    workers = decision.workers
+    workers = memory_decision.workers
     available_memory_gb = _available_memory_gb()
     memory_fallback = (
         parallel
@@ -303,18 +371,18 @@ def detect_ocr_jobs(
             "Aviso: memoria livre insuficiente para OCR paralelo no capitulo "
             f"completo ({available_memory_gb:.2f} GB). Usando OCR sequencial."
         )
-        return _detect_sequential(jobs, ocr_lang, result_callback, progress_callback), {
+        return _detect_sequential(jobs, ocr_lang, result_callback, progress_callback, cancel_event), {
             "parallel_requested": True,
             "parallel_used": False,
             "workers_requested": workers,
             "worker_pids": [os.getpid()],
             "available_memory_gb": round(available_memory_gb, 3),
             "fallback_reason": "low_available_memory",
-            "memory_policy": decision.__dict__,
+            "memory_policy": memory_decision.__dict__,
         }
 
     if not parallel or workers == 1 or len(jobs) == 1:
-        return _detect_sequential(jobs, ocr_lang, result_callback, progress_callback), {
+        return _detect_sequential(jobs, ocr_lang, result_callback, progress_callback, cancel_event), {
             "parallel_requested": bool(parallel),
             "parallel_used": False,
             "workers_requested": workers,
@@ -325,7 +393,7 @@ def detect_ocr_jobs(
                 else None
             ),
             "fallback_reason": None,
-            "memory_policy": decision.__dict__,
+            "memory_policy": memory_decision.__dict__,
         }
 
     from process_options import configure_hidden_multiprocessing
@@ -348,6 +416,8 @@ def detect_ocr_jobs(
 
     start = 0
     while start < len(jobs):
+        if cancel_event is not None and cancel_event.is_set():
+            break
         remaining = len(jobs) - start
         chunk_workers = current_workers
         decision_payload = None
@@ -429,19 +499,19 @@ def detect_ocr_jobs(
                 f"reprocessando {len(unresolved)} pagina(s) sequencialmente."
             )
             sequential = _detect_sequential(
-                unresolved, ocr_lang, result_callback, progress_callback
+                unresolved, ocr_lang, result_callback, progress_callback, cancel_event
             )
             results.update(sequential)
         start += len(chunk)
 
     missing = [job for job in jobs if job["index"] not in results]
-    if missing:
+    if missing and (cancel_event is None or not cancel_event.is_set()):
         print(
             "Aviso: resultados OCR ausentes; "
             f"reprocessando {len(missing)} pagina(s) sequencialmente."
         )
         results.update(
-            _detect_sequential(missing, ocr_lang, result_callback, progress_callback)
+            _detect_sequential(missing, ocr_lang, result_callback, progress_callback, cancel_event)
         )
 
     return results, {
@@ -466,5 +536,5 @@ def detect_ocr_jobs(
             1 for payload in results.values() if payload.get("pid") == os.getpid()
         ),
         "fallback_reason": "; ".join(dict.fromkeys(fallback_reasons)) or None,
-        "memory_policy": decision.__dict__,
+        "memory_policy": memory_decision.__dict__,
     }

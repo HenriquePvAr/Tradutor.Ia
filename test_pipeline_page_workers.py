@@ -2,7 +2,12 @@ import os
 import threading
 import time
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
+
+import cv2
+import numpy as np
 
 import benchmark_pipeline as bp
 from page_processing_contracts import PreTranslationPageResult
@@ -108,6 +113,72 @@ class PipelinePageWorkersTests(unittest.TestCase):
         for thread in threads:
             thread.join()
         self.assertEqual(maximum, 1)
+
+    def test_serial_and_parallel_post_render_overflow_policy_match(self):
+        def make_states(root):
+            states = []
+            for index in range(2):
+                path = Path(root) / f"page-{index}.png"
+                group = type("Group", (), {
+                    "sent_to_translation": True,
+                    "text_overflow_ratio": 1.0,
+                })()
+                states.append({
+                    "index": index,
+                    "original_bgr": np.full((12, 12, 3), 255, dtype=np.uint8),
+                    "raw_lines": [], "candidates": [], "groups": [group],
+                    "image_path": str(path), "output_path": str(path),
+                })
+            return states
+
+        class FakeTranslator:
+            def translate_strict(self, *_args, **_kwargs):
+                return "short"
+
+        def fake_render(*_args, **kwargs):
+            image = np.full((12, 12, 3), 255, dtype=np.uint8)
+            image[2:10, 2:10] = 0
+            return image, {}
+
+        def fake_retry(groups, _translator, records, **_kwargs):
+            for group in groups:
+                group.text_overflow_ratio = 0.0
+            records.append({"retry_type": "layout_overflow", "valid": True})
+            return len(groups)
+
+        with tempfile.TemporaryDirectory() as temp:
+            serial = make_states(temp + "\\serial")
+            parallel = make_states(temp + "\\parallel")
+            Path(temp + "\\serial").mkdir()
+            Path(temp + "\\parallel").mkdir()
+            serial_records, parallel_records = [], []
+            with patch.object(bp, "render_analyzed_image", side_effect=fake_render), \
+                 patch.object(bp, "_retry_layout_overflow_translations", side_effect=fake_retry), \
+                 patch.object(bp.config, "TRANSLATION_MAX_RETRIES", 1), \
+                 patch.dict(os.environ, {"PIPELINE_PAGE_WORKERS": "1"}):
+                bp.process_post_translation_pages(serial, translator=FakeTranslator(),
+                                                   translation_retry_records=serial_records)
+            with patch.object(bp, "render_analyzed_image", side_effect=fake_render), \
+                 patch.object(bp, "_retry_layout_overflow_translations", side_effect=fake_retry), \
+                 patch.object(bp.config, "TRANSLATION_MAX_RETRIES", 1), \
+                 patch.dict(os.environ, {"PIPELINE_PAGE_WORKERS": "2"}):
+                bp.process_post_translation_pages(parallel, translator=FakeTranslator(),
+                                                   translation_retry_records=parallel_records)
+            assert len(serial_records) == len(parallel_records) == 2
+            assert all(g.text_overflow_ratio == 0.0 for s in serial + parallel for g in s["groups"])
+
+    def test_sequential_ocr_honors_cooperative_cancel_before_new_work(self):
+        cancel = threading.Event()
+        cancel.set()
+        import ocr_parallel
+        with patch.object(ocr_parallel, "OCREngine") as engine:
+            from ocr_parallel import _detect_sequential
+            result = _detect_sequential(
+                [{"index": 0, "image_path": "never-read.png"}],
+                "eng", cancel_event=cancel,
+            )
+        assert result == {}
+        engine.return_value.detect_lines.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import json
 import copy
 import hashlib
+import json
 import math
 import os
 import random
@@ -16,6 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import cv2
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import config
@@ -159,7 +161,9 @@ def process_pre_translation_pages(
     return sorted(results, key=lambda result: result.page_index)
 
 
-def process_post_translation_page(state, *, diagnostic_folder=None, targeted_regression=False):
+def process_post_translation_page(state, *, diagnostic_folder=None, targeted_regression=False,
+                                  translator=None, translation_retry_records=None,
+                                  force=False, retry_lock=None):
     """Render and save one page, returning only page-owned state."""
     local = dict(state)
     timings = {}
@@ -171,11 +175,40 @@ def process_post_translation_page(state, *, diagnostic_folder=None, targeted_reg
         debug_folder = None
         if targeted_regression and diagnostic_folder is not None:
             debug_folder = str(Path(diagnostic_folder) / f"page_{int(local['index']):03}")
-        final, debug_data = render_analyzed_image(
-            local["original_bgr"], local.get("raw_lines", []), local["candidates"],
-            local["groups"], font_path=config.FONT_PATH, debug_folder=debug_folder,
-            page_index=local["index"], image_path=local["image_path"], stage_timings=timings,
-        )
+        layout_retry_attempt = 0
+        while True:
+            final, debug_data = render_analyzed_image(
+                local["original_bgr"], local.get("raw_lines", []), local["candidates"],
+                local["groups"], font_path=config.FONT_PATH, debug_folder=debug_folder,
+                page_index=local["index"], image_path=local["image_path"], stage_timings=timings,
+            )
+            overflow_groups = [
+                group for group in local["groups"]
+                if group.sent_to_translation
+                and float(group.text_overflow_ratio or 0.0) > config.MAX_TEXT_OVERFLOW_RATIO
+            ]
+            if (translator is None or not overflow_groups
+                    or layout_retry_attempt >= config.TRANSLATION_MAX_RETRIES
+                    or not hasattr(translator, "translate_strict")):
+                break
+            retry_kwargs = {
+                "force": force,
+                "attempt": layout_retry_attempt + 1,
+            }
+            if retry_lock is None:
+                retried = _retry_layout_overflow_translations(
+                    overflow_groups, translator,
+                    translation_retry_records if translation_retry_records is not None else [],
+                    **retry_kwargs)
+            else:
+                with retry_lock:
+                    retried = _retry_layout_overflow_translations(
+                        overflow_groups, translator,
+                        translation_retry_records if translation_retry_records is not None else [],
+                        **retry_kwargs)
+            if not retried:
+                break
+            layout_retry_attempt += 1
         Path(local["output_path"]).parent.mkdir(parents=True, exist_ok=True)
         save_started = time.perf_counter()
         if not cv2.imwrite(local["output_path"], final):
@@ -204,12 +237,25 @@ def process_post_translation_page(state, *, diagnostic_folder=None, targeted_reg
         ocr_line_provenance.activate(previous_recorder)
 
 
-def process_post_translation_pages(page_states, *, diagnostic_folder=None, targeted_regression=False):
+def process_post_translation_pages(page_states, *, diagnostic_folder=None, targeted_regression=False,
+                                   translator=None, translation_retry_records=None,
+                                   force=False, retry_lock=None):
     workers = _pipeline_page_workers()
     if workers == 1:
-        return [process_post_translation_page(state, diagnostic_folder=diagnostic_folder, targeted_regression=targeted_regression) for state in page_states]
+        return [process_post_translation_page(state, diagnostic_folder=diagnostic_folder,
+                                               targeted_regression=targeted_regression,
+                                               translator=translator,
+                                               translation_retry_records=translation_retry_records,
+                                               force=force, retry_lock=retry_lock)
+                for state in page_states]
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="post-page") as executor:
-        futures = [executor.submit(process_post_translation_page, state, diagnostic_folder=diagnostic_folder, targeted_regression=targeted_regression) for state in page_states]
+        futures = [executor.submit(process_post_translation_page, state,
+                                   diagnostic_folder=diagnostic_folder,
+                                   targeted_regression=targeted_regression,
+                                   translator=translator,
+                                   translation_retry_records=translation_retry_records,
+                                   force=force, retry_lock=retry_lock)
+                   for state in page_states]
         return sorted((future.result() for future in as_completed(futures)), key=lambda result: result.page_index)
 from output_manifest import (
     build_run_manifest,
@@ -230,6 +276,36 @@ from page_processing_contracts import (
     PostTranslationPageResult,
 )
 from translator_nllb import get_translator
+
+
+class PipelineCancelled(RuntimeError):
+    """Cooperative cancellation reached the child pipeline boundary."""
+
+
+def _cancel_event_from_environment():
+    path = str(os.getenv("TRADUTOR_CANCEL_FILE") or "").strip()
+    event = threading.Event()
+    if not path:
+        return event, None
+
+    def watch():
+        while not event.is_set():
+            if Path(path).is_file():
+                event.set()
+                marker_dir = str(os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") or "").strip()
+                if marker_dir:
+                    try:
+                        marker = Path(marker_dir)
+                        marker.mkdir(parents=True, exist_ok=True)
+                        (marker / "benchmark_cancel_observed").write_text("1", encoding="utf-8")
+                    except OSError:
+                        pass
+                return
+            time.sleep(0.05)
+
+    thread = threading.Thread(target=watch, name="pipeline-cancel-watch", daemon=True)
+    thread.start()
+    return event, thread
 
 
 def _build_translation_provider(requested_provider: str, *, translation_enabled: bool):
@@ -299,6 +375,9 @@ PIPELINE_FILES = (
     "translator_nvidia.py",
     "pdf.py",
 )
+
+_PROGRESS_WRITE_LOCK = threading.RLock()
+_PROGRESS_FINGERPRINTS = {}
 PIPELINE_MANIFEST_VERSION = "benchmark-pipeline-v1"
 
 
@@ -1239,6 +1318,14 @@ def run_benchmark(args):
     # replacement between passes, group membership and the exact renderer input.
     ocr_line_provenance.activate()
     output_folder = Path(getattr(args, "output_folder", OUTPUT_FOLDER)).resolve()
+    marker_dir = str(os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") or "").strip()
+    if marker_dir:
+        try:
+            marker = Path(marker_dir)
+            marker.mkdir(parents=True, exist_ok=True)
+            (marker / "benchmark_pipeline_entered").write_text("1", encoding="utf-8")
+        except OSError:
+            pass
     pages_folder = output_folder / "pages"
     errors_folder = output_folder / "errors"
     diagnostic_folder = output_folder / "debug"
@@ -1279,6 +1366,9 @@ def run_benchmark(args):
     )
 
     output_folder.mkdir(parents=True, exist_ok=True)
+    cancel_event, cancel_watcher = _cancel_event_from_environment()
+    if cancel_event.is_set():
+        raise PipelineCancelled("user_cancelled")
     resource_monitor = ResourceMonitor(
         output_folder,
         enabled=config.RESOURCE_MONITORING,
@@ -1722,7 +1812,10 @@ def run_benchmark(args):
         workers=config.OCR_WORKERS,
         result_callback=_persist_ocr_result,
         progress_callback=_ocr_progress,
+        cancel_event=cancel_event,
     )
+    if cancel_event.is_set():
+        raise PipelineCancelled("user_cancelled")
     stage_seconds["ocr"] = time.perf_counter() - ocr_wall_started
     _record_perf_event("ocr", "ocr", int((ocr_wall_started - started) * 1_000_000_000), int((time.perf_counter() - started) * 1_000_000_000))
     counters["ocr_runs"] = len(ocr_jobs)
@@ -1876,6 +1969,8 @@ def run_benchmark(args):
         translator_stats["provider_source"] = "disabled"
         translator_stats["provider_disabled"] = True
     else:
+        if cancel_event.is_set():
+            raise PipelineCancelled("user_cancelled")
         translations = translator.translate_many(
             [group.text for group in translation_targets],
             force=args.force,
@@ -1959,10 +2054,15 @@ def run_benchmark(args):
     )
     post_parallel_results = None
     if _pipeline_page_workers() == 2:
+        overflow_retry_lock = threading.Lock()
         post_parallel_results = process_post_translation_pages(
             analyzable_states,
             diagnostic_folder=diagnostic_folder,
             targeted_regression=targeted_regression,
+            translator=translator if translation_enabled else None,
+            translation_retry_records=translation_retry_records,
+            force=args.force,
+            retry_lock=overflow_retry_lock,
         )
         analyzable_states = []
     for state in analyzable_states:
@@ -2120,6 +2220,8 @@ def run_benchmark(args):
     # Rendering still operates on the page-local dictionaries.  Publish their
     # final page results back to the aggregate list before PDF aggregation.
     for local_state in analyzable_states:
+        if cancel_event.is_set():
+            raise PipelineCancelled("user_cancelled")
         aggregate_state = state_by_index.get(local_state.get("index"))
         if aggregate_state is not None:
             aggregate_state.update(local_state)
@@ -2696,7 +2798,14 @@ def _retry_layout_overflow_translations(
 ):
     retried = 0
     for group in groups:
-        previous = str(group.translation or "").strip()
+        # Render safety may clear an overflowing candidate from the accepted
+        # ``translation`` field.  Keep the provider candidate as retry context;
+        # it is never rendered/final until a subsequent layout validation passes.
+        previous = str(
+            getattr(group, "translation", "")
+            or getattr(group, "translation_candidate", "")
+            or ""
+        ).strip()
         try:
             candidate = translator.translate_strict(
                 group.text,
@@ -2746,6 +2855,16 @@ def _retry_layout_overflow_translations(
         )
         if accepted:
             group.translation_retry_count += 1
+            # The initial overflow was a provisional rejection.  Once the
+            # shortened candidate passes validation and rerendering, clear the
+            # failure bookkeeping so quality/accounting reflects the accepted
+            # final translation rather than the discarded intermediate.
+            group.translation_unresolved = False
+            group.trusted_translation_missing = False
+            group.source_fallback_prevented = False
+            group.translation_attempts_exhausted = False
+            group.manual_review_required = False
+            group.preserved_original = False
             group.translation_validation_reason = "layout_retry_ok"
             retried += 1
         else:
@@ -4660,11 +4779,10 @@ def _write_progress(
     states,
     status="running",
     pdf_path=None,
+    force=False,
 ):
-    serializable = [_serializable_state(state) for state in states]
-    atomic_write_json(
-        path,
-        {
+    serializable = [_json_safe(_serializable_state(state)) for state in states]
+    payload = {
             "status": status,
             "run_signature": run_signature,
             "url": sanitize_source_url(args.url),
@@ -4684,10 +4802,24 @@ def _write_progress(
                 state.get("status") == "completed_with_error"
                 for state in serializable
             ),
-            "pdf_path": pdf_path,
-            "pages": serializable,
-        },
-    )
+        "pdf_path": pdf_path,
+        "pages": serializable,
+    }
+    payload = _json_safe(payload)
+    # Deduplicate semantically identical checkpoints while retaining atomic
+    # persistence for every meaningful transition. The lock covers fingerprint
+    # comparison and write so concurrent page workers cannot stale-overwrite a
+    # newer snapshot.
+    fingerprint = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    key = str(path)
+    with _PROGRESS_WRITE_LOCK:
+        if not force and _PROGRESS_FINGERPRINTS.get(key) == fingerprint:
+            return False
+        atomic_write_json(path, payload)
+        _PROGRESS_FINGERPRINTS[key] = fingerprint
+    return True
 
 
 def _serializable_state(state):
@@ -4719,6 +4851,19 @@ def _serializable_state(state):
         "page_error",
     }
     return {key: value for key, value in state.items() if key in allowed}
+
+
+def _json_safe(value):
+    """Normalize numpy/path scalars nested in page state before JSON writes."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _grouping_fallback_reason(state, groups):

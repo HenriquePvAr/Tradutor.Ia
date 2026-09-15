@@ -464,6 +464,20 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         # the commercial install identifier.  It is read from the persisted
         # authorization snapshot at this process boundary.
         env["TRADUTOR_DEVICE_UUID"] = str(configuration.get("device_uuid") or "")
+        # Cross-process cooperative cancellation signal.  The child watches this
+        # file and drains safely before the runner escalates to termination.
+        cancel_file = output_dir / ".cancel.requested"
+        try:
+            cancel_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        env["TRADUTOR_CANCEL_FILE"] = str(cancel_file)
+        cancel_ack_file = output_dir / ".cancel.observed"
+        try:
+            cancel_ack_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        env["TRADUTOR_CANCEL_ACK_FILE"] = str(cancel_ack_file)
 
         with log_file.open("a", encoding="utf-8") as handle:
             # The command contains the submitted URL and can contain signed query values.
@@ -506,6 +520,17 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                     store.heartbeat(job_id)
                 if not cancelled and store.cancel_requested(job_id):
                     cancelled = True
+                    try:
+                        cancel_file.write_text("cancel_requested\n", encoding="utf-8")
+                    except OSError:
+                        pass
+                    # Give a cooperative child a short, explicit opportunity to
+                    # observe the cross-process signal before forced teardown.
+                    deadline = time.monotonic() + min(1.0, CANCEL_GRACE_SECONDS)
+                    while proc.poll() is None and time.monotonic() < deadline:
+                        if cancel_ack_file.is_file():
+                            break
+                        time.sleep(0.05)
                     handle.write(f"{time.strftime('%H:%M:%S')} cancelamento solicitado\n")
                     handle.flush()
                     try:
@@ -525,8 +550,14 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
             pump.join(timeout=2)
             return_code = proc.wait()
 
-        return _finalize(store, job_id, job, output_dir, return_code, cancelled,
-                         log_path, interrupted=interrupted)
+        result_code = _finalize(store, job_id, job, output_dir, return_code, cancelled,
+                                log_path, interrupted=interrupted)
+        for control_file in (output_dir / ".cancel.requested", output_dir / ".cancel.observed"):
+            try:
+                control_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return result_code
     finally:
         store.close()
 

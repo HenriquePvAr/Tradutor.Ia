@@ -42,6 +42,17 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     checkpoints = out / "checkpoints"
     checkpoints.mkdir(exist_ok=True)
+    cancel_file = Path(str(__import__("os").environ.get("TRADUTOR_CANCEL_FILE") or ""))
+    cancel_ack = Path(str(__import__("os").environ.get("TRADUTOR_CANCEL_ACK_FILE") or ""))
+
+    def cancelled() -> bool:
+        if not str(cancel_file):
+            return False
+        if cancel_file.is_file():
+            if str(cancel_ack):
+                cancel_ack.write_text("child_observed\n", encoding="utf-8")
+            return True
+        return False
 
     for label, key in STAGES:
         # A completed prior stage may be reused on resume; skip re-doing it.
@@ -50,12 +61,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{label} 0/0 (reaproveitado do checkpoint)", flush=True)
             continue
         for step in range(1, args.steps + 1):
+            if cancelled():
+                print("CANCEL_OBSERVED stage=" + key, flush=True)
+                return 130
             print(f"{label} {step}/{args.steps}", flush=True)
             if args.hang:
                 # Simulate an interrupted run: block until killed.
                 while True:
                     time.sleep(0.1)
             time.sleep(max(0.0, args.sleep))
+            if cancelled():
+                print("CANCEL_OBSERVED stage=" + key, flush=True)
+                return 130
         if args.fail_at_stage == key:
             print(f"Falha simulada no estágio {key}", file=sys.stderr, flush=True)
             return 1

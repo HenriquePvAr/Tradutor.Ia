@@ -101,6 +101,15 @@ def build_parser():
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     print("PIPELINE_MAIN_ENTER", flush=True)
+    marker_dir = str(os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") or "").strip()
+    if marker_dir:
+        try:
+            marker = Path(marker_dir)
+            marker.mkdir(parents=True, exist_ok=True)
+            (marker / "run_webtoon_entered").write_text("1", encoding="utf-8")
+            (marker / "local_input_roots").write_text(os.getenv("LOCAL_INPUT_ROOTS", ""), encoding="utf-8")
+        except OSError:
+            pass
     parser = build_parser()
     if not argv:
         args = _interactive_args(parser)
@@ -308,7 +317,13 @@ def _prepare_source(args, parser):
             manifest_path, source_reference, snapshot_ref = _snapshot_local_folder(raw_folder)
         else:
             manifest_path, source_reference, snapshot_ref = _owned_local_manifest(raw_manifest)
-    except Exception:
+    except Exception as exc:
+        marker_dir = str(os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") or "").strip()
+        if marker_dir:
+            try:
+                (Path(marker_dir) / "input_error").write_text(type(exc).__name__ + ":" + str(exc), encoding="utf-8")
+            except OSError:
+                pass
         # LocalFolderError inherits ValueError, but a filesystem race can also surface as a
         # lower-level exception.  Collapse every local-intake failure to this stable public
         # message rather than risking an absolute source path in a traceback.
@@ -339,7 +354,10 @@ def _owned_local_manifest(value):
 
     from local_folder_input import local_source_reference, snapshot_workspace_root
 
-    root = Path(snapshot_workspace_root()).resolve()
+    test_root = str(os.getenv("TRADUTOR_TEST_RUNTIME_ROOT") or "").strip() if os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") else ""
+    # Hermetic subprocess tests may provide an isolated runtime root; production keeps
+    # the normal runtime_paths-backed workspace above.
+    root = ((Path(test_root) / "local_sources") if test_root else Path(snapshot_workspace_root())).resolve()
     supplied = Path(str(value or "")).expanduser()
     if not supplied.is_absolute():
         supplied = root / supplied
@@ -387,7 +405,8 @@ def _is_reparse_point(path):
 def _resolve_local_output_folder(value, snapshot_ref):
     """Keep local snapshots' materialised pages under the repository output root."""
 
-    root = (REPO_ROOT / "output").resolve()
+    test_root = str(os.getenv("TRADUTOR_TEST_RUNTIME_ROOT") or "").strip() if os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") else ""
+    root = ((Path(test_root) / "output") if test_root else (REPO_ROOT / "output")).resolve()
     if not value:
         suffix = re.sub(r"[^A-Za-z0-9_-]+", "", str(snapshot_ref or ""))[:24]
         candidate = root / f"local_chapter_{suffix or 'run'}"
@@ -396,7 +415,7 @@ def _resolve_local_output_folder(value, snapshot_ref):
         if path.is_absolute():
             candidate = path.resolve()
         elif path.parts and path.parts[0].casefold() == "output":
-            candidate = (REPO_ROOT / path).resolve()
+            candidate = (root / Path(*path.parts[1:])).resolve()
         else:
             candidate = (root / path).resolve()
     try:

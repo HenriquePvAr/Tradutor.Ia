@@ -1,5 +1,6 @@
 import importlib.util
 import re
+import threading
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,6 +153,7 @@ def mark_ocr_line_recovered(line, recovery_engine, *, initial_ocr_engine=None):
 class OCREngine:
     _paddle_instances = {}
     _rapidocr_instances = {}
+    _rapidocr_init_lock = threading.Lock()
 
     def __init__(self, lang_choice, engine=None, fallback_engine=None):
         self.lang_choice = str(lang_choice).strip().lower()
@@ -599,10 +601,12 @@ class OCREngine:
     def _get_rapidocr(self):
         cache_key = "default"
         if cache_key not in self._rapidocr_instances:
-            from rapidocr_onnxruntime import RapidOCR
+            with self._rapidocr_init_lock:
+                if cache_key not in self._rapidocr_instances:
+                    from rapidocr_onnxruntime import RapidOCR
 
-            print("Inicializando RapidOCR / ONNX Runtime...")
-            self._rapidocr_instances[cache_key] = RapidOCR()
+                    print("Inicializando RapidOCR / ONNX Runtime...")
+                    self._rapidocr_instances[cache_key] = RapidOCR()
         return self._rapidocr_instances[cache_key]
 
 

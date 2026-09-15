@@ -53,8 +53,10 @@ def local_source_reference(source_fingerprint: object) -> str:
 
 def snapshot_workspace_root() -> Path:
     """Create only the ignored internal workspace root, never the user input root."""
-    LOCAL_SNAPSHOT_ROOT.mkdir(parents=True, exist_ok=True)
-    return LOCAL_SNAPSHOT_ROOT.resolve()
+    test_root = str(os.getenv("TRADUTOR_TEST_RUNTIME_ROOT") or "").strip() if os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") else ""
+    root = (Path(test_root) / "local_sources") if test_root else LOCAL_SNAPSHOT_ROOT
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
 
 
 def materialize_snapshot(
@@ -73,7 +75,7 @@ def materialize_snapshot(
     A malformed/incomplete snapshot fails the whole input gate rather than silently producing
     a shorter chapter.
     """
-    root = Path(snapshot_root or LOCAL_SNAPSHOT_ROOT).resolve()
+    root = Path(snapshot_root or snapshot_workspace_root()).resolve()
     manifest_file = Path(manifest_path).expanduser().resolve(strict=True)
     try:
         manifest_file.relative_to(root)
@@ -94,7 +96,9 @@ def materialize_snapshot(
         raise LocalFolderError(NO_CHAPTER_IMAGES, "empty_snapshot_selection")
 
     destination_root = Path(target_folder).expanduser().resolve()
-    allowed_output_root = Path(output_root or (REPO_ROOT / "output")).expanduser().resolve()
+    test_root = str(os.getenv("TRADUTOR_TEST_RUNTIME_ROOT") or "").strip() if os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") else ""
+    default_output = (Path(test_root) / "output") if test_root else (REPO_ROOT / "output")
+    allowed_output_root = Path(output_root or default_output).expanduser().resolve()
     try:
         destination_root.relative_to(allowed_output_root)
     except ValueError as exc:
