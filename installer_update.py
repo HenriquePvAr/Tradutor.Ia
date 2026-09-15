@@ -43,6 +43,8 @@ def download_verified_installer(
     transport: update_transport.UpdateTransport,
     *,
     data_root: Path | None = None,
+    progress_callback=None,
+    cancel_event=None,
 ) -> Path:
     """Download an installer into a disposable ``.download`` file, then promote atomically."""
     if manifest.artifact_type != INSTALLER_ARTIFACT_TYPE:
@@ -54,10 +56,17 @@ def download_verified_installer(
     partial.unlink(missing_ok=True)
     final.unlink(missing_ok=True)
     try:
-        transport.download_package(
-            manifest.package.url, partial,
-            sha256=manifest.package.sha256, size=manifest.package.size,
-        )
+        kwargs = {"sha256": manifest.package.sha256, "size": manifest.package.size}
+        if progress_callback is not None or cancel_event is not None:
+            kwargs.update(progress_callback=progress_callback, cancel_event=cancel_event)
+        try:
+            transport.download_package(manifest.package.url, partial, **kwargs)
+        except TypeError:
+            # Keep small test transports and third-party adapters compatible with the original
+            # two-keyword contract; production transport supports progress/cancellation.
+            if progress_callback is not None or cancel_event is not None:
+                raise
+            transport.download_package(manifest.package.url, partial, sha256=manifest.package.sha256, size=manifest.package.size)
         os.replace(partial, final)
     except BaseException:
         partial.unlink(missing_ok=True)

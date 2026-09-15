@@ -6802,7 +6802,7 @@
   $('#dashGotoHistory')?.addEventListener('click', () => activateTab('hist'));
   $('#checkUpdatesBtn')?.addEventListener('click', async event => {
     const button = event.currentTarget; const title = $('#updateStatusTitle'); const status = $('#updateStatus'); button.disabled = true;
-    const setState = (state, heading, copy) => { if (title) title.textContent = heading; if (status) status.textContent = copy; button.dataset.updateState = state; };
+    const setState = (state, heading, copy) => { if (title) title.textContent = heading; if (status) status.textContent = copy; button.dataset.updateState = state; button.hidden = ['checking','downloading','ready_to_install','installing'].includes(state); };
     const download = $('#downloadUpdateBtn'); if (download) { download.hidden = true; download.disabled = true; download.onclick = null; }
     setState('checking', 'Verificando atualizações…', 'Consultando o canal beta com segurança.');
     try {
@@ -6818,15 +6818,32 @@
             try {
               const fetched = await fetch('/api/update/download', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
               const result = await fetched.json().catch(() => ({}));
-              if (!fetched.ok || result.state !== 'ready_to_install') throw new Error('download_failed');
-              setState('ready_to_install', 'Atualização pronta para instalar', 'O instalador foi baixado e verificado. Clique novamente para instalar.');
-              download.textContent = 'Instalar agora'; download.disabled = false;
-              download.onclick = async () => {
-                download.disabled = true; setState('installing', 'Instalando atualização…', 'O Yomu Sekai será fechado para concluir a instalação.');
-                const installed = await fetch('/api/update/install', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({handoff_token: result.handoff_token})});
-                if (!installed.ok) { setState('error', 'Instalação indisponível', 'A versão atual continua utilizável.'); download.disabled = false; return; }
-                setState('installing', 'Atualização iniciada', 'Feche o aplicativo quando solicitado para concluir.');
+              if (!fetched.ok || !result.download_token) throw new Error('download_failed');
+              download.textContent = 'Cancelar'; download.disabled = false;
+              const poll = async () => {
+                const status = await fetch(`/api/update/download/status?token=${encodeURIComponent(result.download_token)}`, {cache: 'no-store'});
+                const current = await status.json().catch(() => ({}));
+                if (current.state === 'downloading' || current.state === 'starting') {
+                  const received = Number(current.received || 0), expected = Number(current.expected || data.package_size || 0);
+                  const mb = n => (n / 1048576).toFixed(1);
+                  setState('downloading', 'Baixando atualização…', expected ? `${Math.floor(received * 100 / expected)}% · ${mb(received)} MB / ${mb(expected)} MB` : `${mb(received)} MB recebidos`);
+                  setTimeout(poll, 300); return;
+                }
+                if (current.state === 'ready_to_install') {
+                  setState('ready_to_install', 'Atualização pronta para instalar', 'O instalador foi baixado e verificado.');
+                  download.textContent = 'Instalar agora'; download.disabled = false;
+                  download.onclick = async () => {
+                    download.disabled = true; setState('installing', 'Instalando atualização…', 'O Yomu Sekai será fechado para concluir a instalação.');
+                    const installed = await fetch('/api/update/install', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({handoff_token: current.handoff_token})});
+                    if (!installed.ok) { setState('error', 'Instalação indisponível', 'A versão atual continua utilizável.'); download.disabled = false; return; }
+                    setState('installing', 'Atualização iniciada', 'Feche o aplicativo quando solicitado para concluir.');
+                  }; return;
+                }
+                if (current.state === 'cancelled') { setState('update_available', `Versão ${data.available_version} disponível`, 'Download cancelado.'); download.textContent = 'Baixar e instalar'; download.disabled = false; return; }
+                throw new Error(current.error || 'download_failed');
               };
+              download.onclick = async () => { download.disabled = true; await fetch(`/api/update/download/cancel?token=${encodeURIComponent(result.download_token)}`, {method: 'POST'}); };
+              await poll();
             } catch (_) { setState('error', 'Download indisponível', 'A versão atual continua utilizável. Tente novamente mais tarde.'); download.disabled = false; }
           };
         }
@@ -6834,7 +6851,7 @@
       else if (data.state === 'not_configured') setState('error', 'Atualizações ainda não publicadas', 'O canal beta será habilitado quando a próxima versão for publicada.');
       else setState('up_to_date', 'Você está usando a versão mais recente.', 'Nenhuma atualização está disponível neste momento.');
     } catch (_) { setState('error', 'Não foi possível verificar agora', 'Tente novamente mais tarde.'); }
-    finally { button.disabled = false; }
+    finally { button.disabled = false; if (button.dataset.updateState === 'error' || button.dataset.updateState === 'up_to_date' || button.dataset.updateState === 'update_available') button.hidden = false; }
   });
 
   /* ---------- settings ---------- */

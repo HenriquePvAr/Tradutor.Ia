@@ -112,7 +112,8 @@ class UpdateTransport:
         log.info("update_manifest_fetched", extra={"bytes": len(body)})
         return bytes(body)
 
-    def download_package(self, url: str, destination: Path, *, sha256: str, size: int) -> Path:
+    def download_package(self, url: str, destination: Path, *, sha256: str, size: int,
+                         progress_callback=None, cancel_event=None) -> Path:
         """Stream the package to a temporary file; promote it only once it is provably right.
 
         Size and hash both come from the already-verified signed manifest. The file is hashed
@@ -130,11 +131,15 @@ class UpdateTransport:
         try:
             with os.fdopen(handle, "wb") as stream, self._open(url, stream=True) as response:
                 for chunk in response.iter_content(_DOWNLOAD_CHUNK):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise TransportError("update download cancelled")
                     received += len(chunk)
                     if received > size:
                         raise PackageSizeMismatch(f"package is larger than the declared {size}")
                     digest.update(chunk)
                     stream.write(chunk)
+                    if progress_callback is not None:
+                        progress_callback(received, size)
             if received != size:
                 raise PackageSizeMismatch(f"package size {received} != declared {size}")
             if digest.hexdigest() != sha256:

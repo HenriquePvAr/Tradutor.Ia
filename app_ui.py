@@ -74,6 +74,8 @@ if not load_local_environment_for_entrypoint():
 ROOT = Path(__file__).resolve().parent
 _UPDATE_INSTALLER_HANDOFFS: dict[str, Path] = {}
 _UPDATE_INSTALLER_HANDOFFS_LOCK = threading.Lock()
+_UPDATE_DOWNLOADS: dict[str, dict[str, Any]] = {}
+_UPDATE_DOWNLOADS_LOCK = threading.Lock()
 
 
 def _https_context() -> ssl.SSLContext:
@@ -1508,9 +1510,31 @@ def api_update_manifest() -> JSONResponse:
                 headers={"Cache-Control": "no-store"})
 
 
+def _run_update_download(token: str, manifest: update_manifest.UpdateManifest) -> None:
+    cancel_event = threading.Event()
+    try:
+        transport = update_transport.UpdateTransport()
+        with _UPDATE_DOWNLOADS_LOCK:
+            state = _UPDATE_DOWNLOADS[token]
+            state.update(status="downloading", received=0, expected=manifest.package.size)
+            cancel_event = state["cancel_event"]
+        def progress(received: int, expected: int) -> None:
+            with _UPDATE_DOWNLOADS_LOCK:
+                if token in _UPDATE_DOWNLOADS:
+                    _UPDATE_DOWNLOADS[token].update(received=received, expected=expected)
+        path = installer_update.download_verified_installer(
+            manifest, transport, progress_callback=progress, cancel_event=cancel_event)
+        with _UPDATE_DOWNLOADS_LOCK:
+            _UPDATE_DOWNLOADS[token].update(status="ready_to_install", path=path, version=manifest.version_text)
+    except BaseException as exc:
+        with _UPDATE_DOWNLOADS_LOCK:
+            if token in _UPDATE_DOWNLOADS:
+                _UPDATE_DOWNLOADS[token].update(status="cancelled" if cancel_event.is_set() else "error", error=type(exc).__name__)
+
+
 @app.post("/api/update/download")
 def api_update_download() -> JSONResponse:
-    """Download a verified Windows installer into user-scoped staging."""
+    """Start a verified Windows installer download without blocking the UI thread."""
     manifest_url = os.getenv("TRADUTOR_IA_UPDATE_MANIFEST_URL", DEFAULT_MANIFEST_URL).strip()
     if not manifest_url:
         return JSONResponse({"state": "not_configured", "can_install": False}, status_code=409)
@@ -1523,17 +1547,45 @@ def api_update_download() -> JSONResponse:
             return JSONResponse({"state": decision.state, "can_install": False}, status_code=409)
         if manifest.artifact_type != installer_update.INSTALLER_ARTIFACT_TYPE:
             raise installer_update.InstallerUpdateError("update artifact is not a Windows installer")
-        path = installer_update.download_verified_installer(manifest, transport)
         token = secrets.token_urlsafe(24)
-        with _UPDATE_INSTALLER_HANDOFFS_LOCK:
-            _UPDATE_INSTALLER_HANDOFFS[token] = path
-        return JSONResponse({"state": "ready_to_install", "version": manifest.version_text,
-                             "size": manifest.package.size, "handoff_token": token},
+        with _UPDATE_DOWNLOADS_LOCK:
+            _UPDATE_DOWNLOADS[token] = {"status": "starting", "received": 0,
+                "expected": manifest.package.size, "version": manifest.version_text,
+                "cancel_event": threading.Event()}
+        threading.Thread(target=_run_update_download, args=(token, manifest), daemon=True).start()
+        return JSONResponse({"state": "downloading", "version": manifest.version_text,
+                             "size": manifest.package.size, "download_token": token},
                             headers={"Cache-Control": "no-store"})
     except (update_manifest.UpdateError, update_transport.TransportError) as exc:
         return JSONResponse({"state": "error", "can_install": False,
                              "error": type(exc).__name__}, status_code=502,
                             headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/update/download/status")
+def api_update_download_status(token: str = "") -> JSONResponse:
+    with _UPDATE_DOWNLOADS_LOCK:
+        state = dict(_UPDATE_DOWNLOADS.get(token) or {})
+    if not state:
+        return JSONResponse({"state": "error", "error": "download_not_found"}, status_code=404)
+    state.pop("cancel_event", None)
+    path = state.pop("path", None)
+    if state.get("status") == "ready_to_install" and path:
+        handoff = secrets.token_urlsafe(24)
+        with _UPDATE_INSTALLER_HANDOFFS_LOCK:
+            _UPDATE_INSTALLER_HANDOFFS[handoff] = Path(path)
+        state["handoff_token"] = handoff
+    return JSONResponse({"state": state.pop("status", "error"), **state}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/update/download/cancel")
+def api_update_download_cancel(token: str = "") -> JSONResponse:
+    with _UPDATE_DOWNLOADS_LOCK:
+        state = _UPDATE_DOWNLOADS.get(token)
+        if not state:
+            return JSONResponse({"state": "error", "error": "download_not_found"}, status_code=404)
+        state["cancel_event"].set()
+    return JSONResponse({"state": "cancelling"}, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/update/install")
