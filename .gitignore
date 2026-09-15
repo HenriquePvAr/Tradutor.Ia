@@ -40,6 +40,8 @@ models/
 .mypy_cache/
 .ruff_cache/
 .playwright-cli/
+.claude/
+.wrangler/
 
 # Packaging output and alternative virtualenv layouts.
 build/

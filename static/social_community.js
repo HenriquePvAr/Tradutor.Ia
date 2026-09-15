@@ -141,11 +141,26 @@ function header() {
       on: { click: () => { state.tab = t.id; state.openWorkId = null; render(); } },
     }));
   }
-  return el('header', { class: 'sc-head' }, [
-    el('div', { class: 'sc-head-top' }, [
-      el('span', { class: 'sc-title', text: 'Comunidade' }),
-      el('span', { class: 'sc-user', text: displayName, attrs: { title: displayName } }),
-      el('button', { class: 'btn-ghost sc-logout', text: 'Sair', on: { click: doLogout } }),
+  // Same .page-head shell every other panel uses, so the community screen does not
+  // look like a different app.  In development mode the masthead already shows the
+  // user, so the right slot carries the status tag instead of a duplicated chip.
+  const headright = COMMUNITY_ENABLED
+    ? [
+        el('span', { class: 'sc-user', text: displayName, attrs: { title: displayName } }),
+        el('button', { class: 'btn-ghost sc-logout', text: 'Sair', on: { click: doLogout } }),
+      ]
+    : [el('span', { class: 'page-tag', text: 'em breve' })];
+  return el('header', {}, [
+    el('div', { class: 'page-head' }, [
+      el('span', { class: 'ph-kanji', text: '共', attrs: { 'aria-hidden': 'true' } }),
+      el('span', { class: 'ph-burst', attrs: { 'aria-hidden': 'true' } }),
+      el('div', {}, [
+        el('div', { class: 'page-title', text: 'Comu', attrs: { 'data-text': 'Comunidade' } }, [
+          el('span', { class: 'accent', text: 'nidade' }),
+        ]),
+        el('div', { class: 'page-desc', text: 'Descubra traduções, acompanhe obras e compartilhe projetos.' }),
+      ]),
+      el('div', { class: 'page-headright' }, headright),
     ]),
     nav,
   ]);
