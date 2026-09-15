@@ -2375,7 +2375,7 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 | `TESTER-CONFIG-PROVISIONING-PENDING` | Alta (bloqueia Beta externa) | Não há caminho de provisionamento de configuração: um tester precisa criar `.env` manualmente com `DEEPL_API_KEY`, `SUPABASE_URL` e `SUPABASE_PUBLISHABLE_KEY` para a aplicação funcionar. | `.env.example`, `config.py`, `docs/DEVELOPMENT.md#variáveis-de-ambiente` | Definir junto com o Setup: config pública embutida, provisionamento pelo login ou entrega controlada pelo owner |
 | `YK-ADS-MIGRATION-NOT-APPLIED` | Alta (bloqueia Beta comercial) | A fundação de YK+ads (expiração simétrica do diário, alvo por plano, preferência de anúncios, hardening de privilégios) existe apenas como migration local; o remoto ainda roda `claim_daily_yk` com literal `5`, `finalize_translation_job` com débito diário eterno e `finalize_yk_reservation` acessível por `authenticated`. | `supabase/migrations/20260915140000_yk_ads_foundation.sql`, §31 | Owner revisar e aplicar; até lá o bucket diário remoto continua contaminável |
 | `PASSIVE-ADS-UI-PLACEHOLDER` | Média | `#passiveAdsSettings` é um placeholder "Em breve"; o backend já tem `set_passive_ads_enabled`, mas nenhuma tela liga/desliga a preferência. | `ui/ui_shell.html`, §31 | TDD de UI após a migration ser aplicada |
-| `REWARDED-PROVIDER-NOT-CHOSEN` | Média | Nenhum provider de rewarded ads compatível com Windows desktop foi escolhido; os dois Edge Functions são stubs 503 e a flag global está desligada. | `supabase/functions/rewarded-ad-*`, §31 | Missão seguinte: escolher provider e implementar verificação SSV |
+| `ADS-INVENTORY-BLOCKER` | Alta (bloqueia monetização por anúncios) | Pesquisa concluída: nenhum provider entrega anúncio passivo verificável neste runtime (Win32 + WebView local, sem domínio). AdSense/Ad Manager proíbem desktop apps por política; Microsoft e AdDuplex estão mortos; Pubfinity/PubMatic são UWP; AdsJumbo é .NET sem rewarded nem SSV. Único viável: offerwall web com postback HMAC — produto diferente de "assistir anúncio". | `docs/technical/ADS_PROVIDER_RESEARCH.md`, §31 | Decisão comercial do owner: offerwall, beta sem anúncios passivos, ou monetização fora do escopo da beta |
 | `CI-JS-SUITES-NOT-RUN` | Média | A CI roda apenas `node --check` sobre `static/*.js`; as 14 suítes `.mjs` (que exigem `--experimental-vm-modules`) não são executadas em nenhum job. Regressão de frontend só é detectada localmente. | `.github/workflows/tests.yml`, `docs/DEVELOPMENT.md#ci` | Adicionar um step que itere `test_*.mjs` com a flag; barato e sem impacto no comportamento de produção |
 
 ### Limitações conhecidas do produto
@@ -2495,9 +2495,16 @@ precise reconstruir a regra financeira.
 INSERT/UPDATE/DELETE/TRUNCATE direto de `anon` e `authenticated`. RLS não cobre
 TRUNCATE, por isso o privilégio é revogado diretamente.
 
-### Rewarded ads — PLANEJADO
+### Rewarded ads — BLOQUEADO POR FALTA DE INVENTÁRIO
 
-Nenhum provider está integrado. `supabase/functions/rewarded-ad-session` e
+Nenhum provider está integrado, e a pesquisa de 2026-09-15 concluiu que **não
+existe provider de anúncios passivos compatível** com este runtime (Win32 +
+WebView local, sem domínio). Ver
+[Pesquisa de provider de anúncios](ADS_PROVIDER_RESEARCH.md) para a tabela de
+candidatos, as citações de política e a única alternativa viável encontrada
+(offerwall web com postback assinado). Consequência: a condição
+`valid_passive_ad_activity` que gatearia a concessão do YK diário **não é
+implementável** sem fabricar prova de anúncio, e por isso não foi implementada. `supabase/functions/rewarded-ad-session` e
 `rewarded-ad-callback` continuam stubs retornando `rewarded_ads_disabled` (503).
 `credit_rewarded_ad` exige **as duas** chaves ligadas (`beta_feature_flags.rewarded_ads_enabled`
 global e `plans.rewarded_ads_enabled` do plano), respeita `plans.rewarded_daily_cap`
