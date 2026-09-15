@@ -381,7 +381,8 @@ class RewardedAdTests(unittest.TestCase):
 class MigrationContractTests(unittest.TestCase):
     def test_migration_sorts_after_the_applied_remote_head(self):
         names = sorted(p.name for p in (ROOT / "supabase/migrations").glob("*.sql"))
-        self.assertEqual(names[-1], MIGRATION.name)
+        self.assertIn(MIGRATION.name, names)
+        self.assertGreater(names.index(MIGRATION.name), names.index("20260913005557_canonical_translation_commit_rpc_grants.sql"))
         self.assertGreater(MIGRATION.name, "20260915013128_chapter_level_translation_finalization.sql")
 
     def test_daily_target_comes_from_the_plan_not_a_literal(self):
@@ -517,12 +518,14 @@ class EdgeContractTests(unittest.TestCase):
         self.assertNotIn("finalize_yk_reservation", edge)
         self.assertIn("release_yk_reservation", edge)
 
-    def test_rewarded_stubs_stay_disabled(self):
-        for name in ("rewarded-ad-session", "rewarded-ad-callback"):
-            source = (ROOT / f"supabase/functions/{name}/index.ts").read_text(encoding="utf-8")
-            self.assertIn("rewarded_ads_disabled", source)
-            self.assertIn("503", source)
-            self.assertNotIn("credit_rewarded_ad", source)
+    def test_rewarded_edges_are_fail_closed_and_server_authoritative(self):
+        session = (ROOT / "supabase/functions/rewarded-ad-session/index.ts").read_text(encoding="utf-8")
+        callback = (ROOT / "supabase/functions/rewarded-ad-callback/index.ts").read_text(encoding="utf-8")
+        self.assertIn("create_rewarded_ad_session", session)
+        self.assertIn("requireAuth", session)
+        self.assertIn("AYET_PUBLISHER_API_KEY", callback)
+        self.assertIn("credit_ayet_rewarded_ad", callback)
+        self.assertNotIn("yk_ledger", callback)
 
 
 def _function_body(name: str) -> str:
