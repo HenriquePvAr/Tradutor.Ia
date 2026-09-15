@@ -171,7 +171,8 @@ class BatchResponse:
 
 class BackendClient(Protocol):
     def reserve(self, *, job_id: str, request_id: str, auth_token: str, device_id: str = "") -> dict[str, Any]: ...
-    def translate_batch(self, request: BatchRequest, *, reservation_id: str, auth_token: str) -> BatchResponse: ...
+    def translate_batch(self, request: BatchRequest, *, reservation_id: str, auth_token: str,
+                        finalize_job: bool = True) -> BatchResponse: ...
 
 
 class HttpBackendClient:
@@ -210,12 +211,14 @@ class HttpBackendClient:
             "device_id": str(device_id or ""),
         }, auth_token)
 
-    def translate_batch(self, request: BatchRequest, *, reservation_id: str, auth_token: str) -> BatchResponse:
+    def translate_batch(self, request: BatchRequest, *, reservation_id: str, auth_token: str,
+                        finalize_job: bool = True) -> BatchResponse:
         device_id = _validated_device_uuid()
         payload = {
             "request_id": request.request_id, "job_id": request.job_id,
             "source_lang": request.source_lang, "target_lang": request.target_lang,
             "reservation_id": reservation_id,
+            "finalize_job": bool(finalize_job),
             "device_id": device_id,
             "items": [{"item_id": i.item_id, "text": i.text} for i in request.items],
         }
@@ -355,7 +358,8 @@ class MockBackendClient:
                 self.reserve_count += 1
             return {"reservation_id": reservation, "required_yk": 1}
 
-    def translate_batch(self, request: BatchRequest, *, reservation_id: str, auth_token: str) -> BatchResponse:
+    def translate_batch(self, request: BatchRequest, *, reservation_id: str, auth_token: str,
+                        finalize_job: bool = True) -> BatchResponse:
         if self.fail:
             raise BackendTranslationError(self.fail)
         with self._lock:
@@ -401,7 +405,9 @@ class YomuBackendTranslationProvider:
             reservation_id = str(reservation.get("reservation_id") or "")
             if not reservation_id:
                 raise BackendTranslationError("RESERVATION_FAILED")
-            response = self.backend.translate_batch(request, reservation_id=reservation_id, auth_token=context.access_token)
+            response = self.backend.translate_batch(request, reservation_id=reservation_id,
+                                                    auth_token=context.access_token,
+                                                    finalize_job=True)
             expected = {item.item_id for item in request.items}
             actual = [item.item_id for item in response.items]
             if response.request_id != request.request_id or set(actual) != expected or len(actual) != len(set(actual)):
@@ -484,7 +490,8 @@ class YomuBackendTranslationProvider:
                 sub_request = BatchRequest(sub_request_id, job_id, "EN", "PT-BR", chunk)
                 responses.append(self._translate_batch_with_reservation(
                     sub_request, reservation_id=reservation_id,
-                    auth_token=context.access_token))
+                    auth_token=context.access_token,
+                    finalize_job=(index == len(chunks))))
         self.stats.update({"request_id": request_id, "job_id": job_id,
                            "translation_results": len(items),
                            "translation_batches": len(responses)})
@@ -492,7 +499,7 @@ class YomuBackendTranslationProvider:
         return [by_id[item.item_id] for item in items]
 
     def _translate_batch_with_reservation(self, request: BatchRequest, *, reservation_id: str,
-                                          auth_token: str) -> BatchResponse:
+                                          auth_token: str, finalize_job: bool = True) -> BatchResponse:
         existing = self.results.get(request.job_id, request.request_id)
         if existing:
             return existing
@@ -501,7 +508,8 @@ class YomuBackendTranslationProvider:
             if existing:
                 return existing
             response = self.backend.translate_batch(
-                request, reservation_id=reservation_id, auth_token=auth_token)
+                request, reservation_id=reservation_id, auth_token=auth_token,
+                finalize_job=finalize_job)
             expected = {item.item_id for item in request.items}
             actual = [item.item_id for item in response.items]
             if (response.request_id != request.request_id or set(actual) != expected
