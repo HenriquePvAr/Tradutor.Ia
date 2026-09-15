@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 import zipfile
 import platform
+import threading
 import app_version
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,6 +188,29 @@ class DesktopApi:
         return {"requested": True}
 
 
+class AdsDiagnosticsApi:
+    """Sanitized diagnostics sink used only by the opt-in ads WebView probe."""
+
+    _allowed = {
+        "mode", "url", "user_agent", "page_loaded", "iframe_created", "iframe_src",
+        "iframe_load", "iframe_metrics", "slot_states", "resource_hosts", "javascript_enabled",
+        "local_storage", "session_storage", "error_class", "blocked_reason",
+    }
+
+    def __init__(self):
+        base = Path(os.getenv("LOCALAPPDATA", "")) / "YomuSekai" / "logs"
+        base.mkdir(parents=True, exist_ok=True)
+        self.path = base / "ads-diagnostic.json"
+
+    def record(self, payload: object) -> dict[str, bool]:
+        if not isinstance(payload, dict):
+            raise ValueError("invalid_diagnostic_payload")
+        safe = {k: payload[k] for k in self._allowed if k in payload}
+        safe["recorded_at"] = datetime.now(timezone.utc).isoformat()
+        self.path.write_text(json.dumps(safe, ensure_ascii=True, indent=2), encoding="utf-8")
+        return {"recorded": True}
+
+
 def _healthy(host: str, port: int, timeout: float = 1.5) -> bool:
     try:
         with urllib.request.urlopen(_url(host, port), timeout=timeout) as response:
@@ -293,7 +317,7 @@ def _set_windows_app_user_model_id() -> None:
         return
 
 
-def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftest: bool = False, auth_diagnostics: bool = False) -> int:
+def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftest: bool = False, auth_diagnostics: bool = False, ads_diagnostic_mode: str | None = None) -> int:
     try:
         import webview
     except ImportError as exc:  # pragma: no cover - environment diagnostic
@@ -304,9 +328,14 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
     try:
         _wait_ready(host, port, server)
         _set_windows_app_user_model_id()
+        direct_ads = ads_diagnostic_mode == "direct"
+        diagnostic_api = AdsDiagnosticsApi() if ads_diagnostic_mode else None
+        target_url = "https://henriquepvar.github.io/ad/banner-728x90.html" if direct_ads else _desktop_url(host, port)
         window = webview.create_window(
-            "Yomu Sekai", _desktop_url(host, port), width=1440, height=900,
-            min_size=(980, 680), confirm_close=True, js_api=DesktopApi(),
+            "Yomu Sekai - Ads Diagnostic" if ads_diagnostic_mode else "Yomu Sekai", target_url,
+            width=900 if direct_ads else 1440, height=240 if direct_ads else 900,
+            min_size=(760, 180) if direct_ads else (980, 680), confirm_close=True,
+            js_api=diagnostic_api if diagnostic_api else DesktopApi(),
         )
         lifecycle = {"closing": False, "closed": False}
 
@@ -320,6 +349,43 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
 
         window.events.closing += on_closing
         window.events.closed += on_closed
+        if ads_diagnostic_mode:
+            def collect_ads_diagnostics() -> None:
+                script = r"""
+                (() => {
+                  const resources = performance.getEntriesByType('resource')
+                    .map(e => { try { return new URL(e.name).hostname; } catch (_) { return ''; } })
+                    .filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).slice(0, 20);
+                  const frames = [...document.querySelectorAll('iframe')];
+                  const iframeMetrics = frames.map(f => {
+                    const r = f.getBoundingClientRect();
+                    let bodyLength = null, childCount = null;
+                    try { bodyLength = f.contentDocument?.body?.innerHTML?.length ?? null; childCount = f.contentDocument?.body?.children?.length ?? null; } catch (_) {}
+                    return { width: Math.round(r.width), height: Math.round(r.height), body_length: bodyLength, child_count: childCount };
+                  });
+                  const slots = [...document.querySelectorAll('[data-passive-ad-slot]')].map(x => ({
+                    name: x.dataset.passiveAdSlot || '', state: x.dataset.state || '', hidden: !!x.hidden,
+                    iframe: !!x.querySelector('iframe'), src: x.querySelector('iframe')?.src || ''
+                  }));
+                  return window.pywebview.api.record({
+                    mode: %MODE%, url: location.href, user_agent: navigator.userAgent,
+                    page_loaded: document.readyState === 'complete', iframe_created: frames.length > 0,
+                    iframe_src: frames.map(f => f.src).filter(Boolean).slice(0, 10), iframe_metrics: iframeMetrics,
+                    iframe_load: frames.map(f => f.contentWindow ? 'created' : 'unknown'),
+                    slot_states: slots, resource_hosts: resources,
+                    javascript_enabled: true,
+                    local_storage: (() => { try { localStorage.setItem('__yk_probe','1'); localStorage.removeItem('__yk_probe'); return true; } catch (_) { return false; } })(),
+                    session_storage: (() => { try { sessionStorage.setItem('__yk_probe','1'); sessionStorage.removeItem('__yk_probe'); return true; } catch (_) { return false; } })()
+                  });
+                })()
+                """.replace("%MODE%", json.dumps(ads_diagnostic_mode))
+                try:
+                    window.evaluate_js(script)
+                except Exception:
+                    return
+            def on_loaded() -> None:
+                threading.Timer(3.0, collect_ads_diagnostics).start()
+            window.events.loaded += on_loaded
         if lifecycle_selftest:
             # Exercise the real Window close path; the same events fire as for the
             # user pressing the native close button.  This hook is CLI-only.
@@ -358,16 +424,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--lifecycle-selftest", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--auth-diagnostics", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--ads-diagnostic-direct", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--ads-diagnostic-yomu", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--export-diagnostics", metavar="DESTINO", help="exporta um ZIP sanitizado de diagnósticos")
     parsed = parser.parse_args(args)
     if parsed.host not in {"127.0.0.1", "localhost"}:
         parser.error("o desktop shell aceita somente loopback")
     if parsed.auth_diagnostics:
         os.environ["TRADUTOR_AUTH_DIAGNOSTICS"] = "1"
+    ads_mode = None
+    if parsed.ads_diagnostic_direct and parsed.ads_diagnostic_yomu:
+        parser.error("escolha apenas um modo de diagnóstico de anúncios")
+    if parsed.ads_diagnostic_direct:
+        ads_mode = "direct"
+    elif parsed.ads_diagnostic_yomu:
+        ads_mode = "yomu"
+    elif os.getenv("YOMU_ADS_DIAGNOSTICS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        ads_mode = "yomu"
     if parsed.export_diagnostics:
         print(export_diagnostics(parsed.export_diagnostics))
         return 0
-    return run(parsed.host, parsed.port, lifecycle_selftest=parsed.lifecycle_selftest, auth_diagnostics=parsed.auth_diagnostics)
+    return run(parsed.host, parsed.port, lifecycle_selftest=parsed.lifecycle_selftest, auth_diagnostics=parsed.auth_diagnostics, ads_diagnostic_mode=ads_mode)
 
 
 if __name__ == "__main__":
