@@ -2,7 +2,18 @@ import sqlite3
 import unittest
 from datetime import datetime, timezone, timedelta
 
-from commercial_foundation import DisabledBillingProvider, DisabledRewardedAdProvider, YKWallet
+from offline_test_guard import install_offline_network_guard
+
+install_offline_network_guard()
+
+from commercial_foundation import (
+    PLANS,
+    DisabledBillingProvider,
+    DisabledRewardedAdProvider,
+    YKWallet,
+)
+
+FREE = PLANS["free"]
 
 
 class CommercialFoundationTests(unittest.TestCase):
@@ -11,6 +22,9 @@ class CommercialFoundationTests(unittest.TestCase):
         self.wallet = YKWallet(self.db)
         self.now = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
         self.user = "user-1"
+        # Daily YK is only usable with passive ads on; these legacy cases all
+        # exercise the spending path, so opt the user in.
+        self.wallet.set_passive_ads(self.user, True, now=self.now)
 
     def tearDown(self):
         self.db.close()
@@ -26,20 +40,23 @@ class CommercialFoundationTests(unittest.TestCase):
             if permanent:
                 db.execute("INSERT INTO yk_ledger VALUES (?,?,?,?,?,?,?,?,?)", ("p", self.user, permanent, "permanent", "test", None, None, self.now.isoformat(), "{}"))
                 db.commit()
-            self.assertEqual(wallet.claim_daily(self.user, now=self.now), expected)
-            self.assertEqual(wallet.claim_daily(self.user, now=self.now), 0)
+            self.assertEqual(wallet.claim_daily(self.user, now=self.now, plan=FREE), expected)
+            self.assertEqual(wallet.claim_daily(self.user, now=self.now, plan=FREE), 0)
             db.close()
 
     def test_spend_is_idempotent_and_uses_expiring_buckets_first(self):
         self.credit(3, "permanent")
         self.credit(2, "daily")
-        reservation = self.wallet.reserve_translation(self.user, "job-1", now=self.now)
+        reservation = self.wallet.reserve_translation(self.user, "job-1", now=self.now, plan=FREE)
         self.wallet.consume_reservation(reservation["id"], now=self.now)
         self.assertEqual(self.wallet.balances(self.user, now=self.now).available, 4)
-        self.assertEqual(self.wallet.reserve_translation(self.user, "job-1", now=self.now)["id"], reservation["id"])
+        self.assertEqual(
+            self.wallet.reserve_translation(self.user, "job-1", now=self.now, plan=FREE)["id"],
+            reservation["id"],
+        )
 
     def test_daily_expires_at_utc_reset(self):
-        self.wallet.claim_daily(self.user, now=self.now)
+        self.wallet.claim_daily(self.user, now=self.now, plan=FREE)
         tomorrow = self.now + timedelta(days=1, minutes=1)
         self.assertEqual(self.wallet.balances(self.user, now=tomorrow).daily, 0)
 
@@ -48,4 +65,3 @@ class CommercialFoundationTests(unittest.TestCase):
             DisabledBillingProvider().create_checkout(user_id=self.user, plan_slug="pro_monthly")
         with self.assertRaisesRegex(RuntimeError, "not_configured"):
             DisabledRewardedAdProvider().verify_reward({})
-

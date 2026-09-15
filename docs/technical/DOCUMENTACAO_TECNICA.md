@@ -2373,6 +2373,9 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 | `BETA-AUTHORIZER-REMOTE-PENDING` | Alta (bloqueia Beta externa) | O authorizer local foi corrigido para resolver o entitlement ativo; deploy remoto e validação autenticada ainda não foram executados. | `ui_bridge.py`, `beta_license.py`, `999231d` | Repetir diagnóstico de Auth e executar LIC-001 após autorização |
 | `CLEAN-VM-VALIDATION-PENDING` | Alta (bloqueia Beta externa) | Nenhuma evidência de validação em VM Windows limpa. | — | Executar após o empacotamento existir |
 | `TESTER-CONFIG-PROVISIONING-PENDING` | Alta (bloqueia Beta externa) | Não há caminho de provisionamento de configuração: um tester precisa criar `.env` manualmente com `DEEPL_API_KEY`, `SUPABASE_URL` e `SUPABASE_PUBLISHABLE_KEY` para a aplicação funcionar. | `.env.example`, `config.py`, `docs/DEVELOPMENT.md#variáveis-de-ambiente` | Definir junto com o Setup: config pública embutida, provisionamento pelo login ou entrega controlada pelo owner |
+| `YK-ADS-MIGRATION-NOT-APPLIED` | Alta (bloqueia Beta comercial) | A fundação de YK+ads (expiração simétrica do diário, alvo por plano, preferência de anúncios, hardening de privilégios) existe apenas como migration local; o remoto ainda roda `claim_daily_yk` com literal `5`, `finalize_translation_job` com débito diário eterno e `finalize_yk_reservation` acessível por `authenticated`. | `supabase/migrations/20260915140000_yk_ads_foundation.sql`, §31 | Owner revisar e aplicar; até lá o bucket diário remoto continua contaminável |
+| `PASSIVE-ADS-UI-PLACEHOLDER` | Média | `#passiveAdsSettings` é um placeholder "Em breve"; o backend já tem `set_passive_ads_enabled`, mas nenhuma tela liga/desliga a preferência. | `ui/ui_shell.html`, §31 | TDD de UI após a migration ser aplicada |
+| `REWARDED-PROVIDER-NOT-CHOSEN` | Média | Nenhum provider de rewarded ads compatível com Windows desktop foi escolhido; os dois Edge Functions são stubs 503 e a flag global está desligada. | `supabase/functions/rewarded-ad-*`, §31 | Missão seguinte: escolher provider e implementar verificação SSV |
 | `CI-JS-SUITES-NOT-RUN` | Média | A CI roda apenas `node --check` sobre `static/*.js`; as 14 suítes `.mjs` (que exigem `--experimental-vm-modules`) não são executadas em nenhum job. Regressão de frontend só é detectada localmente. | `.github/workflows/tests.yml`, `docs/DEVELOPMENT.md#ci` | Adicionar um step que itere `test_*.mjs` com a flag; barato e sem impacto no comportamento de produção |
 
 ### Limitações conhecidas do produto
@@ -2432,6 +2435,77 @@ de dispositivo. Nenhum segredo administrativo em nenhum dos dois.
 | Licenciamento de tester | ⬜ pendente |
 | Validação em VM Windows limpa | ⬜ pendente |
 | Screenshots reais no guia do usuário | ⬜ pendente |
+
+## 31. Economia de YK e anúncios — PARCIAL
+
+> **Estado:** a migration `supabase/migrations/20260915140000_yk_ads_foundation.sql`
+> existe localmente e **não foi aplicada remotamente**. O remoto está em
+> `20260915013128_chapter_level_translation_finalization`. Nada nesta seção descreve
+> comportamento em produção até o owner revisar e aplicar a migration.
+
+### Regra de produto
+
+| Bucket | Expira | Usável com anúncios passivos OFF | Origem |
+| --- | --- | --- | --- |
+| `daily` | Sim, no fim do ciclo | **Não** — fica armazenado e bloqueado | Complemento diário |
+| `subscription` | Conforme o plano | Sim | Plano pago |
+| `permanent` | **Não** | Sim | Rewarded ads (futuro), concessões |
+
+O YK diário é um **complemento até `plans.daily_yk_target`**, não `permanente + 5`:
+com `target = 5`, um usuário com 3 permanentes recebe 2 diários. A concessão acontece
+no máximo uma vez por ciclo (`yk_daily_claims`, PK `user_id + claim_day`) e **não é
+recompletada** depois que o usuário gasta. Um plano com `daily_yk_target = 0` — os
+planos Pro — não recebe nada.
+
+Ordem de consumo: `daily` → `subscription` → `permanent`. O diário vai primeiro
+porque é o único que expira.
+
+### Expiração simétrica
+
+O crédito diário nasce com `expires_at = claim_day + 1`. O débito correspondente
+**herda essa mesma expiração**, capturada em `yk_reservations.daily_expires_at` no
+momento da reserva. Sem isso, o crédito expirava e o débito permanecia para sempre,
+contaminando o bucket diário de todos os ciclos seguintes. Nenhuma linha do ledger é
+apagada ou zerada: crédito e débito simplesmente deixam de casar com o filtro
+`expires_at is null or expires_at > now()` ao mesmo tempo.
+
+### Anúncios passivos
+
+`public.user_ad_preferences.passive_ads_enabled`, **default `false`** (closed beta:
+o usuário precisa optar). O backend é a autoridade — `reserve_translation_yk` lê a
+preferência do banco e nunca de um campo do payload. Com a preferência desligada,
+`available_daily = 0`; o ledger diário continua intacto e volta a ser utilizável se o
+usuário reativar antes de expirar. O permanente nunca depende dessa preferência.
+
+`wallet_summary()` devolve `daily_stored`, `daily_usable`, `subscription`,
+`permanent`, `reserved`, `passive_ads_enabled` e `usable_total`, para que a UI não
+precise reconstruir a regra financeira.
+
+### Fronteira de escrita de moeda
+
+| Função | Quem pode executar | Papel |
+| --- | --- | --- |
+| `reserve_translation_yk(text,uuid)` | `authenticated` | Reserva 1 capítulo = 1 YK |
+| `release_yk_reservation(uuid)` | `authenticated` | Abandona reserva cujo provider **nunca** começou |
+| `finalize_translation_job(text,uuid)` | `service_role` | **Finalizador canônico** — debita |
+| `finalize_yk_reservation(uuid,boolean)` | `service_role` | Legado, sem superfície de cliente |
+| `credit_rewarded_ad(...)` | `service_role` | Boundary do SSV rewarded (sem provider ainda) |
+
+`ad_reward_events`, `yk_ledger`, `yk_reservations` e `yk_daily_claims` perdem
+INSERT/UPDATE/DELETE/TRUNCATE direto de `anon` e `authenticated`. RLS não cobre
+TRUNCATE, por isso o privilégio é revogado diretamente.
+
+### Rewarded ads — PLANEJADO
+
+Nenhum provider está integrado. `supabase/functions/rewarded-ad-session` e
+`rewarded-ad-callback` continuam stubs retornando `rewarded_ads_disabled` (503).
+`credit_rewarded_ad` exige **as duas** chaves ligadas (`beta_feature_flags.rewarded_ads_enabled`
+global e `plans.rewarded_ads_enabled` do plano), respeita `plans.rewarded_daily_cap`
+(default 5/dia) e usa `ad_reward_events.provider_event_id UNIQUE` como autoridade
+anti-replay. Um cliente nunca pode afirmar "assisti" e receber moeda.
+
+O modelo executável dessas regras vive em `commercial_foundation.YKWallet` e é
+verificado por `test_yk_ads_foundation.py`.
 
 ## 31. Glossário
 
