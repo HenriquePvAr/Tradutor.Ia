@@ -1,9 +1,13 @@
 /* Reusable passive-ad surface. Rendering is UI-only and never changes YK. */
 (function () {
   const URL = 'https://henriquepvar.github.io/ad/banner-728x90.html';
-  const enabled = window.__yomuPassiveAdsProviderEnabled === true;
+  // Resolve at mount time: this script is loaded in <head>, while the
+  // bootstrap flag is assigned by the body script afterwards.
+  const providerEnabled = () => window.__yomuPassiveAdsProviderEnabled === true;
   function mount(container) {
+    if (!container) return;
     if (container.querySelector('iframe')) return;
+    const enabled = providerEnabled();
     if (!container || !enabled) { if (container) container.hidden = true; return; }
     container.hidden = false; container.dataset.state = 'LOADING';
     const frame = document.createElement('iframe');
@@ -22,6 +26,6 @@
     });
     document.querySelectorAll('[data-passive-ad-slot]').forEach(mount);
   }
-  window.PassiveAdSlot = { init, url: URL, enabled };
+  window.PassiveAdSlot = { init, url: URL, isEnabled: providerEnabled };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, {once: true}); else init();
 })();

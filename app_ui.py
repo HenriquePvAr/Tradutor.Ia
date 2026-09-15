@@ -2983,7 +2983,7 @@ def index() -> None:
         "<script>"
         f"window.__tradutorRuntimeIdentity = {runtime_identity};"
         f"window.__tradutorBuildVersion = {dumps_json(BUILD_VERSION)};"
-        f"window.__yomuPassiveAdsProviderEnabled = {dumps_json(os.getenv('YOMU_PASSIVE_ADS_PROVIDER_ENABLED', '').strip() == '1')};"
+        f"window.__yomuPassiveAdsProviderEnabled = {dumps_json(os.getenv('YOMU_PASSIVE_ADS_PROVIDER_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'})};"
         f"window.__tradutorVisualTestEnabled = {'true' if visual_test_enabled else 'false'};"
         f"window.__tradutorAuthDiagnosticsEnabled = {'true' if _AUTH_DIAGNOSTICS_ENABLED else 'false'};"
         "</script>"

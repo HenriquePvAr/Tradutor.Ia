@@ -7,6 +7,7 @@ def test_passive_slot_uses_public_property_and_never_touches_yk():
     source = (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
     assert "https://henriquepvar.github.io/ad/banner-728x90.html" in source
     assert "__yomuPassiveAdsProviderEnabled" in source
+    assert "providerEnabled" in source
     assert "credit_rewarded" not in source.lower()
     assert "daily_yk" not in source.lower()
 
