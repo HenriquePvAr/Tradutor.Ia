@@ -36,11 +36,23 @@ def test_reservation_failure_policy_is_explicit_and_fail_safe():
 
 
 def test_translation_commit_contract_is_canonical():
+    """The canonical contract is chapter-level since 20260915013128.
+
+    A provider batch commits with commit_translation_batch_success and writes no
+    ledger row; the chapter settles once through finalize_translation_job.  The
+    per-batch commit_translation_success path is no longer the canonical one.
+    """
     from pathlib import Path
-    migration = Path("supabase/migrations/20260912100000_canonical_translation_commit_rpc.sql").read_text(encoding="utf-8")
+    migration = Path("supabase/migrations/20260915013128_chapter_level_translation_finalization.sql").read_text(encoding="utf-8")
     edge = Path("supabase/functions/translation-execute/index.ts").read_text(encoding="utf-8")
-    assert "drop function if exists public.commit_translation_success(text, integer, text, text);" in migration
+    assert "create or replace function public.commit_translation_batch_success(" in migration
+    assert "create or replace function public.finalize_translation_job(" in migration
     assert "p_result jsonb" in migration
     assert "p_result: result" in edge
     assert "p_claim_token: claimToken" in edge
-    assert edge.count('"commit_translation_success"') >= 2
+    assert '"commit_translation_batch_success"' in edge
+    assert '"finalize_translation_job"' in edge
+    # The batch commit must not debit: only the chapter finalizer touches yk_ledger.
+    batch = migration.split("create or replace function public.commit_translation_batch_success(")[1]
+    batch = batch.split("create or replace function public.finalize_translation_job(")[0]
+    assert "yk_ledger" not in batch

@@ -120,6 +120,10 @@ def test_control_plane_wallet_avoids_false_zero_while_loading():
 
 
 def test_wallet_refreshes_on_rewards_entry_and_daily_claim():
+    # Wallet payloads go through applyWallet() now, so the assertion is on the
+    # refresh behaviour rather than on a direct state assignment.
     assert "event.detail?.tab === 'rewards'" in CP
-    assert "state.wallet = await call('wallet-summary')" in CP
-    assert "state.walletLoaded = true" in CP
+    assert "await dailyClaim(); applyWallet(await call('wallet-summary'), 'wallet-summary')" in CP
+    # applyWallet() is the single place that flips the loaded flag, and it does
+    # so only when the normalized payload is actually usable.
+    assert "state.walletLoaded = normalized.status === 'ready'" in CP
