@@ -6835,8 +6835,13 @@
                   download.onclick = async () => {
                     download.disabled = true; setState('installing', 'Instalando atualização…', 'O Yomu Sekai será fechado para concluir a instalação.');
                     const installed = await fetch('/api/update/install', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({handoff_token: current.handoff_token})});
+                    const installedJson = await installed.json().catch(() => ({}));
                     if (!installed.ok) { setState('error', 'Instalação indisponível', 'A versão atual continua utilizável.'); download.disabled = false; return; }
-                    setState('installing', 'Atualização iniciada', 'Feche o aplicativo quando solicitado para concluir.');
+                    setState('installing', 'Instalação iniciada', 'O Yomu Sekai será fechado para concluir a atualização.');
+                    if (installed.ok && installedJson?.shutdown_required) {
+                      if (window.pywebview?.api?.request_shutdown) await window.pywebview.api.request_shutdown();
+                      else setTimeout(() => window.close(), 200);
+                    }
                   }; return;
                 }
                 if (current.state === 'cancelled') { setState('update_available', `Versão ${data.available_version} disponível`, 'Download cancelado.'); download.textContent = 'Baixar e instalar'; download.disabled = false; return; }

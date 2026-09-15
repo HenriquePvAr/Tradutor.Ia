@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent
 APP_ICON_PATH = ROOT / "assets" / "branding" / "generated" / "yomu-sekai.ico"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
+_REQUEST_WINDOW_CLOSE = None
 
 
 def export_diagnostics(destination: str) -> Path:
@@ -177,6 +178,14 @@ class DesktopApi:
         self._auth_store.cleanup(job_id)
         return {"job_id": str(job_id), "envelope_ready": False}
 
+    def request_shutdown(self) -> dict[str, bool]:
+        """Ask the native shell to close after a verified installer was spawned."""
+        callback = globals().get("_REQUEST_WINDOW_CLOSE")
+        if not callable(callback):
+            raise RuntimeError("desktop_shutdown_unavailable")
+        callback()
+        return {"requested": True}
+
 
 def _healthy(host: str, port: int, timeout: float = 1.5) -> bool:
     try:
@@ -291,6 +300,7 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
         raise SystemExit("WebView2 indisponível: instale pywebview no .venv-beta.") from exc
 
     server = _start_server(host, port, auth_diagnostics=auth_diagnostics)
+    global _REQUEST_WINDOW_CLOSE
     try:
         _wait_ready(host, port, server)
         _set_windows_app_user_model_id()
@@ -305,6 +315,8 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
 
         def on_closed() -> None:
             lifecycle["closed"] = True
+
+        _REQUEST_WINDOW_CLOSE = lambda: window.destroy()
 
         window.events.closing += on_closing
         window.events.closed += on_closed
@@ -326,6 +338,7 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
             return 1
         return 0
     finally:
+        _REQUEST_WINDOW_CLOSE = None
         shutdown_owned_runtime(server)
 
 

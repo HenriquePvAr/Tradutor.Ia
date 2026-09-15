@@ -1599,11 +1599,19 @@ def api_update_install(payload: dict[str, Any] = Body(...)) -> JSONResponse:
     if path is None:
         raise HTTPException(status_code=404, detail={"code": "handoff_not_found"})
     try:
+        _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_SPAWN_ATTEMPT", path=str(path))
         process = installer_update.spawn_verified_installer(path)
     except (OSError, update_manifest.UpdateError) as exc:
+        _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_SPAWN_ERROR", error=type(exc).__name__)
         return JSONResponse({"state": "error", "error": type(exc).__name__}, status_code=502,
                             headers={"Cache-Control": "no-store"})
-    return JSONResponse({"state": "installing", "pid": process.pid},
+    _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_SPAWN_OK", pid=process.pid)
+    time.sleep(0.25)
+    if process.poll() is not None:
+        _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_EARLY_EXIT", exit_code=process.returncode)
+        return JSONResponse({"state": "error", "error": "installer_early_exit"}, status_code=502,
+                            headers={"Cache-Control": "no-store"})
+    return JSONResponse({"state": "installing", "pid": process.pid, "shutdown_required": True},
                         headers={"Cache-Control": "no-store"})
 
 
