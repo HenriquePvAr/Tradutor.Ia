@@ -54,6 +54,7 @@ import natural_ptbr_refinement
 import refinement_selection_decisions
 import update_manifest
 import update_transport
+import installer_update
 from app_version import BUILD_VERSION
 from translator_nvidia import TranslatorNvidiaBatch
 from chapter_quality_revision import REVIEW_SCHEMA_VERSION
@@ -70,6 +71,8 @@ if not load_local_environment_for_entrypoint():
     raise SystemExit(2)
 
 ROOT = Path(__file__).resolve().parent
+_UPDATE_INSTALLER_HANDOFFS: dict[str, Path] = {}
+_UPDATE_INSTALLER_HANDOFFS_LOCK = threading.Lock()
 
 
 def _https_context() -> ssl.SSLContext:
@@ -1492,15 +1495,63 @@ def api_update_manifest() -> JSONResponse:
         manifest = update_manifest.verify_manifest(raw, trusted_keys=update_manifest.load_trusted_keys())
         decision = update_manifest.decide_update(installed, manifest)
         return JSONResponse({"state": decision.state, "version": installed,
-                             "available_version": manifest.version_text, "channel": manifest.channel,
-                             "published_at": manifest.published_at.isoformat(),
-                             "package_size": manifest.package.size, "mandatory": decision.mandatory,
-                             "can_install": decision.should_install}, headers={"Cache-Control": "no-store"})
+            "available_version": manifest.version_text, "channel": manifest.channel,
+            "published_at": manifest.published_at.isoformat(),
+            "package_size": manifest.package.size, "artifact_type": manifest.artifact_type,
+            "release_notes": manifest.release_notes, "mandatory": decision.mandatory,
+            "can_install": decision.should_install}, headers={"Cache-Control": "no-store"})
     except (update_manifest.UpdateError, update_transport.TransportError) as exc:
         return JSONResponse({"state": "error", "version": installed,
                              "channel": update_manifest.CLIENT_UPDATE_CHANNEL,
                              "can_install": False, "error": type(exc).__name__}, status_code=502,
+                headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/update/download")
+def api_update_download() -> JSONResponse:
+    """Download a verified Windows installer into user-scoped staging."""
+    manifest_url = os.getenv("TRADUTOR_IA_UPDATE_MANIFEST_URL", "").strip()
+    if not manifest_url:
+        return JSONResponse({"state": "not_configured", "can_install": False}, status_code=409)
+    try:
+        transport = update_transport.UpdateTransport()
+        raw = transport.fetch_manifest(manifest_url)
+        manifest = update_manifest.verify_manifest(raw, trusted_keys=update_manifest.load_trusted_keys())
+        decision = update_manifest.decide_update(BUILD_VERSION, manifest)
+        if not decision.should_install:
+            return JSONResponse({"state": decision.state, "can_install": False}, status_code=409)
+        if manifest.artifact_type != installer_update.INSTALLER_ARTIFACT_TYPE:
+            raise installer_update.InstallerUpdateError("update artifact is not a Windows installer")
+        path = installer_update.download_verified_installer(manifest, transport)
+        token = secrets.token_urlsafe(24)
+        with _UPDATE_INSTALLER_HANDOFFS_LOCK:
+            _UPDATE_INSTALLER_HANDOFFS[token] = path
+        return JSONResponse({"state": "ready_to_install", "version": manifest.version_text,
+                             "size": manifest.package.size, "handoff_token": token},
                             headers={"Cache-Control": "no-store"})
+    except (update_manifest.UpdateError, update_transport.TransportError) as exc:
+        return JSONResponse({"state": "error", "can_install": False,
+                             "error": type(exc).__name__}, status_code=502,
+                            headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/update/install")
+def api_update_install(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+    """Start only the installer previously staged by ``/api/update/download``."""
+    token = payload.get("handoff_token") if isinstance(payload, dict) else None
+    if not isinstance(token, str) or not token:
+        raise HTTPException(status_code=400, detail={"code": "invalid_handoff_token"})
+    with _UPDATE_INSTALLER_HANDOFFS_LOCK:
+        path = _UPDATE_INSTALLER_HANDOFFS.pop(token, None)
+    if path is None:
+        raise HTTPException(status_code=404, detail={"code": "handoff_not_found"})
+    try:
+        process = installer_update.spawn_verified_installer(path)
+    except (OSError, update_manifest.UpdateError) as exc:
+        return JSONResponse({"state": "error", "error": type(exc).__name__}, status_code=502,
+                            headers={"Cache-Control": "no-store"})
+    return JSONResponse({"state": "installing", "pid": process.pid},
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/ui/page-revision/regions")

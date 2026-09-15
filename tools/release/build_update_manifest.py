@@ -7,13 +7,14 @@ from app_version import PRODUCT_VERSION
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("artifact", type=Path); p.add_argument("--version", default=PRODUCT_VERSION)
-    p.add_argument("--channel", default="beta"); p.add_argument("--release-notes", default="")
+    p.add_argument("--channel", default="beta"); p.add_argument("--artifact-type", default="zip", choices=("zip", "windows-installer")); p.add_argument("--release-notes", default="")
     p.add_argument("--mandatory", action="store_true"); p.add_argument("--min-supported-version", default="0")
     p.add_argument("--output", type=Path, required=True); a = p.parse_args()
     data = a.artifact.read_bytes()
     # This helper prepares the unsigned payload consumed by the release signer.  It intentionally
     # emits the same channel-bearing schema the client verifies; unsigned output is never trusted.
     manifest = {"schema_version": 1, "app_id": "tradutor-ia", "channel": a.channel,
+                "artifact_type": a.artifact_type,
                 "version": a.version, "minimum_version": a.min_supported_version,
                 "published_at": None,
                 "package": {"filename": a.artifact.name, "url": "",

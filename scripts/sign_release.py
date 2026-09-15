@@ -75,7 +75,7 @@ def sign_manifest(payload: dict, private_key: Ed25519PrivateKey, *, key_id: str)
 def build_payload(
     *, version: str, minimum_version: str, package_path: Path, url: str, app_id: str = APP_ID,
     minimum_bootstrap_version: str | None = None,
-    channel: str = CLIENT_UPDATE_CHANNEL,
+    channel: str = CLIENT_UPDATE_CHANNEL, artifact_type: str = "zip", release_notes: str = "",
 ) -> dict:
     parse_version(version)
     parse_version(minimum_version)
@@ -86,11 +86,15 @@ def build_payload(
         # Only emitted when a release genuinely needs a newer launcher, so ordinary manifests
         # stay byte-identical to the shape #57 signed.
         extra["minimum_bootstrap_version"] = minimum_bootstrap_version
+    if artifact_type not in {"zip", "windows-installer"}:
+        raise ValueError("unsupported artifact type")
     return {
         **extra,
         "schema_version": SUPPORTED_SCHEMA_VERSION,
         "app_id": app_id,
         "channel": channel,
+        "artifact_type": artifact_type,
+        "release_notes": release_notes,
         "version": version,
         "minimum_version": minimum_version,
         "published_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -131,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     signer.add_argument("--url", required=True)
     signer.add_argument("--app-id", default=APP_ID)
     signer.add_argument("--channel", default=CLIENT_UPDATE_CHANNEL)
+    signer.add_argument("--artifact-type", default="zip", choices=("zip", "windows-installer"))
+    signer.add_argument("--release-notes", default="")
     signer.add_argument("--out", required=True, type=Path)
 
     args = parser.parse_args(argv)
@@ -150,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
         app_id=args.app_id,
         minimum_bootstrap_version=args.minimum_bootstrap_version,
         channel=args.channel,
+        artifact_type=args.artifact_type,
+        release_notes=args.release_notes,
     )
     args.out.write_text(json.dumps(sign_manifest(payload, private_key, key_id=args.key_id), indent=2))
     print(f"signed manifest written: {args.out} ({args.app_id} {args.version})")

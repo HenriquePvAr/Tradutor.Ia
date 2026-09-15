@@ -239,6 +239,7 @@ class UpdatePackage:
     url: str
     sha256: str
     size: int
+    artifact_type: str = "zip"
 
 
 @dataclass(frozen=True)
@@ -251,6 +252,7 @@ class UpdateManifest:
     published_at: datetime
     package: UpdatePackage
     key_id: str
+    release_notes: str = ""
     #: Oldest bootstrap/launcher that may host this payload. Optional in the schema and
     #: defaulting to ``0.0.0`` (see ``_BOOTSTRAP_VERSION_DEFAULT``).
     minimum_bootstrap_version: SemanticVersion = SemanticVersion(0, 0, 0)
@@ -258,6 +260,10 @@ class UpdateManifest:
     @property
     def version_text(self) -> str:
         return format_version(self.version)
+
+    @property
+    def artifact_type(self) -> str:
+        return self.package.artifact_type
 
 
 def _require(payload: Mapping[str, Any], field: str, expected_type: type) -> Any:
@@ -286,7 +292,11 @@ def _parse_package(raw: Any) -> UpdatePackage:
     size = _require(raw, "size", int)
     if size <= 0:
         raise ManifestInvalid("package size must be positive")
-    return UpdatePackage(filename=filename, url=url, sha256=sha256, size=size)
+    artifact_type = raw.get("artifact_type", "zip")
+    if not isinstance(artifact_type, str) or artifact_type not in {"zip", "windows-installer"}:
+        raise ManifestInvalid("package artifact_type is unsupported")
+    return UpdatePackage(filename=filename, url=url, sha256=sha256, size=size,
+                         artifact_type=artifact_type)
 
 
 def parse_manifest(document: Any) -> tuple[dict, str, bytes]:
@@ -390,6 +400,14 @@ def verify_manifest(
     except ValueError as exc:
         raise ManifestInvalid(f"invalid published_at: {published_at_raw!r}") from exc
 
+    package_raw = payload.get("package")
+    if isinstance(package_raw, Mapping) and "artifact_type" in payload and "artifact_type" not in package_raw:
+        package_raw = {**package_raw, "artifact_type": payload["artifact_type"]}
+
+    release_notes = payload.get("release_notes", "")
+    if not isinstance(release_notes, str) or len(release_notes) > 10000:
+        raise ManifestInvalid("manifest release_notes is malformed")
+
     manifest = UpdateManifest(
         schema_version=schema_version,
         app_id=manifest_app_id,
@@ -397,8 +415,9 @@ def verify_manifest(
         version=version,
         minimum_version=minimum_version,
         published_at=published_at,
-        package=_parse_package(payload.get("package")),
+        package=_parse_package(package_raw),
         key_id=key_id,
+        release_notes=release_notes,
         minimum_bootstrap_version=parse_version(
             payload.get("minimum_bootstrap_version", _BOOTSTRAP_VERSION_DEFAULT)
         ),

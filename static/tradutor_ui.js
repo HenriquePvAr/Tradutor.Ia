@@ -6803,6 +6803,7 @@
   $('#checkUpdatesBtn')?.addEventListener('click', async event => {
     const button = event.currentTarget; const title = $('#updateStatusTitle'); const status = $('#updateStatus'); button.disabled = true;
     const setState = (state, heading, copy) => { if (title) title.textContent = heading; if (status) status.textContent = copy; button.dataset.updateState = state; };
+    const download = $('#downloadUpdateBtn'); if (download) { download.hidden = true; download.disabled = true; download.onclick = null; }
     setState('checking', 'Verificando atualizações…', 'Consultando o canal beta com segurança.');
     try {
       const response = await fetch('/api/update/manifest', {cache:'no-store'});
@@ -6811,10 +6812,24 @@
       if (!response.ok || data.state === 'error') setState('error', 'Não foi possível verificar agora', 'O canal de atualização não respondeu de forma válida.');
       else if (data.state === 'update_available' || data.state === 'mandatory_update') {
         setState('update_available', `Versão ${data.available_version} disponível`, `Uma atualização segura está pronta para download (${Math.round(Number(data.package_size || 0) / 1024)} KB).`);
-        let download = $('#downloadUpdateBtn');
-        if (!download) { download = document.createElement('button'); download.id = 'downloadUpdateBtn'; download.type = 'button'; download.className = 'btn-ghost'; button.parentNode.appendChild(download); }
-        download.hidden = false; download.disabled = false; download.textContent = 'Baixar atualização';
-        download.onclick = () => { download.disabled = true; setState('downloading', 'Preparando atualização…', 'O download só será iniciado após a publicação do artifact assinado.'); setTimeout(() => setState('error', 'Atualização indisponível', 'O canal beta ainda não publicou um artifact para download.'), 250); };
+        if (download) { download.hidden = false; download.disabled = false; download.textContent = data.mandatory ? 'Baixar e instalar' : 'Baixar e instalar';
+          download.onclick = async () => {
+            download.disabled = true; setState('downloading', 'Baixando atualização…', 'O instalador oficial será verificado antes da execução.');
+            try {
+              const fetched = await fetch('/api/update/download', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+              const result = await fetched.json().catch(() => ({}));
+              if (!fetched.ok || result.state !== 'ready_to_install') throw new Error('download_failed');
+              setState('ready_to_install', 'Atualização pronta para instalar', 'O instalador foi baixado e verificado. Clique novamente para instalar.');
+              download.textContent = 'Instalar agora'; download.disabled = false;
+              download.onclick = async () => {
+                download.disabled = true; setState('installing', 'Instalando atualização…', 'O Yomu Sekai será fechado para concluir a instalação.');
+                const installed = await fetch('/api/update/install', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({handoff_token: result.handoff_token})});
+                if (!installed.ok) { setState('error', 'Instalação indisponível', 'A versão atual continua utilizável.'); download.disabled = false; return; }
+                setState('installing', 'Atualização iniciada', 'Feche o aplicativo quando solicitado para concluir.');
+              };
+            } catch (_) { setState('error', 'Download indisponível', 'A versão atual continua utilizável. Tente novamente mais tarde.'); download.disabled = false; }
+          };
+        }
       }
       else if (data.state === 'not_configured') setState('error', 'Atualizações ainda não publicadas', 'O canal beta será habilitado quando a próxima versão for publicada.');
       else setState('up_to_date', 'Você está usando a versão mais recente.', 'Nenhuma atualização está disponível neste momento.');
