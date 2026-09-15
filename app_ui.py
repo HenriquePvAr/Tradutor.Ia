@@ -2922,6 +2922,7 @@ def index() -> None:
     ui.add_body_html(
         "<script>"
         f"window.__tradutorRuntimeIdentity = {runtime_identity};"
+        f"window.__tradutorBuildVersion = {dumps_json(BUILD_VERSION)};"
         f"window.__tradutorVisualTestEnabled = {'true' if visual_test_enabled else 'false'};"
         f"window.__tradutorAuthDiagnosticsEnabled = {'true' if _AUTH_DIAGNOSTICS_ENABLED else 'false'};"
         "</script>"

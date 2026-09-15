@@ -6873,7 +6873,10 @@
     $('#settingRepair').textContent = settings.ocr_text_repair_mode || '—';
     $('#settingPython').textContent = settings.python_version || '—';
     $('#settingNicegui').textContent = settings.nicegui_version || '—';
-    $('#settingBuild').textContent = 'local';
+    const buildVersion = String(window.__tradutorBuildVersion || '').trim();
+    $('#settingBuild').textContent = buildVersion || 'local';
+    const installedVersion = $('#installedUpdateVersion');
+    if (installedVersion) installedVersion.textContent = buildVersion || 'Versão atual';
     applyOcrEngineStatus(settings.ocr_engine);
     renderWorkspaceSourcePolicy(settings.workspace_source_policy || {});
   }
