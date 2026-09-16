@@ -32,6 +32,61 @@ DEFAULT_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
 _REQUEST_WINDOW_CLOSE = None
 NATIVE_AD_DIAGNOSTIC_BUILD_ID = "native-ad-product-beta"
 _NATIVE_POC_LOG_LOCK = threading.Lock()
+_NATIVE_AD_WINDOW = None
+_NATIVE_AD_SURFACE_CREATE_SCHEDULED = False
+_NATIVE_AD_PENDING_PLACEMENT = None
+_NATIVE_AD_PENDING_BOUNDS = None
+
+
+def _runtime_log(event: str, **fields) -> None:
+    """Small bounded lifecycle log available in normal beta builds."""
+    try:
+        path = Path(os.getenv("LOCALAPPDATA", "")) / "YomuSekai" / "logs" / "runtime.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        safe = {str(k): str(v)[:160] for k, v in fields.items() if k not in {"token", "cookie", "password", "url_query"}}
+        line = json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "event": str(event), **safe}, ensure_ascii=True) + "\n"
+        with _NATIVE_POC_LOG_LOCK:
+            if path.exists() and path.stat().st_size > 256_000:
+                path.replace(path.with_suffix(".previous.log"))
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(line)
+    except OSError:
+        return
+
+
+def _request_native_ad_surface() -> None:
+    """Create the child WebView lazily, never on the startup critical path."""
+    global _NATIVE_AD_SURFACE_CREATE_SCHEDULED, _NATIVE_AD_SURFACE
+    if _NATIVE_AD_SURFACE is not None or _NATIVE_AD_SURFACE_CREATE_SCHEDULED:
+        return
+    window = globals().get("_NATIVE_AD_WINDOW")
+    form = getattr(window, "native", None) if window is not None else None
+    begin = getattr(form, "BeginInvoke", None)
+    if not callable(begin):
+        _runtime_log("NATIVE_SURFACE_CREATE_FAILURE", error="MAIN_FORM_NOT_READY")
+        return
+    _NATIVE_AD_SURFACE_CREATE_SCHEDULED = True
+    _runtime_log("NATIVE_SURFACE_CREATE_START")
+    try:
+        from System import Action
+        def create_on_ui_thread():
+            global _NATIVE_AD_SURFACE_CREATE_SCHEDULED, _NATIVE_AD_SURFACE
+            try:
+                _NATIVE_AD_SURFACE = NativeAdSurface(window)
+                _runtime_log("NATIVE_SURFACE_CREATE_SUCCESS")
+                if _NATIVE_AD_PENDING_PLACEMENT is not None:
+                    _NATIVE_AD_SURFACE.set_placement(*_NATIVE_AD_PENDING_PLACEMENT)
+                if _NATIVE_AD_PENDING_BOUNDS is not None:
+                    _NATIVE_AD_SURFACE.set_bounds(*_NATIVE_AD_PENDING_BOUNDS)
+            except Exception as exc:
+                _NATIVE_AD_SURFACE = None
+                _runtime_log("NATIVE_SURFACE_CREATE_FAILURE", error=type(exc).__name__)
+            finally:
+                _NATIVE_AD_SURFACE_CREATE_SCHEDULED = False
+        begin(Action(create_on_ui_thread))
+    except Exception as exc:
+        _NATIVE_AD_SURFACE_CREATE_SCHEDULED = False
+        _runtime_log("NATIVE_SURFACE_CREATE_FAILURE", error=type(exc).__name__)
 
 
 def export_diagnostics(destination: str) -> Path:
@@ -195,9 +250,13 @@ class DesktopApi:
 
     def native_ad_set_bounds(self, x: float, y: float, width: float, height: float, visible: bool = True) -> dict[str, bool]:
         surface = globals().get("_NATIVE_AD_SURFACE")
-        if surface is None:
-            return {"available": False}
         state = (round(float(x)), round(float(y)), max(0, round(float(width))), max(0, round(float(height))), bool(visible))
+        if surface is None:
+            global _NATIVE_AD_PENDING_BOUNDS
+            _NATIVE_AD_PENDING_BOUNDS = state
+            if visible:
+                _request_native_ad_surface()
+            return {"available": True, "ready": False}
         with self._native_bounds_lock:
             if state == self._last_native_bounds_state:
                 return {"available": True, "ready": bool(getattr(surface, "_ready", False))}
@@ -207,8 +266,6 @@ class DesktopApi:
 
     def native_ad_set_placement(self, route: str, url: str, width: int, height: int) -> dict[str, bool]:
         surface = globals().get("_NATIVE_AD_SURFACE")
-        if surface is None:
-            return {"available": False}
         safe_route = str(route)[:40]
         safe_url = str(url)
         allowed_ad_hosts = (
@@ -218,6 +275,11 @@ class DesktopApi:
         if not safe_url.startswith(allowed_ad_hosts):
             return {"available": False}
         state = (safe_route, safe_url, max(1, int(width)), max(1, int(height)))
+        if surface is None:
+            global _NATIVE_AD_PENDING_PLACEMENT
+            _NATIVE_AD_PENDING_PLACEMENT = state
+            _request_native_ad_surface()
+            return {"available": True, "ready": False}
         if state == self._native_placement:
             return {"available": True}
         self._native_placement = state
@@ -577,27 +639,13 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
             min_size=(760, 180) if direct_ads else (980, 680), confirm_close=True,
             js_api=diagnostic_api if diagnostic_api else DesktopApi(),
         )
+        global _NATIVE_AD_WINDOW
+        _NATIVE_AD_WINDOW = window
+        _runtime_log("MAIN_WINDOW_CREATED", native_ads=native_ads, diagnostic=bool(ads_diagnostic_mode))
         if native_ads and not direct_ads:
             def create_native_surface() -> None:
-                global _NATIVE_AD_SURFACE
-                _native_poc_log("AD_HOST_CREATE_START")
-                try:
-                    form = getattr(window, "native", None)
-                    if form is None:
-                        raise RuntimeError("MAIN_FORM_NOT_FOUND")
-                    from System import Action
-                    def create_on_ui_thread():
-                        global _NATIVE_AD_SURFACE
-                        try:
-                            _NATIVE_AD_SURFACE = NativeAdSurface(window)
-                        except Exception as exc:
-                            _NATIVE_AD_SURFACE = None
-                            _native_poc_log("AD_HOST_CREATE_FAILURE", error=type(exc).__name__, detail=str(exc)[:160])
-                    form.BeginInvoke(Action(create_on_ui_thread))
-                except Exception as exc:
-                    _NATIVE_AD_SURFACE = None
-                    detail = str(exc).replace("\\r", " ").replace("\\n", " ")[:160]
-                    _native_poc_log("AD_HOST_CREATE_FAILURE", error=type(exc).__name__, detail=detail)
+                # Surface creation is lazy: startup must not depend on ads.
+                _native_poc_log("MAIN_WINDOW_READY")
             # pywebview invokes the start callback on its GUI thread, after the
             # WinForms parent exists. The normal app remains untouched by this
             # opt-in diagnostic path.
@@ -691,6 +739,7 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
             return 1
         return 0
     finally:
+        _runtime_log("APP_SHUTDOWN")
         _REQUEST_WINDOW_CLOSE = None
         shutdown_owned_runtime(server)
 
