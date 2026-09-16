@@ -211,7 +211,11 @@ class DesktopApi:
             return {"available": False}
         safe_route = str(route)[:40]
         safe_url = str(url)
-        if not safe_url.startswith("https://henriquepvar.github.io/ad/"):
+        allowed_ad_hosts = (
+            "https://henriquepvar.github.io/ad/",
+            "https://game-deals-alpha.vercel.app/ad/",
+        )
+        if not safe_url.startswith(allowed_ad_hosts):
             return {"available": False}
         state = (safe_route, safe_url, max(1, int(width)), max(1, int(height)))
         if state == self._native_placement:

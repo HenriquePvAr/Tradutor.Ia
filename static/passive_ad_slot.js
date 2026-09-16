@@ -2,9 +2,9 @@
 (function () {
   const PLACEMENTS = Object.freeze({
     home: {width: 728, height: 90, url: 'https://henriquepvar.github.io/ad/home-728x90.html'},
-    'new-translation': {width: 728, height: 90, url: 'https://henriquepvar.github.io/ad/new-translation-728x90.html'},
+    'new-translation': {width: 728, height: 90, url: 'https://game-deals-alpha.vercel.app/ad/new-translation-728x90.html'},
     queue: {width: 468, height: 60, url: 'https://henriquepvar.github.io/ad/queue-468x60.html'},
-    rewards: {width: 320, height: 50, url: 'https://henriquepvar.github.io/ad/rewards-320x50.html'},
+    rewards: {width: 320, height: 50, url: 'https://game-deals-alpha.vercel.app/ad/rewards-320x50.html'},
     'translated-chapters': {width: 728, height: 90, url: 'https://henriquepvar.github.io/ad/translated-chapters-native.html'}
   });
   const nativeMode = () => Boolean(window.pywebview?.api?.native_ad_set_bounds);
