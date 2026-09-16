@@ -157,6 +157,7 @@ class DesktopApi:
         runtime = Path(os.getenv("LOCALAPPDATA", "")) / "TradutorIA" / "runtime"
         self._auth_store = AuthEnvelopeStore(runtime)
         self._last_native_bounds_state = None
+        self._native_placement = None
         self._native_bounds_lock = threading.Lock()
         self._last_d4_slot_diag = None
 
@@ -203,6 +204,20 @@ class DesktopApi:
             self._last_native_bounds_state = state
         _native_poc_log("BOUNDS_STATE_CHANGED", x=state[0], y=state[1], width=state[2], height=state[3], visible=state[4])
         return {"available": bool(surface.set_bounds(*state)), "ready": bool(getattr(surface, "_ready", False))}
+
+    def native_ad_set_placement(self, route: str, url: str, width: int, height: int) -> dict[str, bool]:
+        surface = globals().get("_NATIVE_AD_SURFACE")
+        if surface is None:
+            return {"available": False}
+        safe_route = str(route)[:40]
+        safe_url = str(url)
+        if not safe_url.startswith("https://henriquepvar.github.io/ad/"):
+            return {"available": False}
+        state = (safe_route, safe_url, max(1, int(width)), max(1, int(height)))
+        if state == self._native_placement:
+            return {"available": True}
+        self._native_placement = state
+        return {"available": bool(surface.set_placement(*state))}
 
     def native_ad_d4_event(self, event: str, payload: object = None) -> dict[str, bool]:
         """Record only allow-listed D4 geometry breadcrumbs from the UI."""
@@ -300,6 +315,7 @@ class NativeAdSurface:
         self._ready = False
         self._pending_bounds = None
         self._applied_bounds = None
+        self._placement = ("home", self.URL, 728, 90)
         _native_poc_log("COREWEBVIEW2_INIT_START")
         self.control.EnsureCoreWebView2Async(None)
 
@@ -308,7 +324,7 @@ class NativeAdSurface:
             self._ready = True
             _native_poc_log("COREWEBVIEW2_INIT_SUCCESS", available=True)
             self.control.CoreWebView2.NewWindowRequested += self._on_new_window
-            self.control.CoreWebView2.Navigate(self.URL)
+            self.control.CoreWebView2.Navigate(self._placement[1])
             _native_poc_log("NAVIGATION_START", host="henriquepvar.github.io", path="/ad/banner-728x90.html")
             if self._pending_bounds:
                 self.set_bounds(*self._pending_bounds)
@@ -359,6 +375,18 @@ class NativeAdSurface:
         except Exception:
             _native_poc_log("NATIVE_AD_ERROR", error="INVALID_BOUNDS_OR_UI_THREAD")
             return False
+
+    def set_placement(self, route, url, width, height):
+        if self._disposed:
+            return False
+        self._placement = (str(route), str(url), int(width), int(height))
+        if self._ready:
+            try:
+                self.control.CoreWebView2.Navigate(self._placement[1])
+            except Exception:
+                _native_poc_log("NATIVE_AD_ERROR", error="NAVIGATION_FAILED")
+                return False
+        return True
 
     def hide(self):
         return self.set_bounds(*(self._pending_bounds or (0, 0, 728, 90, False))[:4], visible=False)

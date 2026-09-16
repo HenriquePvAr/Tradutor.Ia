@@ -5,7 +5,8 @@ ROOT = Path(__file__).resolve().parent
 
 def test_passive_slot_uses_public_property_and_never_touches_yk():
     source = (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
-    assert "https://henriquepvar.github.io/ad/banner-728x90.html" in source
+    for url in ("/ad/home-728x90.html", "/ad/new-translation-728x90.html", "/ad/queue-468x60.html", "/ad/rewards-320x50.html", "/ad/translated-chapters-native.html"):
+        assert url in source
     assert "__yomuPassiveAdsProviderEnabled" in source
     assert "providerEnabled" in source
     assert "credit_rewarded" not in source.lower()
