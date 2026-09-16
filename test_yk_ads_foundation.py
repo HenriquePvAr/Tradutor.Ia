@@ -381,7 +381,7 @@ class RewardedAdTests(unittest.TestCase):
 class MigrationContractTests(unittest.TestCase):
     def test_migration_sorts_after_the_applied_remote_head(self):
         names = sorted(p.name for p in (ROOT / "supabase/migrations").glob("*.sql"))
-        self.assertEqual(names[-1], MIGRATION.name)
+        self.assertEqual(names[-1], "20260916100000_yk_ads_product_contract.sql")
         self.assertGreater(MIGRATION.name, "20260915013128_chapter_level_translation_finalization.sql")
 
     def test_daily_target_comes_from_the_plan_not_a_literal(self):

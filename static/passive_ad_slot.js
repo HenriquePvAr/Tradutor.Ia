@@ -1,44 +1,26 @@
-/* Reusable passive-ad surface. Rendering is UI-only and never changes YK. */
+/* Passive ads: one active slot, one bounded geometry update per frame. */
 (function () {
   const URL = 'https://henriquepvar.github.io/ad/banner-728x90.html';
-  // Resolve at mount time: this script is loaded in <head>, while the
-  // bootstrap flag is assigned by the body script afterwards.
-  const providerEnabled = () => window.__yomuPassiveAdsProviderEnabled === true;
-  function mount(container) {
-    if (!container) return;
-    if (container.querySelector('iframe')) return;
-    const enabled = providerEnabled();
-    if (!container || !enabled) { if (container) container.hidden = true; return; }
-    container.hidden = false; container.dataset.state = 'LOADING';
-    const frame = document.createElement('iframe');
-    frame.title = 'Publicidade'; frame.className = 'passive-ad-frame';
-    // Eager loading is intentional: WebView2 can keep lazy frames in a
-    // permanently blank state when their parent view is mounted before the
-    // navigation becomes visible. The frame remains isolated and does not
-    // grant script access to the host document.
-    frame.loading = 'eager';
-    // Do not leak the loopback UI origin to the ad provider. This also avoids
-    // localhost referrer rejection while preserving the public ad origin.
-    frame.referrerPolicy = 'no-referrer'; frame.src = URL;
-    frame.addEventListener('load', () => { container.dataset.state = 'LOADED'; });
-    frame.addEventListener('error', () => { container.dataset.state = 'ERROR'; frame.remove(); });
-    container.append(frame);
-  }
-  function init() {
-    const targets = [
-      ['#view-inicio', 'home'],
-      ['#view-nova', 'new-translation'],
-      ['#view-queue', 'queue'],
-      ['#view-rewards', 'rewards'],
-      ['#view-hist', 'translated-chapters'],
-    ];
-    targets.forEach(([selector, name]) => {
-      const parent = document.querySelector(selector); if (!parent || parent.querySelector(`[data-passive-ad-slot="${name}"]`)) return;
-      const container = document.createElement('div'); container.className = 'passive-ad-slot'; container.dataset.passiveAdSlot = name; container.hidden = true;
-      container.innerHTML = '<span class="passive-ad-label">Publicidade</span>'; parent.insertBefore(container, parent.firstElementChild); mount(container);
-    });
-    document.querySelectorAll('[data-passive-ad-slot]').forEach(mount);
-  }
-  window.PassiveAdSlot = { init, url: URL, isEnabled: providerEnabled };
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, {once: true}); else init();
+  const nativeMode = () => Boolean(window.pywebview?.api?.native_ad_set_bounds);
+  const providerEnabled = () => window.__yomuPassiveAdsProviderEnabled !== false
+    && window.__yomuPassiveAdsPreference === true;
+  const views = [['#view-inicio', 'home'], ['#view-nova', 'new-translation'], ['#view-queue', 'queue'], ['#view-rewards', 'rewards'], ['#view-hist', 'translated-chapters']];
+  let activeAdSlot = null; let resizeObserver = null; let scheduled = false; let lastSentKey = ''; let inFlight = false; let pendingState = null; let listenersAttached = false; let retryBudget = 0; let dailyClaimAttempted = false;
+  function statusFor(node) { return node?.querySelector('.native-ad-poc-status'); }
+  function setStatus(node, text) { const el = statusFor(node); if (el && el.textContent !== text) el.textContent = text; }
+  function makeSlot(name) { const slot = document.createElement('div'); slot.className = 'passive-ad-slot'; slot.dataset.passiveAdSlot = name; slot.dataset.nativeAdSlot = name; slot.hidden = nativeMode() || !providerEnabled(); slot.innerHTML = '<span class="passive-ad-label">Publicidade</span>'; return slot; }
+  function ensureSlots() { views.forEach(([selector, name]) => { const parent = document.querySelector(selector); if (parent && !parent.querySelector(`[data-native-ad-slot="${name}"]`)) parent.insertBefore(makeSlot(name), parent.firstElementChild); }); }
+  function resolveActiveSlot() { return [...document.querySelectorAll('[data-native-ad-slot]')].find((node) => node.closest('.panel-view')?.classList.contains('active')) || null; }
+  function stateKey(state) { return [state.route, state.x, state.y, state.width, state.height, state.visible].join('|'); }
+  function maybeClaimDaily(result, state) { if (dailyClaimAttempted || !result?.available || result?.ready !== true || !state.visible || !providerEnabled()) return; if (window.__tradutorAuthState !== 'authenticated') return; const cp = window.__yomuControlPlane; if (!cp?.dailyClaim) return; dailyClaimAttempted = true; cp.dailyClaim().then(() => cp.call('wallet-summary').then((summary) => { cp.applyWallet(summary, 'wallet-summary'); cp.render?.(); })).catch(() => { dailyClaimAttempted = false; }); }
+  function sendState(state) { if (!nativeMode() || !window.pywebview?.api?.native_ad_set_bounds) return; const key = stateKey(state); if (key === lastSentKey && !inFlight) return; if (inFlight) { pendingState = state; return; } lastSentKey = key; inFlight = true; window.pywebview.api.native_ad_set_bounds(state.x, state.y, state.width, state.height, state.visible && providerEnabled()).then((result) => { if (activeAdSlot) setStatus(activeAdSlot, result?.available && state.visible && providerEnabled() ? 'Publicidade' : ''); maybeClaimDaily(result, state); }).catch(() => { if (activeAdSlot) setStatus(activeAdSlot, ''); }).finally(() => { inFlight = false; const next = pendingState; pendingState = null; if (next && stateKey(next) !== lastSentKey) sendState(next); }); }
+  function measureAndSend() { if (!nativeMode() || !window.pywebview?.api?.native_ad_set_bounds) return; activeAdSlot = resolveActiveSlot(); document.querySelectorAll('[data-native-ad-slot]').forEach((node) => { if (node !== activeAdSlot) node.hidden = true; }); if (!activeAdSlot) { sendState({route: '', x: 0, y: 0, width: 0, height: 0, visible: false}); return; } activeAdSlot.hidden = false; const rect = activeAdSlot.getBoundingClientRect(); const css = getComputedStyle(activeAdSlot); const valid = providerEnabled() && rect.width >= 728 && rect.height >= 90 && rect.bottom > 0 && rect.top < window.innerHeight && css.display !== 'none' && css.visibility !== 'hidden'; const state = {route: activeAdSlot.dataset.nativeAdSlot || '', x: Math.round(rect.left), y: Math.round(rect.top), width: valid ? Math.round(rect.width) : 0, height: valid ? Math.round(rect.height) : 0, visible: valid}; activeAdSlot.hidden = !valid; sendState(state); if (!valid && retryBudget > 0) { retryBudget -= 1; scheduleSync(); } }
+  function scheduleSync() { if (scheduled) return; scheduled = true; requestAnimationFrame(() => { scheduled = false; measureAndSend(); }); }
+  function observeActiveSlot() { if (resizeObserver) resizeObserver.disconnect(); resizeObserver = null; activeAdSlot = resolveActiveSlot(); if (activeAdSlot && typeof ResizeObserver !== 'undefined') { resizeObserver = new ResizeObserver(scheduleSync); resizeObserver.observe(activeAdSlot); } }
+  function onRouteChanged() { const previous = activeAdSlot; observeActiveSlot(); if (previous !== activeAdSlot) { lastSentKey = ''; pendingState = null; } scheduleSync(); }
+  function mountIframe(container) { if (!container || nativePoc() || !providerEnabled() || container.querySelector('iframe')) return; container.hidden = false; container.dataset.state = 'LOADING'; const frame = document.createElement('iframe'); frame.title = 'Publicidade'; frame.className = 'passive-ad-frame'; frame.loading = 'eager'; frame.referrerPolicy = 'no-referrer'; frame.src = URL; frame.addEventListener('load', () => { container.dataset.state = 'LOADED'; }); frame.addEventListener('error', () => { container.dataset.state = 'ERROR'; frame.remove(); }); container.append(frame); }
+  function init() { ensureSlots(); document.querySelectorAll('[data-native-ad-slot]').forEach((node) => { if (nativeMode()) node.hidden = true; else if (providerEnabled()) mountIframe(node); else { node.hidden = true; node.querySelector('iframe')?.remove(); } }); if (!nativeMode()) return; if (!listenersAttached) { listenersAttached = true; window.addEventListener('resize', scheduleSync, {passive: true}); window.addEventListener('scroll', scheduleSync, {passive: true, capture: true}); window.addEventListener('yomu-passive-ad-route', onRouteChanged); window.addEventListener('tradutor-auth-changed', () => { retryBudget = 60; onRouteChanged(); }); window.addEventListener('yomu-passive-ads-preference-changed', () => { retryBudget = 60; onRouteChanged(); }); } observeActiveSlot(); retryBudget = 30; scheduleSync(); }
+  window.PassiveAdSlot = {init, url: URL, isEnabled: providerEnabled, onRouteChanged};
+  const start = () => { if (nativeMode()) return init(); ensureSlots(); document.querySelectorAll('[data-native-ad-slot]').forEach((node) => { if (providerEnabled()) mountIframe(node); }); window.addEventListener('yomu-passive-ads-preference-changed', init); window.addEventListener('tradutor-auth-changed', init); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once: true}); else start();
 })();

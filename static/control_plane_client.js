@@ -6,6 +6,7 @@ const state = {
   bootstrap: null, wallet: null, progression: null, license: null,
   device: null, identity: null, heartbeatTimer: 0, inFlight: null, authenticated: false,
   ready: false, walletLoaded: false, walletStatus: 'loading', translationInFlight: null,
+  passiveAdsEnabled: false,
 };
 const WINDOW_REALM_ID = (() => {
   try { return window.__YOMU_WINDOW_REALM_ID__ || (window.__YOMU_WINDOW_REALM_ID__ = crypto.randomUUID()); }
@@ -33,7 +34,8 @@ function normalizeWalletState(payload) {
   const values = Object.fromEntries(WALLET_FIELDS.map(key => [key, Number(payload[key])]));
   if (recognized.some(key => !Number.isFinite(values[key]) || values[key] < 0)) return {status: 'unknown_schema', active_yk: null, daily_yk: null, reserved_yk: null, subscription_yk: null, permanent_yk: null};
   const daily = values.daily || 0, subscription = values.subscription || 0, permanent = values.permanent || 0, reserved = values.reserved || 0;
-  return {status: 'ready', active_yk: Math.max(0, daily + subscription + permanent - reserved), daily_yk: daily, subscription_yk: subscription, permanent_yk: permanent, reserved_yk: reserved};
+  const serverUsable = Number.isFinite(Number(payload.usable_now)) ? Number(payload.usable_now) : null;
+  return {status: 'ready', active_yk: Math.max(0, serverUsable === null ? daily + subscription + permanent - reserved : serverUsable), daily_yk: daily, subscription_yk: subscription, permanent_yk: permanent, reserved_yk: reserved, usable_now: serverUsable};
 }
 function applyWallet(payload, source) {
   const raw = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
@@ -127,6 +129,32 @@ async function call(name, body = {}) {
   const payload = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(String(payload.code || payload.message || `http_${r.status}`)), {code: String(payload.code || ''), status: r.status});
   return payload;
+}
+async function callRpc(name, body = {}) {
+  const cfg = await config();
+  const bearer = await token();
+  if (!bearer || cfg.provider !== 'supabase' || !cfg.supabase_url) throw Object.assign(new Error('server_unavailable'), {code: 'server_unavailable', status: 503});
+  const r = await fetch(`${String(cfg.supabase_url).replace(/\/$/, '')}/rest/v1/rpc/${name}`, {
+    method: 'POST', cache: 'no-store', headers: {'Content-Type': 'application/json', apikey: cfg.publishable_key || '', Authorization: `Bearer ${bearer}`},
+    body: JSON.stringify(body),
+  });
+  const payload = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(String(payload.message || payload.code || `http_${r.status}`)), {code: String(payload.code || ''), status: r.status});
+  return payload;
+}
+async function loadPassiveAdsPreference() {
+  const payload = await callRpc('get_passive_ads_preference');
+  state.passiveAdsEnabled = payload?.passive_ads_enabled === true;
+  window.__yomuPassiveAdsPreference = state.passiveAdsEnabled;
+  window.dispatchEvent(new CustomEvent('yomu-passive-ads-preference-changed', {detail: {enabled: state.passiveAdsEnabled}}));
+  return state.passiveAdsEnabled;
+}
+async function setPassiveAdsPreference(enabled) {
+  const payload = await callRpc('set_passive_ads_enabled', {p_enabled: Boolean(enabled)});
+  state.passiveAdsEnabled = payload?.passive_ads_enabled === true;
+  window.__yomuPassiveAdsPreference = state.passiveAdsEnabled;
+  window.dispatchEvent(new CustomEvent('yomu-passive-ads-preference-changed', {detail: {enabled: state.passiveAdsEnabled}}));
+  return state.passiveAdsEnabled;
 }
 async function desktopIdentity() {
   if (!window.pywebview?.api) {
@@ -262,6 +290,7 @@ async function bootstrap() {
       state.license = state.bootstrap.license || state.bootstrap.licence || null;
       trace('CONTROL_PLANE_LICENSE_STATE', {step: 'license', license_present: Boolean(state.license), license_status: state.license?.status, license_id: state.license?.id || state.license?.license_id});
       if (!state.license || String(state.license.status || '').toLowerCase() !== 'active') throw Object.assign(new Error('license_not_found'), {code: 'license_not_found', status: 403});
+      try { await loadPassiveAdsPreference(); } catch (_) { state.passiveAdsEnabled = false; window.__yomuPassiveAdsPreference = false; }
       await ensureDevice();
       state.ready = true;
       trace('CONTROL_PLANE_BOOTSTRAP_SUCCESS', {step: 'bootstrap', ok: true, duration_ms: Date.now() - started}); render(); startHeartbeat();
@@ -318,7 +347,7 @@ async function translationPreflight(payload = {}) {
 }
 function startHeartbeat() { if (state.heartbeatTimer) return; state.heartbeatTimer = window.setInterval(heartbeat, 120000); }
 function stopHeartbeat() { if (state.heartbeatTimer) window.clearInterval(state.heartbeatTimer); state.heartbeatTimer = 0; }
-window.__yomuControlPlane = {state, call, bootstrap, heartbeat, dailyClaim, reserve, finalize, executeTranslation, translationPreflight, ensureDevice, friendly, normalizeWalletState, applyWallet};
+window.__yomuControlPlane = {state, call, callRpc, bootstrap, heartbeat, dailyClaim, reserve, finalize, executeTranslation, translationPreflight, ensureDevice, loadPassiveAdsPreference, setPassiveAdsPreference, friendly, normalizeWalletState, applyWallet, render};
 window.addEventListener('tradutor-ui-policy-listener-ready', () => {
   trace('CONTROL_PLANE_UI_LISTENER_READY_RECEIVED', {event_name: 'tradutor-ui-policy-listener-ready', window_realm_id: WINDOW_REALM_ID, is_top_window: window.top === window, pathname: window.location?.pathname || '/'});
   if (state.bootstrap?.feature_flags && typeof state.bootstrap.feature_flags.translation_enabled === 'boolean') {
@@ -339,6 +368,6 @@ window.addEventListener('tradutor-auth-changed', event => {
   trace('AUTH_CHANGED_EVENT_RECEIVED', {step: 'auth_event', authenticated: String(event.detail?.state || '') === 'authenticated', user_id: event.detail?.user_id});
   state.authenticated = String(event.detail?.state || '') === 'authenticated';
   if (state.authenticated) void bootstrap();
-   else { stopHeartbeat(); state.bootstrap = state.wallet = state.progression = state.license = state.device = null; state.walletLoaded = false; state.walletStatus = 'loading'; render(); }
+   else { stopHeartbeat(); state.bootstrap = state.wallet = state.progression = state.license = state.device = null; state.passiveAdsEnabled = false; window.__yomuPassiveAdsPreference = false; state.walletLoaded = false; state.walletStatus = 'loading'; window.dispatchEvent(new CustomEvent('yomu-passive-ads-preference-changed', {detail: {enabled: false}})); render(); }
 });
 if (window.__tradutorAuthState === 'authenticated') { trace('AUTH_RESTORED_SESSION_DETECTED', {step: 'auth_restore', authenticated: true}); void bootstrap(); }

@@ -977,8 +977,10 @@
         </div>
         <div class="panel settings-section" id="passiveAdsSettings">
           <div class="panel-label">Anúncios</div>
-          <p class="settings-help">Quando o programa de anúncios estiver disponível, você poderá optar por exibir anúncios discretos para ter acesso aos Yomu Keys diários.</p>
-          <span class="settings-status-pill">Em breve</span>
+          <label class="checkline"><input type="checkbox" name="passive_ads_enabled" id="passiveAdsToggle" aria-describedby="passiveAdsDescription passiveAdsStatus"><span>Anúncios passivos</span></label>
+          <p class="settings-help" id="passiveAdsDescription">Exibe anúncios nas telas compatíveis e permite utilizar YK diários. YK permanentes continuam disponíveis mesmo com anúncios desativados.</p>
+          <div class="settings-status-pill" id="passiveAdsStatus" aria-live="polite">Desativado</div>
+          <div class="settings-help" id="passiveAdsBalance">YK utilizáveis agora: —</div>
         </div>
         <div class="panel settings-section about-simple">
           <div class="panel-label" data-i18n="settings.about">Sobre</div>

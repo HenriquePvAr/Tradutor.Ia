@@ -669,6 +669,7 @@
     $$('.rail-tab').forEach(item => item.classList.remove('active'));
     tab.classList.add('active');
     target.classList.add('active');
+    window.dispatchEvent(new CustomEvent('yomu-passive-ad-route', { detail: { tab: name } }));
     moveIndicator(tab);
     staggerReveal(target);
     const theme = tabTheme[name] || tabTheme.inicio;
@@ -6992,6 +6993,7 @@
     const form = $('#productSettingsForm');
     if (!form) return;
     Object.entries(settings).forEach(([key, value]) => {
+      if (key === 'passive_ads_enabled') return;
       const field = form.elements.namedItem(key);
       if (!field) return;
       if (field.type === 'checkbox') field.checked = Boolean(value);
@@ -7003,6 +7005,34 @@
       window.TradutorI18n.apply(document);
     }
   }
+  function renderPassiveAdsPreference(enabled) {
+    const toggle = $('#passiveAdsToggle');
+    if (toggle) toggle.checked = enabled === true;
+    const status = $('#passiveAdsStatus');
+    if (status) status.textContent = enabled === true ? 'Ativado' : 'Desativado';
+  }
+  window.addEventListener('yomu-passive-ads-preference-changed', event => {
+    renderPassiveAdsPreference(event.detail?.enabled === true);
+    const wallet = window.__yomuControlPlane?.state?.wallet;
+    const balance = $('#passiveAdsBalance');
+    if (balance && wallet) balance.textContent = `YK utilizáveis agora: ${Number(wallet.usable_now ?? wallet.active_yk ?? 0)}`;
+  });
+  $('#passiveAdsToggle')?.addEventListener('change', async event => {
+    const toggle = event.currentTarget;
+    const desired = toggle.checked === true;
+    const previous = !desired;
+    toggle.disabled = true;
+    try {
+      const cp = window.__yomuControlPlane;
+      if (!cp?.setPassiveAdsPreference) throw Object.assign(new Error('server_unavailable'), {code: 'server_unavailable'});
+      await cp.setPassiveAdsPreference(desired);
+      if (cp.state?.wallet) { try { cp.applyWallet(await cp.call('wallet-summary'), 'wallet-summary'); cp.render?.(); } catch (_) {} }
+      showToast(desired ? 'Anúncios passivos ativados.' : 'Anúncios passivos desativados.', 'ok');
+    } catch (errorValue) {
+      toggle.checked = previous;
+      showToast(errorValue?.message || 'Não foi possível salvar a preferência de anúncios.', 'error');
+    } finally { toggle.disabled = false; }
+  });
   async function loadProductSettings() {
     if (!isCanonicalCommunityAuthenticated()) return;
     try {

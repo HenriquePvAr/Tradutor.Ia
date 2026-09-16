@@ -19,6 +19,7 @@ async function serviceRpc(name: string, body: unknown) {
 }
 Deno.serve(async (req) => {
   if (req.method !== "GET" && req.method !== "POST") return json({ code: "method_not_allowed" }, 405);
+  return json({ code: "rewarded_ads_disabled" }, 503);
   const p = new URL(req.url).searchParams;
   const secret = Deno.env.get("AYET_PUBLISHER_API_KEY") || "";
   const signature = safe(req.headers.get("X-Ayetstudios-Security-Hash"));

@@ -30,6 +30,8 @@ APP_ICON_PATH = ROOT / "assets" / "branding" / "generated" / "yomu-sekai.ico"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
 _REQUEST_WINDOW_CLOSE = None
+NATIVE_AD_DIAGNOSTIC_BUILD_ID = "native-ad-product-beta"
+_NATIVE_POC_LOG_LOCK = threading.Lock()
 
 
 def export_diagnostics(destination: str) -> Path:
@@ -154,6 +156,9 @@ class DesktopApi:
         self.identity = InstallIdentity()
         runtime = Path(os.getenv("LOCALAPPDATA", "")) / "TradutorIA" / "runtime"
         self._auth_store = AuthEnvelopeStore(runtime)
+        self._last_native_bounds_state = None
+        self._native_bounds_lock = threading.Lock()
+        self._last_d4_slot_diag = None
 
     def get_install_identity(self) -> dict[str, str]:
         return {"device_id": self.identity.device_id(), "public_key": self.identity.public_key()}
@@ -187,6 +192,37 @@ class DesktopApi:
         callback()
         return {"requested": True}
 
+    def native_ad_set_bounds(self, x: float, y: float, width: float, height: float, visible: bool = True) -> dict[str, bool]:
+        surface = globals().get("_NATIVE_AD_SURFACE")
+        if surface is None:
+            return {"available": False}
+        state = (round(float(x)), round(float(y)), max(0, round(float(width))), max(0, round(float(height))), bool(visible))
+        with self._native_bounds_lock:
+            if state == self._last_native_bounds_state:
+                return {"available": True, "ready": bool(getattr(surface, "_ready", False))}
+            self._last_native_bounds_state = state
+        _native_poc_log("BOUNDS_STATE_CHANGED", x=state[0], y=state[1], width=state[2], height=state[3], visible=state[4])
+        return {"available": bool(surface.set_bounds(*state)), "ready": bool(getattr(surface, "_ready", False))}
+
+    def native_ad_d4_event(self, event: str, payload: object = None) -> dict[str, bool]:
+        """Record only allow-listed D4 geometry breadcrumbs from the UI."""
+        allowed = {"D4_PYWEBVIEWREADY", "D4_ANCHOR_FOUND", "D4_ACTIVE_SLOT", "D4_BOUNDS_JS_CALL", "D4_INITIAL_BOUNDS_SEND"}
+        name = str(event)[:64]
+        if name in allowed:
+            fields = payload if isinstance(payload, dict) else {}
+            safe = {k: fields[k] for k in ("route", "found", "connected", "display", "visibility", "x", "y", "width", "height", "dpr", "visible") if k in fields}
+            if name == "D4_ACTIVE_SLOT":
+                diag_key = tuple(sorted((str(k), str(v)) for k, v in safe.items()))
+                if diag_key == self._last_d4_slot_diag:
+                    return {"recorded": True}
+                self._last_d4_slot_diag = diag_key
+            _native_poc_log(name, **safe)
+        return {"recorded": name in allowed}
+
+    def native_ad_hide(self) -> dict[str, bool]:
+        surface = globals().get("_NATIVE_AD_SURFACE")
+        return {"available": bool(surface and surface.hide())}
+
 
 class AdsDiagnosticsApi:
     """Sanitized diagnostics sink used only by the opt-in ads WebView probe."""
@@ -209,6 +245,173 @@ class AdsDiagnosticsApi:
         safe["recorded_at"] = datetime.now(timezone.utc).isoformat()
         self.path.write_text(json.dumps(safe, ensure_ascii=True, indent=2), encoding="utf-8")
         return {"recorded": True}
+
+
+class NativeAdSurface:
+    """Opt-in Home-only WebView2 child surface for the ads POC.
+
+    This deliberately uses the WinForms/WebView2 objects already loaded by
+    pywebview. It is never created during normal startup and does not replace
+    pywebview's primary browser control.
+    """
+
+    URL = "https://henriquepvar.github.io/ad/banner-728x90.html"
+
+    def __init__(self, window):
+        from System import Uri
+        from System.Drawing import Color, Point, Size
+        from Microsoft.Web.WebView2.WinForms import CoreWebView2CreationProperties, WebView2
+
+        self.window = window
+        self.form = getattr(window, "native", None)
+        if self.form is None or not hasattr(self.form, "Controls"):
+            _native_poc_log("MAIN_FORM_LOOKUP_RESULT", found=False, error="MAIN_FORM_NOT_FOUND")
+            raise RuntimeError("native_parent_unavailable")
+        _native_poc_log("MAIN_FORM_LOOKUP_RESULT", found=True, type=type(self.form).__name__, handle=self.form.Handle.ToInt32())
+        _native_poc_log("MAIN_FORM_CLIENT_SIZE", width=self.form.ClientSize.Width, height=self.form.ClientSize.Height)
+        self._Point = Point
+        self._Size = Size
+        self._Uri = Uri
+        self.control = WebView2()
+        _native_poc_log("WEBVIEW_CONTROL_CREATE_SUCCESS", type=type(self.control).__name__)
+        props = CoreWebView2CreationProperties()
+        local = os.getenv("LOCALAPPDATA", "")
+        if local:
+            props.UserDataFolder = str(Path(local) / "YomuSekai" / "ad-webview")
+        self.control.CreationProperties = props
+        self.control.Visible = False
+        self.control.TabStop = False
+        self.control.CoreWebView2InitializationCompleted += self._on_initialized
+        try:
+            self.control.NavigationCompleted += self._on_navigation_completed
+        except Exception:
+            _native_poc_log("NATIVE_AD_ERROR", error="NAVIGATION_EVENT_UNAVAILABLE")
+        self.form.Controls.Add(self.control)
+        self.control.BackColor = Color.Black
+        _native_poc_log("AD_HOST_CREATE_SUCCESS", handle=self.control.Handle.ToInt32(), parent=self.form.Handle.ToInt32(), visible=self.control.Visible)
+        try:
+            tree = []
+            for i, item in enumerate(self.form.Controls):
+                tree.append({"index": i, "type": type(item).__name__, "dock": str(item.Dock), "visible": bool(item.Visible), "bounds": str(item.Bounds)})
+            _native_poc_log("MAIN_CONTROL_TREE", controls=json.dumps(tree, ensure_ascii=True))
+        except Exception:
+            _native_poc_log("MAIN_CONTROL_TREE", error="CONTROL_TREE_UNAVAILABLE")
+        self._disposed = False
+        self._ready = False
+        self._pending_bounds = None
+        self._applied_bounds = None
+        _native_poc_log("COREWEBVIEW2_INIT_START")
+        self.control.EnsureCoreWebView2Async(None)
+
+    def _on_initialized(self, sender, args):
+        if getattr(args, "IsSuccess", False):
+            self._ready = True
+            _native_poc_log("COREWEBVIEW2_INIT_SUCCESS", available=True)
+            self.control.CoreWebView2.NewWindowRequested += self._on_new_window
+            self.control.CoreWebView2.Navigate(self.URL)
+            _native_poc_log("NAVIGATION_START", host="henriquepvar.github.io", path="/ad/banner-728x90.html")
+            if self._pending_bounds:
+                self.set_bounds(*self._pending_bounds)
+        else:
+            _native_poc_log("COREWEBVIEW2_INIT_FAILURE", error="CORE_INIT_FAILED")
+
+    def _on_new_window(self, sender, args):
+        # Keep the main Yomu surface intact; provider clicks may open externally.
+        try:
+            import webbrowser
+            webbrowser.open(str(args.Uri))
+            args.Handled = True
+        except Exception:
+            args.Handled = True
+
+    def _on_navigation_completed(self, sender, args):
+        _native_poc_log("NAVIGATION_COMPLETED", success=bool(getattr(args, "IsSuccess", False)), web_error=str(getattr(args, "WebErrorStatus", "unknown")))
+
+    def set_bounds(self, x, y, width, height, visible=True):
+        if self._disposed:
+            return False
+        try:
+            bounds = (int(x), int(y), max(0, int(width)), max(0, int(height)), bool(visible))
+            if bounds == self._pending_bounds or bounds == self._applied_bounds:
+                return True
+            self._pending_bounds = bounds
+            _native_poc_log("NATIVE_BOUNDS_CALCULATED", x=bounds[0], y=bounds[1], width=bounds[2], height=bounds[3], visible=bounds[4])
+            def apply():
+                if self._disposed:
+                    return
+                _, _, w, h, show = bounds
+                if bounds == self._applied_bounds:
+                    return
+                self.control.Location = self._Point(bounds[0], bounds[1])
+                self.control.Size = self._Size(w, h)
+                self.control.Visible = bool(show and w >= 1 and h >= 1)
+                self._applied_bounds = bounds
+                _native_poc_log("BOUNDS_APPLIED", bounds=str(self.control.Bounds), visible=self.control.Visible, ready=self._ready)
+                if self.control.Visible:
+                    self.control.BringToFront()
+                    _native_poc_log("SURFACE_SHOW_CALLED", frontmost=True)
+            begin = getattr(self.form, "BeginInvoke", None)
+            if callable(begin):
+                begin(__import__('System').Action(apply))
+            else:
+                self.form.Invoke(__import__('System').Action(apply))
+            return True
+        except Exception:
+            _native_poc_log("NATIVE_AD_ERROR", error="INVALID_BOUNDS_OR_UI_THREAD")
+            return False
+
+    def hide(self):
+        return self.set_bounds(*(self._pending_bounds or (0, 0, 728, 90, False))[:4], visible=False)
+
+    def dispose(self):
+        if self._disposed:
+            return
+        self._disposed = True
+        try:
+            self.form.Invoke(__import__('System').Action(lambda: self.control.Dispose()))
+        except Exception:
+            _native_poc_log("NATIVE_AD_ERROR", error="DISPOSE_FAILED")
+        _native_poc_log("SURFACE_DISPOSE_COMPLETE")
+
+
+_NATIVE_AD_SURFACE = None
+
+
+def _native_poc_log(event: str, **fields) -> None:
+    if os.getenv("YOMU_ADS_NATIVE_POC", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    try:
+        is_d4g = "geometry" in NATIVE_AD_DIAGNOSTIC_BUILD_ID
+        filename = "native-ad-d4g.log" if is_d4g else ("native-ad-d4.log" if NATIVE_AD_DIAGNOSTIC_BUILD_ID.startswith("native-ad-d4") else ("native-home-slot-probe.log" if "home-slot-probe" in NATIVE_AD_DIAGNOSTIC_BUILD_ID else "native-ad-poc.log"))
+        path = Path(os.getenv("LOCALAPPDATA", "")) / "YomuSekai" / "logs" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        safe = {"event": str(event)}
+        safe.update({str(k): str(v)[:240] for k, v in fields.items() if k not in {"cookie", "token", "url_query"}})
+        with _NATIVE_POC_LOG_LOCK:
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), **safe}, ensure_ascii=True) + "\n")
+    except OSError:
+        return
+
+
+def _native_d3_log(event: str, **fields) -> None:
+    """Early, dual-path bootstrap log for the side-by-side D3 artifact."""
+    if os.getenv("YOMU_ADS_NATIVE_POC", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    safe = {"event": str(event), "build_id": NATIVE_AD_DIAGNOSTIC_BUILD_ID}
+    safe.update({str(k): str(v)[:160] for k, v in fields.items() if k not in {"cookie", "token", "url_query"}})
+    line = json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), **safe}, ensure_ascii=True) + "\n"
+    targets = [
+        Path(os.getenv("LOCALAPPDATA", "")) / "YomuSekai" / "logs" / ("native-ad-d4g.log" if "geometry" in NATIVE_AD_DIAGNOSTIC_BUILD_ID else ("native-ad-d4.log" if NATIVE_AD_DIAGNOSTIC_BUILD_ID.startswith("native-ad-d4") else ("native-home-slot-probe.log" if "home-slot-probe" in NATIVE_AD_DIAGNOSTIC_BUILD_ID else "native-ad-d3.log"))),
+        Path(os.getenv("TEMP", "")) / ("yomu-native-ad-d4g.log" if "geometry" in NATIVE_AD_DIAGNOSTIC_BUILD_ID else ("yomu-native-ad-d4.log" if NATIVE_AD_DIAGNOSTIC_BUILD_ID.startswith("native-ad-d4") else ("yomu-native-home-slot-probe.log" if "home-slot-probe" in NATIVE_AD_DIAGNOSTIC_BUILD_ID else "yomu-native-ad-d3.log"))),
+    ]
+    for path in targets:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(line)
+        except OSError:
+            continue
 
 
 def _healthy(host: str, port: int, timeout: float = 1.5) -> bool:
@@ -329,14 +532,46 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
         _wait_ready(host, port, server)
         _set_windows_app_user_model_id()
         direct_ads = ads_diagnostic_mode == "direct"
+        # The native ad surface is a product capability on Windows.  The legacy
+        # POC flag remains only as an optional diagnostic marker; it no longer
+        # gates creation of the surface.
+        native_ads = os.name == "nt" and not direct_ads
         diagnostic_api = AdsDiagnosticsApi() if ads_diagnostic_mode else None
         target_url = "https://henriquepvar.github.io/ad/banner-728x90.html" if direct_ads else _desktop_url(host, port)
+        window_title = "Yomu Sekai - Ads Diagnostic" if ads_diagnostic_mode else "Yomu Sekai"
         window = webview.create_window(
-            "Yomu Sekai - Ads Diagnostic" if ads_diagnostic_mode else "Yomu Sekai", target_url,
+            window_title, target_url,
             width=900 if direct_ads else 1440, height=240 if direct_ads else 900,
             min_size=(760, 180) if direct_ads else (980, 680), confirm_close=True,
             js_api=diagnostic_api if diagnostic_api else DesktopApi(),
         )
+        if native_ads and not direct_ads:
+            def create_native_surface() -> None:
+                global _NATIVE_AD_SURFACE
+                _native_poc_log("AD_HOST_CREATE_START")
+                try:
+                    form = getattr(window, "native", None)
+                    if form is None:
+                        raise RuntimeError("MAIN_FORM_NOT_FOUND")
+                    from System import Action
+                    def create_on_ui_thread():
+                        global _NATIVE_AD_SURFACE
+                        try:
+                            _NATIVE_AD_SURFACE = NativeAdSurface(window)
+                        except Exception as exc:
+                            _NATIVE_AD_SURFACE = None
+                            _native_poc_log("AD_HOST_CREATE_FAILURE", error=type(exc).__name__, detail=str(exc)[:160])
+                    form.BeginInvoke(Action(create_on_ui_thread))
+                except Exception as exc:
+                    _NATIVE_AD_SURFACE = None
+                    detail = str(exc).replace("\\r", " ").replace("\\n", " ")[:160]
+                    _native_poc_log("AD_HOST_CREATE_FAILURE", error=type(exc).__name__, detail=detail)
+            # pywebview invokes the start callback on its GUI thread, after the
+            # WinForms parent exists. The normal app remains untouched by this
+            # opt-in diagnostic path.
+            native_surface_callback = create_native_surface
+        else:
+            native_surface_callback = None
         lifecycle = {"closing": False, "closed": False}
 
         def on_closing() -> None:
@@ -344,11 +579,31 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
 
         def on_closed() -> None:
             lifecycle["closed"] = True
+            surface = globals().get("_NATIVE_AD_SURFACE")
+            if surface is not None:
+                surface.dispose()
 
         _REQUEST_WINDOW_CLOSE = lambda: window.destroy()
 
         window.events.closing += on_closing
         window.events.closed += on_closed
+        if native_surface_callback:
+            # The start callback can run before pywebview assigns window.native.
+            # BrowserForm.shown is the first deterministic point at which the
+            # parent HWND/control tree exists.
+            window.events.shown += native_surface_callback
+            def trigger_native_geometry() -> None:
+                # Some pywebview builds dispatch pywebviewready before the
+                # document's late-loaded asset registers its listener. Re-run
+                # the real slot initializer once the page is fully loaded.
+                try:
+                    _native_poc_log("D4_FORCED_INIT_AFTER_LOADED")
+                    probe = window.evaluate_js("({ready:document.readyState, legacyAnchor:!!document.getElementById('native-ad-d4-anchor'), homeSlot:!!document.querySelector('[data-native-ad-slot=\\\"home\\\"]'), activeRoute:document.querySelector('.panel-view.active')?.id || '', nativeFlag:window.__yomuAdsNativePoc, providerFlag:window.__yomuPassiveAdsProviderEnabled, slot:typeof window.PassiveAdSlot, py:!!window.pywebview, api:!!window.pywebview?.api, bounds:typeof window.pywebview?.api?.native_ad_set_bounds})")
+                    _native_poc_log("D4_BRIDGE_PROBE", probe=json.dumps(probe, ensure_ascii=True)[:240])
+                    window.evaluate_js("window.PassiveAdSlot && window.PassiveAdSlot.init && window.PassiveAdSlot.init()")
+                except Exception as exc:
+                    _native_poc_log("NATIVE_AD_ERROR", error="FORCED_INIT_FAILED", detail=type(exc).__name__)
+            window.events.loaded += trigger_native_geometry
         if ads_diagnostic_mode:
             def collect_ads_diagnostics() -> None:
                 script = r"""
@@ -411,6 +666,14 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Yomu Sekai WebView2 desktop shell")
     args = list(sys.argv[1:] if argv is None else argv)
+    if os.getenv("YOMU_ADS_NATIVE_POC", "").strip().lower() in {"1", "true", "yes", "on"}:
+        prefix = "D4" if NATIVE_AD_DIAGNOSTIC_BUILD_ID.startswith("native-ad-d4") else "D3"
+        _native_d3_log(f"{prefix}_PROCESS_START", native_flag=os.getenv("YOMU_ADS_NATIVE_POC", "absent"), provider_flag=os.getenv("YOMU_PASSIVE_ADS_PROVIDER_ENABLED", "absent"), entrypoint=str(Path(sys.argv[0]).name))
+        _native_d3_log(f"{prefix}_NATIVE_FLAG", value=os.getenv("YOMU_ADS_NATIVE_POC", "absent"))
+        _native_d3_log(f"{prefix}_PROVIDER_FLAG", value=os.getenv("YOMU_PASSIVE_ADS_PROVIDER_ENABLED", "absent"))
+        _native_d3_log(f"{prefix}_BOOTSTRAP_REACHED")
+        if prefix == "D4":
+            _native_d3_log("D4_AUTH_INDEPENDENT_DIAGNOSTIC_START")
     # Frozen builds keep the worker/UI child protocol from start_tradutor.  Route
     # those private commands before parsing desktop-only options so subprocesses
     # spawned by the frozen runtime remain compatible with the shared entrypoint.
