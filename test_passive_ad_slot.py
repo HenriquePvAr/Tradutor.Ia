@@ -71,3 +71,13 @@ def test_native_bounds_are_coalesced_and_have_a_circuit_breaker():
     assert "_bounds_coalesced" in source
     assert "AD_STORM_CIRCUIT_BREAKER" in source
     assert "len(self._native_bounds_events) > 500" in source
+    assert "nativeDispatchTimer" in (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
+    assert "now - lastNativeDispatchAt < 200" in (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
+
+
+def test_native_route_navigation_is_deduplicated_and_stateful_visibility_is_logged():
+    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    assert "_current_navigation_url" in source
+    assert "PLACEMENT_NAV_START" in source
+    assert "self._surface_visible" in source
+    assert "if desired_visible and not self._surface_visible" in source

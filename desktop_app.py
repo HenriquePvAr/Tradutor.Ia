@@ -405,6 +405,9 @@ class NativeAdSurface:
         self._bounds_applies = 0
         self._bounds_coalesced = 0
         self._bounds_window_started = time.monotonic()
+        self._surface_visible = False
+        self._navigation_generation = 0
+        self._current_navigation_url = None
         self._placement = ("home", self.URL, 728, 90)
         _native_poc_log("COREWEBVIEW2_INIT_START")
         _runtime_log("CORE_INIT_START", surface_generation=id(self))
@@ -416,6 +419,7 @@ class NativeAdSurface:
             _native_poc_log("COREWEBVIEW2_INIT_SUCCESS", available=True)
             _runtime_log("CORE_INIT_SUCCESS", surface_generation=id(self))
             self.control.CoreWebView2.NewWindowRequested += self._on_new_window
+            self._current_navigation_url = self._placement[1]
             self.control.CoreWebView2.Navigate(self._placement[1])
             _native_poc_log("NAVIGATION_START", host="henriquepvar.github.io", path="/ad/banner-728x90.html")
             _runtime_log("PLACEMENT_NAV_START", route=self._placement[0], placement_id=self._placement[1].rstrip("/").split("/")[-1])
@@ -436,7 +440,7 @@ class NativeAdSurface:
 
     def _on_navigation_completed(self, sender, args):
         _native_poc_log("NAVIGATION_COMPLETED", success=bool(getattr(args, "IsSuccess", False)), web_error=str(getattr(args, "WebErrorStatus", "unknown")))
-        _runtime_log("PLACEMENT_NAV_SUCCESS" if bool(getattr(args, "IsSuccess", False)) else "PLACEMENT_NAV_FAILURE", route=self._placement[0])
+        _runtime_log("PLACEMENT_NAV_SUCCESS" if bool(getattr(args, "IsSuccess", False)) else "PLACEMENT_NAV_FAILURE", route=self._placement[0], generation=self._navigation_generation)
 
     def set_bounds(self, x, y, width, height, visible=True):
         if self._disposed:
@@ -465,16 +469,18 @@ class NativeAdSurface:
                     return
                 self.control.Location = self._Point(current[0], current[1])
                 self.control.Size = self._Size(w, h)
-                self.control.Visible = bool(show and w >= 1 and h >= 1)
+                desired_visible = bool(show and w >= 1 and h >= 1)
+                self.control.Visible = desired_visible
                 self._applied_bounds = current
                 self._bounds_applies += 1
                 _native_poc_log("BOUNDS_APPLIED", bounds=str(self.control.Bounds), visible=self.control.Visible, ready=self._ready)
-                if self.control.Visible:
+                if desired_visible and not self._surface_visible:
                     self.control.BringToFront()
                     _native_poc_log("SURFACE_SHOW_CALLED", frontmost=True)
                     _runtime_log("SURFACE_SHOW", route=self._placement[0])
-                else:
+                elif not desired_visible and self._surface_visible:
                     _runtime_log("SURFACE_HIDE", route=self._placement[0])
+                self._surface_visible = desired_visible
                 now = time.monotonic()
                 if now - self._bounds_window_started >= 10.0:
                     _runtime_log("ADS_BOUNDS_WINDOW", measurement_requests=self._bounds_measurements, native_applies=self._bounds_applies, native_coalesced=self._bounds_coalesced)
@@ -496,12 +502,18 @@ class NativeAdSurface:
         if self._disposed:
             return False
         self._placement = (str(route), str(url), int(width), int(height))
+        if self._current_navigation_url == self._placement[1]:
+            return True
+        self._navigation_generation += 1
+        self._current_navigation_url = self._placement[1]
         _runtime_log("ROUTE_CHANGED", route=self._placement[0])
         if self._ready:
             try:
+                _runtime_log("PLACEMENT_NAV_START", route=self._placement[0], generation=self._navigation_generation)
                 self.control.CoreWebView2.Navigate(self._placement[1])
             except Exception:
                 _native_poc_log("NATIVE_AD_ERROR", error="NAVIGATION_FAILED")
+                _runtime_log("PLACEMENT_NAV_FAILURE", route=self._placement[0], generation=self._navigation_generation)
                 return False
         return True
 
