@@ -63,3 +63,11 @@ def test_native_surface_is_lazy_and_ads_off_hides_without_bounds_request():
     assert "_NATIVE_AD_PENDING_BOUNDS" in source
     assert "if (!providerEnabled()) { activeAdSlot.hidden = true;" in js
     assert "_NATIVE_AD_SURFACE = NativeAdSurface(window)" not in source.split("def run", 1)[1].split("webview.start", 1)[0]
+
+
+def test_native_bounds_are_coalesced_and_have_a_circuit_breaker():
+    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    assert "_begininvoke_pending" in source
+    assert "_bounds_coalesced" in source
+    assert "AD_STORM_CIRCUIT_BREAKER" in source
+    assert "len(self._native_bounds_events) > 500" in source

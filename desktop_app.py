@@ -10,6 +10,7 @@ plaintext.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import os
 import socket
@@ -215,6 +216,10 @@ class DesktopApi:
         self._native_placement = None
         self._native_bounds_lock = threading.Lock()
         self._last_d4_slot_diag = None
+        self._native_bounds_events = deque()
+        self._native_storm_tripped = False
+        self._native_bounds_requests = 0
+        self._native_bounds_deduped = 0
 
     def get_install_identity(self) -> dict[str, str]:
         return {"device_id": self.identity.device_id(), "public_key": self.identity.public_key()}
@@ -251,6 +256,18 @@ class DesktopApi:
     def native_ad_set_bounds(self, x: float, y: float, width: float, height: float, visible: bool = True) -> dict[str, bool]:
         surface = globals().get("_NATIVE_AD_SURFACE")
         state = (round(float(x)), round(float(y)), max(0, round(float(width))), max(0, round(float(height))), bool(visible))
+        now = time.monotonic()
+        self._native_bounds_requests += 1
+        self._native_bounds_events.append(now)
+        while self._native_bounds_events and now - self._native_bounds_events[0] > 5.0:
+            self._native_bounds_events.popleft()
+        if len(self._native_bounds_events) > 500 and not self._native_storm_tripped:
+            self._native_storm_tripped = True
+            _runtime_log("AD_STORM_CIRCUIT_BREAKER", bounds_requests=len(self._native_bounds_events))
+            if surface is not None:
+                surface.hide()
+        if self._native_storm_tripped:
+            return {"available": True, "ready": False, "circuit_breaker": True}
         if surface is None:
             global _NATIVE_AD_PENDING_BOUNDS
             _NATIVE_AD_PENDING_BOUNDS = state
@@ -259,6 +276,7 @@ class DesktopApi:
             return {"available": True, "ready": False}
         with self._native_bounds_lock:
             if state == self._last_native_bounds_state:
+                self._native_bounds_deduped += 1
                 return {"available": True, "ready": bool(getattr(surface, "_ready", False))}
             self._last_native_bounds_state = state
         _native_poc_log("BOUNDS_STATE_CHANGED", x=state[0], y=state[1], width=state[2], height=state[3], visible=state[4])
@@ -381,21 +399,31 @@ class NativeAdSurface:
         self._ready = False
         self._pending_bounds = None
         self._applied_bounds = None
+        self._bounds_lock = threading.Lock()
+        self._begininvoke_pending = False
+        self._bounds_measurements = 0
+        self._bounds_applies = 0
+        self._bounds_coalesced = 0
+        self._bounds_window_started = time.monotonic()
         self._placement = ("home", self.URL, 728, 90)
         _native_poc_log("COREWEBVIEW2_INIT_START")
+        _runtime_log("CORE_INIT_START", surface_generation=id(self))
         self.control.EnsureCoreWebView2Async(None)
 
     def _on_initialized(self, sender, args):
         if getattr(args, "IsSuccess", False):
             self._ready = True
             _native_poc_log("COREWEBVIEW2_INIT_SUCCESS", available=True)
+            _runtime_log("CORE_INIT_SUCCESS", surface_generation=id(self))
             self.control.CoreWebView2.NewWindowRequested += self._on_new_window
             self.control.CoreWebView2.Navigate(self._placement[1])
             _native_poc_log("NAVIGATION_START", host="henriquepvar.github.io", path="/ad/banner-728x90.html")
+            _runtime_log("PLACEMENT_NAV_START", route=self._placement[0], placement_id=self._placement[1].rstrip("/").split("/")[-1])
             if self._pending_bounds:
                 self.set_bounds(*self._pending_bounds)
         else:
             _native_poc_log("COREWEBVIEW2_INIT_FAILURE", error="CORE_INIT_FAILED")
+            _runtime_log("CORE_INIT_FAILURE", surface_generation=id(self))
 
     def _on_new_window(self, sender, args):
         # Keep the main Yomu surface intact; provider clicks may open externally.
@@ -408,30 +436,50 @@ class NativeAdSurface:
 
     def _on_navigation_completed(self, sender, args):
         _native_poc_log("NAVIGATION_COMPLETED", success=bool(getattr(args, "IsSuccess", False)), web_error=str(getattr(args, "WebErrorStatus", "unknown")))
+        _runtime_log("PLACEMENT_NAV_SUCCESS" if bool(getattr(args, "IsSuccess", False)) else "PLACEMENT_NAV_FAILURE", route=self._placement[0])
 
     def set_bounds(self, x, y, width, height, visible=True):
         if self._disposed:
             return False
         try:
             bounds = (int(x), int(y), max(0, int(width)), max(0, int(height)), bool(visible))
-            if bounds == self._pending_bounds or bounds == self._applied_bounds:
-                return True
-            self._pending_bounds = bounds
+            with self._bounds_lock:
+                self._bounds_measurements += 1
+                if bounds == self._pending_bounds or bounds == self._applied_bounds:
+                    self._bounds_coalesced += 1
+                    return True
+                self._pending_bounds = bounds
+                if self._begininvoke_pending:
+                    self._bounds_coalesced += 1
+                    return True
+                self._begininvoke_pending = True
             _native_poc_log("NATIVE_BOUNDS_CALCULATED", x=bounds[0], y=bounds[1], width=bounds[2], height=bounds[3], visible=bounds[4])
             def apply():
-                if self._disposed:
+                with self._bounds_lock:
+                    self._begininvoke_pending = False
+                    current = self._pending_bounds
+                if self._disposed or current is None:
                     return
-                _, _, w, h, show = bounds
-                if bounds == self._applied_bounds:
+                _, _, w, h, show = current
+                if current == self._applied_bounds:
                     return
-                self.control.Location = self._Point(bounds[0], bounds[1])
+                self.control.Location = self._Point(current[0], current[1])
                 self.control.Size = self._Size(w, h)
                 self.control.Visible = bool(show and w >= 1 and h >= 1)
-                self._applied_bounds = bounds
+                self._applied_bounds = current
+                self._bounds_applies += 1
                 _native_poc_log("BOUNDS_APPLIED", bounds=str(self.control.Bounds), visible=self.control.Visible, ready=self._ready)
                 if self.control.Visible:
                     self.control.BringToFront()
                     _native_poc_log("SURFACE_SHOW_CALLED", frontmost=True)
+                    _runtime_log("SURFACE_SHOW", route=self._placement[0])
+                else:
+                    _runtime_log("SURFACE_HIDE", route=self._placement[0])
+                now = time.monotonic()
+                if now - self._bounds_window_started >= 10.0:
+                    _runtime_log("ADS_BOUNDS_WINDOW", measurement_requests=self._bounds_measurements, native_applies=self._bounds_applies, native_coalesced=self._bounds_coalesced)
+                    self._bounds_measurements = self._bounds_applies = self._bounds_coalesced = 0
+                    self._bounds_window_started = now
             begin = getattr(self.form, "BeginInvoke", None)
             if callable(begin):
                 begin(__import__('System').Action(apply))
@@ -440,12 +488,15 @@ class NativeAdSurface:
             return True
         except Exception:
             _native_poc_log("NATIVE_AD_ERROR", error="INVALID_BOUNDS_OR_UI_THREAD")
+            with self._bounds_lock:
+                self._begininvoke_pending = False
             return False
 
     def set_placement(self, route, url, width, height):
         if self._disposed:
             return False
         self._placement = (str(route), str(url), int(width), int(height))
+        _runtime_log("ROUTE_CHANGED", route=self._placement[0])
         if self._ready:
             try:
                 self.control.CoreWebView2.Navigate(self._placement[1])
@@ -747,6 +798,7 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Yomu Sekai WebView2 desktop shell")
     args = list(sys.argv[1:] if argv is None else argv)
+    _runtime_log("PROCESS_START", pid=os.getpid(), parent_pid=os.getppid(), entrypoint=str(Path(sys.argv[0]).name))
     if os.getenv("YOMU_ADS_NATIVE_POC", "").strip().lower() in {"1", "true", "yes", "on"}:
         prefix = "D4" if NATIVE_AD_DIAGNOSTIC_BUILD_ID.startswith("native-ad-d4") else "D3"
         _native_d3_log(f"{prefix}_PROCESS_START", native_flag=os.getenv("YOMU_ADS_NATIVE_POC", "absent"), provider_flag=os.getenv("YOMU_PASSIVE_ADS_PROVIDER_ENABLED", "absent"), entrypoint=str(Path(sys.argv[0]).name))
