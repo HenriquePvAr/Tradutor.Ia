@@ -45,3 +45,21 @@ def test_native_route_hook_is_explicit_and_resize_observer_is_scoped():
     assert "resizeObserver.observe(activeAdSlot)" in source
     assert "tradutor-auth-changed" in source
     assert "activeAdSlot.hidden = false" in source
+
+
+def test_host_mapping_keeps_vercel_only_for_approved_placements():
+    source = (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
+    assert "https://game-deals-alpha.vercel.app/ad/new-translation-728x90.html" in source
+    assert "https://game-deals-alpha.vercel.app/ad/rewards-320x50.html" in source
+    assert "https://henriquepvar.github.io/ad/home-728x90.html" in source
+    assert "https://henriquepvar.github.io/ad/queue-468x60.html" in source
+    assert "https://henriquepvar.github.io/ad/translated-chapters-native.html" in source
+
+
+def test_native_surface_is_lazy_and_ads_off_hides_without_bounds_request():
+    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    js = (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
+    assert "_request_native_ad_surface" in source
+    assert "_NATIVE_AD_PENDING_BOUNDS" in source
+    assert "if (!providerEnabled()) { activeAdSlot.hidden = true;" in js
+    assert "_NATIVE_AD_SURFACE = NativeAdSurface(window)" not in source.split("def run", 1)[1].split("webview.start", 1)[0]
