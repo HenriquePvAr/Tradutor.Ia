@@ -98,6 +98,19 @@ def download_images(
     max_retries = max_retries or MAX_RETRIES_DOWNLOAD
     target_folder = target_folder or TEMP_FOLDER
     total_started = time.perf_counter()
+    # Optional, caller-owned diagnostics keep the downloader observable without changing
+    # its bytes/report contract.  The benchmark harness uses this to compare bounded
+    # workers with the serial baseline; production callers may omit it.
+    parallel_diagnostics = parallel_diagnostics if isinstance(parallel_diagnostics, dict) else {}
+    parallel_diagnostics.setdefault("workers_configured", int(DOWNLOAD_WORKERS))
+    parallel_diagnostics.setdefault("max_in_flight", 0)
+    parallel_diagnostics.setdefault("queue_wait_ms", 0.0)
+    parallel_diagnostics.setdefault("cumulative_download_ms", 0.0)
+    parallel_diagnostics.setdefault("item_count", 0)
+    parallel_diagnostics.setdefault("retry_count", 0)
+    parallel_diagnostics.setdefault("failure_count", 0)
+    parallel_diagnostics.setdefault("cache_hits", 0)
+    parallel_diagnostics.setdefault("cache_misses", 0)
 
     report = {
         "url": _sanitized_url(url),
@@ -306,6 +319,7 @@ def download_images(
             cancel_event=cancel_event,
             parallel_diagnostics=parallel_diagnostics,
         )
+        report["download_diagnostics"] = dict(parallel_diagnostics)
         if not report.get("download_valid"):
             raise SourceError("incomplete_download", "download_gate")
         report["teardown"] = _pending_teardown_diagnostic(ownership)
@@ -325,6 +339,7 @@ def download_images(
         report["failure"] = {"code": _pipeline_exception_code(exc)}
         raise
     finally:
+        report["download_diagnostics"] = dict(parallel_diagnostics)
         for transport in transports:
             try:
                 transport.close()
@@ -2239,6 +2254,16 @@ def _download_candidates(
     cancel_event=None,
     parallel_diagnostics=None,
 ):
+    if isinstance(parallel_diagnostics, dict):
+        parallel_diagnostics.setdefault("workers_configured", int(DOWNLOAD_WORKERS))
+        parallel_diagnostics.setdefault("max_in_flight", 0)
+        parallel_diagnostics.setdefault("queue_wait_ms", 0.0)
+        parallel_diagnostics.setdefault("cumulative_download_ms", 0.0)
+        parallel_diagnostics.setdefault("item_count", 0)
+        parallel_diagnostics.setdefault("retry_count", 0)
+        parallel_diagnostics.setdefault("failure_count", 0)
+        parallel_diagnostics.setdefault("cache_hits", 0)
+        parallel_diagnostics.setdefault("cache_misses", 0)
     saved = []
     content_hashes: set[str] = set()
     content_candidate_ids: dict[str, str] = {}
@@ -2271,12 +2296,24 @@ def _download_candidates(
         min(int(DOWNLOAD_WORKERS), max(1, len(candidates)))
         if http_only and not has_existing_slots else 1
     )
+    if isinstance(parallel_diagnostics, dict):
+        parallel_diagnostics["workers_effective"] = int(parallel_workers)
+        parallel_diagnostics["max_in_flight"] = max(
+            int(parallel_diagnostics.get("max_in_flight") or 0), int(parallel_workers)
+        )
     if parallel_workers > 1:
         def fetch_slot(item):
             slot, candidate = item
             url = candidate["url"]
-            data = _download_url(url, referer, max_retries, transports=transports)
-            return slot, data, getattr(_download_url, "last_transport_name", "")
+            started = time.perf_counter()
+            try:
+                data = _download_url(url, referer, max_retries, transports=transports)
+                error = ""
+            except Exception as exc:  # worker faults are item-scoped, not pipeline-wide
+                data = None
+                error = type(exc).__name__
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            return slot, data, getattr(_download_url, "last_transport_name", ""), elapsed_ms, error
         with ThreadPoolExecutor(max_workers=parallel_workers, thread_name_prefix="yomu-download") as pool:
             pending = {}
             next_slot = 0
@@ -2289,9 +2326,21 @@ def _download_candidates(
             while pending:
                 for future in as_completed(tuple(pending)):
                     slot = pending.pop(future)
-                    result = future.result()
-                    parallel_diagnostics and parallel_diagnostics.setdefault("completion_order", []).append(slot)
+                    try:
+                        result = future.result()
+                    except Exception as exc:  # defensive: an executor future must not hang the run
+                        result = (slot, None, "", 0.0, type(exc).__name__)
+                    parallel_diagnostics and parallel_diagnostics.setdefault("completion_order", []).append(slot + 1)
                     parallel_payloads[slot] = (result[1], result[2])
+                    if isinstance(parallel_diagnostics, dict):
+                        parallel_diagnostics["item_count"] = int(parallel_diagnostics.get("item_count") or 0) + 1
+                        parallel_diagnostics["cumulative_download_ms"] = (
+                            float(parallel_diagnostics.get("cumulative_download_ms") or 0.0)
+                            + float(result[3] or 0.0)
+                        )
+                        if result[4]:
+                            parallel_diagnostics["failure_count"] = int(
+                                parallel_diagnostics.get("failure_count") or 0) + 1
                     if cancel_event is not None and cancel_event.is_set():
                         continue
                     while next_slot < len(candidates) and (cancel_event is None or not cancel_event.is_set()):
@@ -2314,6 +2363,8 @@ def _download_candidates(
         existing_path = os.path.join(target_folder, f"{len(saved) + 1:03}.png")
         existing_item = _existing_download_item(existing_path, candidate, url)
         if existing_item:
+            if isinstance(parallel_diagnostics, dict):
+                parallel_diagnostics["cache_hits"] = int(parallel_diagnostics.get("cache_hits") or 0) + 1
             content_hashes.add(existing_item["sha256"])
             content_candidate_ids.setdefault(
                 existing_item["sha256"], str(existing_item.get("candidate_id") or "")
@@ -2325,6 +2376,9 @@ def _download_candidates(
             if progress_callback:
                 progress_callback(len(saved), max_images or total, "Baixando imagens")
             continue
+
+        if isinstance(parallel_diagnostics, dict):
+            parallel_diagnostics["cache_misses"] = int(parallel_diagnostics.get("cache_misses") or 0) + 1
 
         download_started = time.perf_counter()
         canvas_data = candidate.get("canvas_data")
@@ -2338,7 +2392,20 @@ def _download_candidates(
             if parallel_payloads:
                 data, used_transport = parallel_payloads.get(idx - 1, (b"", ""))
             else:
-                data = _download_url(url, referer, max_retries, transports=transports)
+                serial_started = time.perf_counter()
+                try:
+                    data = _download_url(url, referer, max_retries, transports=transports)
+                except Exception:
+                    data = None
+                    if isinstance(parallel_diagnostics, dict):
+                        parallel_diagnostics["failure_count"] = int(
+                            parallel_diagnostics.get("failure_count") or 0) + 1
+                if isinstance(parallel_diagnostics, dict):
+                    parallel_diagnostics["item_count"] = int(parallel_diagnostics.get("item_count") or 0) + 1
+                    parallel_diagnostics["cumulative_download_ms"] = (
+                        float(parallel_diagnostics.get("cumulative_download_ms") or 0.0)
+                        + (time.perf_counter() - serial_started) * 1000.0
+                    )
                 used_transport = getattr(_download_url, "last_transport_name", "")
         report["timings"]["download_seconds"] += time.perf_counter() - download_started
 

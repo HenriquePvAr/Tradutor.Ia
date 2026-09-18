@@ -341,6 +341,7 @@ _DESKTOP_HANDOFF_TTL_SECONDS = 600
 _DESKTOP_HANDOFFS: dict[str, dict[str, Any]] = {}
 _DESKTOP_HANDOFF_LOCK = threading.Lock()
 _DESKTOP_CLIENT_DIAGNOSTICS: dict[str, Any] = {}
+_BOOTSTRAP_DIAGNOSTIC_SEQUENCE = 0
 BRIDGE = UiBridge()
 
 # Canonical, per-user diagnostics root.  These records are deliberately small,
@@ -962,6 +963,11 @@ def api_health() -> dict[str, str]:
 
 @app.get("/api/ui/bootstrap")
 def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, Any]:
+    global _BOOTSTRAP_DIAGNOSTIC_SEQUENCE
+    _BOOTSTRAP_DIAGNOSTIC_SEQUENCE += 1
+    bootstrap_sequence = _BOOTSTRAP_DIAGNOSTIC_SEQUENCE
+    bootstrap_started = time.perf_counter()
+    _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_START", sequence=bootstrap_sequence, cursor=cursor)
     payload: dict[str, Any] = {
         "status": "ready",
         "history": [],
@@ -989,7 +995,11 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
     }
     try:
         principal = AUTH.authenticate_request(request)
+        _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_AUTH_READY", sequence=bootstrap_sequence, authenticated=bool(principal.authenticated), elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
         if not principal.authenticated:
+            payload["profile_state"] = "error"
+            payload["profile_error_code"] = "unauthenticated"
+            _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_RESPONSE", sequence=bootstrap_sequence, success=True, http_status=200, profile_present=False, profile_error=True, wallet_present=bool(payload.get("wallet")), source="unauthenticated", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
             return payload
         payload = BRIDGE.bootstrap(cursor, principal=principal)
         _enrich_history_publications(payload.get("history") or [])
@@ -1005,13 +1015,21 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             ),
         }
         if _SOCIAL_STATUS.get("provider") == "supabase" and _SOCIAL_STATUS.get("available"):
+            _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_START", sequence=bootstrap_sequence, source="supabase")
             try:
                 payload["profile"] = _remote_profile_for_principal(principal, request)
-            except Exception:
+                payload["profile_state"] = "ready"
+                _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_RESULT", sequence=bootstrap_sequence, success=True, profile_present=bool(payload["profile"]), source="supabase", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
+            except Exception as exc:
                 payload["profile"] = {"profile_error": True, "remote_source": True}
+                payload["profile_state"] = "error"
+                payload["profile_error_code"] = "profile_remote_unavailable"
                 payload["community"]["profile_load_failed"] = True
+                _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_ERROR", sequence=bootstrap_sequence, success=False, profile_present=False, error_class=type(exc).__name__, source="supabase", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
         else:
             payload["profile"] = _profile_for_principal(principal)
+            payload["profile_state"] = "ready"
+            _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_RESULT", sequence=bootstrap_sequence, success=True, profile_present=bool(payload["profile"]), source="local", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
         try:
             if _SOCIAL_STATUS.get("provider") != "supabase":
                 _sync_public_profile(principal)
@@ -1036,6 +1054,10 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
             ),
         }
         payload["profile"] = {}
+        payload["profile_state"] = "error"
+        payload["profile_error_code"] = "bootstrap_error"
+        _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_ERROR", sequence=bootstrap_sequence, success=False, profile_present=False, error_class="bootstrap_error", source="bootstrap", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
+    _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_RESPONSE", sequence=bootstrap_sequence, success=True, http_status=200, profile_present=bool(payload.get("profile")), profile_error=bool(payload.get("profile_error_code") or (payload.get("profile") or {}).get("profile_error")), wallet_present=bool(payload.get("wallet")), source=str(payload.get("profile_state") or "unknown"), elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
     return payload
 
 
@@ -2707,7 +2729,7 @@ async def api_source_trace(request: Request) -> dict[str, bool]:
     if not trace_id or len(trace_id) > 80:
         raise HTTPException(status_code=400, detail="invalid_trace_id")
     safe = {"timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "trace_id": trace_id, "event": str(payload.get("event") or "SOURCE_UI_CLICK")[:80]}
-    for key in ("status", "reason_code", "stage", "authenticated", "license_ready", "source_type", "policy_present", "policy_status", "all_submitted_sources_authorized", "guard_result", "route", "ready", "duration_ms"):
+    for key in ("status", "reason_code", "stage", "authenticated", "license_ready", "source_type", "policy_present", "policy_status", "all_submitted_sources_authorized", "guard_result", "route", "ready", "duration_ms", "sequence", "elapsed_ms", "sync_state", "bootstrap_ready", "wallet_ready", "auth_ready", "review_state", "form_valid", "button_enabled", "block_reason", "request_count", "error_code", "node_instance_id", "target_node_id", "closest_start_button_node_id", "is_connected", "disabled", "aria_disabled", "event_phase", "default_prevented", "pointer_id", "trusted", "active_element_node_id", "document_has_focus", "render_generation", "same_node_down_up", "mutation_type", "attribute", "start_button_present", "start_button_node_id", "child_count", "pointer_capture_used", "top_element", "client_x", "client_y", "target_tag", "target_start_button_match", "current_start_button_node_id", "current_button_is_connected", "computed_pointer_events", "computed_visibility", "computed_display", "result", "click_seen", "mutation_count", "audit_event_count", "audit_counts", "audit_buffer", "start_in_flight", "dry_run", "generation"):
         value = payload.get(key)
         if isinstance(value, (str, int, bool, float)):
             safe[key] = value
@@ -2740,7 +2762,22 @@ async def api_control_plane_trace(request: Request) -> dict[str, bool]:
         "feature_flags_type", "policy_source", "policy_resolved_at", "resolved_at",
         "event_name", "event_target", "target", "window_realm_id", "is_top_window", "pathname",
         "has_detail", "detail_translation_enabled", "detail_source", "detail_resolved_at", "probe",
-    }
+        "reason", "trigger", "amount_granted", "already_claimed", "next_available_at",
+        "daily_target", "daily_stored", "daily_usable", "expires_at", "usable_now",
+        "canonical_usable", "displayed_usable", "header_match", "passive_ads_enabled",
+        "claim_attempt_count", "surface_visible", "navigation_success", "session_valid",
+        "granted", "amount", "next_claim_at", "daily_expires_at", "daily", "permanent", "subscription",
+        "backend_next_available", "ui_next_available", "cooldown_match", "attempt", "route", "session_generation", "error_kind",
+        "has_active_plan", "resolved_plan", "daily_yk_target", "wallet_refresh_seq",
+        "auth_context_present", "current_cycle_claim_exists_for_auth_user",
+        "current_cycle_claim_amount_for_auth_user", "valid_daily_credit_total_for_auth_user",
+        "daily_debit_total_for_auth_user", "active_daily_reserved_total_for_auth_user",
+        "daily_net_stored_recomputed_for_auth_user", "wallet_daily_stored_returned",
+        "daily_reconciliation_match",
+         "profile_state", "profile_present", "profile_error_present",
+         "readiness_profile_required", "readiness_ready", "sequence", "elapsed_ms",
+         "error_class", "message", "source", "line", "column", "phase", "ui_generation", "bridge_type",
+     }
     event = str(payload.get("event") or "CONTROL_PLANE_EVENT")[:80]
     safe: dict[str, Any] = {"event": event}
     for key in allowed:
@@ -2750,6 +2787,10 @@ async def api_control_plane_trace(request: Request) -> dict[str, bool]:
         elif isinstance(value, (int, float, bool)):
             safe[key] = value
     _append_diagnostic_log("app_current.jsonl", event, **{k: v for k, v in safe.items() if k != "event"})
+    if event == "UI_CHANNEL_PING_SENT":
+        _append_diagnostic_log("app_current.jsonl", "UI_CHANNEL_PING_HOST_RECEIVED", **{k: v for k, v in safe.items() if k != "event"})
+    elif event == "UI_BRIDGE_READY_SENT":
+        _append_diagnostic_log("app_current.jsonl", "UI_BRIDGE_READY_HOST_RECEIVED", **{k: v for k, v in safe.items() if k != "event"})
     return {"ok": True}
 
 
@@ -2986,6 +3027,8 @@ def index() -> None:
         f"window.__yomuPassiveAdsProviderEnabled = {dumps_json(os.getenv('YOMU_PASSIVE_ADS_PROVIDER_ENABLED', '').strip().lower() not in {'0', 'false', 'no', 'off'})};"
         "window.__yomuPassiveAdsPreference = false;"
         f"window.__yomuAdsNativePoc = {dumps_json(os.getenv('YOMU_ADS_NATIVE_POC', '').strip().lower() in {'1', 'true', 'yes', 'on'})};"
+        f"window.__yomuYkDiagnostic = {dumps_json(os.getenv('YOMU_YK_DIAGNOSTIC', '').strip().lower() in {'1', 'true', 'yes', 'on'})};"
+        f"window.__yomuTranslationStartDryRun = {dumps_json(os.getenv('YOMU_TRANSLATION_START_DRY_RUN', '').strip().lower() in {'1', 'true', 'yes', 'on'})};"
         f"window.__yomuNativeAdsDiagnosticBuildId = {dumps_json('native-home-slot-probe-local-r1')};"
         f"window.__tradutorVisualTestEnabled = {'true' if visual_test_enabled else 'false'};"
         f"window.__tradutorAuthDiagnosticsEnabled = {'true' if _AUTH_DIAGNOSTICS_ENABLED else 'false'};"

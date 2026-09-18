@@ -72,6 +72,38 @@ def test_ui_trace_policy_events_use_same_control_plane_sink():
     assert "UI_TRACE_FETCH_STATUS" in ui and "UI_TRACE_FETCH_ERROR" in ui
 
 
+def test_profile_bootstrap_has_explicit_states_and_sanitized_telemetry():
+    ui = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
+    for event in (
+        "PROFILE_BOOTSTRAP_REQUEST_STARTED", "PROFILE_BOOTSTRAP_RECEIVED",
+        "PROFILE_BOOTSTRAP_PROFILE_PRESENT", "PROFILE_BOOTSTRAP_PROFILE_ERROR",
+        "PROFILE_STATE_COMMIT", "PROFILE_RENDER_STATE", "PROFILE_ERROR_STATE",
+        "READINESS_RECOMPUTE", "PROFILE_BOOTSTRAP_RETRY_AFTER_CONTROL_PLANE_AUTH",
+    ):
+        assert event in ui
+    assert "profileState: 'PROFILE_LOADING'" in ui
+    assert "PROFILE_ERROR" in ui and "Perfil indisponível" in ui
+    assert "Carregando perfil…" in ui
+    assert "readiness_profile_required: false" in ui
+    assert "auth_event_ordering" in ui
+
+
+def test_bootstrap_profile_failure_is_explicit_and_read_only():
+    app = Path("app_ui.py").read_text(encoding="utf-8")
+    for event in (
+        "UI_BOOTSTRAP_START", "UI_BOOTSTRAP_AUTH_READY",
+        "UI_BOOTSTRAP_PROFILE_START", "UI_BOOTSTRAP_PROFILE_RESULT",
+        "UI_BOOTSTRAP_PROFILE_ERROR", "UI_BOOTSTRAP_RESPONSE",
+    ):
+        assert event in app
+    assert 'payload["profile_state"] = "error"' in app
+    assert 'payload["profile_error_code"] = "profile_remote_unavailable"' in app
+    assert 'payload["profile_error_code"] = "bootstrap_error"' in app
+    endpoint = app[app.find("async def api_control_plane_trace"):app.find("async def api_profile_media", app.find("async def api_control_plane_trace"))]
+    for forbidden in ("access_token", "refresh_token", "service_role", "private_key", "signature"):
+        assert forbidden not in endpoint
+
+
 def test_server_records_ui_trace_request_before_sanitizer():
     assert "UI_TRACE_HTTP_REQUEST_RECEIVED" in APP
     start = APP.find("async def api_control_plane_trace")

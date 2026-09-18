@@ -287,11 +287,17 @@ ENABLE_DOWNLOAD_CACHE = _env_bool("ENABLE_DOWNLOAD_CACHE", True)
 # Bounded HTTP image-download concurrency. Browser/Selenium transports remain serial.
 DOWNLOAD_WORKERS = min(4, max(1, _env_int("DOWNLOAD_WORKERS", 2)))
 CACHE_ROOT = str(cache_root())
+# Mission 6 opt-in.  The legacy barrier remains the production default until the
+# streaming path has passed quality, cancellation and memory gates.
+PIPELINE_STREAMING = _env_bool("YOMU_PIPELINE_STREAMING", False)
 
 OCR_PARALLEL = _env_bool("OCR_PARALLEL", True)
 # Model-backed OCR is conservative by default. The legacy names remain
 # supported; TRADUTOR_* is the explicit public policy surface.
 OCR_WORKERS = max(1, _env_int("TRADUTOR_OCR_WORKERS", _env_int("OCR_WORKERS", 1)))
+# Explicit Mission 4 opt-in. Heavy model instances remain single-worker by
+# default; enabling this is required before bounded parallel OCR can be used.
+OCR_ALLOW_HEAVY_PARALLELISM = _env_bool("OCR_ALLOW_HEAVY_PARALLELISM", False)
 # Page-level pre/post parallelism defaults to two after controlled A/B runs
 # showed semantic/provenance/quality equivalence. RapidOCR and LaMa remain
 # independently capped at one; the runtime helper validates overrides again.
@@ -328,6 +334,9 @@ WORKER_SCALE_DOWN_COOLDOWN_SECONDS = max(
     _env_float("WORKER_SCALE_DOWN_COOLDOWN_SECONDS", 8.0),
 )
 OCR_QUEUE_MULTIPLIER = max(1, _env_int("OCR_QUEUE_MULTIPLIER", 2))
+# Small bounded handoff used only by the experimental streaming OCR path.
+# Streaming remains opt-in; the legacy list path is unchanged.
+OCR_STREAM_QUEUE_CAPACITY = max(1, _env_int("OCR_STREAM_QUEUE_CAPACITY", 2))
 CLASSIFICATION_PROFILING = _env_bool("CLASSIFICATION_PROFILING", False)
 
 TRANSLATION_PARALLEL = _env_bool("TRANSLATION_PARALLEL", True)

@@ -1,6 +1,10 @@
 (() => {
   'use strict';
 
+  // Earliest execution sentinel: this must be observable even if a later
+  // initialization step fails before the normal diagnostic channel is ready.
+  try { window.__tradutorUiScriptEntered = true; } catch (_) { /* diagnostic only */ }
+
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
   const escapeHtml = value => {
@@ -28,6 +32,9 @@
     bootstrap: null,
     history: [],
     profile: {},
+    profileState: 'PROFILE_LOADING',
+    profileBootstrapSequence: 0,
+    profileErrorNotified: false,
     settings: {},
     queue: [],
     status: 'ready',
@@ -93,8 +100,32 @@
     terminalStatusByIdentity: new Map(),
     retryDialogContext: null,
     authUserId: '',
+    authenticated: false,
+    authGeneration: 0,
+    profileBootstrapAuthGeneration: 0,
     translationEnabled: false,
   };
+  // These state cells are read by the initial form hydration before the
+  // translation-start section is reached. Declare them up front so that the
+  // first UI pass cannot trip a temporal-dead-zone error.
+  let startInFlight = null;
+  let startAttemptSequence = 0;
+  let activeStartFingerprint = '';
+  const diagnosticEvents = new Set(['TRADUTOR_UI_SCRIPT_ENTER', 'UI_JS_FATAL_ERROR', 'UI_JS_UNHANDLED_REJECTION', 'UI_SCRIPT_EXECUTED', 'UI_TRACE_CHANNEL_PROBE', 'UI_CHANNEL_PING_SENT', 'UI_BRIDGE_READY_SENT',
+    'UI_POLICY_LISTENER_REGISTRATION_ATTEMPT', 'UI_POLICY_LISTENER_REGISTERED',
+    'UI_CONTROL_PLANE_EVENT_CALLBACK_ENTERED', 'UI_CONTROL_PLANE_EVENT_RECEIVED',
+    'UI_TRANSLATION_POLICY_APPLIED', 'UI_POLICY_SYNC_SKIPPED',
+    'PROFILE_AUTH_GENERATION_STARTED', 'PROFILE_BOOTSTRAP_AUTH_TRANSITION_REQUESTED',
+    'UI_AUTH_EVENT_RECEIVED', 'UI_BOOTSTRAP_SCHEDULED',
+    'UI_BRIDGE_REGISTERED', 'UI_BRIDGE_READY_RECEIVED',
+    'CONTROL_PLANE_PENDING_AUTH_REPLAY_START', 'CONTROL_PLANE_PENDING_AUTH_REPLAY_RESULT',
+    'PROFILE_BOOTSTRAP_RETRY_AFTER_CONTROL_PLANE_AUTH',
+    'PROFILE_BOOTSTRAP_REQUEST_STARTED', 'PROFILE_BOOTSTRAP_RECEIVED',
+    'PROFILE_BOOTSTRAP_PROFILE_PRESENT', 'PROFILE_BOOTSTRAP_PROFILE_ERROR',
+    'PROFILE_STATE_COMMIT', 'PROFILE_RENDER_STATE', 'PROFILE_ERROR_STATE',
+    'READINESS_RECOMPUTE',
+    'YK_WALLET_POST_FINALIZE_REFRESH_START', 'YK_WALLET_POST_FINALIZE_REFRESH_RESULT',
+    'YK_WALLET_POST_FINALIZE_REFRESH_ERROR']);
   function syncAuthoritativeTranslationFlag() {
     const controlPlane = getGlobal('__yomuControlPlane');
     const flags = controlPlane?.state?.bootstrap?.feature_flags;
@@ -112,6 +143,19 @@
     uiTrace('UI_CONTROL_PLANE_EVENT_CALLBACK_ENTERED', {event_name: 'tradutor-control-plane-updated', has_detail: Boolean(event?.detail), detail_translation_enabled: event?.detail?.state?.bootstrap?.feature_flags?.translation_enabled, detail_source: event?.detail?.state?.bootstrap?.translation_policy_source || '', detail_resolved_at: event?.detail?.state?.bootstrap?.translation_policy_resolved_at || '', window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
     uiTrace('UI_CONTROL_PLANE_EVENT_RECEIVED', {event_name: 'tradutor-control-plane-updated', window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
     syncAuthoritativeTranslationFlag();
+    // Auth can settle in the control-plane before the auth UI event reaches this
+    // document (notably after restoring a persisted desktop session).  Re-run the
+    // local UI bootstrap once the event loop has installed the data lifecycle so
+    // profile state cannot remain on the initial unauthenticated loading shell.
+    window.setTimeout(() => {
+      try {
+        const refresh = getGlobal('__tradutorRefreshBootstrap');
+        if (typeof refresh === 'function') {
+          uiTrace('PROFILE_BOOTSTRAP_RETRY_AFTER_CONTROL_PLANE_AUTH', {reason: 'auth_event_ordering'});
+          void refresh();
+        }
+      } catch (_) { /* diagnostics/recovery must never affect the UI */ }
+    }, 0);
   });
   uiTrace('UI_POLICY_LISTENER_REGISTERED', {event_name: 'tradutor-control-plane-updated', target: 'window', document_ready_state: document.readyState, pathname: window.location?.pathname || '/', is_top_window: window.top === window, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
   window.dispatchEvent(new CustomEvent('tradutor-ui-policy-listener-ready'));
@@ -163,6 +207,16 @@
       'job_id', 'run_id', 'stage',
       'translation_enabled', 'source', 'resolved_at', 'policy_source',
       'policy_resolved_at',
+      'profile_state', 'profile_present', 'profile_error_present', 'ui_generation', 'bridge_type',
+      'error_class', 'message', 'source', 'line', 'column', 'phase',
+      'readiness_profile_required', 'readiness_ready', 'sequence', 'elapsed_ms',
+      'node_instance_id', 'target_node_id', 'closest_start_button_node_id', 'is_connected',
+      'disabled', 'aria_disabled', 'event_phase', 'default_prevented', 'pointer_id', 'trusted',
+      'active_element_node_id', 'document_has_focus', 'render_generation', 'same_node_down_up',
+      'mutation_type', 'attribute', 'start_button_present', 'start_button_node_id', 'child_count',
+      'target_node_id', 'document_focused', 'pointer_capture_used', 'top_element', 'client_x', 'client_y',
+      'result', 'click_seen', 'mutation_count', 'current_start_button_node_id', 'current_button_is_connected',
+      'target_tag', 'target_start_button_match', 'computed_pointer_events', 'computed_visibility', 'computed_display',
     ]) {
       if (fields[key] !== undefined) safe[key] = fields[key];
     }
@@ -170,16 +224,22 @@
     trace.push(safe);
     if (trace.length > 80) trace.shift();
     setGlobal('__tradutorUiTrace', trace);
-    const diagnosticEvents = new Set(['UI_SCRIPT_EXECUTED', 'UI_TRACE_CHANNEL_PROBE',
-      'UI_POLICY_LISTENER_REGISTRATION_ATTEMPT', 'UI_POLICY_LISTENER_REGISTERED',
-      'UI_CONTROL_PLANE_EVENT_CALLBACK_ENTERED', 'UI_CONTROL_PLANE_EVENT_RECEIVED',
-      'UI_TRANSLATION_POLICY_APPLIED', 'UI_POLICY_SYNC_SKIPPED']);
     if (diagnosticEvents.has(safe.event)) {
       const body = {event: safe.event};
       for (const key of ['translation_enabled', 'source', 'resolved_at', 'policy_source',
         'policy_resolved_at', 'event_name', 'target', 'document_ready_state', 'pathname',
         'is_top_window', 'window_realm_id', 'has_detail', 'detail_translation_enabled',
-        'detail_source', 'detail_resolved_at', 'probe']) {
+        'job_id', 'status', 'usable_now', 'daily_stored', 'code',
+        'detail_source', 'detail_resolved_at', 'probe', 'profile_state', 'profile_present',
+        'profile_error_present', 'ui_generation', 'bridge_type', 'error_class', 'message', 'source', 'line', 'column', 'phase',
+        'readiness_profile_required', 'readiness_ready', 'sequence', 'elapsed_ms',
+        'node_instance_id', 'target_node_id', 'closest_start_button_node_id', 'is_connected',
+        'disabled', 'aria_disabled', 'event_phase', 'default_prevented', 'pointer_id', 'trusted',
+        'active_element_node_id', 'document_has_focus', 'render_generation', 'same_node_down_up',
+        'mutation_type', 'attribute', 'start_button_present', 'start_button_node_id', 'child_count',
+        'pointer_capture_used', 'top_element', 'client_x', 'client_y', 'result', 'click_seen', 'mutation_count',
+        'current_start_button_node_id', 'current_button_is_connected', 'target_tag', 'target_start_button_match',
+        'computed_pointer_events', 'computed_visibility', 'computed_display']) {
         if (safe[key] !== undefined) body[key] = safe[key];
       }
       try {
@@ -199,6 +259,23 @@
       } catch (error) { /* diagnostics must never affect the UI */ }
     }
   }
+  uiTrace('TRADUTOR_UI_SCRIPT_ENTER', {document_ready_state: document.readyState});
+  const sanitizeJsError = (value, limit = 160) => String(value || '').replace(/[\r\n\t]+/g, ' ').slice(0, limit);
+  window.addEventListener('error', event => {
+    uiTrace('UI_JS_FATAL_ERROR', {
+      error_class: sanitizeJsError(event.error?.name || 'Error', 60),
+      message: sanitizeJsError(event.message || event.error?.message),
+      source: sanitizeJsError(String(event.filename || '').split(/[\\/]/).pop(), 80),
+      line: Number(event.lineno || 0), column: Number(event.colno || 0), phase: 'script_init',
+    });
+  });
+  window.addEventListener('unhandledrejection', event => {
+    const reason = event.reason || {};
+    uiTrace('UI_JS_UNHANDLED_REJECTION', {
+      error_class: sanitizeJsError(reason.name || 'UnhandledRejection', 60),
+      message: sanitizeJsError(reason.message || reason), phase: 'script_init',
+    });
+  });
   uiTrace('UI_SCRIPT_EXECUTED', {document_ready_state: document.readyState, pathname: window.location?.pathname || '/', is_top_window: window.top === window, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
   uiTrace('UI_TRACE_CHANNEL_PROBE', {probe: 'tradutor_ui', document_ready_state: document.readyState, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
   function profileMediaTrace(step, fields = {}) {
@@ -961,6 +1038,20 @@
     appState.programmingFields = false;
     if (typeof syncSourceFormState === 'function') syncSourceFormState();
   }
+  uiTrace('TRADUTOR_UI_SCRIPT_ENTER', {document_ready_state: document.readyState});
+  function applyUrlDerivedFields(value, {fillEmpty = false} = {}) {
+    if (!/^https?:\/\//i.test(String(value || '').trim())) return;
+    const guess = guessFromUrl(value);
+    const nameInput = $('#nameInput');
+    const outputInput = $('#outputInput');
+    const nameValue = nameInput?.value?.trim() || '';
+    const outputValue = outputInput?.value?.trim() || '';
+    const nameCanBeFilled = !appState.nameDirty || !nameValue;
+    const outputCanBeFilled = !appState.outputDirty || !outputValue;
+    if (nameCanBeFilled && guess.title) programField(nameInput, guess.title);
+    if (outputCanBeFilled && guess.slug) programField(outputInput, guess.slug);
+    syncSourceFormState();
+  }
   function setSourceType(value) {
     const sourceType = value === 'local_folder' ? 'local_folder' : 'url';
     appState.selectedSourceType = sourceType;
@@ -1041,10 +1132,7 @@
     }
     const value = state.url;
     if (!/^https?:\/\//i.test(value)) return;
-    const guess = guessFromUrl(value);
-    if (!appState.nameDirty) programField($('#nameInput'), guess.title);
-    if (!appState.outputDirty) programField($('#outputInput'), guess.slug);
-    syncSourceFormState();
+    applyUrlDerivedFields(value);
     $('#urlError')?.classList.remove('show');
     updateTranslationStartControls();
   }
@@ -1233,6 +1321,10 @@
     appState.programmingFields = true;
     if ($('#urlInput')) $('#urlInput').value = draftUrl;
     appState.programmingFields = false;
+    // Restored drafts do not emit a DOM input event. Apply the same URL-derived
+    // defaults here, but only into fields that are still blank; explicit saved
+    // execution values are applied immediately afterward and take precedence.
+    applyUrlDerivedFields(draftUrl, {fillEmpty: true});
     applyStoredExecutionDraft(draft.execution || {});
     syncSourceFormState();
     appState.sourceValidation = {
@@ -1376,13 +1468,26 @@
     if (busyBlocksDraft) reasons.push('pipeline_busy');
     return reasons;
   }
+  function traceTranslationStartControlState(reason, button = $('#startBtn')) {
+    const ready = minimumSourceInputIsValid() && !translationStartDisabledReasons().length;
+    const state = {
+      ready, disabled: Boolean(button?.disabled), start_in_flight: Boolean(startInFlight),
+      dry_run: window.__yomuTranslationStartDryRun === true,
+      generation: Number(window.__YOMU_FORM_RENDER_GENERATION || 0), reason: String(reason || 'unknown'),
+    };
+    const signature = JSON.stringify({...state, reason: ''});
+    if (window.__yomuLastStartControlState === signature) return;
+    window.__yomuLastStartControlState = signature;
+    sourceTrace('TRANSLATION_START_CONTROL_STATE', state);
+  }
   function updateTranslationStartControls() {
     const validating = appState.sourceValidation.status === 'validating';
     const pipelineBusy = inFlightStatuses.has(appState.status);
+    const startRequestBusy = Boolean(startInFlight || activeStartFingerprint);
     // The worker queue may already contain another chapter. A fresh form remains an
     // independent draft: it may be validated and enqueued while that job continues.
     const editingFreshDraft = appState.newTranslationDraft;
-    const busyBlocksDraft = pipelineBusy && !editingFreshDraft;
+    const busyBlocksDraft = (pipelineBusy && !editingFreshDraft) || startRequestBusy;
     const local = appState.selectedSourceType === 'local_folder';
     const minimumValid = minimumSourceInputIsValid();
     const canStart = local
@@ -1411,6 +1516,7 @@
       start.setAttribute('aria-disabled', canStart ? 'false' : 'true');
       if (!busyBlocksDraft && start.dataset.busy !== '1') start.textContent = 'Iniciar tradução';
     }
+    traceTranslationStartControlState('controls_update', start);
     return {canStart, validating, pipelineBusy};
   }
   function invalidateSourceValidation() {
@@ -1752,17 +1858,110 @@
   // await, so a burst of clicks cannot open a second chain. Disabling the
   // button is UX; this is the concurrency contract. The database settles what
   // survives a genuinely simultaneous submission.
-  let startInFlight = null;
+  // Keep a short-lived single-flight identity after the request resolves.  The
+  // button can be re-rendered while the job is being adopted, so a DOM
+  // `disabled` flag alone is not a sufficient duplicate-submit guard.
+  function currentStartFingerprint() {
+    const form = syncSourceFormState();
+    return [
+      appState.selectedSourceType || 'url',
+      form.url || form.localFolder || '',
+      form.chapterName || '',
+      appState.selectedScope || 'full',
+      appState.selectedMode || 'quality',
+    ].join('|');
+  }
   function startTranslation() {
-    if (startInFlight) return startInFlight;
-    startInFlight = runStartTranslation().finally(() => { startInFlight = null; });
+    const sequence = ++startAttemptSequence;
+    const fingerprint = currentStartFingerprint();
+    const startButton = $('#startBtn');
+    traceTranslationStartControlState('click_received', startButton);
+    sourceTrace('TRANSLATION_START_CLICK', {
+      sequence, elapsed_ms: 0, sync_state: String(appState.status || 'unknown'),
+      bootstrap_ready: Boolean(getGlobal('__yomuControlPlane')?.state?.ready),
+      wallet_ready: Boolean(getGlobal('__yomuControlPlane')?.state?.walletLoaded),
+      auth_ready: Boolean(getGlobal('__yomuControlPlane')?.state?.authenticated),
+      review_state: String(appState.sourceReview?.status || appState.status || 'none'),
+      form_valid: minimumSourceInputIsValid(), button_enabled: Boolean(startButton && !startButton.disabled),
+      request_count: 0,
+    });
+    if (startInFlight || (activeStartFingerprint && activeStartFingerprint === fingerprint)) {
+      uiTrace('TRANSLATION_START_IGNORED_IN_FLIGHT', {
+        fingerprint: fingerprint.slice(0, 120),
+        has_request: Boolean(startInFlight),
+      });
+      sourceTrace('TRANSLATION_START_SINGLE_FLIGHT_SKIP', {
+        sequence, elapsed_ms: 0, block_reason: 'single_flight', request_count: 0,
+        button_enabled: Boolean(startButton && !startButton.disabled),
+      });
+      return startInFlight;
+    }
+    activeStartFingerprint = fingerprint;
+    uiTrace('TRANSLATION_START_ACCEPTED', {fingerprint: fingerprint.slice(0, 120)});
+    sourceTrace('TRANSLATION_START_HANDLER_ENTER', {sequence, elapsed_ms: 0, request_count: 0});
+    traceTranslationStartControlState('handler_enter', startButton);
+    startInFlight = runStartTranslation(sequence).then(result => {
+      if (!result || !result.job_id) activeStartFingerprint = '';
+      return result;
+    }).catch(error => {
+      activeStartFingerprint = '';
+      uiTrace('TRANSLATION_START_UNHANDLED_ERROR', {
+        code: String(error?.code || error?.message || 'start_failed').slice(0, 80),
+      });
+      return undefined;
+    }).finally(() => {
+      traceTranslationStartControlState('finally_before_clear', $('#startBtn'));
+      startInFlight = null;
+      // Recompute after the single-flight promise is actually cleared.  The
+      // dry-run path previously called this while startInFlight was still set,
+      // immediately disabling the button again and making later trusted
+      // gestures appear to be lost.
+      updateTranslationStartControls();
+      traceTranslationStartControlState('finally_after_clear', $('#startBtn'));
+    });
+    traceTranslationStartControlState('controls_after_inflight_set', startButton);
     return startInFlight;
   }
-  async function runStartTranslation() {
+  async function runStartTranslation(sequence = 0) {
+    // Take the visual lock synchronously, before policy/bootstrap awaits.  This
+    // makes the first valid click visibly pending and prevents a second click
+    // from looking like a required retry.
+    const button = $('#startBtn');
+    const previousLabel = button ? button.textContent : '';
+    if (button) {
+      button.dataset.busy = '1';
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.textContent = 'Iniciando processamento…';
+    }
+    sourceTrace('TRANSLATION_START_PENDING', {sequence, elapsed_ms: 0, request_count: 0, button_enabled: Boolean(button && !button.disabled)});
+    traceTranslationStartControlState('start_in_flight_set', button);
+    if (window.__yomuTranslationStartDryRun === true) {
+      sourceTrace('TRANSLATION_START_DRY_RUN_BLOCKED', {
+        sequence, elapsed_ms: 0, request_count: 0, reason: 'diagnostic_only',
+      });
+      traceTranslationStartControlState('dry_run_blocked', button);
+      if (button) {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        delete button.dataset.busy;
+        button.textContent = previousLabel || 'Iniciar tradução';
+      }
+      updateTranslationStartControls();
+      return {dry_run: true, job_id: ''};
+    }
     const traceId = beginSourceAttempt();
     const sourceType = appState.selectedSourceType || 'unknown';
     sourceTrace('SOURCE_UI_CLICK', {trace_id: traceId, source_type: sourceType});
-    if (!validateForm()) return;
+    if (!validateForm()) {
+      sourceTrace('TRANSLATION_START_BLOCKED', {sequence, elapsed_ms: 0, block_reason: 'form_invalid', form_valid: false, request_count: 0});
+      if (button) {
+        button.textContent = previousLabel || 'Iniciar tradução';
+        delete button.dataset.busy;
+        button.removeAttribute('aria-busy');
+      }
+      return;
+    }
     sourceTrace('FORM_VALIDATION', {trace_id: traceId, status: 'pass'});
     const policy = appState.settings?.workspace_source_policy || {};
     const policyPresent = Object.keys(policy).length > 0;
@@ -1774,17 +1973,20 @@
       guard_result: sourceType === 'url' ? (policyAllows ? 'ALLOW' : 'BLOCK') : 'ALLOW',
     });
     if (sourceType === 'url' && !policyAllows) {
+      sourceTrace('TRANSLATION_START_BLOCKED', {sequence, elapsed_ms: 0, block_reason: 'workspace_policy_blocked', form_valid: true, request_count: 0});
       sourceTrace('SOURCE_POLICY_GUARD_BLOCKED', {
         trace_id: traceId,
         reason_code: !policyPresent ? 'POLICY_MISSING' : (policy.status !== 'active' ? 'POLICY_INACTIVE' : 'SOURCES_NOT_AUTHORIZED'),
       });
       updateTranslationStartControls();
       showToast('Esta origem não está autorizada para processamento.', 'warn');
+      if (button) {
+        button.textContent = previousLabel || 'Iniciar tradução';
+        delete button.dataset.busy;
+        button.removeAttribute('aria-busy');
+      }
       return;
     }
-    const button = $('#startBtn');
-    if (button?.dataset.busy === '1') return;      // guards a double click in-flight
-    const previousLabel = button ? button.textContent : '';
     if (button) {
       button.dataset.busy = '1';
       button.disabled = true;
@@ -1795,7 +1997,18 @@
     const controlPlane = getGlobal('__yomuControlPlane');
     let controlPlaneRefreshOk = true;
     if (controlPlane?.state?.authenticated && typeof controlPlane.bootstrap === 'function') {
-      const refreshed = await controlPlane.bootstrap();
+      let refreshed = false;
+      try {
+        refreshed = await controlPlane.bootstrap();
+      } catch (error) {
+        sourceTrace('TRANSLATION_POLICY_REFRESH_FAILED', {
+          trace_id: traceId, reason_code: String(error?.code || 'control_plane_refresh_failed'),
+        });
+        showStartError(error);
+        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; button.removeAttribute('aria-busy'); delete button.dataset.busy; }
+        updateTranslationStartControls();
+        return;
+      }
       // A failed refresh must not be converted into a disabled translation job.
       // Stop before source analysis/job creation so a transient control-plane
       // failure cannot silently change the user's authoritative policy.
@@ -1807,7 +2020,7 @@
         const error = new Error('Não foi possível confirmar a política de tradução.');
         error.code = 'control_plane_refresh_failed';
         showStartError(error);
-        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
+        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; button.removeAttribute('aria-busy'); }
         if (button) delete button.dataset.busy;
         updateTranslationStartControls();
         return;
@@ -1834,17 +2047,20 @@
       });
       let analysisResult;
       try {
+        sourceTrace('TRANSLATION_START_REQUEST', {sequence, elapsed_ms: 0, request_count: 1, route: '/api/ui/source/analyze'});
         sourceTrace('START_REQUEST', {trace_id: traceId, route: '/api/ui/source/analyze', source_type: sourceType});
         sourceTrace('SOURCE_ANALYZE_REQUEST_STARTED', {trace_id: traceId, route: '/api/ui/source/analyze', source_type: sourceType});
         const startedAt = performance.now();
         analysisResult = await api('/api/ui/source/analyze', {
           method: 'POST', body: JSON.stringify({...payload, trace_id: traceId}), timeoutMs: 190000,
         });
+        sourceTrace('TRANSLATION_START_RESPONSE', {sequence, elapsed_ms: Math.round(performance.now() - startedAt), request_count: 1, status: 'ok'});
         sourceTrace('SOURCE_ANALYZE_REQUEST_FINISHED', {trace_id: traceId, status: 'ok', ready: analysisResult?.ready === true, duration_ms: Math.round(performance.now() - startedAt)});
       } catch (error) {
+        sourceTrace('TRANSLATION_START_ERROR', {sequence, elapsed_ms: 0, request_count: 1, error_code: String(error.code || 'source_analyze_failed').slice(0, 80)});
         sourceTrace('SOURCE_ANALYZE_REQUEST_FAILED', {trace_id: traceId, reason_code: String(error.code || 'source_analyze_failed')});
         showSourceValidationError(error);
-        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
+        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; button.removeAttribute('aria-busy'); }
         if (button) delete button.dataset.busy;
         updateTranslationStartControls();
         return;
@@ -1872,11 +2088,12 @@
         appState.settings.workspace_source_policy = analysisResult.policy;
       }
       if (!ready) {
+        sourceTrace('TRANSLATION_START_BLOCKED', {sequence, elapsed_ms: 0, block_reason: 'source_not_ready', form_valid: true, request_count: 1});
         const error = new Error(analysisResult?.reason_code || 'source_extraction_failed');
         error.code = analysisResult?.reason_code || 'source_extraction_failed';
         error.analysis = analysisResult?.analysis || null;
         showSourceValidationError(error);
-        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
+        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; button.removeAttribute('aria-busy'); }
         if (button) delete button.dataset.busy;
         updateTranslationStartControls();
         return;
@@ -1895,10 +2112,12 @@
 
     let runStartedAt = performance.now();
     try {
+      sourceTrace('TRANSLATION_START_REQUEST', {sequence, elapsed_ms: 0, request_count: 2, route: '/api/ui/run'});
       sourceTrace('AUTO_CONTINUE_BEGIN', {trace_id: getGlobal('__sourceTraceId') || '', route: '/api/ui/run'});
       sourceTrace('SOURCE_RUN_REQUEST_STARTED', {trace_id: traceId, route: '/api/ui/run', source_type: sourceType});
       runStartedAt = performance.now();
       const result = await api('/api/ui/run', {method: 'POST', body: JSON.stringify({...payload, trace_id: traceId})});
+      sourceTrace('TRANSLATION_START_RESPONSE', {sequence, elapsed_ms: Math.round(performance.now() - runStartedAt), request_count: 2, status: 'ok'});
       sourceTrace('RUN_REQUEST_FINISHED', {trace_id: traceId, route: '/api/ui/run', status: 'ok', reason_code: String(result?.reason_code || ''), duration_ms: Math.round(performance.now() - runStartedAt)});
       if (!result || result.ok === false) {
         const error = new Error((result && (result.message || result.reason_code)) || 'Não foi possível analisar esta fonte com segurança.');
@@ -1940,12 +2159,13 @@
       activateTab('nova');
       return result;
     } catch (error) {
+      sourceTrace('TRANSLATION_START_ERROR', {sequence, elapsed_ms: Math.round(performance.now() - runStartedAt), request_count: 2, error_code: String(error.code || 'run_failed').slice(0, 80)});
       sourceTrace('RUN_REQUEST_FAILED', {trace_id: traceId, route: '/api/ui/run', status: 'error', reason_code: String(error.code || 'run_failed'), duration_ms: Math.round(performance.now() - runStartedAt)});
       // The backend rejected it: return control to the user with a readable reason.
-      if (button) { button.textContent = previousLabel || 'Iniciar tradução'; }
+      if (button) { button.textContent = previousLabel || 'Iniciar tradução'; button.removeAttribute('aria-busy'); }
       showStartError(error);
     } finally {
-      if (button) delete button.dataset.busy;
+      if (button) { delete button.dataset.busy; button.removeAttribute('aria-busy'); }
       updateTranslationStartControls();
     }
   }
@@ -2012,7 +2232,191 @@
       control.setAttribute('aria-disabled', active ? 'true' : 'false');
     });
   }
-  $('#startBtn')?.addEventListener('click', startTranslation);
+  // Bind the start gesture at the stable document boundary.  The translation
+  // panel can be rerendered while readiness/profile state settles; a listener
+  // attached directly to the old button node can then observe pointerdown but
+  // miss the semantic click on the replacement node.  Delegation preserves the
+  // normal click/keyboard contract and keeps single-flight inside startTranslation.
+  function startButtonFromEvent(event) {
+    const target = event?.target;
+    const button = target && typeof target.closest === 'function' ? target.closest('#startBtn') : null;
+    if (button) observeStartButtonGeneration(button);
+    return button;
+  }
+  const startGestureNodeIds = new WeakMap();
+  let nextStartGestureNodeId = 1;
+  let startGestureSequence = 0;
+  let startGestureObserver = null;
+  let startGestureDown = null;
+  let lastObservedStartButton = null;
+  // Lossless input audit: keep the primary evidence in-memory and emit one
+  // bounded dump, rather than relying on one host/bridge message per event.
+  const inputAudit = window.__yomuInputAudit = window.__yomuInputAudit || {events: [], counts: {}, next_seq: 0, dumped: false};
+  const inputAuditRecord = (eventType, event, scope) => {
+    const target = event?.target;
+    const button = target && typeof target.closest === 'function' ? target.closest('#startBtn') : null;
+    const x = Number(event?.clientX || 0), y = Number(event?.clientY || 0);
+    let top = null, topStart = null;
+    try { top = document.elementFromPoint(x, y); topStart = top?.closest?.('#startBtn') || null; } catch (_) {}
+    const record = {
+      seq: ++inputAudit.next_seq, performance_ms: Number(performance.now().toFixed(3)), event_type: eventType,
+      scope, isTrusted: event?.isTrusted === true, event_phase: Number(event?.eventPhase || 0),
+      target_node_id: startGestureNodeId(target), closest_start_node_id: startGestureNodeId(button),
+      clientX: x, clientY: y, button: Number(event?.button ?? -1), buttons: Number(event?.buttons || 0),
+      pointerId: Number(event?.pointerId || 0), pointerType: String(event?.pointerType || ''),
+      defaultPrevented: event?.defaultPrevented === true, hasFocus: document.hasFocus?.() === true,
+      visibility: String(document.visibilityState || ''), render_generation: Number(window.__YOMU_FORM_RENDER_GENERATION || 0),
+      disabled: button?.disabled === true, top_element_node_id: startGestureNodeId(top),
+      top_is_start: Boolean(topStart), down_inside_start: eventType.endsWith('down') ? Boolean(topStart) : undefined,
+    };
+    inputAudit.events.push(record); if (inputAudit.events.length > 200) inputAudit.events.shift();
+    inputAudit.counts[`${scope}_${eventType}`] = Number(inputAudit.counts[`${scope}_${eventType}`] || 0) + 1;
+    if (eventType === 'mousedown' && event?.isTrusted === true && button && !inputAudit.marker) {
+      const marker = document.createElement('div'); marker.textContent = 'PHYSICAL_GESTURES_SEEN_BY_DOM=0';
+      marker.id = 'yomu-input-audit-marker'; marker.style.cssText = 'position:fixed;left:4px;top:4px;z-index:2147483647;pointer-events:none;background:#111;color:#9f9;font:11px monospace;padding:2px 4px;';
+      document.documentElement.appendChild(marker); inputAudit.marker = marker;
+    }
+    if (eventType === 'mousedown' && event?.isTrusted === true && button && inputAudit.marker) {
+      const n = Number(inputAudit.counts.DOCUMENT_mousedown || 0); inputAudit.marker.textContent = `PHYSICAL_GESTURES_SEEN_BY_DOM=${n}`;
+    }
+    if (Number(inputAudit.counts.DOCUMENT_mousedown || 0) >= 20 && !inputAudit.dumped) dumpInputAudit();
+  };
+  function dumpInputAudit() {
+    if (inputAudit.dumped) return;
+    inputAudit.dumped = true;
+    sourceTrace('DUMP_INPUT_AUDIT', {
+      audit_event_count: inputAudit.events.length,
+      audit_counts: JSON.stringify(inputAudit.counts),
+      audit_buffer: JSON.stringify(inputAudit.events),
+    });
+  }
+  window.__yomuDumpInputAudit = dumpInputAudit;
+  for (const scopeTarget of [window, document]) {
+    const scope = scopeTarget === window ? 'WINDOW' : 'DOCUMENT';
+    for (const type of ['pointerdown','pointerup','pointercancel','lostpointercapture','mousedown','mouseup','click','dblclick']) {
+      scopeTarget.addEventListener(type, event => inputAuditRecord(type, event, scope), {capture: true, passive: true});
+    }
+  }
+  window.addEventListener('focus', () => inputAuditRecord('focus', null, 'WINDOW'), {capture: true, passive: true});
+  window.addEventListener('blur', () => inputAuditRecord('blur', null, 'WINDOW'), {capture: true, passive: true});
+  document.addEventListener('visibilitychange', () => inputAuditRecord('visibilitychange', null, 'DOCUMENT'), {capture: true, passive: true});
+  function startGestureNodeId(node) {
+    if (!node || (typeof node !== 'object' && typeof node !== 'function')) return '';
+    if (!startGestureNodeIds.has(node)) startGestureNodeIds.set(node, `start-node-${nextStartGestureNodeId++}`);
+    return startGestureNodeIds.get(node);
+  }
+  function startGestureEventFields(event, button) {
+    const target = event?.target;
+    const active = document.activeElement;
+    return {
+      node_instance_id: startGestureNodeId(button), target_node_id: startGestureNodeId(target),
+      closest_start_button_node_id: startGestureNodeId(target?.closest?.('#startBtn')),
+      is_connected: button?.isConnected === true, disabled: button?.disabled === true,
+      aria_disabled: button?.getAttribute?.('aria-disabled') || '',
+      ready: String(appState.status || 'unknown'), event_phase: Number(event?.eventPhase || 0),
+      default_prevented: event?.defaultPrevented === true, pointer_id: Number(event?.pointerId || 0),
+      trusted: event?.isTrusted === true, active_element_node_id: startGestureNodeId(active),
+      document_has_focus: document.hasFocus?.() === true,
+    };
+  }
+  function observeStartButtonGeneration(button) {
+    if (!button || button === lastObservedStartButton) return Number(window.__YOMU_FORM_RENDER_GENERATION || 0);
+    lastObservedStartButton = button;
+    const generation = Number(window.__YOMU_FORM_RENDER_GENERATION || 0) + 1;
+    window.__YOMU_FORM_RENDER_GENERATION = generation;
+    sourceTrace('TRANSLATION_START_BUTTON_NODE_OBSERVED', {node_instance_id: startGestureNodeId(button), render_generation: generation});
+    return generation;
+  }
+  function finishStartGestureDiagnostics(result = 'TIMEOUT') {
+    if (startGestureDown) {
+      const button = startGestureDown.node;
+      sourceTrace('TRANSLATION_START_GESTURE_SUMMARY', {
+        sequence: startGestureDown.sequence, result,
+        node_instance_id: startGestureDown.node_id,
+        current_start_button_node_id: startGestureNodeId($('#startBtn')),
+        current_button_is_connected: $('#startBtn')?.isConnected === true,
+        disabled: button?.disabled === true,
+        render_generation: Number(window.__YOMU_FORM_RENDER_GENERATION || 0),
+        same_node_down_up: Boolean(startGestureDown.same_node_down_up),
+        click_seen: Boolean(startGestureDown.click_seen),
+        mutation_count: Number(startGestureDown.mutation_count || 0),
+      });
+    }
+    if (startGestureObserver) { startGestureObserver.disconnect(); startGestureObserver = null; }
+    startGestureDown = null;
+  }
+  function beginStartGestureDiagnostics(button) {
+    finishStartGestureDiagnostics();
+    const sequence = ++startGestureSequence;
+    startGestureDown = {sequence, node: button, node_id: startGestureNodeId(button), render_generation: Number(window.__YOMU_FORM_RENDER_GENERATION || 0), disabled: button?.disabled === true, same_node_down_up: false, click_seen: false, mutation_count: 0};
+    sourceTrace('TRANSLATION_START_GESTURE_BEGIN', {sequence, ...startGestureEventFields({target: button}, button), render_generation: startGestureDown.render_generation});
+    const panel = $('#newTranslationFormPanel');
+    if (panel && typeof MutationObserver === 'function') {
+      startGestureObserver = new MutationObserver(mutations => {
+        for (const mutation of mutations) {
+          if (startGestureDown) startGestureDown.mutation_count += 1;
+          const target = mutation.target;
+          const current = $('#startBtn');
+          sourceTrace('TRANSLATION_START_GESTURE_MUTATION', {
+            sequence, mutation_type: mutation.type, attribute: mutation.attributeName || '',
+            start_button_present: Boolean(current), start_button_node_id: startGestureNodeId(current),
+            disabled: current?.disabled === true, render_generation: Number(window.__YOMU_FORM_RENDER_GENERATION || 0),
+            child_count: mutation.addedNodes?.length + mutation.removedNodes?.length,
+            target_node_id: startGestureNodeId(target),
+          });
+        }
+      });
+      startGestureObserver.observe(panel, {subtree: true, childList: true, attributes: true, attributeFilter: ['disabled', 'aria-disabled', 'class', 'style']});
+    }
+    window.setTimeout(() => finishStartGestureDiagnostics('NO_CLICK_TIMEOUT'), 750);
+  }
+  document.addEventListener('mousedown', event => {
+    const button = startButtonFromEvent(event);
+    sourceTrace('TRANSLATION_START_MOUSEDOWN', startGestureEventFields(event, button));
+  }, {capture: true});
+  document.addEventListener('mouseup', event => {
+    const button = startButtonFromEvent(event);
+    sourceTrace('TRANSLATION_START_MOUSEUP', startGestureEventFields(event, button));
+  }, {capture: true});
+  document.addEventListener('pointerdown', event => {
+    const button = startButtonFromEvent(event);
+    if (!button) return;
+    beginStartGestureDiagnostics(button);
+    sourceTrace('TRANSLATION_START_POINTER', {
+      ...startGestureEventFields(event, button), sync_state: String(appState.status || 'unknown'),
+      render_generation: Number(window.__YOMU_FORM_RENDER_GENERATION || 0),
+    });
+  }, {capture: true});
+  document.addEventListener('pointerup', event => {
+    const button = startButtonFromEvent(event);
+    if (!button) return;
+    const sameNode = Boolean(startGestureDown && startGestureDown.node === button);
+    if (startGestureDown) startGestureDown.same_node_down_up = sameNode;
+    sourceTrace('TRANSLATION_START_POINTERUP', {
+      ...startGestureEventFields(event, button),
+      same_node_down_up: sameNode,
+      render_generation: Number(window.__YOMU_FORM_RENDER_GENERATION || 0),
+    });
+  }, {capture: true});
+  document.addEventListener('click', event => {
+    const button = startButtonFromEvent(event);
+    if (!button) return;
+    sourceTrace('TRANSLATION_START_CLICK_CAPTURE', {
+      ...startGestureEventFields(event, button), render_generation: Number(window.__YOMU_FORM_RENDER_GENERATION || 0),
+    });
+    if (startGestureDown) startGestureDown.click_seen = true;
+    startTranslation();
+    if (startGestureDown) window.setTimeout(() => finishStartGestureDiagnostics('CLICK'), 0);
+  }, {capture: true});
+  document.addEventListener('click', event => {
+    sourceTrace('TRANSLATION_START_ANY_CLICK', {
+      target_node_id: startGestureNodeId(event?.target), trusted: event?.isTrusted === true,
+      default_prevented: event?.defaultPrevented === true, event_phase: Number(event?.eventPhase || 0),
+      render_generation: Number(window.__YOMU_FORM_RENDER_GENERATION || 0),
+    });
+    // The capture listener schedules the CLICK summary after startTranslation;
+    // keep this listener observational so it cannot clear the gesture first.
+  }, {capture: false});
   $('#sourceReportSend')?.addEventListener('click', sendSourceSupportReport);
   $('#sourceReportDismiss')?.addEventListener('click', closeSourceReportDialog);
   $('#cancelBtn')?.addEventListener('click', () => cancelTranslation(
@@ -2129,6 +2533,11 @@
       startButton.dataset.busy = '0';
       updateTranslationStartControls();
     }
+    // A terminal observation closes the duplicate-submit window.  Until then,
+    // an identical click remains a no-op even if a render recreated the button.
+    if (terminalRunStatuses.has(String(appState.status || '').toLowerCase())) {
+      activeStartFingerprint = '';
+    }
     const boot = $('#boot');
     if (boot && !document.documentElement.dataset.visualBootTest) boot.classList.add('hide');
   }
@@ -2144,6 +2553,29 @@
       persistConsumedTerminalNotifications();
     }
   }
+  async function refreshWalletAfterTerminal(record) {
+    const cp = window.__yomuControlPlane;
+    if (!cp?.call || !cp?.applyWallet) return;
+    try {
+      uiTrace('YK_WALLET_POST_FINALIZE_REFRESH_START', {
+        job_id: record?.id || '',
+        status: record?.status || '',
+      });
+      const wallet = await cp.call('wallet-summary');
+      cp.applyWallet(wallet, 'translation-terminal');
+      cp.render?.();
+      uiTrace('YK_WALLET_POST_FINALIZE_REFRESH_RESULT', {
+        job_id: record?.id || '',
+        usable_now: Number(wallet?.usable_now ?? NaN),
+        daily_stored: Number(wallet?.daily_stored ?? NaN),
+      });
+    } catch (errorValue) {
+      uiTrace('YK_WALLET_POST_FINALIZE_REFRESH_ERROR', {
+        job_id: record?.id || '',
+        code: String(errorValue?.code || errorValue?.message || 'wallet_refresh_failed').slice(0, 80),
+      });
+    }
+  }
   function handleTerminalRuntimeTransition(runtime) {
     const record = runtime.active || runtime.source_review || runtime.source_ready || runtime.latest || null;
     const identity = terminalIdentity(record);
@@ -2152,6 +2584,11 @@
     const previous = appState.terminalStatusByIdentity.get(identity) || '';
     appState.terminalStatusByIdentity.set(identity, status);
     if (!terminalRunStatuses.has(status)) return;
+    // Financial reconciliation is independent from notification deduplication.
+    // The first terminal observation commonly has no previous status; it must
+    // still refresh the canonical wallet before the notification early-return.
+    const shouldRefreshWallet = !previous || !terminalRunStatuses.has(previous);
+    if (shouldRefreshWallet) void refreshWalletAfterTerminal(record);
     releaseStaleInterfaceBusy();
     const key = terminalNotificationKey(record);
     const notification = terminalNotificationMessage(record);
@@ -5816,9 +6253,28 @@
     applyCanonicalAuthSurface(state);
     syncAuthoritativeTranslationFlag();
     renderHistory();
-    // The initial bootstrap may race the SDK/backend session check. Refresh the
-    // authoritative local records once authentication settles.
-    void refreshBootstrap();
+    const authenticated = state === 'authenticated';
+    uiTrace('UI_AUTH_EVENT_RECEIVED', {authenticated});
+    const authTransition = authenticated && !appState.authenticated;
+    appState.authenticated = authenticated;
+    if (!authenticated) {
+      appState.authGeneration += 1;
+      appState.profileBootstrapAuthGeneration = 0;
+      return;
+    }
+    if (authTransition) {
+      appState.authGeneration += 1;
+      appState.profileBootstrapAuthGeneration = 0;
+      appState.profileState = 'PROFILE_LOADING';
+      uiTrace('PROFILE_AUTH_GENERATION_STARTED', {generation: appState.authGeneration});
+    }
+    if (appState.profileBootstrapAuthGeneration !== appState.authGeneration) {
+      appState.profileBootstrapAuthGeneration = appState.authGeneration;
+      uiTrace('UI_BOOTSTRAP_SCHEDULED', {generation: appState.authGeneration});
+      uiTrace('PROFILE_BOOTSTRAP_AUTH_TRANSITION_REQUESTED', {generation: appState.authGeneration});
+      const refresh = getGlobal('__tradutorRefreshBootstrap');
+      if (typeof refresh === 'function') void refresh();
+    }
   });
   applyCanonicalAuthSurface(getGlobal('__tradutorAuthState') || 'auth_loading');
   function eventPathCandidates(event, selector) {
@@ -7240,7 +7696,12 @@
       banner_ref_present: Boolean(profile.banner_media_url),
     });
     const authenticated = String(getGlobal('__tradutorAuthState') || '') === 'authenticated';
-    const name = authenticated ? (profile.display_name || 'Carregando perfil…') : 'Visitante';
+    const profileState = appState.profileState || 'PROFILE_LOADING';
+    const name = !authenticated ? 'Visitante'
+      : profileState === 'PROFILE_ERROR' ? 'Perfil indisponível'
+      : profileState === 'PROFILE_LOADING' ? 'Carregando perfil…'
+      : (profile.display_name || 'Usuário');
+    uiTrace('PROFILE_RENDER_STATE', {profile_state: profileState, profile_present: Boolean(profile.display_name || profile.user_id), profile_error_present: profileState === 'PROFILE_ERROR'});
     const avatar = name.slice(0, 1).toUpperCase();
     const avatarData = profile.avatar_mode === 'image' ? profile.avatar_media_url : '';
     [$('#pcAvatar'), $('#rpAvatar')].forEach(element => {
@@ -7467,7 +7928,24 @@
     bootstrapInFlight = runBootstrapRefresh().finally(() => { bootstrapInFlight = null; });
     return bootstrapInFlight;
   }
+  setGlobal('__tradutorRefreshBootstrap', refreshBootstrap);
+  uiTrace('UI_BRIDGE_REGISTERED', {ui_generation: 1, bridge_type: typeof window.__tradutorRefreshBootstrap});
+  uiTrace('UI_CHANNEL_PING_SENT', {ui_generation: 1});
+  uiTrace('UI_BRIDGE_READY_SENT', {ui_generation: 1});
+  const pendingAuthGeneration = Number(getGlobal('__yomuPendingAuthBootstrapGeneration') || 0);
+  if (pendingAuthGeneration && String(getGlobal('__tradutorAuthState') || '') === 'authenticated') {
+    uiTrace('UI_BRIDGE_READY_RECEIVED', {auth_generation: pendingAuthGeneration, pending: true});
+    setGlobal('__yomuPendingAuthBootstrapGeneration', 0);
+    uiTrace('CONTROL_PLANE_PENDING_AUTH_REPLAY_START', {auth_generation: pendingAuthGeneration});
+    void refreshBootstrap().finally(() => {
+      uiTrace('CONTROL_PLANE_PENDING_AUTH_REPLAY_RESULT', {auth_generation: pendingAuthGeneration, success: true});
+    });
+  }
   async function runBootstrapRefresh() {
+    const profileSequence = ++appState.profileBootstrapSequence;
+    const profileStartedAt = performance.now();
+    appState.profileState = 'PROFILE_LOADING';
+    uiTrace('PROFILE_BOOTSTRAP_REQUEST_STARTED', {sequence: profileSequence, profile_state: appState.profileState});
     try {
       setBootStage(1);
       const data = await api(`/api/ui/bootstrap?cursor=${appState.cursor}`);
@@ -7477,7 +7955,23 @@
       const authState = syncCanonicalAuthFromBootstrap(data);
       setBootStage(3);
       const authenticated = authState === 'authenticated';
-      appState.profile = authenticated ? (data.profile || {}) : {};
+      const profileError = authenticated && (data.profile_state === 'error' || data.profile?.profile_error === true);
+      uiTrace('PROFILE_BOOTSTRAP_RECEIVED', {
+        sequence: profileSequence,
+        elapsed_ms: Math.round(performance.now() - profileStartedAt),
+        profile_present: Boolean(authenticated && data.profile && !profileError),
+        profile_error_present: Boolean(profileError),
+        profile_state: profileError ? 'PROFILE_ERROR' : (authenticated ? 'PROFILE_READY' : 'PROFILE_ERROR'),
+      });
+      if (profileSequence !== appState.profileBootstrapSequence) return;
+      appState.profileState = profileError ? 'PROFILE_ERROR' : (authenticated ? 'PROFILE_READY' : 'PROFILE_ERROR');
+      appState.profile = authenticated && !profileError ? (data.profile || {}) : {};
+      uiTrace(profileError ? 'PROFILE_BOOTSTRAP_PROFILE_ERROR' : 'PROFILE_BOOTSTRAP_PROFILE_PRESENT', {
+        sequence: profileSequence, profile_state: appState.profileState,
+        profile_present: Boolean(appState.profile && Object.keys(appState.profile).length),
+        profile_error_present: profileError,
+      });
+      uiTrace('PROFILE_STATE_COMMIT', {sequence: profileSequence, profile_state: appState.profileState});
       setBootStage(4);
       setGlobal('__tradutorDisplayName', authenticated ? String(appState.profile.display_name || '').trim() : '');
       appState.settings = data.settings || {};
@@ -7492,6 +7986,10 @@
       applyCanonicalAuthSurface(authState);
       if (authenticated) {
         applyProfileToForm(appState.profile);
+        if (appState.profileState === 'PROFILE_ERROR' && !appState.profileErrorNotified) {
+          appState.profileErrorNotified = true;
+          showToast('Não foi possível carregar o perfil. A tradução continua disponível.', 'warn');
+        }
         void loadProductSettings();
         await loadPendingHumanPreviews();
       } else {
@@ -7505,11 +8003,16 @@
       }
       setBootStage(6);
       renderRuntime(data);
+      uiTrace('READINESS_RECOMPUTE', {sequence: profileSequence, readiness_profile_required: false, readiness_ready: Boolean(updateTranslationStartControls()?.canStart), reason: appState.profileState === 'PROFILE_ERROR' ? 'profile_degraded' : 'profile_ready'});
       rememberRuntimeTerminalState(data);
       setBootStage(7);
       window.clearTimeout(bootTimer);
       window.setTimeout(closeBoot, 250);
     } catch (error) {
+      if (profileSequence === appState.profileBootstrapSequence) {
+        appState.profileState = 'PROFILE_ERROR';
+        uiTrace('PROFILE_ERROR_STATE', {sequence: profileSequence, profile_state: appState.profileState, profile_error_present: true, reason: error?.code || 'bootstrap_request_failed'});
+      }
       window.clearTimeout(bootTimer);
       setBootFailed('Não foi possível carregar a interface.');
       showToast(`Interface local: ${error.message}`, 'error');

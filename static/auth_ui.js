@@ -210,7 +210,7 @@ let authDiagnosticSequence = 0;
 
 function authTrace(event, fields = {}) {
   const safe = {event: String(event || ''), at: new Date().toISOString(), seq: ++authDiagnosticSequence};
-  for (const key of ['status', 'code', 'name', 'message', 'authenticated', 'source', 'token_present', 'token_length', 'elapsed_ms', 'expires_at', 'reason', 'meta', 'destination', 'auth_event', 'recovery_intent_present', 'recovery_intent_valid', 'session_present_before_login', 'app_open_reason', 'build_id', 'caller', 'window_role', 'session_fingerprint', 'session_present', 'user_present', 'request_trace_id']) {
+  for (const key of ['status', 'code', 'name', 'message', 'authenticated', 'source', 'token_present', 'token_length', 'elapsed_ms', 'expires_at', 'reason', 'meta', 'destination', 'auth_event', 'recovery_intent_present', 'recovery_intent_valid', 'session_present_before_login', 'app_open_reason', 'build_id', 'caller', 'window_role', 'session_fingerprint', 'session_present', 'user_present', 'request_trace_id', 'generation']) {
     if (fields[key] !== undefined) safe[key] = fields[key];
   }
   window.__tradutorAuthTrace.push(safe);
@@ -387,6 +387,34 @@ function setAuthState(state, userId = '') {
   authPresentation?.reflectAuthState(state);
   authTrace('auth_state_changed', {status: state, authenticated: state === 'authenticated'});
 }
+
+// The control-plane bootstrap can confirm the same current session after the
+// explicit login confirmation raced/temporarily failed.  Reconcile that
+// authoritative state back into the auth shell exactly once; otherwise the
+// login error surface remains visible even though the app is authenticated.
+let lateAuthShellGeneration = 0;
+window.addEventListener('tradutor-control-plane-updated', event => {
+  const snapshot = event?.detail?.state || {};
+  if (snapshot.authenticated !== true) return;
+  const generation = Number(window.__yomuAuthGeneration || 0);
+  authTrace('AUTH_UI_RECONCILE_RECEIVED', {
+    authenticated: true, generation, reason: 'control_plane_authenticated',
+  });
+  if (window.__tradutorAuthState === 'authenticated' && lateAuthShellGeneration === generation) {
+    authTrace('AUTH_UI_RECONCILE_IGNORED', {authenticated: true, generation, reason: 'already_authenticated'});
+    return;
+  }
+  if (generation && generation < lateAuthShellGeneration) {
+    authTrace('AUTH_UI_RECONCILE_IGNORED', {authenticated: true, generation, reason: 'stale_generation'});
+    return;
+  }
+  lateAuthShellGeneration = generation || lateAuthShellGeneration + 1;
+  window.__tradutorCommunityAuthenticated = true;
+  setAuthState('authenticated', snapshot.user_id || window.__tradutorCommunityUserId || '');
+  authTrace('AUTH_UI_RECONCILE_APPLY', {authenticated: true, generation: lateAuthShellGeneration, reason: 'late_authoritative_auth'});
+  renderAuthShell('authenticated');
+  authTrace('AUTH_UI_RECONCILE_RESULT', {authenticated: true, generation: lateAuthShellGeneration, reason: 'shell_authenticated'});
+});
 
 function startAuthHeartbeat() {
   if (authHeartbeatTimer) return;
@@ -1499,6 +1527,12 @@ async function init() {
       }
     } catch (err) {
       if (attemptId !== loginAttemptCounter) return;
+      // A stale confirmation failure must not put the UI back into auth_error
+      // after a newer authoritative control-plane event opened the shell.
+      if (window.__tradutorAuthState === 'authenticated' || window.__tradutorCommunityAuthenticated === true) {
+        authTrace('LOGIN_FAILURE_IGNORED_AFTER_AUTH_RECONCILE', {authenticated: true, reason: 'late_session_failure'});
+        return;
+      }
       // Never reconcile an explicit login timeout from an existing session:
       // recovery/session state is not proof of the credentials just entered.
       const status = Number(err?.status || 0);

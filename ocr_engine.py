@@ -300,9 +300,17 @@ class OCREngine:
             img_bgr,
             lines,
         ))
-        if not lines and story_regions > 0 and recovered_regions == 0:
+        text_regions = int(rapid_metrics.get("estimated_text_regions") or 0)
+        has_text_evidence = (
+            recovered_regions > 0
+            or (text_regions > 0 and _has_plausible_story_text_evidence(img_bgr))
+        )
+        if not lines and story_regions > 0 and has_text_evidence and recovered_regions == 0:
             sufficiency = OCR_INSUFFICIENT
             fallback_reason = "zero_lines_on_story_like_page"
+        elif not lines and story_regions > 0 and not has_text_evidence:
+            sufficiency = OCR_SUFFICIENT
+            fallback_reason = "zero_lines_on_art_only_page"
         else:
             sufficiency = OCR_REVIEW
             fallback_reason = ";".join(reasons)
@@ -1459,7 +1467,7 @@ def _rapidocr_suspicion(img_bgr, lines):
 
     if not lines and text_regions >= 2:
         reasons.append("zero_lines_on_text_like_page")
-    if not lines and story_text_regions >= 1:
+    if not lines and story_text_regions >= 1 and text_regions > 0:
         reasons.append("zero_lines_on_story_like_page")
     if lines and average_confidence < config.RAPIDOCR_MIN_CONFIDENCE:
         reasons.append("low_average_confidence")
@@ -1622,6 +1630,20 @@ def _uncovered_story_text_regions(img_bgr, lines):
 def _covered_story_region_count(img_bgr, lines):
     return len(_detect_story_text_region_boxes(img_bgr)) - len(
         _uncovered_story_text_regions(img_bgr, lines)
+    )
+
+
+def _has_plausible_story_text_evidence(img_bgr):
+    """Reject edge-anchored art highlights as independent story-text evidence."""
+    boxes = _detect_story_text_region_boxes(img_bgr)
+    if img_bgr is None or img_bgr.size == 0:
+        return False
+    height, width = img_bgr.shape[:2]
+    return any(
+        x >= width * 0.03
+        and box_width >= width * 0.25
+        and box_height >= height * 0.02
+        for x, _y, box_width, box_height in boxes
     )
 
 

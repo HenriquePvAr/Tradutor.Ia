@@ -82,3 +82,63 @@ def test_failed_terminal_job_does_not_promote_shell_badge_to_error():
     assert "presentationStatus = String(terminalLatest.status || appState.status);" in render_runtime
     assert "appState.status = String(terminalLatest.status" not in render_runtime
     assert "status.textContent = runStatusLabels[appState.status] || appState.status;" in render_runtime
+
+
+def test_first_terminal_observation_refreshes_wallet_before_notification_dedupe():
+    source = _source()
+    handler = _between(source, "function handleTerminalRuntimeTransition(runtime)", "function canonicalProgressStage")
+    assert "const shouldRefreshWallet = !previous || !terminalRunStatuses.has(previous);" in handler
+    assert handler.index("if (shouldRefreshWallet) void refreshWalletAfterTerminal(record);") < handler.index(
+        "if (!previous || terminalRunStatuses.has(previous) || !notification)"
+    )
+    assert "YK_WALLET_POST_FINALIZE_REFRESH_START" in source
+    assert "YK_WALLET_POST_FINALIZE_REFRESH_RESULT" in source
+
+
+def test_terminal_wallet_refresh_does_not_storm_on_duplicate_terminal_state():
+    source = _source()
+    handler = _between(source, "function handleTerminalRuntimeTransition(runtime)", "function canonicalProgressStage")
+    # Refresh is gated by the prior terminal status; duplicate terminal
+    # observations still take the existing notification-dedupe path.
+    assert "!terminalRunStatuses.has(previous)" in handler
+    assert handler.count("refreshWalletAfterTerminal(record)") == 1
+
+
+def test_translation_start_has_single_flight_identity_and_trace():
+    source = _source()
+    assert "let activeStartFingerprint = '';" in source
+    assert "TRANSLATION_START_IGNORED_IN_FLIGHT" in source
+    assert "TRANSLATION_START_ACCEPTED" in source
+    assert "startInFlight || (activeStartFingerprint && activeStartFingerprint === fingerprint)" in source
+
+
+def test_translation_start_takes_visual_lock_before_async_policy_refresh():
+    source = _source()
+    start = _between(source, "async function runStartTranslation(sequence = 0)", "function visibleCancelControl")
+    assert start.index("button.dataset.busy = '1';") < start.index("await controlPlane.bootstrap()")
+    assert "button.setAttribute('aria-busy', 'true');" in start
+    assert "TRANSLATION_START_IGNORED_IN_FLIGHT" in source
+
+
+def test_translation_start_remains_disabled_while_request_is_in_flight():
+    source = _source()
+    controls = _between(source, "function updateTranslationStartControls()", "function invalidateSourceValidation")
+    assert "const startRequestBusy = Boolean(startInFlight || activeStartFingerprint);" in controls
+    assert "|| startRequestBusy" in controls
+
+
+def test_translation_start_r3_persists_pointer_and_lifecycle_telemetry():
+    source = _source()
+    for event in (
+        "TRANSLATION_START_POINTER",
+        "TRANSLATION_START_CLICK",
+        "TRANSLATION_START_HANDLER_ENTER",
+        "TRANSLATION_START_PENDING",
+        "TRANSLATION_START_REQUEST",
+        "TRANSLATION_START_RESPONSE",
+        "TRANSLATION_START_ERROR",
+        "TRANSLATION_START_SINGLE_FLIGHT_SKIP",
+    ):
+        assert event in source
+    assert "sequence" in source
+    assert "request_count" in source

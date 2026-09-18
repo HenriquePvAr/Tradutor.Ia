@@ -39,6 +39,14 @@ _NATIVE_AD_PENDING_PLACEMENT = None
 _NATIVE_AD_PENDING_BOUNDS = None
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _content_diagnostic_enabled() -> bool:
+    return _env_flag("YOMU_ADS_CONTENT_DIAGNOSTIC")
+
+
 def _runtime_log(event: str, **fields) -> None:
     """Small bounded lifecycle log available in normal beta builds."""
     try:
@@ -322,6 +330,24 @@ class DesktopApi:
         surface = globals().get("_NATIVE_AD_SURFACE")
         return {"available": bool(surface and surface.hide())}
 
+    def native_ad_session_state(self, route: str = "") -> dict[str, object]:
+        """Return sanitized ad-session readiness for the UI claim gate."""
+        surface = globals().get("_NATIVE_AD_SURFACE")
+        if surface is None:
+            return {"available": False, "core_ready": False, "surface_visible": False,
+                    "navigation_success": False, "navigation_in_progress": False, "route": ""}
+        committed = getattr(surface, "_committed_placement", None)
+        committed_route = str(committed[0]) if committed else ""
+        requested_route = str(route or "")
+        return {
+            "available": True,
+            "core_ready": bool(getattr(surface, "_ready", False)),
+            "surface_visible": bool(getattr(surface, "_surface_visible", False) and getattr(surface.control, "Visible", False)),
+            "navigation_success": bool(committed and (not requested_route or committed_route == requested_route)),
+            "navigation_in_progress": bool(getattr(surface, "_navigation_in_progress", False)),
+            "route": committed_route,
+        }
+
 
 class AdsDiagnosticsApi:
     """Sanitized diagnostics sink used only by the opt-in ads WebView probe."""
@@ -408,10 +434,260 @@ class NativeAdSurface:
         self._surface_visible = False
         self._navigation_generation = 0
         self._current_navigation_url = None
+        self._requested_placement = None
+        self._committed_placement = None
+        self._active_navigation = None
+        self._navigation_in_progress = False
+        self._navigation_invoke_pending = False
+        self._last_requested_bounds = None
+        self._force_visibility_reapply = False
+        self._content_diag_enabled = _content_diagnostic_enabled()
+        self._content_diag_timers = []
+        self._snapshot_timer = None
+        self._snapshot_generation = None
+        self._snapshot_stages = []
+        self._snapshot_stage_index = 0
+        self._script_watchers = []
         self._placement = ("home", self.URL, 728, 90)
+        self._requested_placement = self._placement
         _native_poc_log("COREWEBVIEW2_INIT_START")
         _runtime_log("CORE_INIT_START", surface_generation=id(self))
         self.control.EnsureCoreWebView2Async(None)
+
+    def _content_diag(self, event: str, **fields):
+        if self._content_diag_enabled:
+            _native_poc_log(event, **fields)
+
+    @staticmethod
+    def _safe_uri(uri):
+        try:
+            from urllib.parse import urlsplit
+            p = urlsplit(str(uri))
+            return {"scheme": p.scheme, "host": p.hostname or "", "path": p.path[:180]}
+        except Exception:
+            return {"scheme": "", "host": "", "path": ""}
+
+    def _cancel_snapshot_sequence(self):
+        timer = getattr(self, "_snapshot_timer", None)
+        if timer is not None:
+            try:
+                timer.Stop()
+                timer.Dispose()
+            except Exception:
+                pass
+        self._snapshot_timer = None
+        self._snapshot_generation = None
+
+    def _watch_script_task(self, task, stage, generation):
+        try:
+            from System.Windows.Forms import Timer
+            started = time.monotonic()
+            watcher = Timer()
+            watcher.Interval = 50
+            def finish(reason=None):
+                try:
+                    watcher.Stop()
+                    watcher.Dispose()
+                except Exception:
+                    pass
+                if watcher in self._script_watchers:
+                    self._script_watchers.remove(watcher)
+                if reason:
+                    self._content_diag("AD_DOM_EXECUTE_SCRIPT_ERROR", stage=stage, reason=reason, generation=generation)
+            def tick(sender, args):
+                if self._disposed or generation != self._navigation_generation:
+                    finish("NAVIGATION_GENERATION_STALE" if generation != self._navigation_generation else "WEBVIEW_DISPOSED")
+                    return
+                if time.monotonic() - started > 5.0:
+                    finish("EXECUTE_SCRIPT_TIMEOUT")
+                    return
+                try:
+                    if not bool(task.IsCompleted):
+                        return
+                    if bool(task.IsCanceled):
+                        finish("EXECUTE_SCRIPT_CANCELED")
+                        return
+                    if bool(task.IsFaulted):
+                        finish("EXECUTE_SCRIPT_TASK_FAULTED")
+                        return
+                    raw = task.GetAwaiter().GetResult()
+                    value = json.loads(str(raw))
+                    if isinstance(value, str):
+                        value = json.loads(value)
+                    if not isinstance(value, dict):
+                        finish("JSON_PARSE_ERROR")
+                        return
+                    self._content_diag("AD_DOM_SNAPSHOT", stage=stage, generation=generation, payload=json.dumps(value, ensure_ascii=True)[:2200])
+                    for iframe in value.get("iframes", []) or []:
+                        self._content_diag("AD_IFRAME_STATE", stage=stage, generation=generation,
+                                           index=iframe.get("index", 0), host=iframe.get("src_host", iframe.get("host", "")),
+                                           path=iframe.get("src_path", ""), x=iframe.get("x", 0), y=iframe.get("y", 0),
+                                           width=iframe.get("width", iframe.get("w", 0)), height=iframe.get("height", iframe.get("h", 0)),
+                                           display=iframe.get("display", ""), visibility=iframe.get("visibility", ""),
+                                           opacity=iframe.get("opacity", ""), connected=iframe.get("isConnected", False))
+                    for point in value.get("top_elements", []) or []:
+                        self._content_diag("AD_TOP_ELEMENT", stage=stage, generation=generation,
+                                           point=point.get("point", ""), tag=point.get("tag", ""),
+                                           id=point.get("id", ""), class_name=point.get("class_name", ""),
+                                           rect=json.dumps(point.get("rect", {}), ensure_ascii=True),
+                                           display=point.get("display", ""), visibility=point.get("visibility", ""),
+                                           opacity=point.get("opacity", ""), z_index=point.get("z_index", ""))
+                    self._content_diag("AD_BODY_CHILDREN", stage=stage, generation=generation,
+                                       children=json.dumps(value.get("body_children", []), ensure_ascii=True))
+                    if stage in {"1s", "3s", "5s"}:
+                        self._capture_preview(stage, generation)
+                    finish()
+                except Exception as exc:
+                    finish("PYTHONNET_RESULT_BINDING_ERROR:" + type(exc).__name__)
+            watcher.Tick += tick
+            self._script_watchers.append(watcher)
+            watcher.Start()
+        except Exception as exc:
+            self._content_diag("AD_DOM_EXECUTE_SCRIPT_ERROR", stage=stage, reason=type(exc).__name__)
+
+    def _capture_preview(self, stage, generation):
+        """Capture only the ad child WebView2 without blocking its UI thread."""
+        if self._disposed or generation != self._navigation_generation or not self._ready:
+            return
+        try:
+            from System.IO import MemoryStream
+            from Microsoft.Web.WebView2.Core import CoreWebView2CapturePreviewImageFormat
+            from System.Windows.Forms import Timer
+            stream = MemoryStream()
+            task = self.control.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream)
+            watcher = Timer()
+            watcher.Interval = 50
+            started = time.monotonic()
+            audit_dir = os.getenv("YOMU_ADS_AUDIT_DIR", "")
+            out_dir = Path(audit_dir) if audit_dir else Path(os.getenv("LOCALAPPDATA", "")) / "YomuSekai" / "logs" / "ad-content-final" / datetime.now().strftime("%Y%m%d-%H%M%S")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"ad-webview-{stage}.png"
+
+            def finish(reason=None):
+                try:
+                    watcher.Stop(); watcher.Dispose(); stream.Dispose()
+                except Exception:
+                    pass
+                if watcher in self._script_watchers:
+                    self._script_watchers.remove(watcher)
+                if reason:
+                    self._content_diag("AD_CAPTURE_PREVIEW_ERROR", stage=stage, reason=reason)
+
+            def tick(sender, args):
+                if self._disposed or generation != self._navigation_generation:
+                    finish("NAVIGATION_GENERATION_STALE" if generation != self._navigation_generation else "WEBVIEW_DISPOSED")
+                    return
+                if time.monotonic() - started > 5.0:
+                    finish("CAPTURE_PREVIEW_TIMEOUT")
+                    return
+                try:
+                    if not bool(task.IsCompleted):
+                        return
+                    if bool(task.IsCanceled):
+                        finish("CAPTURE_PREVIEW_CANCELED"); return
+                    if bool(task.IsFaulted):
+                        finish("CAPTURE_PREVIEW_TASK_FAULTED"); return
+                    data = bytes(stream.ToArray())
+                    if not data:
+                        finish("CAPTURE_PREVIEW_EMPTY"); return
+                    out_path.write_bytes(data)
+                    classification, details = self._classify_preview(data)
+                    self._content_diag("AD_CAPTURE_PREVIEW", stage=stage, file=str(out_path), classification=classification, **details)
+                    finish()
+                except Exception as exc:
+                    finish("CAPTURE_PREVIEW_RESULT_ERROR:" + type(exc).__name__)
+
+            watcher.Tick += tick
+            self._script_watchers.append(watcher)
+            watcher.Start()
+        except Exception as exc:
+            self._content_diag("AD_CAPTURE_PREVIEW_ERROR", stage=stage, reason="CAPTURE_PREVIEW_BINDING_ERROR:" + type(exc).__name__)
+
+    @staticmethod
+    def _classify_preview(data):
+        try:
+            from io import BytesIO
+            from PIL import Image
+            image = Image.open(BytesIO(data)).convert("RGB")
+            pixels = list(image.getdata())
+            near_white = sum(1 for p in pixels if min(p) >= 248) / max(1, len(pixels))
+            mean = sum(sum(p) / 3.0 for p in pixels) / max(1, len(pixels))
+            variance = sum(((sum(p) / 3.0) - mean) ** 2 for p in pixels) / max(1, len(pixels))
+            classification = "WHITE" if near_white >= 0.98 and variance < 20.0 else "CONTENT"
+            return classification, {"width": image.width, "height": image.height,
+                                    "near_white_pct": round(near_white, 4), "variance": round(variance, 2),
+                                    "criterion": "near_white>=0.98_and_variance<20"}
+        except Exception as exc:
+            return "FAIL", {"criterion": "IMAGE_ANALYSIS_UNAVAILABLE:" + type(exc).__name__}
+
+    def _execute_snapshot(self, stage, generation):
+        if not self._content_diag_enabled or self._disposed or generation != self._navigation_generation or not self._ready:
+            return
+        self._content_diag("AD_SNAPSHOT_STAGE", stage=stage, generation=generation)
+        script = r"""(()=>{const rect=e=>{const r=e?.getBoundingClientRect?.()||{};return {x:Math.round(r.x||0),y:Math.round(r.y||0),left:Math.round(r.left||0),top:Math.round(r.top||0),right:Math.round(r.right||0),bottom:Math.round(r.bottom||0),width:Math.round(r.width||0),height:Math.round(r.height||0)}};const style=e=>{const s=e?getComputedStyle(e):{};return {display:s.display||'',visibility:s.visibility||'',opacity:s.opacity||'',position:s.position||'',z_index:s.zIndex||''}};const url=u=>{try{const p=new URL(u||'');return {src_scheme:p.protocol.replace(':',''),src_host:p.hostname||'',src_path:p.pathname||''}}catch(e){return {src_scheme:'',src_host:'',src_path:''}}};const fs=[...document.querySelectorAll('iframe')].slice(0,8).map((f,i)=>Object.assign({index:i,attribute_width:f.getAttribute('width')||'',attribute_height:f.getAttribute('height')||'',clientWidth:f.clientWidth||0,clientHeight:f.clientHeight||0,offsetWidth:f.offsetWidth||0,offsetHeight:f.offsetHeight||0,isConnected:!!f.isConnected,rect:rect(f)},url(f.src),style(f)));const points=[['10,10',10,10],['center',innerWidth/2,innerHeight/2],['bottom-right',Math.max(0,innerWidth-10),Math.max(0,innerHeight-10)]];const tops=points.map(([point,x,y])=>{const e=document.elementFromPoint(x,y);return Object.assign({point,tag:e?.tagName||'',id:(e?.id||'').slice(0,80),class_name:(typeof e?.className==='string'?e.className:'').slice(0,80),rect:rect(e)},style(e))});const children=[...document.body?.children||[]].slice(0,20).map(e=>Object.assign({tag:e.tagName||'',rect:rect(e)},style(e)));return JSON.stringify({href:location.href.split('?')[0],ready:document.readyState,visibility:document.visibilityState,focus:document.hasFocus(),inner:[innerWidth,innerHeight],dpr:devicePixelRatio,scroll:[document.documentElement.scrollWidth,document.documentElement.scrollHeight],scripts:document.scripts.length,invoke:[...document.scripts].some(s=>(s.src||'').includes('highrevenueformat.com')),iframes:fs,top_elements:tops,body_children:children,body_rect:rect(document.body),body:[document.body?.children.length||0],ua:navigator.userAgent,cookie:navigator.cookieEnabled})})()"""
+        try:
+            task = self.control.CoreWebView2.ExecuteScriptAsync(script)
+            self._watch_script_task(task, stage, generation)
+        except Exception as exc:
+            self._content_diag("AD_DOM_EXECUTE_SCRIPT_ERROR", stage=stage, reason="PYTHONNET_BINDING_ERROR:" + type(exc).__name__)
+
+    def _start_snapshot_sequence(self):
+        if not self._content_diag_enabled or self._disposed:
+            return
+        self._cancel_snapshot_sequence()
+        generation = self._navigation_generation
+        self._snapshot_generation = generation
+        self._snapshot_stages = [("250ms", 250), ("1s", 1000), ("3s", 3000), ("5s", 5000)]
+        self._snapshot_stage_index = 0
+        self._content_diag("AD_SNAPSHOT_SEQUENCE_CREATED", generation=generation)
+        self._execute_snapshot("DOMContentLoaded", generation)
+        try:
+            from System.Windows.Forms import Timer
+            timer = Timer()
+            timer.Interval = self._snapshot_stages[0][1]
+            def tick(sender, args):
+                if self._disposed or generation != self._navigation_generation:
+                    self._cancel_snapshot_sequence()
+                    return
+                stage, _delay = self._snapshot_stages[self._snapshot_stage_index]
+                self._execute_snapshot(stage, generation)
+                self._snapshot_stage_index += 1
+                if self._snapshot_stage_index >= len(self._snapshot_stages):
+                    self._content_diag("AD_SNAPSHOT_SEQUENCE_COMPLETE", generation=generation)
+                    self._cancel_snapshot_sequence()
+                else:
+                    timer.Interval = self._snapshot_stages[self._snapshot_stage_index][1] - self._snapshot_stages[self._snapshot_stage_index - 1][1]
+            timer.Tick += tick
+            self._snapshot_timer = timer
+            timer.Start()
+        except Exception as exc:
+            self._content_diag("AD_SNAPSHOT_SCHEDULER_ERROR", reason=type(exc).__name__)
+
+    def _attach_content_diagnostics(self):
+        if not self._content_diag_enabled:
+            return
+        core = self.control.CoreWebView2
+        try:
+            def dom_loaded(sender, args):
+                self._content_diag("AD_DOM_CONTENT_LOADED")
+                self._start_snapshot_sequence()
+            core.DOMContentLoaded += dom_loaded
+        except Exception:
+            self._content_diag("AD_CONTENT_DIAGNOSTIC_ERROR", error="DOMCONTENTLOADED_UNAVAILABLE")
+        try:
+            def response(sender, args):
+                request = getattr(args, "Request", None)
+                response_obj = getattr(args, "Response", None)
+                fields = self._safe_uri(getattr(request, "Uri", ""))
+                fields["status"] = getattr(response_obj, "StatusCode", "unknown")
+                self._content_diag("AD_RESOURCE_RESPONSE", **fields)
+            core.WebResourceResponseReceived += response
+        except Exception:
+            self._content_diag("AD_CONTENT_DIAGNOSTIC_ERROR", error="RESOURCE_EVENTS_UNAVAILABLE")
+        try:
+            core.ProcessFailed += lambda sender, args: self._content_diag("AD_PROCESS_FAILED", kind=str(getattr(args, "ProcessFailedKind", "unknown")))
+        except Exception:
+            self._content_diag("AD_CONTENT_DIAGNOSTIC_ERROR", error="PROCESS_FAILED_EVENT_UNAVAILABLE")
 
     def _on_initialized(self, sender, args):
         if getattr(args, "IsSuccess", False):
@@ -419,10 +695,8 @@ class NativeAdSurface:
             _native_poc_log("COREWEBVIEW2_INIT_SUCCESS", available=True)
             _runtime_log("CORE_INIT_SUCCESS", surface_generation=id(self))
             self.control.CoreWebView2.NewWindowRequested += self._on_new_window
-            self._current_navigation_url = self._placement[1]
-            self.control.CoreWebView2.Navigate(self._placement[1])
-            _native_poc_log("NAVIGATION_START", host="henriquepvar.github.io", path="/ad/banner-728x90.html")
-            _runtime_log("PLACEMENT_NAV_START", route=self._placement[0], placement_id=self._placement[1].rstrip("/").split("/")[-1])
+            self._attach_content_diagnostics()
+            self._navigate_requested_on_ui_thread()
             if self._pending_bounds:
                 self.set_bounds(*self._pending_bounds)
         else:
@@ -439,17 +713,106 @@ class NativeAdSurface:
             args.Handled = True
 
     def _on_navigation_completed(self, sender, args):
-        _native_poc_log("NAVIGATION_COMPLETED", success=bool(getattr(args, "IsSuccess", False)), web_error=str(getattr(args, "WebErrorStatus", "unknown")))
-        _runtime_log("PLACEMENT_NAV_SUCCESS" if bool(getattr(args, "IsSuccess", False)) else "PLACEMENT_NAV_FAILURE", route=self._placement[0], generation=self._navigation_generation)
+        success = bool(getattr(args, "IsSuccess", False))
+        error = str(getattr(args, "WebErrorStatus", "unknown"))
+        active = self._active_navigation
+        source = ""
+        try:
+            source = str(self.control.CoreWebView2.Source or "")
+        except Exception:
+            pass
+        _native_poc_log("NAVIGATION_COMPLETED", success=success, web_error=error)
+        if active is None:
+            _runtime_log("NAV_CALLBACK_STALE_IGNORED", reason="NO_ACTIVE_NAVIGATION")
+            return
+        generation, placement = active
+        if generation != self._navigation_generation:
+            self._navigation_in_progress = False
+            self._active_navigation = None
+            _runtime_log("NAV_CALLBACK_STALE_IGNORED", generation=generation, current_generation=self._navigation_generation)
+            if self._ready and self._requested_placement:
+                self._navigate_requested_on_ui_thread()
+            return
+        expected = placement[1]
+        if success and source and source.split("?", 1)[0] != expected.split("?", 1)[0]:
+            _runtime_log("NAV_CALLBACK_STALE_IGNORED", generation=generation, source=self._safe_uri(source), expected=self._safe_uri(expected))
+            return
+        self._navigation_in_progress = False
+        self._active_navigation = None
+        if not success:
+            self._committed_placement = None
+            self._current_navigation_url = None
+            _runtime_log("PLACEMENT_NAV_FAILURE", route=placement[0], generation=generation, web_error_status=error)
+            self._hide_surface_for_navigation_failure(placement[0])
+            return
+        self._committed_placement = placement
+        self._current_navigation_url = placement[1]
+        _runtime_log("NAV_COMMIT_CURRENT", route=placement[0], generation=generation, url=self._safe_uri(placement[1]))
+        _runtime_log("PLACEMENT_NAV_SUCCESS", route=placement[0], generation=generation)
+        if self._last_requested_bounds is not None:
+            # A route request hides the surface while the old navigation is
+            # being replaced, but the geometry itself remains unchanged.  A
+            # visibility transition must not be coalesced as a geometry no-op.
+            self._force_visibility_reapply = True
+            x, y, width, height, _previous_visible = self._last_requested_bounds
+            self.set_bounds(x, y, width, height, visible=True, force_visibility_reapply=True)
 
-    def set_bounds(self, x, y, width, height, visible=True):
+    def _hide_surface_for_navigation_failure(self, route):
+        """Invalidate the old creative immediately; never leave a stale ad visible."""
+        try:
+            self._surface_visible = False
+            if self._pending_bounds is not None:
+                self._pending_bounds = (*self._pending_bounds[:4], False)
+            def hide_ui():
+                if self._disposed:
+                    return
+                self.control.Visible = False
+            begin = getattr(self.form, "BeginInvoke", None)
+            if callable(begin):
+                begin(__import__('System').Action(hide_ui))
+            else:
+                self.form.Invoke(__import__('System').Action(hide_ui))
+            _runtime_log("NAV_FAILURE_HIDE", route=route)
+        except Exception as exc:
+            _native_poc_log("NATIVE_AD_ERROR", error="NAV_FAILURE_HIDE_" + type(exc).__name__)
+
+    def _navigate_requested_on_ui_thread(self):
+        if self._disposed or not self._ready or not self._requested_placement:
+            return
+        placement = self._requested_placement
+        generation = self._navigation_generation
+        if self._active_navigation == (generation, placement):
+            return
+        if self._navigation_in_progress:
+            _runtime_log("NAV_LATEST_WINS", route=placement[0], generation=generation,
+                         active_generation=self._active_navigation[0] if self._active_navigation else "")
+            return
+        self._active_navigation = (generation, placement)
+        self._navigation_in_progress = True
+        _runtime_log("NAV_REQUEST", route=placement[0], generation=generation, url=self._safe_uri(placement[1]))
+        _runtime_log("PLACEMENT_NAV_START", route=placement[0], generation=generation, placement_id=placement[1].rstrip("/").split("/")[-1])
+        try:
+            self.control.CoreWebView2.Navigate(placement[1])
+            _native_poc_log("NAVIGATION_START", **self._safe_uri(placement[1]))
+        except Exception as exc:
+            self._navigation_in_progress = False
+            self._active_navigation = None
+            self._committed_placement = None
+            self._current_navigation_url = None
+            _native_poc_log("NATIVE_AD_ERROR", error="NAVIGATE_" + type(exc).__name__)
+            _runtime_log("PLACEMENT_NAV_FAILURE", route=placement[0], generation=generation, error=type(exc).__name__)
+            self._hide_surface_for_navigation_failure(placement[0])
+
+    def set_bounds(self, x, y, width, height, visible=True, force_visibility_reapply=False):
         if self._disposed:
             return False
         try:
             bounds = (int(x), int(y), max(0, int(width)), max(0, int(height)), bool(visible))
+            self._last_requested_bounds = bounds
             with self._bounds_lock:
                 self._bounds_measurements += 1
-                if bounds == self._pending_bounds or bounds == self._applied_bounds:
+                force_reapply = bool(force_visibility_reapply or self._force_visibility_reapply)
+                if not force_reapply and (bounds == self._pending_bounds or bounds == self._applied_bounds):
                     self._bounds_coalesced += 1
                     return True
                 self._pending_bounds = bounds
@@ -465,11 +828,14 @@ class NativeAdSurface:
                 if self._disposed or current is None:
                     return
                 _, _, w, h, show = current
-                if current == self._applied_bounds:
+                force_apply = bool(self._force_visibility_reapply)
+                if current == self._applied_bounds and not force_apply:
                     return
                 self.control.Location = self._Point(current[0], current[1])
                 self.control.Size = self._Size(w, h)
-                desired_visible = bool(show and w >= 1 and h >= 1)
+                committed = self._committed_placement
+                placement_matches = bool(committed and self._placement and committed[1] == self._placement[1])
+                desired_visible = bool(show and w >= 1 and h >= 1 and placement_matches and not self._navigation_in_progress)
                 self.control.Visible = desired_visible
                 self._applied_bounds = current
                 self._bounds_applies += 1
@@ -481,6 +847,7 @@ class NativeAdSurface:
                 elif not desired_visible and self._surface_visible:
                     _runtime_log("SURFACE_HIDE", route=self._placement[0])
                 self._surface_visible = desired_visible
+                self._force_visibility_reapply = False
                 now = time.monotonic()
                 if now - self._bounds_window_started >= 10.0:
                     _runtime_log("ADS_BOUNDS_WINDOW", measurement_requests=self._bounds_measurements, native_applies=self._bounds_applies, native_coalesced=self._bounds_coalesced)
@@ -501,19 +868,29 @@ class NativeAdSurface:
     def set_placement(self, route, url, width, height):
         if self._disposed:
             return False
-        self._placement = (str(route), str(url), int(width), int(height))
-        if self._current_navigation_url == self._placement[1]:
+        self._cancel_snapshot_sequence()
+        placement = (str(route), str(url), int(width), int(height))
+        if self._requested_placement == placement and self._committed_placement == placement:
             return True
+        self._placement = placement
+        self._requested_placement = placement
         self._navigation_generation += 1
-        self._current_navigation_url = self._placement[1]
-        _runtime_log("ROUTE_CHANGED", route=self._placement[0])
+        self._committed_placement = None
+        self._current_navigation_url = None
+        _runtime_log("PLACEMENT_RESOLVED", route=placement[0], generation=self._navigation_generation, url=self._safe_uri(placement[1]), width=placement[2], height=placement[3])
+        _runtime_log("ROUTE_CHANGED", route=placement[0])
+        self._hide_surface_for_navigation_failure(placement[0])
         if self._ready:
             try:
-                _runtime_log("PLACEMENT_NAV_START", route=self._placement[0], generation=self._navigation_generation)
-                self.control.CoreWebView2.Navigate(self._placement[1])
-            except Exception:
-                _native_poc_log("NATIVE_AD_ERROR", error="NAVIGATION_FAILED")
-                _runtime_log("PLACEMENT_NAV_FAILURE", route=self._placement[0], generation=self._navigation_generation)
+                begin = getattr(self.form, "BeginInvoke", None)
+                if callable(begin):
+                    begin(__import__('System').Action(self._navigate_requested_on_ui_thread))
+                else:
+                    self.form.Invoke(__import__('System').Action(self._navigate_requested_on_ui_thread))
+            except Exception as exc:
+                _native_poc_log("NATIVE_AD_ERROR", error="NAV_REQUEST_" + type(exc).__name__)
+                _runtime_log("PLACEMENT_NAV_FAILURE", route=placement[0], generation=self._navigation_generation, error=type(exc).__name__)
+                self._hide_surface_for_navigation_failure(placement[0])
                 return False
         return True
 
@@ -524,6 +901,14 @@ class NativeAdSurface:
         if self._disposed:
             return
         self._disposed = True
+        self._cancel_snapshot_sequence()
+        for watcher in list(getattr(self, "_script_watchers", [])):
+            try:
+                watcher.Stop()
+                watcher.Dispose()
+            except Exception:
+                pass
+        self._script_watchers = []
         try:
             self.form.Invoke(__import__('System').Action(lambda: self.control.Dispose()))
         except Exception:
@@ -535,7 +920,7 @@ _NATIVE_AD_SURFACE = None
 
 
 def _native_poc_log(event: str, **fields) -> None:
-    if os.getenv("YOMU_ADS_NATIVE_POC", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    if not (_env_flag("YOMU_ADS_NATIVE_POC") or _content_diagnostic_enabled()):
         return
     try:
         is_d4g = "geometry" in NATIVE_AD_DIAGNOSTIC_BUILD_ID
@@ -688,6 +1073,13 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
     try:
         _wait_ready(host, port, server)
         _set_windows_app_user_model_id()
+        content_diag_requested = _content_diagnostic_enabled()
+        content_diag_active = content_diag_requested
+        _runtime_log("ADS_CONTENT_DIAGNOSTIC_STATE", requested=content_diag_requested, active=content_diag_active, build_version=getattr(app_version, "BUILD_VERSION", app_version.PRODUCT_VERSION), capability=True)
+        if content_diag_active:
+            _native_poc_log("AD_CONTENT_DIAGNOSTIC_PROBE", mode="content-only")
+        if content_diag_requested and not content_diag_active:
+            _runtime_log("DIAGNOSTIC_ACTIVATION_FAILURE", reason="CONTENT_DIAGNOSTIC_DISABLED")
         direct_ads = ads_diagnostic_mode == "direct"
         # The native ad surface is a product capability on Windows.  The legacy
         # POC flag remains only as an optional diagnostic marker; it no longer
@@ -704,7 +1096,7 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
         )
         global _NATIVE_AD_WINDOW
         _NATIVE_AD_WINDOW = window
-        _runtime_log("MAIN_WINDOW_CREATED", native_ads=native_ads, diagnostic=bool(ads_diagnostic_mode))
+        _runtime_log("MAIN_WINDOW_CREATED", native_ads=native_ads, diagnostic=bool(ads_diagnostic_mode or content_diag_active), content_diagnostic=content_diag_active)
         if native_ads and not direct_ads:
             def create_native_surface() -> None:
                 # Surface creation is lazy: startup must not depend on ads.
@@ -811,7 +1203,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Yomu Sekai WebView2 desktop shell")
     args = list(sys.argv[1:] if argv is None else argv)
     _runtime_log("PROCESS_START", pid=os.getpid(), parent_pid=os.getppid(), entrypoint=str(Path(sys.argv[0]).name))
-    if os.getenv("YOMU_ADS_NATIVE_POC", "").strip().lower() in {"1", "true", "yes", "on"}:
+    if _env_flag("YOMU_ADS_NATIVE_POC"):
         prefix = "D4" if NATIVE_AD_DIAGNOSTIC_BUILD_ID.startswith("native-ad-d4") else "D3"
         _native_d3_log(f"{prefix}_PROCESS_START", native_flag=os.getenv("YOMU_ADS_NATIVE_POC", "absent"), provider_flag=os.getenv("YOMU_PASSIVE_ADS_PROVIDER_ENABLED", "absent"), entrypoint=str(Path(sys.argv[0]).name))
         _native_d3_log(f"{prefix}_NATIVE_FLAG", value=os.getenv("YOMU_ADS_NATIVE_POC", "absent"))
@@ -847,7 +1239,7 @@ def main(argv: list[str] | None = None) -> int:
         ads_mode = "direct"
     elif parsed.ads_diagnostic_yomu:
         ads_mode = "yomu"
-    elif os.getenv("YOMU_ADS_DIAGNOSTICS", "").strip().lower() in {"1", "true", "yes", "on"}:
+    elif _env_flag("YOMU_ADS_DIAGNOSTICS"):
         ads_mode = "yomu"
     if parsed.export_diagnostics:
         print(export_diagnostics(parsed.export_diagnostics))

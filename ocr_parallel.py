@@ -118,6 +118,43 @@ def _detect_in_worker(job):
         gc.collect()
 
 
+def detect_ocr_job(job, engine, *, progress_callback=None, result_callback=None):
+    """Process one OCR job using the canonical serial OCR result contract."""
+    if progress_callback:
+        progress_callback(job, "started")
+    started = time.perf_counter()
+    image = cv2.imread(job["image_path"])
+    if image is None:
+        result = {"index": job["index"], "error": "image_load_failed",
+                  "elapsed_seconds": time.perf_counter() - started, "lines": [],
+                  "pid": os.getpid()}
+    else:
+        try:
+            lines = engine.detect_lines(image, page=job["index"])
+            metadata = dict(engine.last_run_metadata or {})
+            result = {"index": job["index"],
+                      "error": _ocr_error_from_metadata(metadata),
+                      "elapsed_seconds": time.perf_counter() - started,
+                      "lines": lines, "ocr_metadata": metadata,
+                      "pid": os.getpid()}
+        except Exception as exc:
+            result = {"index": job["index"], "error": str(exc),
+                      "elapsed_seconds": time.perf_counter() - started,
+                      "lines": [], "pid": os.getpid()}
+        finally:
+            image = None
+            try:
+                del lines
+            except UnboundLocalError:
+                pass
+            gc.collect()
+    if result_callback:
+        result_callback(result)
+    if progress_callback:
+        progress_callback(result, "completed")
+    return result
+
+
 def _detect_sequential(jobs, ocr_lang, result_callback=None, progress_callback=None,
                        cancel_event=None):
     marker_dir = str(os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") or "").strip()
@@ -174,58 +211,12 @@ def _detect_sequential(jobs, ocr_lang, result_callback=None, progress_callback=N
     for job in jobs:
         if cancel_event is not None and cancel_event.is_set():
             break
-        if progress_callback:
-            progress_callback(job, "started")
-        started = time.perf_counter()
-        image = cv2.imread(job["image_path"])
-        if image is None:
-            results[job["index"]] = {
-                "index": job["index"],
-                "error": "image_load_failed",
-                "elapsed_seconds": time.perf_counter() - started,
-                "lines": [],
-                "pid": os.getpid(),
-            }
-            if result_callback:
-                result_callback(results[job["index"]])
-            if progress_callback:
-                progress_callback(results[job["index"]], "completed")
-            continue
-
-        try:
-            lines = engine.detect_lines(image, page=job["index"])
-            metadata = dict(engine.last_run_metadata or {})
-            results[job["index"]] = {
-                "index": job["index"],
-                "error": _ocr_error_from_metadata(metadata),
-                "elapsed_seconds": time.perf_counter() - started,
-                "lines": lines,
-                "ocr_metadata": metadata,
-                "pid": os.getpid(),
-            }
-            if result_callback:
-                result_callback(results[job["index"]])
-        except Exception as exc:
-            results[job["index"]] = {
-                "index": job["index"],
-                "error": str(exc),
-                "elapsed_seconds": time.perf_counter() - started,
-                "lines": [],
-                "pid": os.getpid(),
-            }
-            if result_callback:
-                result_callback(results[job["index"]])
-        finally:
-            # Release native image/line references on both success and failure;
-            # long sequential chapters must not retain every page's arrays.
-            image = None
-            try:
-                del lines
-            except UnboundLocalError:
-                pass
-            gc.collect()
-        if progress_callback:
-            progress_callback(results[job["index"]], "completed")
+        result = detect_ocr_job(
+            job, engine,
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+        )
+        results[result["index"]] = result
     return results
 
 
@@ -354,7 +345,11 @@ def detect_ocr_jobs(
         estimated_worker_peak_mb=getattr(config, "OCR_WORKER_INITIAL_PEAK_MB", 1800.0),
         reserve_mb=getattr(config, "TRADUTOR_OCR_MEMORY_RESERVE_MB", 4096.0),
         max_memory_mb=getattr(config, "TRADUTOR_MAX_MEMORY_MB", 0.0),
-        engine_heavy=str(getattr(config, "OCR_ENGINE", "paddle")).lower() in {"paddle", "paddle_mobile", "rapidocr"},
+        engine_heavy=(
+            str(getattr(config, "OCR_ENGINE", "paddle")).lower()
+            in {"paddle", "paddle_mobile", "rapidocr"}
+            and not bool(getattr(config, "OCR_ALLOW_HEAVY_PARALLELISM", False))
+        ),
         largest_image_pixels=largest_pixels,
     )
     workers = memory_decision.workers

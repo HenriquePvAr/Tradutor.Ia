@@ -29,6 +29,17 @@ class OcrMemoryPolicyTests(unittest.TestCase):
         self.assertEqual(decision.workers, 1)
         self.assertIn("heavy_engine", decision.reason)
 
+    def test_explicit_heavy_parallel_opt_in_respects_memory_capacity(self):
+        decision = choose_workers(
+            2,
+            memory=MemorySnapshot(available_memory_mb=30000, total_memory_mb=32000),
+            estimated_worker_peak_mb=1800,
+            reserve_mb=2048,
+            engine_heavy=False,
+        )
+        self.assertEqual(decision.workers, 2)
+        self.assertNotIn("heavy_engine", decision.reason)
+
     def test_large_image_reduces_concurrency(self):
         decision = choose_workers(
             2,

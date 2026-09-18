@@ -282,7 +282,11 @@ class StartIsIdempotent(StoreCase):
             "only startTranslation may POST /api/ui/run; a second call site "
             "would be a start path with no single-flight guard",
         )
-        self.assertIn("$('#startBtn')?.addEventListener('click', startTranslation)", js)
+        # The start control uses stable document-level delegation so a
+        # rerender/replacement of #startBtn cannot strand the click handler.
+        self.assertIn("document.addEventListener('click'", js)
+        self.assertIn("startButtonFromEvent(event)", js)
+        self.assertIn("startTranslation();", js)
         self.assertGreaterEqual(js.count("startTranslation()"), 3)
 
 

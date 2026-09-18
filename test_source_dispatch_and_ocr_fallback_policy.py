@@ -182,9 +182,12 @@ class StartFailureUiContractTests(unittest.TestCase):
         self.js = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
 
     def test_start_single_flight_lock_always_releases(self):
-        self.assertIn(
-            "startInFlight = runStartTranslation().finally(() => { startInFlight = null; });",
-            self.js)
+        start_block = self.js[self.js.index("startInFlight = runStartTranslation"):]
+        start_block = start_block[:start_block.index("async function runStartTranslation")]
+        self.assertIn(".catch(error =>", start_block)
+        self.assertIn(".finally(() =>", start_block)
+        self.assertIn("startInFlight = null;", start_block)
+        self.assertIn("updateTranslationStartControls();", start_block)
         block = self.js[self.js.index("analysisResult = await api('/api/ui/source/analyze'"):]
         block = block[:block.index("const ready =")]
         self.assertIn("showSourceValidationError(error)", block)

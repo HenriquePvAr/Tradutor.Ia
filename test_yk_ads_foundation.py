@@ -109,6 +109,16 @@ class DailyTopUpTests(unittest.TestCase):
 # The expiry bug
 # ---------------------------------------------------------------------------
 class DailyExpiryTests(unittest.TestCase):
+    def test_full_spend_day1_does_not_reduce_day2_grant(self):
+        w = wallet()
+        self.assertEqual(w.claim_daily(USER, now=DAY1, plan=FREE), 5)
+        for index in range(5):
+            translate(w, f"full-spend-{index}", now=DAY1, plan=FREE)
+        self.assertEqual(w.balances(USER, now=DAY1).daily, 0)
+        day2 = DAY2 + timedelta(minutes=1)
+        self.assertEqual(w.claim_daily(USER, now=day2, plan=FREE), 5)
+        self.assertEqual(w.balances(USER, now=day2).daily, 5)
+
     def test_daily_debit_does_not_outlive_its_credit(self):
         w = wallet()
         self.assertEqual(w.claim_daily(USER, now=DAY1, plan=FREE), 5)
@@ -381,7 +391,7 @@ class RewardedAdTests(unittest.TestCase):
 class MigrationContractTests(unittest.TestCase):
     def test_migration_sorts_after_the_applied_remote_head(self):
         names = sorted(p.name for p in (ROOT / "supabase/migrations").glob("*.sql"))
-        self.assertEqual(names[-1], "20260916100000_yk_ads_product_contract.sql")
+        self.assertEqual(names[-1], "20260917021000_daily_cross_cycle_accounting.sql")
         self.assertGreater(MIGRATION.name, "20260915013128_chapter_level_translation_finalization.sql")
 
     def test_daily_target_comes_from_the_plan_not_a_literal(self):
@@ -436,6 +446,35 @@ class MigrationContractTests(unittest.TestCase):
         summary = _function_body("wallet_summary")
         for key in ("daily_stored", "daily_usable", "usable_total", "passive_ads_enabled"):
             self.assertIn(key, summary)
+
+    def test_local_wallet_auth_reconciliation_is_read_only_and_auth_scoped(self):
+        summary = (ROOT / "supabase/migrations/20260917015949_wallet_summary_auth_reconciliation.sql").read_text(encoding="utf-8")
+        for key in (
+            "auth_context_present", "current_cycle_claim_exists_for_auth_user",
+            "current_cycle_claim_amount_for_auth_user", "valid_daily_credit_total_for_auth_user",
+            "daily_debit_total_for_auth_user", "active_daily_reserved_total_for_auth_user",
+            "daily_net_stored_recomputed_for_auth_user", "wallet_daily_stored_returned",
+            "daily_reconciliation_match",
+        ):
+            self.assertIn(key, summary)
+        self.assertIn("user_id=u", summary)
+        self.assertIn("LOCAL READ-ONLY DIAGNOSTIC ONLY", summary)
+        self.assertNotIn("insert into public.yk_ledger", summary.lower())
+        self.assertNotIn("update public.yk_ledger", summary.lower())
+
+    def test_local_cross_cycle_fix_requires_expiring_daily_rows(self):
+        sql = (ROOT / "supabase/migrations/20260917021000_daily_cross_cycle_accounting.sql").read_text(encoding="utf-8")
+        self.assertGreaterEqual(sql.count("bucket='daily' and expires_at>now()"), 2)
+        self.assertIn("daily_expires_at", sql)
+        self.assertIn("-- LOCAL ONLY", sql)
+        self.assertNotIn("delete from public.yk_ledger", sql.lower())
+        self.assertNotIn("update public.yk_ledger", sql.lower())
+
+    def test_local_cross_cycle_fix_keeps_legacy_active_reservations_conservative(self):
+        sql = (ROOT / "supabase/migrations/20260917021000_daily_cross_cycle_accounting.sql").read_text(encoding="utf-8")
+        self.assertIn("status='reserved'", sql)
+        self.assertIn("into rd,rs,rp", sql)
+        self.assertIn("d:=greatest(0,d-rd)", sql)
 
     def test_legacy_finalizer_loses_authenticated_execute(self):
         self.assertIn(

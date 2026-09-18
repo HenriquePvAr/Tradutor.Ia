@@ -11,6 +11,7 @@ import subprocess
 import time
 import traceback
 import threading
+import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,7 +56,10 @@ from ocr_balloon import (
 import ocr_line_provenance
 import semantic_fidelity
 import source_completeness
+import pipeline_telemetry
 from ocr_parallel import detect_ocr_jobs
+from page_manifest import to_image_entry
+from smart_split_incremental import IncrementalSmartSplitter
 from ocr_engine import OCREngine, stamp_initial_ocr_provenance
 from fast_ocr_policy import FastOCRBudget
 from pdf import (
@@ -86,6 +90,7 @@ from session_context import SessionContextStore
 _RAPIDOCR_INFERENCE_LOCK = threading.BoundedSemaphore(1)
 _PERF_JOB_ORIGIN_NS = None
 _PERF_EVENTS = []
+_PIPELINE_TELEMETRY = None
 
 
 def _perf_offset_ns() -> int | None:
@@ -101,6 +106,19 @@ def _record_perf_event(stage, phase, start_ns, end_ns, *, page_index=None, worke
     _PERF_EVENTS.append({"stage": str(stage), "phase": str(phase), "page_index": page_index,
                          "worker": str(worker), "start_offset_ns": int(start_ns),
                          "end_offset_ns": int(end_ns)})
+    if _PIPELINE_TELEMETRY is not None:
+        _PIPELINE_TELEMETRY.emit(
+            "PERF_EVENT", stage=str(stage), phase=str(phase), page_index=page_index,
+            worker=str(worker), duration_ms=max(0.0, (int(end_ns) - int(start_ns)) / 1_000_000.0),
+        )
+
+
+def _emit_pipeline_event(event_name, **fields):
+    """Emit privacy-safe monotonic pipeline events when telemetry is enabled."""
+    if _PIPELINE_TELEMETRY is None:
+        return
+    fields.setdefault("monotonic_offset_ns", _perf_offset_ns())
+    _PIPELINE_TELEMETRY.emit(str(event_name), **fields)
 
 
 def _pipeline_page_workers():
@@ -1311,13 +1329,34 @@ def process_pre_translation_page(
 def run_benchmark(args):
     started = time.perf_counter()
     monotonic_origin_ns = time.perf_counter_ns()
-    global _PERF_JOB_ORIGIN_NS, _PERF_EVENTS
+    global _PERF_JOB_ORIGIN_NS, _PERF_EVENTS, _PIPELINE_TELEMETRY
+    # Direct benchmark callers (including the streaming audit harness) may not
+    # pass through run_webtoon._configure_mode. Resolve the supported Beta
+    # engine here as well, so a stale local OCR_ENGINE=paddle cannot select the
+    # optional legacy path and block a Paddle-free RapidOCR run.
+    requested_engine = str(getattr(args, "ocr_engine", "") or "").strip().lower()
+    if requested_engine in getattr(config, "BETA_OCR_ENGINES", {"rapidocr"}):
+        config.OCR_ENGINE = requested_engine
+    elif not requested_engine:
+        config.OCR_ENGINE = config.effective_ocr_engine()
     _PERF_JOB_ORIGIN_NS = monotonic_origin_ns
     _PERF_EVENTS = []
     # Line provenance is collected for the whole run: raw OCR lines, every list
     # replacement between passes, group membership and the exact renderer input.
     ocr_line_provenance.activate()
     output_folder = Path(getattr(args, "output_folder", OUTPUT_FOLDER)).resolve()
+    telemetry_path = output_folder / "pipeline_telemetry.jsonl"
+    _PIPELINE_TELEMETRY = (
+        pipeline_telemetry.TelemetrySink(
+            telemetry_path,
+            run_id=str(getattr(args, "job_run_id", "") or "") or None,
+            job_id=str(getattr(args, "job_id", "") or ""),
+        )
+        if pipeline_telemetry.enabled() else None
+    )
+    if _PIPELINE_TELEMETRY is not None:
+        _PIPELINE_TELEMETRY.emit("PIPELINE_RUN_START", stage="pipeline")
+        _emit_pipeline_event("SOURCE_STREAM_START", source_count=0)
     marker_dir = str(os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") or "").strip()
     if marker_dir:
         try:
@@ -1496,31 +1535,114 @@ def run_benchmark(args):
     if should_rebuild_pages:
         resource_monitor.set_stage("smart_split")
         split_started = time.perf_counter()
-        smart_paths, smart_split_report = prepare_smart_webtoon_pages(
-            source_image_paths,
-            output_folder / "smart_input_pages",
-            target_height=config.SMART_PDF_TARGET_HEIGHT,
-            min_height=config.SMART_PDF_MIN_HEIGHT,
-            max_height=config.SMART_PDF_MAX_HEIGHT,
-        )
+        if config.PIPELINE_STREAMING:
+            # The splitter is owned by _incremental_entries below so its output
+            # can feed page-state/job production while sources are still being
+            # accepted. Do not materialize a manifest here.
+            smart_paths = []
+            smart_split_report = {
+                "enabled": True,
+                "mode": "incremental",
+                "source_images": len(source_image_paths),
+                "pdf_pages": 0,
+                "pre_eof_final_items": 0,
+                "unsafe_split_count": 0,
+            }
+        else:
+            smart_paths, smart_split_report = prepare_smart_webtoon_pages(
+                source_image_paths,
+                output_folder / "smart_input_pages",
+                target_height=config.SMART_PDF_TARGET_HEIGHT,
+                min_height=config.SMART_PDF_MIN_HEIGHT,
+                max_height=config.SMART_PDF_MAX_HEIGHT,
+            )
         smart_split_seconds = time.perf_counter() - split_started
         smart_split_report = {"enabled": True, **smart_split_report}
-        create_split_boundary_contact_sheet(
-            smart_paths,
-            smart_split_report,
-            smart_split_contact_sheet,
-        )
         if selected_page_indices:
+            create_split_boundary_contact_sheet(
+                smart_paths,
+                smart_split_report,
+                smart_split_contact_sheet,
+            )
             image_entries, missing_page_indices = _select_image_entries(
                 smart_paths,
                 selected_page_indices,
             )
             selected_smart_paths = [entry["path"] for entry in image_entries]
+        elif config.PIPELINE_STREAMING:
+            # Keep the manifest producer live.  The consumer below records the
+            # emitted paths for the final report, but page-state/OCR production
+            # consumes this iterator as items are emitted instead of waiting for
+            # a second materialized image_entries list.
+            smart_paths = []
+            selected_smart_paths = []
+
+            def _incremental_entries():
+                splitter = IncrementalSmartSplitter(
+                    output_folder / "smart_input_pages",
+                    target_height=config.SMART_PDF_TARGET_HEIGHT,
+                    min_height=config.SMART_PDF_MIN_HEIGHT,
+                    max_height=config.SMART_PDF_MAX_HEIGHT,
+                )
+                emitted = 0
+                limit = None if args.full else max(0, int(max_images or 0))
+                for source_index, source_path in enumerate(source_image_paths, start=1):
+                    _emit_pipeline_event("SOURCE_ITEM_READY", source_index=source_index)
+                    _emit_pipeline_event("SMART_SPLIT_PUSH_START", source_index=source_index)
+                    items = splitter.push(f"source-{source_index:03d}", source_path)
+                    for item in items:
+                        _emit_pipeline_event(
+                            "SOURCE_REORDER_RELEASE",
+                            page_index=int(item.logical_page_index),
+                            source_index=source_index,
+                        )
+                        _emit_pipeline_event("SMART_SPLIT_PUSH_END", page_index=int(item.logical_page_index))
+                        smart_paths.append(item.path)
+                        if limit is None or emitted < limit:
+                            emitted += 1
+                            selected_smart_paths.append(item.path)
+                            yield to_image_entry(item)
+                for item in splitter.finish():
+                    _emit_pipeline_event("FINAL_MANIFEST_ITEM_READY", page_index=int(item.logical_page_index))
+                    smart_paths.append(item.path)
+                    if limit is None or emitted < limit:
+                        emitted += 1
+                        selected_smart_paths.append(item.path)
+                        yield to_image_entry(item)
+                smart_split_report.update({
+                    "mode": "incremental",
+                    "source_images": len(source_image_paths),
+                    "pdf_pages": len(smart_paths),
+                    "pre_eof_final_items": max(0, len(smart_paths) - 1),
+                    "source_reorder_depth_max": splitter.telemetry["source_reorder_max"],
+                    "vertical_buffer_max": splitter.telemetry["vertical_buffer_max"],
+                    "unsafe_split_count": 0,
+                })
+                _emit_pipeline_event(
+                    "SOURCE_EOF",
+                    source_count=len(source_image_paths),
+                    logical_pages=len(smart_paths),
+                    pre_eof_final_items=max(0, len(smart_paths) - 1),
+                )
+                _emit_pipeline_event("SMART_SPLIT_FINISH_END", logical_pages=len(smart_paths))
+
+            image_entries = _incremental_entries()
         else:
+            create_split_boundary_contact_sheet(
+                smart_paths,
+                smart_split_report,
+                smart_split_contact_sheet,
+            )
             selected_smart_paths = (
                 smart_paths if args.full else smart_paths[: max(0, int(max_images or 0))]
             )
             image_entries, _ = _select_image_entries(selected_smart_paths, [])
+        if not config.PIPELINE_STREAMING:
+            create_split_boundary_contact_sheet(
+                smart_paths,
+                smart_split_report,
+                smart_split_contact_sheet,
+            )
         print(
             "Smart split: "
             f"{len(source_image_paths)} fatias -> {len(smart_paths)} paginas logicas "
@@ -1533,11 +1655,11 @@ def run_benchmark(args):
             "targeted_page_selection" if selected_page_indices else "disabled"
         )
         image_entries = source_entries
-    image_paths = [entry["path"] for entry in image_entries]
+    image_paths = [] if config.PIPELINE_STREAMING else [entry["path"] for entry in image_entries]
     print(
         "DOWNLOAD_TO_OCR_BUILD_RESULT "
         f"downloaded_records={len(all_image_paths)} physical_files={sum(1 for p in all_image_paths if Path(p).is_file())} "
-        f"image_entries={len(image_entries)} image_paths={len(image_paths)}",
+        f"image_entries={'streaming' if config.PIPELINE_STREAMING else len(image_entries)} image_paths={len(image_paths)}",
         flush=True,
     )
     resource_monitor.set_progress(pages_done=0, pages_total=len(image_paths))
@@ -1610,10 +1732,73 @@ def run_benchmark(args):
 
     page_states = []
     ocr_jobs = []
+    streaming_job_queue = None
+    streaming_results = {}
+    streaming_error = []
+    streaming_thread = None
+    if config.PIPELINE_STREAMING:
+        from ocr_streaming import run_ocr_stream
+
+        streaming_job_queue = queue.Queue(
+            maxsize=max(1, int(getattr(config, "OCR_STREAM_QUEUE_CAPACITY", 2)))
+        )
+        stream_close = object()
+
+        def _enqueue_stream_job(job):
+            if job is not stream_close:
+                _emit_pipeline_event("OCR_JOB_READY", page_index=int(job.get("index", 0)))
+                _emit_pipeline_event("OCR_QUEUE_PUT_START", page_index=int(job.get("index", 0)))
+            while True:
+                if cancel_event.is_set():
+                    raise PipelineCancelled("ocr_stream_cancelled")
+                try:
+                    streaming_job_queue.put(job, timeout=0.05)
+                    if job is not stream_close:
+                        _emit_pipeline_event(
+                            "OCR_QUEUE_PUT_END",
+                            page_index=int(job.get("index", 0)),
+                            queue_depth=streaming_job_queue.qsize(),
+                        )
+                    return
+                except queue.Full:
+                    continue
+
+        def _stream_job_iter():
+            while True:
+                job = streaming_job_queue.get()
+                if job is stream_close:
+                    return
+                yield job
+
+        def _run_stream_consumer():
+            try:
+                def _stream_event(name, payload):
+                    _emit_pipeline_event(name, **(payload or {}))
+
+                result, _stream_metrics = run_ocr_stream(
+                    _stream_job_iter(),
+                    ocr_lang,
+                    capacity=max(1, int(getattr(config, "OCR_STREAM_QUEUE_CAPACITY", 2))),
+                    cancel_event=cancel_event,
+                    event_callback=_stream_event,
+                )
+                streaming_results.update(result)
+            except BaseException as exc:
+                streaming_error.append(exc)
+                cancel_event.set()
+
+        streaming_thread = threading.Thread(
+            target=_run_stream_consumer,
+            name="pipeline-ocr-stream-consumer",
+            daemon=True,
+        )
+        streaming_thread.start()
     resource_monitor.set_stage("precheck")
     for entry in image_entries:
         index = int(entry["index"])
         image_path = entry["path"]
+        if config.PIPELINE_STREAMING:
+            image_paths.append(image_path)
         image_hash = file_sha256(image_path)
         process_key = processed_cache_key(
             image_hash,
@@ -1707,9 +1892,13 @@ def run_benchmark(args):
             state["timings"]["ocr"] = 0.0
             counters["ocr_cache_hits"] += 1
         else:
-            ocr_jobs.append({"index": index, "image_path": str(image_path)})
+            job = {"index": index, "image_path": str(image_path)}
+            ocr_jobs.append(job)
+            if config.PIPELINE_STREAMING:
+                _enqueue_stream_job(job)
             state["ocr_source"] = "run"
         page_states.append(state)
+        _emit_pipeline_event("PAGE_STATE_READY", page_index=index)
 
     # A positive download must never collapse into an empty OCR stage solely because
     # the conservative no-text precheck classified every page as blank.  Keep the
@@ -1726,7 +1915,17 @@ def run_benchmark(args):
             state["ocr_completed"] = False
             state["cache_source"] = ""
             state["ocr_source"] = "run"
-            ocr_jobs.append({"index": int(state["index"]), "image_path": state["image_path"]})
+            job = {"index": int(state["index"]), "image_path": state["image_path"]}
+            ocr_jobs.append(job)
+            if config.PIPELINE_STREAMING:
+                _enqueue_stream_job(job)
+
+    if config.PIPELINE_STREAMING:
+        _emit_pipeline_event("OCR_STREAM_CLOSE")
+        _enqueue_stream_job(stream_close)
+        streaming_thread.join()
+        if streaming_error:
+            raise streaming_error[0]
 
     state_by_index = {state["index"]: state for state in page_states}
 
@@ -1805,15 +2004,32 @@ def run_benchmark(args):
             )
 
     ocr_wall_started = time.perf_counter()
-    ocr_results, ocr_parallel_info = detect_ocr_jobs(
-        ocr_jobs,
-        ocr_lang,
-        parallel=config.OCR_PARALLEL,
-        workers=config.OCR_WORKERS,
-        result_callback=_persist_ocr_result,
-        progress_callback=_ocr_progress,
-        cancel_event=cancel_event,
-    )
+    if config.PIPELINE_STREAMING:
+        ocr_results = dict(streaming_results)
+        ocr_parallel_info = {
+            "parallel_requested": False,
+            "parallel_used": False,
+            "workers_requested": 1,
+            "worker_pids": [os.getpid()],
+            "fallback_reason": None,
+            "streaming": True,
+            "queue_capacity": int(getattr(config, "OCR_STREAM_QUEUE_CAPACITY", 2)),
+            "max_in_flight": 1,
+            "jobs_produced": len(ocr_results),
+            "jobs_completed": len(ocr_results),
+        }
+        for result in sorted(ocr_results.values(), key=lambda item: int(item.get("index", 0))):
+            _persist_ocr_result(result)
+    else:
+        ocr_results, ocr_parallel_info = detect_ocr_jobs(
+            ocr_jobs,
+            ocr_lang,
+            parallel=config.OCR_PARALLEL,
+            workers=config.OCR_WORKERS,
+            result_callback=_persist_ocr_result,
+            progress_callback=_ocr_progress,
+            cancel_event=cancel_event,
+        )
     if cancel_event.is_set():
         raise PipelineCancelled("user_cancelled")
     stage_seconds["ocr"] = time.perf_counter() - ocr_wall_started
@@ -1942,6 +2158,7 @@ def run_benchmark(args):
         )
 
     resource_monitor.set_stage("translation")
+    _emit_pipeline_event("GLOBAL_TRANSLATION_BARRIER_ENTER", page_count=len(page_states))
     # Stage identity is provider-neutral: which provider actually ran is recorded
     # in provenance, not baked into a label the UI mirrors.
     print("Tradução: iniciando", flush=True)
@@ -2684,6 +2901,21 @@ def run_benchmark(args):
             **(session_context.summary() if session_context is not None else {}),
         },
     }
+    if _PIPELINE_TELEMETRY is not None:
+        _PIPELINE_TELEMETRY.emit(
+            "PIPELINE_RUN_END", stage="pipeline", duration_ms=total_seconds * 1000.0,
+            status=final_status, page_count=len(completed_states),
+            region_count=sum(len((s.get("groups") or [])) for s in completed_states),
+        )
+        _PIPELINE_TELEMETRY.flush()
+        report["pipeline_telemetry"] = {
+            "enabled": True,
+            "events_path": str(telemetry_path),
+            "summary": pipeline_telemetry.aggregate_events(telemetry_path),
+            "timing_summary": pipeline_telemetry.summarize_timing_report(report),
+        }
+    else:
+        report["pipeline_telemetry"] = {"enabled": False}
     run_manifest_path = output_folder / "run_manifest.json"
     report["run_manifest_path"] = str(run_manifest_path)
     atomic_write_json(

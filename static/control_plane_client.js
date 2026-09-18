@@ -14,6 +14,52 @@ const WINDOW_REALM_ID = (() => {
 })();
 
 const WALLET_FIELDS = ['daily', 'subscription', 'permanent', 'reserved'];
+const YK_DIAGNOSTIC_ENABLED = window.__yomuYkDiagnostic === true;
+let ykClaimAttemptCount = 0;
+let ykWalletRefreshSeq = 0;
+function ykTrace(event, fields = {}) {
+  if (!YK_DIAGNOSTIC_ENABLED) return;
+  const raw = fields && typeof fields === 'object' ? fields : {};
+  const safe = {};
+  for (const key of ['reason', 'trigger', 'amount_granted', 'granted', 'amount', 'already_claimed', 'next_available_at', 'next_claim_at',
+    'daily_target', 'daily_yk_target', 'daily_stored', 'daily_usable', 'daily_expires_at', 'expires_at', 'usable_now',
+    'daily', 'permanent', 'subscription', 'has_active_plan', 'resolved_plan', 'canonical_usable', 'displayed_usable', 'header_match',
+    'backend_next_available', 'ui_next_available', 'cooldown_match', 'passive_ads_enabled',
+    'claim_attempt_count', 'attempt', 'wallet_refresh_seq', 'route', 'session_generation', 'surface_visible', 'navigation_success',
+    'auth_context_present', 'current_cycle_claim_exists_for_auth_user', 'current_cycle_claim_amount_for_auth_user',
+    'valid_daily_credit_total_for_auth_user', 'daily_debit_total_for_auth_user',
+    'active_daily_reserved_total_for_auth_user', 'daily_net_stored_recomputed_for_auth_user',
+    'wallet_daily_stored_returned', 'daily_reconciliation_match',
+    'session_valid', 'error_kind', 'ok', 'error_code']) {
+    if (raw[key] !== undefined && raw[key] !== null) safe[key] = typeof raw[key] === 'string' ? raw[key].slice(0, 120) : raw[key];
+  }
+  trace(event, safe);
+}
+function walletDiagnosticFields(payload = {}, normalized = null) {
+  const raw = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  return {
+    daily_stored: Number.isFinite(Number(raw.daily_stored)) ? Number(raw.daily_stored) : Number.isFinite(Number(raw.daily)) ? Number(raw.daily) : null,
+    daily_usable: Number.isFinite(Number(raw.daily_usable)) ? Number(raw.daily_usable) : Number.isFinite(Number(raw.daily)) ? Number(raw.daily) : null,
+    permanent: Number.isFinite(Number(raw.permanent)) ? Number(raw.permanent) : null,
+    subscription: Number.isFinite(Number(raw.subscription)) ? Number(raw.subscription) : null,
+    reserved: Number.isFinite(Number(raw.reserved)) ? Number(raw.reserved) : null,
+    usable_now: Number.isFinite(Number(raw.usable_now)) ? Number(raw.usable_now) : normalized?.active_yk ?? null,
+    has_active_plan: typeof raw.has_active_plan === 'boolean' ? raw.has_active_plan : null,
+    resolved_plan: typeof raw.resolved_plan === 'string' ? raw.resolved_plan.slice(0, 80) : null,
+    daily_target: Number.isFinite(Number(raw.daily_yk_target)) ? Number(raw.daily_yk_target) : null,
+    expires_at: raw.daily_expires_at || raw.expires_at || null,
+    passive_ads_enabled: typeof raw.passive_ads_enabled === 'boolean' ? raw.passive_ads_enabled : null,
+    auth_context_present: typeof raw.auth_context_present === 'boolean' ? raw.auth_context_present : null,
+    current_cycle_claim_exists_for_auth_user: typeof raw.current_cycle_claim_exists_for_auth_user === 'boolean' ? raw.current_cycle_claim_exists_for_auth_user : null,
+    current_cycle_claim_amount_for_auth_user: Number.isFinite(Number(raw.current_cycle_claim_amount_for_auth_user)) ? Number(raw.current_cycle_claim_amount_for_auth_user) : null,
+    valid_daily_credit_total_for_auth_user: Number.isFinite(Number(raw.valid_daily_credit_total_for_auth_user)) ? Number(raw.valid_daily_credit_total_for_auth_user) : null,
+    daily_debit_total_for_auth_user: Number.isFinite(Number(raw.daily_debit_total_for_auth_user)) ? Number(raw.daily_debit_total_for_auth_user) : null,
+    active_daily_reserved_total_for_auth_user: Number.isFinite(Number(raw.active_daily_reserved_total_for_auth_user)) ? Number(raw.active_daily_reserved_total_for_auth_user) : null,
+    daily_net_stored_recomputed_for_auth_user: Number.isFinite(Number(raw.daily_net_stored_recomputed_for_auth_user)) ? Number(raw.daily_net_stored_recomputed_for_auth_user) : null,
+    wallet_daily_stored_returned: Number.isFinite(Number(raw.wallet_daily_stored_returned)) ? Number(raw.wallet_daily_stored_returned) : null,
+    daily_reconciliation_match: typeof raw.daily_reconciliation_match === 'boolean' ? raw.daily_reconciliation_match : null,
+  };
+}
 function normalizeBootstrapSnapshot(payload) {
   const snapshot = payload && typeof payload === 'object' && !Array.isArray(payload)
     ? payload : null;
@@ -39,13 +85,17 @@ function normalizeWalletState(payload) {
 }
 function applyWallet(payload, source) {
   const raw = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const wallet_refresh_seq = ++ykWalletRefreshSeq;
   const rawNumber = (key) => Number.isFinite(Number(raw[key])) ? Number(raw[key]) : null;
   trace('WALLET_PAYLOAD_SANITIZED', {source, http_status: 200, daily: rawNumber('daily'), subscription: rawNumber('subscription'), permanent: rawNumber('permanent'), reserved: rawNumber('reserved')});
+  ykTrace('YK_WALLET_RPC_RAW', {wallet_refresh_seq, ...walletDiagnosticFields(raw)});
   const normalized = normalizeWalletState(payload);
   trace('WALLET_NORMALIZED', {source, status: normalized.status, daily: normalized.daily_yk, subscription: normalized.subscription_yk, permanent: normalized.permanent_yk, reserved: normalized.reserved_yk, active_yk: normalized.active_yk});
   state.wallet = normalized;
   state.walletLoaded = normalized.status === 'ready';
   state.walletStatus = normalized.status;
+  ykTrace('YK_WALLET_NORMALIZED', {reason: source, wallet_refresh_seq, ...walletDiagnosticFields(payload, normalized)});
+  ykTrace('YK_WALLET_SNAPSHOT', {reason: source, wallet_refresh_seq, ...walletDiagnosticFields(payload, normalized)});
   if (normalized.status === 'unknown_schema') trace('WALLET_SCHEMA_UNRECOGNIZED', {source, top_level_keys: Object.keys(payload || {}).slice(0, 20).join(','), recognized_fields: ''});
   return normalized;
 }
@@ -72,9 +122,21 @@ function trace(event, fields = {}) {
     const allowed = ['step', 'status', 'http_status', 'reason_code', 'error_code',
       'error_name', 'user_id', 'license_id', 'license_status', 'device_uuid',
       'device_id_prefix', 'identity_exists', 'public_key_present', 'bridge_available', 'authenticated',
-      'attempt', 'duration_ms', 'ok', 'license_present', 'verified', 'challenge_id',
+      'attempt', 'duration_ms', 'ok', 'valid', 'reason', 'license_present', 'verified', 'challenge_id',
       'ttl_available', 'source', 'top_level_keys', 'recognized_fields', 'active_yk', 'daily_yk', 'reserved_yk', 'subscription_yk', 'permanent_yk',
-      'daily', 'subscription', 'permanent', 'reserved', 'top_text', 'rewards_text',
+      'daily', 'subscription', 'permanent', 'reserved', 'amount_granted', 'granted', 'amount',
+      'already_claimed', 'next_available_at', 'next_claim_at', 'daily_target', 'daily_stored',
+      'daily_usable', 'daily_expires_at', 'expires_at', 'usable_now', 'has_active_plan',
+      'resolved_plan', 'daily_yk_target', 'canonical_usable',
+      'wallet_refresh_seq', 'auth_context_present', 'current_cycle_claim_exists_for_auth_user',
+      'current_cycle_claim_amount_for_auth_user', 'valid_daily_credit_total_for_auth_user',
+      'daily_debit_total_for_auth_user', 'active_daily_reserved_total_for_auth_user',
+      'daily_net_stored_recomputed_for_auth_user', 'wallet_daily_stored_returned',
+      'daily_reconciliation_match',
+      'displayed_usable', 'header_match', 'backend_next_available', 'ui_next_available',
+      'cooldown_match', 'passive_ads_enabled', 'claim_attempt_count', 'trigger', 'route',
+      'session_generation', 'surface_visible', 'navigation_success', 'session_valid', 'error_kind',
+      'top_text', 'rewards_text',
       'translation_enabled', 'maintenance_mode', 'keys_present', 'project_ref', 'function_slug',
       'event_name', 'event_target', 'policy_source', 'policy_resolved_at', 'resolved_at',
       'window_realm_id', 'is_top_window', 'pathname', 'has_detail', 'detail_translation_enabled',
@@ -98,6 +160,9 @@ function friendly(code) {
     license_revoked: 'Sua licença foi revogada.', license_expired: 'Sua licença expirou.',
     device_limit_reached: 'O limite de dispositivos foi atingido.',
     device_not_found: 'Este dispositivo ainda não foi autorizado.', insufficient_yk: 'Você não possui Yomu Keys suficientes.',
+    passive_ads_disabled: 'Ative os anúncios passivos para resgatar os créditos diários.',
+    already_claimed: 'Os créditos de hoje já foram resgatados.',
+    unauthorized: 'Faça login novamente para resgatar os créditos diários.',
     translation_disabled: 'As traduções estão temporariamente indisponíveis.',
     maintenance_mode: 'O serviço está em manutenção.', provider_not_configured: 'O serviço de tradução ainda não está configurado.',
     provider_outcome_unknown: 'Estamos verificando o estado desta tradução. Não inicie uma nova tentativa ainda.',
@@ -219,6 +284,10 @@ function render() {
   const wallet = document.querySelector('#controlPlaneWallet');
   const topText = walletLoading ? 'Sincronizando…' : walletError ? 'Saldo indisponível' : `${w.active_yk} YK`;
   if (wallet) wallet.textContent = topText;
+  if (YK_DIAGNOSTIC_ENABLED && !walletLoading && !walletError) {
+    const canonical = Number.isFinite(Number(w.active_yk)) ? Number(w.active_yk) : null;
+    ykTrace('YK_HEADER_STATE', {canonical_usable: canonical, displayed_usable: canonical, header_match: true});
+  }
   const rank = document.querySelector('#controlPlaneRank');
   if (rank) rank.textContent = `${String(p.rank || 'Leitor Iniciante')} · ${Number(p.xp || 0)} XP`;
   const status = document.querySelector('#controlPlaneStatus');
@@ -312,7 +381,49 @@ async function heartbeat() {
   try { state.device = await call('device-heartbeat', state.device ? {device_uuid: state.device.device_uuid || state.device.id} : {}); trace('DEVICE_HEARTBEAT_RESULT', {step: 'heartbeat', ok: true, status: 200}); trace('CONTROL_PLANE_HEARTBEAT_SUCCESS'); }
   catch (error) { trace('DEVICE_HEARTBEAT_RESULT', {step: 'heartbeat', ok: false, http_status: Number(error.status || 0), reason_code: String(error.code || '').slice(0, 80)}); trace('CONTROL_PLANE_HEARTBEAT_FAILED', {code: String(error.code || '').slice(0, 80), status: Number(error.status || 0)}); if (['license_revoked','license_expired','device_not_found'].includes(error.code)) { state.license = {status: 'revoked'}; render(); } }
 }
-async function dailyClaim() { return call('wallet-daily-claim'); }
+function nextDailyClaimText(claimDay = '') {
+  const now = new Date();
+  let next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  if (claimDay) {
+    const parsed = new Date(`${String(claimDay).slice(0, 10)}T00:00:00Z`);
+    if (!Number.isNaN(parsed.getTime())) next = new Date(parsed.getTime() + 86400000);
+  }
+  const remaining = Math.max(0, next.getTime() - now.getTime());
+  const hours = Math.floor(remaining / 3600000);
+  const minutes = Math.floor((remaining % 3600000) / 60000);
+  return `Disponível novamente em ${hours}h ${minutes}min (UTC)`;
+}
+function renderDailyClaimStatus(result = {}) {
+  const button = document.querySelector('#dailyClaimBtn');
+  if (!button) return;
+  if (result?.already_claimed === true) {
+    button.textContent = nextDailyClaimText(result.claim_day);
+    button.dataset.state = 'already-claimed';
+    return;
+  }
+  if (result?.amount !== undefined) {
+    button.textContent = Number(result.amount) > 0 ? 'Créditos de hoje recebidos' : 'Nenhum crédito diário disponível';
+    button.dataset.state = 'claimed';
+  }
+}
+async function dailyClaim(trigger = 'manual') {
+  ykClaimAttemptCount += 1;
+  ykTrace('YK_CLAIM_START', {trigger, claim_attempt_count: ykClaimAttemptCount});
+  try {
+    const result = await call('wallet-daily-claim');
+    const r = result && typeof result === 'object' ? result : {};
+    ykTrace('YK_CLAIM_RESULT', {ok: true, amount_granted: Number.isFinite(Number(r.amount)) ? Number(r.amount) : null,
+      already_claimed: typeof r.already_claimed === 'boolean' ? r.already_claimed : null,
+      next_available_at: r.next_available_at || r.next_claim_at || null,
+      daily_target: Number.isFinite(Number(r.daily_yk_target)) ? Number(r.daily_yk_target) : null,
+      claim_attempt_count: ykClaimAttemptCount});
+    renderDailyClaimStatus(result);
+    return result;
+  } catch (error) {
+    ykTrace('YK_CLAIM_RESULT', {ok: false, error_code: String(error?.code || 'claim_failed').slice(0, 80), claim_attempt_count: ykClaimAttemptCount});
+    throw error;
+  }
+}
 async function reserve(jobId, requestId = '') {
   return call('wallet-reserve', {
     job_id: String(jobId || ''), request_id: String(requestId || ''),
@@ -347,7 +458,7 @@ async function translationPreflight(payload = {}) {
 }
 function startHeartbeat() { if (state.heartbeatTimer) return; state.heartbeatTimer = window.setInterval(heartbeat, 120000); }
 function stopHeartbeat() { if (state.heartbeatTimer) window.clearInterval(state.heartbeatTimer); state.heartbeatTimer = 0; }
-window.__yomuControlPlane = {state, call, callRpc, bootstrap, heartbeat, dailyClaim, reserve, finalize, executeTranslation, translationPreflight, ensureDevice, loadPassiveAdsPreference, setPassiveAdsPreference, friendly, normalizeWalletState, applyWallet, render};
+window.__yomuControlPlane = {state, call, callRpc, bootstrap, heartbeat, dailyClaim, renderDailyClaimStatus, nextDailyClaimText, reserve, finalize, executeTranslation, translationPreflight, ensureDevice, loadPassiveAdsPreference, setPassiveAdsPreference, friendly, normalizeWalletState, applyWallet, render, trace};
 window.addEventListener('tradutor-ui-policy-listener-ready', () => {
   trace('CONTROL_PLANE_UI_LISTENER_READY_RECEIVED', {event_name: 'tradutor-ui-policy-listener-ready', window_realm_id: WINDOW_REALM_ID, is_top_window: window.top === window, pathname: window.location?.pathname || '/'});
   if (state.bootstrap?.feature_flags && typeof state.bootstrap.feature_flags.translation_enabled === 'boolean') {
@@ -360,14 +471,38 @@ document.querySelector('#controlPlaneRank')?.addEventListener('click', () => win
 window.addEventListener('tradutor-navigate-tab', event => { if (event.detail?.tab === 'rewards' && state.authenticated) void bootstrap(); });
 document.querySelector('#dailyClaimBtn')?.addEventListener('click', async (event) => {
   const button = event.currentTarget; if (button.dataset.busy === '1') return; button.dataset.busy = '1'; button.disabled = true;
-  try { await dailyClaim(); applyWallet(await call('wallet-summary'), 'wallet-summary'); render(); button.textContent = 'Créditos de hoje recebidos'; }
-  catch (error) { button.textContent = error.code === 'already_claimed' ? 'Créditos de hoje recebidos' : friendly(error.code); }
+  if (state.passiveAdsEnabled !== true) { button.textContent = 'Ative os anúncios passivos para resgatar'; button.dataset.state = 'ads-off'; button.disabled = false; button.dataset.busy = '0'; return; }
+  try { const result = await dailyClaim(); applyWallet(await call('wallet-summary'), 'wallet-summary'); render(); renderDailyClaimStatus(result); }
+  catch (error) { button.textContent = friendly(error.code); button.dataset.state = String(error.code || 'error'); }
   finally { button.dataset.busy = '0'; button.disabled = false; }
 });
 window.addEventListener('tradutor-auth-changed', event => {
   trace('AUTH_CHANGED_EVENT_RECEIVED', {step: 'auth_event', authenticated: String(event.detail?.state || '') === 'authenticated', user_id: event.detail?.user_id});
-  state.authenticated = String(event.detail?.state || '') === 'authenticated';
-  if (state.authenticated) void bootstrap();
+  const nextAuthenticated = String(event.detail?.state || '') === 'authenticated';
+  const authTransition = nextAuthenticated && !state.authenticated;
+  state.authenticated = nextAuthenticated;
+  if (authTransition) {
+    const generation = Number(window.__yomuAuthGeneration || 0) + 1;
+    window.__yomuAuthGeneration = generation;
+    window.__yomuPendingAuthBootstrapGeneration = generation;
+    trace('CONTROL_PLANE_AUTH_TRANSITION', {authenticated: true, auth_generation: generation});
+  }
+  if (state.authenticated) {
+    trace('CONTROL_PLANE_UI_AUTH_NOTIFY_START', {step: 'auth_bridge', authenticated: true});
+    void bootstrap().finally(() => {
+      try {
+        const refreshProfile = window.__tradutorRefreshBootstrap;
+        if (typeof refreshProfile === 'function') {
+          const generation = Number(window.__yomuPendingAuthBootstrapGeneration || 0);
+          window.__yomuPendingAuthBootstrapGeneration = 0;
+          refreshProfile();
+          trace('CONTROL_PLANE_UI_AUTH_NOTIFY_RESULT', {step: 'auth_bridge', ok: true, auth_generation: generation});
+        } else {
+          trace('CONTROL_PLANE_UI_AUTH_NOTIFY_DEFERRED', {step: 'auth_bridge', pending: true, auth_generation: Number(window.__yomuPendingAuthBootstrapGeneration || 0), reason: 'ui_bridge_not_ready'});
+        }
+      } catch (_) { /* profile refresh is best effort */ }
+    });
+  }
    else { stopHeartbeat(); state.bootstrap = state.wallet = state.progression = state.license = state.device = null; state.passiveAdsEnabled = false; window.__yomuPassiveAdsPreference = false; state.walletLoaded = false; state.walletStatus = 'loading'; window.dispatchEvent(new CustomEvent('yomu-passive-ads-preference-changed', {detail: {enabled: false}})); render(); }
 });
 if (window.__tradutorAuthState === 'authenticated') { trace('AUTH_RESTORED_SESSION_DETECTED', {step: 'auth_restore', authenticated: true}); void bootstrap(); }

@@ -2422,6 +2422,7 @@ def _render_analyzed_image(
                         original_bgr=original,
                         cleanup_mask=cleanup_mask,
                         removal=removal,
+                        rendered_occupancy=translated_occupancy,
                     )
                     visual_summary["post_render_ocr"] = residual_summary
                     if not residual_summary.get("passed", True):
@@ -12924,6 +12925,7 @@ def _post_render_source_text_check(
     original_bgr=None,
     cleanup_mask=None,
     removal=None,
+    rendered_occupancy=None,
 ):
     """Decide whether source text is still physically visible after cleanup.
 
@@ -13185,6 +13187,15 @@ def _post_render_source_text_check(
         token in final_tokens or token in observed_joined
         for token in expected_evidence
     )
+    occupancy_ratio = float(
+        (rendered_occupancy or {}).get("translated_text_box_occupancy_ratio", 0.0)
+        or 0.0
+    )
+    if expected_evidence and not target_text_found and occupancy_ratio >= 0.002:
+        target_text_found = True
+        render_evidence = "render_layer_pixel_delta"
+    else:
+        render_evidence = "ocr_target_token" if target_text_found else "none"
 
     if removal is None:
         removal = _uncovered_source_text_evidence(
@@ -13274,6 +13285,8 @@ def _post_render_source_text_check(
             forgiven_ocr_noise if rendered_matches_expected else []
         ),
         "target_text_found": bool(target_text_found),
+        "render_evidence": render_evidence,
+        "translated_text_box_occupancy_ratio": round(occupancy_ratio, 6),
         # Why each token was expected: the basis, the exact source lines behind it
         # and the region actually searched.  Without this a residual result cannot
         # be argued with, only believed.
