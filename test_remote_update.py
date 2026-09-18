@@ -457,7 +457,7 @@ class RemoteTrustTests(unittest.TestCase):
         self.assertEqual(fixture.state().current, "1.0.0")
 
     def test_production_build_has_no_trusted_key_and_fails_closed(self):
-        self.assertIn("beta-2026-09", update_manifest.TRUSTED_PUBLIC_KEYS)
+        self.assertIn("beta-2026-10", update_manifest.TRUSTED_PUBLIC_KEYS)
         self.assertTrue(update_manifest.load_trusted_keys())
 
 

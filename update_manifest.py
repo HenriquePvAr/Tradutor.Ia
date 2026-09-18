@@ -80,9 +80,9 @@ _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 #: Local trust root: ``key_id -> base64 raw Ed25519 public key``. Public material only; nothing
 #: here is secret. The corresponding private release key remains outside this repository.
 TRUSTED_PUBLIC_KEYS: dict[str, str] = {
-    # Public half of the Yomu Sekai beta release key. The matching private key is held
-    # outside this repository in the secure publication environment.
-    "beta-2026-09": "XTimQMUs/c20b2IEJnKZHJqqym7zhRtW+ufplfc2dNQ=",
+    # Public half of the rotated Yomu Sekai beta release key. The matching private key is
+    # held outside the repository in the owner's protected recovery file.
+    "beta-2026-10": "HsWAnxt7v49+wIIFF9d7EvzMLQqBoP4dTFp2bmo56B4=",
 }
 
 

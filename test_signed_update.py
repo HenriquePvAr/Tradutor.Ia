@@ -270,7 +270,7 @@ class SignatureMatrixTests(unittest.TestCase):
             update_manifest.verify_manifest(self._signed(), trusted_keys={})
 
     def test_production_trust_store_fails_closed_while_no_release_key_exists(self):
-        self.assertIn("beta-2026-09", update_manifest.TRUSTED_PUBLIC_KEYS)
+        self.assertIn("beta-2026-10", update_manifest.TRUSTED_PUBLIC_KEYS)
         self.assertTrue(update_manifest.load_trusted_keys())
 
 
