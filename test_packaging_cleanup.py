@@ -38,8 +38,17 @@ def test_installer_version_matches_single_beta_version_source():
 
 def test_installer_copies_onedir_contents_to_app_root():
     script = ISS.read_text(encoding="utf-8")
-    assert 'Source: "{#BundleRoot}\\YomuSekai\\*"; DestDir: "{app}"' in script
+    assert 'Source: "{#BundleRoot}\\YomuSekai\\YomuSekai\\*"; DestDir: "{app}"' in script
+    assert 'Source: "{#BundleRoot}\\YomuSekai\\*"; DestDir: "{app}"' not in script
     assert r"{app}\YomuSekai\YomuSekai.exe" not in script
+    assert "[InstallDelete]" in script
+    assert 'Type: filesandordirs; Name: "{app}\\YomuSekai"' in script
+
+
+def test_updates_surface_contains_beta3_visual_marker():
+    shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+    assert 'data-update-test-marker="beta.3"' in shell
+    assert "Update test · beta.3" in shell
 
 
 def test_clean_production_workspace_seeds_safe_source_policy_once(tmp_path):

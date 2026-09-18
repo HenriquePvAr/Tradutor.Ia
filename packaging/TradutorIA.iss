@@ -40,10 +40,15 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 [Tasks]
 Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked
 
+[InstallDelete]
+; Beta2 copied the PyInstaller wrapper directory into {app}. Remove only that
+; known legacy payload directory before laying down the flat beta3 payload.
+Type: filesandordirs; Name: "{app}\YomuSekai"
+
 [Files]
-; BundleRoot is the PyInstaller candidate root; copy the ONEDIR contents, not its
-; wrapper directory, so the executable lands at {app}\YomuSekai.exe.
-Source: "{#BundleRoot}\YomuSekai\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; BundleRoot is the candidate root. PyInstaller's COLLECT directory is the
+; second YomuSekai level; copy its contents directly into {app}.
+Source: "{#BundleRoot}\YomuSekai\YomuSekai\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 ; Remove only disposable per-user execution state.  The device identity is deliberately
 ; stored under %LOCALAPPDATA%\YomuSekai\device-identity.bin and is not covered here, so
