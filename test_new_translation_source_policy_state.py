@@ -146,6 +146,17 @@ function escapeHtml(value) { return String(value ?? ''); }
 function escapeAttr(value) { return String(value ?? '').replace(/"/g, '&quot;'); }
 function slugify(value) { return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); }
 function guessFromUrl() { return {title: 'Fixture chapter', slug: 'fixture_chapter'}; }
+function programField(element, value) { if (element && !element.value) element.value = value; }
+function syncSourceFormState() {}
+function applyUrlDerivedFields(value, {fillEmpty = false} = {}) {
+  if (!/^https?:\/\//i.test(String(value || '').trim())) return;
+  const guess = guessFromUrl(value);
+  if (fillEmpty) {
+    programField($('#nameInput'), guess.title);
+    programField($('#outputInput'), guess.slug);
+  }
+  syncSourceFormState();
+}
 function shake() {}
 function showToast() {}
 
@@ -156,9 +167,9 @@ return {appState, elements, storage, trace,
   refreshStoredSourceExecutionDraft, formPayload, updateTranslationStartControls};`;
 const ui = new Function('$', '$$', 'elements', 'storage', 'trace', 'sessionStorage', 'document', 'window',
   'SOURCE_VALIDATION_DRAFT_STORAGE_KEY', 'appState', 'uiTrace', 'escapeHtml',
-  'escapeAttr', 'slugify', 'guessFromUrl', 'shake', 'showToast', body)(
+  'escapeAttr', 'slugify', 'guessFromUrl', 'applyUrlDerivedFields', 'shake', 'showToast', body)(
   $, $$, elements, storage, trace, sessionStorage, document, window, SOURCE_VALIDATION_DRAFT_STORAGE_KEY,
-  appState, uiTrace, escapeHtml, escapeAttr, slugify, guessFromUrl, shake, showToast);
+  appState, uiTrace, escapeHtml, escapeAttr, slugify, guessFromUrl, applyUrlDerivedFields, shake, showToast);
 
 let payload = null;
 if (scenario.action === 'persist') {

@@ -45,10 +45,10 @@ def test_installer_copies_onedir_contents_to_app_root():
     assert 'Type: filesandordirs; Name: "{app}\\YomuSekai"' in script
 
 
-def test_updates_surface_contains_beta3_visual_marker():
+def test_updates_surface_has_no_beta3_visual_marker():
     shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-    assert 'data-update-test-marker="beta.3"' in shell
-    assert "Update test · beta.3" in shell
+    assert 'data-update-test-marker="beta.3"' not in shell
+    assert "Update test · beta.3" not in shell
 
 
 def test_clean_production_workspace_seeds_safe_source_policy_once(tmp_path):

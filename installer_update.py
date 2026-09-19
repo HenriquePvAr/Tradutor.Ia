@@ -7,6 +7,7 @@ and safe process handoff; it never accepts an arbitrary executable path from the
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 from pathlib import Path
 
@@ -89,6 +90,80 @@ def spawn_verified_installer(path: Path, *, silent: bool = True) -> subprocess.P
     return subprocess.Popen(
         [str(path), *installer_arguments(silent=silent)],
         cwd=str(path.parent), shell=False, close_fds=True,
+    )
+
+
+def _handoff_script() -> str:
+    """Return the small external PowerShell handoff used by the frozen app.
+
+    It deliberately lives outside the install root (the update cache) and waits for
+    explicitly supplied PIDs before starting the already verified installer.
+    """
+    return r'''param(
+  [Parameter(Mandatory=$true)][string]$Installer,
+  [Parameter(Mandatory=$true)][string]$LogPath,
+  [int[]]$OwnedPid = @(),
+  [int]$TimeoutSeconds = 30,
+  [string]$InstallerArgsJson = '[]'
+)
+$ErrorActionPreference = 'Stop'
+function Write-Log([string]$Event, [string]$Detail = '') {
+  $line = "$(Get-Date -Format o) $Event" + ($(if($Detail){" $Detail"}else{''}))
+  Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
+}
+try {
+  [string[]]$InstallerArgs = @($InstallerArgsJson | ConvertFrom-Json)
+  Write-Log 'HANDOFF_START' ("pid_count=" + $OwnedPid.Count)
+  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+  do {
+    $alive = @($OwnedPid | Where-Object { $_ -gt 0 -and (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
+    if ($alive.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 100
+  } while ((Get-Date) -lt $deadline)
+  if ($alive.Count -ne 0) { Write-Log 'HANDOFF_TIMEOUT' ("alive=" + ($alive -join ',')); exit 71 }
+  if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { Write-Log 'INSTALLER_MISSING'; exit 72 }
+  Write-Log 'INSTALLER_SPAWN' 'after_owned_pids_exit'
+  $proc = Start-Process -FilePath $Installer -ArgumentList $InstallerArgs -WorkingDirectory (Split-Path -Parent $Installer) -PassThru
+  Write-Log 'INSTALLER_SPAWNED' ("pid=" + $proc.Id)
+  exit 0
+} catch {
+  Write-Log 'HANDOFF_ERROR' $_.Exception.GetType().Name
+  exit 73
+}
+'''
+
+
+def spawn_installer_after_processes_exit(
+    path: Path, *, owned_pids: list[int], silent: bool = True,
+    timeout_seconds: int = 30, log_path: Path | None = None,
+) -> subprocess.Popen:
+    """Start an external handoff process and launch the verified installer only after exit.
+
+    The helper is staged beside the downloaded installer, not below ``{app}``, so it can
+    survive the parent shutdown and remain runnable while Inno replaces the installation.
+    """
+    path = Path(path)
+    if path.suffix.casefold() != ".exe" or not path.is_file():
+        raise InstallerUpdateError("verified installer is missing")
+    helper_dir = path.parent
+    helper_dir.mkdir(parents=True, exist_ok=True)
+    script = helper_dir / f"{path.stem}.handoff.ps1"
+    if log_path is None:
+        log_path = helper_dir / f"{path.stem}.handoff.log"
+    script.write_text(_handoff_script(), encoding="utf-8", newline="\r\n")
+    args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
+            "-Installer", str(path), "-LogPath", str(log_path), "-TimeoutSeconds", str(int(timeout_seconds))]
+    for pid in sorted({int(pid) for pid in owned_pids if int(pid) > 0}):
+        args.extend(["-OwnedPid", str(pid)])
+    args.extend(["-InstallerArgsJson", json.dumps(installer_arguments(silent=silent), separators=(",", ":"))])
+    creationflags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    ) if os.name == "nt" else 0
+    return subprocess.Popen(
+        ["powershell.exe", *args], cwd=str(helper_dir), shell=False, close_fds=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
     )
 
 

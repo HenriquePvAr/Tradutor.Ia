@@ -104,7 +104,7 @@ class RuntimeUiForensicsTests(unittest.TestCase):
             self.assertIn(current_head, html)
             match = re.search(
                 r"window\.__tradutorRuntimeIdentity\s*=\s*(\{.*?\});"
-                r"window\.__tradutorVisualTestEnabled",
+                r".*?window\.__tradutorVisualTestEnabled",
                 html,
                 re.S,
             )

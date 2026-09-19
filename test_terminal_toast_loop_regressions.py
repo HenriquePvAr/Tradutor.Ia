@@ -123,8 +123,9 @@ def test_translation_start_takes_visual_lock_before_async_policy_refresh():
 def test_translation_start_remains_disabled_while_request_is_in_flight():
     source = _source()
     controls = _between(source, "function updateTranslationStartControls()", "function invalidateSourceValidation")
-    assert "const startRequestBusy = Boolean(startInFlight || activeStartFingerprint);" in controls
-    assert "|| startRequestBusy" in controls
+    assert "const startRequestBusy = Boolean(" in controls
+    assert "startInFlight" in controls and "activeStartFingerprint" in controls
+    assert "!startBusyBlocksDraft" in controls
 
 
 def test_translation_start_r3_persists_pointer_and_lifecycle_telemetry():

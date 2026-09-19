@@ -1483,16 +1483,19 @@
   function updateTranslationStartControls() {
     const validating = appState.sourceValidation.status === 'validating';
     const pipelineBusy = inFlightStatuses.has(appState.status);
-    const startRequestBusy = Boolean(startInFlight || activeStartFingerprint);
+    const startRequestBusy = Boolean(
+      (typeof startInFlight !== 'undefined' && startInFlight)
+      || (typeof activeStartFingerprint !== 'undefined' && activeStartFingerprint));
     // The worker queue may already contain another chapter. A fresh form remains an
     // independent draft: it may be validated and enqueued while that job continues.
     const editingFreshDraft = appState.newTranslationDraft;
-    const busyBlocksDraft = (pipelineBusy && !editingFreshDraft) || startRequestBusy;
+    const busyBlocksDraft = pipelineBusy && !editingFreshDraft;
+    const startBusyBlocksDraft = startRequestBusy;
     const local = appState.selectedSourceType === 'local_folder';
     const minimumValid = minimumSourceInputIsValid();
     const canStart = local
-      ? minimumValid && !busyBlocksDraft
-      : minimumValid && workspacePolicyAllowsProcessing() && !busyBlocksDraft;
+      ? minimumValid && !busyBlocksDraft && !startBusyBlocksDraft
+      : minimumValid && workspacePolicyAllowsProcessing() && !busyBlocksDraft && !startBusyBlocksDraft;
     const disabledReasons = canStart ? [] : translationStartDisabledReasons();
     if (disabledReasons.join('|') !== appState.lastStartDisabledReasons.join('|')) {
       appState.lastStartDisabledReasons = disabledReasons;
@@ -1514,9 +1517,9 @@
       }[reason] || '';
       start.title = reasonText;
       start.setAttribute('aria-disabled', canStart ? 'false' : 'true');
-      if (!busyBlocksDraft && start.dataset.busy !== '1') start.textContent = 'Iniciar tradução';
+      if (!busyBlocksDraft && !startBusyBlocksDraft && start.dataset.busy !== '1') start.textContent = 'Iniciar tradução';
     }
-    traceTranslationStartControlState('controls_update', start);
+    if (typeof traceTranslationStartControlState === 'function') traceTranslationStartControlState('controls_update', start);
     return {canStart, validating, pipelineBusy};
   }
   function invalidateSourceValidation() {
@@ -1997,17 +2000,28 @@
     const controlPlane = getGlobal('__yomuControlPlane');
     let controlPlaneRefreshOk = true;
     if (controlPlane?.state?.authenticated && typeof controlPlane.bootstrap === 'function') {
-      let refreshed = false;
-      try {
-        refreshed = await controlPlane.bootstrap();
-      } catch (error) {
-        sourceTrace('TRANSLATION_POLICY_REFRESH_FAILED', {
-          trace_id: traceId, reason_code: String(error?.code || 'control_plane_refresh_failed'),
-        });
-        showStartError(error);
-        if (button) { button.textContent = previousLabel || 'Iniciar tradução'; button.removeAttribute('aria-busy'); delete button.dataset.busy; }
-        updateTranslationStartControls();
-        return;
+      // The authenticated bootstrap is already the authoritative policy snapshot.  A
+      // second network bootstrap on every click created a race where a transient wallet/
+      // license refresh failure blocked an otherwise valid, ready session.  Refresh only
+      // while the control plane is not ready; heartbeat keeps the ready snapshot current.
+      const readySnapshot = controlPlane.state.ready === true
+        && controlPlane.state.bootstrap
+        && typeof controlPlane.state.bootstrap === 'object';
+      let refreshed = readySnapshot;
+      if (readySnapshot) {
+        sourceTrace('TRANSLATION_POLICY_REFRESH_SKIPPED_READY', {trace_id: traceId});
+      } else {
+        try {
+          refreshed = await controlPlane.bootstrap();
+        } catch (error) {
+          sourceTrace('TRANSLATION_POLICY_REFRESH_FAILED', {
+            trace_id: traceId, reason_code: String(error?.code || 'control_plane_refresh_failed'),
+          });
+          showStartError(error);
+          if (button) { button.textContent = previousLabel || 'Iniciar tradução'; button.removeAttribute('aria-busy'); delete button.dataset.busy; }
+          updateTranslationStartControls();
+          return;
+        }
       }
       // A failed refresh must not be converted into a disabled translation job.
       // Stop before source analysis/job creation so a transient control-plane
@@ -2271,12 +2285,12 @@
     };
     inputAudit.events.push(record); if (inputAudit.events.length > 200) inputAudit.events.shift();
     inputAudit.counts[`${scope}_${eventType}`] = Number(inputAudit.counts[`${scope}_${eventType}`] || 0) + 1;
-    if (eventType === 'mousedown' && event?.isTrusted === true && button && !inputAudit.marker) {
+    if (window.__yomuInputAuditVisible === true && eventType === 'mousedown' && event?.isTrusted === true && button && !inputAudit.marker) {
       const marker = document.createElement('div'); marker.textContent = 'PHYSICAL_GESTURES_SEEN_BY_DOM=0';
       marker.id = 'yomu-input-audit-marker'; marker.style.cssText = 'position:fixed;left:4px;top:4px;z-index:2147483647;pointer-events:none;background:#111;color:#9f9;font:11px monospace;padding:2px 4px;';
       document.documentElement.appendChild(marker); inputAudit.marker = marker;
     }
-    if (eventType === 'mousedown' && event?.isTrusted === true && button && inputAudit.marker) {
+    if (window.__yomuInputAuditVisible === true && eventType === 'mousedown' && event?.isTrusted === true && button && inputAudit.marker) {
       const n = Number(inputAudit.counts.DOCUMENT_mousedown || 0); inputAudit.marker.textContent = `PHYSICAL_GESTURES_SEEN_BY_DOM=${n}`;
     }
     if (Number(inputAudit.counts.DOCUMENT_mousedown || 0) >= 20 && !inputAudit.dumped) dumpInputAudit();

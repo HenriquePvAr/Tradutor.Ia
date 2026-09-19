@@ -55,6 +55,10 @@ import refinement_selection_decisions
 import update_manifest
 import update_transport
 import installer_update
+try:
+    import psutil
+except ImportError:  # pragma: no cover - packaged builds include psutil
+    psutil = None
 from update_bootstrap import DEFAULT_MANIFEST_URL
 from app_version import BUILD_VERSION
 from translator_nvidia import TranslatorNvidiaBatch
@@ -76,6 +80,28 @@ _UPDATE_INSTALLER_HANDOFFS: dict[str, Path] = {}
 _UPDATE_INSTALLER_HANDOFFS_LOCK = threading.Lock()
 _UPDATE_DOWNLOADS: dict[str, dict[str, Any]] = {}
 _UPDATE_DOWNLOADS_LOCK = threading.Lock()
+
+
+def _owned_update_pids() -> list[int]:
+    """Return only the current Yomu process tree PIDs for update handoff waiting."""
+    if psutil is None:
+        return [os.getpid()]
+    pids: set[int] = set()
+    try:
+        current = psutil.Process(os.getpid())
+        candidates = [current, *current.parents()]
+        candidates.extend(current.children(recursive=True))
+        for process in candidates:
+            try:
+                name = str(process.name() or '').casefold()
+                exe = str(process.exe() or '').casefold()
+                if 'yomusekai' in name or 'yomusekai' in exe:
+                    pids.add(int(process.pid))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ValueError):
+                continue
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ValueError):
+        pass
+    return sorted(pids or {os.getpid()})
 
 
 def _https_context() -> ssl.SSLContext:
@@ -1621,18 +1647,20 @@ def api_update_install(payload: dict[str, Any] = Body(...)) -> JSONResponse:
     if path is None:
         raise HTTPException(status_code=404, detail={"code": "handoff_not_found"})
     try:
-        _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_SPAWN_ATTEMPT", path=str(path))
-        process = installer_update.spawn_verified_installer(path)
+        owned_pids = _owned_update_pids()
+        _append_diagnostic_log(
+            "app_current.jsonl", "UPDATE_INSTALLER_HANDOFF_ATTEMPT",
+            path=str(path), owned_pid_count=len(owned_pids), owned_pids=owned_pids,
+        )
+        process = installer_update.spawn_installer_after_processes_exit(
+            path, owned_pids=owned_pids,
+            log_path=Path(installer_update.update_root()) / "handoff.log",
+        )
     except (OSError, update_manifest.UpdateError) as exc:
-        _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_SPAWN_ERROR", error=type(exc).__name__)
+        _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_HANDOFF_ERROR", error=type(exc).__name__)
         return JSONResponse({"state": "error", "error": type(exc).__name__}, status_code=502,
                             headers={"Cache-Control": "no-store"})
-    _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_SPAWN_OK", pid=process.pid)
-    time.sleep(0.25)
-    if process.poll() is not None:
-        _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_EARLY_EXIT", exit_code=process.returncode)
-        return JSONResponse({"state": "error", "error": "installer_early_exit"}, status_code=502,
-                            headers={"Cache-Control": "no-store"})
+    _append_diagnostic_log("app_current.jsonl", "UPDATE_INSTALLER_HANDOFF_STARTED", pid=process.pid)
     return JSONResponse({"state": "installing", "pid": process.pid, "shutdown_required": True},
                         headers={"Cache-Control": "no-store"})
 
@@ -3029,6 +3057,7 @@ def index() -> None:
         f"window.__yomuAdsNativePoc = {dumps_json(os.getenv('YOMU_ADS_NATIVE_POC', '').strip().lower() in {'1', 'true', 'yes', 'on'})};"
         f"window.__yomuYkDiagnostic = {dumps_json(os.getenv('YOMU_YK_DIAGNOSTIC', '').strip().lower() in {'1', 'true', 'yes', 'on'})};"
         f"window.__yomuTranslationStartDryRun = {dumps_json(os.getenv('YOMU_TRANSLATION_START_DRY_RUN', '').strip().lower() in {'1', 'true', 'yes', 'on'})};"
+        f"window.__yomuInputAuditVisible = {dumps_json(os.getenv('YOMU_INPUT_AUDIT_VISIBLE', '').strip().lower() in {'1', 'true', 'yes', 'on'})};"
         f"window.__yomuNativeAdsDiagnosticBuildId = {dumps_json('native-home-slot-probe-local-r1')};"
         f"window.__tradutorVisualTestEnabled = {'true' if visual_test_enabled else 'false'};"
         f"window.__tradutorAuthDiagnosticsEnabled = {'true' if _AUTH_DIAGNOSTICS_ENABLED else 'false'};"

@@ -195,7 +195,9 @@ def test_subprocess_runs_from_unrelated_cwd_and_cleans_successfully(tmp_path):
         env={**os.environ, "ALLOW_NETWORK_TESTS": ""},
     )
     assert completed.returncode == 0, completed.stderr
-    result = json.loads(completed.stdout)
+    # The fixture may emit a diagnostic line on stdout before its final JSON
+    # payload; the machine-readable contract is the last non-empty line.
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result["valid"] is True
     assert result["external_calls"] == 0
     assert result["cleanup_complete"] is True
