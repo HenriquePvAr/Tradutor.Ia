@@ -26,7 +26,8 @@ def test_handoff_is_external_and_receives_pid_list():
             installer_update.spawn_installer_after_processes_exit(path, owned_pids=[11, 12])
     args, kwargs = popen.call_args
     assert args[0][0].casefold() == "powershell.exe"
-    assert "-OwnedPid" in args[0]
+    assert "-WaitProcessIds" in args[0]
+    assert "-InstallerArgsB64" in args[0]
     assert "11" in args[0] and "12" in args[0]
     assert kwargs["shell"] is False
 

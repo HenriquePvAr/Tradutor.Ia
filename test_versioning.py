@@ -5,7 +5,7 @@ import app_version
 
 def test_canonical_versions_are_current():
     assert app_version.PRODUCT_VERSION == "0.9.0"
-    assert app_version.BUILD_VERSION == "0.9.1-beta.5"
+    assert app_version.BUILD_VERSION == "0.9.1-beta.7"
     assert app_version.DISPLAY_VERSION == app_version.BUILD_VERSION
 
 

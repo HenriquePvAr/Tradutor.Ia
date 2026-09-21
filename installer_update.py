@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import json
+import base64
 import subprocess
 from pathlib import Path
 
@@ -102,9 +103,9 @@ def _handoff_script() -> str:
     return r'''param(
   [Parameter(Mandatory=$true)][string]$Installer,
   [Parameter(Mandatory=$true)][string]$LogPath,
-  [int[]]$OwnedPid = @(),
+  [int[]]$WaitProcessIds = @(),
   [int]$TimeoutSeconds = 30,
-  [string]$InstallerArgsJson = '[]'
+  [string]$InstallerArgsB64 = ''
 )
 $ErrorActionPreference = 'Stop'
 function Write-Log([string]$Event, [string]$Detail = '') {
@@ -112,11 +113,19 @@ function Write-Log([string]$Event, [string]$Detail = '') {
   Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
 }
 try {
-  [string[]]$InstallerArgs = @($InstallerArgsJson | ConvertFrom-Json)
-  Write-Log 'HANDOFF_START' ("pid_count=" + $OwnedPid.Count)
+  Write-Log 'HANDOFF_PROCESS_STARTED' ("wait_pid_count=" + $WaitProcessIds.Count + " installer_present=" + [bool]$Installer + " args_present=" + [bool]$InstallerArgsB64)
+  try {
+    $jsonBytes = [Convert]::FromBase64String($InstallerArgsB64)
+    $argsJson = [Text.Encoding]::UTF8.GetString($jsonBytes)
+    [string[]]$InstallerArgs = @($argsJson | ConvertFrom-Json)
+  } catch {
+    Write-Log 'HANDOFF_ARGUMENT_PARSE_FAILED' $_.Exception.GetType().Name
+    exit 74
+  }
+  Write-Log 'HANDOFF_START' ("pid_count=" + $WaitProcessIds.Count)
   $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
   do {
-    $alive = @($OwnedPid | Where-Object { $_ -gt 0 -and (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
+    $alive = @($WaitProcessIds | Where-Object { $_ -gt 0 -and (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
     if ($alive.Count -eq 0) { break }
     Start-Sleep -Milliseconds 100
   } while ((Get-Date) -lt $deadline)
@@ -154,8 +163,9 @@ def spawn_installer_after_processes_exit(
     args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
             "-Installer", str(path), "-LogPath", str(log_path), "-TimeoutSeconds", str(int(timeout_seconds))]
     for pid in sorted({int(pid) for pid in owned_pids if int(pid) > 0}):
-        args.extend(["-OwnedPid", str(pid)])
-    args.extend(["-InstallerArgsJson", json.dumps(installer_arguments(silent=silent), separators=(",", ":"))])
+        args.extend(["-WaitProcessIds", str(pid)])
+    args_json = json.dumps(installer_arguments(silent=silent), separators=(",", ":")).encode("utf-8")
+    args.extend(["-InstallerArgsB64", base64.b64encode(args_json).decode("ascii")])
     creationflags = (
         getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         | getattr(subprocess, "CREATE_NO_WINDOW", 0)
