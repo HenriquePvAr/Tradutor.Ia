@@ -1,3 +1,5 @@
+import base64
+import json
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
@@ -26,9 +28,10 @@ def test_handoff_is_external_and_receives_pid_list():
             installer_update.spawn_installer_after_processes_exit(path, owned_pids=[11, 12])
     args, kwargs = popen.call_args
     assert args[0][0].casefold() == "powershell.exe"
-    assert "-WaitProcessIds" in args[0]
-    assert "-InstallerArgsB64" in args[0]
-    assert "11" in args[0] and "12" in args[0]
+    assert "-WaitProcessIds" not in args[0]
+    assert args[0].count("-HandoffPayloadBase64") == 1
+    payload = json.loads(base64.b64decode(args[0][args[0].index("-HandoffPayloadBase64") + 1]))
+    assert payload["wait_process_ids"] == [11, 12]
     assert kwargs["shell"] is False
 
 

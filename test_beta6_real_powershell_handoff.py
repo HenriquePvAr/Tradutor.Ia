@@ -20,15 +20,15 @@ def _b64(value):
     return base64.b64encode(json.dumps(value, separators=(",", ":")).encode()).decode("ascii")
 
 
-def _invoke(script, tmp_path, *, installer, payload, extra=None):
+def _invoke(script, tmp_path, *, installer, payload, extra=None, timeout_seconds=5):
     script_path = tmp_path / "handoff helper with spaces.ps1"
     log_path = tmp_path / "handoff.log"
     script_path.write_text(script, encoding="utf-8")
+    structured = {"installer_path": str(installer), "installer_args": payload,
+                  "wait_process_ids": list(extra or []), "timeout_seconds": timeout_seconds,
+                  "expected_size": None, "expected_sha256": None}
     args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path),
-            "-Installer", str(installer), "-LogPath", str(log_path), "-TimeoutSeconds", "5"]
-    for pid in extra or []:
-        args += ["-WaitProcessIds", str(pid)]
-    args += ["-InstallerArgsB64", _b64(payload)]
+            "-HandoffLogPath", str(log_path), "-HandoffPayloadBase64", _b64(structured)]
     result = _run_ps(args)
     return result, log_path
 
@@ -49,7 +49,7 @@ def test_real_powershell_malformed_payload_fails_closed_and_logs_before_parse(tm
     log_path = tmp_path / "malformed.log"
     script_path.write_text(installer_update._handoff_script(), encoding="utf-8")
     result = _run_ps(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path),
-                      "-Installer", str(installer), "-LogPath", str(log_path), "-InstallerArgsB64", "not-base64"])
+                      "-HandoffLogPath", str(log_path), "-HandoffPayloadBase64", "not-base64"])
     assert result.returncode == 74
     text = log_path.read_text(encoding="utf-8")
     assert "HANDOFF_PROCESS_STARTED" in text

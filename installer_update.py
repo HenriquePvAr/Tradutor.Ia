@@ -101,23 +101,40 @@ def _handoff_script() -> str:
     explicitly supplied PIDs before starting the already verified installer.
     """
     return r'''param(
-  [Parameter(Mandatory=$true)][string]$Installer,
-  [Parameter(Mandatory=$true)][string]$LogPath,
-  [int[]]$WaitProcessIds = @(),
-  [int]$TimeoutSeconds = 30,
-  [string]$InstallerArgsB64 = ''
+  [Parameter(Mandatory=$true)][string]$HandoffLogPath,
+  [Parameter(Mandatory=$true)][string]$HandoffPayloadBase64
 )
 $ErrorActionPreference = 'Stop'
 function Write-Log([string]$Event, [string]$Detail = '') {
   $line = "$(Get-Date -Format o) $Event" + ($(if($Detail){" $Detail"}else{''}))
-  Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
+  Add-Content -LiteralPath $HandoffLogPath -Value $line -Encoding UTF8
 }
 try {
-  Write-Log 'HANDOFF_PROCESS_STARTED' ("wait_pid_count=" + $WaitProcessIds.Count + " installer_present=" + [bool]$Installer + " args_present=" + [bool]$InstallerArgsB64)
+  Write-Log 'HANDOFF_PROCESS_STARTED'
+  Write-Log 'PAYLOAD_DECODE_START'
   try {
-    $jsonBytes = [Convert]::FromBase64String($InstallerArgsB64)
-    $argsJson = [Text.Encoding]::UTF8.GetString($jsonBytes)
-    [string[]]$InstallerArgs = @($argsJson | ConvertFrom-Json)
+    $jsonBytes = [Convert]::FromBase64String($HandoffPayloadBase64)
+    $payload = ([Text.Encoding]::UTF8.GetString($jsonBytes) | ConvertFrom-Json)
+    $names = @($payload.PSObject.Properties.Name)
+    foreach($required in @('installer_path','installer_args','wait_process_ids','timeout_seconds')) {
+      if($names -notcontains $required) { throw "missing required field: $required" }
+    }
+    if($payload.installer_args -is [string] -or $payload.wait_process_ids -is [string]) { throw 'array field has invalid type' }
+    [string]$Installer = [string]$payload.installer_path
+    [string[]]$InstallerArgs = @($payload.installer_args)
+    $invalidArgs = @($InstallerArgs | Where-Object { $_ -isnot [string] })
+    if([string]::IsNullOrWhiteSpace($Installer) -or $invalidArgs.Count -gt 0) { throw 'invalid installer fields' }
+    $WaitProcessIds = New-Object System.Collections.Generic.List[int]
+    $seen = New-Object System.Collections.Generic.HashSet[int]
+    foreach($item in @($payload.wait_process_ids)) {
+      if($item -isnot [byte] -and $item -isnot [int16] -and $item -isnot [int32] -and $item -isnot [int64]) { throw 'invalid wait PID type' }
+      $pidValue = [int64]$item
+      if($pidValue -le 0 -or $pidValue -gt [int32]::MaxValue) { throw 'invalid wait PID value' }
+      if($seen.Add([int]$pidValue)) { $WaitProcessIds.Add([int]$pidValue) }
+    }
+    $TimeoutSeconds = [int]$payload.timeout_seconds
+    if($TimeoutSeconds -le 0) { throw 'invalid timeout' }
+    Write-Log 'PAYLOAD_DECODE_OK' ("wait_pid_count=" + $WaitProcessIds.Count)
   } catch {
     Write-Log 'HANDOFF_ARGUMENT_PARSE_FAILED' $_.Exception.GetType().Name
     exit 74
@@ -160,12 +177,17 @@ def spawn_installer_after_processes_exit(
     if log_path is None:
         log_path = helper_dir / f"{path.stem}.handoff.log"
     script.write_text(_handoff_script(), encoding="utf-8", newline="\r\n")
+    payload = {
+        "installer_path": str(path),
+        "installer_args": installer_arguments(silent=silent),
+        "wait_process_ids": sorted({int(pid) for pid in owned_pids if int(pid) > 0}),
+        "timeout_seconds": max(1, int(timeout_seconds)),
+        "expected_size": None,
+        "expected_sha256": None,
+    }
+    payload_b64 = base64.b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
     args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
-            "-Installer", str(path), "-LogPath", str(log_path), "-TimeoutSeconds", str(int(timeout_seconds))]
-    for pid in sorted({int(pid) for pid in owned_pids if int(pid) > 0}):
-        args.extend(["-WaitProcessIds", str(pid)])
-    args_json = json.dumps(installer_arguments(silent=silent), separators=(",", ":")).encode("utf-8")
-    args.extend(["-InstallerArgsB64", base64.b64encode(args_json).decode("ascii")])
+            "-HandoffLogPath", str(log_path), "-HandoffPayloadBase64", payload_b64]
     creationflags = (
         getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         | getattr(subprocess, "CREATE_NO_WINDOW", 0)
