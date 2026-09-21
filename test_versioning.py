@@ -5,7 +5,7 @@ import app_version
 
 def test_canonical_versions_are_current():
     assert app_version.PRODUCT_VERSION == "0.9.0"
-    assert app_version.BUILD_VERSION == "0.9.1-beta.10"
+    assert app_version.BUILD_VERSION == "0.9.1-beta.11"
     assert app_version.DISPLAY_VERSION == app_version.BUILD_VERSION
 
 
@@ -13,6 +13,12 @@ def test_installer_uses_release_define_not_stale_beta20():
     script = Path("packaging/TradutorIA.iss").read_text(encoding="utf-8")
     assert "AppVersion={#ProductVersion}" in script
     assert "Beta20" not in script
+
+
+def test_installer_declares_windows_uninstall_icon_and_shortcut_icon():
+    script = Path("packaging/TradutorIA.iss").read_text(encoding="utf-8")
+    assert "UninstallDisplayIcon={app}\\YomuSekai.exe" in script
+    assert 'IconFilename: "{app}\\YomuSekai.exe"' in script
 
 
 def test_update_manifest_defaults_to_canonical_product_version():
