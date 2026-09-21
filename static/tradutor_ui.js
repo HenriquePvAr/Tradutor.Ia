@@ -7271,6 +7271,11 @@
     activateTab('hist');
   });
   $('#dashGotoHistory')?.addEventListener('click', () => activateTab('hist'));
+  const UPDATE_DOWNLOAD_REQUEST_TIMEOUT_MS = 75000;
+  const makeUpdateCorrelationId = () => {
+    try { if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID(); } catch (_) { /* fallback below */ }
+    return `upd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  };
   $('#checkUpdatesBtn')?.addEventListener('click', async event => {
     const button = event.currentTarget; const title = $('#updateStatusTitle'); const status = $('#updateStatus'); button.disabled = true;
     const setState = (state, heading, copy) => { if (title) title.textContent = heading; if (status) status.textContent = copy; button.dataset.updateState = state; button.hidden = ['checking','downloading','ready_to_install','installing'].includes(state); };
@@ -7286,8 +7291,12 @@
         if (download) { download.hidden = false; download.disabled = false; download.textContent = data.mandatory ? 'Baixar e instalar' : 'Baixar e instalar';
           download.onclick = async () => {
             download.disabled = true; setState('downloading', 'Baixando atualização…', 'O instalador oficial será verificado antes da execução.');
+            const correlationId = makeUpdateCorrelationId();
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), UPDATE_DOWNLOAD_REQUEST_TIMEOUT_MS);
             try {
-              const fetched = await fetch('/api/update/download', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+              const fetched = await fetch('/api/update/download', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Yomu-Correlation-Id': correlationId}, body: '{}', signal: controller.signal});
+              clearTimeout(timeoutId);
               const result = await fetched.json().catch(() => ({}));
               if (!fetched.ok || !result.download_token) throw new Error('download_failed');
               download.textContent = 'Cancelar'; download.disabled = false;
@@ -7320,7 +7329,16 @@
               };
               download.onclick = async () => { download.disabled = true; await fetch(`/api/update/download/cancel?token=${encodeURIComponent(result.download_token)}`, {method: 'POST'}); };
               await poll();
-            } catch (_) { setState('error', 'Download indisponível', 'A versão atual continua utilizável. Tente novamente mais tarde.'); download.disabled = false; }
+            } catch (error) {
+              clearTimeout(timeoutId);
+              const timedOut = error?.name === 'AbortError';
+              setState('error', timedOut ? 'Download demorou além do esperado' : 'Download indisponível', timedOut
+                ? `A solicitação não respondeu. ID de diagnóstico: ${correlationId}`
+                : `A versão atual continua utilizável. ID de diagnóstico: ${correlationId}`);
+              download.textContent = 'Baixar e instalar';
+              download.onclick = null;
+              download.disabled = false;
+            }
           };
         }
       }

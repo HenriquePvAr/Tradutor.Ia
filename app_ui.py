@@ -390,6 +390,35 @@ def _append_diagnostic_log(filename: str, event: str, **fields: Any) -> None:
         pass
 
 
+_UPDATE_CORRELATION_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+
+
+def _update_correlation_id(request: Request) -> str:
+    """Return a bounded, non-secret correlation id for one update attempt."""
+    candidate = str(request.headers.get("x-yomu-correlation-id") or "").strip()
+    if _UPDATE_CORRELATION_RE.fullmatch(candidate):
+        return candidate
+    return uuid.uuid4().hex
+
+
+def _safe_update_exception(exc: BaseException) -> dict[str, str]:
+    """Keep update diagnostics useful without persisting URLs, headers or secrets."""
+    def clean(value: Any) -> str:
+        text = str(value or "")[:240]
+        text = re.sub(r"(?i)(authorization|cookie|token|password|secret)=([^&\s]+)", r"\1=<redacted>", text)
+        text = re.sub(r"https?://[^\s]+", "<url>", text)
+        return text
+
+    result = {"exception_type": type(exc).__name__, "message": clean(exc)}
+    cause = exc.__cause__
+    context = exc.__context__ if cause is None else None
+    if cause is not None:
+        result.update({"cause_type": type(cause).__name__, "cause_message": clean(cause)})
+    if context is not None:
+        result.update({"context_type": type(context).__name__, "context_message": clean(context)})
+    return result
+
+
 _append_diagnostic_log("app_current.jsonl", "APP_BOOT", product="Yomu Sekai", port=APP_PORT)
 
 
@@ -1558,55 +1587,107 @@ def api_update_manifest() -> JSONResponse:
                 headers={"Cache-Control": "no-store"})
 
 
-def _run_update_download(token: str, manifest: update_manifest.UpdateManifest) -> None:
+def _run_update_download(token: str, manifest: update_manifest.UpdateManifest, correlation_id: str) -> None:
     cancel_event = threading.Event()
+    stage = "worker_enter"
+    _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_WORKER_ENTERED", correlation_id=correlation_id, stage=stage)
     try:
         transport = update_transport.UpdateTransport()
         with _UPDATE_DOWNLOADS_LOCK:
             state = _UPDATE_DOWNLOADS[token]
             state.update(status="downloading", received=0, expected=manifest.package.size)
             cancel_event = state["cancel_event"]
+            state["correlation_id"] = correlation_id
+            state["progress_milestones"] = set()
         def progress(received: int, expected: int) -> None:
             with _UPDATE_DOWNLOADS_LOCK:
                 if token in _UPDATE_DOWNLOADS:
-                    _UPDATE_DOWNLOADS[token].update(received=received, expected=expected)
+                    current = _UPDATE_DOWNLOADS[token]
+                    current.update(received=received, expected=expected)
+                    milestones = current.setdefault("progress_milestones", set())
+                    fraction = (received / expected) if expected else 0.0
+                    milestone = "first_byte" if received else ""
+                    for threshold, name in ((0.25, "25"), (0.50, "50"), (0.75, "75"), (1.0, "100")):
+                        if fraction >= threshold and name not in milestones:
+                            milestones.add(name)
+                            _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_PROGRESS", correlation_id=correlation_id, stage="download", milestone=name, received=received, expected=expected)
+                    if milestone and "first_byte" not in milestones:
+                        milestones.add("first_byte")
+                        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_FIRST_CHUNK", correlation_id=correlation_id, stage="download", received=received)
+        stage = "download_http"
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_HTTP_BEGIN", correlation_id=correlation_id, stage=stage, expected=manifest.package.size)
         path = installer_update.download_verified_installer(
             manifest, transport, progress_callback=progress, cancel_event=cancel_event)
+        stage = "download_complete"
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_COMPLETE", correlation_id=correlation_id, stage=stage, expected=manifest.package.size)
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_VERIFY_BEGIN", correlation_id=correlation_id, stage="verify")
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_VERIFY_OK", correlation_id=correlation_id, stage="verify")
         with _UPDATE_DOWNLOADS_LOCK:
             _UPDATE_DOWNLOADS[token].update(status="ready_to_install", path=path, version=manifest.version_text)
     except BaseException as exc:
+        details = _safe_update_exception(exc)
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_WORKER_ERROR", correlation_id=correlation_id, stage=stage, **details)
         with _UPDATE_DOWNLOADS_LOCK:
             if token in _UPDATE_DOWNLOADS:
                 _UPDATE_DOWNLOADS[token].update(status="cancelled" if cancel_event.is_set() else "error", error=type(exc).__name__)
+    finally:
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_WORKER_EXIT", correlation_id=correlation_id, stage=stage)
 
 
 @app.post("/api/update/download")
-def api_update_download() -> JSONResponse:
+def api_update_download(request: Request) -> JSONResponse:
     """Start a verified Windows installer download without blocking the UI thread."""
+    correlation_id = _update_correlation_id(request)
+    stage = "request_received"
+    _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_REQUEST_RECEIVED", correlation_id=correlation_id, stage=stage, method="POST", route="/api/update/download")
     manifest_url = os.getenv("TRADUTOR_IA_UPDATE_MANIFEST_URL", DEFAULT_MANIFEST_URL).strip()
     if not manifest_url:
-        return JSONResponse({"state": "not_configured", "can_install": False}, status_code=409)
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_ROUTE_ERROR", correlation_id=correlation_id, stage="configuration", exception_type="ConfigurationError", message="manifest_not_configured")
+        return JSONResponse({"state": "not_configured", "can_install": False, "correlation_id": correlation_id}, status_code=409)
     try:
+        stage = "manifest_fetch"
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_MANIFEST_FETCH_START", correlation_id=correlation_id, stage=stage)
         transport = update_transport.UpdateTransport()
         raw = transport.fetch_manifest(manifest_url)
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_MANIFEST_FETCH_OK", correlation_id=correlation_id, stage=stage, bytes=len(raw))
+        stage = "manifest_verify"
         manifest = update_manifest.verify_manifest(raw, trusted_keys=update_manifest.load_trusted_keys())
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_MANIFEST_VERIFY_OK", correlation_id=correlation_id, stage=stage, version=manifest.version_text)
+        stage = "decision"
         decision = update_manifest.decide_update(BUILD_VERSION, manifest)
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_DECISION_OK", correlation_id=correlation_id, stage=stage, state=decision.state, should_install=decision.should_install)
         if not decision.should_install:
-            return JSONResponse({"state": decision.state, "can_install": False}, status_code=409)
+            return JSONResponse({"state": decision.state, "can_install": False, "correlation_id": correlation_id}, status_code=409)
         if manifest.artifact_type != installer_update.INSTALLER_ARTIFACT_TYPE:
             raise installer_update.InstallerUpdateError("update artifact is not a Windows installer")
         token = secrets.token_urlsafe(24)
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_TOKEN_CREATED", correlation_id=correlation_id, stage="token")
         with _UPDATE_DOWNLOADS_LOCK:
             _UPDATE_DOWNLOADS[token] = {"status": "starting", "received": 0,
                 "expected": manifest.package.size, "version": manifest.version_text,
-                "cancel_event": threading.Event()}
-        threading.Thread(target=_run_update_download, args=(token, manifest), daemon=True).start()
-        return JSONResponse({"state": "downloading", "version": manifest.version_text,
-                             "size": manifest.package.size, "download_token": token},
-                            headers={"Cache-Control": "no-store"})
+                "cancel_event": threading.Event(), "correlation_id": correlation_id}
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_STATE_REGISTERED", correlation_id=correlation_id, stage="state_registered")
+        stage = "thread_start"
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_THREAD_START_BEGIN", correlation_id=correlation_id, stage=stage)
+        threading.Thread(target=_run_update_download, args=(token, manifest, correlation_id), daemon=True).start()
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_THREAD_STARTED", correlation_id=correlation_id, stage=stage)
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_RESPONSE_BEGIN", correlation_id=correlation_id, stage="response")
+        response = JSONResponse({"state": "downloading", "version": manifest.version_text,
+                                 "size": manifest.package.size, "download_token": token, "correlation_id": correlation_id},
+                                headers={"Cache-Control": "no-store"})
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_RESPONSE_RETURNED", correlation_id=correlation_id, stage="response", http_status=200)
+        return response
     except (update_manifest.UpdateError, update_transport.TransportError) as exc:
+        details = _safe_update_exception(exc)
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_ROUTE_ERROR", correlation_id=correlation_id, stage=stage, **details)
         return JSONResponse({"state": "error", "can_install": False,
-                             "error": type(exc).__name__}, status_code=502,
+                             "error": details["exception_type"], "code": "update_download_unavailable", "correlation_id": correlation_id}, status_code=502,
+                            headers={"Cache-Control": "no-store"})
+    except Exception as exc:  # noqa: BLE001 - the UI must recover from pre-token failures
+        details = _safe_update_exception(exc)
+        _append_diagnostic_log("routes_current.jsonl", "UPDATE_DOWNLOAD_ROUTE_ERROR", correlation_id=correlation_id, stage=stage, **details)
+        return JSONResponse({"state": "error", "can_install": False,
+                             "error": "UpdateDownloadError", "code": "update_download_failed", "correlation_id": correlation_id}, status_code=500,
                             headers={"Cache-Control": "no-store"})
 
 
@@ -1617,6 +1698,11 @@ def api_update_download_status(token: str = "") -> JSONResponse:
     if not state:
         return JSONResponse({"state": "error", "error": "download_not_found"}, status_code=404)
     state.pop("cancel_event", None)
+    # Internal milestone bookkeeping is intentionally not part of the JSON API.
+    # It is a set and would otherwise make JSONResponse fail while a download is
+    # in progress; the externally useful progress is already represented by
+    # ``received``/``expected`` and the diagnostic log.
+    state.pop("progress_milestones", None)
     path = state.pop("path", None)
     if state.get("status") == "ready_to_install" and path:
         handoff = secrets.token_urlsafe(24)
