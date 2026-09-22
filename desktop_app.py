@@ -31,6 +31,7 @@ APP_ICON_PATH = ROOT / "assets" / "branding" / "generated" / "yomu-sekai.ico"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
 _REQUEST_WINDOW_CLOSE = None
+_UPDATE_SHUTDOWN_CONTEXT = False
 NATIVE_AD_DIAGNOSTIC_BUILD_ID = "native-ad-product-beta"
 _NATIVE_POC_LOG_LOCK = threading.Lock()
 _NATIVE_AD_WINDOW = None
@@ -258,7 +259,7 @@ class DesktopApi:
         callback = globals().get("_REQUEST_WINDOW_CLOSE")
         if not callable(callback):
             raise RuntimeError("desktop_shutdown_unavailable")
-        callback()
+        callback("update")
         return {"requested": True}
 
     def native_ad_set_bounds(self, x: float, y: float, width: float, height: float, visible: bool = True) -> dict[str, bool]:
@@ -1069,7 +1070,7 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
         raise SystemExit("WebView2 indisponível: instale pywebview no .venv-beta.") from exc
 
     server = _start_server(host, port, auth_diagnostics=auth_diagnostics)
-    global _REQUEST_WINDOW_CLOSE
+    global _REQUEST_WINDOW_CLOSE, _UPDATE_SHUTDOWN_CONTEXT
     try:
         _wait_ready(host, port, server)
         _set_windows_app_user_model_id()
@@ -1111,6 +1112,7 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
 
         def on_closing() -> None:
             lifecycle["closing"] = True
+            _runtime_log("UPDATE_WINDOW_CLOSE_BEGIN" if lifecycle.get("update_shutdown") else "WINDOW_CLOSE_BEGIN")
 
         def on_closed() -> None:
             lifecycle["closed"] = True
@@ -1118,7 +1120,30 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
             if surface is not None:
                 surface.dispose()
 
-        _REQUEST_WINDOW_CLOSE = lambda: window.destroy()
+        def request_window_close(reason: str = "user") -> None:
+            nonlocal server
+            global _UPDATE_SHUTDOWN_CONTEXT
+            if reason == "update":
+                if lifecycle.get("update_shutdown"):
+                    _runtime_log("UPDATE_SHUTDOWN_ALREADY_REQUESTED")
+                    return
+                lifecycle["update_shutdown"] = True
+                _UPDATE_SHUTDOWN_CONTEXT = True
+                _runtime_log("UPDATE_SHUTDOWN_REQUESTED")
+                _runtime_log("UPDATE_SHUTDOWN_CONTEXT_SET")
+                _runtime_log("API_SHUTDOWN_BEGIN")
+                # Stop the owned API child explicitly and asynchronously; the
+                # UI thread must remain free to return from the WebView loop.
+                threading.Thread(
+                    target=lambda: (shutdown_owned_runtime(server), _runtime_log("API_SHUTDOWN_COMPLETE")),
+                    name="update-api-shutdown", daemon=True,
+                ).start()
+                window.confirm_close = False
+            _runtime_log("UPDATE_WINDOW_CLOSE_BEGIN" if reason == "update" else "WINDOW_CLOSE_BEGIN")
+            window.destroy()
+            _runtime_log("UPDATE_WINDOW_CLOSE_COMPLETE" if reason == "update" else "WINDOW_CLOSE_COMPLETE")
+
+        _REQUEST_WINDOW_CLOSE = request_window_close
 
         window.events.closing += on_closing
         window.events.closed += on_closed
@@ -1190,13 +1215,16 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
             webview_start_callback = None
         webview.start(func=webview_start_callback, gui="edgechromium", debug=False,
                       icon=str(APP_ICON_PATH))
+        _runtime_log("WEBVIEW_LOOP_RETURNED")
         if lifecycle_selftest and not lifecycle["closed"]:
             return 1
         return 0
     finally:
+        _runtime_log("APP_FINAL_CLEANUP_BEGIN")
         _runtime_log("APP_SHUTDOWN")
         _REQUEST_WINDOW_CLOSE = None
         shutdown_owned_runtime(server)
+        _runtime_log("APP_FINAL_CLEANUP_COMPLETE")
 
 
 def main(argv: list[str] | None = None) -> int:
