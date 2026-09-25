@@ -15,7 +15,7 @@ AppId={{cff6c710-2b7d-4a09-8f25-e32ea363430f}
 AppName=Yomu Sekai
 AppVersion={#ProductVersion}
 SetupIconFile={#SourcePath}\..\assets\branding\generated\yomu-sekai.ico
-UninstallDisplayIcon={app}\YomuSekai.exe
+UninstallDisplayIcon={app}\_internal\assets\branding\generated\yomu-sekai.ico
 DefaultDirName={localappdata}\Programs\YomuSekai
 DefaultGroupName=Yomu Sekai
 PrivilegesRequired=lowest
@@ -79,8 +79,8 @@ Type: filesandordirs; Name: "{localappdata}\TradutorIA\.cache"
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM YomuSekai.exe"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "YomuSekaiShutdown"
 
 [Icons]
-Name: "{group}\Yomu Sekai"; Filename: "{app}\YomuSekai.exe"; WorkingDir: "{app}"; IconFilename: "{app}\YomuSekai.exe"; IconIndex: 0
-Name: "{autodesktop}\Yomu Sekai"; Filename: "{app}\YomuSekai.exe"; WorkingDir: "{app}"; IconFilename: "{app}\YomuSekai.exe"; IconIndex: 0; Tasks: desktopicon
+Name: "{group}\Yomu Sekai"; Filename: "{app}\YomuSekai.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\assets\branding\generated\yomu-sekai.ico"; IconIndex: 0
+Name: "{autodesktop}\Yomu Sekai"; Filename: "{app}\YomuSekai.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\assets\branding\generated\yomu-sekai.ico"; IconIndex: 0; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\YomuSekai.exe"; Description: "Iniciar o Yomu Sekai"; Flags: postinstall skipifsilent nowait
