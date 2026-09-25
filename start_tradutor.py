@@ -69,13 +69,18 @@ def _detached_flags() -> int:
 
 def build_child_command(role: str, *, frozen: bool | None = None) -> list[str]:
     """Build the worker/UI child command for Python and frozen runtimes."""
-    if role not in {"worker", "ui"}:
+    if role not in {"worker", "ui", "dynamic-resolver"}:
         raise ValueError(f"unknown child role: {role}")
     if frozen is None:
         frozen = bool(getattr(sys, "frozen", False))
     if frozen:
         return [sys.executable, "--internal-child", role]
-    script = REPO_ROOT / ("worker_service.py" if role == "worker" else "app_ui.py")
+    script_name = {
+        "worker": "worker_service.py",
+        "ui": "app_ui.py",
+        "dynamic-resolver": "dynamic_resolver_process.py",
+    }[role]
+    script = REPO_ROOT / script_name
     return [background_python_executable(), "-u", str(script)]
 
 
@@ -92,6 +97,9 @@ def _run_internal_child(role: str, argv: list[str]) -> int:
     if role == "ui":
         import app_ui
         return app_ui.main()
+    if role == "dynamic-resolver":
+        import dynamic_resolver_process
+        return dynamic_resolver_process.main(argv)
     if role == "pipeline":
         print("CHILD_POST_BOOT_BEGIN role=pipeline", flush=True)
         try:

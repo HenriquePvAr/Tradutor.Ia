@@ -43,6 +43,7 @@ hiddenimports = [
     # capability explicit: otherwise the optional import is swallowed by the resolver
     # and the UI falls through to a misleading source_access_denied result.
     "scrapling_reader_resolver",
+    "dynamic_resolver_process",
     "scrapling.fetchers",
     "scrapling.fetchers.chrome",
     "scrapling.core.storage",

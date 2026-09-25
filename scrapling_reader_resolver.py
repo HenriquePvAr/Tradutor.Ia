@@ -10,8 +10,12 @@ import json
 import base64
 import hashlib
 import os
+import pickle
 import re
+import signal
+import subprocess
 import struct
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -35,6 +39,11 @@ MAX_NETWORK_EVENTS = 256
 MAX_BROWSER_RESPONSE_BODY_BYTES = 8 * 1024 * 1024
 ALLOWED_BROWSER_IMAGE_CONTENT_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 MAX_CANONICAL_ATTEMPTS = 3
+# One monotonic deadline covers browser startup, page actions, materialization and any
+# bounded full-resolution retry. Playwright's per-operation timeout is shortened to the
+# remaining budget so a stuck browser operation raises into Scrapling's cleanup path.
+DYNAMIC_RESOLVER_DEADLINE_SECONDS = 180.0
+DYNAMIC_RESOLVER_CLEANUP_RESERVE_SECONDS = 3.0
 # Missing-page (canonical materialization) budget model.  Each unresolved logical page
 # gets its OWN bounded budget so one slow page cannot starve the pages after it; the
 # chapter-level ceiling is proportional to the number of unresolved pages (with a hard
@@ -64,6 +73,41 @@ def _missing_chapter_budget_seconds(unresolved_count: int) -> float:
         MISSING_CHAPTER_BASE_OVERHEAD_SECONDS
         + max(0, int(unresolved_count)) * MISSING_PAGE_BUDGET_SECONDS,
     )
+
+
+# Headroom added on top of the pending-page budget before a fresh full retry may start:
+# it reserves margin for browser startup jitter and the final cleanup pass so a retry is
+# only attempted when it can realistically finish inside the global deadline.
+RETRY_BUDGET_SAFETY_MARGIN_SECONDS = 15.0
+
+
+def _materialization_retry_decision(
+    *, pending_count: int, prev_pending_count: int | None,
+    remaining_budget: float, attempt: int, max_attempts: int, pending_budget: float,
+) -> str:
+    """Decide what a pass that left pages unmaterialized should do next.
+
+    Returns ``retry`` / ``no_progress`` / ``budget_insufficient`` / ``failed``.
+
+    * ``no_progress`` -- a *retry* pass that did not shrink the pending set versus the
+      previous pass, with a real positive pending count on both.  Repeating an identical
+      pass cannot help, so fail closed immediately instead of burning the deadline.  A
+      first pass -- or a pass whose pending count is unavailable (0) -- is never classified
+      no_progress: an intermittently-flaky first pass is still allowed its bounded retry
+      (Comix materialization recovers on a later full pass ~half the time).
+    * ``budget_insufficient`` -- the remaining budget cannot fund another bounded full pass
+      with its cleanup margin reserved.
+    * ``retry`` -- another bounded pass is worthwhile and affordable.
+    * ``failed`` -- attempts are exhausted.
+    """
+    if (prev_pending_count is not None and pending_count > 0
+            and pending_count >= prev_pending_count):
+        return "no_progress"
+    if attempt >= max_attempts:
+        return "failed"
+    if remaining_budget < pending_budget + RETRY_BUDGET_SAFETY_MARGIN_SECONDS:
+        return "budget_insufficient"
+    return "retry"
 
 
 def _resolution_failure_code(candidates: list, final_missing: list) -> str | None:
@@ -179,7 +223,10 @@ def _store_selector_profile(selector: str, resource_host: str) -> None:
 def _append_telemetry(event: str, **fields: Any) -> None:
     """Best-effort local telemetry with an allow-list of non-sensitive fields."""
     allowed = {"event", "site", "status", "pages", "selector", "elapsed_ms", "error_code",
-               "attempt", "max_attempts", "pending_count", "pending_indices", "missing_count"}
+               "attempt", "max_attempts", "pending_count", "pending_indices", "missing_count",
+               "stage", "remaining_ms", "remaining_budget_ms", "new_pages", "materialized_count",
+               "body_capture_count", "body_read_failed", "body_skip_dedup",
+               "body_skip_content_type", "body_skip_oversize", "body_promoted"}
     safe = {key: value for key, value in fields.items() if key in allowed}
     safe["event"] = event[:64]
     safe.setdefault("site", "comix.to")
@@ -635,6 +682,43 @@ def _capture_rendered_canvas_candidate(page: Any, page_index: int, state: dict[s
     }
 
 
+def _should_read_response_body(
+    *, resource_type: str, resource_url: str,
+    content_type_header: str | None, content_length_header: str | None,
+    already_captured: bool,
+) -> tuple[bool, str]:
+    """Decide, from cheap metadata, whether to pull a network response body.
+
+    Reading a body (``response.body()``) copies the full image bytes out of the browser
+    and is the single largest cost of the resolver; most of those bytes never become a
+    canonical page.  This gate skips ONLY bodies that ``_promote_browser_response_candidate``
+    would reject anyway, so it can never drop a page that could have been promoted:
+
+    * a response whose URL was already captured (an identical CDN image -> ``dedup``);
+    * a declared ``content-length`` over the promotion cap (``oversize``, rejected at 692);
+    * a declared ``content-type`` that is not an allowed browser image (``content_type``,
+      rejected at 695).
+
+    A missing header is never a reason to skip (we read and let promotion decide).  Returns
+    ``(read, skip_reason)`` where ``skip_reason`` is ``""`` when ``read`` is True and
+    ``not_page_image`` for a resource outside the reader's page-image host.
+    """
+    if resource_type != "image" or "jloo.wowpic1.store" not in resource_url:
+        return False, "not_page_image"
+    if already_captured:
+        return False, "dedup"
+    declared_type = str(content_type_header or "").split(";", 1)[0].strip().casefold()
+    if declared_type and declared_type not in ALLOWED_BROWSER_IMAGE_CONTENT_TYPES:
+        return False, "content_type"
+    try:
+        declared_length = int(content_length_header) if content_length_header else 0
+    except (TypeError, ValueError):
+        declared_length = 0
+    if declared_length > MAX_BROWSER_RESPONSE_BODY_BYTES:
+        return False, "oversize"
+    return True, ""
+
+
 def _promote_browser_response_candidate(
     raw: dict[str, Any], body: bytes, content_type: str | None = None
 ) -> dict[str, Any] | None:
@@ -838,9 +922,10 @@ def _scroll_normal_reader(page: Any, selector: str, initial: list[dict[str, Any]
     return list(seen.values()), diagnostics
 
 
-def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None = None,
-            timeout: float = 30.0) -> Any:
-    """Resolve a selected dynamic reader into the regular SourceAnalysis model."""
+def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None = None,
+                    timeout: float = 30.0,
+                    deadline_seconds: float | None = None) -> Any:
+    """Run the selected reader in the disposable resolver child process."""
     if not supports_url(url):
         raise DynamicReaderError("site_not_selected")
     if _DynamicFetcher is None:
@@ -854,9 +939,46 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
         raise DynamicReaderError("navigation_rejected") from exc
     events: list[dict[str, Any]] = []
     browser_bodies: dict[str, dict[str, Any]] = {}
+    # Sanitized response-body utility counters (no bytes/URLs/cookies): how many bodies were
+    # actually read vs skipped by cheap metadata, so the eager-capture cost can be measured.
+    body_stats: dict[str, int] = {
+        "captured": 0, "read_failed": 0, "dedup": 0, "content_type": 0, "oversize": 0}
     result_holder: dict[str, Any] = {}
+    started = time.monotonic()
+    effective_deadline = (
+        DYNAMIC_RESOLVER_DEADLINE_SECONDS
+        if deadline_seconds is None else max(0.0, float(deadline_seconds))
+    )
+    deadline = started + effective_deadline
+
+    def remaining_seconds(stage: str) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _append_telemetry(
+                "dynamic_fetch_stage_timeout", status="timeout", stage=stage,
+                elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+            )
+            raise DynamicReaderError("dynamic_resolver_deadline_exceeded", stage)
+        return remaining
+
+    def stage_start(stage: str) -> float:
+        remaining = remaining_seconds(stage)
+        _append_telemetry(
+            "dynamic_fetch_stage_start", status="started", stage=stage,
+            elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+            remaining_ms=max(1, int(remaining * 1000)),
+        )
+        return time.monotonic()
+
+    def stage_end(stage: str, stage_started: float) -> None:
+        _append_telemetry(
+            "dynamic_fetch_stage_end", status="completed", stage=stage,
+            elapsed_ms=round((time.monotonic() - stage_started) * 1000, 1),
+        )
+        remaining_seconds(stage)
 
     def page_setup(page: Any) -> None:
+        setup_started = stage_start("page_setup")
         try:
             page.add_init_script("""
             (() => {
@@ -936,24 +1058,43 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
                 if "/api/v1/chapters/" in resource_url or resource_type == "image":
                     events.append(_sanitized_network_event(resource_url, resource_type,
                                                             int(response.status)))
-                if resource_type == "image" and "jloo.wowpic1.store" in resource_url:
-                    try:
-                        body = response.body()
-                        if 0 < len(body) <= MAX_BROWSER_RESPONSE_BODY_BYTES:
-                            browser_bodies[resource_url] = {
-                                "body": body,
-                                "content_type": str(response.headers.get("content-type") or ""),
-                            }
-                    except Exception:
-                        pass
+                try:
+                    response_headers = response.headers or {}
+                except Exception:
+                    response_headers = {}
+                read_body, skip_reason = _should_read_response_body(
+                    resource_type=resource_type, resource_url=resource_url,
+                    content_type_header=response_headers.get("content-type"),
+                    content_length_header=response_headers.get("content-length"),
+                    already_captured=resource_url in browser_bodies)
+                if not read_body:
+                    if skip_reason in body_stats:
+                        body_stats[skip_reason] += 1
+                    return
+                try:
+                    body_started = stage_start("response_body_capture")
+                    body = response.body()
+                    if 0 < len(body) <= MAX_BROWSER_RESPONSE_BODY_BYTES:
+                        browser_bodies[resource_url] = {
+                            "body": body,
+                            "content_type": str(response_headers.get("content-type") or ""),
+                        }
+                        body_stats["captured"] += 1
+                    else:
+                        body_stats["read_failed"] += 1
+                    stage_end("response_body_capture", body_started)
+                except Exception:
+                    body_stats["read_failed"] += 1
             except Exception:
                 return
         try:
             page.on("response", on_response)
         except Exception as exc:
             raise DynamicReaderError("network_observer_unavailable") from exc
+        stage_end("page_setup", setup_started)
 
     def page_action(page: Any) -> None:
+        action_started = stage_start("page_action_initial_wait")
         if cancel_check and cancel_check():
             raise DynamicReaderError("cancelled")
         try:
@@ -961,6 +1102,8 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
             page.wait_for_timeout(400)
         except Exception as exc:
             raise DynamicReaderError("browser_action_failed") from exc
+        stage_end("page_action_initial_wait", action_started)
+        discovery_started = stage_start("reader_discovery_and_preload")
         candidates, selector = _extract_candidates(page, url, events, cancel_check)
         promoted_candidates: list[dict[str, Any]] = []
         for item in candidates:
@@ -1000,6 +1143,7 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
             scroll_diagnostics["discovery_strategy"] = "dom_scroll_accumulation"
         else:
             scroll_diagnostics["discovery_strategy"] = "public_reader_preload_all_dom"
+        stage_end("reader_discovery_and_preload", discovery_started)
         scroll_diagnostics.update({
             "public_page_list_found": False,
             "public_page_list_count": 0,
@@ -1025,12 +1169,14 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
         fallback_attempt_diagnostics: dict[str, dict[str, Any]] = {}
         per_page_budget = MISSING_PAGE_BUDGET_SECONDS
         chapter_budget_seconds = _missing_chapter_budget_seconds(len(missing))
-        chapter_deadline = time.monotonic() + chapter_budget_seconds
+        chapter_deadline = min(time.monotonic() + chapter_budget_seconds, deadline)
         scroll_diagnostics["fallback_budget_seconds"] = chapter_budget_seconds
         scroll_diagnostics["fallback_per_page_budget_seconds"] = per_page_budget
         page_elapsed_ms: dict[str, float] = {}
         if missing:
+            materialization_started = stage_start("missing_page_materialization")
             for page_index in missing:
+                remaining_seconds("missing_page_materialization")
                 if cancel_check and cancel_check():
                     raise DynamicReaderError("cancelled")
                 if time.monotonic() >= chapter_deadline:
@@ -1045,6 +1191,7 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
                 page_deadline = min(page_started + per_page_budget, chapter_deadline)
                 attempts: list[str] = []
                 for attempt in range(1, MAX_CANONICAL_ATTEMPTS + 1):
+                    remaining_seconds("missing_page_materialization")
                     try:
                         _read_reader_render_state(page, page_index)
                         # A retry starts a fresh logical/render/network epoch.  The page
@@ -1072,6 +1219,7 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
                         last_hash = ""
                         readiness_stage = "NAVIGATION"
                         for _ in range(40):
+                            remaining_seconds("missing_page_materialization")
                             if time.monotonic() >= page_deadline:
                                 readiness_stage = "READINESS_WATCHDOG"
                                 break
@@ -1208,6 +1356,7 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
                 page_elapsed_ms[str(page_index)] = round(
                     (time.monotonic() - page_started) * 1000, 1)
                 fallback_attempts[page_index] = attempts
+            stage_end("missing_page_materialization", materialization_started)
         if fallback_candidates:
             candidates, _ = _merge_logical_candidates(
                 candidates, fallback_candidates, control_count)
@@ -1248,7 +1397,6 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
         result_holder["canvas_captured"] = len(fallback_candidates)
         result_holder["final_missing"] = final_missing
 
-    started = time.perf_counter()
     browser = discover_system_browser()
     if browser is None:
         _append_telemetry("dynamic_resolution_failed", status="error", error_code="browser_executable_not_found")
@@ -1261,7 +1409,9 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
     # never returned.
     candidates: list[dict[str, Any]] = []
     final_missing: list[int] = []
+    prev_pending_count: int | None = None
     for attempt in range(1, MAX_RESOLUTION_ATTEMPTS + 1):
+        remaining = remaining_seconds("dynamic_fetch")
         if attempt > 1:
             # Fresh pass: the page_action/page_setup closures write into these shared
             # containers, so reset them in place (the closures still hold the same objects).
@@ -1269,16 +1419,24 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
             events.clear()
             browser_bodies.clear()
         try:
+            fetch_started = stage_start("dynamic_fetch")
             response = _DynamicFetcher.fetch(
                 url, real_chrome=True, executable_path=browser[1], headless=True,
-                timeout=int(timeout * 1000), wait=1200,
+                timeout=max(1, int(min(float(timeout), remaining) * 1000)), wait=1200,
                 network_idle=False, page_setup=page_setup, page_action=page_action,
                 retries=1, retry_delay=0,
             )
+            stage_end("dynamic_fetch", fetch_started)
         except DynamicReaderError as exc:
             _append_telemetry("dynamic_resolution_failed", status="error", error_code=exc.code)
             raise
         except Exception as exc:
+            if time.monotonic() >= deadline:
+                _append_telemetry(
+                    "dynamic_fetch_stage_timeout", status="timeout", stage="dynamic_fetch",
+                    elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+                )
+                raise DynamicReaderError("dynamic_resolver_deadline_exceeded", "dynamic_fetch") from exc
             text = type(exc).__name__.casefold()
             code = "browser_unavailable" if any(x in text for x in ("browser", "executable", "chrom")) else "dynamic_fetch_failed"
             raise DynamicReaderError(code) from exc
@@ -1295,28 +1453,79 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
             pending = sorted({int(item.get("logical_page_index")) for item in candidates
                               if item.get("logical_page_index") is not None
                               and str(item.get("source") or "") == "scrapling_dom"})
-            exhausted = attempt >= MAX_RESOLUTION_ATTEMPTS
-            _append_telemetry(
-                "dynamic_resolution_failed" if exhausted else "dynamic_resolution_retry",
-                status="error" if exhausted else "retry",
-                error_code="canonical_materialization_failed",
+            materialized_count = sum(
+                1 for item in candidates
+                if item.get("logical_page_index") is not None
+                and str(item.get("source") or "") != "scrapling_dom")
+            remaining_budget = max(0.0, deadline - time.monotonic())
+            pending_budget = _missing_chapter_budget_seconds(len(pending))
+            decision = _materialization_retry_decision(
+                pending_count=len(pending), prev_pending_count=prev_pending_count,
+                remaining_budget=remaining_budget, attempt=attempt,
+                max_attempts=MAX_RESOLUTION_ATTEMPTS, pending_budget=pending_budget)
+            telemetry = dict(
                 attempt=attempt, max_attempts=MAX_RESOLUTION_ATTEMPTS,
                 pending_count=len(pending), pending_indices=pending[:30],
-                elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+                materialized_count=materialized_count,
+                new_pages=(0 if prev_pending_count is None
+                           else max(0, prev_pending_count - len(pending))),
+                remaining_budget_ms=int(remaining_budget * 1000),
+                elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+                # Response-body utility is emitted on the terminal telemetry too, so a
+                # failing run (the common Comix case) still reports the capture reduction.
+                body_capture_count=body_stats["captured"],
+                body_read_failed=body_stats["read_failed"],
+                body_skip_dedup=body_stats["dedup"],
+                body_skip_content_type=body_stats["content_type"],
+                body_skip_oversize=body_stats["oversize"],
+                body_promoted=sum(1 for item in candidates
+                                  if str(item.get("source") or "") == "browser_response_body"),
             )
-            if not exhausted:
-                continue  # a fresh full pass almost always completes the pending page
-            raise DynamicReaderError("canonical_materialization_failed")
+            if decision == "no_progress":
+                # A full pass that materialized nothing new cannot be helped by an
+                # identical pass; fail closed with a precise code instead of a doomed
+                # retry or a misleading "budget insufficient" message.
+                _append_telemetry("dynamic_resolution_no_progress", status="error",
+                                  error_code="canonical_materialization_no_progress", **telemetry)
+                raise DynamicReaderError("canonical_materialization_no_progress")
+            if decision == "budget_insufficient":
+                _append_telemetry(
+                    "dynamic_resolution_retry_skipped", status="skipped",
+                    error_code="canonical_materialization_retry_budget_insufficient", **telemetry)
+                raise DynamicReaderError("canonical_materialization_retry_budget_insufficient")
+            if decision == "failed":
+                _append_telemetry("dynamic_resolution_failed", status="error",
+                                  error_code="canonical_materialization_failed", **telemetry)
+                raise DynamicReaderError("canonical_materialization_failed")
+            # decision == "retry": progress was made and the budget funds another bounded
+            # pass; a fresh full pass almost always completes the remaining pending page.
+            _append_telemetry("dynamic_resolution_retry", status="retry",
+                              error_code="canonical_materialization_failed", **telemetry)
+            prev_pending_count = len(pending)
+            remaining_seconds("resolution_retry")
+            continue
         if failure == "no_reader_images":
             raise DynamicReaderError("no_reader_images")
         if failure == "canonical_materialization_timeout":
             _append_telemetry("dynamic_resolution_failed", status="error",
                               error_code="canonical_materialization_timeout",
                               missing_count=len(final_missing),
-                              elapsed_ms=round((time.perf_counter() - started) * 1000, 1))
+                              elapsed_ms=round((time.monotonic() - started) * 1000, 1))
             raise DynamicReaderError("canonical_materialization_timeout")
     # The opaque API wrapper is deliberately treated as observation-only.  We never read or
     # transform its body; DOM image URLs are the selected public source of truth.
+    _append_telemetry(
+        "dynamic_body_capture_summary", status="ok",
+        body_capture_count=body_stats["captured"],
+        body_read_failed=body_stats["read_failed"],
+        body_skip_dedup=body_stats["dedup"],
+        body_skip_content_type=body_stats["content_type"],
+        body_skip_oversize=body_stats["oversize"],
+        body_promoted=sum(1 for item in candidates
+                          if str(item.get("source") or "") == "browser_response_body"),
+        elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+    )
+    remaining_seconds("analysis_finalize")
     from universal_chapter_adapter import analyse_candidates
     analysis = analyse_candidates(
         url, candidates, adapter=adapter, final_url=url,
@@ -1331,7 +1540,7 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
             "slots_total": len(candidates), "slots_resolved": len(candidates),
             "slots_pending": 0, "slots_rejected": 0,
             **(result_holder.get("scroll_diagnostics") or {}),
-            "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+            "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
             "opaque_xhr_observed": any(str(e.get("path") or "").startswith("/api/v1/chapters/")
                                         for e in events),
         },
@@ -1340,9 +1549,253 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
     analysis.collection_strategy = "scrapling_selected_dynamic_dom"
     analysis.coverage_strategy = "reader_container"
     analysis.profile_used = False
+    remaining_seconds("analysis_finalize")
     _append_telemetry(
         "dynamic_resolution_succeeded", status="success", pages=len(candidates),
         selector=result_holder.get("selector", _PAGE_SELECTOR),
-        elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+        elapsed_ms=round((time.monotonic() - started) * 1000, 1),
     )
     return analysis
+
+
+def _create_kill_job() -> Any:
+    """Create a Windows Job Object that kills the child and its browser descendants."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimit(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class ExtendedLimit(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimit),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                 wintypes.LPVOID, wintypes.DWORD]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.CreateJobObjectW(None, None)
+    if not handle:
+        raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+    limits = ExtendedLimit()
+    limits.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(
+        handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+    ):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(handle)
+        raise OSError(error, "SetInformationJobObject failed")
+    return (kernel32, handle)
+
+
+def _job_active_processes(job: Any) -> int:
+    if job is None:
+        return 0
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicAccounting(ctypes.Structure):
+        _fields_ = [
+            ("TotalUserTime", ctypes.c_longlong),
+            ("TotalKernelTime", ctypes.c_longlong),
+            ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+            ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+            ("TotalPageFaultCount", wintypes.DWORD),
+            ("TotalProcesses", wintypes.DWORD),
+            ("ActiveProcesses", wintypes.DWORD),
+            ("TotalTerminatedProcesses", wintypes.DWORD),
+        ]
+
+    kernel32, handle = job
+    kernel32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                    wintypes.LPVOID, wintypes.DWORD,
+                                                    wintypes.LPVOID]
+    info = BasicAccounting()
+    if not kernel32.QueryInformationJobObject(
+        handle, 1, ctypes.byref(info), ctypes.sizeof(info), None
+    ):
+        raise OSError(ctypes.get_last_error(), "QueryInformationJobObject failed")
+    return int(info.ActiveProcesses)
+
+
+def _assign_child_to_job(job: Any, process: subprocess.Popen[Any]) -> None:
+    if job is None:
+        return
+    kernel32, handle = job
+    if not kernel32.AssignProcessToJobObject(handle, process._handle):  # noqa: SLF001
+        import ctypes
+        error = ctypes.get_last_error()
+        raise OSError(error, "AssignProcessToJobObject failed")
+
+
+def _terminate_child(process: subprocess.Popen[Any], job: Any, *, grace_seconds: float = 0.5) -> None:
+    if job is not None:
+        kernel32, handle = job
+        kernel32.TerminateJobObject(handle, 1)
+    elif process.poll() is None:
+        if os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                process.kill()
+        else:
+            process.kill()
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=grace_seconds)
+    if job is not None:
+        end = time.monotonic() + max(1.0, grace_seconds)
+        while _job_active_processes(job) and time.monotonic() < end:
+            time.sleep(0.02)
+
+
+def _close_job(job: Any) -> None:
+    if job is not None:
+        kernel32, handle = job
+        kernel32.CloseHandle(handle)
+
+
+def _run_child_command(command: list[str], *, deadline: float,
+                       cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
+    """Start behind a gate, place the process tree in a kill-on-close job, reap it."""
+    job = _create_kill_job()
+    process = None
+    terminated = False
+    try:
+        process = subprocess.Popen(
+            command, cwd=str(Path(__file__).resolve().parent),
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, text=True,
+            creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                           | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+            start_new_session=(os.name != "nt"),
+        )
+        _assign_child_to_job(job, process)
+        assert process.stdin is not None
+        process.stdin.write("go\n")
+        process.stdin.flush()
+        process.stdin.close()
+        while process.poll() is None:
+            if cancel_check and cancel_check():
+                terminated = True
+                _terminate_child(process, job)
+                return {"returncode": process.returncode, "terminated": True,
+                        "reaped": process.poll() is not None, "active_processes": _job_active_processes(job)}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminated = True
+                _terminate_child(process, job)
+                return {"returncode": process.returncode, "terminated": True,
+                        "reaped": process.poll() is not None, "active_processes": _job_active_processes(job)}
+            time.sleep(min(0.05, remaining))
+        process.wait()
+        # A normal child may still have a stray browser descendant. Kill anything left
+        # in the isolated job and wait until the kernel reports the tree empty.
+        if _job_active_processes(job):
+            terminated = True
+            _terminate_child(process, job)
+        end = time.monotonic() + 1.0
+        active = _job_active_processes(job)
+        while active and time.monotonic() < end:
+            time.sleep(0.02)
+            active = _job_active_processes(job)
+        return {"returncode": process.returncode, "terminated": terminated,
+                "reaped": process.poll() is not None, "active_processes": active}
+    finally:
+        if process is not None and process.poll() is None:
+            _terminate_child(process, job)
+        _close_job(job)
+
+
+def _resolve_in_child_process(url: str, *, cancel_check: Callable[[], bool] | None,
+                              timeout: float) -> Any:
+    """Supervise the sync Playwright resolver and forcibly reap its process tree."""
+    from chapter_source import select_adapter
+
+    started = time.monotonic()
+    deadline = started + DYNAMIC_RESOLVER_DEADLINE_SECONDS
+    with tempfile.TemporaryDirectory(prefix="yomu-dynamic-resolver-") as temp_dir:
+        root = Path(temp_dir)
+        request_path = root / "request.json"
+        result_path = root / "result.pkl"
+        status_path = root / "status.json"
+        request_path.write_text(json.dumps({
+            "url": url,
+            "timeout": float(timeout),
+            "deadline_seconds": max(
+                1.0,
+                DYNAMIC_RESOLVER_DEADLINE_SECONDS - DYNAMIC_RESOLVER_CLEANUP_RESERVE_SECONDS,
+            ),
+        }), encoding="utf-8")
+        if bool(getattr(sys, "frozen", False)):
+            command = [sys.executable, "--internal-child", "dynamic-resolver",
+                       str(request_path), str(result_path), str(status_path)]
+        else:
+            worker_script = Path(__file__).with_name("dynamic_resolver_process.py")
+            command = [sys.executable, "-u", str(worker_script),
+                       str(request_path), str(result_path), str(status_path)]
+        try:
+            outcome = _run_child_command(command, deadline=deadline, cancel_check=cancel_check)
+        except Exception as exc:
+            raise DynamicReaderError("dynamic_resolver_isolation_unavailable") from exc
+        if not outcome["reaped"] or outcome["active_processes"]:
+            raise DynamicReaderError("dynamic_resolver_child_cleanup_failed")
+        if outcome["terminated"]:
+            code = "cancelled" if cancel_check and cancel_check() else "dynamic_resolver_deadline_exceeded"
+            _append_telemetry(
+                "dynamic_resolution_failed", status="timeout" if code != "cancelled" else "cancelled",
+                error_code=code, stage="child_process",
+                elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+            )
+            raise DynamicReaderError(code)
+        if not status_path.is_file():
+            raise DynamicReaderError("dynamic_resolver_child_failed")
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        if status.get("status") != "pass":
+            reason = str(status.get("reason_code") or "dynamic_resolver_child_failed")[:80]
+            raise DynamicReaderError(reason)
+        if not result_path.is_file() or result_path.stat().st_size > 256 * 1024 * 1024:
+            raise DynamicReaderError("dynamic_resolver_child_result_invalid")
+        with result_path.open("rb") as stream:
+            return pickle.load(stream)
+
+
+def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None = None,
+            timeout: float = 30.0) -> Any:
+    """Run the sync browser resolver behind a killable wall-clock boundary."""
+    if not supports_url(url):
+        raise DynamicReaderError("site_not_selected")
+    if getattr(adapter, "name", "") not in {"comix", "ComixAdapter"}:
+        raise DynamicReaderError("site_not_selected")
+    return _resolve_in_child_process(url, cancel_check=cancel_check, timeout=timeout)

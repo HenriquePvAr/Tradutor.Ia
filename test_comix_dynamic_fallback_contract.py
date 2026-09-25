@@ -22,7 +22,8 @@ def _analysis():
 def test_comix_reader_api_status_retries_existing_dynamic_fallback(status):
     adapter = select_adapter(URL)
     direct = SourceError("source_access_denied", f"reader_api_status_{status}")
-    with mock.patch.object(down, "analyze_chapter_source", side_effect=direct), \
+    with mock.patch("http_source_discovery.discover_via_http", return_value=None), \
+         mock.patch.object(down, "analyze_chapter_source", side_effect=direct), \
          mock.patch("scrapling_reader_resolver.resolve", return_value=_analysis()) as resolve:
         result = down.discover_chapter_source(URL)
     assert result is not None
@@ -70,6 +71,35 @@ def test_comix_522_specialized_failure_is_controlled_without_retry_loop():
     resolve.assert_called_once()
 
 
+def test_comix_preflight_challenge_uses_dynamic_browser_fallback():
+    direct = SourceError("challenge_required", "navigation_preflight")
+    direct.preflight_result = {
+        "adapter": "comix", "reason_code": "challenge_required",
+        "captcha_detected": True, "security_blocked": True,
+    }
+    with mock.patch("http_source_discovery.discover_via_http", return_value=None), \
+         mock.patch.object(down, "analyze_chapter_source", side_effect=direct), \
+         mock.patch("scrapling_reader_resolver.resolve", return_value=_analysis()) as resolve:
+        result = down.discover_chapter_source(URL)
+    assert result is not None
+    assert len(result.accepted) == 2
+    resolve.assert_called_once()
+
+
+def test_comix_preflight_challenge_resolver_failure_is_terminal_and_no_bypass():
+    direct = SourceError("challenge_required", "navigation_preflight")
+    direct.preflight_result = {"adapter": "comix", "reason_code": "challenge_required"}
+    challenge = DynamicReaderError("challenge_required")
+    with mock.patch("http_source_discovery.discover_via_http", return_value=None), \
+         mock.patch.object(down, "analyze_chapter_source", side_effect=direct), \
+         mock.patch("scrapling_reader_resolver.resolve", side_effect=challenge) as resolve:
+        with pytest.raises(SourceError) as caught:
+            down.discover_chapter_source(URL)
+    assert caught.value.code == "source_access_denied"
+    assert caught.value.detail == "dynamic_reader_challenge_required"
+    resolve.assert_called_once()
+
+
 def test_comix_dynamic_browser_unavailable_is_not_false_access_denied():
     direct = SourceError("source_access_denied", "reader_api_status_403")
     unavailable = DynamicReaderError("browser_unavailable")
@@ -78,6 +108,17 @@ def test_comix_dynamic_browser_unavailable_is_not_false_access_denied():
         with pytest.raises(SourceError) as caught:
             down.discover_chapter_source(URL)
     assert caught.value.code == "dynamic_source_unavailable"
+
+
+def test_comix_non_reader_access_denial_does_not_trigger_dynamic_fallback():
+    direct = SourceError("source_access_denied", "account_permission_denied")
+    with mock.patch("http_source_discovery.discover_via_http", return_value=None), \
+         mock.patch.object(down, "analyze_chapter_source", side_effect=direct), \
+         mock.patch("scrapling_reader_resolver.resolve") as resolve:
+        with pytest.raises(SourceError) as caught:
+            down.discover_chapter_source(URL)
+    assert caught.value is direct
+    resolve.assert_not_called()
 
 
 def test_optional_resolver_import_failure_is_controlled_not_name_error():

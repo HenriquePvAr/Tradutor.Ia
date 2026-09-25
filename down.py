@@ -464,6 +464,10 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None):
         return analyze_chapter_source(url, cancel_check=cancel_check, on_progress=on_progress)
     except SourceError as exc:
         preflight_result = getattr(exc, "preflight_result", {}) or {}
+        is_comix_challenge = (
+            getattr(adapter, "name", "") == "comix"
+            and getattr(exc, "code", "") == "challenge_required"
+        )
         is_comix_522 = (
             getattr(adapter, "name", "") == "comix"
             and getattr(exc, "code", "") == "source_unavailable"
@@ -472,8 +476,11 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None):
         is_comix_reader_api_denied = (
             getattr(adapter, "name", "") == "comix"
             and getattr(exc, "code", "") == "source_access_denied"
+            and str(getattr(exc, "detail", "") or "") in {
+                "reader_api_status_401", "reader_api_status_403",
+            }
         )
-        if not (is_comix_522 or is_comix_reader_api_denied):
+        if not (is_comix_522 or is_comix_reader_api_denied or is_comix_challenge):
             raise
         dynamic_error_type, resolve_dynamic, import_error = _load_dynamic_reader_resolver()
         if import_error is not None or not callable(resolve_dynamic) or dynamic_error_type is None:
@@ -482,6 +489,9 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None):
             failure.preflight_result = preflight_result
             raise failure from import_error
         try:
+            # Comix may serve a normal anti-bot interstitial to the bounded requests
+            # preflight. The supported dynamic resolver uses the product's ordinary
+            # browser path only; any challenge it cannot resolve remains terminal.
             dynamic_analysis = resolve_dynamic(url, adapter=adapter, cancel_check=cancel_check)
             if dynamic_analysis is not None:
                 return dynamic_analysis

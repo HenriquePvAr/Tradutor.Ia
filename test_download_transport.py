@@ -15,7 +15,7 @@ import chapter_source
 from chapter_source import (
     CHALLENGE_REQUIRED, ChallengeRequired, INVALID_IMAGE_RESPONSE, SOURCE_ACCESS_DENIED,
     INCOMPLETE_DOWNLOAD, SOURCE_RATE_LIMITED, SourceError, GenericImageChapterAdapter,
-    UniversalChapterAdapter, WEBTOONS,
+    UniversalChapterAdapter, WEBTOONS, select_adapter,
 )
 from download_transport import (
     BrowserSessionTransport, CloudscraperTransport, DownloadLimits, LimitExceeded,
@@ -287,6 +287,28 @@ class NavigationPreflightTests(unittest.TestCase):
             final = preflight_browser_navigation(adapter(), PAGE, session=session)
         self.assertEqual(final, f"https://{HOST}/reader")
         self.assertEqual(session.requests, [PAGE, final])
+
+    def test_comix_normal_html_body_follows_regular_browser_preflight(self):
+        url = "https://comix.to/title/9lmnj-error-the-echo/11388794-chapter-1"
+        session = _Session([_Response(
+            content=b"<html><body><main>Chapter reader</main></body></html>",
+            content_type="text/html",
+        )])
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            result = inspect_source_preflight(select_adapter(url), url, session=session)
+        self.assertIn(result.status, {"preflight_ready", "browser_inspection_required"})
+        self.assertNotEqual(result.reason_code, CHALLENGE_REQUIRED)
+
+    def test_comix_challenge_branch_uses_canonical_reason_without_name_error(self):
+        url = "https://comix.to/title/9lmnj-error-the-echo/11388794-chapter-1"
+        body = b"<html><body>Checking your browser before accessing</body></html>"
+        session = _Session([_Response(content=body, content_type="text/html")])
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            result = inspect_source_preflight(select_adapter(url), url, session=session)
+        self.assertEqual(result.status, "source_captcha_detected")
+        self.assertEqual(result.reason_code, CHALLENGE_REQUIRED)
+        self.assertTrue(result.captcha_detected)
+        self.assertTrue(result.security_blocked)
 
     def test_navigation_redirect_to_private_or_non_http_target_fails_closed(self):
         for location in ("http://127.0.0.1/admin", "file:///C:/secret.txt"):

@@ -2,6 +2,10 @@ import unittest
 from unittest import mock
 from io import BytesIO
 import base64
+import os
+import sys
+import tempfile
+import time
 
 from PIL import Image
 
@@ -160,7 +164,7 @@ class ScraplingResolverTests(unittest.TestCase):
     def test_missing_capability_is_controlled(self):
         with mock.patch.object(resolver, "_DynamicFetcher", None):
             with self.assertRaisesRegex(resolver.DynamicReaderError, "capability_unavailable"):
-                resolver.resolve(self.URL, adapter=_FakeAdapter())
+                resolver._resolve_inline(self.URL, adapter=_FakeAdapter())
 
     def test_capability_snapshot_is_sanitized(self):
         snapshot = resolver.capabilities()
@@ -178,9 +182,99 @@ class ScraplingResolverTests(unittest.TestCase):
 
         fake_fetcher.fetch.side_effect = fetch
         with mock.patch.object(resolver, "_DynamicFetcher", fake_fetcher):
+            # Opaque XHR is never decrypted, so nothing materializes: the resolver fails
+            # closed on the first pass (no-progress) instead of wasting further retries.
             with self.assertRaisesRegex(resolver.DynamicReaderError,
-                                        "canonical_materialization_failed"):
-                resolver.resolve(self.URL, adapter=_FakeAdapter())
+                                        "canonical_materialization_no_progress"):
+                resolver._resolve_inline(self.URL, adapter=_FakeAdapter())
+
+    def test_global_deadline_is_passed_as_playwright_operation_timeout(self):
+        fake_fetcher = mock.Mock()
+
+        def bounded_fetch(_url, **kwargs):
+            # Model a blocking browser operation honoring Playwright's supplied timeout.
+            time.sleep(kwargs["timeout"] / 1000 + 0.02)
+            raise TimeoutError("simulated browser operation timeout")
+
+        fake_fetcher.fetch.side_effect = bounded_fetch
+        with mock.patch.object(resolver, "_DynamicFetcher", fake_fetcher), \
+                mock.patch.object(resolver, "discover_system_browser", return_value=("Chrome", "chrome.exe")), \
+                mock.patch.object(resolver, "DYNAMIC_RESOLVER_DEADLINE_SECONDS", 0.05):
+            started = time.monotonic()
+            with self.assertRaisesRegex(resolver.DynamicReaderError,
+                                        "dynamic_resolver_deadline_exceeded"):
+                resolver._resolve_inline(self.URL, adapter=_FakeAdapter(), timeout=1.0)
+            self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(fake_fetcher.fetch.call_count, 1)
+        self.assertLessEqual(fake_fetcher.fetch.call_args.kwargs["timeout"], 50)
+
+    def test_expired_global_deadline_prevents_retry(self):
+        fake_fetcher = mock.Mock()
+        fake_fetcher.fetch.return_value = object()
+        with mock.patch.object(resolver, "_DynamicFetcher", fake_fetcher), \
+                mock.patch.object(resolver, "discover_system_browser", return_value=("Chrome", "chrome.exe")), \
+                mock.patch.object(resolver, "DYNAMIC_RESOLVER_DEADLINE_SECONDS", 0):
+            with self.assertRaisesRegex(resolver.DynamicReaderError,
+                                        "dynamic_resolver_deadline_exceeded"):
+                resolver._resolve_inline(self.URL, adapter=_FakeAdapter())
+        fake_fetcher.fetch.assert_not_called()
+
+    def test_full_resolution_retry_is_skipped_without_its_required_budget(self):
+        # A first pass leaves pages pending but the remaining budget cannot fund another
+        # bounded full pass (with its cleanup margin): fail closed with the budget code,
+        # and never start a second pass.
+        fake_fetcher = mock.Mock()
+
+        def fetch(_url, **kwargs):
+            page = _FakePage()
+            kwargs["page_setup"](page)
+            kwargs["page_action"](page)
+            return object()
+
+        fake_fetcher.fetch.side_effect = fetch
+        with mock.patch.object(resolver, "_DynamicFetcher", fake_fetcher), \
+                mock.patch.object(resolver, "DYNAMIC_RESOLVER_DEADLINE_SECONDS", 1.0), \
+                mock.patch.object(resolver, "_missing_chapter_budget_seconds", return_value=100.0):
+            with self.assertRaisesRegex(
+                resolver.DynamicReaderError,
+                "canonical_materialization_retry_budget_insufficient",
+            ):
+                resolver._resolve_inline(self.URL, adapter=_FakeAdapter())
+        self.assertEqual(fake_fetcher.fetch.call_count, 1)
+
+    @unittest.skipUnless(os.name == "nt", "process-tree kill job contract is Windows-specific")
+    def test_hard_deadline_terminates_and_reaps_child_and_browser_descendant(self):
+        import psutil
+
+        with tempfile.TemporaryDirectory(prefix="yomu-resolver-test-") as temp:
+            marker = os.path.join(temp, "descendant.pid")
+            child_code = (
+                "import subprocess,sys,time; sys.stdin.readline(); "
+                "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                f"open({marker!r},'w').write(str(p.pid)); time.sleep(30)"
+            )
+            started = time.monotonic()
+            outcome = resolver._run_child_command(
+                [sys.executable, "-c", child_code], deadline=started + 0.5)
+            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertTrue(outcome["terminated"])
+            self.assertTrue(outcome["reaped"])
+            self.assertEqual(outcome["active_processes"], 0)
+            self.assertTrue(os.path.isfile(marker))
+            with open(marker, encoding="utf-8") as stream:
+                descendant_pid = int(stream.read())
+            end = time.monotonic() + 2.0
+            while psutil.pid_exists(descendant_pid) and time.monotonic() < end:
+                time.sleep(0.02)
+            self.assertFalse(psutil.pid_exists(descendant_pid))
+
+    def test_dynamic_resolver_child_command_is_available_for_dev_and_frozen(self):
+        import start_tradutor
+
+        dev_command = start_tradutor.build_child_command("dynamic-resolver", frozen=False)
+        frozen_command = start_tradutor.build_child_command("dynamic-resolver", frozen=True)
+        self.assertTrue(os.path.isfile(dev_command[-1]))
+        self.assertEqual(frozen_command[-2:], ["--internal-child", "dynamic-resolver"])
 
     def test_cancelled_before_extraction(self):
         with self.assertRaisesRegex(resolver.DynamicReaderError, "cancelled"):
@@ -292,6 +386,113 @@ class ScraplingResolverTests(unittest.TestCase):
         self.assertIsNone(
             resolver._promote_browser_response_candidate(raw, b"not-an-image", "image/webp")
         )
+
+
+class MaterializationRetryDecisionTests(unittest.TestCase):
+    """Pure budget/progress policy: futile retries stopped and the cleanup margin
+    reserved, while a flaky first pass still keeps its bounded retry."""
+
+    def _decide(self, **overrides):
+        base = dict(pending_count=3, prev_pending_count=None,
+                    remaining_budget=200.0, attempt=1, max_attempts=3, pending_budget=80.0)
+        base.update(overrides)
+        return resolver._materialization_retry_decision(**base)
+
+    def test_first_pass_with_budget_retries(self):
+        self.assertEqual(self._decide(prev_pending_count=None, remaining_budget=200.0,
+                                      pending_budget=80.0), "retry")
+
+    def test_first_pass_without_budget_is_budget_insufficient(self):
+        self.assertEqual(self._decide(prev_pending_count=None, remaining_budget=90.0,
+                                      pending_budget=80.0), "budget_insufficient")
+
+    def test_first_pass_is_never_no_progress(self):
+        # prev is None -> an intermittently-flaky first pass is always allowed its retry,
+        # even at zero materialization (large pending), so recovery on a later pass works.
+        self.assertEqual(self._decide(prev_pending_count=None, pending_count=147,
+                                      remaining_budget=5000.0, pending_budget=10.0), "retry")
+
+    def test_retry_pass_without_shrink_is_no_progress(self):
+        self.assertEqual(self._decide(attempt=2, pending_count=6, prev_pending_count=6,
+                                      remaining_budget=5000.0, pending_budget=50.0),
+                         "no_progress")
+
+    def test_retry_pass_with_shrink_continues(self):
+        self.assertEqual(self._decide(attempt=2, pending_count=4, prev_pending_count=6,
+                                      remaining_budget=5000.0, pending_budget=50.0), "retry")
+
+    def test_unavailable_pending_count_is_not_no_progress(self):
+        # pending_count 0 (counts unavailable, e.g. mocked failure code) must fall back to
+        # the bounded attempt-count retry, never a spurious no_progress.
+        self.assertNotEqual(
+            self._decide(attempt=2, pending_count=0, prev_pending_count=0,
+                         remaining_budget=5000.0, pending_budget=8.0),
+            "no_progress")
+
+    def test_exhausted_is_failed(self):
+        self.assertEqual(self._decide(attempt=3, pending_count=1, prev_pending_count=3,
+                                      remaining_budget=5000.0, pending_budget=30.0), "failed")
+
+    def test_cleanup_margin_is_reserved(self):
+        # exactly pending_budget remaining is NOT enough: the safety margin must fit too.
+        self.assertEqual(self._decide(remaining_budget=50.0, pending_budget=50.0),
+                         "budget_insufficient")
+        self.assertEqual(
+            self._decide(remaining_budget=50.0 + resolver.RETRY_BUDGET_SAFETY_MARGIN_SECONDS,
+                         pending_budget=50.0),
+            "retry")
+
+
+class ResponseBodyFilterTests(unittest.TestCase):
+    """Coverage-preserving pre-filter for response.body(): skip only bodies that promotion
+    would reject anyway (duplicate URL / oversize / wrong content-type), never on missing
+    metadata, and always read a fresh allowed page image."""
+
+    HOST_URL = "https://jloo.wowpic1.store/a/7.webp"
+
+    def _decide(self, **overrides):
+        base = dict(resource_type="image", resource_url=self.HOST_URL,
+                    content_type_header="image/webp", content_length_header="1024",
+                    already_captured=False)
+        base.update(overrides)
+        return resolver._should_read_response_body(**base)
+
+    def test_fresh_allowed_page_image_is_read(self):
+        self.assertEqual(self._decide(), (True, ""))
+
+    def test_non_image_resource_is_skipped(self):
+        read, reason = self._decide(resource_type="fetch")
+        self.assertFalse(read)
+        self.assertEqual(reason, "not_page_image")
+
+    def test_foreign_host_is_skipped(self):
+        read, reason = self._decide(resource_url="https://cdn.other.example/7.webp")
+        self.assertFalse(read)
+        self.assertEqual(reason, "not_page_image")
+
+    def test_duplicate_url_is_skipped(self):
+        self.assertEqual(self._decide(already_captured=True), (False, "dedup"))
+
+    def test_disallowed_content_type_is_skipped(self):
+        self.assertEqual(self._decide(content_type_header="image/gif"),
+                         (False, "content_type"))
+
+    def test_oversize_declared_length_is_skipped(self):
+        big = str(resolver.MAX_BROWSER_RESPONSE_BODY_BYTES + 1)
+        self.assertEqual(self._decide(content_length_header=big), (False, "oversize"))
+
+    def test_allowed_types_are_read(self):
+        for ctype in ("image/png", "image/jpeg", "image/webp", "image/webp; charset=binary"):
+            self.assertEqual(self._decide(content_type_header=ctype), (True, ""), ctype)
+
+    def test_missing_metadata_is_never_a_skip_reason(self):
+        # No content-type / no content-length must still be read (promotion decides), so a
+        # page that would have promoted is never dropped by a cautious filter.
+        self.assertEqual(self._decide(content_type_header=None, content_length_header=None),
+                         (True, ""))
+
+    def test_unparseable_length_is_read(self):
+        self.assertEqual(self._decide(content_length_header="not-a-number"), (True, ""))
 
 
 if __name__ == "__main__":

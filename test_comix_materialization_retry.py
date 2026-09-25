@@ -36,6 +36,21 @@ class _FakeAdapter:
         return None
 
 
+def _inline_boundary(adapter):
+    """A ``_resolve_in_child_process`` stand-in that runs the resolver INLINE.
+
+    ``resolve()`` now spawns a child process for isolation (see the child-process
+    boundary tests in ``test_scrapling_reader_resolver.py``).  These tests exercise the
+    INLINE retry/materialization contract, so they replace only that boundary with an
+    in-process call to ``_resolve_inline`` -- the parent-process mocks then apply and no
+    real Chrome/subprocess is launched.  Production is unchanged.
+    """
+    def boundary(url, *, cancel_check=None, timeout=30.0):
+        return resolver._resolve_inline(
+            url, adapter=adapter, cancel_check=cancel_check, timeout=timeout)
+    return boundary
+
+
 def _run_resolve_with(failure_sequence):
     """Drive resolve() with a scripted per-attempt classification.
 
@@ -45,6 +60,7 @@ def _run_resolve_with(failure_sequence):
     """
     fake_fetcher = mock.MagicMock()
     telemetry = []
+    adapter = _FakeAdapter()
 
     def record(event, **fields):
         telemetry.append({"event": event, **fields})
@@ -54,9 +70,10 @@ def _run_resolve_with(failure_sequence):
             mock.patch.object(resolver, "_DynamicFetcher", fake_fetcher), \
             mock.patch.object(resolver, "_resolution_failure_code", side_effect=list(failure_sequence)), \
             mock.patch.object(resolver, "_append_telemetry", side_effect=record), \
+            mock.patch.object(resolver, "_resolve_in_child_process", side_effect=_inline_boundary(adapter)), \
             mock.patch("universal_chapter_adapter.analyse_candidates", return_value=mock.MagicMock()):
         try:
-            result = resolver.resolve(URL, adapter=_FakeAdapter())
+            result = resolver.resolve(URL, adapter=adapter)
             return result, fake_fetcher.fetch.call_count, telemetry
         except DynamicReaderError as exc:
             return exc, fake_fetcher.fetch.call_count, telemetry
@@ -122,21 +139,27 @@ class MaterializationRetryTests(unittest.TestCase):
 
     # --- D: capability/browser problems never spin a useless retry ---
     def test_capability_unavailable_does_not_retry(self):
+        adapter = _FakeAdapter()
         with mock.patch.object(resolver, "supports_url", return_value=True), \
-                mock.patch.object(resolver, "_DynamicFetcher", None):
+                mock.patch.object(resolver, "_DynamicFetcher", None), \
+                mock.patch.object(resolver, "_resolve_in_child_process",
+                                  side_effect=_inline_boundary(adapter)):
             with self.assertRaises(DynamicReaderError) as ctx:
-                resolver.resolve(URL, adapter=_FakeAdapter())
+                resolver.resolve(URL, adapter=adapter)
         self.assertEqual(ctx.exception.code, "capability_unavailable")
 
     def test_browser_error_propagates_without_retry(self):
+        adapter = _FakeAdapter()
         fake_fetcher = mock.MagicMock()
         fake_fetcher.fetch.side_effect = DynamicReaderError("browser_unavailable")
         with mock.patch.object(resolver, "supports_url", return_value=True), \
                 mock.patch.object(resolver, "discover_system_browser", return_value=("chrome", "/fake")), \
                 mock.patch.object(resolver, "_DynamicFetcher", fake_fetcher), \
-                mock.patch.object(resolver, "_append_telemetry"):
+                mock.patch.object(resolver, "_append_telemetry"), \
+                mock.patch.object(resolver, "_resolve_in_child_process",
+                                  side_effect=_inline_boundary(adapter)):
             with self.assertRaises(DynamicReaderError) as ctx:
-                resolver.resolve(URL, adapter=_FakeAdapter())
+                resolver.resolve(URL, adapter=adapter)
         self.assertEqual(ctx.exception.code, "browser_unavailable")
         self.assertEqual(fake_fetcher.fetch.call_count, 1)  # raised, not retried
 
