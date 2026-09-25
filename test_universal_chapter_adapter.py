@@ -96,6 +96,16 @@ class UniversalAnalysisTests(unittest.TestCase):
         self.assertNotIn("?", str(public))
         self.assertNotIn("page-001.webp", str(public))
 
+    def test_logical_reader_indices_define_order_after_fallback_materialization(self):
+        # Preloaded indices 1 and 10 can precede fallback index 2 in discovery order;
+        # canonical logical identity must win over stale DOM y/order values.
+        result = self.analyse([
+            page(1, logical_page_index=1, y=1),
+            page(10, logical_page_index=10, y=10),
+            page(2, logical_page_index=2, y=2),
+        ])
+        self.assertEqual([candidate.logical_index for candidate in result.accepted], [1, 2, 10])
+
     def test_two_ambiguous_pages_need_confirmation(self):
         result = self.analyse([
             page(1, container="", context="", width=800, height=1200),

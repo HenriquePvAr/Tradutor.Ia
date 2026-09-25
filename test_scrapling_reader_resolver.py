@@ -268,6 +268,32 @@ class ScraplingResolverTests(unittest.TestCase):
                 time.sleep(0.02)
             self.assertFalse(psutil.pid_exists(descendant_pid))
 
+    @unittest.skipUnless(os.name == "nt", "process-tree kill job contract is Windows-specific")
+    def test_normal_child_exit_reaps_browser_descendant_without_becoming_timeout(self):
+        import psutil
+
+        with tempfile.TemporaryDirectory(prefix="yomu-resolver-test-") as temp:
+            marker = os.path.join(temp, "descendant.pid")
+            child_code = (
+                "import subprocess,sys; sys.stdin.readline(); "
+                "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                f"open({marker!r},'w').write(str(p.pid))"
+            )
+            started = time.monotonic()
+            outcome = resolver._run_child_command(
+                [sys.executable, "-c", child_code], deadline=started + 10)
+            self.assertLess(time.monotonic() - started, 3.0)
+            self.assertFalse(outcome["terminated"])
+            self.assertTrue(outcome["cleanup_killed_descendants"])
+            self.assertTrue(outcome["reaped"])
+            self.assertEqual(outcome["active_processes"], 0)
+            with open(marker, encoding="utf-8") as stream:
+                descendant_pid = int(stream.read())
+            end = time.monotonic() + 2.0
+            while psutil.pid_exists(descendant_pid) and time.monotonic() < end:
+                time.sleep(0.02)
+            self.assertFalse(psutil.pid_exists(descendant_pid))
+
     def test_dynamic_resolver_child_command_is_available_for_dev_and_frozen(self):
         import start_tradutor
 
@@ -322,6 +348,20 @@ class ScraplingResolverTests(unittest.TestCase):
         self.assertEqual(len(merged), 105)
         self.assertEqual(missing, [])
 
+    def test_reader_declared_count_drives_canonical_set_without_historical_49(self):
+        reader_declared_count = 51
+        expected = resolver._expected_page_indices(reader_declared_count)
+        candidates = [
+            {"logical_page_index": index, "url": f"data:page-{index}"}
+            for index in expected
+        ]
+        merged, missing = resolver._merge_logical_candidates(
+            candidates, [], reader_declared_count)
+        self.assertEqual(len(expected), 51)
+        self.assertEqual([item["logical_page_index"] for item in merged], expected)
+        self.assertEqual(expected[-2:], [50, 51])
+        self.assertEqual(missing, [])
+
     def test_missing_page_merge_fails_closed(self):
         preload = [
             {"logical_page_index": index, "url": f"https://cdn.test/{index}.webp"}
@@ -337,6 +377,38 @@ class ScraplingResolverTests(unittest.TestCase):
             {"logical_page_index": 2, "source": "canvas_capture", "url": "data:2"},
             {"logical_page_index": 3, "source": "scrapling_dom", "url": "https://cdn/3"},
         ]
+
+
+class _FakeLocator:
+    def __init__(self, *, count=1, fail_click=False):
+        self.count_value = count
+        self.fail_click = fail_click
+        self.first = self
+        self.scrolled = False
+        self.clicked = False
+
+    def count(self):
+        return self.count_value
+
+    def scroll_into_view_if_needed(self, **_kwargs):
+        self.scrolled = True
+
+    def click(self, **_kwargs):
+        if self.fail_click:
+            raise RuntimeError("click failed")
+        self.clicked = True
+
+
+class _NavigationPage:
+    def __init__(self, locator):
+        self.control = locator
+        self.evaluations = []
+
+    def locator(self, _selector):
+        return self.control
+
+    def evaluate(self, script, index):
+        self.evaluations.append((script, index))
         current = [
             {"logical_page_index": 1, "source": "scrapling_dom", "url": "https://cdn/new-1"},
             {"logical_page_index": 2, "source": "scrapling_dom", "url": "https://cdn/new-2"},
@@ -347,6 +419,112 @@ class ScraplingResolverTests(unittest.TestCase):
         self.assertEqual([item["source"] for item in merged],
                          ["browser_response_body", "canvas_capture", "canvas_capture"])
         self.assertEqual(pending, [])
+
+    def test_partial_scope_targets_only_requested_canonical_prefix(self):
+        for requested in (3, 5, 20, 50):
+            with self.subTest(requested=requested):
+                target = resolver._target_page_indices(105, requested)
+                self.assertEqual(len(target), requested)
+                self.assertEqual(target, list(range(1, requested + 1)))
+        self.assertEqual(resolver._target_page_indices(105), list(range(1, 106)))
+
+    def test_partial_retry_merges_only_in_scope_and_retries_exact_pending_pages(self):
+        previous = [
+            {"logical_page_index": index, "source": "canvas_capture", "url": f"data:{index}"}
+            for index in range(1, 6)
+        ]
+        previous[3] = {"logical_page_index": 4, "source": "scrapling_dom", "url": "https://cdn/4"}
+        current = [
+            {"logical_page_index": 4, "source": "scrapling_dom", "url": "https://cdn/new-4"},
+            {"logical_page_index": 6, "source": "scrapling_dom", "url": "https://cdn/6"},
+            {"logical_page_index": 105, "source": "canvas_capture", "url": "data:105"},
+        ]
+        merged, pending = resolver._merge_materialized_attempts(
+            previous, current, 105, requested_count=5)
+        self.assertEqual([item["logical_page_index"] for item in merged], [1, 2, 3, 4, 5])
+        self.assertEqual(pending, [4])
+        self.assertEqual(len({item["logical_page_index"] for item in merged}), 5)
+
+    def test_last_and_penultimate_page_indices_are_in_canonical_target(self):
+        target = resolver._target_page_indices(105)
+        self.assertEqual(target[-2:], [104, 105])
+
+    def test_reader_navigation_uses_normal_control_with_targeted_scroll(self):
+        locator = _FakeLocator()
+        page = _NavigationPage(locator)
+        result = resolver._navigate_reader_to_page(page, 105)
+        self.assertTrue(result["control_found"])
+        self.assertEqual(result["click_method"], "playwright_control_click+targeted_scroll")
+        self.assertTrue(locator.scrolled)
+        self.assertTrue(locator.clicked)
+
+    def test_reader_navigation_scrolls_only_target_when_control_is_not_mounted(self):
+        page = _NavigationPage(_FakeLocator(count=0))
+        result = resolver._navigate_reader_to_page(page, 104)
+        self.assertFalse(result["control_found"])
+        self.assertEqual(result["click_method"], "targeted_page_scroll")
+        self.assertEqual(page.evaluations[-1][1], 104)
+
+    def test_render_identity_and_capture_scope_page_nodes_to_reader_main(self):
+        class InspectPage:
+            def __init__(self):
+                self.scripts = []
+            def evaluate(self, script, *_args):
+                self.scripts.append(script)
+                return {"container_exists": False}
+        page = InspectPage()
+        resolver._read_reader_render_state(page, 4)
+        self.assertIn("reader?.querySelector('[data-page'", page.scripts[0])
+        self.assertNotIn("document.querySelector('[data-page", page.scripts[0])
+        self.assertIn("const render = canvas || image", page.scripts[0])
+
+    def test_partial_body_promotion_ignores_out_of_scope_pages(self):
+        response = mock.Mock()
+        candidates = [
+            {"url": f"https://cdn.example/{index}.webp", "logical_page_index": index,
+             "context": "reader", "container": "comix-reader", "source": "scrapling_dom"}
+            for index in (1, 5, 6)
+        ]
+        pending = {
+            item["url"]: {"response": response, "resource_type": "image",
+                          "content_type": "image/webp", "content_length": "128"}
+            for item in candidates
+        }
+        stats = {"read_total": 0, "read_ms": 0, "read_failed": 0,
+                 "captured": 0, "promoted": 0}
+        resolver._promote_observed_response_bodies(
+            candidates, pending, {}, stats, requested_count=5)
+        self.assertEqual(stats["read_total"], 2)
+        self.assertIn("https://cdn.example/6.webp", pending)
+
+    def test_partial_preload_does_not_switch_reader_to_preload_all(self):
+        class Page:
+            def __init__(self):
+                self.scripts = []
+                self.waits = 0
+            def evaluate(self, script, *_args):
+                self.scripts.append(script)
+                if "settings:" in script:
+                    return {"settings": True, "some": True, "all": True,
+                            "checked": "some", "direction": "ltr", "controls": 105}
+                return {}
+            def wait_for_timeout(self, _ms):
+                self.waits += 1
+
+        page = Page()
+        with mock.patch.object(resolver, "_close_reader_settings", return_value={"closed": True}), \
+                mock.patch.object(resolver, "_read_reader_overlay_state", return_value={}):
+            candidates, selector = resolver._configure_preload_all(
+                page, candidates=[], selector="img.rpage-page__img", url=self.URL,
+                events=[], cancel_check=None, browser_bodies={}, pending_responses={},
+                body_stats={}, previously_materialized_indices=set(),
+                promoted_resource_indices={}, page_body_elapsed_ms={},
+                page_action_started=time.monotonic(), reader_image_hosts=set(),
+                scroll_diagnostics={}, requested_count=5)
+        self.assertEqual(candidates, [])
+        self.assertEqual(selector, "img.rpage-page__img")
+        self.assertEqual(page.waits, 0)
+        self.assertFalse(any("input.click()" in script for script in page.scripts))
 
     def test_dynamic_fallback_materializes_rendered_canvas_not_network_resource(self):
         page = _ViewportCanvasPage()
@@ -359,6 +537,36 @@ class ScraplingResolverTests(unittest.TestCase):
         self.assertEqual(candidate["capture_width"], 800)
         self.assertEqual(candidate["capture_height"], 1250)
         self.assertNotEqual(candidate["url"], "https://cdn.test/scrambled")
+
+    def test_dynamic_fallback_uses_targeted_element_capture_when_viewport_clips_page(self):
+        element_png = BytesIO()
+        Image.new("RGBA", (800, 1250), (12, 24, 36, 255)).save(element_png, format="PNG")
+
+        class Locator:
+            def count(self):
+                return 1
+            def screenshot(self, **_kwargs):
+                return element_png.getvalue()
+
+        class Page:
+            def evaluate(self, _script, _index):
+                return {
+                    "target": {"x": 900, "y": 10, "width": 640, "height": 800},
+                    "viewport": {"width": 1280, "height": 900},
+                    "visual": {"x": 0, "y": 0}, "dpr": 1,
+                    "native": {"width": 800, "height": 1250},
+                }
+            def locator(self, _selector):
+                return Locator()
+            def screenshot(self, **_kwargs):
+                raise AssertionError("viewport capture must not be used when target is clipped")
+
+        candidate = resolver._capture_rendered_canvas_candidate(
+            Page(), 10, {"width": 800, "height": 1250}
+        )
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["capture_method"], "reader_element_screenshot")
+        self.assertEqual((candidate["capture_width"], candidate["capture_height"]), (800, 1250))
 
     def test_browser_png_is_promoted_without_transcode(self):
         encoded = BytesIO()

@@ -65,3 +65,34 @@ def test_ui_source_analysis_entrypoint_routes_recoverable_comix_failures(
         assert bridge.store.list_jobs(statuses=None, limit=None) == []
     finally:
         bridge.close()
+
+
+def test_partial_source_analysis_passes_requested_page_scope_to_dynamic_resolver(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADUTOR_TEST_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    bridge = UiBridge()
+    principal = SimpleNamespace(owner_id="local", user_id="local", authenticated=True)
+    preflight_error = SourceError("source_access_denied", "reader_api_status_403")
+    preflight_error.preflight_result = {
+        "adapter": "comix", "http_status": 403, "reason_code": "source_access_denied"}
+    analysis = SourceAnalysis(
+        adapter="comix", final_host="comix.to", outcome=SUPPORTED_SPECIFIC_ADAPTER,
+        confidence=1.0, accepted=[],
+    )
+    monkeypatch.setattr(app_ui, "BRIDGE", bridge)
+    monkeypatch.setattr(app_ui, "_ui_principal", lambda *_args, **_kwargs: principal)
+    request = SimpleNamespace(headers={}, client=SimpleNamespace(host="127.0.0.1"))
+    try:
+        with mock.patch("http_source_discovery.discover_via_http", return_value=None), \
+             mock.patch.object(down, "analyze_chapter_source", side_effect=preflight_error), \
+             mock.patch("scrapling_reader_resolver.resolve", return_value=analysis) as resolver:
+            response = asyncio.run(app_ui.api_source_analyze(request, {
+                "source_type": "url", "url": URL, "full": False,
+                "max_images": 5, "trace_id": "partial-five",
+            }))
+        assert response["ready"] is True
+        resolver.assert_called_once()
+        assert resolver.call_args.kwargs["max_pages"] == 5
+        assert bridge.store.list_jobs(statuses=None, limit=None) == []
+    finally:
+        bridge.close()

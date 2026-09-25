@@ -806,7 +806,14 @@ def analyse_candidates(
                               reader_diagnostics=safe_reader_diagnostics)
 
     selected = cluster_list[0]
-    accepted = sorted(selected.candidates, key=lambda candidate: (candidate.y, candidate.order))
+    if selected.candidates and all(candidate.logical_index > 0
+                                   for candidate in selected.candidates):
+        # Reader-provided logical indices are the canonical sequence. In a virtualized
+        # reader, fallback-captured pages are appended after preload pages and their DOM
+        # y coordinate can be stale/zero; sorting by y would move those pages out of order.
+        accepted = sorted(selected.candidates, key=lambda candidate: candidate.logical_index)
+    else:
+        accepted = sorted(selected.candidates, key=lambda candidate: (candidate.y, candidate.order))
     if len(accepted) > MAX_AUTOMATIC_PAGES and "page_limit_exceeded" not in safe_warnings:
         safe_warnings.append("page_limit_exceeded")
     coverage_incomplete = any(warning in _INCOMPLETE_COVERAGE_WARNINGS for warning in safe_warnings)

@@ -20,6 +20,8 @@ def main(argv: list[str] | None = None) -> int:
         url = str(request.get("url") or "")
         timeout = float(request.get("timeout") or 30.0)
         deadline_seconds = float(request.get("deadline_seconds") or 177.0)
+        max_pages = request.get("max_pages")
+        max_pages = int(max_pages) if max_pages is not None else None
         from chapter_source import select_adapter
         from scrapling_reader_resolver import _resolve_inline
 
@@ -28,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         adapter.validate_path(url)
         analysis = _resolve_inline(
             url, adapter=adapter, timeout=timeout,
-            deadline_seconds=deadline_seconds,
+            deadline_seconds=deadline_seconds, max_pages=max_pages,
         )
         with result_path.open("wb") as stream:
             pickle.dump(analysis, stream, protocol=pickle.HIGHEST_PROTOCOL)

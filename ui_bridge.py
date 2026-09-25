@@ -4513,8 +4513,13 @@ class UiBridge:
         if self._requested_source_type(payload) != "url":
             raise ValueError("source_validation_url_required")
         normalized = self._normalize_payload(payload, require_environment=False)
-        analysis = await self._run_source_analysis(
-            normalized["url"], diagnostic_callback=diagnostic_callback)
+        if normalized["full"]:
+            analysis = await self._run_source_analysis(
+                normalized["url"], diagnostic_callback=diagnostic_callback)
+        else:
+            analysis = await self._run_source_analysis(
+                normalized["url"], diagnostic_callback=diagnostic_callback,
+                max_pages=normalized["max_images"])
 
         from chapter_source import (
             REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
@@ -5352,7 +5357,8 @@ class UiBridge:
         }
 
     @staticmethod
-    def _analyze_source(url: str, *, cancel_check=None, diagnostic_callback=None):
+    def _analyze_source(url: str, *, cancel_check=None, diagnostic_callback=None,
+                        max_pages=None):
         """Late import keeps UI bootstrap/import hermetic; only a user submit navigates.
 
         Tries HTTP-only discovery first (no Chrome) and only falls back to the browser-based
@@ -5360,16 +5366,22 @@ class UiBridge:
         """
         from down import discover_chapter_source
 
+        if max_pages is None:
+            return discover_chapter_source(
+                url, cancel_check=cancel_check, diagnostic_callback=diagnostic_callback)
         return discover_chapter_source(
-            url, cancel_check=cancel_check, diagnostic_callback=diagnostic_callback)
+            url, cancel_check=cancel_check, diagnostic_callback=diagnostic_callback,
+            max_images=max_pages)
 
     async def _run_source_analysis(self, url: str, *, cancel_check=None,
-                                   diagnostic_callback=None):
+                                   diagnostic_callback=None, max_pages=None):
         """Run Selenium analysis off the UI loop while retaining cancellation visibility."""
+        source_kwargs = {"cancel_check": cancel_check,
+                         "diagnostic_callback": diagnostic_callback}
+        if max_pages is not None:
+            source_kwargs["max_pages"] = max_pages
         return await asyncio.wait_for(
-            asyncio.to_thread(
-                self._analyze_source, url, cancel_check=cancel_check,
-                diagnostic_callback=diagnostic_callback),
+            asyncio.to_thread(self._analyze_source, url, **source_kwargs),
             timeout=SOURCE_ANALYSIS_TIMEOUT_SECONDS,
         )
 

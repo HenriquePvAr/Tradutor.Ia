@@ -18,6 +18,7 @@ import struct
 import sys
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -63,6 +64,11 @@ _PAGE_SELECTOR = "img.rpage-page__img"
 def _expected_page_indices(control_count: int) -> list[int]:
     """Build the reader's logical page set from public controls, not a chapter constant."""
     return list(range(1, max(0, int(control_count)) + 1))
+
+
+def _target_page_indices(control_count: int, requested_count: int | None = None) -> list[int]:
+    expected = _expected_page_indices(control_count)
+    return expected if requested_count is None else expected[:max(0, int(requested_count))]
 
 
 def _missing_chapter_budget_seconds(unresolved_count: int) -> float:
@@ -150,6 +156,7 @@ def _merge_logical_candidates(
 
 def _merge_materialized_attempts(
     previous: list[dict[str, Any]], current: list[dict[str, Any]], control_count: int,
+    requested_count: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
     """Retain verified pages across a bounded fresh-browser retry and return only
     canonical indices that still need materialization. New materialized candidates win;
@@ -162,18 +169,22 @@ def _merge_materialized_attempts(
         index = item.get("logical_page_index")
         source = str(item.get("source") or "")
         if index is None:
+            if requested_count is not None:
+                continue
             key = str(item.get("url") or "")
             if key not in seen_unindexed:
                 unindexed.append(item)
                 seen_unindexed.add(key)
             continue
         index = int(index)
+        if requested_count is not None and index > requested_count:
+            continue
         existing = by_index.get(index)
         if existing is None or source != "scrapling_dom":
             by_index[index] = item
     merged = [by_index[index] for index in sorted(by_index)] + unindexed
     pending = [
-        index for index in _expected_page_indices(control_count)
+        index for index in _target_page_indices(control_count, requested_count)
         if index not in by_index or str(by_index[index].get("source") or "") == "scrapling_dom"
     ]
     return merged, pending
@@ -264,7 +275,17 @@ def _append_telemetry(event: str, **fields: Any) -> None:
                "discovery_ms", "navigation_ms", "render_wait_ms", "canvas_capture_ms",
                "response_body_ms", "total_materialization_ms", "result_source", "reader_image_host_count",
                "attempt_elapsed_ms", "pending_before", "pending_after", "new_materialized",
-               "failure_stage"}
+               "failure_stage", "trace_id", "navigation_result", "candidate_source",
+               "candidate_url_presence", "requested_control_exists", "requested_control_disabled",
+               "control_count", "active_control_index", "container_exists", "container_visible",
+               "canvas_count", "canvas_width", "canvas_height", "image_response_seen",
+               "body_candidate_seen", "last_failure_reason", "nav_attempt_count", "reader_page_number",
+               "page_root_tag", "page_root_class", "page_root_child_count", "page_root_image_count",
+               "image_complete", "image_natural_width", "image_natural_height", "image_page_number",
+               "image_src_present",
+               "active_container_data_page", "capture_failure_reason",
+               "already_materialized_revisited", "retry_pending_indices", "materialization_target_count",
+               "out_of_scope_materialized_count"}
     safe = {key: value for key, value in fields.items() if key in allowed}
     safe["event"] = event[:64]
     safe.setdefault("site", "comix.to")
@@ -472,9 +493,13 @@ def _configure_preload_all(
     previously_materialized_indices: set[int],
     promoted_resource_indices: dict[str, int],
     page_body_elapsed_ms: dict[int, float],
+    page_discovery_elapsed_ms: dict[int, float] | None = None,
+    response_seen_indices: set[int] | None = None,
+    body_candidate_indices: set[int] | None = None,
     page_action_started: float,
     reader_image_hosts: set[str],
     scroll_diagnostics: dict[str, Any],
+    requested_count: int | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Switch the public reader to "Preload all" and guarantee the Settings surface
     is closed before any downstream canonical capture.
@@ -497,7 +522,8 @@ def _configure_preload_all(
           some: !!document.querySelector('input[name="preload"][value="some"]'),
           all: !!document.querySelector('input[name="preload"][value="all"]'),
           checked: document.querySelector('input[name="preload"]:checked')?.value || null,
-          direction: document.querySelector('[role="radio"][aria-checked="true"]')?.innerText || null
+          direction: document.querySelector('[role="radio"][aria-checked="true"]')?.innerText || null,
+          controls: document.querySelectorAll('button[aria-label^="Go to page "]').length
         })""") or {}
         if not state.get("some") or not state.get("all"):
             preload_stage = "open_settings"
@@ -510,13 +536,19 @@ def _configure_preload_all(
               some: !!document.querySelector('input[name="preload"][value="some"]'),
               all: !!document.querySelector('input[name="preload"][value="all"]'),
               checked: document.querySelector('input[name="preload"]:checked')?.value || null,
-              direction: document.querySelector('[role="radio"][aria-checked="true"]')?.innerText || null
+              direction: document.querySelector('[role="radio"][aria-checked="true"]')?.innerText || null,
+              controls: document.querySelectorAll('button[aria-label^="Go to page "]').length
             })""") or {}
         scroll_diagnostics.update({
             "preload_mode_initial": str(state.get("checked") or "unknown"),
             "preload_control_found": bool(state.get("all")),
             "reading_direction": str(state.get("direction") or "unknown"),
         })
+        scroll_diagnostics["page_control_count"] = int(state.get("controls") or 0)
+        if requested_count is not None:
+            # Do not switch to the reader's full preload mode for a bounded request.
+            scroll_diagnostics["preload_mode_discovery"] = str(state.get("checked") or "unknown")
+            state["all"] = False
         if state.get("all"):
             preload_stage = "select_all"
             page.evaluate("""() => {
@@ -552,17 +584,21 @@ def _configure_preload_all(
             preload_stage = "extract_candidates"
             expanded, selector = _extract_candidates(page, url, events, cancel_check)
             discovered_elapsed_ms = (time.monotonic() - page_action_started) * 1000
-            for item in expanded:
-                index = item.get("logical_page_index")
-                if index is not None:
-                    page_discovery_elapsed_ms.setdefault(int(index), discovered_elapsed_ms)
+            if page_discovery_elapsed_ms is not None:
+                for item in expanded:
+                    index = item.get("logical_page_index")
+                    if index is not None:
+                        page_discovery_elapsed_ms.setdefault(int(index), discovered_elapsed_ms)
             preload_stage = "promote"
             promoted_expanded = _promote_observed_response_bodies(
                 expanded, pending_responses, browser_bodies, body_stats,
                 previously_materialized_indices=previously_materialized_indices,
                 promoted_resource_indices=promoted_resource_indices,
                 page_body_elapsed_ms=page_body_elapsed_ms,
-                reader_image_hosts=reader_image_hosts)
+                response_seen_indices=response_seen_indices,
+                body_candidate_indices=body_candidate_indices,
+                reader_image_hosts=reader_image_hosts,
+                requested_count=requested_count)
             candidates = (promoted_expanded if len(promoted_expanded) >= len(candidates)
                           else candidates)
             scroll_diagnostics.update({
@@ -612,7 +648,10 @@ def _configure_preload_all(
     return candidates, selector
 
 
-def _capture_rendered_canvas_candidate(page: Any, page_index: int, state: dict[str, Any]) -> dict[str, Any] | None:
+def _capture_rendered_canvas_candidate(
+    page: Any, page_index: int, state: dict[str, Any],
+    diagnostic: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
     """Materialize a Canvas page from a fresh headless reader frame.
 
     The isolated Canvas surface can remain stale after Comix reuses a reader node.  The
@@ -622,10 +661,31 @@ def _capture_rendered_canvas_candidate(page: Any, page_index: int, state: dict[s
     """
     expected_width = int(state.get("canvas_width") or state.get("width") or 0)
     expected_height = int(state.get("canvas_height") or state.get("height") or 0)
+    def failed(reason: str) -> None:
+        if diagnostic is not None:
+            diagnostic["reason"] = reason
+    def capture_element() -> bytes | None:
+        # The visible viewport can clip a valid, tall reader canvas even after the
+        # target was scrolled into view. Playwright's element screenshot captures
+        # exactly this reader-owned render node, without capturing adjacent pages.
+        selector = (
+            f'main.rpage-main [data-page="{int(page_index)}"] '
+            'canvas.rpage-page__img, '
+            f'main.rpage-main [data-page="{int(page_index)}"] '
+            'img.rpage-page__img'
+        )
+        try:
+            locator = page.locator(selector)
+            if int(locator.count()) != 1:
+                return None
+            return bytes(locator.screenshot(type="png", timeout=5000))
+        except Exception:
+            return None
     geometry_script = """(index) => {
       const reader = document.querySelector('main.rpage-main');
-      const target = document.querySelector('[data-page="' + index + '"]');
-      const render = target?.querySelector('canvas.rpage-page__img');
+      const target = reader?.querySelector('[data-page="' + index + '"]');
+      const render = target?.querySelector('canvas.rpage-page__img') ||
+        target?.querySelector('img.rpage-page__img');
       if (!reader || !target || !render) return null;
       const rr = reader.getBoundingClientRect();
       const tr = render.getBoundingClientRect();
@@ -635,12 +695,14 @@ def _capture_rendered_canvas_candidate(page: Any, page_index: int, state: dict[s
         viewport: {width: innerWidth, height: innerHeight},
         visual: {x: visualViewport?.offsetLeft || 0, y: visualViewport?.offsetTop || 0},
         dpr: devicePixelRatio,
-        native: {width: Number(render.width || 0), height: Number(render.height || 0)}
+        native: {width: Number(render.naturalWidth || render.width || 0),
+          height: Number(render.naturalHeight || render.height || 0)}
       };
     }"""
     try:
         geometry = page.evaluate(geometry_script, page_index) or {}
         if not geometry:
+            failed("geometry_missing")
             return None
         expected_width = expected_width or int(geometry["native"]["width"] or 0)
         expected_height = expected_height or int(geometry["native"]["height"] or 0)
@@ -651,6 +713,7 @@ def _capture_rendered_canvas_candidate(page: Any, page_index: int, state: dict[s
         if int(viewport["height"]) < required_height:
             setter = getattr(page, "set_viewport_size", None)
             if not callable(setter):
+                failed("viewport_resize_unavailable")
                 return None
             setter({"width": int(viewport["width"]), "height": required_height})
             page.wait_for_timeout(80)
@@ -659,47 +722,69 @@ def _capture_rendered_canvas_candidate(page: Any, page_index: int, state: dict[s
             })""")
             geometry = page.evaluate(geometry_script, page_index) or {}
             if not geometry:
+                failed("geometry_missing_after_resize")
                 return None
             target = geometry["target"]
             viewport = geometry["viewport"]
             dpr = float(geometry.get("dpr") or dpr)
         tolerance = 1.0
+        element_capture_used = False
         if (target["x"] < -tolerance or target["y"] < -tolerance or
                 target["x"] + target["width"] > viewport["width"] + tolerance or
                 target["y"] + target["height"] > viewport["height"] + tolerance):
-            return None
-        image_bytes = page.screenshot(type="png")
+            image_bytes = capture_element()
+            if image_bytes is None:
+                failed("target_outside_viewport")
+                return None
+            element_capture_used = True
+        else:
+            image_bytes = page.screenshot(type="png")
         from io import BytesIO
         from PIL import Image
         with Image.open(BytesIO(image_bytes)) as source:
             source = source.convert("RGBA")
             source_width, source_height = source.size
-            visual = geometry.get("visual") or {"x": 0, "y": 0}
-            left = round((target["x"] - float(visual.get("x") or 0)) * dpr)
-            top = round((target["y"] - float(visual.get("y") or 0)) * dpr)
-            right = round((target["x"] + target["width"] - float(visual.get("x") or 0)) * dpr)
-            bottom = round((target["y"] + target["height"] - float(visual.get("y") or 0)) * dpr)
-            if left < 0 or top < 0 or right > source_width or bottom > source_height:
-                return None
-            cropped = source.crop((left, top, right, bottom))
+            if element_capture_used:
+                cropped = source
+            else:
+                visual = geometry.get("visual") or {"x": 0, "y": 0}
+                left = round((target["x"] - float(visual.get("x") or 0)) * dpr)
+                top = round((target["y"] - float(visual.get("y") or 0)) * dpr)
+                right = round((target["x"] + target["width"] - float(visual.get("x") or 0)) * dpr)
+                bottom = round((target["y"] + target["height"] - float(visual.get("y") or 0)) * dpr)
+                if left < 0 or top < 0 or right > source_width or bottom > source_height:
+                    image_bytes = capture_element()
+                    if image_bytes is None:
+                        failed("crop_outside_screenshot")
+                        return None
+                    element_capture_used = True
+                    with Image.open(BytesIO(image_bytes)) as element_image:
+                        cropped = element_image.convert("RGBA")
+                else:
+                    cropped = source.crop((left, top, right, bottom))
             crop_width, crop_height = cropped.size
             if not crop_width or not crop_height:
+                failed("empty_crop")
                 return None
             if expected_width and expected_height:
                 crop_aspect = crop_width / crop_height
                 native_aspect = expected_width / expected_height
                 if abs(crop_aspect - native_aspect) > 0.01:
+                    failed("crop_aspect_mismatch")
                     return None
-                if crop_width < expected_width or crop_height < expected_height:
+                if (crop_width < expected_width or crop_height < expected_height) and not element_capture_used:
+                    failed("crop_below_native_size")
                     return None
                 if (crop_width, crop_height) != (expected_width, expected_height):
                     cropped = cropped.resize((expected_width, expected_height), Image.Resampling.LANCZOS)
             encoded = BytesIO()
             cropped.save(encoded, format="PNG")
             image_bytes = encoded.getvalue()
-    except Exception:
+    except Exception as exc:
+        failed(f"capture_exception_{type(exc).__name__[:48]}")
         return None
     if len(image_bytes) < 24 or image_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+        failed("invalid_png_capture")
         return None
     capture_width, capture_height = struct.unpack(">II", image_bytes[16:24])
     return {
@@ -719,7 +804,8 @@ def _capture_rendered_canvas_candidate(page: Any, page_index: int, state: dict[s
         "context": "reader",
         "visible": True,
         "canvas_data": image_bytes,
-        "capture_method": "headless_dynamic_viewport_crop",
+        "capture_method": ("reader_element_screenshot" if element_capture_used
+                            else "headless_dynamic_viewport_crop"),
         "capture_width": capture_width,
         "capture_height": capture_height,
     }
@@ -772,6 +858,9 @@ def _promote_observed_response_bodies(
     promoted_resource_indices: dict[str, int] | None = None,
     page_body_elapsed_ms: dict[int, float] | None = None,
     reader_image_hosts: set[str] | None = None,
+    requested_count: int | None = None,
+    response_seen_indices: set[int] | None = None,
+    body_candidate_indices: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Read bodies lazily, only after an exact HTTPS image URL is observed on the
     selected Comix reader page nodes. Response callbacks stay metadata-only/nonblocking.
@@ -780,6 +869,8 @@ def _promote_observed_response_bodies(
         str(item.get("url") or ""): item for item in candidates
         if str(item.get("context") or "") == "reader"
         and str(item.get("container") or "") == "comix-reader"
+        and item.get("logical_page_index") is not None
+        and (requested_count is None or int(item.get("logical_page_index")) <= requested_count)
     }
     observed_urls = set(observed)
     already_materialized = previously_materialized_indices or set()
@@ -796,52 +887,61 @@ def _promote_observed_response_bodies(
             pending_responses.pop(resource_url, None)
             body_stats["skip_dedup"] = body_stats.get("skip_dedup", 0) + 1
             continue
-        if resource_url in browser_bodies:
-            continue
         response_info = pending_responses.pop(resource_url, None)
-        if not response_info:
+        cached_body = browser_bodies.get(resource_url)
+        if not response_info and not cached_body:
             continue
-        read, reason = _should_read_response_body(
-            resource_type=response_info.get("resource_type", ""),
-            resource_url=resource_url,
-            content_type_header=response_info.get("content_type"),
-            content_length_header=response_info.get("content_length"),
-            already_captured=resource_url in browser_bodies,
-            reader_observed=True,
-        )
-        if not read:
-            key = f"skip_{reason}"
-            body_stats[key] = body_stats.get(key, 0) + 1
-            continue
-        body_stats["read_total"] += 1
-        started = time.monotonic()
-        try:
-            body = response_info["response"].body()
-            read_ms = (time.monotonic() - started) * 1000
-            body_stats["last_read_ms"] = read_ms
-            body_stats["read_ms"] += read_ms
-            if 0 < len(body) <= MAX_BROWSER_RESPONSE_BODY_BYTES:
-                browser_bodies[resource_url] = {
-                    "body": body,
-                    "content_type": str(response_info.get("content_type") or ""),
-                }
-                body_stats["captured"] += 1
-            else:
-                body_stats["read_failed"] += 1
-                body_stats["reject_empty_or_oversize"] += 1
+        if page_index is not None and response_seen_indices is not None:
+            response_seen_indices.add(int(page_index))
+        if page_index is not None and body_candidate_indices is not None:
+            body_candidate_indices.add(int(page_index))
+        if cached_body:
+            body = cached_body.get("body", b"")
+            content_type = str(cached_body.get("content_type") or "")
+        else:
+            read, reason = _should_read_response_body(
+                resource_type=response_info.get("resource_type", ""),
+                resource_url=resource_url,
+                content_type_header=response_info.get("content_type"),
+                content_length_header=response_info.get("content_length"),
+                already_captured=False,
+                reader_observed=True,
+            )
+            if not read:
+                key = f"skip_{reason}"
+                body_stats[key] = body_stats.get(key, 0) + 1
                 continue
-        except Exception:
-            read_ms = (time.monotonic() - started) * 1000
-            body_stats["last_read_ms"] = read_ms
-            body_stats["read_ms"] += read_ms
-            body_stats["read_failed"] += 1
-            body_stats["reject_body_unavailable"] += 1
-            continue
+            body_stats["read_total"] += 1
+            started = time.monotonic()
+            try:
+                body = response_info["response"].body()
+                read_ms = (time.monotonic() - started) * 1000
+                body_stats["last_read_ms"] = read_ms
+                body_stats["read_ms"] += read_ms
+                if 0 < len(body) <= MAX_BROWSER_RESPONSE_BODY_BYTES:
+                    cached_body = {
+                        "body": body,
+                        "content_type": str(response_info.get("content_type") or ""),
+                    }
+                    browser_bodies[resource_url] = cached_body
+                    body_stats["captured"] += 1
+                else:
+                    body_stats["read_failed"] += 1
+                    body_stats["reject_empty_or_oversize"] += 1
+                    continue
+            except Exception:
+                read_ms = (time.monotonic() - started) * 1000
+                body_stats["last_read_ms"] = read_ms
+                body_stats["read_ms"] += read_ms
+                body_stats["read_failed"] += 1
+                body_stats["reject_body_unavailable"] += 1
+                continue
+            content_type = str(cached_body.get("content_type") or "")
         matching = next((item for item in candidates if str(item.get("url") or "") == resource_url), None)
         if matching is None:
             continue
         promoted = _promote_browser_response_candidate(
-            matching, body, str(response_info.get("content_type") or ""))
+            matching, body, content_type)
         if promoted is None:
             body_stats["reject_not_promotable"] += 1
             continue
@@ -917,8 +1017,14 @@ def _read_reader_render_state(page: Any, page_index: int) -> dict[str, Any]:
           button.classList.contains('is-active');
       });
       const activeMatch = String(active?.getAttribute('aria-label') || '').match(/(\\d+)\\s*$/);
-      const root = document.querySelector('[data-page="' + wanted + '"]');
+      const reader = document.querySelector('main.rpage-main');
+      const root = reader?.querySelector('[data-page="' + wanted + '"]');
       const canvas = root?.querySelector('canvas.rpage-page__img');
+      const image = root?.querySelector('img.rpage-page__img');
+      const render = canvas || image;
+      const imagePageMatch = String(image?.getAttribute('alt') || '')
+        .match(/(?:^|\\b)page\\s+(\\d+)(?:\\b|$)/i);
+      const rootRect = root?.getBoundingClientRect();
       let fingerprint = '';
       if (canvas && canvas.width && canvas.height) {
         const context = canvas.getContext('2d', {willReadFrequently: true});
@@ -941,6 +1047,11 @@ def _read_reader_render_state(page: Any, page_index: int) -> dict[str, Any]:
           }
           fingerprint = (hash >>> 0).toString(16);
         }
+      } else if (image?.complete && image.naturalWidth && image.naturalHeight) {
+        // IMG-mode pages are canonical reader output too. Keep this identity in memory
+        // only; the source URL is never part of telemetry.
+        fingerprint = String(image.currentSrc || image.src ||
+          `${image.naturalWidth}x${image.naturalHeight}`);
       }
       const canvasLabel = String(canvas?.getAttribute('aria-label') || '');
       const labelMatch = canvasLabel.match(/(?:page|página)\\s*(\\d+)/i);
@@ -950,13 +1061,32 @@ def _read_reader_render_state(page: Any, page_index: int) -> dict[str, Any]:
         active_container_data_page: root ? Number(root.getAttribute('data-page')) : null,
         canvas_aria_label: canvasLabel,
         canvas_label_index: labelMatch ? Number(labelMatch[1]) : null,
-        canvas_width: canvas?.width || 0,
-        canvas_height: canvas?.height || 0,
+        canvas_width: canvas?.width || image?.naturalWidth || 0,
+        canvas_height: canvas?.height || image?.naturalHeight || 0,
         canvas_pixel_hash: fingerprint,
         fingerprint_sample_area: '24x32_grid',
         container_exists: !!root,
-        canvas_in_requested_container: !!canvas,
-        render_settled: !!root && !!canvas && !root.classList.contains('is-loading') && !!fingerprint
+        container_visible: !!rootRect && rootRect.width > 0 && rootRect.height > 0 &&
+          rootRect.bottom > 0 && rootRect.top < innerHeight,
+        control_count: controls.length,
+        requested_control_exists: controls.some(button =>
+          String(button.getAttribute('aria-label') || '') === 'Go to page ' + wanted),
+        requested_control_disabled: controls.find(button =>
+          String(button.getAttribute('aria-label') || '') === 'Go to page ' + wanted)?.disabled || false,
+        canvas_count: root?.querySelectorAll('canvas.rpage-page__img').length || 0,
+        page_root_tag: String(root?.tagName || '').slice(0, 24),
+        page_root_class: String(root?.className || '').slice(0, 100),
+        page_root_child_count: root?.childElementCount || 0,
+        page_root_image_count: root?.querySelectorAll('img.rpage-page__img').length || 0,
+        image_complete: !!image?.complete,
+        image_natural_width: image?.naturalWidth || 0,
+        image_natural_height: image?.naturalHeight || 0,
+        image_page_number: imagePageMatch ? Number(imagePageMatch[1]) : null,
+        image_src_present: !!(image?.currentSrc || image?.src),
+        image_source_url: String(image?.currentSrc || image?.src || ''),
+        canvas_in_requested_container: !!render,
+        render_kind: canvas ? 'canvas' : image ? 'img' : 'none',
+        render_settled: !!root && !!render && !root.classList.contains('is-loading') && !!fingerprint
       };
     }
     """
@@ -968,6 +1098,60 @@ def _read_reader_render_state(page: Any, page_index: int) -> dict[str, Any]:
     # the lifecycle probe.  The backing-store fingerprint is side-effect free.
     state["fingerprint_source"] = "canvas_backing_pixels"
     return state
+
+
+def _navigate_reader_to_page(page: Any, page_index: int, *, dom_click: bool = False) -> dict[str, Any]:
+    """Use the visible Comix page control normally, then a bounded targeted scroll."""
+    selector = f'button[aria-label="Go to page {int(page_index)}"]'
+    result: dict[str, Any] = {"control_found": False, "click_method": "none", "click_error": ""}
+    try:
+        control = page.locator(selector)
+        count = int(control.count())
+        result["control_found"] = count > 0
+        if count:
+            if dom_click:
+                page.evaluate("""(index) => {
+                  const button = document.querySelector(
+                    'button[aria-label="Go to page ' + index + '"]');
+                  if (button) button.click();
+                }""", int(page_index))
+                result["click_method"] = "reader_dom_click_retry"
+            else:
+                try:
+                    control.first.scroll_into_view_if_needed(timeout=1200)
+                    control.first.click(timeout=1800)
+                    result["click_method"] = "playwright_control_click"
+                except Exception as exc:
+                    result["click_error"] = type(exc).__name__[:60]
+                    try:
+                        page.evaluate("""(index) => {
+                          const button = document.querySelector(
+                            'button[aria-label="Go to page ' + index + '"]');
+                          if (button) button.click();
+                        }""", int(page_index))
+                        result["click_method"] = "reader_dom_click_fallback"
+                    except Exception as fallback_exc:
+                        result["click_error"] = type(fallback_exc).__name__[:60]
+            # Some pages are absent from the reader's active preload window until the
+            # actual page container intersects the viewport. Scroll only this target.
+            page.evaluate("""(index) => {
+              const target = document.querySelector('main.rpage-main')
+                ?.querySelector('[data-page="' + index + '"]');
+              if (target) target.scrollIntoView({block:'center', inline:'nearest'});
+            }""", int(page_index))
+            result["click_method"] += "+targeted_scroll"
+        else:
+            # A virtualized page/control may be attached only after the corresponding
+            # reader container is brought into view. This scroll is limited to one index.
+            page.evaluate("""(index) => {
+              const target = document.querySelector('main.rpage-main')
+                ?.querySelector('[data-page="' + index + '"]');
+              if (target) target.scrollIntoView({block:'center', inline:'nearest'});
+            }""", int(page_index))
+            result["click_method"] = "targeted_page_scroll"
+    except Exception as exc:
+        result["click_error"] = type(exc).__name__[:60]
+    return result
 
 
 def _scroll_normal_reader(page: Any, selector: str, initial: list[dict[str, Any]],
@@ -1058,7 +1242,8 @@ def _scroll_normal_reader(page: Any, selector: str, initial: list[dict[str, Any]
 
 def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None = None,
                     timeout: float = 30.0,
-                    deadline_seconds: float | None = None) -> Any:
+                    deadline_seconds: float | None = None,
+                    max_pages: int | None = None) -> Any:
     """Run the selected reader in the disposable resolver child process."""
     if not supports_url(url):
         raise DynamicReaderError("site_not_selected")
@@ -1072,6 +1257,8 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
     except Exception as exc:
         raise DynamicReaderError("navigation_rejected") from exc
     events: list[dict[str, Any]] = []
+    trace_id = uuid.uuid4().hex
+    requested_count = (max(1, int(max_pages)) if max_pages is not None else None)
     browser_bodies: dict[str, dict[str, Any]] = {}
     pending_responses: dict[str, dict[str, Any]] = {}
     # Sanitized utility counters. Response callbacks retain only bounded metadata and
@@ -1086,6 +1273,8 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
     preserved_candidates: list[dict[str, Any]] = []
     promoted_resource_indices: dict[str, int] = {}
     page_body_elapsed_ms: dict[int, float] = {}
+    response_seen_indices: set[int] = set()
+    body_candidate_indices: set[int] = set()
     page_stage_metrics: dict[int, dict[str, float | None]] = {}
     reader_image_hosts: set[str] = set()
     result_holder: dict[str, Any] = {}
@@ -1275,7 +1464,10 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             previously_materialized_indices=previously_materialized_indices,
             promoted_resource_indices=promoted_resource_indices,
             page_body_elapsed_ms=page_body_elapsed_ms,
-            reader_image_hosts=reader_image_hosts)
+            reader_image_hosts=reader_image_hosts,
+            requested_count=requested_count,
+            response_seen_indices=response_seen_indices,
+            body_candidate_indices=body_candidate_indices)
         scroll_diagnostics = {
             "initial_dom_count": len(candidates),
             "initial_slot_count": len(candidates),
@@ -1296,15 +1488,25 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             previously_materialized_indices=previously_materialized_indices,
             promoted_resource_indices=promoted_resource_indices,
             page_body_elapsed_ms=page_body_elapsed_ms,
+            page_discovery_elapsed_ms=page_discovery_elapsed_ms,
+            response_seen_indices=response_seen_indices,
+            body_candidate_indices=body_candidate_indices,
             page_action_started=page_action_started,
             reader_image_hosts=reader_image_hosts,
+            requested_count=requested_count,
         )
+        if requested_count is not None:
+            candidates = [
+                item for item in candidates
+                if item.get("logical_page_index") is not None
+                and 1 <= int(item["logical_page_index"]) <= requested_count
+            ]
         discovered_elapsed = (time.monotonic() - page_action_started) * 1000
         for item in candidates:
             index = item.get("logical_page_index")
             if index is not None:
                 page_discovery_elapsed_ms.setdefault(int(index), discovered_elapsed)
-        if len(candidates) <= 3:
+        if requested_count is None and len(candidates) <= 3:
             candidates, walked = _scroll_normal_reader(
                 page, selector, candidates, cancel_check)
             scroll_diagnostics.update(walked)
@@ -1324,7 +1526,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         })
         control_count = int(scroll_diagnostics.get("page_control_count") or 0)
         candidates, missing = _merge_materialized_attempts(
-            preserved_candidates, candidates, control_count)
+            preserved_candidates, candidates, control_count, requested_count)
         logical_indices = sorted({
             int(item["logical_page_index"])
             for item in candidates if item.get("logical_page_index") is not None
@@ -1340,6 +1542,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         scroll_diagnostics["fallback_budget_seconds"] = chapter_budget_seconds
         scroll_diagnostics["fallback_per_page_budget_seconds"] = per_page_budget
         page_elapsed_ms: dict[str, float] = {}
+        page_nav_diagnostics: dict[int, dict[str, Any]] = {}
         if missing:
             materialization_started = stage_start("missing_page_materialization")
             for page_index in missing:
@@ -1359,6 +1562,11 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                     "navigation_ms": None, "render_wait_ms": None, "canvas_capture_ms": 0.0}
                 page_deadline = min(page_started + per_page_budget, chapter_deadline)
                 attempts: list[str] = []
+                page_capture_failure_reason = ""
+                navigation_action: dict[str, Any] = {
+                    "control_found": False, "click_method": "none", "click_error": ""}
+                last_state: dict[str, Any] = {}
+                materialized_from_body: dict[str, Any] | None = None
                 for attempt in range(1, MAX_CANONICAL_ATTEMPTS + 1):
                     remaining_seconds("missing_page_materialization")
                     try:
@@ -1370,14 +1578,9 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                             page.evaluate("(index) => window.__yomuCanvasDiag?.markNavigation(index)", page_index)
                         except Exception:
                             pass
-                        page.evaluate(
-                            """(index) => {
-                            const button = document.querySelector(
-                              'button[aria-label="Go to page ' + index + '"]');
-                            if (button) button.click();
-                          }""",
-                            page_index,
-                        )
+                        navigation_action = _navigate_reader_to_page(
+                            page, page_index, dom_click=(attempt > 1))
+                        last_state = _read_reader_render_state(page, page_index)
                         # Comix can reopen the settings surface when the virtualized
                         # reader jumps to a missing logical page.  Close it again
                         # before evaluating navigation/readiness predicates.
@@ -1409,13 +1612,51 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                                     last_draw_ms: last ? last.t - nav.t : null,
                                     no_draw_ms: last ? performance.now() - last.t : null};
                                 }""", page_index) or {}
+                            control_identity_ok = state.get("active_control_index") == page_index
+                            visible_canvas_identity_ok = (
+                                state.get("active_container_data_page") == page_index
+                                and state.get("container_visible") is True
+                                and state.get("canvas_in_requested_container") is True
+                                and int(state.get("canvas_width") or 0) > 0
+                                and int(state.get("canvas_height") or 0) > 0
+                            )
                             identity_ok = (
-                                state.get("active_control_index") == page_index
+                                (control_identity_ok or visible_canvas_identity_ok)
                                 and state.get("active_container_data_page") == page_index
                                 and state.get("canvas_in_requested_container") is True
                                 and (not state.get("canvas_label_index")
                                      or state.get("canvas_label_index") == page_index)
                             )
+                            last_state = state
+                            if identity_ok and state.get("image_src_present"):
+                                extracted_images, _ = _extract_candidates(
+                                    page, url, events, cancel_check)
+                                image_candidates = [item for item in extracted_images
+                                    if item.get("logical_page_index") == page_index]
+                                if not image_candidates:
+                                    image_candidates = [item for item in extracted_images
+                                        if str(item.get("url") or "")
+                                        == str(state.get("image_source_url") or "")]
+                                    if len(image_candidates) == 1:
+                                        image_candidates[0]["logical_page_index"] = page_index
+                                if image_candidates:
+                                    promoted_images = _promote_observed_response_bodies(
+                                        image_candidates, pending_responses, browser_bodies,
+                                        body_stats,
+                                        previously_materialized_indices=previously_materialized_indices,
+                                        promoted_resource_indices=promoted_resource_indices,
+                                        page_body_elapsed_ms=page_body_elapsed_ms,
+                                        reader_image_hosts=reader_image_hosts,
+                                        requested_count=requested_count,
+                                        response_seen_indices=response_seen_indices,
+                                        body_candidate_indices=body_candidate_indices)
+                                    materialized_from_body = next((item for item in promoted_images
+                                        if str(item.get("source") or "") == "browser_response_body"), None)
+                                    if materialized_from_body is not None:
+                                        fallback_candidates.append(materialized_from_body)
+                                        attempts.append("pass")
+                                        loaded = True
+                                        break
                             if identity_ok and page_metrics["navigation_ms"] is None:
                                 page_metrics["navigation_ms"] = round(
                                     (time.monotonic() - navigation_started) * 1000, 1)
@@ -1470,6 +1711,8 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                                 scroll_diagnostics["fallback_last_page_timeout_substage"] = readiness_stage
                                 break
                             continue
+                        if materialized_from_body is not None:
+                            break
                         capture_started = time.monotonic()
                         page.evaluate(
                             """() => new Promise(resolve => {
@@ -1479,15 +1722,25 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                             })"""
                         )
                         state = _read_reader_render_state(page, page_index)
-                        candidate = _capture_rendered_canvas_candidate(page, page_index, state)
+                        capture_diag: dict[str, str] = {}
+                        candidate = _capture_rendered_canvas_candidate(
+                            page, page_index, state, diagnostic=capture_diag
+                        )
                         page.evaluate("""() => new Promise(resolve => {
                           requestAnimationFrame(() => requestAnimationFrame(resolve));
                         })""")
+                        stable_capture_diag: dict[str, str] = {}
                         stable_candidate = _capture_rendered_canvas_candidate(
-                            page, page_index, _read_reader_render_state(page, page_index)
+                            page, page_index, _read_reader_render_state(page, page_index),
+                            diagnostic=stable_capture_diag,
                         )
                         if candidate is None or stable_candidate is None:
-                            attempts.append("temporary_compositor_not_ready")
+                            page_capture_failure_reason = (
+                                stable_capture_diag.get("reason")
+                                or capture_diag.get("reason")
+                                or "capture_returned_none"
+                            )
+                            attempts.append("capture_failed:" + page_capture_failure_reason)
                             continue
                         first_bytes = bytes(candidate.get("canvas_data") or b"")
                         second_bytes = bytes(stable_candidate.get("canvas_data") or b"")
@@ -1500,7 +1753,8 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                             page_metrics["canvas_capture_ms"] = round(
                                 float(page_metrics["canvas_capture_ms"] or 0)
                                 + (time.monotonic() - capture_started) * 1000, 1)
-                            attempts.append("frame_not_stable")
+                            page_capture_failure_reason = "frame_not_stable"
+                            attempts.append("capture_failed:frame_not_stable")
                             continue
                         candidate = stable_candidate
                         candidate["render_diagnostics"] = page.evaluate(
@@ -1540,11 +1794,91 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                 page_elapsed_ms[str(page_index)] = round(
                     (time.monotonic() - page_started) * 1000, 1)
                 fallback_attempts[page_index] = attempts
+                if attempts and attempts[-1] != "pass":
+                    state_diag = last_state if isinstance(last_state, dict) else {}
+                    if page_capture_failure_reason:
+                        failure_reason = "CAPTURE_" + page_capture_failure_reason.upper()[:72]
+                    elif not navigation_action.get("control_found"):
+                        failure_reason = "NAV_CONTROL_NOT_FOUND"
+                    elif navigation_action.get("click_error") and navigation_action.get("click_method") == "none":
+                        failure_reason = "NAV_CLICK_FAILED"
+                    elif not (state_diag.get("active_control_index") == page_index
+                              or (state_diag.get("active_container_data_page") == page_index
+                                  and state_diag.get("container_visible"))):
+                        failure_reason = "WRONG_ACTIVE_PAGE"
+                    elif not state_diag.get("canvas_in_requested_container"):
+                        failure_reason = "CANVAS_NOT_CREATED"
+                    elif not state_diag.get("canvas_width") or not state_diag.get("canvas_height"):
+                        failure_reason = "CANVAS_ZERO_SIZE"
+                    else:
+                        failure_reason = str(readiness_stage or "OTHER")[:80]
+                    page_nav_diagnostics[page_index] = {
+                        "navigation_result": navigation_action.get("click_method", "none"),
+                        "requested_control_exists": bool(state_diag.get("requested_control_exists")),
+                        "requested_control_disabled": bool(state_diag.get("requested_control_disabled")),
+                        "control_count": int(state_diag.get("control_count") or 0),
+                        "active_control_index": state_diag.get("active_control_index"),
+                        "active_container_data_page": state_diag.get("active_container_data_page"),
+                        "container_exists": bool(state_diag.get("container_exists")),
+                        "container_visible": bool(state_diag.get("container_visible")),
+                        "canvas_count": int(state_diag.get("canvas_count") or 0),
+                        "canvas_width": int(state_diag.get("canvas_width") or 0),
+                        "canvas_height": int(state_diag.get("canvas_height") or 0),
+                        "page_root_tag": str(state_diag.get("page_root_tag") or "")[:24],
+                        "page_root_class": str(state_diag.get("page_root_class") or "")[:100],
+                        "page_root_child_count": int(state_diag.get("page_root_child_count") or 0),
+                        "page_root_image_count": int(state_diag.get("page_root_image_count") or 0),
+                        "image_complete": bool(state_diag.get("image_complete")),
+                        "image_natural_width": int(state_diag.get("image_natural_width") or 0),
+                        "image_natural_height": int(state_diag.get("image_natural_height") or 0),
+                        "image_page_number": state_diag.get("image_page_number"),
+                        "image_src_present": bool(state_diag.get("image_src_present")),
+                        "capture_failure_reason": page_capture_failure_reason,
+                        "last_failure_reason": failure_reason,
+                    }
                 page_stage_metrics[page_index] = {
                     **page_metrics,
                     "total_materialization_ms": page_elapsed_ms[str(page_index)],
                     "attempt": float(len(attempts)),
                 }
+                if page_index not in {int(item.get("logical_page_index") or 0)
+                                      for item in fallback_candidates}:
+                    page_diag = page_nav_diagnostics.get(page_index, {})
+                    _append_telemetry(
+                        "comix_page_navigation_diagnostic", trace_id=trace_id,
+                        status="pending", canonical_index=page_index,
+                        navigation_result=page_diag.get("navigation_result", "none"),
+                        candidate_source=next((str(item.get("source") or "") for item in candidates
+                                               if item.get("logical_page_index") == page_index), ""),
+                        candidate_url_presence=any(item.get("logical_page_index") == page_index
+                                                   and bool(item.get("url")) for item in candidates),
+                        requested_control_exists=page_diag.get("requested_control_exists", False),
+                        requested_control_disabled=page_diag.get("requested_control_disabled", False),
+                        control_count=page_diag.get("control_count", 0),
+                        active_control_index=page_diag.get("active_control_index"),
+                        reader_page_number=page_diag.get("active_container_data_page"),
+                        active_container_data_page=page_diag.get("active_container_data_page"),
+                        container_exists=page_diag.get("container_exists", False),
+                        container_visible=page_diag.get("container_visible", False),
+                        canvas_count=page_diag.get("canvas_count", 0),
+                        canvas_width=page_diag.get("canvas_width", 0),
+                        canvas_height=page_diag.get("canvas_height", 0),
+                        page_root_tag=page_diag.get("page_root_tag", ""),
+                        page_root_class=page_diag.get("page_root_class", ""),
+                        page_root_child_count=page_diag.get("page_root_child_count", 0),
+                        page_root_image_count=page_diag.get("page_root_image_count", 0),
+                        image_complete=page_diag.get("image_complete", False),
+                        image_natural_width=page_diag.get("image_natural_width", 0),
+                        image_natural_height=page_diag.get("image_natural_height", 0),
+                        image_page_number=page_diag.get("image_page_number"),
+                        image_src_present=page_diag.get("image_src_present", False),
+                        capture_failure_reason=page_diag.get("capture_failure_reason", ""),
+                        image_response_seen=page_index in response_seen_indices,
+                        body_candidate_seen=page_index in body_candidate_indices,
+                        last_failure_reason=page_diag.get("last_failure_reason", "OTHER"),
+                        nav_attempt_count=len(attempts),
+                        elapsed_ms=page_elapsed_ms[str(page_index)],
+                    )
             stage_end("missing_page_materialization", materialization_started)
         if fallback_candidates:
             candidates, _ = _merge_logical_candidates(
@@ -1554,13 +1888,14 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             for item in candidates
             if item.get("logical_page_index") is not None
         })
-        final_missing = [index for index in _expected_page_indices(control_count)
+        scroll_diagnostics["logical_page_indices"] = final_indices
+        final_missing = [index for index in _target_page_indices(control_count, requested_count)
                          if index not in final_indices]
         candidate_by_index = {
             int(item["logical_page_index"]): item
             for item in candidates if item.get("logical_page_index") is not None
         }
-        for page_index in _expected_page_indices(control_count):
+        for page_index in _target_page_indices(control_count, requested_count):
             item = candidate_by_index.get(page_index)
             result_source = str(item.get("source") or "pending") if item else "pending"
             page_metrics = page_stage_metrics.get(page_index, {})
@@ -1582,6 +1917,47 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                 failure_stage=(fallback_attempt_diagnostics.get(str(page_index), {})
                                .get("timeout_substage") if result_source == "pending" else ""),
                 result_source=result_source,
+                trace_id=trace_id,
+                navigation_result=(page_nav_diagnostics.get(page_index, {})
+                                   .get("navigation_result", "not_attempted")),
+                candidate_source=result_source,
+                candidate_url_presence=bool(item and item.get("url")),
+                requested_control_exists=(page_nav_diagnostics.get(page_index, {})
+                                          .get("requested_control_exists", False)),
+                requested_control_disabled=(page_nav_diagnostics.get(page_index, {})
+                                            .get("requested_control_disabled", False)),
+                control_count=(page_nav_diagnostics.get(page_index, {}).get("control_count", 0)),
+                active_control_index=(page_nav_diagnostics.get(page_index, {})
+                                      .get("active_control_index")),
+                active_container_data_page=(page_nav_diagnostics.get(page_index, {})
+                                            .get("active_container_data_page")),
+                container_exists=(page_nav_diagnostics.get(page_index, {}).get("container_exists", False)),
+                container_visible=(page_nav_diagnostics.get(page_index, {}).get("container_visible", False)),
+                canvas_count=(page_nav_diagnostics.get(page_index, {}).get("canvas_count", 0)),
+                canvas_width=(page_nav_diagnostics.get(page_index, {}).get("canvas_width", 0)),
+                canvas_height=(page_nav_diagnostics.get(page_index, {}).get("canvas_height", 0)),
+                page_root_tag=page_nav_diagnostics.get(page_index, {}).get("page_root_tag", ""),
+                page_root_class=page_nav_diagnostics.get(page_index, {}).get("page_root_class", ""),
+                page_root_child_count=page_nav_diagnostics.get(page_index, {}).get("page_root_child_count", 0),
+                page_root_image_count=page_nav_diagnostics.get(page_index, {}).get("page_root_image_count", 0),
+                image_complete=page_nav_diagnostics.get(page_index, {}).get("image_complete", False),
+                image_natural_width=page_nav_diagnostics.get(page_index, {}).get("image_natural_width", 0),
+                image_natural_height=page_nav_diagnostics.get(page_index, {}).get("image_natural_height", 0),
+                image_page_number=page_nav_diagnostics.get(page_index, {}).get("image_page_number"),
+                image_src_present=page_nav_diagnostics.get(page_index, {}).get("image_src_present", False),
+                body_candidate_seen=page_index in body_candidate_indices,
+                image_response_seen=page_index in response_seen_indices,
+                reader_page_number=(page_nav_diagnostics.get(page_index, {})
+                                    .get("active_container_data_page")),
+                capture_failure_reason=(page_nav_diagnostics.get(page_index, {})
+                                        .get("capture_failure_reason", "")),
+                last_failure_reason=(page_nav_diagnostics.get(page_index, {})
+                                     .get("last_failure_reason", "")),
+                nav_attempt_count=int(page_metrics.get("attempt") or 0),
+                already_materialized_revisited=0,
+                retry_pending_indices=final_missing,
+                materialization_target_count=len(_target_page_indices(control_count, requested_count)),
+                out_of_scope_materialized_count=0,
             )
         scroll_diagnostics.update({
             "fallback_navigation_count": len(missing),
@@ -1686,8 +2062,9 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                 attempt=attempt, max_attempts=MAX_RESOLUTION_ATTEMPTS,
                 pending_count=len(pending), pending_indices=pending[:30],
                 materialized_count=materialized_count,
-                expected_count=len(_expected_page_indices(
-                    int((result_holder.get("scroll_diagnostics") or {}).get("page_control_count") or 0))),
+                expected_count=len(_target_page_indices(
+                    int((result_holder.get("scroll_diagnostics") or {}).get("page_control_count") or 0),
+                    requested_count)),
                 final_missing_count=len(final_missing),
                 new_pages=(materialized_count if prev_materialized_count is None
                            else max(0, materialized_count - prev_materialized_count)),
@@ -1911,6 +2288,7 @@ def _run_child_command(command: list[str], *, deadline: float,
     job = _create_kill_job()
     process = None
     terminated = False
+    cleanup_killed_descendants = False
     try:
         process = subprocess.Popen(
             command, cwd=str(Path(__file__).resolve().parent),
@@ -1940,9 +2318,10 @@ def _run_child_command(command: list[str], *, deadline: float,
             time.sleep(min(0.05, remaining))
         process.wait()
         # A normal child may still have a stray browser descendant. Kill anything left
-        # in the isolated job and wait until the kernel reports the tree empty.
+        # in the isolated job and wait until the kernel reports the tree empty. This is
+        # cleanup after successful child exit, not a deadline/cancellation termination.
         if _job_active_processes(job):
-            terminated = True
+            cleanup_killed_descendants = True
             _terminate_child(process, job)
         end = time.monotonic() + 1.0
         active = _job_active_processes(job)
@@ -1950,6 +2329,7 @@ def _run_child_command(command: list[str], *, deadline: float,
             time.sleep(0.02)
             active = _job_active_processes(job)
         return {"returncode": process.returncode, "terminated": terminated,
+                "cleanup_killed_descendants": cleanup_killed_descendants,
                 "reaped": process.poll() is not None, "active_processes": active}
     finally:
         if process is not None and process.poll() is None:
@@ -1958,7 +2338,7 @@ def _run_child_command(command: list[str], *, deadline: float,
 
 
 def _resolve_in_child_process(url: str, *, cancel_check: Callable[[], bool] | None,
-                              timeout: float) -> Any:
+                              timeout: float, max_pages: int | None = None) -> Any:
     """Supervise the sync Playwright resolver and forcibly reap its process tree."""
     from chapter_source import select_adapter
 
@@ -1976,6 +2356,7 @@ def _resolve_in_child_process(url: str, *, cancel_check: Callable[[], bool] | No
                 1.0,
                 DYNAMIC_RESOLVER_DEADLINE_SECONDS - DYNAMIC_RESOLVER_CLEANUP_RESERVE_SECONDS,
             ),
+            "max_pages": max_pages,
         }), encoding="utf-8")
         if bool(getattr(sys, "frozen", False)):
             command = [sys.executable, "--internal-child", "dynamic-resolver",
@@ -2011,10 +2392,13 @@ def _resolve_in_child_process(url: str, *, cancel_check: Callable[[], bool] | No
 
 
 def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None = None,
-            timeout: float = 30.0) -> Any:
+            timeout: float = 30.0, max_pages: int | None = None) -> Any:
     """Run the sync browser resolver behind a killable wall-clock boundary."""
     if not supports_url(url):
         raise DynamicReaderError("site_not_selected")
     if getattr(adapter, "name", "") not in {"comix", "ComixAdapter"}:
         raise DynamicReaderError("site_not_selected")
-    return _resolve_in_child_process(url, cancel_check=cancel_check, timeout=timeout)
+    if max_pages is None:
+        return _resolve_in_child_process(url, cancel_check=cancel_check, timeout=timeout)
+    return _resolve_in_child_process(
+        url, cancel_check=cancel_check, timeout=timeout, max_pages=max_pages)

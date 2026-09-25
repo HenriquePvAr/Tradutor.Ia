@@ -457,7 +457,7 @@ def _emit_source_fallback_event(callback, event, **fields):
 
 
 def discover_chapter_source(url, *, cancel_check=None, on_progress=None,
-                            diagnostic_callback=None):
+                            diagnostic_callback=None, max_images=None):
     """Discover a chapter's pages the cheapest way that can prove it saw the whole reader.
 
     Same public contract as ``analyze_chapter_source`` (a ``SourceAnalysis``): this is a drop-in
@@ -527,7 +527,12 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None,
             # Comix may serve a normal anti-bot interstitial to the bounded requests
             # preflight. The supported dynamic resolver uses the product's ordinary
             # browser path only; any challenge it cannot resolve remains terminal.
-            dynamic_analysis = resolve_dynamic(url, adapter=adapter, cancel_check=cancel_check)
+            if max_images is None:
+                dynamic_analysis = resolve_dynamic(
+                    url, adapter=adapter, cancel_check=cancel_check)
+            else:
+                dynamic_analysis = resolve_dynamic(
+                    url, adapter=adapter, cancel_check=cancel_check, max_pages=max_images)
             if dynamic_analysis is not None:
                 _emit_source_fallback_event(
                     diagnostic_callback, "DYNAMIC_RESOLVER_END", provider=provider,
