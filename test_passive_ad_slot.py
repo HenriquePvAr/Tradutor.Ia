@@ -51,9 +51,9 @@ def test_host_mapping_keeps_vercel_only_for_approved_placements():
     source = (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
     assert "https://game-deals-alpha.vercel.app/ad/new-translation-728x90.html" in source
     assert "https://game-deals-alpha.vercel.app/ad/rewards-320x50.html" in source
-    assert "https://henriquepvar.github.io/ad/home-728x90.html" in source
-    assert "https://henriquepvar.github.io/ad/queue-468x60.html" in source
-    assert "https://henriquepvar.github.io/ad/translated-chapters-native.html" in source
+    assert "https://yomusekai.com.br/ad/home-728x90.html" in source
+    assert "https://yomusekai.com.br/ad/queue-468x60.html" in source
+    assert "https://yomusekai.com.br/ad/translated-chapters-native.html" in source
 
 
 def test_native_surface_is_lazy_and_ads_off_hides_without_bounds_request():
@@ -160,7 +160,8 @@ def test_native_route_callbacks_are_generation_and_source_guarded():
     source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
     assert "NAV_CALLBACK_STALE_IGNORED" in source
     assert "generation != self._navigation_generation" in source
-    assert "source.split(\"?\", 1)[0] != expected.split(\"?\", 1)[0]" in source
+    assert "is_allowed_ad_navigation(expected, source)" in source
+    assert "NavigationStarting += self._on_navigation_starting" in source
 
 
 def test_passive_ads_claim_requires_server_preference_and_visible_successful_surface():
@@ -237,11 +238,11 @@ def test_native_navigation_is_marshaled_to_winforms_ui_thread():
 def test_native_route_map_preserves_all_five_canonical_urls():
     source = (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
     expected = (
-        "https://henriquepvar.github.io/ad/home-728x90.html",
+        "https://yomusekai.com.br/ad/home-728x90.html",
         "https://game-deals-alpha.vercel.app/ad/new-translation-728x90.html",
-        "https://henriquepvar.github.io/ad/queue-468x60.html",
+        "https://yomusekai.com.br/ad/queue-468x60.html",
         "https://game-deals-alpha.vercel.app/ad/rewards-320x50.html",
-        "https://henriquepvar.github.io/ad/translated-chapters-native.html",
+        "https://yomusekai.com.br/ad/translated-chapters-native.html",
     )
     for url in expected:
         assert url in source

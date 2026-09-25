@@ -24,6 +24,7 @@ import zipfile
 import platform
 import threading
 import app_version
+from ad_url_policy import canonical_ad_url, is_allowed_ad_navigation
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -48,6 +49,29 @@ def _env_flag(name: str) -> bool:
 
 def _content_diagnostic_enabled() -> bool:
     return _env_flag("YOMU_ADS_CONTENT_DIAGNOSTIC")
+
+
+def _persistent_webview_profile_dir() -> Path:
+    """Return the current user's durable, app-scoped WebView2 profile directory."""
+    local_app_data = os.getenv("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        user_root = Path(local_app_data).expanduser().resolve()
+    else:
+        # Keep non-Windows development/test runs per-user as well; Windows builds use
+        # LOCALAPPDATA and inherit that user's profile ACLs.
+        user_root = (Path(os.getenv("XDG_DATA_HOME", "~/.local/share"))
+                     .expanduser().resolve())
+    profile = (user_root / "YomuSekai" / "webview-profile").resolve()
+    if user_root not in profile.parents:
+        raise RuntimeError("webview_profile_outside_user_data")
+    profile.mkdir(parents=True, exist_ok=True)
+    return profile
+
+
+def _webview_start_options() -> dict[str, object]:
+    """Persist WebView2 cookies/storage under this Windows user's Yomu profile."""
+    return {"private_mode": False,
+            "storage_path": str(_persistent_webview_profile_dir())}
 
 
 def _runtime_log(event: str, **fields) -> None:
@@ -398,12 +422,8 @@ class DesktopApi:
     def native_ad_set_placement(self, route: str, url: str, width: int, height: int) -> dict[str, bool]:
         surface = globals().get("_NATIVE_AD_SURFACE")
         safe_route = str(route)[:40]
-        safe_url = str(url)
-        allowed_ad_hosts = (
-            "https://henriquepvar.github.io/ad/",
-            "https://game-deals-alpha.vercel.app/ad/",
-        )
-        if not safe_url.startswith(allowed_ad_hosts):
+        safe_url = canonical_ad_url(str(url))
+        if safe_url is None:
             return {"available": False}
         state = (safe_route, safe_url, max(1, int(width)), max(1, int(height)))
         if surface is None:
@@ -485,7 +505,7 @@ class NativeAdSurface:
     pywebview's primary browser control.
     """
 
-    URL = "https://henriquepvar.github.io/ad/banner-728x90.html"
+    URL = "https://yomusekai.com.br/ad/banner-728x90.html"
 
     def __init__(self, window):
         from System import Uri
@@ -800,6 +820,7 @@ class NativeAdSurface:
             _native_poc_log("COREWEBVIEW2_INIT_SUCCESS", available=True)
             _runtime_log("CORE_INIT_SUCCESS", surface_generation=id(self))
             self.control.CoreWebView2.NewWindowRequested += self._on_new_window
+            self.control.CoreWebView2.NavigationStarting += self._on_navigation_starting
             self._attach_content_diagnostics()
             self._navigate_requested_on_ui_thread()
             if self._pending_bounds:
@@ -816,6 +837,18 @@ class NativeAdSurface:
             args.Handled = True
         except Exception:
             args.Handled = True
+
+    def _on_navigation_starting(self, sender, args):
+        uri = str(getattr(args, "Uri", "") or "")
+        active = self._active_navigation
+        requested = active[1][1] if active else self._current_navigation_url
+        if requested and is_allowed_ad_navigation(requested, uri):
+            return
+        try:
+            args.Cancel = True
+        except Exception:
+            pass
+        _runtime_log("AD_TOP_LEVEL_NAVIGATION_BLOCKED", requested=self._safe_uri(requested or ""), target=self._safe_uri(uri))
 
     def _on_navigation_completed(self, sender, args):
         success = bool(getattr(args, "IsSuccess", False))
@@ -839,8 +872,15 @@ class NativeAdSurface:
                 self._navigate_requested_on_ui_thread()
             return
         expected = placement[1]
-        if success and source and source.split("?", 1)[0] != expected.split("?", 1)[0]:
-            _runtime_log("NAV_CALLBACK_STALE_IGNORED", generation=generation, source=self._safe_uri(source), expected=self._safe_uri(expected))
+        if success and not is_allowed_ad_navigation(expected, source):
+            self._navigation_in_progress = False
+            self._active_navigation = None
+            self._committed_placement = None
+            self._current_navigation_url = None
+            _runtime_log("PLACEMENT_NAV_FAILURE", route=placement[0], generation=generation, error="UNTRUSTED_FINAL_URL", source=self._safe_uri(source), expected=self._safe_uri(expected))
+            self._hide_surface_for_navigation_failure(placement[0])
+            if self._ready and self._requested_placement and generation != self._navigation_generation:
+                self._navigate_requested_on_ui_thread()
             return
         self._navigation_in_progress = False
         self._active_navigation = None
@@ -1321,6 +1361,7 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, lifecycle_selftes
         else:
             webview_start_callback = None
         webview.start(func=webview_start_callback, gui="edgechromium", debug=False,
+                      **_webview_start_options(),
                       icon=str(APP_ICON_PATH))
         _runtime_log("WEBVIEW_LOOP_RETURNED")
         if lifecycle_selftest and not lifecycle["closed"]:

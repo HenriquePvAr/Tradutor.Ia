@@ -199,8 +199,9 @@ class SecurityHeadersMiddleware:
             "frame-ancestors 'none'; form-action 'self'; "
             "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https:; font-src 'self' data:; "
-            "connect-src 'self' ws: wss: " + (_SUPABASE_CSP_ORIGIN + "; " if _SUPABASE_CSP_ORIGIN else "") +
-            "frame-src 'self'" + (" " + _SUPABASE_CSP_ORIGIN if _SUPABASE_CSP_ORIGIN else "")
+            "connect-src 'self' ws: wss:" + (" " + _SUPABASE_CSP_ORIGIN if _SUPABASE_CSP_ORIGIN else "") + "; " +
+            "frame-src 'self'" + (" " + _SUPABASE_CSP_ORIGIN if _SUPABASE_CSP_ORIGIN else "") +
+            " https://henriquepvar.github.io https://yomusekai.com.br https://game-deals-alpha.vercel.app;"
         ),
     }
 
