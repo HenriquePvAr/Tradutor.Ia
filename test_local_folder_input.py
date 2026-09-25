@@ -117,6 +117,32 @@ class LocalFolderInputTests(unittest.TestCase):
                 output_root=self.output_root)
         self.assertEqual(raised.exception.detail, "output_outside_root")
 
+    def test_default_output_root_is_the_authoritative_runtime_root(self):
+        snap = self.snapshot()
+        runtime_output = self.root / "user-data" / "output"
+        target = runtime_output / "webtoon_chapter" / "run-1" / "input"
+        with mock.patch("runtime_paths.output_root", return_value=runtime_output):
+            paths, report = materialize_snapshot(
+                snap.manifest_path, target, snapshot_root=self.snapshots)
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(report["download_gate"]["passed"])
+        self.assertTrue((target / "001.png").is_file())
+
+    def test_default_runtime_root_rejects_bundle_and_arbitrary_paths(self):
+        snap = self.snapshot()
+        runtime_output = self.root / "user-data" / "output"
+        with mock.patch("runtime_paths.output_root", return_value=runtime_output):
+            for target in (
+                self.root / "bundle" / "_internal" / "output" / "run" / "input",
+                self.root / "arbitrary" / "run" / "input",
+                runtime_output / "run" / "input" / ".." / ".." / ".." / "outside",
+            ):
+                with self.subTest(target=target):
+                    with self.assertRaises(LocalFolderError) as raised:
+                        materialize_snapshot(
+                            snap.manifest_path, target, snapshot_root=self.snapshots)
+                    self.assertEqual(raised.exception.detail, "output_outside_root")
+
 
 if __name__ == "__main__":
     unittest.main()

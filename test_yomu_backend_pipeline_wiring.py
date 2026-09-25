@@ -17,6 +17,11 @@ def _token():
     return enc(b'{"alg":"none"}') + "." + enc(payload) + ".sig"
 
 
+@pytest.fixture(autouse=True)
+def verified_commercial_device_uuid(monkeypatch):
+    monkeypatch.setenv("TRADUTOR_DEVICE_UUID", "550e8400-e29b-41d4-a716-446655440000")
+
+
 def test_pipeline_adapter_uses_stable_job_and_request_identity(tmp_path, monkeypatch):
     job_id = "job-pipeline"
     AuthEnvelopeStore(tmp_path).seal(job_id, _token())

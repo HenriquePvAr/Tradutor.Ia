@@ -83,6 +83,16 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn("-u", worker + ui)
         self.assertFalse(any(arg.endswith(".py") for arg in worker + ui))
 
+    def test_local_folder_internal_child_dispatch_probe(self):
+        with patch("run_local_folder.main", return_value=0) as runner:
+            self.assertEqual(
+                start_tradutor._run_internal_child(
+                    "local-folder", ["--snapshot-ref", "snap-123", "--force"]
+                ),
+                0,
+            )
+        runner.assert_called_once_with(["--snapshot-ref", "snap-123", "--force"])
+
     def test_internal_child_dispatches_exactly_one_entrypoint(self):
         with patch.object(start_tradutor, "load_local_environment_for_entrypoint") as load, \
                 patch("worker_service.main", return_value=7) as worker:

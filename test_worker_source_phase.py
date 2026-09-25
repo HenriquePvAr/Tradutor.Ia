@@ -456,6 +456,30 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertEqual(reused.outcome, specific_outcome())
         self.assertEqual(len(reused.accepted), 2)
 
+    def test_comix_preflight_is_not_rehydrated_without_materializable_pages(self):
+        analysis = FakeAnalysis(specific_outcome(), accepted=105)
+        job = self.queued_url_job(
+            source_analysis_json=json.dumps({
+                "adapter": "comix", "outcome": specific_outcome(),
+                "accepted": [{"id": f"c{i:03}"} for i in range(105)]
+            }))
+        from source_readiness import source_result_from_analysis
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            persisted = readiness.persist_analysis(source_result_from_analysis(job, analysis))
+        finally:
+            readiness.close()
+        self.store.update_fields(
+            job["id"], configuration_json=json.dumps({
+                "job_type": "translation", "source_analysis_result_id": persisted.analysis_id}),
+            source_analysis_json=json.dumps({
+                "adapter": "comix", "outcome": specific_outcome(), "accepted": []}))
+        worker = _Worker(self.store, error=AssertionError("test only exercises the reuse gate"))
+        reused = worker._reuse_persisted_source_analysis(self.store.get_job(job["id"]))
+        self.assertIsNone(reused)
+        log = (self.tmp / "logs" / f"{job['id']}.log").read_text(encoding="utf-8")
+        self.assertIn("dynamic_adapter_requires_materializable_manifest", log)
+
 
 class SelectionReuseTests(unittest.TestCase):
     def test_usable_selection_requires_candidate_ids(self):

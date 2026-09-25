@@ -241,6 +241,38 @@ class SubmitTests(unittest.TestCase):
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.QUEUED)
 
+    def test_download_only_does_not_require_translation_auth_handoff(self):
+        with mock.patch("secure_auth_context.AuthEnvelopeStore.seal") as seal:
+            result = self.start(download_only=True, translation_enabled=True)
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["status"], JobStatus.QUEUED)
+        self.assertTrue(job["configuration"]["download_only"])
+        self.assertTrue(job["configuration"]["translation_enabled"])
+        self.assertEqual(self.bridge.worker_calls, 1)
+        self.assertNotIn("auth_context_ref", job["configuration"])
+        seal.assert_not_called()
+
+    def test_translation_enabled_job_still_requires_auth_handoff(self):
+        with self.assertRaisesRegex(ValueError, "auth_handoff_unavailable"):
+            self.start(translation_enabled=True)
+        self.assertEqual(self.bridge.worker_calls, 0)
+
+    def test_translation_enabled_job_seals_valid_credential_before_worker(self):
+        token = "test.auth.context.token"
+        envelope_path = self.tmp / "runtime" / "auth" / "job.auth"
+        envelope_path.parent.mkdir(parents=True)
+        with mock.patch("secure_auth_context.AuthEnvelopeStore.seal", return_value=envelope_path) as seal:
+            with mock.patch.object(ui_bridge, "env_status", return_value={
+                "env_exists": True, "nvidia_configured": True,
+            }):
+                result = drive(self.bridge.start(
+                    self.payload(translation_enabled=True), license_access_token=token,
+                ))
+        job = self.bridge.store.get_job(result["job_id"])
+        seal.assert_called_once_with(job["id"], token, user_id="")
+        self.assertEqual(job["configuration"]["auth_context_ref"], "auth/job.auth")
+        self.assertEqual(self.bridge.worker_calls, 1)
+
     def test_submit_uses_slug_and_run_id_for_immutable_output_directory(self):
         result = self.start(slug="daytime_in_the_bunker_episode_17_smoke_9")
         job = self.bridge.store.get_job(result["job_id"])
@@ -451,7 +483,9 @@ class LocalFolderSubmitTests(unittest.TestCase):
         self.assertIn("run_local_folder.py", " ".join(job["command"]))
         self.assertIn("--snapshot-ref", job["command"])
         output_arg = job["command"][job["command"].index("--output") + 1]
-        self.assertEqual(output_arg, f"capitulo_local_teste/{job['run_id']}")
+        self.assertEqual(Path(output_arg).resolve(), Path(job["output_dir"]).resolve())
+        self.assertTrue(Path(output_arg).is_absolute())
+        self.assertNotIn("_internal", Path(output_arg).parts)
         self.assertEqual(Path(job["output_dir"]).parent.name, "capitulo_local_teste")
         self.assertEqual(Path(job["output_dir"]).name, job["run_id"])
         self.assertNotIn(self.raw_folder, str(job))
@@ -470,6 +504,20 @@ class LocalFolderSubmitTests(unittest.TestCase):
             "reason_code": "",
         })
         self.assertNotIn(self.raw_folder, str(browser_record))
+
+    def test_local_folder_does_not_require_development_dotenv_before_staging(self):
+        with mock.patch.object(ui_bridge, "env_status", return_value={
+            "env_exists": False, "nvidia_configured": False,
+        }):
+            result = drive(self.bridge.start(self.payload(), local_folder_allowed=True))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.snapshot_calls, [self.raw_folder])
+        job = self.bridge.store.get_job(result["job_id"])
+        self.assertEqual(job["status"], JobStatus.QUEUED)
+        self.assertEqual(job["stage"], "created")
+        self.assertEqual(job["source_type"], "local_folder")
+        self.assertEqual(job["snapshot_ref"], "snapshot_opaque_1")
 
     def test_local_source_is_denied_before_snapshot_without_loopback_authorization(self):
         with self.assertRaisesRegex(ValueError, "local_folder_requires_loopback_ui"):

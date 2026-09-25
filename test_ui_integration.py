@@ -498,6 +498,62 @@ class UiIntegrationTests(unittest.TestCase):
             self.assertIn(str(fixture.resolve()), hidden["folders"])
             bridge.store.close()
 
+    def test_local_artifact_delete_resolves_legacy_relative_output_namespace(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            fixture = output_root / "webtoon_chapter" / "legacy-run"
+            fixture.mkdir(parents=True)
+            (fixture / "input.png").write_bytes(b"fixture")
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
+            history._write([{
+                "id": "legacy-history",
+                "job_id": "legacy-job",
+                "run_id": "legacy-run",
+                "chapter_name": "Capítulo local",
+                "slug": "webtoon_chapter",
+                "output_folder": "output\\webtoon_chapter\\legacy-run",
+                "status": "failed",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }])
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.output_root = output_root
+            bridge.store = JobStore(root / "jobs.sqlite3")
+            bridge.history = []
+            bridge.history_revision = 1
+            result = bridge.delete_local_artifact(
+                "legacy-job", delete_files=True, confirm="EXCLUIR")
+            self.assertEqual(result["code"], "local_artifact_deleted")
+            self.assertFalse(fixture.exists())
+            bridge.store.close()
+
+    def test_local_artifact_delete_missing_legacy_folder_removes_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
+            history._write([{
+                "id": "missing-history",
+                "job_id": "missing-job",
+                "run_id": "missing-run",
+                "chapter_name": "Capítulo local",
+                "output_folder": "output\\webtoon_chapter\\missing-run",
+                "status": "failed",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }])
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.output_root = output_root
+            bridge.store = JobStore(root / "jobs.sqlite3")
+            bridge.history = []
+            bridge.history_revision = 1
+            result = bridge.delete_local_artifact(
+                "missing-job", delete_files=True, confirm="EXCLUIR")
+            self.assertEqual(result["code"], "local_history_item_hidden")
+            self.assertFalse(history.load())
+            bridge.store.close()
+
     def test_local_artifact_delete_rejects_invalid_confirmation(self):
         bridge = UiBridge.__new__(UiBridge)
         bridge.history_store = UIHistoryStore(Path("unused-history.json"))

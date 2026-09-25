@@ -108,7 +108,7 @@ class MainE2eUiFindingContracts(unittest.TestCase):
         runtime = runtime[:runtime.index("\n  function renderRunStatus")]
         self.assertIn("const draftOnly = appState.newTranslationDraft && !appState.reviewMode && !running", runtime)
         self.assertIn("const activeRecord =", runtime)
-        self.assertIn("|| queuedRecord", runtime)
+        self.assertIn("queuedRecord) || null", runtime)
 
     def test_backend_progress_counters_are_keyed_by_real_stage_not_human_label(self):
         bridge = read("ui_bridge.py")

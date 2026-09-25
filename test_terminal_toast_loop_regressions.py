@@ -95,6 +95,33 @@ def test_first_terminal_observation_refreshes_wallet_before_notification_dedupe(
     assert "YK_WALLET_POST_FINALIZE_REFRESH_RESULT" in source
 
 
+def test_terminal_cleanup_uses_received_record_not_normalized_ready_status():
+    source = _source()
+    release = _between(source, "function releaseStaleInterfaceBusy", "function rememberRuntimeTerminalState")
+    handler = _between(source, "function handleTerminalRuntimeTransition(runtime)", "function canonicalProgressStage")
+    assert "runtime?.latest" in release
+    assert "terminalStatus" in release
+    assert "releaseStaleInterfaceBusy(runtime);" in handler
+    assert "activeStartFingerprint = '';" in release
+
+
+def test_terminal_polling_stops_and_new_run_can_restart_it():
+    source = _source()
+    poll_state = _between(source, "async function pollState()", "function terminalRuntimeStatus")
+    assert "stopPollingForTerminal(data);" in poll_state
+    assert "function stopPollingForTerminal(runtime)" in source
+    assert "function ensurePolling()" in source
+    assert "ensurePolling();" in source
+    assert "window.setInterval(pollState, 850)" in source
+
+
+def test_terminal_refreshes_history_without_submitting_again():
+    source = _source()
+    handler = _between(source, "function handleTerminalRuntimeTransition(runtime)", "function canonicalProgressStage")
+    assert "if (shouldRefreshWallet) void refreshBootstrap();" in handler
+    assert "startTranslation()" not in handler
+
+
 def test_terminal_wallet_refresh_does_not_storm_on_duplicate_terminal_state():
     source = _source()
     handler = _between(source, "function handleTerminalRuntimeTransition(runtime)", "function canonicalProgressStage")

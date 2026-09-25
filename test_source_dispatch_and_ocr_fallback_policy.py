@@ -139,6 +139,22 @@ class PreJobSourceFailureVisibilityTests(unittest.TestCase):
         self.assertTrue(exc.detail["message"])
         self.assertTrue(exc.detail["action"])
 
+    def test_http_exception_is_preserved_at_source_analysis_boundary(self):
+        exc = self._analyze_raising(self.app_ui.HTTPException(
+            status_code=401, detail="authentication_required"))
+        self.assertEqual(exc.status_code, 401)
+        self.assertEqual(exc.detail, "authentication_required")
+
+    def test_generic_failure_emits_sanitized_boundary_class(self):
+        with patch.object(self.app_ui, "_append_diagnostic_log") as append:
+            self._analyze_raising(RuntimeError("private path and token must not leak"))
+        failures = [call.kwargs for call in append.call_args_list
+                    if call.args[1] == "SOURCE_ANALYSIS_BOUNDARY"
+                    and call.kwargs.get("result") == "FAIL"]
+        self.assertTrue(failures)
+        self.assertEqual(failures[-1]["error_class"], "source_analysis_failed")
+        self.assertNotIn("private", str(failures[-1]))
+
     def test_network_error_keeps_its_own_class_internally(self):
         exc = self._analyze_raising(requests.exceptions.ConnectionError("refused"))
         self.assertEqual(exc.detail["code"], "source_network_error")

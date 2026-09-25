@@ -418,6 +418,31 @@ class DownloaderRegressionTests(unittest.TestCase):
         self.assertFalse(gate["passed"])
         self.assertEqual(gate["missing_candidate_id_samples"], ["page-b"])
 
+    def test_complete_logical_gate_fails_closed_when_reader_controls_exceed_downloads(self):
+        accepted = [
+            {"id": f"page-{index}", "logical_index": index}
+            for index in range(1, 106) if index not in {20, 30, 40, 50, 60, 70, 80, 100}
+        ]
+        report = {
+            "expected_chapter_candidate_ids": [item["id"] for item in accepted],
+            "source_analysis": {
+                "accepted": accepted,
+                "reader_diagnostics": {"page_control_count": 105},
+            },
+            "downloaded": [
+                {"candidate_id": item["id"], "logical_index": item["logical_index"],
+                 "path": "", "canonical": True, "canonical_local_path": "",
+                 "is_chapter_candidate": True, "order": item["logical_index"]}
+                for item in accepted
+            ],
+        }
+        gate = _build_download_gate(report)
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["expected_logical_count"], 105)
+        self.assertEqual(gate["actual_logical_count"], 97)
+        self.assertEqual(gate["missing_logical_indices"], [20, 30, 40, 50, 60, 70, 80, 100])
+        self.assertIn("incomplete_logical_pages", gate["reasons"])
+
     def test_source_error_writes_only_a_coded_failure_report(self):
         with tempfile.TemporaryDirectory() as folder:
             debug = Path(folder) / "debug"
@@ -1109,6 +1134,63 @@ class DownloaderRegressionTests(unittest.TestCase):
             "isChapterCandidate": True,
         }
         self.assertIsNone(_candidate_skip_reason(candidate))
+
+    def test_dynamic_reader_provenance_is_not_treated_as_ad_markup(self):
+        candidate = {
+            "url": "https://jloo.wowpic1.store/page-10",
+            "source": "scrapling_reader_network",
+            "width": 800,
+            "height": 1250,
+            "naturalWidth": 800,
+            "naturalHeight": 1250,
+            "isChapterCandidate": True,
+        }
+        self.assertIsNone(_candidate_skip_reason(candidate))
+
+    def test_dynamic_reader_manifest_materializes_all_105_in_parallel(self):
+        class ReaderNetworkTransport:
+            name = "requests"
+
+            def fetch(self, url, *, referer=""):
+                index = int(url.rsplit("-", 1)[-1].split(".", 1)[0])
+                image = Image.new("RGB", (800, 1250), (index % 255, 80, 120))
+                buffer = io.BytesIO()
+                image.save(buffer, "PNG")
+                return SimpleNamespace(content=buffer.getvalue(), status_code=200, headers={})
+
+        candidates = [
+            {
+                "candidate_id": f"page-{index:03}",
+                "url": f"https://jloo.wowpic1.store/page-{index:03}.png",
+                "source": "scrapling_reader_network" if index > 95 else "scrapling_dom",
+                "order": index,
+                "width": 800,
+                "height": 1250,
+                "isChapterCandidate": True,
+            }
+            for index in range(1, 106)
+        ]
+        report = {
+            "viewer_image_count": 105,
+            "expected_chapter_candidate_ids": [item["candidate_id"] for item in candidates],
+            "ignored": [],
+            "downloaded": [],
+            "timings": {"download_seconds": 0.0, "validation_seconds": 0.0,
+                        "image_save_seconds": 0.0},
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            paths = _download_candidates(
+                None, candidates, None, 1, None, None, report,
+                "https://comix.to/title/example/chapter-1", folder,
+                transports=[ReaderNetworkTransport()],
+                parallel_diagnostics={},
+            )
+
+        self.assertEqual(105, len(paths))
+        self.assertEqual(105, report["total_downloaded"])
+        self.assertEqual(0, report["total_ignored"])
+        self.assertTrue(report["download_gate"]["passed"])
+        self.assertEqual(105, report["download_gate"]["downloaded_viewer_images"])
 
     def test_non_chapter_placeholder_remains_rejected(self):
         candidate = {

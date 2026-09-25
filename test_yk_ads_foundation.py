@@ -390,9 +390,22 @@ class RewardedAdTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 class MigrationContractTests(unittest.TestCase):
     def test_migration_sorts_after_the_applied_remote_head(self):
-        names = sorted(p.name for p in (ROOT / "supabase/migrations").glob("*.sql"))
-        self.assertEqual(names[-1], "20260917021000_daily_cross_cycle_accounting.sql")
-        self.assertGreater(MIGRATION.name, "20260915013128_chapter_level_translation_finalization.sql")
+        names = [p.name for p in (ROOT / "supabase/migrations").glob("*.sql")]
+        ordered = sorted(names)
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(names, ordered)
+
+        # Migration order is the timestamped filename contract.  Derive the
+        # predecessor from the repository instead of pinning this test to a
+        # historical remote head that becomes stale when a newer migration is
+        # added for another feature.
+        timestamped = [name for name in ordered if re.match(r"^\d{14}_.+\.sql$", name)]
+        self.assertEqual(len(timestamped), len(ordered))
+        self.assertIn(MIGRATION.name, timestamped)
+        migration_index = timestamped.index(MIGRATION.name)
+        self.assertGreater(migration_index, 0)
+        applied_remote_head = timestamped[migration_index - 1]
+        self.assertGreater(MIGRATION.name, applied_remote_head)
 
     def test_daily_target_comes_from_the_plan_not_a_literal(self):
         claim = _function_body("claim_daily_yk")

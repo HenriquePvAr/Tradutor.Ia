@@ -171,6 +171,26 @@ class UniversalAnalysisTests(unittest.TestCase):
         self.assertEqual([candidate.order for candidate in result.accepted], [1, 2, 3])
         self.assertNotIn("token=private", str(result.public()))
 
+    def test_logical_pages_with_same_hash_or_url_are_preserved(self):
+        shared = "https://cdn.example.test/render/same.webp"
+        result = self.analyse([
+            page(1, url=shared, logical_page_index=1),
+            page(2, url=shared, logical_page_index=2),
+        ])
+        self.assertEqual({candidate.logical_index for candidate in result.accepted}, {1, 2})
+        self.assertFalse(any(item["reason"] == "duplicate_resource"
+                             for item in result.discarded))
+
+    def test_same_logical_page_is_deduplicated_by_logical_index(self):
+        result = self.analyse([
+            page(1, logical_page_index=1),
+            page(2, logical_page_index=1),
+            page(3, logical_page_index=2),
+        ])
+        self.assertEqual({candidate.logical_index for candidate in result.accepted}, {1, 2})
+        self.assertTrue(any(item["reason"] == "duplicate_logical_index"
+                             for item in result.discarded))
+
     def test_advertisements_in_the_same_container_reduce_that_cluster_score(self):
         result = self.analyse([
             page(1), page(2), page(3),

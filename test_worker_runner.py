@@ -224,7 +224,7 @@ class CancelAndRecoveryTests(unittest.TestCase):
             snapshot = LocalFolderChapterAdapter().snapshot(str(source), snapshot_workspace_root())
 
         marker_dir = self.tmp / "markers"
-        out = self.tmp / "real-pipeline-cancel"
+        out = self.tmp / "runtime" / "output" / "real-pipeline-cancel"
         cmd = [sys.executable, "-u", str(REPO / "run_webtoon.py"),
                "--input-manifest", str(snapshot.manifest_path), "--output", "output/test_real_pipeline_cancel",
                "--mode", "fast", "--force", "--max-images", "5",

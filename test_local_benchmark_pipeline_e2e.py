@@ -11,6 +11,7 @@ import _test_bootstrap  # noqa: F401
 
 import hashlib
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -140,7 +141,8 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
         self.chapter.mkdir(parents=True)
         self.snapshots = self.root / "runtime" / "local_sources"
         self.snapshots.mkdir(parents=True)
-        self.output = self.root / "output" / "synthetic_chapter"
+        runtime_output_root = Path(__import__("runtime_paths").output_root()).resolve()
+        self.output = runtime_output_root / "synthetic_chapter"
         self.original = self.chapter / "private-source-page.png"
         self._write_source_page(self.original)
         self.original_digest = hashlib.sha256(self.original.read_bytes()).hexdigest()
@@ -155,6 +157,7 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
         )
 
     def tearDown(self):
+        shutil.rmtree(self.output, ignore_errors=True)
         self.temp.cleanup()
 
     @staticmethod

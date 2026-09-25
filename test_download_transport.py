@@ -20,7 +20,7 @@ from chapter_source import (
 from download_transport import (
     BrowserSessionTransport, CloudscraperTransport, DownloadLimits, LimitExceeded,
     RequestsTransport, build_transports, cloudscraper_transport_enabled,
-    preflight_browser_navigation,
+    inspect_source_preflight, preflight_browser_navigation,
 )
 from image_validation import (
     DuplicateTracker, looks_like_markup, sniff_format, validate_image_bytes,
@@ -266,6 +266,18 @@ class TransportTests(unittest.TestCase):
 
 
 class NavigationPreflightTests(unittest.TestCase):
+    def test_http_522_is_retried_once_and_classified_as_transient(self):
+        session = _Session([_Response(status=522), _Response(status=522)])
+        with mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns):
+            result = inspect_source_preflight(
+                adapter(), PAGE, session=session,
+                limits=DownloadLimits(preflight_transport_attempts=2),
+            )
+        self.assertEqual(result.http_status, 522)
+        self.assertEqual(result.retry_count, 1)
+        self.assertEqual(result.classification, "source_unavailable")
+        self.assertEqual(len(session.requests), 2)
+
     def test_each_navigation_redirect_is_checked_before_browser_use(self):
         session = _Session([
             _Response(status=302, headers={"Location": "/reader"}),

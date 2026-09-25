@@ -91,11 +91,45 @@ class TokenSourceTests(unittest.TestCase):
             out = buf.getvalue()
         self.assertEqual(rc, 0)
         flow.assert_called_once()
+        self.assertTrue(flow.call_args.kwargs["prompt_consent"])
         self.assertNotIn("AT_SECRET", out)
         self.assertNotIn("RT_SECRET", out)
         # Token was persisted for later refresh.
         saved = drive_auth.load_tokens(self.path)
         self.assertEqual(saved.refresh_token, "RT_SECRET")
+
+    def test_authorize_reuses_existing_refresh_without_forcing_consent(self):
+        import contextlib
+        import io
+        drive_auth.save_tokens(self.path, drive_auth.OAuthTokens(
+            access_token="OLD_AT", refresh_token="EXISTING_RT", expiry=1.0))
+        env = {"GOOGLE_OAUTH_CLIENT_ID": "cid", "GOOGLE_OAUTH_CLIENT_SECRET": "sec",
+               "GOOGLE_OAUTH_TOKEN_PATH": str(self.path)}
+        replacement = drive_auth.OAuthTokens(access_token="NEW_AT", refresh_token="", expiry=9e9)
+        with unittest.mock.patch.dict(os.environ, env), \
+                unittest.mock.patch.object(drive_auth, "run_installed_app_flow",
+                                           return_value=replacement) as flow, \
+                contextlib.redirect_stdout(io.StringIO()):
+            rc = drive_auth.main(["authorize"])
+        self.assertEqual(rc, 0)
+        self.assertFalse(flow.call_args.kwargs["prompt_consent"])
+        self.assertEqual(drive_auth.load_tokens(self.path).refresh_token, "EXISTING_RT")
+
+    def test_authorize_force_consent_is_explicit(self):
+        import contextlib
+        import io
+        drive_auth.save_tokens(self.path, drive_auth.OAuthTokens(refresh_token="EXISTING_RT"))
+        env = {"GOOGLE_OAUTH_CLIENT_ID": "cid", "GOOGLE_OAUTH_CLIENT_SECRET": "sec",
+               "GOOGLE_OAUTH_TOKEN_PATH": str(self.path)}
+        replacement = drive_auth.OAuthTokens(access_token="NEW_AT", refresh_token="NEW_RT", expiry=9e9)
+        with unittest.mock.patch.dict(os.environ, env), \
+                unittest.mock.patch.object(drive_auth, "run_installed_app_flow",
+                                           return_value=replacement) as flow, \
+                contextlib.redirect_stdout(io.StringIO()):
+            rc = drive_auth.main(["authorize", "--force-consent"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(flow.call_args.kwargs["prompt_consent"])
+        self.assertEqual(drive_auth.load_tokens(self.path).refresh_token, "NEW_RT")
 
     def test_authorize_requires_client_secret(self):
         with unittest.mock.patch.dict(os.environ, {"GOOGLE_OAUTH_CLIENT_ID": "cid"}, clear=False), \

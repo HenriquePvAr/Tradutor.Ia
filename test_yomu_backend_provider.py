@@ -23,6 +23,13 @@ def request(job="job-1", rid="req-1"):
     return BatchRequest(rid, job, "JA", "PT-BR", (BatchItem("a", "Hello"), BatchItem("b", "Hello")))
 
 
+@pytest.fixture(autouse=True)
+def verified_commercial_device_uuid(monkeypatch):
+    # Production workers receive this from the authenticated license_devices
+    # snapshot; tests must model that boundary explicitly.
+    monkeypatch.setenv("TRADUTOR_DEVICE_UUID", "550e8400-e29b-41d4-a716-446655440000")
+
+
 def test_batch_mapping_duplicate_text_and_idempotency(tmp_path: Path):
     AuthEnvelopeStore(tmp_path).seal("job-1", tok())
     backend = MockBackendClient()
@@ -190,6 +197,21 @@ def test_invalid_install_device_id_fails_before_remote(tmp_path: Path, monkeypat
     monkeypatch.setenv("TRADUTOR_DEVICE_UUID", "ys-install-123")
     AuthEnvelopeStore(tmp_path).seal("job-1", tok())
     with pytest.raises(BackendTranslationError, match="invalid_license_device_uuid"):
+        YomuBackendTranslationProvider(runtime_root=tmp_path, backend=FailingBackend()).translate_batch(request())
+
+
+@pytest.mark.parametrize("value", ["", None])
+def test_missing_commercial_device_id_fails_closed_before_remote(tmp_path: Path, monkeypatch, value):
+    class FailingBackend(MockBackendClient):
+        def reserve(self, **kwargs):
+            raise AssertionError("remote reserve must not be reached")
+
+    if value is None:
+        monkeypatch.delenv("TRADUTOR_DEVICE_UUID", raising=False)
+    else:
+        monkeypatch.setenv("TRADUTOR_DEVICE_UUID", value)
+    AuthEnvelopeStore(tmp_path).seal("job-1", tok())
+    with pytest.raises(BackendTranslationError, match="commercial_device_id_missing"):
         YomuBackendTranslationProvider(runtime_root=tmp_path, backend=FailingBackend()).translate_batch(request())
 
 

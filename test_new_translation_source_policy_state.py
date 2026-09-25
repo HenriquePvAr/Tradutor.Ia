@@ -139,6 +139,9 @@ const appState = Object.assign({
   sourceReady: null,
   newTranslationDraft: false,
   currentSourceUrl: '',
+  localImages: [],
+  localMediaSelectionIds: [],
+  selectedLocalImagePath: '',
 }, scenario.appState || {});
 const trace = [];
 function uiTrace(event, payload) { trace.push({event, payload}); }
@@ -161,10 +164,12 @@ function shake() {}
 function showToast() {}
 
 const body = `const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
+const activeOperationStatuses = new Set(['staging', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
 ${names.map(extractFunction).join('\n')}
 return {appState, elements, storage, trace,
   persistSourceValidationDraft, renderSourceAnalysisReady, rehydrateSourceValidationFromReadyRecord,
-  refreshStoredSourceExecutionDraft, formPayload, updateTranslationStartControls};`;
+  refreshStoredSourceExecutionDraft, formPayload, updateTranslationStartControls,
+  setSourceType, minimumSourceInputIsValid};`;
 const ui = new Function('$', '$$', 'elements', 'storage', 'trace', 'sessionStorage', 'document', 'window',
   'SOURCE_VALIDATION_DRAFT_STORAGE_KEY', 'appState', 'uiTrace', 'escapeHtml',
   'escapeAttr', 'slugify', 'guessFromUrl', 'applyUrlDerivedFields', 'shake', 'showToast', body)(
@@ -172,6 +177,7 @@ const ui = new Function('$', '$$', 'elements', 'storage', 'trace', 'sessionStora
   appState, uiTrace, escapeHtml, escapeAttr, slugify, guessFromUrl, applyUrlDerivedFields, shake, showToast);
 
 let payload = null;
+let minimumValid = null;
 if (scenario.action === 'persist') {
   ui.persistSourceValidationDraft(scenario.validationResult, scenario.sourceUrl);
 } else if (scenario.action === 'render') {
@@ -188,6 +194,12 @@ if (scenario.action === 'persist') {
   if (state.sourceChanged) { ui.storage.delete(SOURCE_VALIDATION_DRAFT_STORAGE_KEY); }
   ui.appState.sourceValidation = {status: 'idle', analysisResultId: '', sourceUrl: '', reasonCode: '', analysis: null};
   ui.updateTranslationStartControls();
+} else if (scenario.action === 'switch_and_payload') {
+  ui.setSourceType(scenario.nextSourceType);
+  payload = ui.formPayload();
+} else if (scenario.action === 'empty_url') {
+  minimumValid = ui.minimumSourceInputIsValid();
+  payload = ui.formPayload();
 }
 
 process.stdout.write(JSON.stringify({
@@ -198,6 +210,7 @@ process.stdout.write(JSON.stringify({
   }])),
   storage: Object.fromEntries(ui.storage.entries()),
   trace: ui.trace,
+  minimumValid,
   payload,
 }));
 """
@@ -632,6 +645,95 @@ class FrontendSourceStateContracts(unittest.TestCase):
         load_history = self._function_body("loadRecordIntoForm")
         self.assertIn("syncSourceFormState();", load_history)
 
+    def test_switching_local_media_to_url_drops_all_local_payload_fields(self):
+        result = self._run_rehydration_harness({
+            "action": "switch_and_payload",
+            "nextSourceType": "url",
+            "elements": {
+                "#urlInput": {"value": WEBTOON_URL},
+                "#localFolderInput": {"value": "stale-selection"},
+                "#nameInput": {"value": "Fixture"},
+                "#outputInput": {"value": "fixture"},
+            },
+            "appState": {
+                "selectedSourceType": "local_images",
+                "sourceForm": {"url": "", "localFolder": "stale-selection"},
+                "localImages": [{"mediaId": "media-1"}] * 12,
+                "localMediaSelectionIds": ["selection-1"],
+            },
+        })
+        payload = result["payload"]
+        self.assertEqual(payload["source_type"], "url")
+        self.assertEqual(payload["url"], WEBTOON_URL)
+        for field in ("local_media_selection_ids", "ordered_media_ids", "image_paths",
+                      "local_folder", "selected_image_paths"):
+            self.assertNotIn(field, payload)
+        self.assertEqual(result["appState"]["localImages"], [])
+        self.assertEqual(result["appState"]["localMediaSelectionIds"], [])
+
+    def test_switching_url_to_local_removes_url_from_payload(self):
+        result = self._run_rehydration_harness({
+            "action": "switch_and_payload",
+            "nextSourceType": "local_images",
+            "elements": {
+                "#urlInput": {"value": WEBTOON_URL},
+                "#nameInput": {"value": "Fixture"},
+                "#outputInput": {"value": "fixture"},
+            },
+            "appState": {
+                "selectedSourceType": "url",
+                "sourceForm": {"url": WEBTOON_URL, "localFolder": ""},
+            },
+        })
+        payload = result["payload"]
+        self.assertEqual(payload["source_type"], "local_images")
+        self.assertNotIn("url", payload)
+        self.assertEqual(result["appState"]["sourceForm"]["url"], "")
+
+    def test_switching_local_images_to_folder_does_not_carry_media_selection(self):
+        result = self._run_rehydration_harness({
+            "action": "switch_and_payload",
+            "nextSourceType": "local_folder",
+            "elements": {
+                "#localFolderInput": {"value": "new-folder"},
+                "#nameInput": {"value": "Fixture"},
+                "#outputInput": {"value": "fixture"},
+            },
+            "appState": {
+                "selectedSourceType": "local_images",
+                "sourceForm": {"url": "", "localFolder": ""},
+                "localImages": [{"mediaId": "old-media", "path": "old.png"}],
+                "localMediaSelectionIds": ["old-selection"],
+            },
+        })
+        payload = result["payload"]
+        self.assertEqual(payload["source_type"], "local_folder")
+        self.assertEqual(payload["local_folder"], "new-folder")
+        self.assertEqual(payload["selected_image_paths"], [])
+        self.assertNotIn("url", payload)
+        self.assertNotIn("local_media_selection_ids", payload)
+
+    def test_empty_url_is_invalid_without_local_media_fallback(self):
+        result = self._run_rehydration_harness({
+            "action": "empty_url",
+            "elements": {
+                "#urlInput": {"value": ""},
+                "#nameInput": {"value": "Fixture"},
+                "#outputInput": {"value": "fixture"},
+            },
+            "appState": {
+                "selectedSourceType": "url",
+                "sourceForm": {"url": "", "localFolder": ""},
+                "localImages": [{"mediaId": "stale-media"}],
+                "localMediaSelectionIds": ["stale-selection"],
+            },
+        })
+        self.assertFalse(result["minimumValid"])
+        self.assertEqual(result["payload"]["url"], "")
+        for field in ("local_media_selection_ids", "ordered_media_ids", "image_paths",
+                      "local_folder", "selected_image_paths"):
+            self.assertNotIn(field, result["payload"])
+
     def test_validate_source_click_submits_one_payload_after_form_sync(self):
         validate_source = self._function_body("validateSource")
         validate_index = validate_source.index("validateForm()")
@@ -661,8 +763,8 @@ class FrontendSourceStateContracts(unittest.TestCase):
         self.assertIn("const latestStatus = String(runtime.latest?.status", render)
         self.assertIn("const queuedRecord = appState.queue.find", render)
         self.assertIn("const activeRecord =", render)
-        self.assertIn("inFlightStatuses.has(latestStatus)", render)
-        self.assertIn("|| queuedRecord", render)
+        self.assertIn("runtimeHasActiveTranslation(runtime, appState.status, queuedRecord)", render)
+        self.assertIn("queuedRecord) || null", render)
         self.assertIn("runtime.latest", render)
         self.assertIn(
             "appState.activeJobId = String(activeRecord?.id || activeRecord?.job_id || '')",
