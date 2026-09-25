@@ -4507,12 +4507,14 @@ class UiBridge:
         payload: dict[str, Any],
         *,
         principal: RequestPrincipal | None = None,
+        diagnostic_callback=None,
     ) -> dict[str, Any]:
         """Inspect one URL without creating a pipeline job or queue entry."""
         if self._requested_source_type(payload) != "url":
             raise ValueError("source_validation_url_required")
         normalized = self._normalize_payload(payload, require_environment=False)
-        analysis = await self._run_source_analysis(normalized["url"])
+        analysis = await self._run_source_analysis(
+            normalized["url"], diagnostic_callback=diagnostic_callback)
 
         from chapter_source import (
             REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
@@ -5350,7 +5352,7 @@ class UiBridge:
         }
 
     @staticmethod
-    def _analyze_source(url: str, *, cancel_check=None):
+    def _analyze_source(url: str, *, cancel_check=None, diagnostic_callback=None):
         """Late import keeps UI bootstrap/import hermetic; only a user submit navigates.
 
         Tries HTTP-only discovery first (no Chrome) and only falls back to the browser-based
@@ -5358,12 +5360,16 @@ class UiBridge:
         """
         from down import discover_chapter_source
 
-        return discover_chapter_source(url, cancel_check=cancel_check)
+        return discover_chapter_source(
+            url, cancel_check=cancel_check, diagnostic_callback=diagnostic_callback)
 
-    async def _run_source_analysis(self, url: str, *, cancel_check=None):
+    async def _run_source_analysis(self, url: str, *, cancel_check=None,
+                                   diagnostic_callback=None):
         """Run Selenium analysis off the UI loop while retaining cancellation visibility."""
         return await asyncio.wait_for(
-            asyncio.to_thread(self._analyze_source, url, cancel_check=cancel_check),
+            asyncio.to_thread(
+                self._analyze_source, url, cancel_check=cancel_check,
+                diagnostic_callback=diagnostic_callback),
             timeout=SOURCE_ANALYSIS_TIMEOUT_SECONDS,
         )
 

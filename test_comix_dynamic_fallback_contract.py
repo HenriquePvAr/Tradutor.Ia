@@ -11,6 +11,55 @@ from scrapling_reader_resolver import DynamicReaderError
 URL = "https://comix.to/title/k72ge-home/1536897-chapter-1"
 
 
+@pytest.mark.parametrize(
+    "provider,reason,status,expected",
+    [
+        ("comix", "challenge_required", 200, True),
+        ("comix", "source_access_denied", 403, True),
+        ("comix", "source_unavailable", 522, True),
+        ("webtoons", "challenge_required", 200, False),
+        ("comix", "source_unavailable", 500, False),
+    ],
+)
+def test_dynamic_fallback_policy_is_centralized(provider, reason, status, expected):
+    assert down.should_use_dynamic_resolver(provider, reason, status) is expected
+
+
+def test_challenge_telemetry_records_decision_start_and_end_once():
+    direct = SourceError("challenge_required", "navigation_preflight")
+    direct.preflight_result = {"adapter": "comix", "http_status": 200,
+                               "reason_code": "challenge_required"}
+    events = []
+    with mock.patch("http_source_discovery.discover_via_http", return_value=None), \
+         mock.patch.object(down, "analyze_chapter_source", side_effect=direct), \
+         mock.patch("scrapling_reader_resolver.resolve", return_value=_analysis()) as resolve:
+        down.discover_chapter_source(
+            URL, diagnostic_callback=lambda event, **fields: events.append((event, fields)))
+    resolve.assert_called_once()
+    assert [event for event, _ in events] == [
+        "SOURCE_FALLBACK_DECISION", "DYNAMIC_RESOLVER_START", "DYNAMIC_RESOLVER_END"]
+    assert events[0][1]["fallback_allowed"] is True
+    assert events[1][1]["result"] == "started"
+    assert events[2][1]["result"] == "pass"
+
+
+def test_budget_failure_is_only_reported_after_resolver_started():
+    direct = SourceError("challenge_required", "navigation_preflight")
+    direct.preflight_result = {"adapter": "comix", "reason_code": "challenge_required"}
+    events = []
+    budget = DynamicReaderError("canonical_materialization_retry_budget_insufficient")
+    with mock.patch("http_source_discovery.discover_via_http", return_value=None), \
+         mock.patch.object(down, "analyze_chapter_source", side_effect=direct), \
+         mock.patch("scrapling_reader_resolver.resolve", side_effect=budget) as resolve:
+        with pytest.raises(SourceError) as caught:
+            down.discover_chapter_source(
+                URL, diagnostic_callback=lambda event, **fields: events.append((event, fields)))
+    resolve.assert_called_once()
+    assert caught.value.code == "dynamic_source_unavailable"
+    assert caught.value.detail == "canonical_materialization_retry_budget_insufficient"
+    assert events[-1][1]["result"] == "budget_failure"
+
+
 def _analysis():
     return SimpleNamespace(outcome="supported_specific_adapter", accepted=[
         {"id": "p1", "url": "https://cdn.example/1.webp", "order": 0},

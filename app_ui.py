@@ -1332,7 +1332,11 @@ async def api_source_analyze(
         _append_diagnostic_log(
             "app_current.jsonl", "SOURCE_ANALYSIS_INPUT", trace_id=trace_id,
             **_source_analysis_observability(payload))
-        result = await BRIDGE.analyze_source_candidate(payload, principal=principal)
+        def _source_diagnostic(event: str, **fields: Any) -> None:
+            _append_diagnostic_log("app_current.jsonl", event, trace_id=trace_id, **fields)
+
+        result = await BRIDGE.analyze_source_candidate(
+            payload, principal=principal, diagnostic_callback=_source_diagnostic)
         _append_diagnostic_log(
             "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
             boundary="analysis_response_serialization", entered="YES", result="PASS")
@@ -1372,6 +1376,7 @@ async def api_source_analyze(
             preflight_reason_code=str(preflight.get("reason_code") or "")[:80],
             elapsed_ms=preflight.get("elapsed_ms"),
             retry_count=preflight.get("retry_count"),
+            retry_count_scope="preflight",
             final_classification=str(
                 preflight.get("classification") or preflight.get("status") or ""
             )[:80])

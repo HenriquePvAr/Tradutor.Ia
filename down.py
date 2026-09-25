@@ -427,7 +427,37 @@ def _load_dynamic_reader_resolver():
     return DynamicReaderError, resolve, None
 
 
-def discover_chapter_source(url, *, cancel_check=None, on_progress=None):
+def should_use_dynamic_resolver(provider, reason_code, http_status=0):
+    """Single policy for the bounded Comix dynamic-reader fallback."""
+    provider = str(provider or "").strip().lower()
+    reason_code = str(reason_code or "").strip().lower()
+    try:
+        http_status = int(http_status or 0)
+    except (TypeError, ValueError):
+        http_status = 0
+    return provider == "comix" and (
+        reason_code == "challenge_required"
+        or (reason_code == "source_unavailable" and http_status == 522)
+        or (reason_code == "source_access_denied" and http_status in {401, 403})
+    )
+
+
+def _emit_source_fallback_event(callback, event, **fields):
+    """Best-effort, allow-listed telemetry; diagnostics must never affect source resolution."""
+    if not callable(callback):
+        return
+    safe_fields = {
+        key: value for key, value in fields.items()
+        if key in {"provider", "reason_code", "fallback_allowed", "result", "elapsed_ms"}
+    }
+    try:
+        callback(event, **safe_fields)
+    except Exception:
+        pass
+
+
+def discover_chapter_source(url, *, cancel_check=None, on_progress=None,
+                            diagnostic_callback=None):
     """Discover a chapter's pages the cheapest way that can prove it saw the whole reader.
 
     Same public contract as ``analyze_chapter_source`` (a ``SourceAnalysis``): this is a drop-in
@@ -464,39 +494,55 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None):
         return analyze_chapter_source(url, cancel_check=cancel_check, on_progress=on_progress)
     except SourceError as exc:
         preflight_result = getattr(exc, "preflight_result", {}) or {}
-        is_comix_challenge = (
-            getattr(adapter, "name", "") == "comix"
-            and getattr(exc, "code", "") == "challenge_required"
-        )
-        is_comix_522 = (
-            getattr(adapter, "name", "") == "comix"
-            and getattr(exc, "code", "") == "source_unavailable"
-            and int(preflight_result.get("http_status") or 0) == 522
-        )
-        is_comix_reader_api_denied = (
-            getattr(adapter, "name", "") == "comix"
-            and getattr(exc, "code", "") == "source_access_denied"
-            and str(getattr(exc, "detail", "") or "") in {
-                "reader_api_status_401", "reader_api_status_403",
-            }
-        )
-        if not (is_comix_522 or is_comix_reader_api_denied or is_comix_challenge):
+        provider = str(getattr(adapter, "name", "") or "")
+        reason_code = str(getattr(exc, "code", "") or "")
+        http_status = preflight_result.get("http_status")
+        if reason_code == "source_access_denied":
+            detail = str(getattr(exc, "detail", "") or "")
+            if detail.startswith("reader_api_status_"):
+                try:
+                    http_status = int(detail.rsplit("_", 1)[-1])
+                except ValueError:
+                    pass
+        fallback_allowed = should_use_dynamic_resolver(provider, reason_code, http_status)
+        _emit_source_fallback_event(
+            diagnostic_callback, "SOURCE_FALLBACK_DECISION", provider=provider,
+            reason_code=reason_code, fallback_allowed=fallback_allowed)
+        if not fallback_allowed:
             raise
         dynamic_error_type, resolve_dynamic, import_error = _load_dynamic_reader_resolver()
         if import_error is not None or not callable(resolve_dynamic) or dynamic_error_type is None:
             detail = type(import_error).__name__ if import_error is not None else "resolver_contract"
+            _emit_source_fallback_event(
+                diagnostic_callback, "DYNAMIC_RESOLVER_END", provider=provider,
+                reason_code=reason_code, result="unavailable", elapsed_ms=0)
             failure = SourceError("dynamic_source_unavailable", detail)
             failure.preflight_result = preflight_result
             raise failure from import_error
+        resolver_started = time.perf_counter()
+        _emit_source_fallback_event(
+            diagnostic_callback, "DYNAMIC_RESOLVER_START", provider=provider,
+            reason_code=reason_code, result="started")
         try:
             # Comix may serve a normal anti-bot interstitial to the bounded requests
             # preflight. The supported dynamic resolver uses the product's ordinary
             # browser path only; any challenge it cannot resolve remains terminal.
             dynamic_analysis = resolve_dynamic(url, adapter=adapter, cancel_check=cancel_check)
             if dynamic_analysis is not None:
+                _emit_source_fallback_event(
+                    diagnostic_callback, "DYNAMIC_RESOLVER_END", provider=provider,
+                    reason_code=reason_code, result="pass",
+                    elapsed_ms=int((time.perf_counter() - resolver_started) * 1000))
                 return dynamic_analysis
         except dynamic_error_type as dynamic_exc:
             code = str(getattr(dynamic_exc, "code", "") or "")
+            result = ("interactive_challenge" if code in {
+                "challenge_required", "login_required", "permission_required", "access_denied"
+            } else "budget_failure" if "budget" in code else "error")
+            _emit_source_fallback_event(
+                diagnostic_callback, "DYNAMIC_RESOLVER_END", provider=provider,
+                reason_code=reason_code, result=result,
+                elapsed_ms=int((time.perf_counter() - resolver_started) * 1000))
             if code in {"challenge_required", "login_required", "permission_required", "access_denied"}:
                 failure = SourceError("source_access_denied", f"dynamic_reader_{code}")
             else:
@@ -504,9 +550,17 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None):
             failure.preflight_result = preflight_result
             raise failure from dynamic_exc
         except Exception as dynamic_exc:
+            _emit_source_fallback_event(
+                diagnostic_callback, "DYNAMIC_RESOLVER_END", provider=provider,
+                reason_code=reason_code, result="error",
+                elapsed_ms=int((time.perf_counter() - resolver_started) * 1000))
             failure = SourceError("dynamic_source_unavailable", type(dynamic_exc).__name__)
             failure.preflight_result = preflight_result
             raise failure from dynamic_exc
+        _emit_source_fallback_event(
+            diagnostic_callback, "DYNAMIC_RESOLVER_END", provider=provider,
+            reason_code=reason_code, result="empty_analysis",
+            elapsed_ms=int((time.perf_counter() - resolver_started) * 1000))
         failure = SourceError("dynamic_source_unavailable", "empty_analysis")
         failure.preflight_result = preflight_result
         raise failure from exc
