@@ -1,7 +1,7 @@
 # Tradutor IA — Documentação Técnica
 
-> **Base verificada:** commit deste TDD (branch `fix/main-e2e-findings`)
-> **Última revisão:** 2026-08-20
+> **Base verificada:** `ecf097d` (branch `feat/passive-ads-adsterra`)
+> **Última revisão:** 2026-09-25
 > **Público:** desenvolvedores, mantenedores, suporte técnico e agentes automatizados.
 
 Documentos irmãos: [Guia do Usuário](../user/GUIA_DO_USUARIO.md) ·
@@ -274,6 +274,21 @@ indistinguível de recurso inexistente — quando o job não pertence ao owner.
 Famílias de rotas: estado/bootstrap, submissão e cancelamento, revisão de fonte, revisão
 de qualidade, revisão de página, rerun de revisão, auditoria linguística, tradução humana
 assistida, máscara humana, fila, perfil, histórico, comunidade.
+
+**Exclusão de capítulo local (`POST /api/ui/history/delete`).** Um card do histórico local
+não é necessariamente um job vivo do store — cards *descobertos* (`discovered-<slug>-<uuid>`)
+e cards legados têm `page_count=0` e nenhuma linha de job. Por isso a rota autentica pelo
+owner com `_ui_principal()` (auth + CSRF) e **não** exige job próprio (`_owned_ui_job`);
+usar o guard de job aqui devolvia `404` e tornava esses cards indeléveis. A remoção do card
+(`history_store._write` + `hide_record`, chaveada pela identidade canônica do registro) é
+**incondicional** — nunca depende de `page_count` positivo nem de uma pasta confinável.
+A exclusão de arquivos (`delete_files=True`) é separada, best-effort e *fail-closed*: só
+apaga a pasta do run quando ela resolve com segurança sob `output/` (`_confined_output_folder`
+rejeita `..`, caminho absoluto estranho, raiz de drive/home/AppData e escape por symlink,
+retornando `None` em vez de levantar), não há publicação vinculada (`local_artifact_published`
+protege o remoto) e a pasta existe; pasta ausente é idempotente. Em qualquer caso inseguro o
+card some e os arquivos são preservados (`files_state`: `removed` / `already_absent` /
+`unsafe_path_preserved` / `delete_failed_preserved` / `preserved`).
 
 ### Início de tradução: camadas de proteção
 

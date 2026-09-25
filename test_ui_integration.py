@@ -554,6 +554,123 @@ class UiIntegrationTests(unittest.TestCase):
             self.assertFalse(history.load())
             bridge.store.close()
 
+    def test_local_artifact_delete_removes_zero_page_card_with_foreign_path(self):
+        # THE regression: a legacy card (page_count=0, no job row) whose stored folder
+        # is not confinable under the current output root must still be deletable.  The
+        # card disappears; the foreign files are preserved (fail-closed), never touched.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            output_root.mkdir(parents=True)
+            foreign = root / "elsewhere" / "old-run"
+            foreign.mkdir(parents=True)
+            (foreign / "keep.txt").write_bytes(b"user data")
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
+            history._write([{
+                "id": "legacy-zero",
+                "chapter_name": "Legado",
+                "page_count": 0,
+                "output_folder": str(foreign),  # absolute, outside output_root
+                "status": "failed",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }])
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.output_root = output_root
+            bridge.store = JobStore(root / "jobs.sqlite3")
+            bridge.history = []
+            bridge.history_revision = 1
+            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+                result = bridge.delete_local_artifact("legacy-zero", delete_files=True, confirm="EXCLUIR")
+            self.assertEqual(result["code"], "local_history_item_hidden")
+            self.assertEqual(result["files_state"], "unsafe_path_preserved")
+            self.assertFalse(result["deleted_files"])
+            self.assertFalse(history.load())  # card removed from the history file
+            self.assertIn("legacy-zero", json.loads(history.hidden_path.read_text(encoding="utf-8"))["ids"])
+            self.assertTrue(foreign.exists())  # foreign files never touched
+            bridge.store.close()
+
+    def test_local_artifact_delete_history_only_never_requires_confinable_folder(self):
+        # History-only removal (checkbox off) works for a foreign/zero-page card.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            output_root.mkdir(parents=True)
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
+            history._write([{
+                "id": "foreign-hide",
+                "page_count": 0,
+                "output_folder": r"D:\somewhere\gone",
+                "status": "failed",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }])
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.output_root = output_root
+            bridge.store = JobStore(root / "jobs.sqlite3")
+            bridge.history = []
+            bridge.history_revision = 1
+            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+                result = bridge.delete_local_artifact("foreign-hide", delete_files=False, confirm="EXCLUIR")
+            self.assertEqual(result["code"], "local_history_item_hidden")
+            self.assertEqual(result["files_state"], "preserved")
+            self.assertFalse(history.load())
+            bridge.store.close()
+
+    def test_local_artifact_delete_blocks_parent_traversal_but_removes_card(self):
+        # A traversal path is fail-closed for files yet the card is still removed.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            output_root.mkdir(parents=True)
+            sentinel = root / "sibling"
+            sentinel.mkdir()
+            (sentinel / "precious.txt").write_bytes(b"do not delete")
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
+            history._write([{
+                "id": "traversal",
+                "output_folder": "output\\..\\sibling",
+                "status": "failed",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }])
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.output_root = output_root
+            bridge.store = JobStore(root / "jobs.sqlite3")
+            bridge.history = []
+            bridge.history_revision = 1
+            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+                result = bridge.delete_local_artifact("traversal", delete_files=True, confirm="EXCLUIR")
+            self.assertEqual(result["files_state"], "unsafe_path_preserved")
+            self.assertTrue((sentinel / "precious.txt").exists())
+            self.assertFalse(history.load())
+            bridge.store.close()
+
+    def test_local_artifact_delete_unknown_id_raises_not_found(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            output_root.mkdir(parents=True)
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
+            history._write([])
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.output_root = output_root
+            bridge.store = JobStore(root / "jobs.sqlite3")
+            bridge.history = []
+            bridge.history_revision = 1
+            with patch("ui_bridge.OUTPUT_ROOT", output_root), self.assertRaisesRegex(ValueError, "local_artifact_not_found"):
+                bridge.delete_local_artifact("ghost", delete_files=False, confirm="EXCLUIR")
+            bridge.store.close()
+
+    def test_history_delete_route_authenticates_without_requiring_store_job(self):
+        # Gate #1 regression: the route must not require a live store job -- legacy
+        # local cards have no job row and were 404'd before reaching the bridge.
+        src = (Path(__file__).resolve().parent / "app_ui.py").read_text(encoding="utf-8")
+        route = src.split('@app.post("/api/ui/history/delete")', 1)[1].split("\n@app.", 1)[0]
+        self.assertIn("_ui_principal(request, mutate=True)", route)
+        self.assertNotIn("_owned_ui_job", route)
+
     def test_local_artifact_delete_rejects_invalid_confirmation(self):
         bridge = UiBridge.__new__(UiBridge)
         bridge.history_store = UIHistoryStore(Path("unused-history.json"))

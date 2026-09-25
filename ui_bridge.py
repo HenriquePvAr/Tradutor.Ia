@@ -6663,69 +6663,91 @@ class UiBridge:
         except pdf_reader.UnsupportedPdf as exc:
             raise ValueError("page_not_available") from exc
 
-    def resolve_local_artifact_for_action(self, local_artifact_id: str) -> dict[str, Any]:
-        """Resolve an opaque UI history identifier to a server-side local artifact.
+    def _find_local_artifact_record(
+        self, local_artifact_id: str
+    ) -> tuple[dict[str, Any], str]:
+        """Find the history record for an opaque UI identifier by identity alone.
 
-        The returned object is intentionally for backend use only: callers must not
-        serialize it to the browser because it includes the confined output path.
+        Matching never depends on a confinable folder or a positive page count, so a
+        legacy/discovered card is always addressable.  Raises ``local_artifact_not_found``
+        only when no record matches the identifier.
         """
         local_artifact_id = str(local_artifact_id or "").strip()
         if not local_artifact_id:
             raise ValueError("local_artifact_not_found")
-        candidates: list[dict[str, Any]] = []
         for source in (self._history_payload(), self.history_store.load()):
-            for item in source:
-                if isinstance(item, dict):
-                    candidates.append(item)
-        seen: set[str] = set()
-        for record in candidates:
-            output_folder = str(record.get("output_folder") or "")
-            match_values = {
-                str(record.get("id") or ""),
-                str(record.get("local_artifact_id") or ""),
-                str(record.get("job_id") or ""),
-                str(record.get("run_id") or ""),
-                str(record.get("slug") or ""),
-            }
-            if output_folder:
-                try:
-                    match_values.add(Path(output_folder).resolve().name)
-                except OSError:
-                    match_values.add(Path(output_folder).name)
-            if local_artifact_id not in match_values:
-                continue
-            dedupe = str(record.get("id") or output_folder)
-            if dedupe in seen:
-                continue
-            seen.add(dedupe)
-            output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
-            raw_folder = Path(output_folder)
-            try:
-                if raw_folder.is_absolute():
-                    folder = raw_folder.resolve()
-                else:
-                    # Legacy cards stored paths such as output\\webtoon_chapter\\<run>.
-                    # Resolve only that explicit namespace against the runtime root's
-                    # parent; never interpret an arbitrary frontend-relative path.
-                    parts = tuple(str(part) for part in raw_folder.parts)
-                    if not parts or parts[0].casefold() != output_root.name.casefold():
-                        raise ValueError("local_artifact_path_invalid")
-                    folder = (output_root.parent / raw_folder).resolve()
-            except (OSError, RuntimeError) as exc:
-                raise ValueError("local_artifact_resolve_failed") from exc
-            if folder == output_root or output_root not in folder.parents:
-                raise ValueError("local_artifact_path_invalid")
-            # Reject symlink/junction escapes after normalization, including legacy paths.
-            try:
-                folder.relative_to(output_root)
-            except ValueError as exc:
-                raise ValueError("local_artifact_path_invalid") from exc
-            return {
-                "local_artifact_id": str(record.get("id") or local_artifact_id),
-                "_record": record,
-                "_output_dir": folder,
-            }
+            for record in source:
+                if not isinstance(record, dict):
+                    continue
+                output_folder = str(record.get("output_folder") or "")
+                match_values = {
+                    str(record.get("id") or ""),
+                    str(record.get("local_artifact_id") or ""),
+                    str(record.get("job_id") or ""),
+                    str(record.get("run_id") or ""),
+                    str(record.get("slug") or ""),
+                }
+                if output_folder:
+                    try:
+                        match_values.add(Path(output_folder).resolve().name)
+                    except OSError:
+                        match_values.add(Path(output_folder).name)
+                if local_artifact_id not in match_values:
+                    continue
+                return record, str(record.get("id") or local_artifact_id)
         raise ValueError("local_artifact_not_found")
+
+    def _confined_output_folder(self, record: dict[str, Any]) -> Path | None:
+        """Return the record's output folder confined under ``output/``, else ``None``.
+
+        Fail-closed path safety for *file* deletion: any path that is empty, escapes the
+        current output root (``..``, an absolute foreign path, a drive/home/AppData root)
+        or resolves through a symlink/junction outside it yields ``None``.  The caller
+        then preserves the files instead of deleting an unconfined target; it never raises.
+        """
+        output_folder = str(record.get("output_folder") or "")
+        if not output_folder:
+            return None
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+        raw_folder = Path(output_folder)
+        try:
+            if raw_folder.is_absolute():
+                folder = raw_folder.resolve()
+            else:
+                # Legacy cards stored paths such as output\\webtoon_chapter\\<run>.
+                # Resolve only that explicit namespace against the runtime root's
+                # parent; never interpret an arbitrary frontend-relative path.
+                parts = tuple(str(part) for part in raw_folder.parts)
+                if not parts or parts[0].casefold() != output_root.name.casefold():
+                    return None
+                folder = (output_root.parent / raw_folder).resolve()
+        except (OSError, RuntimeError):
+            return None
+        if folder == output_root or output_root not in folder.parents:
+            return None
+        # Reject symlink/junction escapes after normalization, including legacy paths.
+        try:
+            folder.relative_to(output_root)
+        except ValueError:
+            return None
+        return folder
+
+    def resolve_local_artifact_for_action(self, local_artifact_id: str) -> dict[str, Any]:
+        """Resolve an opaque UI history identifier to a confined server-side artifact.
+
+        The returned object is intentionally for backend use only: callers must not
+        serialize it to the browser because it includes the confined output path.
+        Raises ``local_artifact_path_invalid`` when the record's folder is unsafe.
+        """
+        record, record_id = self._find_local_artifact_record(local_artifact_id)
+        folder = self._confined_output_folder(record)
+        if folder is None:
+            raise ValueError("local_artifact_path_invalid")
+        return {
+            "local_artifact_id": record_id,
+            "_record": record,
+            "_output_dir": folder,
+        }
 
     def delete_local_artifact(
         self,
@@ -6734,46 +6756,49 @@ class UiBridge:
         delete_files: bool = False,
         confirm: str = "",
     ) -> dict[str, Any]:
-        """Remove one local history entry and, for safe fixtures, its output folder.
+        """Remove one local history entry and, when safe, its output folder.
 
-        The client never supplies a filesystem path. The server resolves the selected
-        record from the authoritative history snapshot, confines it to ``output/`` and
-        refuses to delete files for records tied to an existing community publication.
+        History removal is keyed on the record's canonical identity and is unconditional:
+        it never depends on a positive page count or a confinable folder, so a legacy or
+        discovered card is not immortal.  Files are deleted only when the caller asked,
+        the record is not tied to a community publication, and the folder resolves safely
+        under ``output/`` and still exists; every other case preserves the files
+        (fail-closed) while the card still disappears.
         """
         if str(confirm or "") != "EXCLUIR":
             raise ValueError("confirmation_invalid")
-        resolved = self.resolve_local_artifact_for_action(local_artifact_id)
-        record = resolved["_record"]
-        record_id = resolved["local_artifact_id"]
-        folder = resolved["_output_dir"]
-        if str(record.get("publication_status") or "").lower() == "published" and delete_files:
+        record, record_id = self._find_local_artifact_record(local_artifact_id)
+        published = str(record.get("publication_status") or "").lower() == "published"
+        # A published chapter's files back a live community post: never delete them here.
+        if published and delete_files:
             raise ValueError("local_artifact_published")
         remaining = [item for item in self.history_store.load() if item.get("id") != record_id]
         self.history_store._write(remaining)
         self.history_store.hide_record(record)
         deleted_files = False
+        files_state = "preserved"
         if delete_files:
-            # Deleting a valid history identity is idempotent when the physical folder
-            # was already removed outside the UI.  The record must not become immortal
-            # merely because its authorized target is absent.
-            if not folder.exists():
-                self._refresh_history()
-                return {
-                    "code": "local_history_item_hidden",
-                    "local_artifact_id": record_id,
-                    "deleted_files": False,
-                    "publication_preserved": bool(record.get("publication_id")),
-                }
-            try:
-                shutil.rmtree(folder)
-                deleted_files = True
-            except OSError as exc:
-                raise ValueError("local_artifact_delete_failed") from exc
+            folder = self._confined_output_folder(record)
+            if folder is None:
+                # Fail-closed: an unconfined/foreign path is never touched.
+                files_state = "unsafe_path_preserved"
+            elif not folder.exists():
+                # Idempotent: the folder was already removed outside the UI.
+                files_state = "already_absent"
+            else:
+                try:
+                    shutil.rmtree(folder)
+                    deleted_files = True
+                    files_state = "removed"
+                except OSError:
+                    # The card is already gone; do not resurrect it over a file error.
+                    files_state = "delete_failed_preserved"
         self._refresh_history()
         return {
             "code": "local_artifact_deleted" if deleted_files else "local_history_item_hidden",
             "local_artifact_id": record_id,
             "deleted_files": deleted_files,
+            "files_state": files_state,
             "publication_preserved": bool(record.get("publication_id")),
         }
 

@@ -423,7 +423,11 @@ def test_job_bound_ui_routes_apply_owned_job_guard():
         app_ui.api_source_confirm,
         app_ui.api_source_retry,
         app_ui.api_resume,
-        app_ui.api_history_delete,
     )
     for endpoint in endpoints:
         assert "_owned_ui_job(" in inspect.getsource(endpoint), endpoint.__name__
+    # Local history deletion is NOT job-bound: legacy/discovered cards have no store job,
+    # so the route authenticates the owner (auth + CSRF) without an owned-job guard.
+    delete_src = inspect.getsource(app_ui.api_history_delete)
+    assert "_ui_principal(request, mutate=True)" in delete_src
+    assert "_owned_ui_job(" not in delete_src

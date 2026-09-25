@@ -3381,7 +3381,9 @@ def api_history_delete(
     try:
         record_id = str(
             payload.get("local_artifact_id") or payload.get("record_id") or "")
-        _owned_ui_job(request, record_id, mutate=True)
+        # A local history card is not necessarily a live store job (legacy/discovered
+        # cards have no job row), so authenticate the owner without requiring one.
+        _ui_principal(request, mutate=True)
         return BRIDGE.delete_local_artifact(
             record_id,
             delete_files=bool(payload.get("delete_files", False)),
