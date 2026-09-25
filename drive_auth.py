@@ -210,7 +210,8 @@ def _config_scopes() -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()] or [SCOPE]
 
 
-def run_installed_app_flow(*, client_id: str, client_secret: str, scopes: list[str]) -> OAuthTokens:
+def run_installed_app_flow(*, client_id: str, client_secret: str, scopes: list[str],
+                           prompt_consent: bool = True) -> OAuthTokens:
     """Run the official Installed-App OAuth flow on a loopback redirect.
 
     Isolated so tests mock exactly this seam - no browser opens and no Google endpoint is
@@ -229,10 +230,14 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes: list[s
         }
     }
     flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
-    creds = flow.run_local_server(host="127.0.0.1", port=0, open_browser=True,
-                                  access_type="offline", prompt="consent",
-                                  authorization_prompt_message="",
-                                  success_message="Autorizado. Pode fechar esta aba.")
+    flow_options = {
+        "host": "127.0.0.1", "port": 0, "open_browser": True,
+        "access_type": "offline", "authorization_prompt_message": "",
+        "success_message": "Autorizado. Pode fechar esta aba.",
+    }
+    if prompt_consent:
+        flow_options["prompt"] = "consent"
+    creds = flow.run_local_server(**flow_options)
     expiry = creds.expiry.timestamp() if getattr(creds, "expiry", None) else time.time() + 3600
     return OAuthTokens(access_token=creds.token or "",
                        refresh_token=creds.refresh_token or "",
@@ -240,18 +245,28 @@ def run_installed_app_flow(*, client_id: str, client_secret: str, scopes: list[s
 
 
 # ---- CLI --------------------------------------------------------------------
-def cmd_authorize(_args) -> int:
+def cmd_authorize(args) -> int:
     client_id = _env("GOOGLE_OAUTH_CLIENT_ID")
     client_secret = _env("GOOGLE_OAUTH_CLIENT_SECRET")
     if not client_id or not client_secret:
         print("set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET first", file=sys.stderr)
         return 2
-    tokens = run_installed_app_flow(client_id=client_id, client_secret=client_secret,
-                                    scopes=_config_scopes())
+    token_path = _token_path()
+    existing = load_tokens(token_path)
+    force_consent = bool(getattr(args, "force_consent", False))
+    prompt_consent = force_consent or not bool(existing.refresh_token)
+    tokens = run_installed_app_flow(
+        client_id=client_id, client_secret=client_secret, scopes=_config_scopes(),
+        prompt_consent=prompt_consent,
+    )
+    if not tokens.refresh_token and existing.refresh_token and not force_consent:
+        # Google commonly omits refresh_token when consent is already established.
+        # Keep the existing long-lived credential instead of replacing it with empty.
+        tokens.refresh_token = existing.refresh_token
     if not tokens.refresh_token:
         print("no refresh token returned; re-run authorize with consent", file=sys.stderr)
         return 1
-    save_tokens(_token_path(), tokens)
+    save_tokens(token_path, tokens)
     # Never print token values.
     print("authorized; token saved")
     return 0
@@ -344,7 +359,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     parser = argparse.ArgumentParser(description="Administrative Google Drive OAuth helper")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("authorize").set_defaults(func=cmd_authorize)
+    authorize = sub.add_parser("authorize")
+    authorize.add_argument(
+        "--force-consent", action="store_true",
+        help="request explicit consent to obtain/rotate a refresh token",
+    )
+    authorize.set_defaults(func=cmd_authorize)
     sub.add_parser("status").set_defaults(func=cmd_status)
     revoke = sub.add_parser("revoke")
     revoke.add_argument("--yes", action="store_true")

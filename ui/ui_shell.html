@@ -306,6 +306,9 @@
             <button type="button" class="source-type-card" data-source-type="local_folder" aria-pressed="false">
               Pasta do capítulo
             </button>
+            <button type="button" class="source-type-card" data-source-type="local_images" aria-pressed="false">
+              Imagens
+            </button>
           </div>
 
           <div class="field" id="urlSourceField">
@@ -316,9 +319,45 @@
 
           <div class="field" id="localFolderSourceField" hidden>
             <label>Pasta do capítulo</label>
-            <input type="text" id="localFolderInput" autocomplete="off" spellcheck="false" placeholder="C:\\pasta-permitida\\capitulo" />
+            <input type="hidden" id="localFolderInput" />
+            <button type="button" class="btn-ghost local-folder-picker" id="selectLocalFolderBtn">Selecionar pasta do capítulo</button>
+            <div id="localFolderSummary" class="field-hint">O Yomu carregará todas as imagens válidas diretamente da pasta.</div>
             <div class="field-error" id="localFolderError">informe a pasta do capítulo antes de iniciar</div>
-            <div class="field-hint">O caminho é validado e copiado para uma área temporária; ele não é salvo no histórico ou no resultado.</div>
+            <div class="field-hint">Subpastas não são incluídas automaticamente. A seleção pode ser reorganizada ou reduzida antes de iniciar.</div>
+          </div>
+
+          <div class="field" id="localImagesSourceField" hidden>
+            <label>Selecione as páginas do capítulo</label>
+            <div class="field-hint">PNG ou JPG · Você pode selecionar uma ou várias imagens</div>
+            <input type="file" id="localImagesInput" accept=".png,.jpg,.jpeg,image/png,image/jpeg" multiple hidden />
+            <div class="source-actions">
+              <button type="button" class="btn-ghost local-images-primary" id="addLocalImagesBtn">Adicionar imagens</button>
+              <button type="button" class="btn-ghost local-images-clear" id="clearLocalImagesBtn">Limpar</button>
+            </div>
+            <div id="localImagesCount" class="field-hint">Nenhuma página selecionada</div>
+            <div class="field-error" id="localImagesError">Selecione pelo menos uma imagem.</div>
+          </div>
+
+          <div class="field" id="localPageManagerField" hidden>
+            <label>Páginas do capítulo</label>
+            <div id="localPageCount" class="field-hint">Nenhuma página selecionada</div>
+            <div id="localPageList" class="source-image-list" aria-live="polite"></div>
+            <div class="local-page-preview" id="localPagePreview" hidden>
+              <div class="local-page-preview-head">
+                <button type="button" class="btn-ghost" id="localPreviewPrevious" aria-label="Página anterior">←</button>
+                <span id="localPreviewCounter">Página 1 de 1</span>
+                <button type="button" class="btn-ghost" id="localPreviewNext" aria-label="Próxima página">→</button>
+                <button type="button" class="btn-ghost" id="localPreviewEnlarge">Ampliar</button>
+              </div>
+              <div class="local-page-preview-media" id="localPreviewMedia" aria-live="polite"></div>
+            </div>
+          </div>
+
+          <div class="local-image-modal" id="localImageModal" hidden role="dialog" aria-modal="true" aria-label="Imagem ampliada">
+            <div class="local-image-modal-card">
+              <button type="button" class="btn-ghost local-image-modal-close" id="localImageModalClose" aria-label="Fechar pré-visualização">×</button>
+              <div id="localImageModalMedia"></div>
+            </div>
           </div>
 
           <div class="field">
@@ -329,6 +368,15 @@
           <div class="field">
             <label>Pasta de saída <span class="hint">— nome seguro dentro de output/</span></label>
             <input type="text" id="outputInput" placeholder="nome_seguro_do_capitulo" />
+          </div>
+
+          <div class="field">
+            <label for="outputFormatSelect">Formato de saída</label>
+            <select id="outputFormatSelect">
+              <option value="pdf" selected>PDF</option>
+              <option value="png">PNG</option>
+              <option value="psd">PSD</option>
+            </select>
           </div>
 
           <div class="field">
@@ -364,7 +412,6 @@
             <label for="modeSelect">Modo de processamento</label>
             <select id="modeSelect">
               <option value="quality" selected>Qualidade</option>
-              <option value="fast">Rápido</option>
               <option value="download_only">Download-only</option>
             </select>
             <div class="field-hint" id="modeHint">Usa processamento mais conservador para páginas e fontes difíceis.</div>
@@ -409,7 +456,7 @@
               <div class="toggle-copy"><div class="tt">Abrir pasta ao terminar</div><div class="td">Mostra os arquivos assim que o capítulo estiver pronto</div></div>
               <label class="switch"><input type="checkbox" id="openToggle"><span class="slider"></span></label>
             </div>
-            <div class="toggle-row">
+            <div class="toggle-row" id="sourceProfileRow" hidden>
               <div class="toggle-copy"><div class="tt">Registrar perfil da fonte</div><div class="td">Opcional: só após revisão manual concluída; salva apenas evidências sanitizadas.</div></div>
               <label class="switch"><input type="checkbox" id="sourceProfileToggle"><span class="slider"></span></label>
             </div>
@@ -903,7 +950,7 @@
 
       <div class="settings-friendly-grid">
         <div class="panel setting-summary" id="settingServiceSummary" hidden><div class="setting-summary-icon"></div><div><span>Serviço de tradução</span><strong id="settingServiceFriendly">verificando…</strong></div></div>
-        <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Modo padrão</span><strong id="settingModeFriendly">Rápido</strong></div></div>
+        <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Modo padrão</span><strong id="settingModeFriendly">Qualidade</strong></div></div>
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Leitura de texto</span><strong id="settingReadingFriendly">verificando…</strong></div></div>
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Processamento paralelo</span><strong id="settingParallelFriendly">verificando…</strong></div></div>
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Contexto de capítulo</span><strong id="settingContextFriendly">Ativo</strong></div></div>
@@ -921,7 +968,7 @@
         </div>
         <div class="panel settings-section">
           <div class="panel-label" data-i18n="settings.processing">Processamento</div>
-          <label><span data-i18n="settings.default_mode">Modo padrão</span><select name="default_mode"><option value="fast">Rápido</option><option value="quality">Qualidade</option></select></label>
+          <label><span data-i18n="settings.default_mode">Modo padrão</span><select name="default_mode"><option value="quality">Qualidade</option></select></label>
           <label><span data-i18n="settings.default_scope">Escopo padrão</span><select name="default_scope"><option value="full">Capítulo inteiro</option><option value="sample">Amostra de teste</option></select></label>
           <label class="checkline"><input type="checkbox" name="use_cache"> <span data-i18n="settings.cache">usar cache quando seguro</span></label>
           <label class="checkline"><input type="checkbox" name="temporary_context"> <span data-i18n="settings.temporary_context">usar contexto temporário</span></label>

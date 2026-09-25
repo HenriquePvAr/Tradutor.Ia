@@ -37,10 +37,18 @@ import worker_supervisor
 from local_environment import load_local_environment_for_entrypoint
 from process_options import background_python_executable, build_background_process_options
 from runtime_paths import runtime_root
+from runtime_contract import current_runtime_contract
 
 REPO_ROOT = Path(__file__).resolve().parent
 RUNTIME_ROOT = runtime_root()
 DB_PATH = RUNTIME_ROOT / "jobs.sqlite3"
+
+
+def _worker_process_fingerprint() -> list[str]:
+    """Identify only a Yomu worker, including frozen workers."""
+    if bool(getattr(sys, "frozen", False)):
+        return ["--internal-child", "worker"]
+    return ["worker_service.py"]
 
 #: Supervision belongs to the launcher instance that started the worker, so it lives for
 #: exactly as long as this process. A launcher that finds a healthy worker it did not start
@@ -73,7 +81,7 @@ def build_child_command(role: str, *, frozen: bool | None = None) -> list[str]:
 
 def _run_internal_child(role: str, argv: list[str]) -> int:
     print(f"CHILD_BOOT role={role}", flush=True)
-    if role in {"performance-validation", "worker", "ui", "pipeline"}:
+    if role in {"performance-validation", "worker", "ui", "pipeline", "local-folder"}:
         import build_profile
         if build_profile.is_production() and role == "performance-validation":
             print("REJECTED_BY_PRODUCTION_PROFILE child=performance-validation", file=sys.stderr, flush=True)
@@ -106,6 +114,29 @@ def _run_internal_child(role: str, argv: list[str]) -> int:
             print(
                 f"CHILD_STARTUP_EXCEPTION exception_class={type(exc).__name__} "
                 "stage=pipeline_startup exit_code=1",
+                flush=True,
+            )
+            print("CHILD_EXIT exit_code=1", flush=True)
+            raise
+    if role == "local-folder":
+        print("CHILD_POST_BOOT_BEGIN role=local-folder", flush=True)
+        try:
+            print("LOCAL_FOLDER_MODULE_IMPORT_BEGIN", flush=True)
+            import run_local_folder
+            print("LOCAL_FOLDER_MODULE_IMPORT_RESULT status=success", flush=True)
+            print("LOCAL_FOLDER_MAIN_CALL_BEGIN", flush=True)
+            result = run_local_folder.main(argv)
+            print(
+                f"LOCAL_FOLDER_MAIN_CALL_RETURN result_type={type(result).__name__}",
+                flush=True,
+            )
+            code = 0 if isinstance(result, dict) else int(result or 0)
+            print(f"CHILD_EXIT exit_code={code}", flush=True)
+            return code
+        except BaseException as exc:  # noqa: BLE001 - preserve real child failure
+            print(
+                f"CHILD_STARTUP_EXCEPTION exception_class={type(exc).__name__} "
+                "stage=local_folder_startup exit_code=1",
                 flush=True,
             )
             print("CHILD_EXIT exit_code=1", flush=True)
@@ -221,6 +252,16 @@ def start_worker(*, force: bool = False) -> subprocess.Popen | None:
         healthy = store.healthy_worker(stale_seconds=15)
     finally:
         store.close()
+    incompatible = bool(
+        healthy
+        and bool(getattr(sys, "frozen", False))
+        and str(healthy.get("worker_contract") or "") != current_runtime_contract()
+    )
+    if healthy and incompatible and not force:
+        if stop_worker(timeout=10.0) != 0:
+            print("incompatible worker is still running")
+            return None
+        healthy = None
     if healthy and not force:
         print(f"worker already online: {healthy['worker_id']} (pid {healthy['pid']})")
         return None
@@ -294,7 +335,8 @@ def stop_worker(*, force: bool = False, timeout: float = 30.0) -> int:
         active = store.active_job()
         if active:
             print(f"active job: {active['id']} ({active['status']})")
-        if not process_tree.matches(pid, create_time=create_time, substrings=["worker_service.py"]):
+        fingerprint = _worker_process_fingerprint()
+        if not process_tree.matches(pid, create_time=create_time, substrings=fingerprint):
             print(f"worker pid {pid} no longer matches a worker process; not signalling")
             return 0
         store.request_worker_stop(worker_id)
@@ -314,7 +356,7 @@ def stop_worker(*, force: bool = False, timeout: float = 30.0) -> int:
             print("worker still running; re-run with --force to terminate its tree")
             return 1
         report = process_tree.terminate_tree(
-            pid, create_time=create_time, substrings=["worker_service.py"], timeout=10.0
+            pid, create_time=create_time, substrings=fingerprint, timeout=10.0
         )
         print(f"force stop: {report['reason']} (terminated {len(report['terminated'])}, "
               f"killed {len(report['killed'])}, survivors {report['survivors']})")
@@ -446,7 +488,14 @@ def main(argv: list[str] | None = None) -> int:
         started = start_worker()
         if started is not None:
             supervise_worker(started)
-        return start_ui()
+        try:
+            return start_ui()
+        finally:
+            # A worker belongs to the launcher instance that started it.  Do not leave a
+            # detached lease alive after the desktop instance closes; an existing worker
+            # discovered at startup remains owned by its original launcher.
+            if started is not None:
+                stop_worker(timeout=10.0)
     print(f"unknown command: {command}", file=sys.stderr)
     return 2
 

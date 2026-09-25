@@ -147,6 +147,7 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
     import sys
 
     from ui_helpers import (
+        assert_command_output_format,
         assert_command_provider,
         build_run_command,
         build_run_output_slug,
@@ -158,7 +159,7 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
     output_dir = Path(str(job.get("output_dir") or "chapter"))
     chapter_slug = str(config.get("chapter_slug") or output_dir.parent.name or "chapter")
     output_identity = build_run_output_slug(chapter_slug, str(job.get("run_id") or output_dir.name))
-    return assert_command_provider(build_run_command(
+    return assert_command_output_format(assert_command_provider(build_run_command(
         url=str(job.get("source_url") or ""),
         mode=str(config.get("mode") or "fast"),
         output=output_identity,
@@ -172,8 +173,13 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
         open_output=bool(config.get("open_output", False)),
         download_only=bool(config.get("download_only", False)),
         translation_provider=requested_translation_provider(config) or None,
+        # The persisted config is the single source of truth for the output format.
+        # Omitting it here silently dropped ``--output-format`` on the post-analysis
+        # rebuild, so a psd/png job executed as the pdf default (config said psd, the
+        # runner argv said pdf).  Carry it through like every other per-job argument.
+        output_format=str(config.get("output_format") or "pdf"),
         python_executable=sys.executable,
-    ), config)
+    ), config), config)
 
 
 def _bounded_command_selection(config: dict[str, Any], selection: dict[str, Any]) -> list[str]:

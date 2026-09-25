@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 import uuid
 import hashlib
 from datetime import datetime, timezone
@@ -58,8 +59,10 @@ from beta_license import (
     stable_install_fingerprint_hash,
 )
 from commercial_device import CommercialDeviceAuthorizer, UnavailableCommercialDeviceAuthorizer, CommercialDeviceAuthorizationError, CommercialDeviceContext
+from desktop_identity import InstallIdentity
 from review_rerun import build_pending_region_plan
 from runtime_paths import runtime_root
+from runtime_contract import current_runtime_contract
 import audit_registry
 import human_translation_decisions
 import human_mask_decisions
@@ -140,22 +143,51 @@ def _build_commercial_device_authorizer(runtime_root: Path):
     return CommercialDeviceAuthorizer(runtime_root, supabase_url=url, publishable_key=key)
 
 
+def _enforce_translation_device_uuid(configuration: dict[str, Any]) -> None:
+    """Fail closed before a translating job is ever persisted.
+
+    A Quality job reaches the yomu_backend translation provider, which needs the verified
+    ``license_devices`` row UUID (the runner exports it as ``TRADUTOR_DEVICE_UUID``).  When
+    commercial device authorization does not resolve — e.g. the beta provider is not Supabase
+    so ``commercial_device_authorizer`` is None and the beta path leaves ``device_uuid``
+    unset — the job used to run the entire OCR pass and only then die with
+    ``commercial_device_id_missing``.  Refuse to create such a job instead.  Download-only
+    jobs never translate, so they are exempt.
+    """
+    if bool(configuration.get("download_only")):
+        return
+    value = str(configuration.get("device_uuid") or "").strip()
+    if not value:
+        if os.getenv("TRADUTOR_IA_HERMETIC_TEST_ENV") == "1":
+            # Hermetic parity with _require_beta_access's LocalDevelopmentBetaAuthorizer:
+            # submit/review flow tests never resolve a real commercial device and never
+            # reach the translation provider.  Production (env unset) still fails closed.
+            configuration["device_uuid"] = "00000000-0000-4000-8000-000000000000"
+            return
+        raise ValueError("commercial_device_id_missing")
+    try:
+        uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError("invalid_license_device_uuid") from exc
+
+
 def _read_or_create_install_id(runtime_root: Path, env: dict[str, str] | None = None) -> str:
+    """Resolve the Beta license identity independently from job-data isolation.
+
+    ``runtime_root`` is intentionally only a data root.  Test runtimes may use a
+    different jobs DB/output/log directory, but they must still identify the same
+    physical installation for the Beta license gate.  The explicit environment
+    override remains available for hermetic tests and deployments that provide a
+    canonical installation id themselves.
+    """
     values = os.environ if env is None else env
     configured = str(values.get("TRADUTOR_INSTALL_ID", "") or "").strip()
     if configured:
         return configured
-    path = Path(runtime_root) / "install_id"
+    del runtime_root  # runtime data isolation must not change license identity
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            existing = path.read_text(encoding="utf-8").strip()
-            if existing:
-                return existing
-        install_id = uuid.uuid4().hex
-        path.write_text(install_id + "\n", encoding="utf-8")
-        return install_id
-    except OSError as exc:
+        return InstallIdentity().device_id()
+    except Exception as exc:  # noqa: BLE001 - fail closed at the license boundary
         raise RuntimeError("install_id_unavailable") from exc
 
 
@@ -321,10 +353,9 @@ def _worker_environment_matches_current(worker: dict[str, Any] | None) -> bool:
     # cannot detect the stale code.  Build-tagged worker leases make this mismatch explicit.
     if bool(getattr(sys, "frozen", False)):
         try:
-            import app_version
-            build_tag = str(getattr(app_version, "BUILD_VERSION", "") or "")
-            worker_id = str((worker or {}).get("worker_id") or "")
-            if build_tag and not worker_id.startswith(f"{build_tag}:"):
+            expected_contract = current_runtime_contract()
+            actual_contract = str((worker or {}).get("worker_contract") or "")
+            if not actual_contract or actual_contract != expected_contract:
                 return False
         except Exception:  # noqa: BLE001 - compatibility check must remain fail-open
             pass
@@ -512,6 +543,7 @@ class UiBridge:
         self.commercial_device_authorizer = _build_commercial_device_authorizer(self.runtime_root)
         self._quality_revision_threads: dict[str, threading.Thread] = {}
         self._quality_revision_cancels: dict[str, threading.Event] = {}
+        self._owned_worker_process = None
         self.store.reconcile_confirmed_reviews()
         # A job left in flight by a crash must not come back as PROCESSANDO after a restart.
         self._recover_staged_source_analyses()
@@ -822,7 +854,49 @@ class UiBridge:
                 source_analysis_result = stored_result.public() if stored_result else {}
             finally:
                 readiness.close()
+        public_source_analysis = job.get("source_analysis")
+        if not isinstance(public_source_analysis, dict):
+            public_source_analysis = {}
+        source_verified = bool(
+            any(
+                str(candidate.get("outcome") or "")
+                in {"supported_specific_adapter", "supported_generic", "supported"}
+                and int(candidate.get("accepted_count") or 0) > 0
+                for candidate in (source_analysis_result, public_source_analysis)
+                if isinstance(candidate, dict)
+            )
+        )
         result_metrics = self._current_job_result_metrics(job)
+        artifact_output = self._effective_artifact_output_dir(job)
+        artifact_manifest = {}
+        if artifact_output is not None:
+            try:
+                artifact_manifest = json.loads(
+                    (artifact_output / "run_manifest.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                artifact_manifest = {}
+        display_status = job.get("status")
+        if (
+            source_type in {"local_folder", "local_images"}
+            and str(artifact_manifest.get("final_status") or "") == JobStatus.REVIEW_REQUIRED
+        ):
+            # Older frozen local jobs wrote their pipeline output relative to the bundle,
+            # while the queue row pointed at the user-data output root.  Expose the
+            # verified terminal evidence without mutating that historical row.
+            display_status = JobStatus.REVIEW_REQUIRED
+        display_output = str(artifact_output or job.get("output_dir") or "")
+        display_pdf = str(job.get("pdf_path") or "")
+        if artifact_manifest.get("pdf_path") and artifact_output is not None:
+            candidate_pdf = Path(str(artifact_manifest["pdf_path"]))
+            if not candidate_pdf.is_absolute():
+                candidate_pdf = artifact_output / candidate_pdf
+            try:
+                candidate_pdf.resolve().relative_to(artifact_output.resolve())
+                if candidate_pdf.is_file():
+                    display_pdf = str(candidate_pdf.resolve())
+            except (OSError, ValueError):
+                pass
         record = {
             "id": job["id"],
             "run_id": job.get("run_id"),
@@ -854,7 +928,7 @@ class UiBridge:
             # carry no source path in their row; their snapshot reference stays opaque.
             "url": (
                 sanitize_source_url(str(job.get("source_url") or ""))
-                if source_type != "local_folder" else ""
+                if source_type not in {"local_folder", "local_images"} else ""
             ),
             "source_type": source_type,
             "validation_snapshot": validation_snapshot,
@@ -863,14 +937,21 @@ class UiBridge:
             ),
             "source_label": (
                 str(local_summary.get("folder_name") or "Pasta local")[:120]
-                if source_type == "local_folder" else ""
+                if source_type in {"local_folder", "local_images"} else ""
             ),
             "mode": config.get("mode") or "fast",
             "scope": "full" if config.get("full", True) else "partial",
             "cache_mode": "force" if config.get("force") else "cache",
-            "status": job.get("status"),
-            "output_folder": job.get("output_dir") or "",
-            "pdf_path": job.get("pdf_path") or "",
+            "status": display_status,
+            "output_folder": display_output,
+            "pdf_path": display_pdf,
+            "output_format": str(config.get("output_format") or "pdf"),
+            "download_only": bool(config.get("download_only")),
+            "result_kind": "directory" if (
+                bool(config.get("download_only"))
+                or str(config.get("output_format") or "pdf") in {"png", "psd"}
+            ) else "file",
+            "result_path": display_output or display_pdf,
             "quality_report_path": job.get("quality_report_path") or "",
             "attempt": job.get("attempt") or 1,
             "recoverable": bool(job.get("recoverable")),
@@ -888,6 +969,7 @@ class UiBridge:
             "source_analysis": job.get("source_analysis") or {},
             "source_selection": job.get("source_selection") or {},
             "source_analysis_result": source_analysis_result,
+            "source_verified": source_verified,
             "download_authorization": (
                 config.get("download_authorization") if isinstance(
                     config.get("download_authorization"), dict) else {}
@@ -924,7 +1006,9 @@ class UiBridge:
         history_store = getattr(self, "history_store", None)
         if history_store is None:
             return record
-        verification, manifest = history_store._output_verification(confined_output)
+        verification, manifest = history_store._output_verification(
+            confined_output, download_only=bool(record.get("download_only"))
+        )
         record["output_verification"] = verification
         if manifest:
             pdf_path = history_store._manifest_pdf_path(confined_output, manifest)
@@ -969,6 +1053,43 @@ class UiBridge:
         except (OSError, ValueError, TypeError):
             return False
 
+    @classmethod
+    def _effective_artifact_output_dir(cls, job: dict[str, Any]) -> Path | None:
+        """Find the verified artifact directory for a job, including legacy frozen runs."""
+
+        output_dir = Path(str(job.get("output_dir") or ""))
+        if output_dir.is_dir() and cls._artifact_manifest_matches_job(output_dir, job):
+            return output_dir
+        config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        source_type = str(job.get("source_type") or config.get("source_type") or "")
+        if source_type not in {"local_folder", "local_images"}:
+            return None
+        command = list(job.get("command") or [])
+        try:
+            output_index = command.index("--output") + 1
+            raw_output = Path(str(command[output_index]))
+            executable = Path(str(command[0])).resolve()
+        except (ValueError, IndexError, OSError, TypeError):
+            return None
+        candidates = []
+        if raw_output.is_absolute():
+            candidates.append(raw_output)
+        else:
+            # Candidate23's frozen child resolved relative output below its bundle.  Keep
+            # this compatibility path read-only and require run-id evidence below.
+            candidates.extend((
+                executable.parent / "_internal" / "output" / raw_output,
+                executable.parent / "output" / raw_output,
+            ))
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved.is_dir() and cls._artifact_manifest_matches_job(resolved, job):
+                return resolved
+        return None
+
     def _reconstruction_publication_manifest_ready(self, job: dict[str, Any]) -> bool:
         """Server-side presentation capability for reconstruction publication UX."""
 
@@ -1008,9 +1129,12 @@ class UiBridge:
     def _current_job_result_metrics(self, job: dict[str, Any]) -> dict[str, Any]:
         if str(job.get("status") or "") not in JobStatus.TERMINAL:
             return {}
-        output_dir = Path(str(job.get("output_dir") or ""))
-        if not output_dir.is_dir() or not self._artifact_manifest_matches_job(output_dir, job):
+        output_dir = self._effective_artifact_output_dir(job)
+        if output_dir is None:
             return {}
+        configuration = job.get("configuration") or {}
+        if isinstance(configuration, dict) and configuration.get("download_only") is True:
+            return self._download_only_result_metrics(output_dir)
         report_path = output_dir / "timing_report.json"
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -1034,6 +1158,68 @@ class UiBridge:
             "manual_review_count": manual_review_count,
             "errors": int(report.get("pages_with_error") or 0),
             "quality_gate": quality.get("passed"),
+        }
+
+    @staticmethod
+    def _download_only_result_metrics(output_dir: Path) -> dict[str, Any]:
+        """Expose downloader artifacts without fabricating translation metrics."""
+        try:
+            report = json.loads(
+                (output_dir / "downloaded_images.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {
+                "pages_processed": None,
+                "groups_translated": None,
+                "manual_review_count": None,
+                "errors": None,
+                "quality_gate": "NOT_APPLICABLE",
+                "download_report_valid": False,
+                "download_gate": None,
+            }
+        if not isinstance(report, dict):
+            return {
+                "pages_processed": None,
+                "groups_translated": None,
+                "manual_review_count": None,
+                "errors": None,
+                "quality_gate": "NOT_APPLICABLE",
+                "download_report_valid": False,
+                "download_gate": None,
+            }
+        gate = report.get("download_gate")
+        try:
+            total_downloaded = int(report.get("total_downloaded"))
+        except (TypeError, ValueError):
+            total_downloaded = None
+        downloaded = report.get("downloaded")
+        valid = (
+            total_downloaded is not None
+            and total_downloaded >= 0
+            and isinstance(gate, dict)
+            and gate.get("passed") is True
+            and isinstance(downloaded, list)
+            and len(downloaded) == total_downloaded
+            and all(isinstance(item, dict) for item in downloaded)
+        )
+        if valid:
+            try:
+                output_root = output_dir.resolve()
+                valid = all(
+                    (path := Path(str(item.get("path") or "")).resolve()).is_file()
+                    and path.is_relative_to(output_root)
+                    for item in downloaded
+                )
+            except (OSError, ValueError):
+                valid = False
+        return {
+            "pages_processed": total_downloaded if valid else None,
+            "groups_translated": None,
+            "manual_review_count": None,
+            "errors": None,
+            "quality_gate": "NOT_APPLICABLE",
+            "download_report_valid": valid,
+            "download_gate": "PASS" if valid else None,
         }
 
     @staticmethod
@@ -3675,7 +3861,7 @@ class UiBridge:
             return result if 0.0 <= result <= 1.0 else None
 
         return {
-            "source_type": "local_folder" if job.get("source_type") == "local_folder" else "url",
+            "source_type": job.get("source_type") if job.get("source_type") in {"local_folder", "local_images"} else "url",
             "adapter_name": identifier(job.get("adapter_name")),
             "adapter_version": identifier(job.get("adapter_version")),
             "transport_name": identifier(job.get("transport_name")),
@@ -4439,15 +4625,53 @@ class UiBridge:
                 principal=principal, operation="start_translation",
                 access_token=license_access_token)
         source_type = self._requested_source_type(payload)
+        media_selection_ids = payload.get("local_media_selection_ids")
+        media_ids = payload.get("ordered_media_ids")
+        has_picker_media = isinstance(media_selection_ids, list) and bool(media_selection_ids) and isinstance(media_ids, list) and bool(media_ids)
+        if has_picker_media:
+            # The browser supplies opaque ids only.  Resolve them here, after the
+            # loopback boundary is established, before reusing the existing local
+            # staging implementation.
+            if local_folder_allowed is not True:
+                raise ValueError("local_media_requires_loopback_ui")
+            from local_media_registry import LOCAL_MEDIA_REGISTRY
+            paths = LOCAL_MEDIA_REGISTRY.ordered_paths_many(media_selection_ids, media_ids)
+            forwarded = dict(payload)
+            if source_type == "local_folder":
+                # This value is process-internal only and lets the existing folder
+                # containment check defend the already picker-authorized list.
+                forwarded["local_folder"] = str(Path(paths[0]).parent)
+                forwarded["selected_image_paths"] = paths
+            else:
+                forwarded["image_paths"] = paths
+            return await self._start_local_images(
+                forwarded, principal=principal, beta_decision=beta_decision,
+                commercial_context=commercial_context,
+                license_access_token=license_access_token,
+                source_type=source_type)
+        if source_type == "local_images":
+            if local_folder_allowed is not True:
+                raise ValueError("local_images_requires_loopback_ui")
+            return await self._start_local_images(
+                payload, principal=principal, beta_decision=beta_decision,
+                commercial_context=commercial_context,
+                license_access_token=license_access_token)
         if source_type == "local_folder":
             # The HTTP boundary calculates this from both the bind address and the peer.
             # Direct callers are deliberately denied by default so a future endpoint cannot
             # accidentally turn a local path into a remotely reachable capability.
             if local_folder_allowed is not True:
                 raise ValueError("local_folder_requires_loopback_ui")
+            if payload.get("selected_image_paths"):
+                return await self._start_local_images(
+                    payload, principal=principal, beta_decision=beta_decision,
+                    commercial_context=commercial_context,
+                    license_access_token=license_access_token,
+                    source_type="local_folder")
             return await self._start_local_folder(
                 payload, principal=principal, beta_decision=beta_decision,
-                commercial_context=commercial_context)
+                commercial_context=commercial_context,
+                license_access_token=license_access_token)
         self._require_validated_source(payload)
         stale_resolution = (
             None
@@ -4492,26 +4716,11 @@ class UiBridge:
             job["id"], source_type="url", stage="queued", reason_code="",
             heartbeat_at=time.time(),
         )
-        # Seal the authenticated session before handing the durable job to the
-        # worker.  The frozen pipeline may spend minutes downloading/OCRing before
-        # its first provider call, so creating this context in the UI response path
-        # (or after worker spawn) is too late and races cleanup/process boundaries.
-        if bool(job.get("configuration", {}).get("translation_enabled")):
-            access_token = str(license_access_token or "").strip()
-            if not access_token:
-                raise ValueError("auth_handoff_unavailable")
-            from runtime_paths import runtime_root
-            from secure_auth_context import AuthEnvelopeStore
-
-            auth_path = AuthEnvelopeStore(runtime_root()).seal(
-                job["id"], access_token,
-                user_id=getattr(principal, "user_id", "") if principal else "",
-            )
-            job_configuration = dict(job.get("configuration") or {})
-            job_configuration.update({
-                "auth_context_id": str(job["id"]),
-                "auth_context_ref": "auth/" + auth_path.name,
-            })
+        job_configuration = self._seal_translation_context(
+            job, job.get("configuration", {}), principal=principal,
+            license_access_token=license_access_token,
+        )
+        if job_configuration != (job.get("configuration") or {}):
             self.store.update_fields(
                 job["id"],
                 configuration_json=json.dumps(job_configuration, ensure_ascii=False),
@@ -4521,6 +4730,71 @@ class UiBridge:
         worker = self.ensure_worker()
         return {"ok": True, "run_id": job["run_id"], "job_id": job["id"],
                 "status": JobStatus.QUEUED, "stage": "queued", "worker": worker}
+
+    @staticmethod
+    def _translation_configuration_snapshot(
+        payload: dict[str, Any], normalized: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the shared, secret-free translation contract for any source type."""
+        # Preserve the URL contract's explicit snapshot shape:
+        # "translation_enabled": normalized["translation_enabled"]
+        provider = str(normalized.get("translation_provider") or "").strip().lower()
+        return {
+            "provider_provenance": {
+                "provider_requested": provider,
+                "provider_command_initial": provider,
+                "provider_command_final": provider,
+                "provider_effective": "",
+                "provider_model": "",
+                "provider_source": "ui_payload",
+                "provider_fallback_used": False,
+                "provider_fallback_reason": "",
+            },
+            "translation_provider": provider,
+            "translation_enabled": bool(normalized.get("translation_enabled")),
+            "translation_policy_source": str(
+                normalized.get("translation_policy_source")
+                or ("control_plane_snapshot"
+                    if "translation_enabled" in payload else "fail_closed_default")
+            ),
+            "translation_policy_resolved_at": time.time(),
+            "translation_request_id": str(
+                normalized.get("translation_request_id")
+                or payload.get("translation_request_id")
+                or payload.get("request_id")
+                or f"translation:{payload.get('trace_id') or normalized.get('id') or ''}"
+            )[:220],
+        }
+
+    def _seal_translation_context(
+        self,
+        job: dict[str, Any],
+        configuration: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None,
+        license_access_token: str,
+    ) -> dict[str, Any]:
+        """Seal provider credentials using the same mechanism as URL jobs."""
+        if not bool(configuration.get("translation_enabled")):
+            return dict(configuration)
+        if bool(configuration.get("download_only")):
+            return dict(configuration)
+        access_token = str(license_access_token or "").strip()
+        if not access_token:
+            raise ValueError("auth_handoff_unavailable")
+        from runtime_paths import runtime_root
+        from secure_auth_context import AuthEnvelopeStore
+
+        auth_path = AuthEnvelopeStore(runtime_root()).seal(
+            job["id"], access_token,
+            user_id=getattr(principal, "user_id", "") if principal else "",
+        )
+        sealed = dict(configuration)
+        sealed.update({
+            "auth_context_id": str(job["id"]),
+            "auth_context_ref": "auth/" + auth_path.name,
+        })
+        return sealed
 
     @staticmethod
     def _has_current_pipeline_intent(payload: dict[str, Any]) -> bool:
@@ -4628,16 +4902,32 @@ class UiBridge:
 
         source_url = str(payload.get("url") or "").strip()
         local_folder = str(payload.get("local_folder") or "").strip()
-        if source_url and local_folder:
+        image_paths = payload.get("image_paths")
+        has_images = isinstance(image_paths, list) and bool(image_paths)
+        media_selection_ids = payload.get("local_media_selection_ids")
+        ordered_media_ids = payload.get("ordered_media_ids")
+        has_picker_media = (
+            isinstance(media_selection_ids, list) and bool(media_selection_ids)
+            and isinstance(ordered_media_ids, list) and bool(ordered_media_ids)
+        )
+        declared = str(payload.get("source_type") or "").strip().casefold()
+        if has_picker_media:
+            if source_url or local_folder or has_images or declared not in {"local_folder", "local_images"}:
+                raise SourceError("invalid_request", "local_media_source_mismatch")
+            return declared
+        if source_url and (local_folder or has_images):
             raise SourceError("invalid_request", "url_and_folder")
-        if local_folder:
+        if local_folder and has_images:
+            raise SourceError("invalid_request", "folder_and_images")
+        if has_images:
+            actual = "local_images"
+        elif local_folder:
             actual = "local_folder"
         elif source_url:
             actual = "url"
         else:
             raise SourceError("invalid_request", "missing_source")
-        declared = str(payload.get("source_type") or "").strip().casefold()
-        if declared and declared not in {"url", "local_folder"}:
+        if declared and declared not in {"url", "local_folder", "local_images"}:
             raise SourceError("invalid_request", "unknown_source_type")
         if declared and declared != actual:
             raise SourceError("invalid_request", "source_type_mismatch")
@@ -4706,6 +4996,8 @@ class UiBridge:
         principal: RequestPrincipal | None,
         beta_decision: BetaAccessDecision | None = None,
         commercial_context: CommercialDeviceContext | None = None,
+        license_access_token: str = "",
+        snapshot_override: tuple[str, dict[str, Any], list[str]] | None = None,
     ) -> dict[str, Any]:
         """Snapshot a loopback-only folder selection and queue its opaque reference.
 
@@ -4723,27 +5015,18 @@ class UiBridge:
             started_at=time.time(), heartbeat_at=time.time(),
         )
 
-        # Do not read or copy a local folder when translation execution is unavailable. The
-        # failure is still a visible terminal job, but there is no orphaned snapshot/cache.
-        status = env_status()
-        if not status["env_exists"] or not status["nvidia_configured"]:
-            reason_code = "environment_not_configured"
-            failed = self.store.transition(
-                job["id"], JobStatus.FAILED, reason_code=reason_code,
-                stage="validating_local_source", error_type="configuration",
-                error_message=reason_code,
-            )
-            return {
-                "ok": False, "run_id": failed["run_id"], "job_id": failed["id"],
-                "reason_code": reason_code,
-                "message": "Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.",
-                "stage": "configuração", "action": "Configure o ambiente e envie a pasta novamente.",
-            }
-
+        # A local selection is a media operation, not proof that a development dotenv file
+        # exists.  Frozen desktops intentionally do not bundle .env or provider secrets.
+        # Resolve and stage the owned media first; the worker validates the selected provider
+        # at the capability boundary where it is actually needed.  Download-only therefore
+        # remains provider-free, while translation still fails closed in its provider path.
         raw_folder = str(payload.get("local_folder") or "").strip()
         try:
             self.store.update_fields(job["id"], stage="creating_snapshot", heartbeat_at=time.time())
-            snapshot_ref, summary, candidate_ids = await self._snapshot_local_folder(raw_folder)
+            if snapshot_override is not None:
+                snapshot_ref, summary, candidate_ids = snapshot_override
+            else:
+                snapshot_ref, summary, candidate_ids = await self._snapshot_local_folder(raw_folder)
         except asyncio.CancelledError:
             current = self.store.get_job(job["id"])
             if current and current.get("status") == JobStatus.STAGING:
@@ -4779,13 +5062,16 @@ class UiBridge:
         command = build_local_job_command(
             snapshot_ref=snapshot_ref,
             output=f"{normalized['slug']}/{normalized['id']}",
+            output_path=Path(str(job["output_dir"])).resolve(),
             mode=normalized["mode"],
             logical_pages=True,
             use_cache=normalized["use_cache"],
             force=normalized["force"],
             use_context=normalized["use_context"],
             open_output=normalized["open_output"],
+            output_format=str(payload.get("output_format") or "pdf"),
             python_executable=sys.executable,
+            translation_provider=normalized["translation_provider"],
         )
         selection = {
             "candidate_ids": candidate_ids,
@@ -4799,6 +5085,11 @@ class UiBridge:
             "local_source_summary": summary,
             "source_selection": selection,
         })
+        configuration.update(self._translation_configuration_snapshot(payload, normalized))
+        configuration = self._seal_translation_context(
+            current, configuration, principal=principal,
+            license_access_token=license_access_token,
+        )
         self.store.update_fields(
             job["id"],
             command_json=json.dumps(command, ensure_ascii=False),
@@ -4813,6 +5104,71 @@ class UiBridge:
             "ok": True, "run_id": queued["run_id"], "job_id": queued["id"],
             "worker": self.ensure_worker(), "analysis": summary,
         }
+
+    async def _start_local_images(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None,
+        beta_decision: BetaAccessDecision | None = None,
+        commercial_context: CommercialDeviceContext | None = None,
+        license_access_token: str = "",
+        source_type: str = "local_images",
+    ) -> dict[str, Any]:
+        """Convert an ordered image selection into the existing local-folder boundary.
+
+        The temporary input contains only generated ordinal names.  It is deleted after the
+        local-folder adapter has made its owned snapshot, so the shared worker/pipeline never
+        needs a second image-processing implementation.
+        """
+        from local_images_source import LocalImagesSelection
+        from local_folder_input import snapshot_workspace_root
+
+        paths = payload.get("image_paths") if source_type == "local_images" else payload.get("selected_image_paths")
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("local_images_empty")
+        selection = LocalImagesSelection()
+        selection.add([str(path) for path in paths], initial=False)
+        if source_type == "local_folder":
+            folder = Path(str(payload.get("local_folder") or "")).resolve(strict=True)
+            if not folder.is_dir() or any(page.path.parent != folder for page in selection.pages):
+                raise ValueError("local_folder_selection_outside_source")
+        temp_parent = Path(tempfile.mkdtemp(prefix="yomu-local-images-"))
+        temp_root = temp_parent / "selection"
+        try:
+            selection.snapshot(temp_parent, job_id="selection")
+            generated = (temp_root / "input").resolve()
+            snapshot_ref, summary, candidate_ids = await asyncio.to_thread(
+                self._snapshot_local_images_sync, generated)
+            forwarded = dict(payload)
+            forwarded.pop("image_paths", None)
+            forwarded["source_type"] = "local_folder"
+            forwarded["local_folder"] = str(generated)
+            result = await self._start_local_folder(
+                forwarded, principal=principal, beta_decision=beta_decision,
+                commercial_context=commercial_context,
+                license_access_token=license_access_token,
+                snapshot_override=(snapshot_ref, summary, candidate_ids))
+            if result.get("job_id"):
+                self.store.update_fields(result["job_id"], source_type=source_type)
+            return result
+        finally:
+            shutil.rmtree(temp_parent, ignore_errors=True)
+
+    @staticmethod
+    def _snapshot_local_images_sync(raw_folder: str) -> tuple[str, dict[str, Any], list[str]]:
+        from local_folder_input import snapshot_workspace_root
+        from local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
+        from local_folder_job import public_summary
+
+        root = Path(raw_folder).resolve(strict=True)
+        adapter = LocalFolderChapterAdapter(policy=LocalFolderPolicy(
+            allowed_roots=[root.parent], allow_root_folder=True))
+        snapshot = adapter.snapshot(root, snapshot_workspace_root())
+        manifest = snapshot.public()
+        pages = manifest.get("pages") if isinstance(manifest, dict) else []
+        ids = [str(page.get("id") or "") for page in pages if isinstance(page, dict)]
+        return snapshot.workspace.name, public_summary(snapshot.analysis.source_folder, snapshot.analysis), ids
 
     async def _snapshot_local_folder(
         self,
@@ -4867,6 +5223,7 @@ class UiBridge:
             "source_type": SOURCE_TYPE_LOCAL_FOLDER,
             "ownership_schema_version": 1,
             "mode": normalized["mode"],
+            "download_only": normalized["download_only"],
             "full": True,
             "max_images": None,
             "force": normalized["force"],
@@ -4879,6 +5236,7 @@ class UiBridge:
             "source_analysis": {},
             "source_selection": {},
         }
+        configuration.update(self._translation_configuration_snapshot({}, normalized))
         if beta_decision is not None:
             configuration["beta_license_authorization"] = beta_decision.to_safe_job_metadata()
         if commercial_context is not None:
@@ -4901,6 +5259,7 @@ class UiBridge:
             staging_owner_create_time = float(value) if value is not None else None
         except (ImportError, OSError, TypeError, ValueError):
             pass
+        _enforce_translation_device_uuid(configuration)
         job_id = self.store.create_job(
             # A local folder is never a URL and its original path is never persisted.
             source_url="",
@@ -4942,6 +5301,9 @@ class UiBridge:
         max_images = None if full else int(payload.get("max_images") or 0)
         force = bool(payload.get("force", False))
         use_cache = bool(payload.get("use_cache", not force))
+        download_only = bool(payload.get("download_only", False))
+        translation_provider = self._normalize_translation_provider(payload)
+        translation_enabled = (not download_only) and payload.get("translation_enabled") is True
         # Translation is a server/control-plane decision. Absence is fail-closed
         # (disabled), so a legacy provider value cannot enable DeepL implicitly.
         if mode not in {"fast", "quality"}:
@@ -4964,13 +5326,27 @@ class UiBridge:
             "chapter_name": chapter_name or "Capítulo local",
             "slug": sanitize_output_name(raw_slug),
             "mode": mode,
+            "download_only": download_only,
             "full": True,
             "max_images": None,
             "use_cache": use_cache,
             "force": force,
             "use_context": bool(payload.get("use_context", True)),
             "open_output": bool(payload.get("open_output", False)),
+            "output_format": str(payload.get("output_format") or "pdf").casefold()
+            if str(payload.get("output_format") or "pdf").casefold() in {"pdf", "png", "psd"} else "pdf",
             "create_source_profile": False,
+            "translation_provider": translation_provider,
+            "translation_enabled": translation_enabled,
+            "translation_policy_source": (
+                "control_plane_snapshot"
+                if "translation_enabled" in payload else "fail_closed_default"
+            ),
+            "translation_request_id": str(
+                payload.get("translation_request_id")
+                or payload.get("request_id")
+                or f"translation:{payload.get('trace_id') or payload.get('id') or ''}"
+            )[:220],
         }
 
     @staticmethod
@@ -5256,6 +5632,7 @@ class UiBridge:
             open_output=normalized["open_output"],
             download_only=normalized["download_only"],
             translation_provider=normalized["translation_provider"],
+            output_format=normalized.get("output_format", "pdf"),
             python_executable=sys.executable,
         )
         details = suggest_chapter_details(normalized["url"])
@@ -5275,31 +5652,13 @@ class UiBridge:
             "use_context": normalized["use_context"],
             "chapter_name": normalized["chapter_name"],
             "open_output": normalized["open_output"],
+            "output_format": normalized.get("output_format", "pdf"),
             "create_source_profile": normalized["create_source_profile"],
-            "provider_provenance": {
-                "provider_requested": normalized["translation_provider"],
-                "provider_command_initial": normalized["translation_provider"],
-                "provider_command_final": normalized["translation_provider"],
-                "provider_effective": "",
-                "provider_model": "",
-                "provider_source": "ui_payload",
-                "provider_fallback_used": False,
-                "provider_fallback_reason": "",
-            },
-            "translation_provider": normalized["translation_provider"],
-            "translation_enabled": normalized["translation_enabled"],
-            "translation_policy_source": "control_plane_snapshot"
-            if "translation_enabled" in payload else "fail_closed_default",
-            "translation_policy_resolved_at": time.time(),
-            "translation_request_id": str(
-                payload.get("translation_request_id")
-                or payload.get("request_id")
-                or f"translation:{payload.get('trace_id') or normalized['id']}"
-            )[:220],
             "source_analysis": source_analysis or {},
             "source_selection": source_selection or {},
             "chapter_slug": normalized["slug"],
         }
+        configuration.update(self._translation_configuration_snapshot(payload, normalized))
         idempotency_key = self._idempotency_key(payload)
         if idempotency_key:
             configuration["idempotency_key"] = idempotency_key
@@ -5384,6 +5743,7 @@ class UiBridge:
                 # PID ownership without a creation time is weaker, but still lets the
                 # recovery loop preserve an analysis whose creating UI is demonstrably live.
                 staging_owner_create_time = None
+        _enforce_translation_device_uuid(configuration)
         job_id = self.store.create_job(
             source_url=normalized["url"],
             output_dir=str(output_folder),
@@ -5441,7 +5801,7 @@ class UiBridge:
                             "started": False,
                             "error": "worker_environment_mismatch",
                         }
-                    start_worker()
+                    self._owned_worker_process = start_worker()
                 except Exception:  # noqa: BLE001 - reported to the caller, never swallowed
                     return {
                         "online": False,
@@ -5459,7 +5819,7 @@ class UiBridge:
         try:
             from start_tradutor import start_worker
 
-            start_worker()
+            self._owned_worker_process = start_worker()
         except Exception as exc:  # noqa: BLE001 - reported to the caller, never swallowed
             return {"online": False, "started": False, "error": type(exc).__name__}
         healthy = self.store.healthy_worker(stale_seconds=15)
@@ -5804,6 +6164,7 @@ class UiBridge:
             configuration={
                 **(job.get("configuration") or {}),
                 "beta_license_authorization": beta_decision.to_safe_job_metadata(),
+                "resume_checkpoint_job_id": str(job_id),
             },
             series_title=job.get("series_title") or "",
             series_slug=job.get("series_slug") or "",
@@ -6337,13 +6698,28 @@ class UiBridge:
             if dedupe in seen:
                 continue
             seen.add(dedupe)
+            output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+            raw_folder = Path(output_folder)
             try:
-                folder = Path(output_folder).resolve()
+                if raw_folder.is_absolute():
+                    folder = raw_folder.resolve()
+                else:
+                    # Legacy cards stored paths such as output\\webtoon_chapter\\<run>.
+                    # Resolve only that explicit namespace against the runtime root's
+                    # parent; never interpret an arbitrary frontend-relative path.
+                    parts = tuple(str(part) for part in raw_folder.parts)
+                    if not parts or parts[0].casefold() != output_root.name.casefold():
+                        raise ValueError("local_artifact_path_invalid")
+                    folder = (output_root.parent / raw_folder).resolve()
             except (OSError, RuntimeError) as exc:
                 raise ValueError("local_artifact_resolve_failed") from exc
-            output_root = OUTPUT_ROOT.resolve()
             if folder == output_root or output_root not in folder.parents:
                 raise ValueError("local_artifact_path_invalid")
+            # Reject symlink/junction escapes after normalization, including legacy paths.
+            try:
+                folder.relative_to(output_root)
+            except ValueError as exc:
+                raise ValueError("local_artifact_path_invalid") from exc
             return {
                 "local_artifact_id": str(record.get("id") or local_artifact_id),
                 "_record": record,
@@ -6377,8 +6753,17 @@ class UiBridge:
         self.history_store.hide_record(record)
         deleted_files = False
         if delete_files:
+            # Deleting a valid history identity is idempotent when the physical folder
+            # was already removed outside the UI.  The record must not become immortal
+            # merely because its authorized target is absent.
             if not folder.exists():
-                raise ValueError("local_artifact_not_found")
+                self._refresh_history()
+                return {
+                    "code": "local_history_item_hidden",
+                    "local_artifact_id": record_id,
+                    "deleted_files": False,
+                    "publication_preserved": bool(record.get("publication_id")),
+                }
             try:
                 shutil.rmtree(folder)
                 deleted_files = True
@@ -6408,8 +6793,17 @@ class UiBridge:
                     pass
 
     async def shutdown(self) -> None:
-        # Closing the UI must never cancel a running job: the worker owns it and keeps
-        # processing. Only release this process's database handle.
+        # Stop only a worker that this UI instance started. A worker owned by another
+        # launcher remains untouched; a running job is transitioned by the worker's
+        # normal shutdown path and remains recoverable.
+        process = self._owned_worker_process
+        if process is not None and getattr(process, "poll", lambda: 0)() is None:
+            try:
+                from start_tradutor import stop_worker
+                stop_worker(timeout=10.0)
+            except Exception:  # noqa: BLE001 - database handles still need closing
+                pass
+        self._owned_worker_process = None
         self.close()
 
     def _normalize_payload(
@@ -6445,6 +6839,7 @@ class UiBridge:
             use_context=bool(payload.get("use_context", True)),
             download_only=download_only,
             translation_provider=self._normalize_translation_provider(payload),
+            output_format=str(payload.get("output_format") or "pdf").casefold(),
         )
         return {
             "id": str(payload.get("id") or uuid.uuid4()),
@@ -6462,6 +6857,8 @@ class UiBridge:
             "create_source_profile": payload.get("create_source_profile") is True,
             "translation_provider": self._normalize_translation_provider(payload),
             "translation_enabled": translation_enabled,
+            "output_format": str(payload.get("output_format") or "pdf").casefold()
+            if str(payload.get("output_format") or "pdf").casefold() in {"pdf", "png", "psd"} else "pdf",
         }
 
     @staticmethod

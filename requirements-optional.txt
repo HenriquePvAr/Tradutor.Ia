@@ -1,3 +1,8 @@
 # Optional source transports. The application imports these lazily and keeps them disabled
 # unless their documented feature flag is explicitly set.
 cloudscraper==1.2.71
+# Selected dynamic reader fallback (Comix only). Browser binaries are never installed by
+# this manifest; the resolver uses an already-installed Chrome in an ephemeral context.
+scrapling[fetchers]==0.4.15
+# PSD output writer; imported lazily only when --output-format psd is selected.
+psd-tools==1.10.9

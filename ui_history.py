@@ -265,6 +265,22 @@ class UIHistoryStore:
         return str(resolved) if resolved.is_file() else ""
 
     @staticmethod
+    def _manifest_result_path(folder: Path, manifest: dict[str, Any]) -> str:
+        """Validate the primary result path, which may be a file or directory."""
+        candidate = str(manifest.get("result_path") or "")
+        if not candidate:
+            return ""
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = folder / path
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(folder.resolve())
+        except (OSError, ValueError):
+            return ""
+        return str(resolved) if (resolved.is_file() or resolved.is_dir()) else ""
+
+    @staticmethod
     def _sha256_file(path: str) -> str:
         if not path:
             return ""
@@ -299,6 +315,8 @@ class UIHistoryStore:
             final_status = "review_required"
         identity = cls._job_identity_from_manifest(folder)
         pdf_path = cls._manifest_pdf_path(folder, manifest)
+        result_path = cls._manifest_result_path(folder, manifest)
+        output_format = str(manifest.get("output_format") or report.get("output_format") or "pdf")
         return {
             "id": record_id or f"discovered-{folder.name}",
             "chapter_name": slug.replace("_", " ").title(),
@@ -314,6 +332,11 @@ class UIHistoryStore:
             "output_folder": str(folder),
             **artifacts,
             "pdf_path": pdf_path,
+            "png_path": artifacts.get("png_path", ""),
+            "psd_path": artifacts.get("psd_path", ""),
+            "output_format": output_format,
+            "result_kind": str(manifest.get("result_type") or ("directory" if output_format in {"png", "psd"} else "file")),
+            "result_path": result_path or (artifacts.get("png_path") if output_format == "png" else artifacts.get("psd_path") if output_format == "psd" else pdf_path),
             "output_verification": "manifest_verified",
             "manifest_path": str(folder / MANIFEST_FILENAME),
             "job_id": identity["job_id"],
@@ -337,9 +360,62 @@ class UIHistoryStore:
         }
 
     @classmethod
-    def _output_verification(cls, folder: Path) -> tuple[str, dict[str, Any]]:
+    @classmethod
+    def _download_only_verification(cls, folder: Path) -> tuple[str, dict[str, Any]]:
+        """Verify a download-only result from its directory artifacts.
+
+        Download-only jobs intentionally have no PDF, timing report, or
+        translation quality gate.  Their durable proof is the runner manifest
+        plus the downloader report and the files named by that report.
+        """
+        try:
+            manifest = json.loads((folder / "job_manifest.json").read_text(encoding="utf-8"))
+            report = json.loads((folder / "downloaded_images.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return "legacy_unverified", {}
+        if not isinstance(manifest, dict) or not isinstance(report, dict):
+            return "legacy_unverified", {}
+        if str(manifest.get("status") or "").lower() not in {"finished", "completed"}:
+            return "legacy_unverified", {}
+        result_path = str(manifest.get("result_path") or manifest.get("output_dir") or "")
+        try:
+            if result_path and Path(result_path).resolve() != folder.resolve():
+                return "legacy_unverified", {}
+        except OSError:
+            return "legacy_unverified", {}
+        gate = report.get("download_gate")
+        if not isinstance(gate, dict) or gate.get("passed") is not True:
+            return "legacy_unverified", {}
+        try:
+            downloaded = int(report.get("total_downloaded"))
+        except (TypeError, ValueError):
+            return "legacy_unverified", {}
+        entries = report.get("downloaded")
+        if downloaded <= 0 or not isinstance(entries, list) or len(entries) != downloaded:
+            return "legacy_unverified", {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return "legacy_unverified", {}
+            try:
+                path = Path(str(entry.get("path") or "")).resolve()
+                path.relative_to(folder.resolve())
+            except (OSError, ValueError):
+                return "legacy_unverified", {}
+            if not path.is_file():
+                return "legacy_unverified", {}
+        return "manifest_verified", manifest
+
+    @classmethod
+    def _output_verification(
+        cls, folder: Path, *, download_only: bool = False
+    ) -> tuple[str, dict[str, Any]]:
+        if download_only:
+            return cls._download_only_verification(folder)
         manifest = load_verified_run_manifest(folder)
-        if manifest and cls._manifest_pdf_path(folder, manifest):
+        if manifest and (
+            cls._manifest_pdf_path(folder, manifest)
+            or cls._manifest_result_path(folder, manifest)
+        ):
             return "manifest_verified", manifest
         runtime = REPO_ROOT / ".cache" / "e2e_runtime" / folder.name
         try:
@@ -356,7 +432,10 @@ class UIHistoryStore:
         folder = Path(str(enriched.get("output_folder") or ""))
         if not folder.is_dir():
             return enriched
-        verification, manifest = self._output_verification(folder)
+        verification, manifest = self._output_verification(
+            folder, download_only=bool(enriched.get("download_only"))
+        )
+        report = load_json(folder / "timing_report.json")
         enriched["output_verification"] = verification
         enriched["manifest_path"] = str(folder / MANIFEST_FILENAME) if manifest else ""
         if manifest:
@@ -367,6 +446,20 @@ class UIHistoryStore:
             enriched["slug"] = manifest.get("slug") or enriched.get("slug") or folder.name
             enriched["url"] = manifest.get("source_url") or enriched.get("url", "")
             enriched["pdf_path"] = self._manifest_pdf_path(folder, manifest)
+            enriched["png_path"] = find_output_artifacts(folder).get("png_path", "")
+            enriched["psd_path"] = find_output_artifacts(folder).get("psd_path", "")
+            enriched["output_format"] = str(
+                manifest.get("output_format") or report.get("output_format") or "pdf"
+            )
+            enriched["result_kind"] = str(
+                manifest.get("result_type")
+                or ("directory" if enriched["output_format"] in {"png", "psd"} else "file")
+            )
+            enriched["result_path"] = self._manifest_result_path(folder, manifest) or (
+                enriched["png_path"] if enriched["output_format"] == "png" else
+                enriched["psd_path"] if enriched["output_format"] == "psd" else
+                enriched["pdf_path"]
+            )
             enriched["pdf_sha256"] = manifest.get("pdf_sha256") or self._sha256_file(enriched["pdf_path"])
             status = str(manifest.get("final_status") or "review_required")
             enriched["status"] = (
@@ -440,6 +533,9 @@ class UIHistoryStore:
             "status",
             "output_folder",
             "pdf_path",
+            "png_path",
+            "psd_path",
+            "output_format",
             "quality_report_path",
             "compare_sheet_path",
             "contact_sheet_path",
@@ -465,6 +561,12 @@ class UIHistoryStore:
             "commit_hash",
             "branch",
             "pipeline_version",
+            "download_only",
+            "result_kind",
+            "result_path",
+            "download_report_valid",
+            "download_gate",
+            "source_verified",
         }
         result = {key: value for key, value in record.items() if key in allowed}
         job_id = str(result.get("job_id") or "")

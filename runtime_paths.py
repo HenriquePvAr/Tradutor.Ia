@@ -51,6 +51,51 @@ def runtime_root() -> Path:
     return Path(configured).expanduser() if configured else default_user_data_root() / "runtime"
 
 
+def resolve_runtime_root_for_job(db_path, output_dir: str = "", env=None) -> Path:
+    """Runtime root that owns a job's trusted state: ``auth/``, ``jobs.sqlite3``,
+    ``logs/`` and the secure auth context envelope.
+
+    ``output_dir`` is an OUTPUT destination (it can point at any volume the caller
+    chose) and must NEVER relocate that trusted state -- deriving the runtime root
+    from it let a job whose output lived under the default ``TradutorIA\\output``
+    root make the runner look for its auth envelope in the wrong ``auth/`` dir,
+    surfacing as ``auth_context_missing_or_corrupt``.  Source of truth, in order:
+
+      1. an explicit, existing ``TRADUTOR_RUNTIME_ROOT`` inherited by the process;
+      2. the queue DB's parent directory (auth/, logs/ and the DB live together);
+      3. legacy fallback: the ``<root>/output/...`` lineage of ``output_dir`` --
+         used ONLY when neither of the above is usable.
+    """
+    environ = os.environ if env is None else env
+    # 1. An explicit, existing TRADUTOR_RUNTIME_ROOT is authoritative.  output_dir is a
+    #    mere destination and can NEVER relocate the trusted runtime state over it.
+    explicit = str(environ.get("TRADUTOR_RUNTIME_ROOT") or "").strip()
+    if explicit:
+        candidate = Path(explicit).expanduser()
+        if candidate.is_dir():
+            return candidate
+    db_parent = None
+    if db_path:
+        candidate = Path(db_path).resolve().parent
+        if candidate.is_dir():
+            db_parent = candidate
+    # 2. Legacy: some jobs place the DB one level ABOVE the runtime root and carry a
+    #    ``<runtime>/output/...`` output_dir.  Honor that ``<root>/output`` lineage ONLY
+    #    when it stays inside the DB's own tree (a genuine same-install output subdir) --
+    #    never when output_dir points at a foreign root, which is the exact mismatch that
+    #    made the runner look for its auth envelope under the wrong root.
+    output_path = Path(str(output_dir or "")).resolve()
+    parts = [part.casefold() for part in output_path.parts]
+    if "output" in parts:
+        derived = Path(*output_path.parts[: parts.index("output")])
+        if db_parent is None or derived == db_parent or db_parent in derived.parents:
+            return derived
+    # 3. The DB parent (auth/, logs/ and the DB live together) is the source of truth.
+    if db_parent is not None:
+        return db_parent
+    return default_user_data_root() / "runtime"
+
+
 def cache_root() -> Path:
     configured = _env_str("CACHE_ROOT")
     return Path(configured).expanduser() if configured else default_user_data_root() / "cache"

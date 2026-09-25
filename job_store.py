@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
@@ -183,6 +183,7 @@ _JOB_COLUMNS = (
     "cancel_requested", "interrupted_reason", "recoverable", "resume_from_stage",
     "cancellation_requested_at", "cancellation_completed_at",
     "attempt", "previous_job_id", "commit_hash", "branch",
+    "worker_contract",
     "manifest_path", "progress_path", "quality_report_path", "pdf_path", "log_path",
     "error_type", "error_message", "error_trace_path", "updated_at",
     "reason_code", "source_analysis_json", "source_selection_json",
@@ -264,6 +265,8 @@ class JobStore:
             self._migrate_v10()
         if version < 11:
             self._migrate_v11()
+        if version < 12:
+            self._migrate_v12()
         self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
@@ -291,6 +294,16 @@ class JobStore:
         self._migrate_v9()
         self._migrate_v10()
         self._migrate_v11()
+        self._migrate_v12()
+
+    def _migrate_v12(self) -> None:
+        """Bind jobs and worker leases to the exact runtime contract."""
+        job_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        if "worker_contract" not in job_cols:
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN worker_contract TEXT NOT NULL DEFAULT ''")
+        worker_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(workers)")}
+        if "worker_contract" not in worker_cols:
+            self._conn.execute("ALTER TABLE workers ADD COLUMN worker_contract TEXT NOT NULL DEFAULT ''")
 
     def _migrate_v11(self) -> None:
         """Atomically deduplicate one explicit UI attempt.
@@ -575,7 +588,8 @@ class JobStore:
                 worker_id TEXT PRIMARY KEY,
                 pid INTEGER,
                 started_at REAL,
-                heartbeat_at REAL
+                heartbeat_at REAL,
+                worker_contract TEXT NOT NULL DEFAULT ''
             );
             """
         )
@@ -634,6 +648,7 @@ class JobStore:
         staging_owner_create_time: float | None = None,
         operation_kind: str = "chapter",
         parent_job_id: str = "",
+        worker_contract: str = "",
     ) -> str:
         job_id = str(job_id or uuid.uuid4().hex)
         if len(job_id) != 32 or any(char not in "0123456789abcdef" for char in job_id):
@@ -643,6 +658,12 @@ class JobStore:
             raise ValueError("invalid_initial_job_status")
         now = time.time()
         configuration = dict(configuration or {})
+        if not worker_contract:
+            try:
+                from runtime_contract import current_runtime_contract
+                worker_contract = current_runtime_contract()
+            except Exception:  # noqa: BLE001 - legacy/test stores remain usable
+                worker_contract = ""
         owner_id = str(configuration.get("community_owner_id") or "").strip()
         operation_kind = str(operation_kind or "chapter").strip().casefold()
         if operation_kind not in {
@@ -664,8 +685,8 @@ class JobStore:
                 progress_current, progress_total, created_at, queued_at, updated_at,
                 worker_pid, worker_create_time,
                 cancel_requested, recoverable, attempt, previous_job_id,
-                resume_from_stage, commit_hash, branch
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,0,0,?,?,?,?,?)
+                resume_from_stage, commit_hash, branch, worker_contract
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,0,0,?,?,?,?,?,?)
             """,
             (
                 job_id,
@@ -692,6 +713,7 @@ class JobStore:
                 resume_from_stage,
                 commit_hash,
                 branch,
+                worker_contract,
             ),
         )
         return job_id
@@ -926,6 +948,7 @@ class JobStore:
         worker_id: str,
         worker_pid: int,
         worker_create_time: float | None = None,
+        worker_contract: str = "",
     ) -> dict[str, Any] | None:
         """Atomically move the oldest queued job to ``claiming`` for this worker.
 
@@ -941,12 +964,13 @@ class JobStore:
             WHERE id = (
                 SELECT id FROM jobs WHERE status=?
                 AND (queued_at IS NULL OR queued_at<=?)
+                AND (?='' OR worker_contract IS NULL OR worker_contract='' OR worker_contract=?)
                 ORDER BY created_at ASC LIMIT 1
             ) AND status=?
             """,
             (
                 JobStatus.CLAIMING, worker_id, int(worker_pid), worker_create_time, now, now,
-                JobStatus.QUEUED, now, JobStatus.QUEUED,
+                JobStatus.QUEUED, now, worker_contract, worker_contract, JobStatus.QUEUED,
             ),
         )
         if cur.rowcount != 1:
@@ -1131,13 +1155,29 @@ class JobStore:
         self.update_fields(job_id, **fields)
 
     def request_cancel(self, job_id: str) -> bool:
-        row = self._conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        row = self._conn.execute(
+            "SELECT status, output_dir FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
         if row is None or row["status"] in JobStatus.TERMINAL:
             return False
         self._conn.execute(
             "UPDATE jobs SET cancel_requested=1, cancellation_requested_at=?, updated_at=? WHERE id=?",
             (time.time(), time.time(), job_id),
         )
+        # Publish the cooperative process-boundary signal at the same authority
+        # boundary as the persisted cancellation request.  The runner still polls
+        # the DB as a recovery path, but an active pipeline no longer waits for the
+        # runner heartbeat before its child cancellation watcher can observe it.
+        output_dir = str(row["output_dir"] or "").strip()
+        if output_dir:
+            try:
+                target = Path(output_dir)
+                target.mkdir(parents=True, exist_ok=True)
+                (target / ".cancel.requested").write_text(
+                    "cancel_requested\n", encoding="utf-8"
+                )
+            except OSError:
+                pass
         return True
 
     def review_actions(self, job_id: str) -> dict[str, str]:
@@ -1342,7 +1382,8 @@ class JobStore:
         return recovered
 
     def orphaned_in_flight_jobs(
-        self, *, exclude_worker: str = "", worker_stale_seconds: float = 15.0
+        self, *, exclude_worker: str = "", worker_stale_seconds: float = 15.0,
+        worker_contract: str = ""
     ) -> list[dict[str, Any]]:
         """In-flight jobs whose owning worker is gone, for a new worker to reconcile.
 
@@ -1366,6 +1407,9 @@ class JobStore:
         orphans: list[dict[str, Any]] = []
         for row in rows:
             job: dict[str, Any] = self._row_to_dict(row)  # type: ignore[assignment]
+            job_contract = str(job.get("worker_contract") or "")
+            if worker_contract and job_contract and job_contract != worker_contract:
+                continue
             owner = str(job.get("worker_id") or "")
             if not owner:
                 orphans.append(job)          # claimed by nobody: never supervised
@@ -1478,14 +1522,15 @@ class JobStore:
         return self.get_job(job_id)  # type: ignore[return-value]
 
     # ---- worker registry ----------------------------------------------------
-    def register_worker(self, worker_id: str, pid: int, create_time: float | None = None) -> None:
+    def register_worker(self, worker_id: str, pid: int, create_time: float | None = None,
+                        worker_contract: str = "") -> None:
         now = time.time()
         self._conn.execute(
-            "INSERT INTO workers(worker_id, pid, started_at, heartbeat_at, create_time, stop_requested) "
-            "VALUES(?,?,?,?,?,0) "
+            "INSERT INTO workers(worker_id, pid, started_at, heartbeat_at, create_time, stop_requested, worker_contract) "
+            "VALUES(?,?,?,?,?,0,?) "
             "ON CONFLICT(worker_id) DO UPDATE SET pid=excluded.pid, "
             "heartbeat_at=excluded.heartbeat_at, create_time=excluded.create_time, stop_requested=0",
-            (worker_id, int(pid), now, now, create_time),
+            (worker_id, int(pid), now, now, create_time, worker_contract),
         )
 
     def request_worker_stop(self, worker_id: str) -> None:

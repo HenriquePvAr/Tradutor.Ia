@@ -32,6 +32,7 @@ from job_store import JobStatus, JobStore
 from local_environment import load_local_environment_for_entrypoint
 from process_options import build_background_process_options
 from runtime_paths import runtime_root
+from runtime_contract import current_runtime_contract
 from ui_helpers import sanitize_diagnostic_text
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -57,7 +58,9 @@ class Worker:
         # against a new UI/database and can silently stop after source validation.
         build_tag = str(getattr(app_version, "BUILD_VERSION", "dev") or "dev")
         build_tag = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in build_tag)
-        self.worker_id = f"{build_tag}:{uuid.uuid4().hex}"
+        self.worker_contract = current_runtime_contract()
+        contract_tag = self.worker_contract.rsplit(":", 1)[-1]
+        self.worker_id = f"{build_tag}:{contract_tag}:{uuid.uuid4().hex}"
         self.pid = os.getpid()
         self.db_path = Path(db_path)
         # Production keeps its established runtime log directory. A worker pointed at a
@@ -254,6 +257,17 @@ class Worker:
             selection = json.loads(job.get("source_selection_json") or "{}")
         except (TypeError, ValueError):
             public, selection = {}, {}
+        # A persisted preflight intentionally stores only URL-free public metadata and
+        # opaque candidate IDs.  That is sufficient for review/history, but it is not a
+        # materializable page manifest for the dynamic Comix reader: the ten logical pages
+        # rendered through canvas/network fallback lose their reader-owned resource payload
+        # when rehydrated from this sanitized snapshot.  Reopen the bounded public reader
+        # analysis in the worker so the downloader receives the real 105-page manifest.
+        if str(public.get("adapter") or public.get("adapter_name") or "").casefold() == "comix":
+            self._append_job_log(
+                job["id"], "source_validation",
+                "SOURCE_REUSE_SKIPPED reason=dynamic_adapter_requires_materializable_manifest")
+            return None
         ids = [str(v) for v in (getattr(result, "resolved_selection", ()) or []) if str(v)]
         if not ids:
             ids = [str(v) for v in (selection.get("candidate_ids") or []) if str(v)]
@@ -765,7 +779,8 @@ class Worker:
         ownership_mismatch. This guarantees no orphan and never a second live attempt.
         """
         orphans = self.store.orphaned_in_flight_jobs(
-            exclude_worker=self.worker_id, worker_stale_seconds=self.stale_seconds / 2
+            exclude_worker=self.worker_id, worker_stale_seconds=self.stale_seconds / 2,
+            worker_contract=self.worker_contract,
         )
         safe_to_continue = True
         for job in orphans:
@@ -1073,7 +1088,11 @@ class Worker:
             print("another healthy worker is running; exiting cleanly")
             return
         self._install_signal_handlers()
-        self.store.register_worker(self.worker_id, self.pid, create_time=process_tree.snapshot(self.pid)["create_time"] if process_tree.snapshot(self.pid) else None)
+        self.store.register_worker(
+            self.worker_id, self.pid,
+            create_time=process_tree.snapshot(self.pid)["create_time"] if process_tree.snapshot(self.pid) else None,
+            worker_contract=self.worker_contract,
+        )
         idle = 0
         try:
             while not self._stop_requested:
@@ -1098,7 +1117,8 @@ class Worker:
                     continue
                 snap = process_tree.snapshot(self.pid) or {}
                 job = self.store.claim_next_job(
-                    self.worker_id, self.pid, worker_create_time=snap.get("create_time"))
+                    self.worker_id, self.pid, worker_create_time=snap.get("create_time"),
+                    worker_contract=self.worker_contract)
                 if job is None:
                     if once:
                         return

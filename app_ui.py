@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import hmac
 from collections import deque
 import re
 import secrets
@@ -132,6 +133,29 @@ _SERVER_STARTED_AT = __import__("datetime").datetime.now(
 _RUNTIME_INSTANCE_ID = secrets.token_urlsafe(16)
 _MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
 _PROFILE_MEDIA_MAX_BYTES = {"avatar": 5 * 1024 * 1024, "banner": 12 * 1024 * 1024}
+# Short, self-healing backoff for a drive-backed media ref whose upstream Edge Function
+# fails transiently (e.g. an intermittent 500).  Without it the ~60s avatar/banner poll
+# re-hits the failing upstream on every tick; with a long window it would instead hide an
+# upstream recovery for minutes.  Bounded exponential (30s -> 60s -> 120s cap) balances both:
+# the failure is still surfaced to the client (502), never masked as an empty 200, and a
+# single success clears it immediately.  Keyed by (user_id, kind) -> (monotonic_until, streak).
+# ponytail: process-local dict, fine for a single desktop UI process; a shared store would
+# only matter with multiple UI replicas.
+_PROFILE_MEDIA_UPSTREAM_BACKOFF: dict[tuple[str, str], tuple[float, int]] = {}
+_PROFILE_MEDIA_BACKOFF_BASE_SECONDS = 30.0
+_PROFILE_MEDIA_BACKOFF_MAX_SECONDS = 120.0
+
+
+def _profile_media_backoff_arm(key: tuple[str, str], now_mono: float) -> float:
+    """Arm/extend the bounded exponential backoff (30s, 60s, 120s cap) for a failing key."""
+    previous = _PROFILE_MEDIA_UPSTREAM_BACKOFF.get(key)
+    streak = (previous[1] if previous else 0) + 1
+    delay = min(_PROFILE_MEDIA_BACKOFF_BASE_SECONDS * (2 ** (streak - 1)),
+                _PROFILE_MEDIA_BACKOFF_MAX_SECONDS)
+    _PROFILE_MEDIA_UPSTREAM_BACKOFF[key] = (now_mono + delay, streak)
+    return delay
+
+
 STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
 AUTH_UI_ASSET = ROOT / "static" / "auth_ui.js"
@@ -214,7 +238,7 @@ class SecurityHeadersMiddleware:
 
 
 class MutationRateLimitMiddleware:
-    """Bound accidental mutation bursts without treating loopback as identity."""
+    """Bound mutation bursts while isolating diagnostic telemetry from user actions."""
 
     _WINDOW = 60.0
     _MAX_ENTRIES = 2048
@@ -225,10 +249,26 @@ class MutationRateLimitMiddleware:
         "/api/community": (120, 60.0),
         "/api/ui/": (240, 60.0),
     }
+    _TELEMETRY_ROUTES = frozenset({
+        "/api/ui/source-trace",
+        "/api/ui/control-plane-trace",
+    })
 
     def __init__(self, app):
         self.app = app
         self._events: dict[tuple[str, str], list[float]] = {}
+
+    @classmethod
+    def _bucket_group(cls, path: str) -> str:
+        """Return the protected quota group for a mutation route.
+
+        Trace endpoints are still rate-limited, but their diagnostic traffic must
+        not consume the quota that protects real user mutations such as /api/ui/run.
+        Keep /api/ui/open in the user-mutation group: it opens a user-owned artifact
+        and is not telemetry.
+        """
+
+        return "telemetry" if path in cls._TELEMETRY_ROUTES else "user_mutation"
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http" or scope.get("method") not in {"POST", "PUT", "PATCH", "DELETE"}:
@@ -242,10 +282,19 @@ class MutationRateLimitMiddleware:
             return
         prefix, limit, window = rule
         client = scope.get("client") or ("unknown", 0)
-        key = (str(client[0]), prefix)
+        bucket_group = self._bucket_group(path)
+        key = (str(client[0]), bucket_group)
         now = time.monotonic()
         events = [stamp for stamp in self._events.get(key, []) if now - stamp < window]
         if len(events) >= limit:
+            _append_diagnostic_log(
+                "app_current.jsonl", "RATE_LIMIT_EMITTED",
+                origin_component="mutation_rate_limit_middleware",
+                source_error_code="rate_limited", http_status=429,
+                retry_after_present=True, provider="", stage="http_mutation",
+                route=path[:120], limit_name=f"{prefix}:{bucket_group}"[:120], limit_window_seconds=window,
+                limit_current=len(events), limit_max=limit,
+            )
             response = JSONResponse({"detail": "rate_limited"}, status_code=429,
                                     headers={"Cache-Control": "no-store", "Retry-After": str(int(window))})
             await response(scope, receive, send)
@@ -771,6 +820,140 @@ def _local_folder_submit_allowed(request: Request) -> bool:
     return local_folder_ui_allowed(bind_host=APP_HOST, peer_host=peer)
 
 
+def _local_media_response_allowed(request: Request) -> bool:
+    """Local picker previews are never available outside the loopback UI boundary."""
+
+    return _local_folder_submit_allowed(request)
+
+
+def _source_analysis_observability(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded, path-free input facts for source-validation diagnostics."""
+    raw_url = str(payload.get("url") or "").strip()
+    try:
+        url_host = str(urllib_parse.urlsplit(raw_url).hostname or "")[:120]
+    except ValueError:
+        url_host = ""
+    source_type = str(payload.get("source_type") or "").strip().casefold()[:40]
+    media_ids = payload.get("ordered_media_ids")
+    selected_paths = payload.get("selected_image_paths")
+    image_paths = payload.get("image_paths")
+    local_media_count = len(media_ids) if isinstance(media_ids, list) else 0
+    page_manager_count = (
+        local_media_count
+        if isinstance(media_ids, list)
+        else len(selected_paths) if isinstance(selected_paths, list)
+        else len(image_paths) if isinstance(image_paths, list) else 0
+    )
+    intent = payload.get("pipeline_intent")
+    intent_scope = intent.get("scope") if isinstance(intent, dict) else None
+    full = payload.get("full") is True
+    requested_page_count = None
+    if not full:
+        candidate = payload.get("max_images")
+        try:
+            requested_page_count = max(0, int(candidate))
+        except (TypeError, ValueError):
+            requested_page_count = None
+    return {
+        "source_type": source_type,
+        "has_url": bool(raw_url),
+        "url_host": url_host,
+        "local_media_count": local_media_count,
+        "has_local_folder": bool(str(payload.get("local_folder") or "").strip()),
+        "page_manager_count": page_manager_count,
+        "download_only": payload.get("download_only") is True,
+        "scope_kind": ("full" if full else str(intent_scope or "partial")[:40]),
+        "requested_page_count": requested_page_count,
+    }
+
+
+def _safe_source_error_detail(value: Any) -> str:
+    """Keep only the internal branch token, never arbitrary exception text."""
+    detail = str(value or "").strip().casefold()
+    return detail[:80] if re.fullmatch(r"[a-z0-9_.-]{1,80}", detail) else "redacted"
+
+
+def _internal_local_media_allowed(request: Request) -> bool:
+    """Allow only the native shell on the owned loopback process boundary."""
+    peer = str(getattr(getattr(request, "client", None), "host", "") or "")
+    expected = str(os.getenv("TRADUTOR_LOCAL_MEDIA_IPC_SECRET") or "")
+    supplied = str(request.headers.get("x-yomu-internal-secret") or "")
+    return (
+        local_folder_ui_allowed(bind_host=APP_HOST, peer_host=peer)
+        and bool(expected)
+        and hmac.compare_digest(supplied, expected)
+    )
+
+
+@app.post("/api/internal/local-media/register")
+async def api_internal_local_media_register(request: Request) -> JSONResponse:
+    if not _internal_local_media_allowed(request):
+        raise HTTPException(status_code=404, detail="not_found")
+    body = await request.json()
+    paths = body.get("paths") if isinstance(body, dict) else None
+    folder = body.get("folder") if isinstance(body, dict) else None
+    if not isinstance(paths, list) or not paths or len(paths) > 400:
+        raise HTTPException(status_code=400, detail="invalid_local_media_batch")
+    if any(not isinstance(path, str) or not path.strip() for path in paths):
+        raise HTTPException(status_code=400, detail="invalid_local_media_path")
+    if folder is not None and (not isinstance(folder, str) or not folder.strip()):
+        raise HTTPException(status_code=400, detail="invalid_local_media_folder")
+    from local_media_registry import LOCAL_MEDIA_REGISTRY
+    try:
+        result = LOCAL_MEDIA_REGISTRY.register_selection(paths, folder=folder)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, **result}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/internal/local-media/revoke")
+async def api_internal_local_media_revoke(request: Request) -> JSONResponse:
+    if not _internal_local_media_allowed(request):
+        raise HTTPException(status_code=404, detail="not_found")
+    body = await request.json()
+    selection_id = body.get("selection_id") if isinstance(body, dict) else None
+    if not isinstance(selection_id, str) or not selection_id.strip():
+        raise HTTPException(status_code=400, detail="invalid_local_media_selection")
+    from local_media_registry import LOCAL_MEDIA_REGISTRY
+    return JSONResponse({"ok": True, "revoked": LOCAL_MEDIA_REGISTRY.revoke(selection_id)})
+
+
+@app.get("/api/local-media/{media_id}/thumbnail")
+def api_local_media_thumbnail(media_id: str, request: Request) -> Response:
+    if not _local_media_response_allowed(request):
+        raise HTTPException(status_code=404, detail="not_found")
+    from local_media_registry import LOCAL_MEDIA_REGISTRY
+    media = LOCAL_MEDIA_REGISTRY.get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    try:
+        data = LOCAL_MEDIA_REGISTRY.thumbnail_bytes(media)
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail="not_found") from None
+    return Response(data, media_type="image/png", headers={
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+    })
+
+
+@app.get("/api/local-media/{media_id}")
+def api_local_media(media_id: str, request: Request) -> Response:
+    if not _local_media_response_allowed(request):
+        raise HTTPException(status_code=404, detail="not_found")
+    from local_media_registry import LOCAL_MEDIA_REGISTRY
+    media = LOCAL_MEDIA_REGISTRY.get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    try:
+        if not media.path.is_file() or media.path.stat().st_size != media.size:
+            raise OSError("local_media_changed")
+    except OSError:
+        raise HTTPException(status_code=404, detail="not_found") from None
+    return FileResponse(media.path, media_type=media.mime, headers={
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "inline",
+    })
+
+
 @app.get("/auth/callback")
 def auth_callback(request: Request) -> Response:
     """Supabase e-mail confirmation/login landing page.
@@ -1133,17 +1316,70 @@ async def api_source_analyze(
     trace_id = _source_trace_id(payload)
     _append_diagnostic_log("routes_current.jsonl", "START_ROUTE_ENTER", trace_id=trace_id, route="/api/ui/source/analyze", method="POST")
     _append_diagnostic_log("app_current.jsonl", "SOURCE_ACTION_BEGIN", trace_id=trace_id, action="source_analyze")
+    _append_diagnostic_log(
+        "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
+        boundary="request_parse", entered="YES", result="PASS")
 
     try:
         principal = _ui_principal(request, mutate=True)
+        _append_diagnostic_log(
+            "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
+            boundary="authentication_principal", entered="YES", result="PASS")
+        _append_diagnostic_log(
+            "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
+            boundary="source_analysis_dispatch", entered="YES", result="START")
+        _append_diagnostic_log(
+            "app_current.jsonl", "SOURCE_ANALYSIS_INPUT", trace_id=trace_id,
+            **_source_analysis_observability(payload))
         result = await BRIDGE.analyze_source_candidate(payload, principal=principal)
+        _append_diagnostic_log(
+            "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
+            boundary="analysis_response_serialization", entered="YES", result="PASS")
         _append_diagnostic_log("routes_current.jsonl", "SOURCE_ANALYSIS_RESULT", trace_id=trace_id, route="/api/ui/source/analyze", status="ready" if result.get("ready") is True else "blocked", ready=result.get("ready") is True, reason_code=str(result.get("reason_code") or "")[:80])
         _append_diagnostic_log("app_current.jsonl", "SOURCE_ACTION_RESULT", trace_id=trace_id, action="source_analyze", result="ready" if result.get("ready") is True else "blocked")
         # Analysis is deliberately side-effect free.  Job creation belongs exclusively to
         # /api/ui/run; keeping that ownership in one route prevents a one-click request
         # from creating one job here and another when the client continues explicitly.
         return result
+    except HTTPException as exc:
+        # Preserve framework-level auth/policy responses.  They must not be converted
+        # into a generic 502, while the diagnostic record remains sanitized.
+        _append_diagnostic_log(
+            "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
+            boundary="source_analysis_dispatch", entered="YES", result="FAIL",
+            exception_type=type(exc).__name__, error_class="http_exception",
+            exception_module=type(exc).__module__, failure_function="api_source_analyze")
+        raise
     except SourceError as exc:
+        source_error_code = str(getattr(exc, "code", "") or "")[:80]
+        source_error_detail = str(getattr(exc, "detail", "") or "")[:120]
+        status_match = re.fullmatch(r"reader_api_status_(401|403)", source_error_detail)
+        preflight = getattr(exc, "preflight_result", {}) or {}
+        # Only copy the allow-listed, already-sanitized preflight fields.  In particular,
+        # never persist the navigation URL, headers, cookies, response body or query string.
+        _append_diagnostic_log(
+            "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
+            boundary="source_analysis_dispatch", entered="YES", result="FAIL",
+            exception_type=type(exc).__name__, error_class="source_error",
+            exception_module=type(exc).__module__, failure_function="analyze_source_candidate",
+            source_error_code=source_error_code,
+            reader_api_status_class=(status_match.group(1) if status_match else ""),
+            stage="navigation_preflight" if preflight else "",
+            reader=str(preflight.get("adapter") or "")[:40],
+            provider=str(preflight.get("adapter") or "")[:40],
+            http_status=preflight.get("http_status"),
+            preflight_reason_code=str(preflight.get("reason_code") or "")[:80],
+            elapsed_ms=preflight.get("elapsed_ms"),
+            retry_count=preflight.get("retry_count"),
+            final_classification=str(
+                preflight.get("classification") or preflight.get("status") or ""
+            )[:80])
+        _append_diagnostic_log(
+            "app_current.jsonl", "SOURCE_ANALYSIS_VALIDATION_FAILURE", trace_id=trace_id,
+            error_code=str(exc.code)[:80],
+            error_detail=_safe_source_error_detail(getattr(exc, "detail", "")),
+            validation_branch=_safe_source_error_detail(getattr(exc, "detail", "")),
+            **_source_analysis_observability(payload))
         raise HTTPException(status_code=422, detail={
             "code": exc.code,
             "stage": "validacao_da_fonte",
@@ -1172,6 +1408,11 @@ async def api_source_analyze(
         # Host only: never the path or query string, which is where a signed token or a
         # session identifier would sit.
         host = urllib_parse.urlsplit(str((payload or {}).get("url") or "")).hostname or ""
+        _append_diagnostic_log(
+            "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
+            boundary="source_analysis_dispatch", entered="YES", result="FAIL",
+            exception_type=type(exc).__name__, error_class=code,
+            exception_module=type(exc).__module__, failure_function="analyze_source_candidate")
         print(
             "source_analysis_failed_before_job "
             f"code={code} exception={type(exc).__name__} stage=source_analysis "
@@ -1208,6 +1449,11 @@ def api_source_report(
         }) from exc
 
 
+def required_yk_for_run(payload: dict[str, Any]) -> int:
+    """Return the local entitlement cost without contacting the remote wallet."""
+    return 0 if payload.get("download_only") is True else 1
+
+
 @app.post("/api/ui/run")
 async def api_run(
     request: Request,
@@ -1218,10 +1464,25 @@ async def api_run(
     try:
         trace_id = _source_trace_id(payload)
         _append_diagnostic_log("routes_current.jsonl", "SOURCE_RUN_ROUTE_ENTER", trace_id=trace_id, route="/api/ui/run", method="POST")
-        _append_diagnostic_log("app_current.jsonl", "WALLET_CHECK_STARTED", trace_id=trace_id, required_yk=1)
+        download_only = payload.get("download_only") is True
+        required_yk = required_yk_for_run(payload)
+        _append_diagnostic_log(
+            "app_current.jsonl", "WALLET_CHECK_STARTED", trace_id=trace_id,
+            required_yk=required_yk, download_only=download_only,
+        )
         # Wallet entitlement is enforced by the remote lifecycle RPC, not by this local
         # queue boundary. Record that fact explicitly instead of implying a local balance.
-        _append_diagnostic_log("app_current.jsonl", "WALLET_CHECK_RESULT", trace_id=trace_id, result="DEFERRED_REMOTE", sufficient=None, required_yk=1)
+        _append_diagnostic_log(
+            "app_current.jsonl", "WALLET_CHECK_RESULT", trace_id=trace_id,
+            result="BYPASSED_DOWNLOAD_ONLY" if download_only else "DEFERRED_REMOTE",
+            sufficient=True if download_only else None, required_yk=required_yk,
+            download_only=download_only,
+        )
+        if download_only:
+            _append_diagnostic_log(
+                "app_current.jsonl", "DOWNLOAD_ONLY_PROVIDER_CREDENTIAL_SEALING",
+                trace_id=trace_id, decision="SKIPPED",
+            )
         translation_enabled = payload.get("translation_enabled") is True
         _append_diagnostic_log(
             "app_current.jsonl", "TRANSLATION_POLICY_RESOLVED", trace_id=trace_id,
@@ -1234,8 +1495,8 @@ async def api_run(
             translation_enabled=translation_enabled, allow_translation=translation_enabled,
         )
         requested_type = str(payload.get("source_type") or "").strip().casefold()
-        requests_local_folder = requested_type == "local_folder" or bool(
-            str(payload.get("local_folder") or "").strip())
+        requests_local_folder = requested_type in {"local_folder", "local_images"} or bool(
+            str(payload.get("local_folder") or "").strip()) or bool(payload.get("image_paths"))
         if requests_local_folder and not _local_folder_submit_allowed(request):
             # Do not pass the raw folder to the bridge, error handler, or logs when this
             # server is externally bound. This feature is intentionally unavailable there.
@@ -2929,8 +3190,12 @@ def api_profile_media(request: Request, kind: str) -> Response:
         if token:
             try:
                 remote_profile = social_repo.get_my_profile(token, principal.user_id) or {}
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - optional remote enrichment; local profile is authoritative
+                # Fail-open to the local profile (never breaks PROFILE_READY), but leave a
+                # sanitized breadcrumb so a new remote failure is not fully silent.  Only the
+                # exception category crosses this boundary -- no token, header, ref or trace.
                 remote_profile = {}
+                _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_REMOTE_ENRICH_FALLBACK", route=f"/api/ui/profile/media/{kind}", stage="remote_profile_fetch", safe_error_code="profile_remote_enrich_unavailable", exception_class=type(exc).__name__, exception_module=type(exc).__module__)
     stored_ref = str(
         remote_profile.get(f"{kind}_object_key")
         or profile.get(f"{kind}_media_path")
@@ -2940,6 +3205,14 @@ def api_profile_media(request: Request, kind: str) -> Response:
     bearer = _license_bearer_token(request)
     remote_base = str(os.getenv("SUPABASE_URL", "") or "").rstrip("/")
     if stored_ref.startswith("drive:") and bearer and remote_base:
+        backoff_key = (str(principal.user_id or ""), kind)
+        now_mono = time.monotonic()
+        backoff_entry = _PROFILE_MEDIA_UPSTREAM_BACKOFF.get(backoff_key)
+        if backoff_entry is not None and backoff_entry[0] > now_mono:
+            # A recent upstream failure is still in its backoff window: surface the same
+            # semantic error (502) without re-hitting the failing Edge Function every poll.
+            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=502, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="profile_media_backoff")
+            raise HTTPException(status_code=502, detail="profile_media_unavailable")
         endpoint = f"{remote_base}/functions/v1/profile-media?kind={urllib_parse.quote(kind)}"
         upstream = urllib_request.Request(endpoint, headers={"Authorization": f"Bearer {bearer}"})
         try:
@@ -2951,17 +3224,25 @@ def api_profile_media(request: Request, kind: str) -> Response:
                 if len(content) > 12 * 1024 * 1024:
                     raise HTTPException(status_code=502, detail="media_too_large")
                 media_type = raw.headers.get_content_type() or profile.get(f"{kind}_media_type") or "application/octet-stream"
+                _PROFILE_MEDIA_UPSTREAM_BACKOFF.pop(backoff_key, None)  # healthy again
                 _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=200, duration_ms=int((time.perf_counter() - route_started) * 1000), edge_http_status=200)
                 return Response(content=content, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
         except urllib_error.HTTPError as exc:
             _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=exc.code, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="profile_media_upstream_http")
             if exc.code in {401, 403}:
+                # Auth may recover on the next token refresh; do not back off on it.
+                _PROFILE_MEDIA_UPSTREAM_BACKOFF.pop(backoff_key, None)
                 raise HTTPException(status_code=401, detail="authentication_required") from exc
             if exc.code == 404:
+                _PROFILE_MEDIA_UPSTREAM_BACKOFF.pop(backoff_key, None)
                 raise HTTPException(status_code=404, detail="Mídia não encontrada.") from exc
+            # A server-side upstream failure (5xx) is what keeps recurring: back off so the
+            # poll stops hammering it, while still returning the real error to the client.
+            _profile_media_backoff_arm(backoff_key, now_mono)
             raise HTTPException(status_code=502, detail="profile_media_unavailable") from exc
         except (urllib_error.URLError, TimeoutError) as exc:
             reason = getattr(exc, "reason", exc)
+            _profile_media_backoff_arm(backoff_key, now_mono)
             _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=502, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="profile_media_network", exception_class=type(exc).__name__, exception_module=type(exc).__module__, safe_message=type(reason).__name__, timeout=isinstance(exc, TimeoutError), dns_error=isinstance(reason, socket.gaierror), connection_error=isinstance(reason, OSError))
             raise HTTPException(status_code=502, detail="profile_media_unavailable") from exc
     path = BRIDGE.profile_media_path(kind, user_id=principal.user_id)
@@ -3192,6 +3473,8 @@ app.on_startup(_build_auth_provider_at_startup)
 async def shutdown_processes() -> None:
     _append_diagnostic_log("app_current.jsonl", "APP_SHUTDOWN_BEGIN")
     await BRIDGE.shutdown()
+    from local_media_registry import LOCAL_MEDIA_REGISTRY
+    LOCAL_MEDIA_REGISTRY.clear()
     _append_diagnostic_log("app_current.jsonl", "APP_SHUTDOWN_END")
 
 

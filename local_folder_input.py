@@ -96,9 +96,12 @@ def materialize_snapshot(
         raise LocalFolderError(NO_CHAPTER_IMAGES, "empty_snapshot_selection")
 
     destination_root = Path(target_folder).expanduser().resolve()
-    test_root = str(os.getenv("TRADUTOR_TEST_RUNTIME_ROOT") or "").strip() if os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") else ""
-    default_output = (Path(test_root) / "output") if test_root else (REPO_ROOT / "output")
-    allowed_output_root = Path(output_root or default_output).expanduser().resolve()
+    if output_root is None:
+        from runtime_paths import output_root as runtime_output_root
+
+        allowed_output_root = runtime_output_root().expanduser().resolve()
+    else:
+        allowed_output_root = Path(output_root).expanduser().resolve()
     try:
         destination_root.relative_to(allowed_output_root)
     except ValueError as exc:

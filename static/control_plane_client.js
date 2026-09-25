@@ -170,7 +170,15 @@ function friendly(code) {
   })[code] || 'Não foi possível validar sua licença. Verifique sua conexão e tente novamente.';
 }
 async function config() {
-  const r = await fetch('/api/community/auth/config', {credentials: 'same-origin', cache: 'no-store'});
+  trace('CONTROL_PLANE_FETCH_START', {component: 'auth_config', method: 'GET', route: '/api/community/auth/config', host: window.location?.hostname || '', port: window.location?.port || ''});
+  let r;
+  try {
+    r = await fetch('/api/community/auth/config', {credentials: 'same-origin', cache: 'no-store'});
+  } catch (error) {
+    trace('CONTROL_PLANE_FETCH_RESULT', {component: 'auth_config', method: 'GET', route: '/api/community/auth/config', response_received: false, network_error: String(error?.name || 'TypeError').slice(0, 40)});
+    throw error;
+  }
+  trace('CONTROL_PLANE_FETCH_RESULT', {component: 'auth_config', method: 'GET', route: '/api/community/auth/config', response_received: true, http_status: r.status});
   if (!r.ok) throw Object.assign(new Error('server_unavailable'), {code: 'server_unavailable', status: r.status});
   return r.json();
 }
@@ -182,10 +190,21 @@ async function call(name, body = {}) {
   const cfg = await config();
   const bearer = await token();
   if (!bearer || cfg.provider !== 'supabase' || !cfg.supabase_url) throw Object.assign(new Error('server_unavailable'), {code: 'server_unavailable', status: 503});
-  const r = await fetch(`${String(cfg.supabase_url).replace(/\/$/, '')}/functions/v1/${name}`, {
-    method: 'POST', cache: 'no-store', headers: {'Content-Type': 'application/json', apikey: cfg.publishable_key || '', Authorization: `Bearer ${bearer}`},
-    body: JSON.stringify(body),
-  });
+  const route = `/functions/v1/${String(name || '').replace(/[^a-z0-9_-]/gi, '').slice(0, 80)}`;
+  let host = '';
+  try { host = new URL(String(cfg.supabase_url)).hostname; } catch (_) {}
+  trace('CONTROL_PLANE_FETCH_START', {component: 'supabase_function', method: 'POST', route, host, auth_header_present: Boolean(bearer)});
+  let r;
+  try {
+    r = await fetch(`${String(cfg.supabase_url).replace(/\/$/, '')}${route}`, {
+      method: 'POST', cache: 'no-store', headers: {'Content-Type': 'application/json', apikey: cfg.publishable_key || '', Authorization: `Bearer ${bearer}`},
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    trace('CONTROL_PLANE_FETCH_RESULT', {component: 'supabase_function', method: 'POST', route, host, response_received: false, network_error: String(error?.name || 'TypeError').slice(0, 40)});
+    throw error;
+  }
+  trace('CONTROL_PLANE_FETCH_RESULT', {component: 'supabase_function', method: 'POST', route, host, response_received: true, http_status: r.status});
   if (name === 'beta-bootstrap') {
     let project_ref = '';
     try { project_ref = new URL(cfg.supabase_url).hostname.split('.')[0] || ''; } catch (_) {}
@@ -199,10 +218,21 @@ async function callRpc(name, body = {}) {
   const cfg = await config();
   const bearer = await token();
   if (!bearer || cfg.provider !== 'supabase' || !cfg.supabase_url) throw Object.assign(new Error('server_unavailable'), {code: 'server_unavailable', status: 503});
-  const r = await fetch(`${String(cfg.supabase_url).replace(/\/$/, '')}/rest/v1/rpc/${name}`, {
-    method: 'POST', cache: 'no-store', headers: {'Content-Type': 'application/json', apikey: cfg.publishable_key || '', Authorization: `Bearer ${bearer}`},
-    body: JSON.stringify(body),
-  });
+  const route = `/rest/v1/rpc/${String(name || '').replace(/[^a-z0-9_-]/gi, '').slice(0, 80)}`;
+  let host = '';
+  try { host = new URL(String(cfg.supabase_url)).hostname; } catch (_) {}
+  trace('CONTROL_PLANE_FETCH_START', {component: 'supabase_rpc', method: 'POST', route, host, auth_header_present: Boolean(bearer)});
+  let r;
+  try {
+    r = await fetch(`${String(cfg.supabase_url).replace(/\/$/, '')}${route}`, {
+      method: 'POST', cache: 'no-store', headers: {'Content-Type': 'application/json', apikey: cfg.publishable_key || '', Authorization: `Bearer ${bearer}`},
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    trace('CONTROL_PLANE_FETCH_RESULT', {component: 'supabase_rpc', method: 'POST', route, host, response_received: false, network_error: String(error?.name || 'TypeError').slice(0, 40)});
+    throw error;
+  }
+  trace('CONTROL_PLANE_FETCH_RESULT', {component: 'supabase_rpc', method: 'POST', route, host, response_received: true, http_status: r.status});
   const payload = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(String(payload.message || payload.code || `http_${r.status}`)), {code: String(payload.code || ''), status: r.status});
   return payload;
@@ -248,7 +278,7 @@ async function sealJobAuthContext(jobId, userId = '') {
 window.__yomuSealJobAuthContext = sealJobAuthContext;
 async function ensureDevice() {
   trace('CONTROL_PLANE_ENSURE_DEVICE_STARTED', {step: 'ensure_device', authenticated: state.authenticated});
-  if (!isDesktopRuntime()) { trace('CONTROL_PLANE_ERROR', {step: 'ensure_device', reason_code: 'not_desktop_runtime'}); return null; }
+  if (!isDesktopRuntime()) { trace('CONTROL_PLANE_ERROR', {step: 'ensure_device', reason_code: 'not_desktop_runtime', desktop_query_present: new URLSearchParams(window.location.search || '').get('desktop') === '1', desktop_global_present: window.__yomuDesktopRuntime === true, pywebview_present: Boolean(window.pywebview?.api)}); return null; }
   if (state.device?.verified) return state.device;
   try {
     trace('INSTALL_IDENTITY_REQUESTED', {step: 'get_install_identity'});

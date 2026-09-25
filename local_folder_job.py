@@ -45,19 +45,35 @@ def display_name(folder: Path) -> str:
 def build_local_job_command(*, snapshot_ref: str, output: str, mode: str,
                             logical_pages: bool, use_cache: bool, force: bool,
                             use_context: bool, open_output: bool = False,
-                            python_executable: str | None = None) -> list[str]:
+                            output_format: str = "pdf",
+                            python_executable: str | None = None,
+                            translation_provider: str | None = None,
+                            output_path: Path | None = None,
+                            frozen: bool | None = None) -> list[str]:
     """Argument list for the local runner. Never a shell string.
 
     The runner receives an opaque snapshot reference, not a client-supplied path, so a
     crafted request cannot make it read arbitrary files.
     """
-    command = [
-        python_executable or sys.executable,
-        str(Path(__file__).resolve().parent / "run_local_folder.py"),
+    executable = python_executable or sys.executable
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    command = [executable]
+    if frozen:
+        # The frozen executable dispatches internal children through the same
+        # entrypoint as the URL pipeline.  Passing run_local_folder.py here
+        # makes desktop_app.parse_args() reject it as an unknown argument.
+        command.extend(["--internal-child", "local-folder"])
+    else:
+        command.append(str(Path(__file__).resolve().parent / "run_local_folder.py"))
+    command.extend([
         "--snapshot-ref", str(snapshot_ref),
-        "--output", str(output),
+        "--output", str(output_path.resolve()) if output_path is not None else str(output),
         "--mode", str(mode),
-    ]
+        "--output-format", str(output_format),
+    ])
+    if translation_provider:
+        command.extend(["--translation-provider", str(translation_provider)])
     if logical_pages:
         command.append("--logical-pages")
     if force:

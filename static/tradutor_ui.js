@@ -43,6 +43,9 @@
     selectedScope: 'full',
     selectedMode: 'quality',
     selectedSourceType: 'url',
+    localImages: [],
+    localMediaSelectionIds: [],
+    outputFormat: 'pdf',
     nameDirty: false,
     outputDirty: false,
     providerDirty: false,
@@ -125,7 +128,10 @@
     'PROFILE_STATE_COMMIT', 'PROFILE_RENDER_STATE', 'PROFILE_ERROR_STATE',
     'READINESS_RECOMPUTE',
     'YK_WALLET_POST_FINALIZE_REFRESH_START', 'YK_WALLET_POST_FINALIZE_REFRESH_RESULT',
-    'YK_WALLET_POST_FINALIZE_REFRESH_ERROR']);
+    'YK_WALLET_POST_FINALIZE_REFRESH_ERROR',
+    'IMAGE_PICKER_CALL_BEGIN', 'IMAGE_PICKER_CALL_RETURN', 'IMAGE_PICKER_NORMALIZATION_BEGIN',
+    'IMAGE_PICKER_NORMALIZATION_END', 'IMAGE_PAGES_APPEND_BEGIN', 'IMAGE_PAGES_APPEND_END',
+    'IMAGE_PICKER_HANDLER_ERROR']);
   function syncAuthoritativeTranslationFlag() {
     const controlPlane = getGlobal('__yomuControlPlane');
     const flags = controlPlane?.state?.bootstrap?.feature_flags;
@@ -136,6 +142,21 @@
       source: controlPlane?.state?.bootstrap?.translation_policy_source || 'control_plane_snapshot',
       resolved_at: controlPlane?.state?.bootstrap?.translation_policy_resolved_at || '',
     });
+    // Bootstrap can recover after the first request reported the server as
+    // unavailable.  Recompute the controls on the next turn, after the
+    // initial constants/listeners have been installed, and clear only a stale
+    // run lock.  An actually in-flight operation remains fail-closed.
+    window.setTimeout(() => {
+      try {
+        updateTranslationStartControls();
+        const status = String(appState.status || '').toLowerCase();
+        const activeStatuses = ['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review'];
+        if (isCanonicalCommunityAuthenticated() && appState.profileState === 'PROFILE_READY'
+            && !activeStatuses.includes(status)) {
+          setTranslationFormLocked(false);
+        }
+      } catch (_) { /* readiness recovery must never break the UI */ }
+    }, 0);
     return appState.translationEnabled;
   }
   uiTrace('UI_POLICY_LISTENER_REGISTRATION_ATTEMPT', {event_name: 'tradutor-control-plane-updated', target: 'window', document_ready_state: document.readyState, pathname: window.location?.pathname || '/', is_top_window: window.top === window, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
@@ -171,6 +192,8 @@
   const runStatusLabels = {ready: 'pronto', staging: 'preparando', queued: 'na fila · aguardando', running: 'processando', awaiting_source_review: 'confirme as páginas', source_analysis_ready: 'fonte analisada', finished: 'concluído', review_required: 'precisa de revisão', review_completed: 'revisão concluída', failed: 'não foi possível concluir', legacy_unverified: 'resultado antigo não verificado', error: 'não foi possível concluir', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed', 'failed', 'cancelled']);
   const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
+  // Queued work remains visible in the queue, but is not currently owned by a runner.
+  const activeOperationStatuses = new Set(['staging', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
   const MAX_VISIBLE_TOASTS = 3;
   const TOAST_DISMISS_MS = 3200;
   const TOAST_DEDUP_LIMIT = 80;
@@ -217,6 +240,7 @@
       'target_node_id', 'document_focused', 'pointer_capture_used', 'top_element', 'client_x', 'client_y',
       'result', 'click_seen', 'mutation_count', 'current_start_button_node_id', 'current_button_is_connected',
       'target_tag', 'target_start_button_match', 'computed_pointer_events', 'computed_visibility', 'computed_display',
+      'return_type', 'array_length', 'keys_present', 'item_keys', 'media_id_present', 'display_name_present', 'dimensions_present', 'boundary',
     ]) {
       if (fields[key] !== undefined) safe[key] = fields[key];
     }
@@ -239,7 +263,8 @@
         'mutation_type', 'attribute', 'start_button_present', 'start_button_node_id', 'child_count',
         'pointer_capture_used', 'top_element', 'client_x', 'client_y', 'result', 'click_seen', 'mutation_count',
         'current_start_button_node_id', 'current_button_is_connected', 'target_tag', 'target_start_button_match',
-        'computed_pointer_events', 'computed_visibility', 'computed_display']) {
+        'computed_pointer_events', 'computed_visibility', 'computed_display', 'return_type', 'array_length',
+        'keys_present', 'item_keys', 'media_id_present', 'display_name_present', 'dimensions_present', 'boundary']) {
         if (safe[key] !== undefined) body[key] = safe[key];
       }
       try {
@@ -880,9 +905,9 @@
     translate: 'Traduzindo o capítulo...',
     redrawing: 'Reconstruindo a arte...',
     render: 'Reconstruindo a arte...',
-    generating_pdf: 'Gerando o PDF...',
-    pdf: 'Gerando o PDF...',
-    reports: 'Gerando o PDF...',
+    generating_pdf: 'Gerando o arquivo final...',
+    pdf: 'Gerando o arquivo final...',
+    reports: 'Gerando o arquivo final...',
     quality_review: 'Verificando o resultado...',
     review_rerun: 'Reprocessando pendências...',
     quality_gate: 'Revisando a tradução...',
@@ -1053,18 +1078,53 @@
     syncSourceFormState();
   }
   function setSourceType(value) {
-    const sourceType = value === 'local_folder' ? 'local_folder' : 'url';
+    const sourceType = ['local_folder', 'local_images'].includes(value) ? value : 'url';
+    const previousSourceType = appState.selectedSourceType || 'url';
+    if (previousSourceType !== sourceType) {
+      const oldSelections = Array.isArray(appState.localMediaSelectionIds)
+        ? appState.localMediaSelectionIds.slice() : [];
+      oldSelections.forEach(selectionId => {
+        if (selectionId) void window.pywebview?.api?.revoke_local_media?.(selectionId);
+      });
+      appState.localMediaSelectionIds = [];
+      appState.localImages = [];
+      appState.selectedLocalImagePath = '';
+      if (sourceType === 'url') {
+        const folderInput = $('#localFolderInput');
+        if (folderInput) folderInput.value = '';
+        appState.sourceForm = {...(appState.sourceForm || {}), localFolder: ''};
+      } else {
+        const urlInput = $('#urlInput');
+        if (urlInput) urlInput.value = '';
+        appState.sourceForm = {...(appState.sourceForm || {}), url: ''};
+      }
+      const localFolderSummary = $('#localFolderSummary');
+      if (localFolderSummary) localFolderSummary.textContent = '';
+      const localPreview = $('#localPagePreview');
+      if (localPreview) localPreview.hidden = true;
+      const localPageList = $('#localPageList');
+      if (localPageList) localPageList.innerHTML = '';
+    }
     appState.selectedSourceType = sourceType;
-    const local = sourceType === 'local_folder';
+    const local = sourceType !== 'url';
+    const folder = sourceType === 'local_folder';
+    const images = sourceType === 'local_images';
     $$('.source-type-card').forEach(card => {
       const selected = card.dataset.sourceType === sourceType;
       card.classList.toggle('selected', selected);
       card.setAttribute('aria-pressed', String(selected));
     });
     $('#urlSourceField').hidden = local;
-    $('#localFolderSourceField').hidden = !local;
+    $('#localFolderSourceField').hidden = !folder;
+    $('#localImagesSourceField').hidden = !images;
+    $('#localPageManagerField').hidden = !local;
     $('#urlInput').disabled = local;
-    $('#localFolderInput').disabled = !local;
+    $('#localFolderInput').disabled = !folder;
+    const downloadOnlyOption = $('#modeSelect option[value="download_only"]');
+    if (downloadOnlyOption) {
+      downloadOnlyOption.disabled = local;
+      if (local && appState.selectedMode === 'download_only') applyProcessingMode('quality');
+    }
     const profileToggle = $('#sourceProfileToggle');
     if (profileToggle) {
       profileToggle.disabled = local;
@@ -1089,6 +1149,160 @@
   }
   $$('.source-type-card').forEach(card => card.addEventListener('click', () => setSourceType(card.dataset.sourceType)));
   setSourceType(appState.selectedSourceType);
+
+  function selectedLocalImageIndex() {
+    const selected = appState.selectedLocalImagePath;
+    const index = appState.localImages.findIndex(item => (item.mediaId || item.path) === selected);
+    return index >= 0 ? index : 0;
+  }
+  function localPreviewMarkup(item) {
+    if (!item) return '<span>Nenhuma página selecionada.</span>';
+    if (item.previewUrl) return `<img src="${escapeHtml(item.previewUrl)}" alt="Prévia de ${escapeHtml(item.name)}" />`;
+    return `<div class="local-page-preview-fallback"><strong>${escapeHtml(item.name)}</strong><span>Prévia disponível no aplicativo após selecionar as imagens.</span></div>`;
+  }
+  function renderLocalPreview() {
+    const preview = $('#localPagePreview');
+    const media = $('#localPreviewMedia');
+    const count = appState.localImages.length;
+    if (!preview || !media) return;
+    preview.hidden = count === 0;
+    if (!count) return;
+    const index = selectedLocalImageIndex();
+    const item = appState.localImages[index];
+    appState.selectedLocalImagePath = item.mediaId || item.path;
+    $('#localPreviewCounter').textContent = `Página ${index + 1} de ${count}`;
+    $('#localPreviewPrevious').disabled = index === 0;
+    $('#localPreviewNext').disabled = index === count - 1;
+    media.innerHTML = localPreviewMarkup(item);
+  }
+  function moveLocalImage(fromIndex, toIndex) {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= appState.localImages.length || toIndex >= appState.localImages.length) return;
+    const [item] = appState.localImages.splice(fromIndex, 1);
+    appState.localImages.splice(toIndex, 0, item);
+  }
+  function renderLocalImages() {
+    const count = appState.localImages.length;
+    const counter = $('#localImagesCount');
+    if (counter) counter.textContent = count ? `${count} ${count === 1 ? 'página selecionada' : 'páginas selecionadas'}` : 'Nenhuma página selecionada';
+    const addButton = $('#addLocalImagesBtn');
+    if (addButton) addButton.textContent = count ? '+ Adicionar mais' : 'Adicionar imagens';
+    const clearButton = $('#clearLocalImagesBtn');
+    if (clearButton) clearButton.hidden = count === 0;
+    const sharedCounter = $('#localPageCount');
+    if (sharedCounter) sharedCounter.textContent = count ? `${count} ${count === 1 ? 'página no capítulo' : 'páginas no capítulo'} · a ordem abaixo será usada no processamento` : 'Nenhuma página selecionada';
+    const list = $('#localPageList');
+    if (!list) return;
+    list.innerHTML = appState.localImages.map((item, index) => `
+      <div class="source-image-row${(item.mediaId || item.path) === appState.selectedLocalImagePath ? ' selected' : ''}" data-index="${index}" draggable="true">
+        <button type="button" class="source-image-drag" data-image-action="select" aria-label="Selecionar Página ${index + 1}" title="Arraste para reorganizar">☰</button>
+        <button type="button" class="source-image-name" data-image-action="select">${item.thumbnailUrl ? `<img class="source-image-thumb" src="${escapeHtml(item.thumbnailUrl)}" alt="" />` : ''}<span>Página ${index + 1}</span><span>${escapeHtml(item.name)}</span></button>
+        <button type="button" data-image-action="up" aria-label="Mover para cima">↑</button>
+        <button type="button" data-image-action="down" aria-label="Mover para baixo">↓</button>
+        <button type="button" data-image-action="remove" aria-label="Remover imagem">×</button>
+      </div>`).join('');
+    list.querySelectorAll('[data-image-action]').forEach(button => button.addEventListener('click', () => {
+      const row = button.closest('[data-index]');
+      const index = Number(row?.dataset.index);
+      const action = button.dataset.imageAction;
+      if (!Number.isInteger(index)) return;
+      if (action === 'select') appState.selectedLocalImagePath = appState.localImages[index]?.mediaId || appState.localImages[index]?.path || '';
+      if (action === 'remove') {
+        const removed = appState.localImages.splice(index, 1)[0];
+        if ((removed?.mediaId || removed?.path) === appState.selectedLocalImagePath) appState.selectedLocalImagePath = appState.localImages[index]?.mediaId || appState.localImages[index]?.path || appState.localImages[index - 1]?.mediaId || appState.localImages[index - 1]?.path || '';
+      }
+      if (action === 'up' && index > 0) [appState.localImages[index - 1], appState.localImages[index]] = [appState.localImages[index], appState.localImages[index - 1]];
+      if (action === 'down' && index < appState.localImages.length - 1) [appState.localImages[index + 1], appState.localImages[index]] = [appState.localImages[index], appState.localImages[index + 1]];
+      renderLocalImages(); updateTranslationStartControls();
+    }));
+    let draggingIndex = -1;
+    list.querySelectorAll('[data-index]').forEach(row => {
+      row.addEventListener('dragstart', event => { draggingIndex = Number(row.dataset.index); event.dataTransfer.effectAllowed = 'move'; });
+      row.addEventListener('dragover', event => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; });
+      row.addEventListener('drop', event => {
+        event.preventDefault();
+        const targetIndex = Number(row.dataset.index);
+        moveLocalImage(draggingIndex, targetIndex);
+        draggingIndex = -1;
+        renderLocalImages(); updateTranslationStartControls();
+      });
+    });
+    renderLocalPreview();
+  }
+  function acceptLocalImageFiles(fileList) {
+    const incoming = Array.from(fileList || []).filter(file => /\.(png|jpe?g)$/i.test(file.name));
+    for (const file of incoming) {
+      const path = String(file.path || file.webkitRelativePath || '').trim();
+      if (!path) continue;
+      const isBrowserFile = typeof File !== 'undefined' && file instanceof File;
+      if (!appState.localImages.some(item => item.path === path)) appState.localImages.push({path, name: file.name, previewUrl: isBrowserFile ? URL.createObjectURL(file) : ''});
+    }
+    if (!appState.selectedLocalImagePath && appState.localImages[0]) appState.selectedLocalImagePath = appState.localImages[0].mediaId || appState.localImages[0].path;
+    renderLocalImages(); updateTranslationStartControls();
+  }
+  async function chooseLocalFolder() {
+    if (!window.pywebview?.api?.choose_local_folder) {
+      showToast('O seletor de pasta está disponível somente no aplicativo Yomu.', 'warn');
+      return;
+    }
+    try {
+      const result = await window.pywebview.api.choose_local_folder();
+      const items = Array.isArray(result?.items) ? result.items : [];
+      const oldSelections = appState.localMediaSelectionIds.slice();
+      appState.localImages = items.map(item => ({mediaId: item.media_id, name: item.name, thumbnailUrl: item.thumbnail_url, previewUrl: item.preview_url}));
+      appState.localMediaSelectionIds = result?.selection_id ? [result.selection_id] : [];
+      appState.selectedLocalImagePath = appState.localImages[0]?.mediaId || '';
+      programField($('#localFolderInput'), result?.selection_id || '');
+      oldSelections.forEach(selectionId => { if (selectionId) void window.pywebview?.api?.revoke_local_media?.(selectionId); });
+      const summary = $('#localFolderSummary');
+      if (summary) summary.textContent = items.length ? `${String(result?.folder || 'Pasta selecionada')} · ${items.length} imagens encontradas` : 'Nenhuma imagem PNG/JPG/JPEG foi encontrada diretamente nesta pasta.';
+      renderLocalImages(); updateTranslationStartControls();
+    } catch (_) { showToast('Não foi possível ler a pasta selecionada.', 'error'); }
+  }
+  $('#selectLocalFolderBtn')?.addEventListener('click', chooseLocalFolder);
+  async function chooseLocalImages() {
+    uiTrace('IMAGE_PICKER_CALL_BEGIN', {boundary: 'js_bridge'});
+    if (window.pywebview?.api?.choose_local_images) {
+      try {
+        const result = await window.pywebview.api.choose_local_images();
+        const resultKeys = result && typeof result === 'object' ? Object.keys(result) : [];
+        const items = Array.isArray(result?.items) ? result.items : [];
+        uiTrace('IMAGE_PICKER_CALL_RETURN', {
+          boundary: 'js_bridge', return_type: typeof result, array_length: items.length,
+          keys_present: resultKeys.join(','), item_keys: items[0] && typeof items[0] === 'object' ? Object.keys(items[0]).join(',') : '',
+          media_id_present: Boolean(items[0]?.media_id), display_name_present: Boolean(items[0]?.name),
+          dimensions_present: Boolean(items[0]?.width && items[0]?.height),
+        });
+        if (result?.selection_id) appState.localMediaSelectionIds.push(result.selection_id);
+        uiTrace('IMAGE_PICKER_NORMALIZATION_BEGIN', {boundary: 'js_state', array_length: items.length});
+        for (const item of items) {
+          if (!appState.localImages.some(page => page.mediaId === item.media_id)) appState.localImages.push({mediaId: item.media_id, name: item.name, thumbnailUrl: item.thumbnail_url, previewUrl: item.preview_url});
+        }
+        uiTrace('IMAGE_PICKER_NORMALIZATION_END', {boundary: 'js_state', array_length: appState.localImages.length});
+        if (!appState.selectedLocalImagePath && appState.localImages[0]) appState.selectedLocalImagePath = appState.localImages[0].mediaId || appState.localImages[0].path;
+        uiTrace('IMAGE_PAGES_APPEND_END', {boundary: 'js_state', array_length: appState.localImages.length});
+        renderLocalImages(); updateTranslationStartControls();
+        return;
+      } catch (error) {
+        uiTrace('IMAGE_PICKER_HANDLER_ERROR', {
+          boundary: 'js_bridge', error_class: String(error?.name || 'Error').slice(0, 60),
+          message: String(error?.message || error || 'picker_failed').replace(/[\r\n\t]+/g, ' ').slice(0, 160),
+        });
+        showToast('Não foi possível adicionar as imagens selecionadas.', 'error');
+      }
+    }
+    $('#localImagesInput')?.click();
+  }
+  $('#addLocalImagesBtn')?.addEventListener('click', chooseLocalImages);
+  $('#clearLocalImagesBtn')?.addEventListener('click', () => { appState.localMediaSelectionIds.forEach(selectionId => { if (selectionId) void window.pywebview?.api?.revoke_local_media?.(selectionId); }); appState.localMediaSelectionIds = []; appState.localImages = []; appState.selectedLocalImagePath = ''; renderLocalImages(); updateTranslationStartControls(); });
+  $('#localImagesInput')?.addEventListener('change', event => { acceptLocalImageFiles(event.target.files); event.target.value = ''; });
+  $('#localPreviewPrevious')?.addEventListener('click', () => { const index = selectedLocalImageIndex(); const item = appState.localImages[Math.max(0, index - 1)]; appState.selectedLocalImagePath = item?.mediaId || item?.path || ''; renderLocalImages(); });
+  $('#localPreviewNext')?.addEventListener('click', () => { const index = selectedLocalImageIndex(); const item = appState.localImages[Math.min(appState.localImages.length - 1, index + 1)]; appState.selectedLocalImagePath = item?.mediaId || item?.path || ''; renderLocalImages(); });
+  function closeLocalImageModal() { $('#localImageModal').hidden = true; }
+  $('#localPreviewEnlarge')?.addEventListener('click', () => { const item = appState.localImages[selectedLocalImageIndex()]; if (!item) return; $('#localImageModalMedia').innerHTML = localPreviewMarkup(item); $('#localImageModal').hidden = false; });
+  $('#localImageModalClose')?.addEventListener('click', closeLocalImageModal);
+  $('#localImageModal')?.addEventListener('click', event => { if (event.target === $('#localImageModal')) closeLocalImageModal(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') closeLocalImageModal(); });
+  $('#outputFormatSelect')?.addEventListener('change', event => { appState.outputFormat = ['pdf', 'png', 'psd'].includes(event.target.value) ? event.target.value : 'pdf'; syncSourceFormState(); });
   // Only the providers the runner accepts are representable in form state; anything else
   // (tampered <option>, stale stored value) collapses to '' and never reaches a job.
   // Canonical ids only — the "DeepL (Qualidade)" label never crosses into a payload.
@@ -1104,6 +1318,8 @@
       localFolder: $('#localFolderInput')?.value?.trim() || '',
       chapterName: $('#nameInput')?.value?.trim() || '',
       outputSlug: slugify($('#outputInput')?.value || ''),
+      outputFormat: ['pdf', 'png', 'psd'].includes($('#outputFormatSelect')?.value)
+        ? $('#outputFormatSelect').value : 'pdf',
       translationProvider: normalizeTranslationProvider($('#providerSelect')?.value)
         || normalizeTranslationProvider(previous.translationProvider),
     };
@@ -1113,7 +1329,8 @@
       changed: previous.url !== next.url
         || previous.localFolder !== next.localFolder
         || previous.chapterName !== next.chapterName
-        || previous.outputSlug !== next.outputSlug,
+        || previous.outputSlug !== next.outputSlug
+        || previous.outputFormat !== next.outputFormat,
       sourceChanged: previous.url !== next.url || previous.localFolder !== next.localFolder,
     };
   }
@@ -1348,7 +1565,7 @@
     refreshStoredSourceExecutionDraft();
   });
   $$('.scope-card').forEach(card => card.addEventListener('click', () => {
-    if (appState.selectedSourceType === 'local_folder' && card.dataset.scope !== 'full') return;
+    if (appState.selectedSourceType !== 'url' && card.dataset.scope !== 'full') return;
     $$('.scope-card').forEach(item => item.classList.remove('selected'));
     card.classList.add('selected');
     appState.selectedScope = card.dataset.scope;
@@ -1366,26 +1583,31 @@
   $('#scopeCustomInput')?.addEventListener('input', refreshStoredSourceExecutionDraft);
   function validateForm() {
     const form = syncSourceFormState();
-    const local = appState.selectedSourceType === 'local_folder';
+    const local = appState.selectedSourceType !== 'url';
+    const images = appState.selectedSourceType === 'local_images';
     const url = form.url;
     const folder = form.localFolder;
     let message = '';
-    if (local) {
-      if (!folder) message = 'informe a pasta do capítulo antes de iniciar';
+    if (images) {
+      if (!appState.localImages.length) message = 'Selecione pelo menos uma imagem.';
+    } else if (local) {
+      if (!folder) message = 'Escolha uma pasta do capítulo antes de iniciar.';
+      else if (!appState.localImages.length) message = 'Mantenha pelo menos uma página para iniciar.';
     } else {
       if (!url) message = 'informe a URL do capítulo antes de iniciar';
       else if (!/^https?:\/\//i.test(url)) message = 'a URL precisa começar com http:// ou https://';
       try { if (!message) new URL(url); } catch (_) { message = 'essa URL não parece válida'; }
     }
-    const error = local ? $('#localFolderError') : $('#urlError');
+    const error = images ? $('#localImagesError') : (local ? $('#localFolderError') : $('#urlError'));
     if (message) {
       error.textContent = message;
       error.classList.add('show');
-      shake(local ? $('#localFolderInput') : $('#urlInput'));
+      shake(images ? $('#localImagesInput') : (local ? $('#localFolderInput') : $('#urlInput')));
       return false;
     }
     $('#urlError')?.classList.remove('show');
     $('#localFolderError')?.classList.remove('show');
+    $('#localImagesError')?.classList.remove('show');
     error.classList.remove('show');
     if (appState.selectedScope === 'custom' && Number($('#scopeCustomInput').value) <= 0) {
       shake($('#scopeCustomInput'));
@@ -1396,12 +1618,14 @@
   }
   function formPayload() {
     const form = syncSourceFormState();
-    const local = appState.selectedSourceType === 'local_folder';
+    const local = appState.selectedSourceType !== 'url';
+    const images = appState.selectedSourceType === 'local_images';
     const full = appState.selectedScope === 'full';
     const maxImages = full ? null : Number(appState.selectedScope === 'custom' ? $('#scopeCustomInput').value : appState.selectedScope);
     const guess = local ? {title: 'Capítulo local', slug: 'capitulo_local'} : guessFromUrl(form.url);
     const payload = {
       source_type: appState.selectedSourceType,
+      output_format: form.outputFormat || 'pdf',
       chapter_name: form.chapterName || guess.title,
       slug: form.outputSlug || slugify(guess.slug),
       mode: appState.selectedMode === 'download_only' ? 'fast' : appState.selectedMode,
@@ -1432,8 +1656,19 @@
       policy_source: (typeof getGlobal === 'function' ? getGlobal('__yomuControlPlane') : null)?.state?.bootstrap?.translation_policy_source || 'control_plane_snapshot',
       policy_resolved_at: (typeof getGlobal === 'function' ? getGlobal('__yomuControlPlane') : null)?.state?.bootstrap?.translation_policy_resolved_at || '',
     });
-    if (local) payload.local_folder = form.localFolder;
-    else payload.url = form.url;
+    const mediaIds = (appState.localImages || []).map(item => item.mediaId).filter(Boolean);
+    if (appState.selectedSourceType === 'url') {
+      // Never serialize local selections left by another source type.
+      payload.url = form.url;
+    } else if (mediaIds.length) {
+      payload.local_media_selection_ids = (appState.localMediaSelectionIds || []).slice();
+      payload.ordered_media_ids = mediaIds;
+    } else if (images) {
+      payload.image_paths = appState.localImages.map(item => item.path);
+    } else {
+      payload.local_folder = form.localFolder;
+      payload.selected_image_paths = appState.localImages.map(item => item.path);
+    }
     return payload;
   }
   function workspacePolicyAllowsProcessing() {
@@ -1442,8 +1677,10 @@
   }
   function minimumSourceInputIsValid() {
     const form = syncSourceFormState();
+    if (appState.selectedSourceType === 'local_images') return appState.localImages.length > 0;
     if (appState.selectedSourceType === 'local_folder') {
-      return Boolean(form.localFolder);
+      if (!form.localFolder) return Boolean(form.localFolder);
+      return appState.localImages.length > 0;
     }
     const value = form.url;
     try { return /^https?:\/\//i.test(value) && Boolean(new URL(value)); }
@@ -1457,10 +1694,14 @@
   }
   function translationStartDisabledReasons() {
     const reasons = [];
-    const local = appState.selectedSourceType === 'local_folder';
+    const local = appState.selectedSourceType !== 'url';
     const minimumValid = minimumSourceInputIsValid();
     const validating = appState.sourceValidation.status === 'validating';
-    const pipelineBusy = inFlightStatuses.has(appState.status);
+    // A genuinely active job (queued/claiming/starting/running) must gate the button even
+    // when appState.status reflects a previous terminal (failed/cancelled) job. Use the
+    // canonical active-job identity so a stale terminal status can never re-enable start
+    // while another job is really running.
+    const pipelineBusy = activeOperationStatuses.has(appState.status) || Boolean(appState.activeJobId);
     const busyBlocksDraft = pipelineBusy && !appState.newTranslationDraft;
     if (!minimumValid) reasons.push(local ? 'local_folder_missing' : 'source_input_invalid');
     if (!local && !workspacePolicyAllowsProcessing()) reasons.push('workspace_policy_blocked');
@@ -1482,7 +1723,9 @@
   }
   function updateTranslationStartControls() {
     const validating = appState.sourceValidation.status === 'validating';
-    const pipelineBusy = inFlightStatuses.has(appState.status);
+    // Single source of job identity: a real active job gates the button regardless of a
+    // stale terminal appState.status (see translationStartDisabledReasons).
+    const pipelineBusy = activeOperationStatuses.has(appState.status) || Boolean(appState.activeJobId);
     const startRequestBusy = Boolean(
       (typeof startInFlight !== 'undefined' && startInFlight)
       || (typeof activeStartFingerprint !== 'undefined' && activeStartFingerprint));
@@ -1491,7 +1734,7 @@
     const editingFreshDraft = appState.newTranslationDraft;
     const busyBlocksDraft = pipelineBusy && !editingFreshDraft;
     const startBusyBlocksDraft = startRequestBusy;
-    const local = appState.selectedSourceType === 'local_folder';
+    const local = appState.selectedSourceType !== 'url';
     const minimumValid = minimumSourceInputIsValid();
     const canStart = local
       ? minimumValid && !busyBlocksDraft && !startBusyBlocksDraft
@@ -1517,10 +1760,24 @@
       }[reason] || '';
       start.title = reasonText;
       start.setAttribute('aria-disabled', canStart ? 'false' : 'true');
-      if (!busyBlocksDraft && !startBusyBlocksDraft && start.dataset.busy !== '1') start.textContent = 'Iniciar tradução';
+      if (!busyBlocksDraft && !startBusyBlocksDraft && start.dataset.busy !== '1') start.textContent = appState.selectedMode === 'download_only' ? 'Iniciar download' : 'Iniciar tradução';
     }
     if (typeof traceTranslationStartControlState === 'function') traceTranslationStartControlState('controls_update', start);
     return {canStart, validating, pipelineBusy};
+  }
+  function clearOptimisticExecutionBusy() {
+    // runStartTranslation sets appState.status to an active-operation value ('staging')
+    // optimistically, before the /api/ui/run POST.  A failure BEFORE a job is created
+    // (control-plane transient, source-analyze error, any pre-job error) used to leave
+    // that status stuck, so pipelineBusy stayed true and the start button never
+    // re-enabled without a UI reload.  Clear the optimistic status when no job was
+    // created — but keep gating on a genuinely active job so this never masks a real
+    // running job (active-job identity is preserved).  The error card and source
+    // readiness are untouched: only the transient execution-busy state is reset.
+    if (!appState.activeJobId && activeOperationStatuses.has(appState.status)) {
+      appState.status = appState.sourceValidation?.status === 'ready'
+        ? 'source_analysis_ready' : 'ready';
+    }
   }
   function invalidateSourceValidation() {
     appState.sourceValidation = {
@@ -1904,10 +2161,11 @@
     sourceTrace('TRANSLATION_START_HANDLER_ENTER', {sequence, elapsed_ms: 0, request_count: 0});
     traceTranslationStartControlState('handler_enter', startButton);
     startInFlight = runStartTranslation(sequence).then(result => {
-      if (!result || !result.job_id) activeStartFingerprint = '';
+      if (!result || !result.job_id) { activeStartFingerprint = ''; clearOptimisticExecutionBusy(); }
       return result;
     }).catch(error => {
       activeStartFingerprint = '';
+      clearOptimisticExecutionBusy();
       uiTrace('TRANSLATION_START_UNHANDLED_ERROR', {
         code: String(error?.code || error?.message || 'start_failed').slice(0, 80),
       });
@@ -2152,6 +2410,7 @@
         stage: result.stage || 'queued',
       });
       const awaitingReview = Boolean(result.awaiting_source_review);
+      ensurePolling();
       renderLocalPipelineState(awaitingReview ? 'awaiting_source_review' : (result.stage || 'queued'), {
         status: awaitingReview ? 'awaiting_source_review' : (result.status || 'queued'),
         message: awaitingReview ? 'Aguardando revisão das páginas' : 'Na fila',
@@ -2527,14 +2786,14 @@
       if (status === 'finished') return {message: 'Rerun seletivo concluído.', type: 'ok'};
     }
     if (status === 'review_required') {
-      return {message: 'PDF gerado, mas requer revisão de qualidade.', type: 'warn'};
+      return {message: `${outputFormatLabel(record)} gerado, mas requer revisão de qualidade.`, type: 'warn'};
     }
     if (['finished', 'review_completed'].includes(status) && (record?.pdf_path || record?.quality_report_path || record?.output_folder)) {
-      return {message: 'PDF finalizado e registrado no histórico.', type: 'ok'};
+      return {message: `${outputFormatLabel(record)} finalizado e registrado no histórico.`, type: 'ok'};
     }
     return null;
   }
-  function releaseStaleInterfaceBusy() {
+  function releaseStaleInterfaceBusy(runtime = null) {
     if (document.body) {
       document.body.removeAttribute('aria-busy');
       document.body.inert = false;
@@ -2549,7 +2808,10 @@
     }
     // A terminal observation closes the duplicate-submit window.  Until then,
     // an identical click remains a no-op even if a render recreated the button.
-    if (terminalRunStatuses.has(String(appState.status || '').toLowerCase())) {
+    const terminalRecord = runtime?.active || runtime?.source_review || runtime?.source_ready
+      || runtime?.latest || runtime?.latest_result || null;
+    const terminalStatus = String(terminalRecord?.status || runtime?.status || appState.status || '').toLowerCase();
+    if (terminalRunStatuses.has(terminalStatus)) {
       activeStartFingerprint = '';
     }
     const boot = $('#boot');
@@ -2603,7 +2865,8 @@
     // still refresh the canonical wallet before the notification early-return.
     const shouldRefreshWallet = !previous || !terminalRunStatuses.has(previous);
     if (shouldRefreshWallet) void refreshWalletAfterTerminal(record);
-    releaseStaleInterfaceBusy();
+    releaseStaleInterfaceBusy(runtime);
+    if (shouldRefreshWallet) void refreshBootstrap();
     const key = terminalNotificationKey(record);
     const notification = terminalNotificationMessage(record);
     if (!previous || terminalRunStatuses.has(previous) || !notification) {
@@ -2694,15 +2957,26 @@
         : '';
     balloon.innerHTML = detail ? `${escapeHtml(message)}<br><small>${escapeHtml(detail)}</small>` : escapeHtml(message);
   }
+  function runtimeHasActiveTranslation(runtime, runtimeStatus, queuedRecord) {
+    const status = String(runtimeStatus || '').toLowerCase();
+    if (activeOperationStatuses.has(status)) return true;
+    const activeStatus = String(runtime?.active?.status || '').toLowerCase();
+    if (activeOperationStatuses.has(activeStatus)) return true;
+    return Boolean(queuedRecord && activeOperationStatuses.has(String(queuedRecord.status || '').toLowerCase()));
+  }
   function renderRuntime(runtime) {
     appState.status = runtime.status || 'ready';
     appState.queue = runtime.queue || [];
     const awaitingReview = appState.status === 'awaiting_source_review';
     const latestStatus = String(runtime.latest?.status || '').toLowerCase();
     const queuedRecord = appState.queue.find(record =>
-      inFlightStatuses.has(String(record?.status || '').toLowerCase())) || null;
-    const running = inFlightStatuses.has(appState.status)
-      || inFlightStatuses.has(latestStatus) || Boolean(queuedRecord);
+      activeOperationStatuses.has(String(record?.status || '').toLowerCase())) || null;
+    // `runtime.latest` is historical metadata and may still carry an old
+    // queued/staging status after the operation has failed or been reconciled.
+    // It must never keep the new-translation form locked.  Only the effective
+    // runtime status, a verified active record, or the current queued state can
+    // represent live work.
+    const running = runtimeHasActiveTranslation(runtime, appState.status, queuedRecord);
     const analyzing = appState.status === 'staging';
     const visibleProgress = {...(runtime.progress || {})};
     const terminalLatest = runtime.latest || null;
@@ -2716,7 +2990,7 @@
     const pipelineState = buildPipelineState(runtime, visibleProgress);
     appState.currentPipelineState = pipelineState;
     const activeRecord = runtime.active || runtime.source_review || runtime.source_ready
-      || (inFlightStatuses.has(latestStatus) ? runtime.latest : null) || queuedRecord;
+      || (appState.status === 'queued' && queuedRecord) || null;
     appState.activeJobId = String(activeRecord?.id || activeRecord?.job_id || '');
     appState.latestJobId = String(runtime.latest?.id || runtime.latest?.job_id || '');
     const incoming = activeRecord || runtime.latest || null;
@@ -2792,7 +3066,7 @@
   function renderRunStatus(runtime) {
     const card = $('#runStatusCard');
     if (!card) return;
-    const active = inFlightStatuses.has(runtime.status);
+    const active = activeOperationStatuses.has(runtime.status);
     const record = runtime.active || runtime.latest || null;
     const status = runtime.status === 'ready' && record ? record.status : runtime.status;
     const progress = runtime.progress || {};
@@ -2812,7 +3086,7 @@
     $('#runStatusHuman').textContent = failed ? 'Não foi possível iniciar o processamento' : (stageMessages[pipelineState.stage] || stageMessages[pipelineState.visualStage] || runStatusLabels[status] || 'Processamento');
     const count = progress.total ? `${progress.current || 0} de ${progress.total}` : 'progresso sendo calculado';
     const terminalCount = pipelineState.pendingReview ? `${pipelineState.pendingReview} itens aguardando revisão` : (pipelineState.totalPages ? `${pipelineState.totalPages} páginas` : '');
-    $('#runProgressHuman').textContent = active ? count : (status === 'finished' ? (terminalCount || 'PDF pronto') : status === 'review_required' ? (terminalCount || 'Alguns itens precisam de revisão') : failed ? (reasonText(record?.reason_code) || record?.error_message || 'O processamento não foi concluído.') : runStatusLabels[status] || '');
+    $('#runProgressHuman').textContent = active ? count : (status === 'finished' ? (terminalCount || `${outputFormatLabel(record)} pronto`) : status === 'review_required' ? (terminalCount || 'Alguns itens precisam de revisão') : failed ? (reasonText(record?.reason_code) || record?.error_message || 'O processamento não foi concluído.') : runStatusLabels[status] || '');
     $('#runEtaHuman').textContent = active ? (progress.eta_label || 'Tempo variavel nesta etapa') : '';
     const updated = progress.updated_at ? new Date(Number(progress.updated_at) * 1000) : null;
     $('#runUpdatedHuman').textContent = updated && !Number.isNaN(updated.getTime()) ? `Atualizado ha ${Math.max(0, Math.floor((Date.now() - updated.getTime()) / 1000))}s` : '';
@@ -6151,16 +6425,33 @@
     const record = appState.history.find(item => String(item.job_id || '').toLowerCase() === jobId);
     if (record) void openChapterReview(record, {restore: true});
   }
+  function outputFormatLabel(record) {
+    // Canonical job/manifest output_format is the single source of truth. Never infer the
+    // format from pdf_path: a PSD/PNG job carries an internal canonical PDF too.
+    const fmt = String((record && record.output_format) || 'pdf').toLowerCase();
+    return fmt === 'psd' ? 'PSD' : fmt === 'png' ? 'PNG' : 'PDF';
+  }
+  function historyTypeFormatLabel(record) {
+    const type = record && record.download_only === true ? 'Download' : 'Tradução';
+    return `${type} · ${outputFormatLabel(record)}`;
+  }
   function renderHistoryCard(record) {
     const title = record.chapter_name || record.slug || 'Capítulo';
+    const outputFormat = outputFormatLabel(record);
     const engine = record.mode === 'fast' ? 'rapid' : 'paddle';
+    const isDownloadOnly = record.download_only === true;
     const statusLabel = record.operation_kind === 'artifact_reconstruction'
       ? (record.operation_label || 'Reconstrução corrigida')
       : record.review_status === 'completed' ? 'revisão concluída' : (runStatusLabels[record.status] || record.status || 'local');
     const gateValue = boolish(record.quality_gate);
     const gate = gateValue === true ? 'gate aprovado' : gateValue === false ? 'gate reprovado' : 'gate pendente';
     const provenance = record.output_verification === 'legacy_unverified' ? 'origem não verificada' : record.output_verification === 'e2e_evidence' ? 'evidência E2E' : record.output_verification === 'manifest_verified' ? 'manifest verificado' : 'origem não informada';
-    const meta = `${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)} · ${gate} · ${provenance}`;
+    const downloadPages = Number.isFinite(Number(record.pages_processed)) ? Number(record.pages_processed) : null;
+    const downloadVerification = record.output_verification === 'manifest_verified'
+      ? 'resultado verificado' : 'resultado não verificado';
+    const meta = isDownloadOnly
+      ? `${record.download_report_valid === false ? 'resultado de download indisponível' : `${downloadPages ?? '—'} páginas baixadas`} · ${formatSeconds(record.total_seconds)} · ${downloadVerification}`
+      : `${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)} · ${gate} · ${provenance}`;
     const previewActionHtml = historyPreviewAction(record);
     const retryActionHtml = retryAction(record) || actionButton('Reprocessar', 'reprocess');
     const snapshotBadge = record.validation_snapshot === true
@@ -6168,8 +6459,8 @@
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
-      <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge ${engine}">${engine === 'rapid' ? 'Rápido' : 'Qualidade'}</span>${snapshotBadge}${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
-      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${actionButton('Abrir externamente', 'pdf', record.pdf_path)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>
+      <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge format">${escapeHtml(historyTypeFormatLabel(record))}</span>${isDownloadOnly ? '<span class="badge download-only">Download-only</span>' : ''}${snapshotBadge}${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
+      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${outputFormat === 'PDF' ? actionButton('Abrir PDF', 'pdf', record.pdf_path) : ''}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>
     </div>`;
   }
   function renderHistory() {
@@ -7070,8 +7361,8 @@
     });
   }
   function loadRecordIntoForm(record) {
-    const local = record.source_type === 'local_folder';
-    setSourceType(local ? 'local_folder' : 'url');
+    const local = ['local_folder', 'local_images'].includes(record.source_type);
+    setSourceType(local ? record.source_type : 'url');
     appState.programmingFields = true;
     // A persisted local job has only an opaque snapshot reference. Never reconstruct or
     // display a source filesystem path when loading history back into the form.
@@ -7102,8 +7393,13 @@
   /* ---------- artifact actions ---------- */
   function renderArtifactButtons(container, record) {
     if (!container) return;
+    // The internal canonical PDF is only offered as a user artifact for a PDF job. A PNG/PSD
+    // job keeps that PDF internally, but exposing "PDF base" there confuses the format; the
+    // folder holds the real PNG/PSD output.
+    const pdfArtifact = outputFormatLabel(record) === 'PDF'
+      ? [['Abrir PDF', 'pdf', record.pdf_path]] : [];
     container.innerHTML = [
-      ['PDF base', 'pdf', record.pdf_path], ['Pasta', 'folder', record.output_folder],
+      ...pdfArtifact, ['Pasta', 'folder', record.output_folder],
       ['Qualidade', 'report', record.quality_report_path],
       ['Compare', 'compare', record.compare_sheet_path],
       ['Contexto', 'context', record.session_context_path],
@@ -8063,6 +8359,7 @@
       applyStandaloneSourceReady(data);
       renderRuntime(data);
       handleTerminalRuntimeTransition(data);
+      stopPollingForTerminal(data);
       appState.cursor = Math.max(appState.cursor, Number(data.log_cursor || 0));
       document.documentElement.dataset.uiPollCount = String(Number(document.documentElement.dataset.uiPollCount || 0) + 1);
       uiTrace('EVENT_CURSOR_ADVANCED', {status: appState.status});
@@ -8071,14 +8368,35 @@
       $('#appStatus').dataset.state = 'error';
     } finally { appState.polling = false; }
   }
-  refreshBootstrap();
-  if (getGlobal('__tradutorUiPollingTimer')) {
-    window.clearInterval(getGlobal('__tradutorUiPollingTimer'));
-    uiTrace('POLLING_DUPLICATE_BLOCKED', {status: appState.status});
+  function terminalRuntimeStatus(runtime) {
+    const record = runtime?.active || runtime?.source_review || runtime?.source_ready
+      || runtime?.latest || runtime?.latest_result || null;
+    return String(record?.status || runtime?.status || '').toLowerCase();
   }
-  setGlobal('__tradutorUiPollingTimer', window.setInterval(pollState, 850));
+  function stopPollingForTerminal(runtime) {
+    const status = terminalRuntimeStatus(runtime);
+    if (!terminalRunStatuses.has(status)) return false;
+    const timer = getGlobal('__tradutorUiPollingTimer');
+    if (timer) {
+      window.clearInterval(timer);
+      setGlobal('__tradutorUiPollingTimer', 0);
+      uiTrace('POLLING_STOPPED', {status, reason: 'terminal_runtime'});
+    }
+    return true;
+  }
+  function ensurePolling() {
+    if (getGlobal('__tradutorUiPollingTimer')) {
+      uiTrace('POLLING_DUPLICATE_BLOCKED', {status: appState.status});
+      return getGlobal('__tradutorUiPollingTimer');
+    }
+    const timer = window.setInterval(pollState, 850);
+    setGlobal('__tradutorUiPollingTimer', timer);
+    uiTrace('POLLING_STARTED', {status: appState.status});
+    return timer;
+  }
+  refreshBootstrap();
+  ensurePolling();
   document.documentElement.dataset.tradutorUiReady = '1';
-  uiTrace('POLLING_STARTED', {status: appState.status});
   window.addEventListener('beforeunload', () => {
     window.clearInterval(getGlobal('__tradutorUiPollingTimer'));
     setGlobal('__tradutorUiPollingTimer', 0);

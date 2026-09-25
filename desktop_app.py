@@ -13,6 +13,7 @@ import argparse
 from collections import deque
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -30,6 +31,7 @@ ROOT = Path(__file__).resolve().parent
 APP_ICON_PATH = ROOT / "assets" / "branding" / "generated" / "yomu-sekai.ico"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = int(os.getenv("TRADUTOR_UI_PORT", "8080"))
+_LOCAL_MEDIA_IPC_SECRET = ""
 _REQUEST_WINDOW_CLOSE = None
 _UPDATE_SHUTDOWN_CONTEXT = False
 NATIVE_AD_DIAGNOSTIC_BUILD_ID = "native-ad-product-beta"
@@ -230,6 +232,28 @@ class DesktopApi:
         self._native_bounds_requests = 0
         self._native_bounds_deduped = 0
 
+    @staticmethod
+    def _server_local_media_request(path: str, payload: dict[str, object]) -> dict[str, object]:
+        """Use the private loopback channel to reach the authoritative child registry."""
+        secret = str(globals().get("_LOCAL_MEDIA_IPC_SECRET") or "")
+        if not secret:
+            raise RuntimeError("local_media_ipc_unavailable")
+        port = int(os.getenv("TRADUTOR_UI_PORT", str(DEFAULT_PORT)))
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=body,
+            headers={"Content-Type": "application/json", "X-Yomu-Internal-Secret": secret},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.HTTPError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("local_media_ipc_failed") from exc
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise RuntimeError("local_media_ipc_rejected")
+        return result
+
     def get_install_identity(self) -> dict[str, str]:
         return {"device_id": self.identity.device_id(), "public_key": self.identity.public_key()}
 
@@ -253,6 +277,86 @@ class DesktopApi:
     def clear_auth_context(self, job_id: str) -> dict[str, object]:
         self._auth_store.cleanup(job_id)
         return {"job_id": str(job_id), "envelope_ready": False}
+
+    def choose_local_images(self) -> dict[str, object]:
+        """Open the native picker and return only opaque preview metadata to WebView."""
+        import webview
+        import json
+        from datetime import datetime, timezone
+
+        def diag(event: str, **fields: object) -> None:
+            root = os.getenv("TRADUTOR_DIAGNOSTICS_ROOT", "")
+            if not root:
+                return
+            safe = {"event": event, "timestamp": datetime.now(timezone.utc).isoformat()}
+            for key, value in fields.items():
+                if key in {"path", "paths", "token", "password", "body"}:
+                    continue
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    safe[key] = value
+            try:
+                target = Path(root) / "local-media-picker.jsonl"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(safe, ensure_ascii=False) + "\n")
+            except OSError:
+                pass
+
+        diag("IMAGE_PICKER_CALL_BEGIN")
+        windows = list(getattr(webview, "windows", []) or [])
+        if not windows:
+            diag("IMAGE_PICKER_CALL_RETURN", return_type="dict", item_count=0, reason="no_window")
+            return {"selection_id": "", "items": []}
+        dialog = getattr(webview, "OPEN_DIALOG", 0)
+        result = windows[0].create_file_dialog(dialog, allow_multiple=True,
+                                               file_types=("Images (*.png;*.jpg;*.jpeg)",))
+        if isinstance(result, (str, os.PathLike)):
+            raw_values = [result]
+            result_type = type(result).__name__
+        else:
+            raw_values = list(result or ())
+            result_type = type(result).__name__
+        paths = [str(value) for value in raw_values if str(value).strip()][:400]
+        diag("IMAGE_PICKER_CALL_RETURN", return_type=result_type,
+             returned_count=len(raw_values), accepted_path_count=len(paths))
+        try:
+            payload = self._server_local_media_request(
+                "/api/internal/local-media/register", {"paths": paths})
+        except Exception as exc:  # noqa: BLE001 - report a sanitized picker error
+            diag("IMAGE_PICKER_REGISTER_ERROR", error_class=type(exc).__name__,
+                 error_message=str(exc)[:160])
+            raise
+        items = payload.get("items") if isinstance(payload, dict) else []
+        diag("IMAGE_PICKER_CALL_END", return_type=type(payload).__name__,
+             item_count=len(items) if isinstance(items, list) else 0,
+             item_keys=sorted(items[0].keys()) if items and isinstance(items[0], dict) else [])
+        return payload
+
+    def choose_local_folder(self) -> dict[str, object]:
+        """Pick one folder and enumerate only its direct supported image files."""
+        import webview
+        windows = list(getattr(webview, "windows", []) or [])
+        if not windows:
+            return {"folder": "", "selection_id": "", "items": []}
+        result = windows[0].create_file_dialog(getattr(webview, "FOLDER_DIALOG", 1))
+        folder = Path(str((result or [""])[0] if isinstance(result, (list, tuple)) else result or "")).resolve()
+        if not folder.is_dir():
+            return {"folder": "", "selection_id": "", "items": []}
+        from local_images_source import SUPPORTED_LOCAL_IMAGE_EXTENSIONS, natural_sort_key
+        paths = sorted(
+            (item for item in folder.iterdir() if item.is_file() and item.suffix.casefold() in SUPPORTED_LOCAL_IMAGE_EXTENSIONS),
+            key=natural_sort_key,
+        )
+        registered = self._server_local_media_request(
+            "/api/internal/local-media/register",
+            {"paths": [str(path) for path in paths[:400]], "folder": str(folder)})
+        return {"folder": folder.name, **registered}
+
+    def revoke_local_media(self, selection_id: str) -> dict[str, bool]:
+        """Revoke a prior picker selection without accepting a filesystem path."""
+        result = self._server_local_media_request(
+            "/api/internal/local-media/revoke", {"selection_id": str(selection_id or "")})
+        return {"revoked": bool(result.get("revoked"))}
 
     def request_shutdown(self) -> dict[str, bool]:
         """Ask the native shell to close after a verified installer was spawned."""
@@ -980,6 +1084,9 @@ def _start_server(host: str, port: int, *, auth_diagnostics: bool = False) -> su
     if not python.exists():
         raise RuntimeError("Python do ambiente beta não encontrado.")
     env = os.environ.copy()
+    global _LOCAL_MEDIA_IPC_SECRET
+    _LOCAL_MEDIA_IPC_SECRET = secrets.token_urlsafe(32)
+    env["TRADUTOR_LOCAL_MEDIA_IPC_SECRET"] = _LOCAL_MEDIA_IPC_SECRET
     _load_external_provider_config(env)
     # The frozen bundle carries only browser-public Supabase settings.  Inject
     # them into the owned child environment; private server/provider secrets are

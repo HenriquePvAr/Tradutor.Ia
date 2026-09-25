@@ -84,7 +84,10 @@ def _validated_device_uuid() -> str:
     """Return the verified license_devices row UUID for wallet RPC calls."""
     value = str(os.getenv("TRADUTOR_DEVICE_UUID", "") or "").strip()
     if not value:
-        return ""
+        # The wallet RPC requires the UUID of the authenticated
+        # ``license_devices`` row.  An empty value used to cross the HTTP
+        # boundary and become PostgreSQL SQLSTATE 22P02/``invalid_request``.
+        raise BackendTranslationError("commercial_device_id_missing")
     try:
         parsed = uuid.UUID(value)
     except (ValueError, AttributeError, TypeError) as exc:
@@ -397,11 +400,18 @@ class YomuBackendTranslationProvider:
             if existing:
                 return existing
             try:
-                context = self.auth.acquire(request.job_id)
+                auth_job_id = str(os.getenv("TRADUTOR_AUTH_CONTEXT_ID") or request.job_id).strip()
+                context = self.auth.acquire(auth_job_id)
             except AuthContextError as exc:
                 raise BackendTranslationError(str(exc)) from exc
             self.results.begin(request.job_id, request.request_id)
-            reservation = self.backend.reserve(job_id=request.job_id, request_id=request.request_id, auth_token=context.access_token, device_id=_validated_device_uuid())
+            device_id = _validated_device_uuid()
+            print(
+                "WALLET_RESERVE_REQUEST_SHAPE "
+                f"job_id={request.job_id} device_id_present=YES device_id_uuid_valid=YES",
+                flush=True,
+            )
+            reservation = self.backend.reserve(job_id=request.job_id, request_id=request.request_id, auth_token=context.access_token, device_id=device_id)
             reservation_id = str(reservation.get("reservation_id") or "")
             if not reservation_id:
                 raise BackendTranslationError("RESERVATION_FAILED")
@@ -477,9 +487,15 @@ class YomuBackendTranslationProvider:
                 context = self.auth.acquire(job_id)
             except AuthContextError as exc:
                 raise BackendTranslationError(str(exc)) from exc
+            device_id = _validated_device_uuid()
+            print(
+                "WALLET_RESERVE_REQUEST_SHAPE "
+                f"job_id={job_id} device_id_present=YES device_id_uuid_valid=YES",
+                flush=True,
+            )
             reservation = self.backend.reserve(job_id=job_id, request_id=request_id,
                                                auth_token=context.access_token,
-                                               device_id=_validated_device_uuid())
+                                               device_id=device_id)
             reservation_id = str(reservation.get("reservation_id") or "")
             if not reservation_id:
                 raise BackendTranslationError("RESERVATION_FAILED")

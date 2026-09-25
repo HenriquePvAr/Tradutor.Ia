@@ -242,6 +242,16 @@ class ImageCandidate:
     # A review preview is an optional, bounded data URI generated from an already-visible DOM
     # image. It is never a remote URL and is omitted for tainted/cross-origin image surfaces.
     review_thumbnail: str = field(default="", repr=False, compare=False)
+    # Logical reader identity is stronger than URL/hash identity for virtualized pages.
+    logical_index: int = 0
+    capture_method: str = ""
+    render_epoch_id: int = 0
+    capture_width: int = 0
+    capture_height: int = 0
+    source_content_type: str = ""
+    canonical_content_type: str = ""
+    transcoded: bool = False
+    materialization_method: str = ""
 
     @property
     def effective_width(self) -> int:
@@ -263,6 +273,15 @@ class ImageCandidate:
             "width": self.effective_width,
             "height": self.effective_height,
             "origin": self.origin,
+            "logical_index": self.logical_index,
+            "capture_method": self.capture_method or self.source,
+            "render_epoch_id": self.render_epoch_id,
+            "capture_width": self.capture_width,
+            "capture_height": self.capture_height,
+            "source_content_type": self.source_content_type,
+            "canonical_content_type": self.canonical_content_type,
+            "transcoded": self.transcoded,
+            "materialization_method": self.materialization_method,
             "visible": self.visible,
             "attribute_names": list(self.attribute_names),
         }
@@ -514,7 +533,7 @@ def _to_candidate(raw: dict[str, Any], page_url: str, order: int) -> list[ImageC
     candidates: list[ImageCandidate] = []
     raw_value = raw.get("url") or raw.get("src") or ""
     source = str(raw.get("source") or "dom")[:40]
-    if source == "canvas_capture" and str(raw_value).startswith("data:image/"):
+    if source in {"canvas_capture", "browser_response_body"} and str(raw_value).startswith("data:image/"):
         data = _decode_canvas_data_uri(str(raw_value))
         if not data:
             return candidates
@@ -538,10 +557,19 @@ def _to_candidate(raw: dict[str, Any], page_url: str, order: int) -> list[ImageC
             context=str(raw.get("context") or "")[:240],
             network_order=_signed_number(raw.get("network_order"), -1),
             content_type="image/png",
-            origin="canvas_capture",
+            origin=str(raw.get("origin") or source)[:40],
             visible=True,
             attribute_names=_attribute_names(raw.get("attributeNames")),
             canvas_data=data,
+            logical_index=_number(raw.get("logical_page_index")),
+            capture_method=str(raw.get("capture_method") or source)[:64],
+            render_epoch_id=_number((raw.get("render_diagnostics") or {}).get("epoch")),
+            capture_width=_number(raw.get("capture_width")),
+            capture_height=_number(raw.get("capture_height")),
+            source_content_type=str(raw.get("source_content_type") or "")[:80],
+            canonical_content_type=str(raw.get("canonical_content_type") or "")[:80],
+            transcoded=bool(raw.get("transcoded")),
+            materialization_method=str(raw.get("materialization_method") or "")[:80],
         ))
         return candidates
     for raw_url in _urls_from_value(raw_value):
@@ -569,6 +597,11 @@ def _to_candidate(raw: dict[str, Any], page_url: str, order: int) -> list[ImageC
             origin=str(raw.get("origin") or "dom")[:40],
             visible=bool(raw.get("visible", True)),
             attribute_names=_attribute_names(raw.get("attributeNames")),
+            logical_index=_number(raw.get("logical_page_index")),
+            capture_method=str(raw.get("capture_method") or source)[:64],
+            render_epoch_id=_number((raw.get("render_diagnostics") or {}).get("epoch")),
+            capture_width=_number(raw.get("capture_width")),
+            capture_height=_number(raw.get("capture_height")),
         ))
     return candidates
 
@@ -648,6 +681,7 @@ def analyse_candidates(
     discarded: list[dict[str, Any]] = []
     seen_resources: set[str] = set()
     seen_slots: set[str] = set()
+    seen_logical_indices: set[int] = set()
     for index, raw in enumerate(raw_candidates):
         if index >= MAX_CANDIDATES:
             discarded.append({"reason": "candidate_limit", "count": 1})
@@ -663,13 +697,21 @@ def analyse_candidates(
             discarded.append({"reason": "malformed_candidate"})
             continue
         for candidate in converted:
-            identity = _resource_identity(candidate.url)
-            slot = _resource_slot(candidate)
-            if identity in seen_resources or slot in seen_slots:
-                discarded.append({"id": candidate.id, "reason": "duplicate_resource"})
-                continue
-            seen_resources.add(identity)
-            seen_slots.add(slot)
+            logical_index = int(candidate.logical_index or 0)
+            if logical_index > 0:
+                if logical_index in seen_logical_indices:
+                    discarded.append({"id": candidate.id, "reason": "duplicate_logical_index",
+                                      "logical_index": logical_index})
+                    continue
+                seen_logical_indices.add(logical_index)
+            else:
+                identity = _resource_identity(candidate.url)
+                slot = _resource_slot(candidate)
+                if identity in seen_resources or slot in seen_slots:
+                    discarded.append({"id": candidate.id, "reason": "duplicate_resource"})
+                    continue
+                seen_resources.add(identity)
+                seen_slots.add(slot)
             key = _cluster_key(candidate)
             reason = _negative_reason(candidate)
             if reason:

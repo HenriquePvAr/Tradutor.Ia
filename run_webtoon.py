@@ -2,7 +2,11 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
+import threading
+import time
 import webbrowser
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +58,12 @@ def build_parser():
     parser.add_argument(
         "--output",
         help="Nome da pasta dentro de output/ ou caminho de saida.",
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=("pdf", "png", "psd"),
+        default="pdf",
+        help="Formato do resultado final (padrao: pdf).",
     )
     parser.add_argument("--no-context", action="store_true", help="Desativa o contexto do capitulo.")
     parser.add_argument(
@@ -156,8 +166,11 @@ def main(argv=None):
         session_context_path=str(context_path),
         source_candidate_ids=list(args.source_candidate_id or []),
         translation_provider=args.translation_provider,
+        output_format=args.output_format,
         local_manifest_path=str(getattr(args, "local_manifest_path", "") or ""),
         job_run_id=str(os.getenv("TRADUTOR_JOB_RUN_ID", "") or ""),
+        job_id=str(os.getenv("TRADUTOR_JOB_ID", "") or ""),
+        resume_checkpoint=str(os.getenv("TRADUTOR_RESUME_CHECKPOINT", "") or "") == "1",
     )
     print(
         f"PIPELINE_CONFIG_READY force={bool(benchmark_args.force)} "
@@ -177,7 +190,7 @@ def main(argv=None):
 
     report = _run_benchmark(benchmark_args)
     print(
-        f"PIPELINE_MAIN_RESULT status={'success' if report.get('pdf_path') else 'failed'} "
+        f"PIPELINE_MAIN_RESULT status={'success' if (report.get('pdf_path') or report.get('png_path')) else 'failed'} "
         f"report_type={type(report).__name__}", flush=True,
     )
     pdf_path = Path(report.get("pdf_path") or "")
@@ -188,7 +201,7 @@ def main(argv=None):
     from ui_helpers import derive_final_run_status
 
     final_status = derive_final_run_status(
-        technical_success=bool(report.get("pdf_path")),
+        technical_success=bool(report.get("pdf_path") or report.get("png_path")),
         quality_validation=report.get("quality_validation") or {},
     )
     if final_status == "review_required":
@@ -196,6 +209,8 @@ def main(argv=None):
     else:
         print("\nExecucao concluida")
     print(f"PDF: {pdf_path if pdf_path else 'nao gerado'}")
+    if report.get("png_path"):
+        print(f"PNG: {report['png_path']}")
     if context_path.exists():
         print(f"Contexto: {context_path}")
     print(f"Relatorio: {report.get('timing_report_txt')}")
@@ -211,41 +226,84 @@ def _run_download_only(args, output_folder):
 
     from down import download_images
 
-    input_folder = output_folder / "input"
-    output_folder.mkdir(parents=True, exist_ok=True)
+    output_folder = Path(output_folder).resolve()
+    output_folder.parent.mkdir(parents=True, exist_ok=True)
+    if output_folder.exists() and any(output_folder.iterdir()) and not bool(args.force):
+        raise RuntimeError("download_output_collision")
+    staging = Path(tempfile.mkdtemp(
+        prefix=f".{output_folder.name}.yomu-download-tmp-", dir=str(output_folder.parent)))
+    input_folder = staging / "input"
+    cancel_event = threading.Event()
+    cancel_file = Path(str(os.getenv("TRADUTOR_CANCEL_FILE") or ""))
+    cancel_ack = Path(str(os.getenv("TRADUTOR_CANCEL_ACK_FILE") or ""))
+    stop_watcher = threading.Event()
+
+    def watch_cancel():
+        while not stop_watcher.wait(0.1):
+            if cancel_file and cancel_file.is_file():
+                cancel_event.set()
+                try:
+                    cancel_ack.write_text("download_only_cancel_observed\n", encoding="utf-8")
+                except OSError:
+                    pass
+                return
+
+    watcher = threading.Thread(target=watch_cancel, name="download-only-cancel", daemon=True)
+    watcher.start()
     max_images = args.max_images
     print(f"Download-only: {sanitize_source_url(args.url)}")
     print(f"Escopo: {'capitulo completo' if max_images is None else f'{max_images} imagens'}")
     print(f"Saida: {output_folder}")
-    image_paths = download_images(
-        args.url,
-        max_images=max_images,
-        debug_folder=str(output_folder),
-        target_folder=str(input_folder),
-        force=bool(args.force),
-        approved_candidate_ids=list(args.source_candidate_id or []),
-        progress_callback=lambda current, total, message: print(
-            f"{message}: {current}/{total}",
-            flush=True,
-        ),
-    )
-    report_path = output_folder / "downloaded_images.json"
-    with report_path.open("r", encoding="utf-8") as file:
-        report = json.load(file)
-    gate = report.get("download_gate") or {}
-    print(f"Imagens validas: {len(image_paths)}")
-    print(f"Download gate: {'aprovado' if gate.get('passed') else 'reprovado'}")
-    print(f"Relatorio JSON: {output_folder / 'download_report.json'}")
-    print(f"Relatorio HTML: {output_folder / 'download_report.html'}")
-    print(f"Downloaded images: {report_path}")
-    print(f"Contact sheet: {output_folder / 'download_contact_sheet.jpg'}")
-    if args.open_output:
-        _open_folder(output_folder)
-    if not gate.get("passed"):
-        raise RuntimeError(
-            "Download gate reprovado: " + ", ".join(gate.get("reasons") or [])
+    try:
+        image_paths = download_images(
+            args.url,
+            max_images=max_images,
+            debug_folder=str(staging),
+            target_folder=str(input_folder),
+            force=bool(args.force),
+            approved_candidate_ids=list(args.source_candidate_id or []),
+            cancel_event=cancel_event,
+            preserve_original=True,
+            progress_callback=lambda current, total, message: print(
+                f"{message}: {current}/{total}", flush=True,
+            ),
         )
-    return report
+        report_path = staging / "downloaded_images.json"
+        with report_path.open("r", encoding="utf-8") as file:
+            report = json.load(file)
+        gate = report.get("download_gate") or {}
+        if cancel_event.is_set():
+            raise RuntimeError("download_cancelled")
+        if not gate.get("passed"):
+            raise RuntimeError(
+                "Download gate reprovado: " + ", ".join(gate.get("reasons") or [])
+            )
+        if output_folder.exists():
+            if not bool(args.force):
+                raise RuntimeError("download_output_collision")
+            shutil.rmtree(output_folder)
+        staging.rename(output_folder)
+        for item in report.get("downloaded") or []:
+            if isinstance(item, dict) and item.get("path"):
+                item["path"] = str(item["path"]).replace(str(staging), str(output_folder))
+        report["target_folder"] = str(output_folder / "input")
+        report["result_type"] = "directory"
+        report["result_path"] = str(output_folder)
+        for name in ("downloaded_images.json", "download_report.json"):
+            (output_folder / name).write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path = output_folder / "downloaded_images.json"
+        print(f"Imagens validas: {len(image_paths)}")
+        print("Download gate: aprovado")
+        print(f"Resultado diretorio: {output_folder}")
+        if args.open_output:
+            _open_folder(output_folder)
+        return report
+    finally:
+        stop_watcher.set()
+        watcher.join(timeout=1)
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _run_local_download_only(args, output_folder):
@@ -403,10 +461,20 @@ def _is_reparse_point(path):
 
 
 def _resolve_local_output_folder(value, snapshot_ref):
-    """Keep local snapshots' materialised pages under the repository output root."""
+    """Resolve local output under the runtime-owned output root.
 
-    test_root = str(os.getenv("TRADUTOR_TEST_RUNTIME_ROOT") or "").strip() if os.getenv("YOMU_CANCEL_TEST_MARKER_DIR") else ""
-    root = ((Path(test_root) / "output") if test_root else (REPO_ROOT / "output")).resolve()
+    Frozen workers receive the authoritative absolute ``job["output_dir"]``.  The
+    root is still owned by the runtime, so accepting that absolute path does not
+    make ``--output`` an arbitrary filesystem write target.
+    """
+
+    from runtime_paths import output_root
+
+    # Use the same authoritative runtime output root as local snapshot validation.  Test
+    # isolation is already applied by runtime_paths.output_root(); maintaining a separate
+    # marker-specific root here made valid local jobs resolve to ``<test>/output`` while the
+    # intake validator correctly allowed only ``<test>/user_data/output``.
+    root = output_root().resolve()
     if not value:
         suffix = re.sub(r"[^A-Za-z0-9_-]+", "", str(snapshot_ref or ""))[:24]
         candidate = root / f"local_chapter_{suffix or 'run'}"

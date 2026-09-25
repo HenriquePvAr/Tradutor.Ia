@@ -110,6 +110,8 @@ class SourcePreflightResult:
     security_blocked: bool
     transport_error: str
     elapsed_ms: int
+    retry_count: int
+    classification: str
     policy_hash: str
     navigation_url: str
 
@@ -158,7 +160,8 @@ def _preflight_result(adapter, url: str, *, status: str, reason_code: str,
                       access_restricted: bool = False,
                       captcha_detected: bool = False,
                       security_blocked: bool = False,
-                      transport_error: str = "") -> SourcePreflightResult:
+                      transport_error: str = "", retry_count: int = 0,
+                      classification: str = "") -> SourcePreflightResult:
     normalized = str(url or "")
     return SourcePreflightResult(
         schema_version=1,
@@ -182,6 +185,8 @@ def _preflight_result(adapter, url: str, *, status: str, reason_code: str,
         security_blocked=security_blocked,
         transport_error=transport_error,
         elapsed_ms=max(0, int((time.perf_counter() - started) * 1000)),
+        retry_count=max(0, int(retry_count)),
+        classification=classification or status,
         policy_hash=_preflight_policy_hash(adapter),
         navigation_url=normalized,
     )
@@ -524,6 +529,7 @@ def inspect_source_preflight(adapter, url: str, *, limits: DownloadLimits | None
     current = str(url or "")
     started = time.perf_counter()
     redirect_count = 0
+    retry_count = 0
     try:
         for _ in range(limits.max_redirects + 1):
             adapter.validate_navigation_url(current)
@@ -574,8 +580,9 @@ def inspect_source_preflight(adapter, url: str, *, limits: DownloadLimits | None
                     # Retry only statuses whose semantics are explicitly transient.  The
                     # response is closed before the next bounded attempt; conclusive client
                     # errors (including 401/403/404) remain single-shot and fail closed.
-                    if (int(response.status_code) in {429, 500, 502, 503, 504}
+                    if (int(response.status_code) in {429, 500, 502, 503, 504, 522}
                             and attempt + 1 < preflight_attempts):
+                        retry_count += 1
                         response.close()
                         response = None
                         continue
@@ -658,13 +665,20 @@ def inspect_source_preflight(adapter, url: str, *, limits: DownloadLimits | None
                         adapter, current, status="source_unavailable",
                         reason_code=SOURCE_RATE_LIMITED, started=started,
                         http_status=status, content_type=content_type,
-                        redirect_count=redirect_count)
+                        redirect_count=redirect_count, retry_count=retry_count)
                 if status >= 400:
+                    classification = (
+                        "transient_browser_fallback"
+                        if status == 522 and browser_capable
+                        and getattr(adapter, "name", "") == "comix"
+                        else "source_unavailable"
+                    )
                     return _preflight_result(
                         adapter, current, status="source_unavailable",
                         reason_code="source_unavailable", started=started,
                         http_status=status, content_type=content_type,
-                        redirect_count=redirect_count)
+                        redirect_count=redirect_count, retry_count=retry_count,
+                        classification=classification)
                 if content_type and content_type not in {
                     "text/html", "application/xhtml+xml"
                 }:

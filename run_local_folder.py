@@ -13,6 +13,8 @@ import re
 import sys
 from pathlib import Path
 
+from ui_helpers import TRANSLATION_PROVIDERS, INTERNAL_TRANSLATION_PROVIDERS, normalize_translation_provider
+
 
 _SNAPSHOT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$")
 
@@ -27,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Referencia opaca de um snapshot local criado pelo aplicativo.",
     )
     parser.add_argument("--output", required=True, help="Pasta dentro de output/.")
+    parser.add_argument("--output-format", choices=("pdf", "png", "psd"), default="pdf")
     parser.add_argument("--mode", choices=("fast", "quality"), default="fast")
     cache_group = parser.add_mutually_exclusive_group()
     cache_group.add_argument("--cache", action="store_true")
@@ -37,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--open-output", action="store_true")
     parser.add_argument("--max-images", type=int)
     parser.add_argument("--download-only", action="store_true")
+    parser.add_argument(
+        "--translation-provider",
+        choices=tuple(sorted(TRANSLATION_PROVIDERS | INTERNAL_TRANSLATION_PROVIDERS)),
+        help="Provider de traducao exigido para esta execucao.",
+    )
     # The manifest is authoritative.  This flag is retained only for the existing job-command
     # contract and cannot turn off logical-page handling.
     parser.add_argument("--logical-pages", action="store_true", help=argparse.SUPPRESS)
@@ -94,6 +102,7 @@ def main(argv=None) -> int:
         "--input-manifest", str(manifest),
         "--output", str(args.output),
         "--mode", str(args.mode),
+        "--output-format", str(args.output_format),
     ]
     if args.force:
         delegated.append("--force")
@@ -111,6 +120,8 @@ def main(argv=None) -> int:
         delegated.append("--delete-context-after")
     if args.open_output:
         delegated.append("--open-output")
+    if args.translation_provider:
+        delegated.extend(["--translation-provider", normalize_translation_provider(args.translation_provider)])
 
     # Import only after the opaque-reference gate.  ``run_webtoon`` validates the exact
     # manifest layout, source fingerprint and output root a second time before invoking the

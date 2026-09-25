@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import socket
+import html as _html
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -701,6 +702,288 @@ class WebtoonsAdapter(BaseAdapter):
 WEBTOONS = WebtoonsAdapter()
 
 
+_COMIX_HOSTS = ("comix.to", "www.comix.to")
+_COMIX_CHAPTER_PATH = re.compile(
+    r"^/title/[a-z0-9][a-z0-9-]*/[0-9]+-chapter-[a-z0-9][a-z0-9-]*/?$",
+    re.IGNORECASE,
+)
+_COMIX_SERIES_PATH = re.compile(
+    r"^/title/[a-z0-9][a-z0-9-]*/?$", re.IGNORECASE)
+
+
+def _comix_initial_data(html: str) -> dict[str, Any]:
+    """Read only the small, server-rendered Comix bootstrap JSON."""
+    match = re.search(
+        r'<script[^>]+id=["\']initial-data["\'][^>]*>(.*?)</script>',
+        str(html or ""), re.IGNORECASE | re.DOTALL)
+    if not match:
+        return {}
+    try:
+        value = json.loads(_html.unescape(match.group(1)))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _comix_chapter_id(value: dict[str, Any]) -> str:
+    read = value.get("read") if isinstance(value, dict) else None
+    chapter_id = read.get("chapterId") if isinstance(read, dict) else ""
+    return str(chapter_id or "").strip()
+
+
+def _comix_page_items(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    """Return the API base URL and items without reordering an explicit source order."""
+    pages = payload.get("pages") if isinstance(payload, dict) else None
+    if not isinstance(pages, dict):
+        return "", []
+    base_url = str(pages.get("baseUrl") or "").strip()
+    items = pages.get("items")
+    if not isinstance(items, list):
+        return base_url, []
+    # The API's array order is the reader order.  If an explicit page/index field exists,
+    # use it; never sort URL strings (1, 10, 2 is a real failure mode).
+    indexed: list[tuple[int, int, dict[str, Any]]] = []
+    for position, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        raw_order = item.get("page_number", item.get("index", item.get("position", position)))
+        try:
+            order = int(raw_order)
+        except (TypeError, ValueError):
+            order = position
+        indexed.append((order, position, item))
+    if any(item.get("page_number") is not None or item.get("index") is not None
+           or item.get("position") is not None for _, _, item in indexed):
+        indexed.sort(key=lambda entry: (entry[0], entry[1]))
+    return base_url, [item for _, _, item in indexed]
+
+
+class ComixAdapter(BaseAdapter):
+    """Comix.to reader adapter; page discovery is scoped to the public reader API."""
+
+    adapter_version = "1"
+
+    def __init__(self):
+        super().__init__(
+            name="comix", adapter_version="1", allowed_hosts=_COMIX_HOSTS,
+            resource_hosts=(), runner="run_webtoon.py",
+            chapter_path_markers=("/title/",),
+            container_selector="[data-comix-reader], .reader, #reader",
+            image_selector="img[data-reader-page-image], img[data-page], img",
+            coverage_strategy="reader_container", collection_strategy="adapter_specific",
+        )
+        self._observed_resource_hosts: set[str] = set()
+        self._authorized_resource_hosts: set[str] = set()
+
+    @staticmethod
+    def _root_host(url: str) -> bool:
+        return raw_host_of(url) in _COMIX_HOSTS
+
+    def supports(self, url: str) -> bool:
+        return self._root_host(url)
+
+    def classify_url(self, url: str) -> str:
+        if not self._root_host(url):
+            return "UNKNOWN"
+        path = urlparse(str(url or "")).path or "/"
+        if _COMIX_CHAPTER_PATH.fullmatch(path):
+            return "CHAPTER"
+        if _COMIX_SERIES_PATH.fullmatch(path):
+            return "SERIES"
+        return "UNKNOWN"
+
+    def extract_metadata(self, html: str, *, payload: dict[str, Any] | None = None,
+                         url: str = "") -> dict[str, Any]:
+        """Return only stable public chapter metadata; decorative fields are optional."""
+        bootstrap = _comix_initial_data(html)
+        read = bootstrap.get("read") if isinstance(bootstrap, dict) else {}
+        queries = bootstrap.get("queries") if isinstance(bootstrap, dict) else {}
+        detail: dict[str, Any] = {}
+        if isinstance(queries, dict):
+            for key, value in queries.items():
+                if isinstance(key, str) and "manga" in key and "detail" in key and isinstance(value, dict):
+                    detail = value
+                    break
+        chapter_payload = payload if isinstance(payload, dict) else {}
+        chapter = chapter_payload.get("chapter") if isinstance(chapter_payload.get("chapter"), dict) else {}
+        result = {
+            "source_site": "comix.to",
+            "work_title": str(detail.get("title") or chapter.get("mangaTitle") or ""),
+            "chapter_title": str(chapter.get("title") or ""),
+            "chapter_number": chapter.get("number", read.get("chapterNumber") if isinstance(read, dict) else ""),
+            "chapter_id": str((read or {}).get("chapterId") or chapter_payload.get("id") or ""),
+            "canonical_url": self.normalize_url(url) if url else "",
+        }
+        base_url, items = _comix_page_items(chapter_payload)
+        result["page_count"] = len(items)
+        result["image_base_url"] = base_url
+        return result
+
+    def extract_ordered_pages(self, payload: dict[str, Any], *, page_url: str = "") -> list[dict[str, Any]]:
+        """Normalize API items in reader order without lexicographic URL sorting."""
+        base_url, items = _comix_page_items(payload)
+        pages: list[dict[str, Any]] = []
+        for index, item in enumerate(items):
+            raw = str(item.get("url") or item.get("src") or "").strip()
+            if not raw:
+                continue
+            pages.append({"index": index, "url": urljoin(base_url or page_url, raw),
+                          "headers_required": [], "mime_hint": str(item.get("mime") or "")})
+        return pages
+
+    def normalize_url(self, url: str) -> str:
+        parsed = urlparse(str(url or "").strip())
+        return urlunparse(((parsed.scheme or "https").lower(),
+                           (parsed.netloc or "").lower(), parsed.path.rstrip("/") or "/",
+                           parsed.params, parsed.query, ""))
+
+    def validate_navigation_url(self, url: str) -> None:
+        self._validate_public_url(url)
+        if not self._root_host(url):
+            raise UnsupportedSource(raw_host_of(url))
+
+    def validate_path(self, url: str) -> None:
+        kind = self.classify_url(url)
+        if kind == "SERIES":
+            raise SourceError(UNSUPPORTED_SOURCE, "series_url_requires_chapter")
+        if kind != "CHAPTER":
+            raise SourceError(UNSUPPORTED_SOURCE, "not_a_chapter_url")
+
+    def validate_url(self, url: str) -> None:
+        self._validate_public_url(url)
+        host = raw_host_of(url)
+        if host in _COMIX_HOSTS or host in self._authorized_resource_hosts:
+            return
+        raise UnsupportedSource(host)
+
+    def validate_observed_url(self, url: str) -> None:
+        self._validate_public_url(url)
+        host = raw_host_of(url)
+        if host in _COMIX_HOSTS:
+            return
+        if len(self._observed_resource_hosts) >= MAX_OBSERVED_RESOURCE_HOSTS:
+            raise SourceError(UNSUPPORTED_SOURCE, "too_many_resource_hosts")
+        self._observed_resource_hosts.add(host)
+
+    def authorize_related_url(self, url: str) -> None:
+        self.validate_observed_url(url)
+        self._authorized_resource_hosts.add(raw_host_of(url))
+
+    def collect_dom_candidates_from_html(self, html: str, page_url: str
+                                          ) -> list[dict[str, Any]] | None:
+        data = _comix_initial_data(html)
+        # Sanitized fixtures may carry the API response as a second bootstrap key.  The
+        # production page normally needs the reader's same-origin fetch instead.
+        payload = data.get("chapterPayload") or data.get("chapter") or data
+        base_url, items = _comix_page_items(payload if isinstance(payload, dict) else {})
+        if not items:
+            return None
+        out: list[dict[str, Any]] = []
+        for order, item in enumerate(items):
+            raw_url = str(item.get("url") or item.get("src") or "").strip()
+            if not raw_url:
+                continue
+            out.append({
+                "url": urljoin(base_url or page_url, raw_url), "source": "comix_api",
+                "order": order, "y": order, "width": int(item.get("width") or 1000),
+                "height": int(item.get("height") or 1400),
+                "naturalWidth": int(item.get("width") or 1000),
+                "naturalHeight": int(item.get("height") or 1400),
+                "container": "comix-reader", "context": "reader", "visible": True,
+            })
+        return out or None
+
+    def collect_reader_payload(self, browser: Any, page_url: str) -> dict[str, Any]:
+        """Use the reader's own same-origin API; no cookies/tokens leave the browser."""
+        script = """
+        const done = arguments[arguments.length - 1];
+        try {
+          const el = document.getElementById('initial-data');
+          const data = el ? JSON.parse(el.textContent || '{}') : {};
+          const chapterId = data?.read?.chapterId;
+          if (!chapterId) return done({ok:false, reason:'chapter_id_missing'});
+          fetch('/api/v1/chapters/' + encodeURIComponent(String(chapterId)), {
+            credentials:'include', headers:{'Accept':'application/json','X-Requested-With':'XMLHttpRequest'}
+          }).then(async response => done({ok:response.ok, status:response.status, payload: response.ok ? await response.json() : {}}))
+            .catch(() => done({ok:false, reason:'reader_api_unavailable'}));
+        } catch (_) { done({ok:false, reason:'reader_bootstrap_invalid'}); }
+        """
+        try:
+            result = browser.execute_async_script(script) or {}
+        except Exception as exc:
+            raise SourceError(SOURCE_NOT_READY, "reader_api") from exc
+        if not result.get("ok"):
+            status = int(result.get("status") or 0)
+            raise SourceError(
+                SOURCE_ACCESS_DENIED if status in {401, 403} else SOURCE_NOT_READY,
+                f"reader_api_status_{status}" if status else "reader_api_access",
+            )
+        base_url, items = _comix_page_items(result.get("payload") or {})
+        if not items:
+            raise SourceError(NO_CHAPTER_IMAGES, "empty_page_list")
+        candidates: list[dict[str, Any]] = []
+        for order, item in enumerate(items):
+            raw_url = str(item.get("url") or "").strip()
+            if not raw_url:
+                continue
+            candidate_url = urljoin(base_url or page_url, raw_url)
+            candidates.append({"url": candidate_url, "source": "comix_api", "order": order,
+                               "y": order, "width": int(item.get("width") or 1000),
+                               "height": int(item.get("height") or 1400),
+                               "naturalWidth": int(item.get("width") or 1000),
+                               "naturalHeight": int(item.get("height") or 1400),
+                               "container": "comix-reader", "context": "reader", "visible": True})
+        if not candidates:
+            raise SourceError(NO_CHAPTER_IMAGES, "empty_page_list")
+        return {"page_url": page_url, "collector": "comix_api", "dom_candidates": candidates,
+                "reader_slots": [], "slot_counts": {}, "network_candidates": [],
+                "json_candidates": [], "warnings": []}
+
+    def collect_reader_payload_from_page(self, page: Any, page_url: str) -> dict[str, Any]:
+        """Read the same public chapter payload from a Playwright reader page.
+
+        The dynamic resolver uses a Playwright page rather than Selenium.  Reusing the
+        reader's own same-origin request avoids treating the three currently mounted DOM
+        images as the chapter boundary.  No cookies, response bodies, or credentials leave
+        the page context.
+        """
+        script = """
+        async () => {
+          try {
+            const el = document.getElementById('initial-data');
+            const data = el ? JSON.parse(el.textContent || '{}') : {};
+            const chapterId = data?.read?.chapterId;
+            if (!chapterId) return {ok:false, status:0, reason:'chapter_id_missing'};
+            const response = await fetch('/api/v1/chapters/' + encodeURIComponent(String(chapterId)), {
+              credentials:'include',
+              headers:{'Accept':'application/json','X-Requested-With':'XMLHttpRequest'}
+            });
+            return {
+              ok: response.ok,
+              status: response.status,
+              payload: response.ok ? await response.json() : {}
+            };
+          } catch (_) {
+            return {ok:false, status:0, reason:'reader_api_unavailable'};
+          }
+        }
+        """
+        try:
+            result = page.evaluate(script)
+        except Exception as exc:
+            raise SourceError(SOURCE_NOT_READY, "reader_api") from exc
+        if not isinstance(result, dict) or not result.get("ok"):
+            status = int((result or {}).get("status") or 0) if isinstance(result, dict) else 0
+            raise SourceError(
+                SOURCE_ACCESS_DENIED if status in {401, 403} else SOURCE_NOT_READY,
+                f"reader_api_status_{status}" if status else "reader_api_access",
+            )
+        return result
+
+
+COMIX = ComixAdapter()
+
+
 class GenericImageChapterAdapter(BaseAdapter):
     """Template for a site whose reader is plain lazy-loaded images.
 
@@ -1013,7 +1296,9 @@ class UniversalChapterAdapter(BaseAdapter):
 
 # Registry order is resolution order. Specific adapters always win over the fallback.
 VORTEXSCANS = VortexScansAdapter()
-ADAPTERS: tuple[BaseAdapter, ...] = (WEBTOONS, VORTEXSCANS)
+# Specific adapters are ordered before the universal fallback.  Keep Comix isolated so
+# existing sources retain their exact routing and resource policies.
+ADAPTERS: tuple[BaseAdapter, ...] = (WEBTOONS, VORTEXSCANS, COMIX)
 
 
 def select_adapter(url: str) -> BaseAdapter:
@@ -1023,6 +1308,8 @@ def select_adapter(url: str) -> BaseAdapter:
             # cross-job host authority without changing the stable registry/prototype API.
             if isinstance(adapter, VortexScansAdapter):
                 return VortexScansAdapter()
+            if isinstance(adapter, ComixAdapter):
+                return ComixAdapter()
             return adapter
     return UniversalChapterAdapter(url)
 

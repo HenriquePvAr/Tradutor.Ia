@@ -91,6 +91,7 @@ def download_images(
     approved_candidate_ids=None,
     cancel_event=None,
     parallel_diagnostics=None,
+    preserve_original=False,
 ):
     from chapter_source import SourceError, select_adapter
     from http_source_discovery import discover_via_http
@@ -180,10 +181,31 @@ def download_images(
         http_analysis = discover_via_http(adapter, url)
         pagination_diagnostics = _pagination_diagnostic("not_applicable")
         source_warnings = ()
+        dynamic_analysis = None
+        if http_analysis is None and getattr(adapter, "name", "") == "comix":
+            try:
+                from scrapling_reader_resolver import DynamicReaderError, resolve as resolve_dynamic
+                dynamic_analysis = resolve_dynamic(url, adapter=adapter)
+            except Exception as exc:
+                # Optional selected fallback; the established Selenium path remains the
+                # controlled fallback when Scrapling is absent or unavailable.  Record a
+                # sanitised diagnostic instead of swallowing silently — a first-attempt
+                # failure is why the legacy reader-API path runs below, and its reader_api
+                # 401/403 must re-trigger this browser resolver rather than fail terminal.
+                dynamic_analysis = None
+                report["dynamic_resolver_first_attempt"] = {
+                    "failed": True,
+                    "error": type(exc).__name__,
+                    "code": str(getattr(exc, "code", "") or ""),
+                }
         if http_analysis is not None:
             current_url = url
             source_analysis = http_analysis
             report["collection_strategy"] = "http_static_html"
+        elif dynamic_analysis is not None:
+            current_url = url
+            source_analysis = dynamic_analysis
+            report["collection_strategy"] = "scrapling_selected_dynamic_dom"
         else:
             # Selenium would otherwise follow the chain before exposing ``current_url``. Resolve
             # and validate every top-level redirect with a bounded, cookie-free request first.
@@ -225,29 +247,53 @@ def download_images(
             # contract.  This prevents an older DOM-only shortcut from bypassing coverage limits,
             # network/JSON evidence, candidate IDs or the accepted-reader manifest.
             source_warnings = _scroll_coverage_warnings(scroll_diagnostics, adapter)
-            source_analysis = adapter.analyze(
-                {
-                    "driver": driver,
-                    "page_url": current_url,
-                    "lazy_slot_resolver": _webtoons_lazy_resolver(
-                        cancel_check=None,
-                        on_progress=None,
-                    ),
-                },
-                profile=_load_source_profile(current_url, adapter),
-                extra_warnings=source_warnings)
-            source_analysis, pagination_diagnostics = _maybe_collect_paginated_reader(
-                driver,
-                adapter,
-                source_analysis,
-                page_url=current_url,
-                profile=_load_source_profile(current_url, adapter),
-            )
-            if pagination_diagnostics.get("followed_pages"):
-                # BrowserSessionTransport must retain the browser's final same-origin reader
-                # context.  It is never persisted; reports expose only the safe counters above.
-                current_url = str(getattr(driver, "current_url", "") or current_url)
-                report["collection_strategy"] = "adapter_accepted_paginated_manifest"
+            try:
+                source_analysis = adapter.analyze(
+                    {
+                        "driver": driver,
+                        "page_url": current_url,
+                        "lazy_slot_resolver": _webtoons_lazy_resolver(
+                            cancel_check=None,
+                            on_progress=None,
+                        ),
+                    },
+                    profile=_load_source_profile(current_url, adapter),
+                    extra_warnings=source_warnings)
+                source_analysis, pagination_diagnostics = _maybe_collect_paginated_reader(
+                    driver,
+                    adapter,
+                    source_analysis,
+                    page_url=current_url,
+                    profile=_load_source_profile(current_url, adapter),
+                )
+                if pagination_diagnostics.get("followed_pages"):
+                    # BrowserSessionTransport must retain the browser's final same-origin reader
+                    # context.  It is never persisted; reports expose only the safe counters above.
+                    current_url = str(getattr(driver, "current_url", "") or current_url)
+                    report["collection_strategy"] = "adapter_accepted_paginated_manifest"
+            except SourceError as legacy_exc:
+                # A Comix reader-API 401/403 is NOT a hard denial: the supported dynamic
+                # browser resolver materialises the chapter from the DOM/response body/canvas
+                # without that JSON API, and a normal browser can still open the reader.  Give
+                # the browser resolver one bounded retry before failing closed.  Any other
+                # legacy failure (or a non-Comix adapter) stays terminal as before.
+                if not (getattr(adapter, "name", "") == "comix"
+                        and str(getattr(legacy_exc, "code", "") or "") == "source_access_denied"):
+                    raise
+                report["dynamic_resolver_403_fallback_attempted"] = True
+                retry_analysis = None
+                try:
+                    from scrapling_reader_resolver import resolve as resolve_dynamic
+                    retry_analysis = resolve_dynamic(url, adapter=adapter)
+                except Exception as retry_exc:  # noqa: BLE001 - fall back to the terminal denial
+                    report["dynamic_resolver_403_fallback_error"] = type(retry_exc).__name__
+                    retry_analysis = None
+                if retry_analysis is None:
+                    raise
+                source_analysis = retry_analysis
+                current_url = url
+                report["collection_strategy"] = "scrapling_selected_dynamic_dom"
+                report["dynamic_resolver_403_fallback"] = True
         report["pagination"] = pagination_diagnostics
         report["source_analysis"] = _public_source_analysis(source_analysis)
         report["source_outcome"] = _safe_report_metadata(
@@ -318,6 +364,7 @@ def download_images(
             transports=transports,
             cancel_event=cancel_event,
             parallel_diagnostics=parallel_diagnostics,
+            preserve_original=bool(preserve_original),
         )
         report["download_diagnostics"] = dict(parallel_diagnostics)
         if not report.get("download_valid"):
@@ -371,6 +418,15 @@ def _resolve_canonical_source(adapter, normalized_url):
     return resolver(normalized_url) if callable(resolver) else None
 
 
+def _load_dynamic_reader_resolver():
+    """Return the optional resolver contract without ever leaving an unbound exception name."""
+    try:
+        from scrapling_reader_resolver import DynamicReaderError, resolve
+    except Exception as exc:  # optional packaged capability; keep the cause sanitized
+        return None, None, exc
+    return DynamicReaderError, resolve, None
+
+
 def discover_chapter_source(url, *, cancel_check=None, on_progress=None):
     """Discover a chapter's pages the cheapest way that can prove it saw the whole reader.
 
@@ -401,8 +457,49 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None):
             http_analysis.canonical_identity = canonical_identity.public()
         return http_analysis
     # HTTP discovery does not apply to this source, or was inconclusive: same seam, same URL,
-    # falls back to the existing browser-based analysis.
-    return analyze_chapter_source(url, cancel_check=cancel_check, on_progress=on_progress)
+    # falls back to the existing browser-based analysis. A registered Comix reader may continue
+    # through its bounded dynamic fallback after the preflight proves the requests path is
+    # inconclusive (currently the explicit HTTP 522 case) or the reader API is 401/403.
+    try:
+        return analyze_chapter_source(url, cancel_check=cancel_check, on_progress=on_progress)
+    except SourceError as exc:
+        preflight_result = getattr(exc, "preflight_result", {}) or {}
+        is_comix_522 = (
+            getattr(adapter, "name", "") == "comix"
+            and getattr(exc, "code", "") == "source_unavailable"
+            and int(preflight_result.get("http_status") or 0) == 522
+        )
+        is_comix_reader_api_denied = (
+            getattr(adapter, "name", "") == "comix"
+            and getattr(exc, "code", "") == "source_access_denied"
+        )
+        if not (is_comix_522 or is_comix_reader_api_denied):
+            raise
+        dynamic_error_type, resolve_dynamic, import_error = _load_dynamic_reader_resolver()
+        if import_error is not None or not callable(resolve_dynamic) or dynamic_error_type is None:
+            detail = type(import_error).__name__ if import_error is not None else "resolver_contract"
+            failure = SourceError("dynamic_source_unavailable", detail)
+            failure.preflight_result = preflight_result
+            raise failure from import_error
+        try:
+            dynamic_analysis = resolve_dynamic(url, adapter=adapter, cancel_check=cancel_check)
+            if dynamic_analysis is not None:
+                return dynamic_analysis
+        except dynamic_error_type as dynamic_exc:
+            code = str(getattr(dynamic_exc, "code", "") or "")
+            if code in {"challenge_required", "login_required", "permission_required", "access_denied"}:
+                failure = SourceError("source_access_denied", f"dynamic_reader_{code}")
+            else:
+                failure = SourceError("dynamic_source_unavailable", code or "dynamic_reader")
+            failure.preflight_result = preflight_result
+            raise failure from dynamic_exc
+        except Exception as dynamic_exc:
+            failure = SourceError("dynamic_source_unavailable", type(dynamic_exc).__name__)
+            failure.preflight_result = preflight_result
+            raise failure from dynamic_exc
+        failure = SourceError("dynamic_source_unavailable", "empty_analysis")
+        failure.preflight_result = preflight_result
+        raise failure from exc
 
 
 def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
@@ -1499,6 +1596,18 @@ def _accepted_candidate_to_download(candidate):
         "isChapterCandidate": True,
         "inContainer": bool(_accepted_value(candidate, "container", "")),
         "canvas_data": bytes(canvas_data) if has_canvas else b"",
+        "logical_page_index": _safe_nonnegative_int(
+            _accepted_value(candidate, "logical_index", 0)
+            or _accepted_value(candidate, "logical_page_index", 0)
+        ),
+        "materialization_method": _safe_report_metadata(
+            _accepted_value(candidate, "materialization_method", "")
+            or _accepted_value(candidate, "capture_method", ""), ""
+        ),
+        "render_kind": _safe_report_metadata(
+            _accepted_value(candidate, "render_kind", "")
+            or ("canvas" if has_canvas else "img"), ""
+        ),
     }
 
 
@@ -2253,6 +2362,7 @@ def _download_candidates(
     transports=None,
     cancel_event=None,
     parallel_diagnostics=None,
+    preserve_original=False,
 ):
     if isinstance(parallel_diagnostics, dict):
         parallel_diagnostics.setdefault("workers_configured", int(DOWNLOAD_WORKERS))
@@ -2286,7 +2396,7 @@ def _download_candidates(
     parallel_payloads = {}
     transport_names = {type(t).__name__ for t in (transports or [])}
     http_only = bool(transports) and not (transport_names & {"BrowserSessionTransport", "SeleniumTransport"})
-    has_existing_slots = any(
+    has_existing_slots = (not preserve_original) and any(
         os.path.isfile(os.path.join(target_folder, f"{slot:03}.png"))
         for slot in range(1, min(len(candidates), int(max_images or len(candidates))) + 1)
     )
@@ -2361,7 +2471,10 @@ def _download_candidates(
             continue
 
         existing_path = os.path.join(target_folder, f"{len(saved) + 1:03}.png")
-        existing_item = _existing_download_item(existing_path, candidate, url)
+        existing_item = (
+            _existing_download_item(existing_path, candidate, url)
+            if not preserve_original else None
+        )
         if existing_item:
             if isinstance(parallel_diagnostics, dict):
                 parallel_diagnostics["cache_hits"] = int(parallel_diagnostics.get("cache_hits") or 0) + 1
@@ -2449,9 +2562,25 @@ def _download_candidates(
             content_hashes.add(digest)
             content_candidate_ids[digest] = candidate_id
 
-        file_path = os.path.join(target_folder, f"{len(saved) + 1:03}.png")
+        extension = ".png"
+        if preserve_original:
+            try:
+                source_format = Image.open(io.BytesIO(data)).format or "PNG"
+            except Exception:
+                source_format = "PNG"
+            extension = {
+                "JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp",
+                "AVIF": ".avif", "GIF": ".gif", "BMP": ".bmp",
+            }.get(str(source_format).upper(), ".bin")
+        file_path = os.path.join(target_folder, f"{len(saved) + 1:03}{extension}")
         save_started = time.perf_counter()
-        image.save(file_path, "PNG")
+        if preserve_original:
+            with open(file_path, "wb") as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+        else:
+            image.save(file_path, "PNG")
         image.close()
         report["timings"]["image_save_seconds"] += time.perf_counter() - save_started
 
@@ -2466,6 +2595,13 @@ def _download_candidates(
             "order": candidate.get("order"),
             "sha256": digest,
             "is_chapter_candidate": bool(candidate.get("isChapterCandidate")),
+            "canonical": True,
+            "canonical_local_path": file_path,
+            "logical_index": _safe_nonnegative_int(candidate.get("logical_page_index")),
+            "materialization_method": _safe_report_metadata(
+                candidate.get("materialization_method"), ""
+            ),
+            "render_kind": _safe_report_metadata(candidate.get("render_kind"), ""),
         }
         if duplicate_of_candidate_id:
             item["duplicate_content_of_candidate_id"] = duplicate_of_candidate_id
@@ -2478,6 +2614,20 @@ def _download_candidates(
             progress_callback(len(saved), max_images or total, "Baixando imagens")
 
     report["total_ignored"] = len(report["ignored"])
+    # Parallel download completes pages out of order (data-URL canvas crops finish
+    # instantly and cluster ahead of the network-fetched images).  A chapter manifest,
+    # however, must be in logical reading order, so sort by the page's ``order`` field
+    # (the logical position) before the gate and before returning the saved paths.
+    if isinstance(report.get("downloaded"), list) and len(report["downloaded"]) > 1:
+        report["downloaded"].sort(
+            key=lambda it: (int(it.get("order") or 0), int(it.get("logical_index") or 0))
+            if isinstance(it, dict) else (0, 0)
+        )
+        ordered = [str(it.get("canonical_local_path") or it.get("path") or "")
+                   for it in report["downloaded"]
+                   if isinstance(it, dict) and (it.get("canonical_local_path") or it.get("path"))]
+        if len(ordered) == len(saved):
+            saved = ordered
     report["download_gate"] = _build_download_gate(report)
     report["download_valid"] = bool(report["download_gate"].get("passed"))
     return saved
@@ -2509,6 +2659,13 @@ def _existing_download_item(file_path, candidate, url):
         "sha256": digest,
         "is_chapter_candidate": bool(candidate.get("isChapterCandidate")),
         "reused_existing": True,
+        "canonical": True,
+        "canonical_local_path": file_path,
+        "logical_index": _safe_nonnegative_int(candidate.get("logical_page_index")),
+        "materialization_method": _safe_report_metadata(
+            candidate.get("materialization_method"), ""
+        ),
+        "render_kind": _safe_report_metadata(candidate.get("render_kind"), ""),
     }
 
 
@@ -2517,8 +2674,13 @@ def _candidate_skip_reason(candidate):
     if isinstance(canvas_data, (bytes, bytearray)) and canvas_data:
         return None
     url = (candidate.get("url") or "").lower()
+    # ``source`` is provenance, not page markup.  Dynamic Comix fallback candidates use
+    # values such as ``scrapling_reader_network``; feeding that provenance through the
+    # substring-based ad/interface filter makes the ``ad`` in ``reader`` look like an ad
+    # marker and drops valid logical pages before transport.  Only page-controlled markup
+    # fields belong in this heuristic.
     label = " ".join(
-        str(candidate.get(key) or "").lower() for key in ("className", "id", "alt", "source")
+        str(candidate.get(key) or "").lower() for key in ("className", "id", "alt")
     )
     width = max(
         int(candidate.get("width") or 0),
@@ -2895,6 +3057,89 @@ def _write_download_report(debug_folder, report):
 
 
 def _build_download_gate(report):
+    def logical_gate_metadata():
+        analysis = report.get("source_analysis") or {}
+        if not isinstance(analysis, dict):
+            analysis = {}
+        reader = analysis.get("reader_diagnostics") or {}
+        if not isinstance(reader, dict):
+            reader = {}
+        accepted = analysis.get("accepted") or []
+        accepted_by_id = {
+            str(item.get("id") or ""): int(item.get("logical_index") or 0)
+            for item in accepted if isinstance(item, dict) and item.get("id")
+        }
+        actual = []
+        for item in report.get("downloaded") or []:
+            if not isinstance(item, dict):
+                continue
+            logical = int(item.get("logical_index") or 0)
+            if not logical:
+                logical = accepted_by_id.get(str(item.get("candidate_id") or ""), 0)
+            if logical:
+                actual.append(logical)
+        actual = sorted(set(actual))
+        expected = int(reader.get("page_control_count") or 0)
+        if not expected:
+            expected = max(
+                [int(item.get("logical_index") or 0) for item in accepted
+                 if isinstance(item, dict)] or [0]
+            )
+        # A bounded/partial run (max_images, or a deliberate page subset) must be graded
+        # against the pages it was ASKED to fetch, not the whole canonical chapter -- else a
+        # 5-page test looks "incomplete" because pages 6..105 are legitimately absent.  A
+        # FULL run (selection == every accepted candidate, or no bound) still requires every
+        # canonical page, so an unaccepted/undownloaded page fails closed.
+        raw_selected = report.get("expected_chapter_candidate_ids")
+        selected_ids = [str(value or "") for value in raw_selected
+                        if str(value or "")] if isinstance(raw_selected, list) else []
+        requested_max = report.get("requested_max_images")
+        bounded_by_selection = bool(selected_ids) and len(set(selected_ids)) < len(accepted_by_id)
+        bounded_by_max = isinstance(requested_max, int) and 0 < requested_max < expected
+        if bounded_by_selection:
+            expected_logical = sorted(
+                {accepted_by_id.get(candidate_id, 0) for candidate_id in selected_ids} - {0})
+            missing = [index for index in expected_logical if index not in actual]
+            if expected_logical:
+                expected = len(expected_logical)
+        elif bounded_by_max:
+            expected = requested_max
+            missing = [index for index in range(1, expected + 1) if index not in actual]
+        else:
+            missing = [index for index in range(1, expected + 1) if index not in actual]
+        target_folder = Path(str((report.get("downloaded") or [{}])[0].get("path") or "")).parent
+        has_provenance = any(
+            isinstance(item, dict) and "canonical" in item
+            for item in (report.get("downloaded") or [])
+        )
+        canonical_paths = {
+            os.path.normcase(os.path.abspath(str(item.get("canonical_local_path") or item.get("path") or "")))
+            for item in (report.get("downloaded") or [])
+            if isinstance(item, dict) and item.get("canonical") is True
+        }
+        png_paths = set()
+        if has_provenance and target_folder.is_dir():
+            png_paths = {
+                os.path.normcase(os.path.abspath(str(path)))
+                for path in target_folder.glob("*.png")
+            }
+        unreferenced = sorted(png_paths - canonical_paths)
+        debug_artifacts = [
+            item for item in (report.get("downloaded") or [])
+            if has_provenance and (
+                not isinstance(item, dict) or item.get("canonical") is not True
+            )
+        ]
+        return {
+            "expected_logical_count": expected,
+            "actual_logical_count": len(actual),
+            "logical_indices": actual,
+            "missing_logical_indices": missing,
+            "unreferenced_png_count": len(unreferenced),
+            "debug_artifact_count": len(debug_artifacts),
+        }
+
+    logical = logical_gate_metadata()
     expected_candidate_ids = report.get("expected_chapter_candidate_ids")
     if isinstance(expected_candidate_ids, list):
         expected_ids = [str(value or "") for value in expected_candidate_ids if str(value or "")]
@@ -2915,6 +3160,12 @@ def _build_download_gate(report):
             reasons.append("viewer_images_missing")
         if len(chapter_downloaded) != len(expected_ids):
             reasons.append("viewer_count_mismatch")
+        if logical["expected_logical_count"] and logical["missing_logical_indices"]:
+            reasons.append("incomplete_logical_pages")
+        if logical["unreferenced_png_count"]:
+            reasons.append("unreferenced_png_included")
+        if logical["debug_artifact_count"]:
+            reasons.append("debug_artifact_included")
         orders = [int(item.get("order") or 0) for item in chapter_downloaded]
         if orders and orders != sorted(orders):
             reasons.append("chapter_order_not_monotonic")
@@ -2927,6 +3178,7 @@ def _build_download_gate(report):
             "missing_viewer_images": len(missing_ids),
             "missing_candidate_id_samples": missing_ids[:12],
             "order_monotonic": not orders or orders == sorted(orders),
+            **logical,
         }
     raw_expected = (
         report.get("expected_chapter_urls")
@@ -2947,6 +3199,12 @@ def _build_download_gate(report):
         reasons.append("viewer_images_missing")
     if expected_urls and len(chapter_downloaded) != len(expected_urls):
         reasons.append("viewer_count_mismatch")
+    if logical["expected_logical_count"] and logical["missing_logical_indices"]:
+        reasons.append("incomplete_logical_pages")
+    if logical["unreferenced_png_count"]:
+        reasons.append("unreferenced_png_included")
+    if logical["debug_artifact_count"]:
+        reasons.append("debug_artifact_included")
     orders = [int(item.get("order") or 0) for item in chapter_downloaded]
     if orders and orders != sorted(orders):
         reasons.append("chapter_order_not_monotonic")
@@ -2959,6 +3217,7 @@ def _build_download_gate(report):
         "missing_viewer_images": len(missing_urls),
         "missing_url_samples": missing_urls[:12],
         "order_monotonic": not orders or orders == sorted(orders),
+        **logical,
     }
 
 

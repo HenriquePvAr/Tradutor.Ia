@@ -32,7 +32,7 @@ from process_options import build_background_process_options
 from output_manifest import sanitize_source_url
 from beta_license import LicenseState
 from runner_start_gate import wait_for_start_gate
-from runtime_paths import runtime_root
+from runtime_paths import resolve_runtime_root_for_job, runtime_root
 from ui_helpers import (
     ProgressSnapshot,
     derive_final_run_status,
@@ -124,6 +124,7 @@ def _safe_provenance_score(value: object) -> float | None:
 def _fresh_source_provenance(
     download_report: object,
     source_analysis: object,
+    current_source_type: str = "",
 ) -> dict[str, object]:
     """Project a fresh, sanitized downloader diagnosis into indexed job fields."""
 
@@ -131,8 +132,10 @@ def _fresh_source_provenance(
     analysis = source_analysis if isinstance(source_analysis, dict) else {}
     fields: dict[str, object] = {}
     source_type = str(report.get("source_type") or "").strip()
-    if source_type in {"url", "local_folder"}:
-        fields["source_type"] = source_type
+    if source_type in {"url", "local_folder", "local_images"}:
+        # A local-images job intentionally converges through the local-folder manifest;
+        # retain its user-facing discriminator instead of erasing it at finalization.
+        fields["source_type"] = "local_images" if str(current_source_type or "") == "local_images" else source_type
     for field, value in (
         ("adapter_name", report.get("adapter_name") or analysis.get("adapter")),
         ("adapter_version", report.get("adapter_version") or analysis.get("adapter_version")),
@@ -256,7 +259,8 @@ def _safe_manifest_configuration(configuration: object) -> dict:
     allowed = {
         "job_type", "mode", "full", "max_images", "use_cache", "force",
         "use_context", "chapter_name", "open_output", "create_source_profile",
-        "translation_provider", "translation_request_id",
+        "translation_provider", "translation_request_id", "download_only",
+        "output_format",
     }
     safe = {key: configuration[key] for key in allowed if key in configuration}
     if "create_source_profile" in safe:
@@ -415,11 +419,12 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         # The FINAL argv, after every rebuild, is the only command that can execute. A job
         # that explicitly requested a provider never reaches the provider with a different
         # one — or with none, which silently selects the runtime default.
-        from ui_helpers import assert_command_provider
+        from ui_helpers import assert_command_output_format, assert_command_provider
 
         try:
             _append_pipeline_trace(job, "PIPELINE_IMPORT_BEGIN")
             assert_command_provider(command, job.get("configuration"))
+            assert_command_output_format(command, job.get("configuration"))
             _append_pipeline_trace(job, "PIPELINE_IMPORT_RESULT", status="success")
         except ValueError as exc:
             _append_pipeline_trace(job, "PIPELINE_IMPORT_RESULT", status="failed", reason_code=str(exc))
@@ -449,9 +454,27 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         env["PYTHONUNBUFFERED"] = "1"
         env["TRADUTOR_JOB_ID"] = str(job.get("id") or "")
         env["TRADUTOR_JOB_RUN_ID"] = str(job.get("run_id") or "")
+        configuration = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        # The runtime root owns auth/, jobs.sqlite3, logs/ and the secure auth
+        # envelope.  It is the process's explicit TRADUTOR_RUNTIME_ROOT (or the DB
+        # parent), NEVER derived from output_dir -- an output directory on a
+        # different root must not relocate the trusted auth state (that mismatch
+        # surfaced as auth_context_missing_or_corrupt).
+        runtime_root_for_job = resolve_runtime_root_for_job(
+            db_path, job.get("output_dir"))
+        env["TRADUTOR_RUNTIME_ROOT"] = str(runtime_root_for_job)
+        env["TRADUTOR_TEST_RUNTIME_ROOT"] = str(runtime_root_for_job)
+        env["TRADUTOR_CHECKPOINT_JOB_ID"] = str(
+            configuration.get("resume_checkpoint_job_id")
+            or configuration.get("auth_context_id")
+            or job.get("id") or ""
+        )
+        env["TRADUTOR_RESUME_CHECKPOINT"] = "1" if configuration.get("resume_checkpoint_job_id") else "0"
+        env["TRADUTOR_AUTH_CONTEXT_ID"] = str(
+            configuration.get("auth_context_id") or job.get("id") or ""
+        )
         # Stable logical translation request identity; credentials remain in the
         # encrypted job envelope and never cross this process boundary.
-        configuration = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
         env["TRADUTOR_REQUEST_ID"] = str(
             configuration.get("translation_request_id") or f"translation:{job.get('id') or ''}"
         )[:220]
@@ -568,14 +591,23 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
     artifacts = find_output_artifacts(output_dir)
     report = load_json(output_dir / "timing_report.json")
     download_report = load_json(output_dir / "downloaded_images.json")
+    download_only = bool((job.get("configuration") or {}).get("download_only"))
     quality = report.get("quality_validation") or {}
     commit_mismatch = (
         {}
         if cancelled or interrupted
         else _pipeline_commit_mismatch(job, artifacts)
     )
+    download_gate = download_report.get("download_gate") if isinstance(download_report, dict) else {}
     technical_ok = (
-        return_code == 0 and bool(artifacts.get("pdf_path"))
+        return_code == 0
+        and (
+            (download_only and bool(download_gate.get("passed"))
+             and output_dir.is_dir() and (output_dir / "input").is_dir())
+            or (not download_only and bool(
+                artifacts.get("pdf_path") or artifacts.get("png_path") or artifacts.get("psd_path")
+            ))
+        )
         and not cancelled and not interrupted and not commit_mismatch
     )
     if commit_mismatch:
@@ -599,6 +631,11 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
     failure = download_report.get("failure") if isinstance(download_report, dict) else {}
     source_reason = _safe_reason_code(
         failure.get("code") if isinstance(failure, dict) else "", "pipeline_failed")
+    if download_only and isinstance(download_gate, dict) and not download_gate.get("passed"):
+        # A Download-only run is successful only when its explicit canonical manifest
+        # covers the complete logical chapter.  Never publish a partial 97/105 run as
+        # ``completed`` merely because the worker exited cleanly.
+        source_reason = "incomplete_download"
     if commit_mismatch:
         reason_code = "pipeline_commit_mismatch"
     elif cancelled:
@@ -620,6 +657,14 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         "progress_path": str(output_dir / "progress.json"),
         "reason_code": reason_code,
     }
+    output_format = str(
+        (job.get("configuration") or {}).get("output_format")
+        or report.get("output_format")
+        or "pdf"
+    ).casefold()
+    if download_only:
+        # Download-only has no translated artifact; its output directory is authoritative.
+        fields["pdf_path"] = ""
     fresh_analysis = download_report.get("source_analysis") if isinstance(download_report, dict) else None
     if isinstance(fresh_analysis, dict):
         fresh_analysis = _merge_terminal_source_analysis(
@@ -629,7 +674,8 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         fields["source_analysis_json"] = json.dumps(fresh_analysis, ensure_ascii=False)
     if isinstance(fresh_selection, dict):
         fields["source_selection_json"] = json.dumps(fresh_selection, ensure_ascii=False)
-    fields.update(_fresh_source_provenance(download_report, fresh_analysis))
+    fields.update(_fresh_source_provenance(
+        download_report, fresh_analysis, str(job.get("source_type") or "")))
     if target == JobStatus.FAILED:
         fields["error_type"] = (
             "runtime"
@@ -653,8 +699,26 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
             "expected_commit_hash": commit_mismatch["expected"],
             "actual_commit_hash": commit_mismatch["actual"],
         }
+    if download_only:
+        result_type = "directory"
+        result_path = str(output_dir)
+    elif output_format == "png":
+        result_type = "directory"
+        result_path = artifacts.get("png_path") or ""
+    elif output_format == "psd":
+        result_type = "directory"
+        result_path = artifacts.get("psd_path") or ""
+    else:
+        result_type = "file"
+        result_path = artifacts.get("pdf_path") or ""
     _write_manifest(output_dir, job, status=target,
-                    pdf_path=artifacts.get("pdf_path") or "", exit_code=effective_return_code,
+                    pdf_path=artifacts.get("pdf_path") or "",
+                    output_format=output_format,
+                    png_path=artifacts.get("png_path") or "",
+                    psd_path=artifacts.get("psd_path") or "",
+                    result_type=result_type,
+                    result_path=result_path,
+                    exit_code=effective_return_code,
                     reason_code=reason_code, **manifest_updates)
     if (
         target == JobStatus.FINISHED

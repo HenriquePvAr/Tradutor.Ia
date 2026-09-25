@@ -242,6 +242,7 @@ def build_run_command(
     open_output: bool = False,
     download_only: bool = False,
     translation_provider: str | None = None,
+    output_format: str = "pdf",
     python_executable: str | None = None,
     output_path: Path | None = None,
 ) -> list[str]:
@@ -309,6 +310,11 @@ def build_run_command(
     provider = normalize_translation_provider(translation_provider)
     if provider:
         command.extend(["--translation-provider", provider])
+    normalized_output_format = str(output_format or "pdf").casefold()
+    if normalized_output_format not in {"pdf", "png", "psd"}:
+        raise ValueError("unsupported_output_format")
+    if normalized_output_format in {"png", "psd"}:
+        command.extend(["--output-format", normalized_output_format])
     for candidate_id in source_candidate_ids or []:
         value = str(candidate_id or "").strip()
         if value:
@@ -354,6 +360,37 @@ def assert_command_provider(command: list[str], configuration: object) -> list[s
         raise ValueError("provider_argument_missing")
     if actual != requested:
         raise ValueError("provider_mismatch")
+    return command
+
+
+def command_output_format(command: object) -> str:
+    """The output format a concrete argv will actually run with.
+
+    ``build_run_command`` only emits ``--output-format`` for the non-default png/psd
+    formats, so an absent flag means the canonical default ``pdf``.
+    """
+    args = [str(value) for value in (command or [])]
+    if "--output-format" not in args:
+        return "pdf"
+    index = args.index("--output-format") + 1
+    value = args[index].strip().lower() if index < len(args) else "pdf"
+    return value if value in {"pdf", "png", "psd"} else "pdf"
+
+
+def assert_command_output_format(command: list[str], configuration: object) -> list[str]:
+    """Fail closed when a command's output format diverges from what the job requested.
+
+    A psd/png job whose rebuilt argv silently fell back to pdf produced the wrong artifact
+    while still consuming a YK.  Applied to every rebuild and to the final argv so the
+    divergence is caught before any expensive processing, never after.
+    """
+    config = configuration if isinstance(configuration, dict) else {}
+    requested = str(config.get("output_format") or "pdf").strip().lower()
+    if requested not in {"pdf", "png", "psd"}:
+        requested = "pdf"
+    actual = command_output_format(command)
+    if actual != requested:
+        raise ValueError("output_format_mismatch")
     return command
 
 
@@ -596,6 +633,22 @@ def find_output_artifacts(output_folder: Path) -> dict[str, str]:
                 return str(resolved)
         return ""
 
+    def first_existing_dir(*candidates: Any) -> str:
+        for candidate in candidates:
+            if not candidate:
+                continue
+            path = Path(candidate)
+            if not path.is_absolute():
+                path = folder / path
+            try:
+                resolved = path.resolve()
+                resolved.relative_to(folder)
+            except (OSError, ValueError):
+                continue
+            if resolved.is_dir():
+                return str(resolved)
+        return ""
+
     # A run states where its PDF is, so the name never has to be rebuilt here.
     # Older outputs carry no manifest, so the timing report and finally any PDF in
     # the folder still resolve them, whatever they were called.
@@ -607,6 +660,10 @@ def find_output_artifacts(output_folder: Path) -> dict[str, str]:
             report.get("pdf_path"),
             *folder.glob("*.pdf"),
         ),
+        "png_path": first_existing_dir(
+            manifest.get("png_path"), report.get("png_path")
+        ),
+        "psd_path": first_existing_dir(report.get("psd_path")),
         "quality_report_path": first_existing(report.get("quality_report_html"), folder / "quality_report.html"),
         "compare_sheet_path": first_existing(report.get("preview_compare_sheet"), folder / "compare_sheet.jpg"),
         "contact_sheet_path": first_existing(report.get("preview_contact_sheet"), folder / "contact_sheet.jpg"),

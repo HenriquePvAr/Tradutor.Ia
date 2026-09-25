@@ -86,6 +86,8 @@ from pipeline_cache import (
     valid_image,
 )
 from session_context import SessionContextStore
+from png_output import export_final_pages_png, PngExportError
+from psd_exporter import export_final_pages_psd, PsdExportError
 
 _RAPIDOCR_INFERENCE_LOCK = threading.BoundedSemaphore(1)
 _PERF_JOB_ORIGIN_NS = None
@@ -1666,7 +1668,17 @@ def run_benchmark(args):
 
     previous_progress = load_json(progress_path, default={})
     previous_records = {}
-    if not args.force and previous_progress.get("run_signature") == run_signature:
+    checkpoint_job_id = str(
+        getattr(args, "checkpoint_job_id", "")
+        or os.getenv("TRADUTOR_CHECKPOINT_JOB_ID", "")
+        or getattr(args, "job_id", "")
+        or ""
+    ).strip()
+    resume_cache = bool(getattr(args, "resume_checkpoint", False))
+    if ((resume_cache or not args.force)
+            and _checkpoint_identity_matches(
+                previous_progress, checkpoint_job_id, resume=resume_cache)
+            and previous_progress.get("run_signature") == run_signature):
         previous_records = {
             int(record["index"]): record
             for record in previous_progress.get("pages", [])
@@ -1822,7 +1834,7 @@ def run_benchmark(args):
         reused = _reuse_completed_page(
             state,
             previous_records.get(index),
-            force=args.force,
+            force=(args.force and not resume_cache),
         )
         stage_seconds["cache_load"] += time.perf_counter() - cache_started
         if reused:
@@ -2482,6 +2494,35 @@ def run_benchmark(args):
     artifact_sha256 = artifact["sha256"]
     artifact_size_bytes = artifact["size"]
 
+    # PDF remains the canonical quality artifact for backwards compatibility.  PNG/PSD are
+    # additional chapter-level result produced from the already-rendered final pages, so it
+    # cannot accidentally expose untranslated source images or create per-page jobs.
+    output_format = str(getattr(args, "output_format", "pdf") or "pdf").casefold()
+    if output_format not in {"pdf", "png", "psd"}:
+        raise ValueError("unsupported_output_format")
+    png_path = None
+    psd_path = None
+    if output_format == "png":
+        try:
+            png_path = export_final_pages_png(
+                [state["output_path"] for state in completed_states],
+                output_folder,
+                output_folder.parent.name or output_folder.name,
+                cancel=cancel_event.is_set,
+            )
+        except PngExportError:
+            raise
+    if output_format == "psd":
+        try:
+            psd_path = export_final_pages_psd(
+                [(state["image_path"], state["output_path"]) for state in completed_states],
+                output_folder,
+                output_folder.parent.name or output_folder.name,
+                cancel=cancel_event.is_set,
+            )
+        except PsdExportError:
+            raise
+
     resource_monitor.set_stage("reports")
     preview_started = time.perf_counter()
     selected_states = _create_preview_contact_sheet(
@@ -2875,6 +2916,11 @@ def run_benchmark(args):
         "difference_from_baseline_seconds": round(total_seconds - BASELINE_SECONDS, 6),
         "reduction_from_baseline_percent": round(old_reduction, 3),
         "pdf_path": str(pdf_path),
+        "output_format": output_format,
+        "result_kind": "directory" if (png_path or psd_path) else "file",
+        "result_path": str(psd_path or png_path or pdf_path),
+        "png_path": str(png_path) if png_path else "",
+        "psd_path": str(psd_path) if psd_path else "",
         "artifact_sha256": artifact_sha256,
         "artifact_size_bytes": artifact_size_bytes,
         "progress_path": str(progress_path),
@@ -5017,6 +5063,12 @@ def _write_progress(
     payload = {
             "status": status,
             "run_signature": run_signature,
+            "job_id": str(
+                getattr(args, "checkpoint_job_id", "")
+                or getattr(args, "job_id", "")
+                or os.getenv("TRADUTOR_CHECKPOINT_JOB_ID", "")
+                or ""
+            ),
             "url": sanitize_source_url(args.url),
             "full": bool(args.full),
             "fast": bool(args.fast),
@@ -5052,6 +5104,19 @@ def _write_progress(
         atomic_write_json(path, payload)
         _PROGRESS_FINGERPRINTS[key] = fingerprint
     return True
+
+
+def _checkpoint_identity_matches(progress, checkpoint_job_id, *, resume=False):
+    """Require a checkpoint from the same logical job lineage."""
+    if not isinstance(progress, dict) or not checkpoint_job_id:
+        return False
+    stored = str(progress.get("job_id") or "").strip()
+    if stored:
+        return stored == str(checkpoint_job_id).strip()
+    # Legacy checkpoints lack job_id. They are eligible only when the caller
+    # explicitly supplied a lineage-bound resume and the output path is already
+    # owned by that job; ordinary runs never consume them.
+    return bool(resume)
 
 
 def _serializable_state(state):
