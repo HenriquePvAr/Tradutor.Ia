@@ -112,3 +112,60 @@ do DeepL entre execuções e (b) mudança do conteúdo na fonte desde julho. Fec
 exige um E2E de controle sobre `cv2 4.10.0` com o mesmo capítulo — não feito aqui.
 
 Até lá, qualquer mudança de comportamento de produção precisa carregar seu próprio E2E.
+
+---
+
+## Beta 0.9.1 — estado validado nesta fase (2026-09-25)
+
+> Adendo ao freeze. Registra o que foi corrigido e comprovado fisicamente desde a base
+> acima. Nenhuma dependência de imagem/CV pinada mudou; o contrato do freeze continua ATIVO.
+
+### Pipeline (comprovado por E2E real, runtime `.venv-beta`)
+
+- **Comix**: materialização dinâmica via browser com **retry limitado** do resolver
+  (`MAX_RESOLUTION_ATTEMPTS = 3`, `MISSING_PAGE_BUDGET_SECONDS = 25`); download completo
+  **105/105** provado.
+- **Escopo parcial de páginas**: qualquer `1 ≤ N ≤ total`. O gate de download passou a ser
+  avaliado contra as páginas **selecionadas** (não o capítulo canônico inteiro); provado
+  fisicamente com **N=5** (download 5/5, gate PASS) e por testes para N=1/3/5/20/50/105.
+- **OCR** RapidOCR, **auth context** (envelope DPAPI resolvido pelo `runtime_root` correto,
+  nunca pelo `output_dir`), **wallet reserve/finalize de 1 YK**, **DeepL real** e
+  **reconstrução** — todos exercidos no E2E de 105 páginas e no de 5 páginas.
+
+### Contrato de saída (`output_format`)
+
+- **Quality**: `PDF` | `PNG` | `PSD`. **Download-only**: `PDF` | `PNG` | `PSD` com
+  `OCR = 0`, `DeepL = 0`, `YK = 0`, `XP = 0` (caminho separado, sem provider de tradução).
+- `output_format` propaga de forma coerente **UI → payload → config → command_json →
+  rebuild pós-análise → argv do runner → manifest → history/UI**. Um invariante
+  fail-closed (`assert_command_output_format`) recusa qualquer divergência antes do
+  processamento caro.
+- **PSD**: **1 PSD por página**, duas camadas — `Original` (base) e `Translated` (topo).
+  Provado fisicamente: 5/5 PSDs, 0 zero-byte, camadas validadas com o parser `psd_tools`.
+  *Abertura em Photoshop/Photopea não foi verificada nesta fase.*
+- **PNG**: páginas finais reconstruídas; smoke **105/105** (decode 105, 0 zero-byte, ordem
+  1..N). O PDF canônico interno de um job PNG/PSD **não** altera formato, label, history,
+  botão principal nem `output_format`.
+
+### Perfil / OAuth
+
+- Avatar/banner via Google Drive pela Edge Function `profile-media`; app OAuth em Production,
+  refresh token renovável, login interativo apenas para setup/reparo.
+- Backoff local de upstream com **exponencial limitado (30s → 60s → 120s)** e limpeza
+  imediata no sucesso; falha remota opcional deixa breadcrumb sanitizado e mantém
+  `PROFILE_READY` (fail-open). Um 5xx intermitente do upstream remoto permanece fora do
+  escopo do código local.
+
+### UI
+
+- Modos expostos: **Qualidade** e **Download-only** (o "Rápido" foi ocultado). Botão
+  principal dinâmico ("Iniciar tradução" / "Iniciar download"). Seletor de formato
+  PDF/PNG/PSD. History e cards **format-aware** ("Tradução/Download · PDF|PNG|PSD"),
+  derivados do `output_format` canônico — nunca da presença de `pdf_path`.
+- Retry após falha de start sem reload e bloqueio de start concorrente por job ativo
+  preservados.
+
+### Packaging / branding
+
+- ICO canônico do Yomu aplicado ao EXE, installer, atalhos e à entrada de desinstalação
+  (Programs and Features). Validação física final fica para a missão de empacotamento.

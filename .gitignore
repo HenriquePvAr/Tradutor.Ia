@@ -79,3 +79,9 @@ snapshots/
 *.pem
 *.key
 *.pk8
+
+# Local audit artifacts, ad-hoc runtime diagnostics and scratch output produced while
+# validating the Beta. These are never part of the source and must not be committed.
+.local-audit/
+diagnostics/
+out/

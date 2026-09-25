@@ -1,0 +1,42 @@
+Yomu Sekai — third-party distribution notices
+
+This artifact includes the following permissively licensed components. Their
+copyright and license terms remain with their respective authors. The full
+license texts are available from the cited project distributions/URLs.
+
+Scrapling 0.4.15 — BSD 3-Clause
+https://github.com/D4Vinci/Scrapling/blob/main/LICENSE
+
+psd-tools 1.10.9 — MIT
+https://github.com/psd-tools/psd-tools/blob/main/LICENSE
+
+Pillow 12.3.0 — HPND
+https://github.com/python-pillow/Pillow/blob/main/LICENSE
+
+Playwright 1.63.0 — Apache-2.0
+https://github.com/microsoft/playwright-python/blob/main/LICENSE
+
+Patchright 1.63.0 — Apache-2.0
+https://github.com/Kaliiiiiiiiiiiiii/patchright-python/blob/main/LICENSE
+
+BrowserForge 1.2.4 — Apache-2.0
+https://github.com/daijro/browserforge/blob/main/LICENSE
+
+curl_cffi 0.16.3 — MIT
+https://github.com/lexiforest/curl_cffi/blob/main/LICENSE
+
+apify-fingerprint-datapoints 0.15.0 — Apache-2.0
+https://github.com/apify/fingerprint-suite/blob/master/LICENSE
+
+msgspec 0.21.1 — BSD 3-Clause
+https://github.com/jcrist/msgspec/blob/main/LICENSE
+
+protego 0.7.0 — BSD 3-Clause
+https://github.com/scrapy/protego/blob/master/LICENSE
+
+scipy 1.17.1 and scikit-image 0.26.0 — BSD 3-Clause
+https://github.com/scipy/scipy/blob/main/LICENSE.txt
+https://github.com/scikit-image/scikit-image/blob/main/LICENSE.txt
+
+aggdraw 1.4.1 — MIT-style
+https://github.com/euske/aggdraw/blob/master/LICENSE

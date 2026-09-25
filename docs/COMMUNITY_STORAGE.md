@@ -176,7 +176,8 @@ OAuth do tipo **Desktop app**. `drive_auth.py` roda o fluxo oficial `InstalledAp
 OAuth durante uma requisição web.
 
 ```
-python drive_auth.py authorize            # abre o navegador do sistema, faz consentimento e salva o token
+python drive_auth.py authorize            # reutiliza o refresh token salvo; login só se ainda não houver token
+python drive_auth.py authorize --force-consent # reparo/rotação explícita do refresh token
 python drive_auth.py status               # presenca/validade do token e config (nunca imprime valores)
 python drive_auth.py create-root-folder   # cria a pasta privada do app e imprime so o ID
 python drive_auth.py test-access          # confirma acesso a pasta raiz (nao faz upload)
