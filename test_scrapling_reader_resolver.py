@@ -331,6 +331,23 @@ class ScraplingResolverTests(unittest.TestCase):
         self.assertEqual(len(merged), 5)
         self.assertEqual(missing, [6])
 
+    def test_retry_keeps_materialized_pages_and_returns_only_pending_indices(self):
+        previous = [
+            {"logical_page_index": 1, "source": "browser_response_body", "url": "data:1"},
+            {"logical_page_index": 2, "source": "canvas_capture", "url": "data:2"},
+            {"logical_page_index": 3, "source": "scrapling_dom", "url": "https://cdn/3"},
+        ]
+        current = [
+            {"logical_page_index": 1, "source": "scrapling_dom", "url": "https://cdn/new-1"},
+            {"logical_page_index": 2, "source": "scrapling_dom", "url": "https://cdn/new-2"},
+            {"logical_page_index": 3, "source": "canvas_capture", "url": "data:3"},
+        ]
+        merged, pending = resolver._merge_materialized_attempts(previous, current, 3)
+        self.assertEqual([item["logical_page_index"] for item in merged], [1, 2, 3])
+        self.assertEqual([item["source"] for item in merged],
+                         ["browser_response_body", "canvas_capture", "canvas_capture"])
+        self.assertEqual(pending, [])
+
     def test_dynamic_fallback_materializes_rendered_canvas_not_network_resource(self):
         page = _ViewportCanvasPage()
         candidate = resolver._capture_rendered_canvas_candidate(
@@ -355,6 +372,32 @@ class ScraplingResolverTests(unittest.TestCase):
         self.assertEqual(candidate["canonical_content_type"], "image/png")
         self.assertFalse(candidate["transcoded"])
         self.assertEqual(candidate["logical_page_index"], 89)
+
+    def test_lazy_reader_associated_body_is_promoted(self):
+        encoded = BytesIO()
+        Image.new("RGB", (13, 17), (20, 30, 40)).save(encoded, format="WEBP")
+
+        class Response:
+            calls = 0
+            def body(self):
+                self.calls += 1
+                return encoded.getvalue()
+
+        response = Response()
+        url = "https://rotated-cdn.example/page.webp"
+        candidate = {"url": url, "logical_page_index": 4, "order": 3,
+                     "context": "reader", "container": "comix-reader",
+                     "source": "scrapling_dom"}
+        stats = {"read_total": 0, "read_ms": 0, "read_failed": 0,
+                 "captured": 0, "promoted": 0}
+        result = resolver._promote_observed_response_bodies(
+            [candidate], {url: {"response": response, "resource_type": "image",
+                               "content_type": "image/webp", "content_length": "128"}},
+            {}, stats)
+        self.assertEqual(response.calls, 1)
+        self.assertEqual(result[0]["source"], "browser_response_body")
+        self.assertEqual(result[0]["logical_page_index"], 4)
+        self.assertEqual(stats["promoted"], 1)
 
     def test_browser_webp_is_decoded_and_normalized_without_resize(self):
         encoded = BytesIO()
@@ -444,16 +487,15 @@ class MaterializationRetryDecisionTests(unittest.TestCase):
 
 
 class ResponseBodyFilterTests(unittest.TestCase):
-    """Coverage-preserving pre-filter for response.body(): skip only bodies that promotion
-    would reject anyway (duplicate URL / oversize / wrong content-type), never on missing
-    metadata, and always read a fresh allowed page image."""
+    """Lazy response.body gate: an exact HTTPS URL must first be observed on the
+    selected Comix reader's page-image nodes."""
 
     HOST_URL = "https://jloo.wowpic1.store/a/7.webp"
 
     def _decide(self, **overrides):
         base = dict(resource_type="image", resource_url=self.HOST_URL,
                     content_type_header="image/webp", content_length_header="1024",
-                    already_captured=False)
+                    already_captured=False, reader_observed=True)
         base.update(overrides)
         return resolver._should_read_response_body(**base)
 
@@ -466,9 +508,23 @@ class ResponseBodyFilterTests(unittest.TestCase):
         self.assertEqual(reason, "not_page_image")
 
     def test_foreign_host_is_skipped(self):
-        read, reason = self._decide(resource_url="https://cdn.other.example/7.webp")
+        read, reason = self._decide(resource_url="https://cdn.other.example/7.webp",
+                                    reader_observed=False)
         self.assertFalse(read)
         self.assertEqual(reason, "not_page_image")
+
+    def test_rotated_https_cdn_host_is_allowed_when_exact_url_is_reader_observed(self):
+        self.assertEqual(self._decide(resource_url="https://img-rotated.example/7.webp"),
+                         (True, ""))
+
+    def test_arbitrary_external_host_is_rejected_without_reader_association(self):
+        self.assertEqual(self._decide(resource_url="https://unrelated.example/pixel.png",
+                                      reader_observed=False),
+                         (False, "not_page_image"))
+
+    def test_non_https_reader_resource_is_rejected(self):
+        self.assertEqual(self._decide(resource_url="http://img-rotated.example/7.webp"),
+                         (False, "not_page_image"))
 
     def test_duplicate_url_is_skipped(self):
         self.assertEqual(self._decide(already_captured=True), (False, "dedup"))
@@ -493,6 +549,56 @@ class ResponseBodyFilterTests(unittest.TestCase):
 
     def test_unparseable_length_is_read(self):
         self.assertEqual(self._decide(content_length_header="not-a-number"), (True, ""))
+
+    def test_unassociated_response_body_is_never_read(self):
+        class Response:
+            def body(self):
+                raise AssertionError("unassociated response body must stay unread")
+
+        stats = {"read_total": 0, "read_ms": 0, "read_failed": 0, "captured": 0,
+                 "promoted": 0, "skip_not_page_image": 0}
+        pending = {self.HOST_URL: {"response": Response(), "resource_type": "image",
+                                   "content_type": "image/webp", "content_length": "50"}}
+        result = resolver._promote_observed_response_bodies(
+            [{"url": "https://reader.example/unrelated", "context": "reader",
+              "container": "comix-reader"}], pending, {}, stats)
+        self.assertEqual(stats["read_total"], 0)
+        self.assertEqual(result[0]["url"], "https://reader.example/unrelated")
+
+    def test_retry_does_not_reread_a_previously_materialized_page(self):
+        class Response:
+            def body(self):
+                raise AssertionError("materialized page body must not be reread")
+
+        candidate = {"url": self.HOST_URL, "context": "reader", "container": "comix-reader",
+                     "logical_page_index": 7, "source": "scrapling_dom"}
+        stats = {"read_total": 0, "read_ms": 0, "read_failed": 0, "captured": 0,
+                 "promoted": 0, "skip_dedup": 0}
+        pending = {self.HOST_URL: {"response": Response(), "resource_type": "image",
+                                   "content_type": "image/webp", "content_length": "50"}}
+        resolver._promote_observed_response_bodies(
+            [candidate], pending, {}, stats, previously_materialized_indices={7})
+        self.assertEqual(stats["read_total"], 0)
+        self.assertEqual(stats["skip_dedup"], 1)
+
+    def test_body_read_deduped_for_duplicate_reader_urls(self):
+        class Response:
+            calls = 0
+            def body(self):
+                self.calls += 1
+                return b"invalid-image"
+
+        response = Response()
+        stats = {"read_total": 0, "read_ms": 0, "read_failed": 0, "captured": 0,
+                 "promoted": 0, "reject_not_promotable": 0}
+        candidate = {"url": self.HOST_URL, "context": "reader", "container": "comix-reader",
+                     "logical_page_index": 1, "source": "scrapling_dom"}
+        pending = {self.HOST_URL: {"response": response, "resource_type": "image",
+                                   "content_type": "image/webp", "content_length": "50"}}
+        resolver._promote_observed_response_bodies(
+            [candidate, dict(candidate)], pending, {}, stats)
+        self.assertEqual(response.calls, 1)
+        self.assertEqual(stats["read_total"], 1)
 
 
 if __name__ == "__main__":

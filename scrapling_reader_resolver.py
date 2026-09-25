@@ -148,6 +148,37 @@ def _merge_logical_candidates(
     return [by_index[index] for index in sorted(by_index)], missing
 
 
+def _merge_materialized_attempts(
+    previous: list[dict[str, Any]], current: list[dict[str, Any]], control_count: int,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Retain verified pages across a bounded fresh-browser retry and return only
+    canonical indices that still need materialization. New materialized candidates win;
+    a fresh DOM placeholder can never replace a previously materialized page.
+    """
+    by_index: dict[int, dict[str, Any]] = {}
+    unindexed: list[dict[str, Any]] = []
+    seen_unindexed: set[str] = set()
+    for item in [*previous, *current]:
+        index = item.get("logical_page_index")
+        source = str(item.get("source") or "")
+        if index is None:
+            key = str(item.get("url") or "")
+            if key not in seen_unindexed:
+                unindexed.append(item)
+                seen_unindexed.add(key)
+            continue
+        index = int(index)
+        existing = by_index.get(index)
+        if existing is None or source != "scrapling_dom":
+            by_index[index] = item
+    merged = [by_index[index] for index in sorted(by_index)] + unindexed
+    pending = [
+        index for index in _expected_page_indices(control_count)
+        if index not in by_index or str(by_index[index].get("source") or "") == "scrapling_dom"
+    ]
+    return merged, pending
+
+
 class DynamicReaderError(RuntimeError):
     """Stable, sanitized resolver failure."""
 
@@ -226,7 +257,14 @@ def _append_telemetry(event: str, **fields: Any) -> None:
                "attempt", "max_attempts", "pending_count", "pending_indices", "missing_count",
                "stage", "remaining_ms", "remaining_budget_ms", "new_pages", "materialized_count",
                "body_capture_count", "body_read_failed", "body_skip_dedup",
-               "body_skip_content_type", "body_skip_oversize", "body_promoted"}
+               "body_skip_content_type", "body_skip_oversize", "body_promoted",
+               "body_read_total", "body_read_ms", "body_promoted_total",
+               "body_rejected_total", "body_promotion_rate", "canonical_index",
+               "expected_count", "final_missing_count",
+               "discovery_ms", "navigation_ms", "render_wait_ms", "canvas_capture_ms",
+               "response_body_ms", "total_materialization_ms", "result_source", "reader_image_host_count",
+               "attempt_elapsed_ms", "pending_before", "pending_after", "new_materialized",
+               "failure_stage"}
     safe = {key: value for key, value in fields.items() if key in allowed}
     safe["event"] = event[:64]
     safe.setdefault("site", "comix.to")
@@ -429,6 +467,13 @@ def _configure_preload_all(
     events: list,
     cancel_check: Callable[[], bool] | None,
     browser_bodies: dict,
+    pending_responses: dict[str, dict[str, Any]],
+    body_stats: dict[str, Any],
+    previously_materialized_indices: set[int],
+    promoted_resource_indices: dict[str, int],
+    page_body_elapsed_ms: dict[int, float],
+    page_action_started: float,
+    reader_image_hosts: set[str],
     scroll_diagnostics: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], str]:
     """Switch the public reader to "Preload all" and guarantee the Settings surface
@@ -506,20 +551,18 @@ def _configure_preload_all(
             scroll_diagnostics["page_control_count"] = int(current.get("controls") or 0)
             preload_stage = "extract_candidates"
             expanded, selector = _extract_candidates(page, url, events, cancel_check)
-            preload_stage = "promote"
-            promoted_expanded: list[dict[str, Any]] = []
+            discovered_elapsed_ms = (time.monotonic() - page_action_started) * 1000
             for item in expanded:
-                if str(item.get("source") or "") != "scrapling_dom":
-                    promoted_expanded.append(item)
-                    continue
-                resource_url = str(item.get("url") or "")
-                captured = browser_bodies.get(resource_url)
-                promoted_expanded.append(
-                    (_promote_browser_response_candidate(
-                        item, captured.get("body", b""), captured.get("content_type")
-                    ) if captured else None)
-                    or item
-                )
+                index = item.get("logical_page_index")
+                if index is not None:
+                    page_discovery_elapsed_ms.setdefault(int(index), discovered_elapsed_ms)
+            preload_stage = "promote"
+            promoted_expanded = _promote_observed_response_bodies(
+                expanded, pending_responses, browser_bodies, body_stats,
+                previously_materialized_indices=previously_materialized_indices,
+                promoted_resource_indices=promoted_resource_indices,
+                page_body_elapsed_ms=page_body_elapsed_ms,
+                reader_image_hosts=reader_image_hosts)
             candidates = (promoted_expanded if len(promoted_expanded) >= len(candidates)
                           else candidates)
             scroll_diagnostics.update({
@@ -685,7 +728,7 @@ def _capture_rendered_canvas_candidate(page: Any, page_index: int, state: dict[s
 def _should_read_response_body(
     *, resource_type: str, resource_url: str,
     content_type_header: str | None, content_length_header: str | None,
-    already_captured: bool,
+    already_captured: bool, reader_observed: bool = False,
 ) -> tuple[bool, str]:
     """Decide, from cheap metadata, whether to pull a network response body.
 
@@ -694,6 +737,7 @@ def _should_read_response_body(
     canonical page.  This gate skips ONLY bodies that ``_promote_browser_response_candidate``
     would reject anyway, so it can never drop a page that could have been promoted:
 
+    * an URL not observed on the selected reader's page-image nodes;
     * a response whose URL was already captured (an identical CDN image -> ``dedup``);
     * a declared ``content-length`` over the promotion cap (``oversize``, rejected at 692);
     * a declared ``content-type`` that is not an allowed browser image (``content_type``,
@@ -701,9 +745,11 @@ def _should_read_response_body(
 
     A missing header is never a reason to skip (we read and let promotion decide).  Returns
     ``(read, skip_reason)`` where ``skip_reason`` is ``""`` when ``read`` is True and
-    ``not_page_image`` for a resource outside the reader's page-image host.
+    ``not_page_image`` for a resource outside the exact HTTPS URLs observed in the reader.
     """
-    if resource_type != "image" or "jloo.wowpic1.store" not in resource_url:
+    parsed = urlparse(str(resource_url or ""))
+    if (resource_type != "image" or parsed.scheme.casefold() != "https"
+            or not reader_observed):
         return False, "not_page_image"
     if already_captured:
         return False, "dedup"
@@ -717,6 +763,97 @@ def _should_read_response_body(
     if declared_length > MAX_BROWSER_RESPONSE_BODY_BYTES:
         return False, "oversize"
     return True, ""
+
+
+def _promote_observed_response_bodies(
+    candidates: list[dict[str, Any]], pending_responses: dict[str, dict[str, Any]],
+    browser_bodies: dict[str, dict[str, Any]], body_stats: dict[str, Any],
+    *, previously_materialized_indices: set[int] | None = None,
+    promoted_resource_indices: dict[str, int] | None = None,
+    page_body_elapsed_ms: dict[int, float] | None = None,
+    reader_image_hosts: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Read bodies lazily, only after an exact HTTPS image URL is observed on the
+    selected Comix reader page nodes. Response callbacks stay metadata-only/nonblocking.
+    """
+    observed = {
+        str(item.get("url") or ""): item for item in candidates
+        if str(item.get("context") or "") == "reader"
+        and str(item.get("container") or "") == "comix-reader"
+    }
+    observed_urls = set(observed)
+    already_materialized = previously_materialized_indices or set()
+    promoted_by_url: dict[str, dict[str, Any]] = {}
+    for resource_url in sorted(observed_urls):
+        page_index = observed[resource_url].get("logical_page_index")
+        if page_index is None and promoted_resource_indices is not None:
+            page_index = promoted_resource_indices.get(resource_url)
+        if reader_image_hosts is not None:
+            host = _safe_host(resource_url)
+            if host:
+                reader_image_hosts.add(host)
+        if page_index is not None and int(page_index) in already_materialized:
+            pending_responses.pop(resource_url, None)
+            body_stats["skip_dedup"] = body_stats.get("skip_dedup", 0) + 1
+            continue
+        if resource_url in browser_bodies:
+            continue
+        response_info = pending_responses.pop(resource_url, None)
+        if not response_info:
+            continue
+        read, reason = _should_read_response_body(
+            resource_type=response_info.get("resource_type", ""),
+            resource_url=resource_url,
+            content_type_header=response_info.get("content_type"),
+            content_length_header=response_info.get("content_length"),
+            already_captured=resource_url in browser_bodies,
+            reader_observed=True,
+        )
+        if not read:
+            key = f"skip_{reason}"
+            body_stats[key] = body_stats.get(key, 0) + 1
+            continue
+        body_stats["read_total"] += 1
+        started = time.monotonic()
+        try:
+            body = response_info["response"].body()
+            read_ms = (time.monotonic() - started) * 1000
+            body_stats["last_read_ms"] = read_ms
+            body_stats["read_ms"] += read_ms
+            if 0 < len(body) <= MAX_BROWSER_RESPONSE_BODY_BYTES:
+                browser_bodies[resource_url] = {
+                    "body": body,
+                    "content_type": str(response_info.get("content_type") or ""),
+                }
+                body_stats["captured"] += 1
+            else:
+                body_stats["read_failed"] += 1
+                body_stats["reject_empty_or_oversize"] += 1
+                continue
+        except Exception:
+            read_ms = (time.monotonic() - started) * 1000
+            body_stats["last_read_ms"] = read_ms
+            body_stats["read_ms"] += read_ms
+            body_stats["read_failed"] += 1
+            body_stats["reject_body_unavailable"] += 1
+            continue
+        matching = next((item for item in candidates if str(item.get("url") or "") == resource_url), None)
+        if matching is None:
+            continue
+        promoted = _promote_browser_response_candidate(
+            matching, body, str(response_info.get("content_type") or ""))
+        if promoted is None:
+            body_stats["reject_not_promotable"] += 1
+            continue
+        promoted_by_url[resource_url] = promoted
+        body_stats["promoted"] += 1
+        if page_index is not None and promoted_resource_indices is not None:
+            promoted_resource_indices[resource_url] = int(page_index)
+        if page_index is not None and page_body_elapsed_ms is not None:
+            page_body_elapsed_ms[int(page_index)] = round(
+                page_body_elapsed_ms.get(int(page_index), 0.0)
+                + float(body_stats.get("last_read_ms") or 0), 1)
+    return [promoted_by_url.get(str(item.get("url") or ""), item) for item in candidates]
 
 
 def _promote_browser_response_candidate(
@@ -786,24 +923,21 @@ def _read_reader_render_state(page: Any, page_index: int) -> dict[str, Any]:
       if (canvas && canvas.width && canvas.height) {
         const context = canvas.getContext('2d', {willReadFrequently: true});
         if (context) {
-          // Sample a distributed grid over the backing store. Five fixed points
-          // collide easily on dark/white borders and falsely classify a new page
-          // as the previous canvas.
-          const points = [];
+          // Downsample once, then read one compact pixel buffer. Sampling hundreds of
+          // 1x1 regions separately made every readiness poll issue hundreds of sync
+          // Canvas IPC calls and dominated serial materialization time.
           const sampleWidth = 24;
           const sampleHeight = 32;
-          for (let sy = 0; sy < sampleHeight; sy++) {
-            for (let sx = 0; sx < sampleWidth; sx++) {
-              points.push([
-                Math.min(canvas.width - 1, Math.floor((sx + 0.5) * canvas.width / sampleWidth)),
-                Math.min(canvas.height - 1, Math.floor((sy + 0.5) * canvas.height / sampleHeight))
-              ]);
-            }
-          }
+          const sample = document.createElement('canvas');
+          sample.width = sampleWidth;
+          sample.height = sampleHeight;
+          const sampleContext = sample.getContext('2d', {willReadFrequently: true});
+          sampleContext.drawImage(canvas, 0, 0, sampleWidth, sampleHeight);
+          const pixels = sampleContext.getImageData(0, 0, sampleWidth, sampleHeight).data;
           let hash = 2166136261;
-          for (const [x,y] of points) {
-            const pixel = context.getImageData(Math.max(0,x), Math.max(0,y), 1, 1).data;
-            for (const value of pixel) { hash ^= value; hash = Math.imul(hash, 16777619); }
+          for (let i = 0; i < pixels.length; i++) {
+            hash ^= pixels[i];
+            hash = Math.imul(hash, 16777619);
           }
           fingerprint = (hash >>> 0).toString(16);
         }
@@ -939,10 +1073,21 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         raise DynamicReaderError("navigation_rejected") from exc
     events: list[dict[str, Any]] = []
     browser_bodies: dict[str, dict[str, Any]] = {}
-    # Sanitized response-body utility counters (no bytes/URLs/cookies): how many bodies were
-    # actually read vs skipped by cheap metadata, so the eager-capture cost can be measured.
-    body_stats: dict[str, int] = {
-        "captured": 0, "read_failed": 0, "dedup": 0, "content_type": 0, "oversize": 0}
+    pending_responses: dict[str, dict[str, Any]] = {}
+    # Sanitized utility counters. Response callbacks retain only bounded metadata and
+    # handles; body() is called later only for an exact URL observed in the Comix reader.
+    body_stats: dict[str, Any] = {
+        "captured": 0, "read_total": 0, "read_ms": 0.0, "read_failed": 0,
+        "promoted": 0, "reject_empty_or_oversize": 0, "reject_body_unavailable": 0,
+        "reject_not_promotable": 0, "skip_dedup": 0, "skip_content_type": 0,
+        "skip_oversize": 0, "skip_not_page_image": 0,
+    }
+    page_discovery_elapsed_ms: dict[int, float] = {}
+    preserved_candidates: list[dict[str, Any]] = []
+    promoted_resource_indices: dict[str, int] = {}
+    page_body_elapsed_ms: dict[int, float] = {}
+    page_stage_metrics: dict[int, dict[str, float | None]] = {}
+    reader_image_hosts: set[str] = set()
     result_holder: dict[str, Any] = {}
     started = time.monotonic()
     effective_deadline = (
@@ -976,6 +1121,24 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             elapsed_ms=round((time.monotonic() - stage_started) * 1000, 1),
         )
         remaining_seconds(stage)
+
+    def body_telemetry() -> dict[str, Any]:
+        reads = int(body_stats.get("read_total") or 0)
+        promoted = int(body_stats.get("promoted") or 0)
+        rejected = max(0, reads - promoted)
+        return {
+            "body_read_total": reads,
+            "body_read_ms": round(float(body_stats.get("read_ms") or 0), 1),
+            "body_promoted_total": promoted,
+            "body_rejected_total": rejected,
+            "body_promotion_rate": round(promoted / reads, 4) if reads else 0.0,
+            "body_capture_count": int(body_stats.get("captured") or 0),
+            "body_read_failed": int(body_stats.get("read_failed") or 0),
+            "body_skip_dedup": int(body_stats.get("skip_dedup") or 0),
+            "body_skip_content_type": int(body_stats.get("skip_content_type") or 0),
+            "body_skip_oversize": int(body_stats.get("skip_oversize") or 0),
+            "reader_image_host_count": len(reader_image_hosts),
+        }
 
     def page_setup(page: Any) -> None:
         setup_started = stage_start("page_setup")
@@ -1049,42 +1212,31 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         except Exception:
             pass
         def on_response(response: Any) -> None:
-            if len(events) >= MAX_NETWORK_EVENTS:
-                return
             try:
                 resource_url = str(response.url)
                 resource_type = str(getattr(response, "request", None).resource_type
                                     if getattr(response, "request", None) else "other")
-                if "/api/v1/chapters/" in resource_url or resource_type == "image":
+                if (("/api/v1/chapters/" in resource_url or resource_type == "image")
+                        and len(events) < MAX_NETWORK_EVENTS):
                     events.append(_sanitized_network_event(resource_url, resource_type,
                                                             int(response.status)))
                 try:
                     response_headers = response.headers or {}
                 except Exception:
                     response_headers = {}
-                read_body, skip_reason = _should_read_response_body(
-                    resource_type=resource_type, resource_url=resource_url,
-                    content_type_header=response_headers.get("content-type"),
-                    content_length_header=response_headers.get("content-length"),
-                    already_captured=resource_url in browser_bodies)
-                if not read_body:
-                    if skip_reason in body_stats:
-                        body_stats[skip_reason] += 1
-                    return
-                try:
-                    body_started = stage_start("response_body_capture")
-                    body = response.body()
-                    if 0 < len(body) <= MAX_BROWSER_RESPONSE_BODY_BYTES:
-                        browser_bodies[resource_url] = {
-                            "body": body,
-                            "content_type": str(response_headers.get("content-type") or ""),
-                        }
-                        body_stats["captured"] += 1
-                    else:
-                        body_stats["read_failed"] += 1
-                    stage_end("response_body_capture", body_started)
-                except Exception:
-                    body_stats["read_failed"] += 1
+                parsed_url = urlparse(resource_url)
+                content_type = str(response_headers.get("content-type") or "")
+                if (resource_type == "image" and parsed_url.scheme.casefold() == "https"
+                        and int(response.status) == 200
+                        and len(pending_responses) < MAX_PAGES * 2
+                        and resource_url not in pending_responses
+                        and resource_url not in browser_bodies):
+                    pending_responses[resource_url] = {
+                        "response": response,
+                        "resource_type": resource_type,
+                        "content_type": content_type,
+                        "content_length": response_headers.get("content-length"),
+                    }
             except Exception:
                 return
         try:
@@ -1094,6 +1246,8 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         stage_end("page_setup", setup_started)
 
     def page_action(page: Any) -> None:
+        nonlocal preserved_candidates
+        page_action_started = time.monotonic()
         action_started = stage_start("page_action_initial_wait")
         if cancel_check and cancel_check():
             raise DynamicReaderError("cancelled")
@@ -1105,20 +1259,23 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         stage_end("page_action_initial_wait", action_started)
         discovery_started = stage_start("reader_discovery_and_preload")
         candidates, selector = _extract_candidates(page, url, events, cancel_check)
-        promoted_candidates: list[dict[str, Any]] = []
+        discovered_elapsed = (time.monotonic() - page_action_started) * 1000
         for item in candidates:
-            if str(item.get("source") or "") != "scrapling_dom":
-                promoted_candidates.append(item)
-                continue
-            resource_url = str(item.get("url") or "")
-            captured = browser_bodies.get(resource_url)
-            promoted = (
-                _promote_browser_response_candidate(
-                    item, captured.get("body", b""), captured.get("content_type")
-                ) if captured else None
-            )
-            promoted_candidates.append(promoted or item)
-        candidates = promoted_candidates
+            index = item.get("logical_page_index")
+            if index is not None:
+                page_discovery_elapsed_ms.setdefault(int(index), discovered_elapsed)
+        previously_materialized_indices = {
+            int(item["logical_page_index"])
+            for item in preserved_candidates
+            if item.get("logical_page_index") is not None
+            and str(item.get("source") or "") != "scrapling_dom"
+        }
+        candidates = _promote_observed_response_bodies(
+            candidates, pending_responses, browser_bodies, body_stats,
+            previously_materialized_indices=previously_materialized_indices,
+            promoted_resource_indices=promoted_resource_indices,
+            page_body_elapsed_ms=page_body_elapsed_ms,
+            reader_image_hosts=reader_image_hosts)
         scroll_diagnostics = {
             "initial_dom_count": len(candidates),
             "initial_slot_count": len(candidates),
@@ -1135,7 +1292,18 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             page, candidates=candidates, selector=selector, url=url,
             events=events, cancel_check=cancel_check,
             browser_bodies=browser_bodies, scroll_diagnostics=scroll_diagnostics,
+            pending_responses=pending_responses, body_stats=body_stats,
+            previously_materialized_indices=previously_materialized_indices,
+            promoted_resource_indices=promoted_resource_indices,
+            page_body_elapsed_ms=page_body_elapsed_ms,
+            page_action_started=page_action_started,
+            reader_image_hosts=reader_image_hosts,
         )
+        discovered_elapsed = (time.monotonic() - page_action_started) * 1000
+        for item in candidates:
+            index = item.get("logical_page_index")
+            if index is not None:
+                page_discovery_elapsed_ms.setdefault(int(index), discovered_elapsed)
         if len(candidates) <= 3:
             candidates, walked = _scroll_normal_reader(
                 page, selector, candidates, cancel_check)
@@ -1154,14 +1322,13 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             "reader_page_resource_count": len(candidates),
             "normalized_page_count": len(candidates),
         })
+        control_count = int(scroll_diagnostics.get("page_control_count") or 0)
+        candidates, missing = _merge_materialized_attempts(
+            preserved_candidates, candidates, control_count)
         logical_indices = sorted({
             int(item["logical_page_index"])
-            for item in candidates
-            if item.get("logical_page_index") is not None
+            for item in candidates if item.get("logical_page_index") is not None
         })
-        control_count = int(scroll_diagnostics.get("page_control_count") or 0)
-        missing = [index for index in _expected_page_indices(control_count)
-                   if index not in logical_indices]
         scroll_diagnostics["logical_page_indices"] = logical_indices
         scroll_diagnostics["missing_page_indices"] = missing
         fallback_candidates: list[dict[str, Any]] = []
@@ -1188,6 +1355,8 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                 # A fresh, bounded budget per page: a slow page cannot consume the budget
                 # meant for the pages after it.
                 page_started = time.monotonic()
+                page_metrics: dict[str, float | None] = {
+                    "navigation_ms": None, "render_wait_ms": None, "canvas_capture_ms": 0.0}
                 page_deadline = min(page_started + per_page_budget, chapter_deadline)
                 attempts: list[str] = []
                 for attempt in range(1, MAX_CANONICAL_ATTEMPTS + 1):
@@ -1197,6 +1366,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                         # A retry starts a fresh logical/render/network epoch.  The page
                         # is deliberately re-navigated; no stale canvas or body is reused.
                         try:
+                            navigation_started = time.monotonic()
                             page.evaluate("(index) => window.__yomuCanvasDiag?.markNavigation(index)", page_index)
                         except Exception:
                             pass
@@ -1246,6 +1416,9 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                                 and (not state.get("canvas_label_index")
                                      or state.get("canvas_label_index") == page_index)
                             )
+                            if identity_ok and page_metrics["navigation_ms"] is None:
+                                page_metrics["navigation_ms"] = round(
+                                    (time.monotonic() - navigation_started) * 1000, 1)
                             overlay = _read_reader_overlay_state(page)
                             if _overlay_blocks_capture(overlay):
                                 # Comix can reopen Settings when jumping to a missing
@@ -1277,6 +1450,10 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                                     and (int(lifecycle.get("draw_count") or 0) == 0
                                          or float(lifecycle.get("no_draw_ms") or 0) >= 220)):
                                 loaded = True
+                                navigation_ms = float(page_metrics["navigation_ms"] or 0)
+                                page_metrics["render_wait_ms"] = round(max(
+                                    0.0, (time.monotonic() - navigation_started) * 1000
+                                    - navigation_ms), 1)
                                 break
                         if not loaded:
                             attempts.append("render_timeout")
@@ -1293,6 +1470,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                                 scroll_diagnostics["fallback_last_page_timeout_substage"] = readiness_stage
                                 break
                             continue
+                        capture_started = time.monotonic()
                         page.evaluate(
                             """() => new Promise(resolve => {
                               let count = 0;
@@ -1319,6 +1497,9 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                             or hashlib.sha256(first_bytes).digest()
                             != hashlib.sha256(second_bytes).digest()
                         ):
+                            page_metrics["canvas_capture_ms"] = round(
+                                float(page_metrics["canvas_capture_ms"] or 0)
+                                + (time.monotonic() - capture_started) * 1000, 1)
                             attempts.append("frame_not_stable")
                             continue
                         candidate = stable_candidate
@@ -1347,6 +1528,9 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                             page_index,
                         ) or {}
                         fallback_candidates.append(candidate)
+                        page_metrics["canvas_capture_ms"] = round(
+                            float(page_metrics["canvas_capture_ms"] or 0)
+                            + (time.monotonic() - capture_started) * 1000, 1)
                         attempts.append("pass")
                         break
                     except Exception as exc:
@@ -1356,6 +1540,11 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                 page_elapsed_ms[str(page_index)] = round(
                     (time.monotonic() - page_started) * 1000, 1)
                 fallback_attempts[page_index] = attempts
+                page_stage_metrics[page_index] = {
+                    **page_metrics,
+                    "total_materialization_ms": page_elapsed_ms[str(page_index)],
+                    "attempt": float(len(attempts)),
+                }
             stage_end("missing_page_materialization", materialization_started)
         if fallback_candidates:
             candidates, _ = _merge_logical_candidates(
@@ -1367,6 +1556,33 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         })
         final_missing = [index for index in _expected_page_indices(control_count)
                          if index not in final_indices]
+        candidate_by_index = {
+            int(item["logical_page_index"]): item
+            for item in candidates if item.get("logical_page_index") is not None
+        }
+        for page_index in _expected_page_indices(control_count):
+            item = candidate_by_index.get(page_index)
+            result_source = str(item.get("source") or "pending") if item else "pending"
+            page_metrics = page_stage_metrics.get(page_index, {})
+            body_ms = float(page_body_elapsed_ms.get(page_index, 0.0))
+            canvas_ms = float(page_metrics.get("canvas_capture_ms") or 0.0)
+            fallback_total = float(page_metrics.get("total_materialization_ms") or 0.0)
+            total_ms = round(body_ms + fallback_total, 1)
+            _append_telemetry(
+                "comix_page_materialization",
+                status="success" if item and result_source != "scrapling_dom" else "pending",
+                canonical_index=page_index,
+                discovery_ms=round(page_discovery_elapsed_ms.get(page_index, 0.0), 1),
+                navigation_ms=page_metrics.get("navigation_ms", 0.0) or 0.0,
+                render_wait_ms=page_metrics.get("render_wait_ms", 0.0) or 0.0,
+                response_body_ms=round(body_ms, 1),
+                canvas_capture_ms=round(canvas_ms, 1),
+                total_materialization_ms=total_ms,
+                attempt=int(page_metrics.get("attempt") or 0),
+                failure_stage=(fallback_attempt_diagnostics.get(str(page_index), {})
+                               .get("timeout_substage") if result_source == "pending" else ""),
+                result_source=result_source,
+            )
         scroll_diagnostics.update({
             "fallback_navigation_count": len(missing),
             "fallback_resolved_count": len(fallback_candidates),
@@ -1392,6 +1608,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             "normalized_page_count": len(candidates),
         })
         result_holder["candidates"] = candidates[:MAX_PAGES]
+        preserved_candidates = list(result_holder["candidates"])
         result_holder["selector"] = selector
         result_holder["scroll_diagnostics"] = scroll_diagnostics
         result_holder["canvas_captured"] = len(fallback_candidates)
@@ -1410,6 +1627,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
     candidates: list[dict[str, Any]] = []
     final_missing: list[int] = []
     prev_pending_count: int | None = None
+    prev_materialized_count: int | None = None
     for attempt in range(1, MAX_RESOLUTION_ATTEMPTS + 1):
         remaining = remaining_seconds("dynamic_fetch")
         if attempt > 1:
@@ -1418,6 +1636,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             result_holder.clear()
             events.clear()
             browser_bodies.clear()
+            pending_responses.clear()
         try:
             fetch_started = stage_start("dynamic_fetch")
             response = _DynamicFetcher.fetch(
@@ -1467,17 +1686,20 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                 attempt=attempt, max_attempts=MAX_RESOLUTION_ATTEMPTS,
                 pending_count=len(pending), pending_indices=pending[:30],
                 materialized_count=materialized_count,
-                new_pages=(0 if prev_pending_count is None
-                           else max(0, prev_pending_count - len(pending))),
+                expected_count=len(_expected_page_indices(
+                    int((result_holder.get("scroll_diagnostics") or {}).get("page_control_count") or 0))),
+                final_missing_count=len(final_missing),
+                new_pages=(materialized_count if prev_materialized_count is None
+                           else max(0, materialized_count - prev_materialized_count)),
+                pending_before=prev_pending_count,
+                pending_after=len(pending),
+                new_materialized=(materialized_count if prev_materialized_count is None
+                                  else max(0, materialized_count - prev_materialized_count)),
                 remaining_budget_ms=int(remaining_budget * 1000),
                 elapsed_ms=round((time.monotonic() - started) * 1000, 1),
                 # Response-body utility is emitted on the terminal telemetry too, so a
                 # failing run (the common Comix case) still reports the capture reduction.
-                body_capture_count=body_stats["captured"],
-                body_read_failed=body_stats["read_failed"],
-                body_skip_dedup=body_stats["dedup"],
-                body_skip_content_type=body_stats["content_type"],
-                body_skip_oversize=body_stats["oversize"],
+                **body_telemetry(),
                 body_promoted=sum(1 for item in candidates
                                   if str(item.get("source") or "") == "browser_response_body"),
             )
@@ -1502,6 +1724,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             _append_telemetry("dynamic_resolution_retry", status="retry",
                               error_code="canonical_materialization_failed", **telemetry)
             prev_pending_count = len(pending)
+            prev_materialized_count = materialized_count
             remaining_seconds("resolution_retry")
             continue
         if failure == "no_reader_images":
@@ -1516,11 +1739,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
     # transform its body; DOM image URLs are the selected public source of truth.
     _append_telemetry(
         "dynamic_body_capture_summary", status="ok",
-        body_capture_count=body_stats["captured"],
-        body_read_failed=body_stats["read_failed"],
-        body_skip_dedup=body_stats["dedup"],
-        body_skip_content_type=body_stats["content_type"],
-        body_skip_oversize=body_stats["oversize"],
+        **body_telemetry(),
         body_promoted=sum(1 for item in candidates
                           if str(item.get("source") or "") == "browser_response_body"),
         elapsed_ms=round((time.monotonic() - started) * 1000, 1),
