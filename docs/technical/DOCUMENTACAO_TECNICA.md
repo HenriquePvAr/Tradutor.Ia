@@ -1,6 +1,6 @@
 # Tradutor IA — Documentação Técnica
 
-> **Base verificada:** `ecf097d` (branch `feat/passive-ads-adsterra`)
+> **Base verificada:** `5c651ba` (branch `main`)
 > **Última revisão:** 2026-09-25
 > **Público:** desenvolvedores, mantenedores, suporte técnico e agentes automatizados.
 
@@ -2402,6 +2402,47 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
   densas continuam exigindo revisão humana.
 - Um site sem adapter específico pode passar pela análise universal, mas isso **não**
   significa que ele é suportado.
+
+### Consolidação de runtime e resolver Comix (2026-09-25)
+
+**Sessão desktop persistente.** O WebView2 do desktop usa agora um perfil **persistente por
+usuário** em `%LOCALAPPDATA%\YomuSekai\webview-profile` (`desktop_app._persistent_webview_profile_dir`,
+passado via `storage_path`/`private_mode=False` em `webview.start`). A sessão Supabase
+sobrevive a reinícios do app — não há novo login manual a cada abertura (validado
+fisicamente: reabrir o mesmo build reautenticou sem digitar credenciais, bootstrap `200`,
+wallet `ready`).
+
+**Host canônico de anúncios.** Os criativos de anúncio passivo usam o host canônico
+`yomusekai.com.br` (placements `home`/`queue`/`translated-chapters`), com
+`game-deals-alpha.vercel.app` para `new-translation`/`rewards`. `ad_url_policy.py` centraliza
+a política: HTTPS obrigatório, caminho `/ad/`, sem traversal/credencial/porta, allow-list
+`{yomusekai.com.br, henriquepvar.github.io (legado), game-deals-alpha.vercel.app}`;
+`canonical_ad_url` reescreve **apenas** o legado GitHub Pages para o canônico e
+`is_allowed_ad_navigation` aceita só same-origin ou o redirect legado→canônico. A CSP
+`frame-src` (SecurityHeadersMiddleware) allow-lista exatamente esses hosts (sem wildcard).
+A superfície nativa (`NativeAdSurface`) renderiza fora da CSP; o iframe web é o fallback.
+
+**Resolver dinâmico Comix (bounded).** Fluxo: preflight HTTP → challenge/anti-bot
+(`CHALLENGE_REQUIRED`) → `down.discover_chapter_source` encaminha o comix ao **resolver
+dinâmico** (navegador normal do produto; **sem** bypass de CAPTCHA/proxy/stealth). O resolver
+roda **isolado em subprocesso** (`resolve` → `_resolve_in_child_process` →
+`dynamic_resolver_process.py`, reaproveitado como child role em `start_tradutor`) sob um
+**deadline global de 180 s** (`DYNAMIC_RESOLVER_DEADLINE_SECONDS`) com reserva de cleanup.
+Contrato de retry/progresso (`_materialization_retry_decision`): `no_progress` só quando uma
+**retentativa** não reduz o pending (uma 1ª passada intermitente ainda tem direito ao retry
+bounded); `budget_insufficient` quando não cabe outra passada com a margem de cleanup;
+`failed` ao esgotar tentativas. Captura de `response.body()` filtrada por metadata barata
+(`_should_read_response_body`: dedup por URL, `content-type`/`content-length`), reduzindo
+leituras redundantes **sem perder cobertura** (só descarta o que a promoção rejeitaria).
+
+**Limitação conhecida — capítulos Comix grandes.** Um capítulo com muitas páginas (ex.: ~147
+slots) **não** materializa por completo dentro dos 180 s: a materialização por canvas é
+serial e lenta. O resultado é um **erro terminal seguro e específico**
+(`canonical_materialization_retry_budget_insufficient` / `dynamic_source_unavailable`), nunca
+um NameError, hang, loop ou `source_analysis_failed` genérico. **Não é bypass de CAPTCHA** (o
+navegador normal ultrapassa o challenge e materializa páginas parciais). Paralelizar a
+materialização (K≥2) exigiria Playwright async/multiprocesso fora da abstração sync da
+Scrapling e fica como trabalho futuro.
 
 ## 30. Empacotamento, updater e prontidão para Beta
 
