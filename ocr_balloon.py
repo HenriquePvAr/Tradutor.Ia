@@ -3184,6 +3184,127 @@ def _set_group_classification(
     group.classification_evidence = dict(evidence or {})
 
 
+# --- conservative recovery of ordinary story text the region detectors missed --
+# A short line such as "PERFECTLY FINE." lettered over artwork (no balloon/box)
+# lands as ``classification="unknown" / weak_unknown_text`` and is dropped before
+# translation, even next to a translated dialogue balloon.  Recovering it must
+# never open the door to translating sound effects, so promotion requires several
+# independent signals AND spatial adjacency to a real story region; every listed
+# SFX (single onomatopoeic tokens, no sentence shape, isolated on art) fails it.
+_STORY_ANCHOR_EXCLUDED_CLASSES = frozenset({"sfx", "decorative", "unknown"})
+
+
+def _group_is_story_anchor(group):
+    """A region already accepted as translatable story text on this page."""
+    return (
+        not getattr(group, "ignored", False)
+        and not getattr(group, "preserve_as_name", False)
+        and str(getattr(group, "classification", "")) not in _STORY_ANCHOR_EXCLUDED_CLASSES
+    )
+
+
+def _is_sfx_shaped_token(folded):
+    """A token whose shape alone marks it as onomatopoeia, not a real word."""
+    if not folded:
+        return True
+    if folded in SFX_WORDS:
+        return True
+    if not any(ch in "AEIOUY" for ch in folded):
+        return True  # vowelless cluster (SCRRCH, FWHISH-like)
+    if re.search(r"(.)\1\1", folded):
+        return True  # a run of 3+ of the same character (BRRR, AAAH)
+    return False
+
+
+def _conservative_story_promotion_signals(group):
+    """Lexical/structural evidence that a weak-unknown region is real story text.
+
+    Deliberately strict and combined - never "English + confidence = speech":
+    high OCR confidence, a sentence-final clause, at least two real dictionary
+    words, none of them sound-effect shaped, and a horizontal reading layout.
+    A lone SFX token, a label or OCR gibberish fails at least one signal.
+    """
+    if float(getattr(group, "confidence", 0.0) or 0.0) < 0.90:
+        return False
+    text = clean_ocr_text(group.text)
+    if not re.search(r"[.!?…][\"'\)”]?\s*$", text):
+        return False
+    words = re.findall(r"[A-Za-zÀ-ÿ']+", text)
+    folded = [re.sub(r"[^A-Z']", "", _ascii_fold(word).upper()).strip("'") for word in words]
+    folded = [word for word in folded if word]
+    if len(folded) < 2:
+        return False
+    if any(_is_sfx_shaped_token(word) for word in folded):
+        return False
+    real_words = [word for word in folded if region_taxonomy._is_real_word(word)]
+    # Pronouns/function words ("I", "OF", "A") are real speech but not dictionary
+    # content words; count them toward the two-token minimum while still requiring
+    # at least one content word, so "I SEE." qualifies but "TAP TAP" cannot.
+    meaningful = [
+        word for word in folded
+        if region_taxonomy._is_real_word(word)
+        or word in region_taxonomy._STORY_CLAUSE_MARKERS
+    ]
+    if len(meaningful) < 2 or not real_words:
+        return False
+    if abs(float(getattr(group, "angle_degrees", 0.0) or 0.0)) >= 7:
+        return False
+    if float(getattr(group, "alignment_score", 0.0) or 0.0) < 0.6:
+        return False
+    return True
+
+
+def _boxes_adjacent(a, b, *, gap_factor=1.3):
+    """True when two region boxes sit close enough to share a reading flow."""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    vertical_gap = max(ay, by) - min(ay + ah, by + bh)
+    horizontal_gap = max(ax, bx) - min(ax + aw, bx + bw)
+    return (
+        vertical_gap <= gap_factor * max(ah, bh)
+        and horizontal_gap <= gap_factor * max(aw, bw)
+    )
+
+
+def _promote_unknown_story_on_adjacency(groups, page_index=None):
+    """Second pass: rescue weak-unknown story text that sits next to real story.
+
+    Runs after every region has its final class, so it can use page-level
+    adjacency the per-region policy cannot see.  Only weak_unknown_text/unknown
+    regions are eligible, and only when both the lexical signals and a nearby
+    accepted story region agree.  Telemetry is sanitized (never the text)."""
+    anchors = [group for group in groups if _group_is_story_anchor(group)]
+    for group in groups:
+        if not (
+            getattr(group, "ignored", False)
+            and getattr(group, "ignore_reason", "") == "weak_unknown_text"
+            and str(getattr(group, "classification", "")) == "unknown"
+        ):
+            continue
+
+        def _mark_rejected(reason_code):
+            evidence = dict(getattr(group, "classification_evidence", {}) or {})
+            evidence["unknown_story_promotion"] = "UNKNOWN_STORY_PROMOTION_REJECTED"
+            evidence["unknown_story_promotion_reason"] = reason_code
+            group.classification_evidence = evidence
+
+        if not _conservative_story_promotion_signals(group):
+            _mark_rejected("insufficient_signals")
+            continue
+        if not any(_boxes_adjacent(group.box, anchor.box)
+                   for anchor in anchors if anchor is not group):
+            _mark_rejected("no_adjacent_story_region")
+            continue
+        group.ignored = False
+        group.ignore_reason = ""
+        group.inside_balloon_like_region = True
+        _set_group_classification(
+            group, "speech", "unknown_story_promoted_by_adjacency",
+            confidence=float(getattr(group, "confidence", 0.0) or 0.0),
+            evidence={"unknown_story_promotion": "UNKNOWN_STORY_PROMOTION_ACCEPTED",
+                      "adjacent_story_region": True})
+
+
 def _classify_groups(groups, image_bgr, page_index=None):
     h_img, w_img = image_bgr.shape[:2]
     editorial_evidence_by_group = _editorial_graphic_evidence(groups, image_bgr)
@@ -3433,6 +3554,11 @@ def _classify_groups(groups, image_bgr, page_index=None):
             fallback_used=bool(group.fallback_used),
             dominant_step="classification",
         )
+
+    # Page-level second pass: recover ordinary story text the per-region policy
+    # dropped as weak_unknown_text when it sits adjacent to a real story region.
+    with profile_step("classify.unknown_story_adjacency", page_index=page_index):
+        _promote_unknown_story_on_adjacency(groups, page_index=page_index)
 
 
 def _lettering_is_saturated_effect_art(metrics):
@@ -8739,6 +8865,12 @@ def validate_and_retry_translations(
             group.translation
         )
         latest_candidate = original_candidate
+        # The verdict a retry inherits if it produces nothing new.  An empty or
+        # errored retry casts no judgement on the first-pass candidate, so it must
+        # not overwrite this with "empty_translation" and downgrade a quality-only
+        # hold (which the finalize rescue would ship as PT-BR under review) into an
+        # untranslated-source failure that leaves English on the page.
+        pre_retry_reason = reason
         _ensure_local_source_recovery_before_retry(
             group,
             reason,
@@ -8852,8 +8984,14 @@ def validate_and_retry_translations(
                     fidelity_verifier=fidelity_verifier,
                     fidelity_stats=fidelity_stats,
                 )
-            else:
+            elif candidate:
+                # A non-empty but invalid retry candidate is a real new verdict.
                 reason = new_reason
+            else:
+                # The retry produced nothing (empty or errored): keep the
+                # first-pass reason so a quality-only hold still ships its PT-BR
+                # under review instead of falling back to the English source.
+                reason = pre_retry_reason
 
         if group.translation_valid:
             continue
@@ -13658,10 +13796,28 @@ _FONT_ROLE_BY_TEXT_ROLE = {
 }
 
 
+# ``ink_display``/``high_contrast_display`` are shape-agnostic: they mean "high
+# contrast lettering", not a specific styled intent (unlike the colour-coded
+# ``dramatic_red_display``/``mystic_blue_system``).  A structural story role must
+# therefore keep its own semantic font instead of being flattened into the
+# dramatic impact/bahnschrift ``display`` bucket - e.g. a plain/serif narration
+# box read as black ink on art must stay ``narration_box``, not ``display``.
+_SHAPE_ONLY_VISUAL_CLASSES = frozenset({"ink_display", "high_contrast_display"})
+_SEMANTIC_ROLES_OVER_SHAPE_VISUAL = frozenset(
+    {"narration", "caption", "thought", "system", "location"}
+)
+
+
 def _resolve_font_role(text_role, visual_class, font_class):
     """Pick a semantic font role from classifier output alone (no hardcode)."""
-    role = _STRONG_VISUAL_CLASS_ROLES.get(str(visual_class or ""))
+    visual = str(visual_class or "")
+    text = str(text_role or "")
+    role = _STRONG_VISUAL_CLASS_ROLES.get(visual)
     if role:
+        if visual in _SHAPE_ONLY_VISUAL_CLASSES and text in _SEMANTIC_ROLES_OVER_SHAPE_VISUAL:
+            semantic_role = _FONT_ROLE_BY_TEXT_ROLE.get(text)
+            if semantic_role:
+                return semantic_role, "semantic_role_over_shape_visual_class"
         return role, "visual_class_mapping"
     role = _FONT_ROLE_BY_TEXT_ROLE.get(str(text_role or ""))
     if role:
