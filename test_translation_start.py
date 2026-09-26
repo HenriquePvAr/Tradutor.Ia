@@ -96,7 +96,8 @@ class _Bridge(ui_bridge.UiBridge):
         self.worker_calls += 1
         return {"online": False, "started": False}
 
-    def _analyze_source(self, _url, *, cancel_check=None, on_progress=None):
+    def _analyze_source(self, _url, *, cancel_check=None, on_progress=None,
+                        diagnostic_callback=None, max_pages=None):
         return SimpleNamespace(
             outcome=SUPPORTED_SPECIFIC_ADAPTER,
             accepted=[],
@@ -108,10 +109,13 @@ class _Bridge(ui_bridge.UiBridge):
             },
         )
 
-    async def _run_source_analysis(self, url, *, cancel_check=None):
+    async def _run_source_analysis(self, url, *, cancel_check=None,
+                                   diagnostic_callback=None, max_pages=None):
         # Keep the hermetic bridge synchronous to the tiny manual coroutine driver below;
         # production uses asyncio.to_thread so Selenium never blocks the UI event loop.
-        return self._analyze_source(url, cancel_check=cancel_check)
+        return self._analyze_source(
+            url, cancel_check=cancel_check,
+            diagnostic_callback=diagnostic_callback, max_pages=max_pages)
 
 
 def drive(coro):

@@ -137,7 +137,7 @@ class OfflineFivePageReplayTests(unittest.TestCase):
                                     CLASSIFICATION_PROFILING=False, POST_RENDER_OCR_VALIDATION=False,
                                     VISUAL_DIFF_VALIDATION=False, TRANSLATION_VALIDATION=True,
                                     TRANSLATION_RETRY_ON_MIXED_LANGUAGE=True, TRANSLATE_SFX=False),
-                mock.patch.dict("os.environ", {"TRANSLATION_ENABLED": "true", "YOMU_ENV": "test", "YOMU_TEST_BACKEND": "mock"}, clear=False),
+                mock.patch.dict("os.environ", {"TRANSLATION_ENABLED": "true", "YOMU_ENV": "test", "YOMU_TEST_BACKEND": "mock", "TRADUTOR_OUTPUT_ROOT": str(root / "output")}, clear=False),
             ):
                 report = benchmark_pipeline.run_benchmark(args)
 

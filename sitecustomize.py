@@ -23,6 +23,11 @@ def _is_test_invocation(
     env = os.environ if environment is None else environment
     if env.get("TRADUTOR_IA_OFFLINE_TEST_GUARD") == "1":
         return True
+    if argv is None:
+        original = list(getattr(sys, "orig_argv", ()) or ())
+        for index, token in enumerate(original[:-1]):
+            if token == "-m" and original[index + 1].casefold() in {"unittest", "pytest"}:
+                return True
     entry_path = Path(str(values[0] if values else ""))
     entrypoint = entry_path.name.casefold()
     path_parts = {part.casefold() for part in entry_path.parts}

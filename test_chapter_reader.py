@@ -354,11 +354,11 @@ def test_history_reads_inside_the_app_and_keeps_the_external_viewer_secondary():
     source = UI_JS.read_text(encoding="utf-8")
     assert "data-action=\"read\"" in source
     assert "tradutor-open-reader" in source
-    # The external viewer survives, but no longer as the primary read action.
-    assert "actionButton('Abrir externamente', 'pdf', record.pdf_path)" in source
-    assert "actionButton('Abrir PDF', 'pdf'" not in source
+    # The external viewer survives, but no longer as the primary read action. It is now the
+    # format-aware "Abrir PDF" action (offered only for a PDF job), kept after the in-app read.
+    assert "actionButton('Abrir PDF', 'pdf', record.pdf_path)" in source
     read_index = source.index("readAction(record)")
-    external_index = source.index("actionButton('Abrir externamente'")
+    external_index = source.index("actionButton('Abrir PDF', 'pdf', record.pdf_path)")
     assert read_index < external_index
 
 

@@ -40,17 +40,42 @@ class SmartWebtoonSplitTests(unittest.TestCase):
 
     def test_unconfirmed_remote_smart_split_still_collects_full_chapter(self):
         with mock.patch.object(benchmark_pipeline.config, "SMART_WEBTOON_PDF_SPLIT", True):
+            # A full (unbounded) run of an unconfirmed remote smart split collects the whole
+            # chapter, so split boundaries are computed from the complete source.
             self.assertIsNone(
                 _resolve_download_max_images(
-                    2,
+                    None,
                     selected_page_indices=[],
                     local_manifest_path="",
                     source_candidate_ids=[],
                 )
             )
+            # An explicit bounded request is an execution contract and stays bounded even for
+            # an unconfirmed smart split (partial scope wins over full-chapter collection).
+            self.assertEqual(
+                _resolve_download_max_images(
+                    2,
+                    selected_page_indices=[],
+                    local_manifest_path="",
+                    source_candidate_ids=[],
+                ),
+                2,
+            )
 
     def test_local_manifest_page_selection_preserves_required_source_extent(self):
         with mock.patch.object(benchmark_pipeline.config, "SMART_WEBTOON_PDF_SPLIT", True):
+            # An unbounded run with a local-manifest page selection extends the source
+            # download to cover the highest selected page.
+            self.assertEqual(
+                _resolve_download_max_images(
+                    None,
+                    selected_page_indices=[4],
+                    local_manifest_path="snapshot.json",
+                    source_candidate_ids=[],
+                ),
+                4,
+            )
+            # An explicit bounded request stays bounded even with a manifest selection.
             self.assertEqual(
                 _resolve_download_max_images(
                     2,
@@ -58,7 +83,7 @@ class SmartWebtoonSplitTests(unittest.TestCase):
                     local_manifest_path="snapshot.json",
                     source_candidate_ids=[],
                 ),
-                4,
+                2,
             )
 
     def test_logical_page_indices_are_selected_after_split(self):

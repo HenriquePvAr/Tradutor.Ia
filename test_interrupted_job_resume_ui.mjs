@@ -285,6 +285,12 @@ async function loadUi({ resumeResponse } = {}) {
     location: { search: '', hostname: '127.0.0.1', origin: 'http://127.0.0.1:8080' },
     URLSearchParams,
     URL,
+    CustomEvent: class CustomEvent {
+      constructor(type, options = {}) {
+        this.type = type;
+        Object.assign(this, options);
+      }
+    },
     crypto: { randomUUID: () => 'synthetic-correlation' },
     performance: { now: () => 0 },
     console,
@@ -296,6 +302,7 @@ async function loadUi({ resumeResponse } = {}) {
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     addEventListener() {},
+    dispatchEvent() { return true; },
     AbortController,
     sessionStorage: { getItem: () => '[]', setItem() {}, removeItem() {}, clear() {} },
     localStorage: { getItem: () => null, setItem() {}, removeItem() {}, clear() {} },

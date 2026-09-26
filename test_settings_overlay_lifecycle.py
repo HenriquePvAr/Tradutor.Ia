@@ -56,6 +56,13 @@ def _call(page, scroll_diagnostics):
         events=[],
         cancel_check=None,
         browser_bodies={},
+        pending_responses={},
+        body_stats={},
+        previously_materialized_indices=set(),
+        promoted_resource_indices={},
+        page_body_elapsed_ms={},
+        page_action_started=0.0,
+        reader_image_hosts=set(),
         scroll_diagnostics=scroll_diagnostics,
     )
 

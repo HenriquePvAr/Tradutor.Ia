@@ -31,7 +31,19 @@ DRIVE_ENV_KEYS = (
 
 
 @pytest.fixture(autouse=True)
-def isolated_drive_environment(monkeypatch):
+def isolated_drive_environment(monkeypatch, tmp_path_factory):
+    # The Drive CLI calls load_local_environment(env_path=None), which pairs the base
+    # .env with the real PROJECT_ROOT/.env.local override.  Tests delete HERMETIC_TEST_ENV
+    # so the loader does not early-return, so an un-redirected override path pulls the real
+    # .env.local into os.environ.  It defines BETA_LICENSE_PROVIDER=supabase, a key that is
+    # not pre-existing and therefore never restored by the loader's override guard, so it
+    # leaked into the whole session and made every later UiBridge() build a Supabase beta
+    # authorizer that fails closed on the absent SUPABASE_URL.  Point both project env paths
+    # at an empty isolated directory so no test here can ever read the real files.
+    empty_env_dir = tmp_path_factory.mktemp("drive-env-isolation")
+    monkeypatch.setattr(local_environment, "LOCAL_ENV_PATH", empty_env_dir / ".env")
+    monkeypatch.setattr(
+        local_environment, "LOCAL_ENV_OVERRIDE_PATH", empty_env_dir / ".env.local")
     for key in DRIVE_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     yield

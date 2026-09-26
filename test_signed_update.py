@@ -302,6 +302,22 @@ class VersionPolicyTests(unittest.TestCase):
         self.assertEqual(decision.state, "downgrade_rejected")
         self.assertFalse(decision.should_install)
 
+    def test_beta15_updates_to_beta16_and_beta16_is_current_without_loop(self):
+        beta16 = self._manifest(
+            version="0.9.1-beta.16", minimum_version="0.9.1-beta.15")
+        from_beta15 = update_manifest.decide_update("0.9.1-beta.15", beta16)
+        self.assertEqual(from_beta15.state, "update_available")
+        self.assertEqual(from_beta15.version, "0.9.1-beta.16")
+        at_beta16 = update_manifest.decide_update("0.9.1-beta.16", beta16)
+        self.assertEqual(at_beta16.state, "up_to_date")
+        self.assertFalse(at_beta16.should_install)
+
+        beta15 = self._manifest(
+            version="0.9.1-beta.15", minimum_version="0.9.1-beta.14")
+        downgrade = update_manifest.decide_update("0.9.1-beta.16", beta15)
+        self.assertEqual(downgrade.state, "downgrade_rejected")
+        self.assertFalse(downgrade.should_install)
+
     def test_current_below_minimum_version_is_mandatory(self):
         decision = update_manifest.decide_update("0.9.0", self._manifest())
         self.assertEqual(decision.state, "mandatory_update")

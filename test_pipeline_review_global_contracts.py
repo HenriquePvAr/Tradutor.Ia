@@ -1022,9 +1022,11 @@ class ReviewModeNavigationContracts(unittest.TestCase):
             source.index("applyCanonicalAuthSurface(getGlobal('__tradutorAuthState')")
         ]
         self.assertIn("clearPrivateUiForAuthTransition", listener)
+        # The listener now refreshes the bootstrap through the __tradutorRefreshBootstrap
+        # indirection (void refresh()), but private review must still be cleared first.
         self.assertLess(
             listener.index("clearPrivateUiForAuthTransition"),
-            listener.index("void refreshBootstrap()"),
+            listener.index("void refresh()"),
         )
 
 

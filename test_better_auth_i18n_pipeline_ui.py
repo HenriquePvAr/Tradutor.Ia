@@ -150,7 +150,7 @@ class BetterAuthServiceScaffoldTests(unittest.TestCase):
     def test_service_uses_better_auth_and_hono(self):
         self.assertIn('"better-auth": "1.6.24"', read("apps/auth-service/package.json"))
         self.assertIn('"better-sqlite3": "12.11.1"', read("apps/auth-service/package.json"))
-        self.assertIn('"hono": "4.12.31"', read("apps/auth-service/package.json"))
+        self.assertIn('"hono": "4.13.7"', read("apps/auth-service/package.json"))
         self.assertIn("emailAndPassword", read("apps/auth-service/src/auth.ts"))
         self.assertIn("/internal/auth/session", read("apps/auth-service/src/server.ts"))
 
@@ -286,10 +286,10 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
     def test_login_uses_authorized_local_comic_assets(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
         self.assertIn('/static/assets/auth/comic-original.png', auth_fragment)
-        self.assertIn('/static/assets/auth/comic-translated.png', auth_fragment)
-        self.assertEqual(auth_fragment.count('class="auth-comic-image"'), 2)
+        self.assertIn('id="authProductCarousel"', auth_fragment)
+        self.assertIn('class="auth-product-real-slides"', auth_fragment)
+        self.assertEqual(auth_fragment.count('class="auth-comic-image"'), 1)
         self.assertIn('alt="Página original em inglês"', auth_fragment)
-        self.assertIn('alt="Página traduzida para português"', auth_fragment)
         self.assertIn("auth-login-illustration", auth_fragment)
         self.assertIn("auth-comic-page", auth_fragment)
         self.assertNotIn("auth-visual-art", auth_fragment)
@@ -443,7 +443,7 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertIn("visual_auth_without_presentation", self.auth_js)
         self.assertIn("window.__tradutorVisualTestEnabled === true", self.auth_js)
         self.assertIn("['127.0.0.1', 'localhost', '::1']", self.auth_js)
-        self.assertEqual(self.auth_js.count("addEventListener('submit'"), 1)
+        self.assertEqual(self.auth_js.count("canonicalAuthSubmitImpl = handleAuthSubmit"), 1)
         self.assertIn("setAuthState('auth_submitting')", self.auth_js)
         self.assertIn("setSubmitLoading(submit, true, 'Entrando…')", self.auth_js)
         self.assertIn("button.setAttribute('aria-disabled', String(isLoading))", self.auth_js)
@@ -530,15 +530,16 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         ]
         self.assertNotIn('id="authCompare" aria-hidden="true"', illustration)
         self.assertIn('alt="Página original em inglês"', illustration)
-        self.assertIn('alt="Página traduzida para português"', illustration)
-        self.assertIn("auth-translation-core", illustration)
-        self.assertEqual(illustration.count("<img"), 2)
+        self.assertIn('id="authProductCarousel"', illustration)
+        self.assertIn('aria-label="Áreas reais do Yomu Sekai"', illustration)
+        self.assertIn('data-preview-sources="view-inicio,view-nova,view-queue,view-hist,view-leitor,view-community,view-profile"', illustration)
+        self.assertEqual(illustration.count("<img"), 1)
         self.assertNotIn('src="http://', illustration)
         self.assertNotIn('src="https://', illustration)
 
     def test_form_uses_approved_premium_copy_without_unimplemented_links_or_claims(self):
         auth_fragment = self.shell[self.shell.index('id="authSurface"'):]
-        self.assertIn("Tradutor.<span>IA</span>", auth_fragment)
+        self.assertIn('<strong>YOMU <span>SEKAI</span></strong>', auth_fragment)
         self.assertIn("Faça login para continuar traduzindo suas histórias.", auth_fragment)
         self.assertIn("Seus projetos permanecem privados na sua conta.", auth_fragment)
         self.assertIn('id="authRecoveryLink"', auth_fragment)

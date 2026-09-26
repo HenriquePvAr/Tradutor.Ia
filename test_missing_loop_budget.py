@@ -17,7 +17,10 @@ class MissingBudgetModelTest(unittest.TestCase):
     # A) N unresolved pages do NOT share one fixed deadline: the budget scales with N.
     def test_budget_scales_with_unresolved_count_not_fixed_30s(self):
         self.assertEqual(r._missing_chapter_budget_seconds(2), BASE + 2 * PER)
-        self.assertEqual(r._missing_chapter_budget_seconds(10), BASE + 10 * PER)
+        # Scales linearly with N, bounded by the conscious hard safety ceiling (CAP): a
+        # 10-canvas chapter would be BASE + 10*PER but is clamped to CAP, and the whole
+        # resolution is bounded by the global deadline anyway.
+        self.assertEqual(r._missing_chapter_budget_seconds(10), min(CAP, BASE + 10 * PER))
         # No longer capped at the old shared 30s for a real 10-canvas chapter.
         self.assertGreater(r._missing_chapter_budget_seconds(10), 30.0)
 

@@ -177,6 +177,11 @@ class HermeticTestBoundaryTests(unittest.TestCase):
         self.assertFalse(sitecustomize._is_test_invocation(
             ["run_webtoon.py", "--output", "pytest_demo"], {}
         ))
+        with patch.object(sitecustomize.sys, "argv", ["python.exe"]), patch.object(
+            sitecustomize.sys, "orig_argv", ["python.exe", "-m", "unittest", "discover"],
+            create=True,
+        ):
+            self.assertTrue(sitecustomize._is_test_invocation())
 
     @staticmethod
     def _has_early_unittest_guard(path: Path) -> bool:
@@ -212,6 +217,7 @@ class HermeticTestBoundaryTests(unittest.TestCase):
         # Walk source directories only. Descending into ``output`` or ``.cache`` would read
         # the user's real run artifacts, which the runtime guard refuses (TDD #55).
         skipped = {"__pycache__", "__pypackages__", ".git", "output", ".cache",
+                   ".local-audit", "build", "dist", "outputs", "diagnostics",
                    "node_modules", "tmp"}
 
         def is_source_dir(name: str) -> bool:
@@ -229,7 +235,14 @@ class HermeticTestBoundaryTests(unittest.TestCase):
                 or name.endswith("_test.py")
             )
         tests = sorted(candidates)
-        missing = [str(path.relative_to(root)) for path in tests if not self._has_early_unittest_guard(path)]
+        # Direct ``python -m unittest`` is guarded centrally by sitecustomize before
+        # unittest imports any test module; pytest uses conftest.py. A per-module bootstrap
+        # remains supported for standalone imports and scripts.
+        startup_guarded = sitecustomize._is_test_invocation(
+            [r"C:\\Python\\Lib\\unittest\\__main__.py"], {}
+        )
+        missing = [str(path.relative_to(root)) for path in tests
+                   if not self._has_early_unittest_guard(path) and not startup_guarded]
         self.assertEqual(missing, [], f"testes sem guard offline cedo: {missing}")
 
 

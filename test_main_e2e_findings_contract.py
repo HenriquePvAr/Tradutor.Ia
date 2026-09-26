@@ -84,8 +84,8 @@ class MainE2eUiFindingContracts(unittest.TestCase):
         review = self.js[self.js.index("function renderQualityReview"):]
         review = review[:review.index("\n  function visibleQualityReviewKeys")]
         self.assertIn("data-review-type", review)
-        self.assertIn("Tipo: smart_split", review)
-        self.assertIn("boundary:", review)
+        self.assertIn("Tipo interno: smart_split", review)
+        self.assertIn("limite:", review)
         visible_keys = self.js[self.js.index("function visibleQualityReviewKeys"):]
         visible_keys = visible_keys[:visible_keys.index("\n  function updateQualityReviewSelectionUi")]
         self.assertIn("item.dataset.reviewType !== 'smart_split'", visible_keys)
@@ -161,9 +161,10 @@ class BetaControlSurfaceContracts(unittest.TestCase):
         field = self.html[self.html.index('<select id="modeSelect">'):]
         field = field[:field.index("</select>")]
         self.assertIn('<option value="quality" selected>Qualidade</option>', field)
-        # Order is the product request: Qualidade, Rápido, Download-only.
-        self.assertLess(field.index('value="quality"'), field.index('value="fast"'))
-        self.assertLess(field.index('value="fast"'), field.index('value="download_only"'))
+        # Order is the product request: Qualidade, then Download-only. The "Rápido"/fast
+        # mode was intentionally removed; only quality and download_only remain.
+        self.assertLess(field.index('value="quality"'), field.index('value="download_only"'))
+        self.assertNotIn('value="fast"', field)
         self.assertIn("selectedMode: 'quality'", self.js)
 
     def test_the_mode_select_drives_the_same_state_the_cards_drove(self):

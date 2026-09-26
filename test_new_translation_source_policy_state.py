@@ -233,7 +233,8 @@ def source_payload(**extra):
 
 
 class SourceStateBridge(_Bridge):
-    def _analyze_source(self, _url, *, cancel_check=None, on_progress=None):
+    def _analyze_source(self, _url, *, cancel_check=None, on_progress=None,
+                        diagnostic_callback=None, max_pages=None):
         page = SimpleNamespace(id="page-1")
         return SimpleNamespace(
             outcome=SUPPORTED_SPECIFIC_ADAPTER,
