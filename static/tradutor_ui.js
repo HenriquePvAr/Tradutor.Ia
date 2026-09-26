@@ -6463,6 +6463,23 @@
       <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${outputFormat === 'PDF' ? actionButton('Abrir PDF', 'pdf', record.pdf_path) : ''}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>
     </div>`;
   }
+  // Replace the library markup only when it actually changed, and keep the
+  // scroll position across the swap.  Auto-refresh (refreshBootstrap on a new
+  // history_revision) used to rebuild every card on each poll while the reader
+  // was scrolling the library, snapping the page back to the top.
+  let renderedHistoryHtml = null;
+  function commitHistoryMarkup(list, html) {
+    if (renderedHistoryHtml === html && list.innerHTML) return;
+    const scroller = document.querySelector('main');
+    const preserve = scroller && list.offsetParent !== null;
+    const savedScroll = preserve ? scroller.scrollTop : 0;
+    list.innerHTML = html;
+    renderedHistoryHtml = html;
+    if (preserve && savedScroll > 0) {
+      scroller.scrollTop = savedScroll;
+      window.requestAnimationFrame(() => { scroller.scrollTop = savedScroll; });
+    }
+  }
   function renderHistory() {
     const list = $('#histList');
     if (!list) return;
@@ -6471,7 +6488,7 @@
     const records = appState.history.filter(record => !query || `${record.chapter_name || ''} ${record.slug || ''}`.toLowerCase().includes(query));
     $('#histCount').textContent = query ? `${records.length} de ${appState.history.length}` : `${records.length} ${records.length === 1 ? 'capítulo' : 'capítulos'}`;
     if (!records.length) {
-      list.innerHTML = `<div class="empty-real-state">${appState.history.length ? 'nenhum capítulo corresponde à busca' : 'nenhum capítulo disponível no histórico'}</div>`;
+      commitHistoryMarkup(list, `<div class="empty-real-state">${appState.history.length ? 'nenhum capítulo corresponde à busca' : 'nenhum capítulo disponível no histórico'}</div>`);
       return;
     }
     const groups = new Map();
@@ -6481,12 +6498,13 @@
       if (!groups.has(key)) groups.set(key, {series, records: []});
       groups.get(key).records.push(record);
     });
-    list.innerHTML = Array.from(groups.entries()).map(([key, group]) => {
+    const html = Array.from(groups.entries()).map(([key, group]) => {
       const open = Boolean(query) || appState.expandedFolders.has(key);
       const folderIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h8l2 2"/></svg>';
       const panelId = `series-panel-${slugify(key) || 'series'}`;
       return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><button type="button" class="cf-header" data-folder="${escapeAttr(key)}" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${escapeAttr(panelId)}" aria-label="${escapeAttr(`Expandir ${group.series}`)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></button><div class="cf-body" id="${escapeAttr(panelId)}" role="region" aria-hidden="${open ? 'false' : 'true'}">${group.records.map(renderHistoryCard).join('')}</div></div>`;
     }).join('');
+    commitHistoryMarkup(list, html);
   }
   const statusLabels = {online: 'online', away: 'ausente', busy: 'ocupado', offline: 'offline'};
   function applyCanonicalAuthSurface(state) {
