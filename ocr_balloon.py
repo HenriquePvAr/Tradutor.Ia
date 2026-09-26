@@ -12349,8 +12349,21 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary", sourc
             preview_font_path = str(metadata.get("preview_font_path") or "").strip()
             break
 
+    glyph_style = typography_profile.get("glyph_style") or {}
+    glyph_aware_role = str(typography_profile.get("font_role_glyph_aware") or "")
+    glyph_confident = (
+        float(glyph_style.get("confidence") or 0.0) >= _GLYPH_RENDER_MIN_CONFIDENCE
+        and glyph_aware_role
+        and str(typography_profile.get("font_role_glyph_aware_source") or "").startswith("glyph_style")
+    )
     if preview_font_role:
         font_role = preview_font_role
+    elif glyph_confident:
+        # The source glyph SHAPE (serif/italic/display/condensed), detected
+        # independently of colour, drives the font when the detector is confident.
+        # A low-confidence read falls through to the semantic role below and never
+        # blocks rendering.
+        font_role = glyph_aware_role
     elif typography_profile.get("font_role"):
         # Semantic, source-derived role (TDD #84F32): balloon_dialogue,
         # thought_dialogue, narration_box, story_caption, display,
@@ -13721,6 +13734,47 @@ def extract_original_lettering_profile(img_bgr, group, box):
         if len(halo_hsv) else 0.0
     )
     stroke_width = 2 if float(np.mean(expanded)) > glyph_ratio * 1.15 or max(white_ratio, dark_ratio) > 0.25 else 1
+    # --- outline COLOUR (distinct from fill and background, not anti-aliasing) ----
+    # A real outline is a solid band around the fill whose colour differs from BOTH
+    # the fill core and the background; anti-aliasing is a 1-2px gradient with high
+    # colour variance, so a low-variance, doubly-distinct halo marks a true stroke.
+    # An outlined glyph has two solid colours inside its footprint: the fill in the
+    # eroded interior and the outline in the perimeter ring.  A plain glyph's ring is
+    # just anti-aliasing (high colour variance), so a low-variance ring whose colour
+    # is far from the interior fill marks a true outline.
+    stroke_present = False
+    stroke_color = None
+    stroke_confidence = 0.0
+    glyph_u8 = glyph_mask.astype(np.uint8)
+    # Split the glyph footprint into its two dominant solid colours; a genuine
+    # outline is the cluster that hugs the outer boundary (fill is enclosed).
+    glyph_px = roi[glyph_mask].astype(np.float32)
+    if glyph_px.shape[0] >= 200:
+        boundary = glyph_mask & (cv2.dilate((~glyph_mask).astype(np.uint8),
+                                            np.ones((3, 3), np.uint8)) > 0)
+        crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        _, labels, centers = cv2.kmeans(glyph_px, 2, None, crit, 3, cv2.KMEANS_PP_CENTERS)
+        labels = labels.ravel()
+        pop = [int(np.sum(labels == k)) for k in (0, 1)]
+        total = labels.shape[0]
+        cluster_dist = float(np.max(np.abs(centers[0] - centers[1])))
+        if min(pop) >= 0.15 * total and cluster_dist >= 60:
+            # Which cluster sits on the outer boundary? Map boundary pixels to labels.
+            full = np.full(glyph_mask.shape, -1, dtype=np.int16)
+            full[glyph_mask] = labels
+            bnd_labels = full[boundary]
+            bnd_labels = bnd_labels[bnd_labels >= 0]
+            if bnd_labels.size:
+                frac0 = float(np.mean(bnd_labels == 0))
+                outline_k = 0 if frac0 >= 0.5 else 1
+                fill_k = 1 - outline_k
+                std_outline = float(np.mean(np.std(glyph_px[labels == outline_k], axis=0)))
+                if std_outline <= 55:
+                    stroke_present = True
+                    stroke_color = tuple(int(v) for v in centers[outline_k].tolist())
+                    dominant_bgr = centers[fill_k]
+                    stroke_confidence = round(min(1.0, 0.4 + min(cluster_dist, 200) / 400
+                                                  + abs(frac0 - 0.5) * 0.6), 4)
     glow_strength = 0
     glow_color = None
     # A glow must reinforce the ink's own already-established dominant color
@@ -13748,9 +13802,249 @@ def extract_original_lettering_profile(img_bgr, group, box):
         "dark_ratio": round(dark_ratio, 4),
         "glyph_occupancy": round(glyph_ratio, 4),
         "stroke_width": int(stroke_width),
+        "stroke_present": bool(stroke_present),
+        "stroke_color": stroke_color,
+        "stroke_confidence": float(stroke_confidence),
         "glow_strength": int(glow_strength),
         "glow_color": glow_color,
         "background_brightness": round(bg_gray, 3),
+    }
+
+
+def _shift_mask(mask, dx, dy):
+    shifted = np.roll(np.roll(mask, dy, axis=0), dx, axis=1)
+    if dy > 0:
+        shifted[:dy, :] = False
+    elif dy < 0:
+        shifted[dy:, :] = False
+    if dx > 0:
+        shifted[:, :dx] = False
+    elif dx < 0:
+        shifted[:, dx:] = False
+    return shifted
+
+
+def extract_drop_shadow_profile(img_bgr, box):
+    """Conservative offset drop-shadow detector, separate from outline and glow.
+
+    A drop shadow is an offset copy of the glyph that is darker than the local
+    background but not as dark as the ink itself (semi-transparent), sitting off to
+    one consistent direction.  Plain ink on a clean balloon has no such offset band
+    (negative control), and anti-aliasing lives at 1px, below the tested offsets.
+    """
+    empty = {
+        "shadow_present": False, "shadow_color": None, "shadow_offset": (0, 0),
+        "shadow_opacity": 0.0, "shadow_blur": 0, "confidence": 0.0,
+    }
+    mask, gray = _glyph_ink_mask(img_bgr, box)
+    if mask is None:
+        return empty
+    ex, ey, ew, eh = _expanded_box(box, img_bgr.shape, 6)
+    roi = img_bgr[ey : ey + eh, ex : ex + ew]
+    if roi.shape[:2] != gray.shape:
+        return empty
+    grayf = gray.astype(np.float32)
+    ink = mask.astype(bool)
+    if int(ink.sum()) < 120 or not (~ink).any():
+        return empty
+    bg_val = float(np.median(grayf[~ink]))
+    ink_val = float(np.median(grayf[ink]))
+    span = abs(ink_val - bg_val)
+    if span < 40:
+        return empty
+    # High-contrast text vs the semi-transparent, mid-tone offset shadow band.
+    contrast = np.abs(grayf - bg_val)
+    text_mask = contrast >= 0.55 * span
+    mid_mask = (contrast >= 0.20 * span) & (contrast < 0.55 * span)
+    if int(text_mask.sum()) < 100 or int(mid_mask.sum()) < 60:
+        return empty
+    best = None
+    for dy in (2, 3, 4, 5):
+        for dx in (-5, -4, -3, -2, 0, 2, 3, 4, 5):
+            if dx == 0 and dy == 0:
+                continue
+            zone = _shift_mask(text_mask, dx, dy) & mid_mask & ~text_mask
+            zone_n = int(zone.sum())
+            if zone_n < max(50, int(text_mask.sum() * 0.10)):
+                continue
+            score = zone_n / max(1, int(text_mask.sum()))
+            if best is None or score > best[0]:
+                best = (score, (dx, dy), zone)
+    if best is None:
+        return empty
+    share, (dx, dy), zone = best
+    zone_val = float(np.median(grayf[zone]))
+    darkness = bg_val - zone_val
+    confidence = round(min(1.0, 0.3 + share + abs(darkness) / 160.0), 4)
+    if confidence < 0.5 or share < 0.12:
+        return empty
+    ys, xs = np.where(zone)
+    shadow_bgr = np.median(roi[ys, xs], axis=0)
+    opacity = round(min(1.0, abs(darkness) / max(1.0, span)), 3)
+    return {
+        "shadow_present": True,
+        "shadow_color": tuple(int(v) for v in shadow_bgr.tolist()),
+        "shadow_offset": (int(dx), int(dy)),
+        "shadow_opacity": opacity,
+        "shadow_blur": 1,
+        "confidence": confidence,
+    }
+
+
+GLYPH_STYLE_FAMILY_CLASSES = (
+    "sans", "serif", "comic", "handwritten", "condensed", "display", "dramatic",
+    "mechanical", "decorative", "unknown",
+)
+
+
+def _glyph_ink_mask(img_bgr, box):
+    """Binary ink mask for one region, polarity-robust (dark-on-light or light-on-dark)."""
+    x, y, w, h = _expanded_box(box, img_bgr.shape, 6)
+    roi = img_bgr[y : y + h, x : x + w]
+    if roi.size == 0 or roi.shape[0] < 6 or roi.shape[1] < 6:
+        return None, None
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    border = np.concatenate([
+        gray[: max(1, min(3, gray.shape[0]))].ravel(),
+        gray[-max(1, min(3, gray.shape[0])) :].ravel(),
+        gray[:, : max(1, min(3, gray.shape[1]))].ravel(),
+        gray[:, -max(1, min(3, gray.shape[1])) :].ravel(),
+    ])
+    bg = float(np.median(border))
+    ink = (np.abs(gray.astype(np.float32) - bg) >= 40).astype(np.uint8)
+    if float(ink.mean()) > 0.5:  # ink should be the minority foreground
+        ink = 1 - ink
+    return ink, gray
+
+
+def _text_slant_degrees(mask):
+    """Dominant glyph slant via the shear that maximises vertical-projection variance.
+
+    Upright type peaks at 0; italic/oblique peaks around its true slant angle.
+    """
+    h, w = mask.shape
+    if h < 6 or w < 6:
+        return 0.0
+    best_deg, best_var = 0, -1.0
+    for deg in range(-28, 29, 2):
+        shear = float(np.tan(np.deg2rad(deg)))
+        matrix = np.float32([[1, shear, 0], [0, 1, 0]])
+        out_w = int(w + abs(shear) * h) + 2
+        warped = cv2.warpAffine(mask, matrix, (out_w, h), flags=cv2.INTER_NEAREST)
+        variance = float(np.var(warped.sum(axis=0).astype(np.float32)))
+        if variance > best_var:
+            best_deg, best_var = deg, variance
+    return float(best_deg)
+
+
+def extract_glyph_style_profile(img_bgr, group, box):
+    """Classify the *shape* of the source lettering, independent of its colour.
+
+    Colour family, outline and glow come from
+    :func:`extract_original_lettering_profile`; this answers a different question -
+    serif vs sans vs comic, weight, slant and width - so a black serif narration
+    is not treated the same as a black comic shout merely because both are dark.
+    It is approximate and reports ``confidence``; a low-confidence result must fall
+    back to the semantic role rather than force a wrong visual style.
+    """
+    empty = {
+        "family_class": "unknown", "weight": "regular", "slant": "normal",
+        "width": "normal", "slant_degrees": 0.0, "weight_ratio": 0.0,
+        "aspect": 0.0, "serif_ratio": 0.0, "fill_ratio": 0.0,
+        "confidence": 0.0, "source": "insufficient_pixels",
+    }
+    mask, gray = _glyph_ink_mask(img_bgr, box)
+    if mask is None:
+        return empty
+    ink_count = int(mask.sum())
+    if ink_count < 40 or float(mask.mean()) < 0.01:
+        return empty
+    # Tighten to the ink's own bounding box so padding in ``box`` never dilutes the
+    # fill/height/weight measurements (a padded region must read the same as a snug one).
+    rows = np.where(mask.any(axis=1))[0]
+    cols = np.where(mask.any(axis=0))[0]
+    mask = mask[rows.min() : rows.max() + 1, cols.min() : cols.max() + 1]
+    gray = gray[rows.min() : rows.max() + 1, cols.min() : cols.max() + 1]
+    height = float(mask.shape[0])
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+    stroke = dist[mask > 0] * 2.0
+    stroke_med = float(np.median(stroke)) if stroke.size else 0.0
+    weight_ratio = stroke_med / max(1.0, height)
+    fill_ratio = float(mask.mean())
+    # Per-glyph aspect (width/height) from connected components of a plausible size.
+    _, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    comps = [s for s in stats[1:] if s[4] >= height * height * 0.01 and s[3] >= height * 0.25]
+    aspect = float(np.median([s[2] / max(1, s[3]) for s in comps])) if comps else 0.0
+    slant = _text_slant_degrees(mask)
+    grad_x = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3)
+    serif_ratio = float(np.sum(np.abs(grad_y)) / (np.sum(np.abs(grad_x)) + 1e-6))
+
+    # --- weight (thin < regular < medium < bold < extra_bold) --------------------
+    if weight_ratio >= 0.095:
+        weight = "extra_bold"
+    elif weight_ratio >= 0.074:
+        weight = "bold"
+    elif weight_ratio >= 0.066:
+        weight = "medium"
+    elif weight_ratio >= 0.050:
+        weight = "regular"
+    else:
+        weight = "thin"
+    slant_class = "italic" if abs(slant) >= 8 else "normal"
+
+    # --- width: per-component advance normalized by component height --------------
+    comp_aspects = [s[2] / max(1, s[3]) for s in comps]
+    med_aspect = float(np.median(comp_aspects)) if comp_aspects else aspect
+    width_agree = (
+        float(np.mean([1.0 if a < 0.58 else 0.0 for a in comp_aspects]))
+        if comp_aspects else 0.0
+    )
+    if med_aspect < 0.58 and (width_agree >= 0.5 or len(comp_aspects) <= 2):
+        width_class = "condensed"
+    elif med_aspect > 0.98:
+        width_class = "expanded"
+    else:
+        width_class = "normal"
+    width_confidence = round(min(1.0, 0.3 + abs(med_aspect - 0.72) * 2.0), 4) if comp_aspects else 0.0
+
+    # --- comic/handwritten signals (conservative telemetry, not forced) ----------
+    stroke_cv = float(np.std(stroke) / (np.mean(stroke) + 1e-6)) if stroke.size else 0.0
+    bottoms = [s[1] + s[3] for s in comps]
+    baseline_std = float(np.std(bottoms) / max(1.0, height)) if len(bottoms) >= 3 else 0.0
+    if baseline_std >= 0.12 and stroke_cv >= 0.55:
+        character, character_confidence = "handwritten", round(min(1.0, baseline_std * 3), 4)
+    elif stroke_cv >= 0.50 and baseline_std >= 0.06:
+        character, character_confidence = "comic", round(min(1.0, stroke_cv), 4)
+    else:
+        character, character_confidence = "mechanical", round(min(1.0, 0.4 + (0.5 - min(stroke_cv, 0.5))), 4)
+
+    # --- family: display and serif are the confidently separable shapes ----------
+    if fill_ratio >= 0.42 and weight_ratio >= 0.090:
+        family = "display"
+    elif serif_ratio >= 0.79 and fill_ratio < 0.42:
+        family = "serif"
+    else:
+        family = "sans"
+
+    # Confidence: enough ink, and the family signal clear of its threshold.
+    ink_conf = min(1.0, ink_count / 900.0)
+    if family == "serif":
+        margin = min(1.0, max(0.0, (serif_ratio - 0.79) / 0.10))
+    elif family == "display":
+        margin = min(1.0, max(0.0, (fill_ratio - 0.42) / 0.15))
+    else:  # sans is the residual bucket: least certain about family
+        margin = min(1.0, max(0.0, (0.79 - serif_ratio) / 0.12))
+    confidence = round(min(1.0, 0.35 + 0.4 * ink_conf + 0.25 * margin), 4)
+    return {
+        "family_class": family, "weight": weight, "slant": slant_class,
+        "width": width_class, "width_confidence": width_confidence,
+        "character": character, "character_confidence": character_confidence,
+        "slant_degrees": round(slant, 1), "weight_ratio": round(weight_ratio, 4),
+        "aspect": round(aspect, 3), "serif_ratio": round(serif_ratio, 4),
+        "fill_ratio": round(fill_ratio, 4), "stroke_cv": round(stroke_cv, 4),
+        "baseline_std": round(baseline_std, 4),
+        "confidence": confidence, "source": "original_glyph_pixels",
     }
 
 
@@ -13833,6 +14127,44 @@ def _resolve_font_role(text_role, visual_class, font_class):
     return "balloon_dialogue", "generic_fallback"
 
 
+_GLYPH_STYLE_MIN_CONFIDENCE = 0.55
+# Stricter bar before the glyph shape may override the semantic role/colour in the
+# actual render, so a marginal read never changes the page.
+_GLYPH_RENDER_MIN_CONFIDENCE = 0.62
+_SOURCE_COLOR_MIN_CONFIDENCE = 0.55
+
+
+def select_font_role_with_glyph_style(base_role, text_role, glyph_style):
+    """Refine a semantic font role with the source glyph *shape*, colour-independent.
+
+    Colour never enters here: the same colour with different glyph shapes must be
+    able to resolve to different roles, and the same shape in different colours to
+    the same role.  When the shape detector is not confident the semantic
+    ``base_role`` is kept unchanged (mission fallback #14).
+    """
+    style = glyph_style or {}
+    if float(style.get("confidence") or 0.0) < _GLYPH_STYLE_MIN_CONFIDENCE:
+        return base_role, "semantic_role_fallback"
+    family = str(style.get("family_class") or "")
+    slant = str(style.get("slant") or "normal")
+    width = str(style.get("width") or "normal")
+    role = str(base_role or "regular")
+    if family == "serif":
+        if slant == "italic":
+            return "serif_italic", "glyph_style_serif_italic"
+        if str(text_role or "") in {"narration", "caption"} or role in {"narration_box", "story_caption"}:
+            return "serif_narration", "glyph_style_serif"
+        return "serif_regular", "glyph_style_serif"
+    if family == "display":
+        # Keep an existing dramatic intent; otherwise a plain display shape.
+        return (role if role in {"display", "dramatic_display"} else "display"), "glyph_style_display"
+    if slant == "italic" and role not in {"thought_dialogue", "system_text"}:
+        return "italic_dialogue", "glyph_style_italic"
+    if width == "condensed" and family != "serif":
+        return "condensed", "glyph_style_condensed"
+    return base_role, "semantic_role_kept"
+
+
 def typography_profile_for_region(img_bgr, group, box, *, style=None):
     profile = _typography_profile_for_region(img_bgr, group, box, style=style)
     font_role, font_role_source = _resolve_font_role(
@@ -13841,6 +14173,112 @@ def typography_profile_for_region(img_bgr, group, box, *, style=None):
     profile["font_role"] = font_role
     profile["font_role_source"] = font_role_source
     profile["font_role_fallback"] = font_role_source == "generic_fallback"
+    # Decoupled telemetry: GLYPH shape and COLOUR are separate signals from the
+    # SEMANTIC role.  ``font_role`` above stays the current render contract; the
+    # glyph-aware role and source colour are additive so the pipeline can adopt
+    # them after review without changing existing behaviour here.
+    glyph_style = extract_glyph_style_profile(img_bgr, group, box)
+    lettering = extract_original_lettering_profile(img_bgr, group, box)
+    profile["glyph_style"] = glyph_style
+    profile["color_style"] = {
+        "color_family": lettering.get("color_family", ""),
+        "source_text_color_bgr": lettering.get("dominant_bgr"),
+        "source_stroke_width": lettering.get("stroke_width"),
+        "glow_color": lettering.get("glow_color"),
+    }
+    glyph_role, glyph_role_source = select_font_role_with_glyph_style(
+        font_role, profile.get("text_role"), glyph_style,
+    )
+    profile["font_role_glyph_aware"] = glyph_role
+    profile["font_role_glyph_aware_source"] = glyph_role_source
+    # Top-3 metadata-scored candidates within the chosen role's chain (debug/telemetry);
+    # the renderer still applies its own fit check as the hard constraint.
+    try:
+        profile["font_candidates"] = font_fidelity.rank_fonts_by_glyph_style(
+            glyph_style, role=glyph_role, top_n=3)
+    except Exception:  # noqa: BLE001 - telemetry must never break rendering
+        profile["font_candidates"] = []
+
+    # Apply the measured source glyph colour to the render fill when it was read
+    # confidently AND keeps enough contrast with the balloon background (never
+    # trade a legible original combination for an isolated colour).  Otherwise the
+    # existing family preset stays.  Colour is independent of the role above.
+    profile["source_text_color_confident"] = False
+    source_bgr = lettering.get("dominant_bgr")
+    source_conf = float(lettering.get("confidence") or 0.0)
+    # The curated stylized-display classes already carry an intentional, same-family
+    # fill/stroke/glow pair (a light-blue magical caption, a dark-red dramatic
+    # shout); the raw measured ink colour must not overwrite that art direction.
+    # Ordinary classes, which previously fell back to a generic dark preset, do
+    # adopt the measured colour.
+    _stylized = str(profile.get("visual_class") or "") in {
+        "dramatic_red_display", "mystic_blue_system", "ink_display",
+    }
+    if source_bgr and source_conf >= _SOURCE_COLOR_MIN_CONFIDENCE and not _stylized:
+        source_rgb = (int(source_bgr[2]), int(source_bgr[1]), int(source_bgr[0]))
+        bg_brightness = float(lettering.get("background_brightness") or 255.0)
+        luminance = 0.299 * source_rgb[0] + 0.587 * source_rgb[1] + 0.114 * source_rgb[2]
+        # Legible either by luminance contrast (neutral ink) or by chroma (a
+        # saturated colour reads against the balloon even at similar brightness).
+        chromatic = (max(source_rgb) - min(source_rgb)) >= 45
+        if chromatic or abs(luminance - bg_brightness) >= 45.0:
+            profile["fill_color"] = source_rgb
+            profile["source_text_color_confident"] = True
+            # Apply the measured outline without ever weakening an intentional
+            # preset outline (never remove an outline that mattered).
+            stroke_w = lettering.get("stroke_width")
+            if stroke_w:
+                profile["stroke_width"] = max(int(profile.get("stroke_width") or 1), int(stroke_w))
+
+    # --- STROKE_STYLE: measured outline colour, independent of fill/role ----------
+    profile["source_stroke_confident"] = False
+    stroke_bgr = lettering.get("stroke_color")
+    if (
+        lettering.get("stroke_present")
+        and stroke_bgr
+        and float(lettering.get("stroke_confidence") or 0.0) >= 0.55
+        and not _stylized
+    ):
+        profile["stroke_color"] = (int(stroke_bgr[2]), int(stroke_bgr[1]), int(stroke_bgr[0]))
+        profile["stroke_width"] = max(2, int(profile.get("stroke_width") or 1))
+        profile["source_stroke_confident"] = True
+
+    # --- MIXED_STYLE: divergent per-line source styles (detection + telemetry) -----
+    # Only real, already-segmented OCR lines are used - never invented word spans.
+    # The translated string is a single reflow that does not align 1:1 to source
+    # spans, so the renderer keeps the dominant region style (documented fallback);
+    # this records the evidence so a future per-span renderer can consume it.
+    profile["mixed_style_present"] = False
+    profile["style_spans"] = []
+    lines = [ln for ln in (getattr(group, "lines", []) or []) if getattr(ln, "box", None)]
+    if len(lines) >= 2:
+        spans = []
+        for ln in lines:
+            lx, ly, lw, lh = ln.box
+            gstyle = extract_glyph_style_profile(img_bgr, group, (lx, ly, lw, lh))
+            if float(gstyle.get("confidence") or 0.0) >= _GLYPH_STYLE_MIN_CONFIDENCE:
+                spans.append({
+                    "text": getattr(ln, "text", ""),
+                    "family": gstyle.get("family_class"),
+                    "weight": gstyle.get("weight"),
+                    "slant": gstyle.get("slant"),
+                })
+        if len(spans) >= 2:
+            families = {s["family"] for s in spans}
+            slants = {s["slant"] for s in spans}
+            weights = {s["weight"] for s in spans}
+            if len(families) > 1 or len(slants) > 1 or ("bold" in weights and "regular" in weights):
+                profile["mixed_style_present"] = True
+                profile["style_spans"] = spans
+
+    # --- SHADOW_STYLE: conservative measured drop shadow, independent signal -------
+    shadow = extract_drop_shadow_profile(img_bgr, box)
+    profile["shadow_profile"] = shadow
+    if shadow.get("shadow_present") and float(shadow.get("confidence") or 0.0) >= 0.55 and not _stylized:
+        sc = shadow.get("shadow_color") or (60, 60, 60)
+        profile["shadow_color"] = (int(sc[2]), int(sc[1]), int(sc[0]))
+        profile["shadow_offset"] = tuple(shadow.get("shadow_offset") or (2, 2))
+        profile["shadow_blur"] = int(shadow.get("shadow_blur") or 1)
     return profile
 
 

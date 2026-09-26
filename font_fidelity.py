@@ -38,7 +38,112 @@ ROLE_FONT_FILES = {
     "dramatic_display": ("impact.ttf", "bahnschrift.ttf", "arialbi.ttf"),
     "system_text": ("corbeli.ttf", "calibrili.ttf", "trebucit.ttf"),
     "location_label": ("corbelb.ttf", "calibrib.ttf", "trebucbd.ttf"),
+    # Glyph-shape-derived style roles (mission: typography fidelity). Added so a
+    # serif/italic/condensed source can keep its visual family instead of being
+    # flattened onto a comic/sans role by semantics alone. Local Windows fonts.
+    "serif_narration": ("georgia.ttf", "georgiab.ttf", "times.ttf", "trebuc.ttf"),
+    "serif_regular": ("georgia.ttf", "times.ttf", "calibri.ttf"),
+    "serif_italic": ("georgiai.ttf", "timesi.ttf", "ariali.ttf"),
+    "italic_dialogue": ("comici.ttf", "ariali.ttf", "calibrii.ttf"),
+    "condensed": ("bahnschrift.ttf", "impact.ttf", "arialbd.ttf"),
 }
+
+# Explicit per-font metadata so font selection can score by visual family/weight/
+# slant/width instead of a fixed role chain.  width_ratio is an approximate average
+# glyph advance/height (smaller = more condensed).  Only local Windows fonts.
+FONT_METADATA = {
+    "arial.ttf":      {"family": "sans", "weight": "regular", "italic": False, "width_ratio": 0.52},
+    "arialbd.ttf":    {"family": "sans", "weight": "bold", "italic": False, "width_ratio": 0.54},
+    "ariali.ttf":     {"family": "sans", "weight": "regular", "italic": True, "width_ratio": 0.52},
+    "arialbi.ttf":    {"family": "sans", "weight": "bold", "italic": True, "width_ratio": 0.54},
+    "calibri.ttf":    {"family": "sans", "weight": "regular", "italic": False, "width_ratio": 0.48},
+    "calibrib.ttf":   {"family": "sans", "weight": "bold", "italic": False, "width_ratio": 0.49},
+    "calibril.ttf":   {"family": "sans", "weight": "light", "italic": False, "width_ratio": 0.48},
+    "calibrii.ttf":   {"family": "sans", "weight": "regular", "italic": True, "width_ratio": 0.48},
+    "segoeui.ttf":    {"family": "sans", "weight": "regular", "italic": False, "width_ratio": 0.50},
+    "seguisb.ttf":    {"family": "sans", "weight": "bold", "italic": False, "width_ratio": 0.51},
+    "segoeuii.ttf":   {"family": "sans", "weight": "regular", "italic": True, "width_ratio": 0.50},
+    "trebuc.ttf":     {"family": "sans", "weight": "regular", "italic": False, "width_ratio": 0.53},
+    "trebucbd.ttf":   {"family": "sans", "weight": "bold", "italic": False, "width_ratio": 0.55},
+    "trebucit.ttf":   {"family": "sans", "weight": "regular", "italic": True, "width_ratio": 0.53},
+    "corbel.ttf":     {"family": "sans", "weight": "regular", "italic": False, "width_ratio": 0.49},
+    "corbelb.ttf":    {"family": "sans", "weight": "bold", "italic": False, "width_ratio": 0.50},
+    "corbeli.ttf":    {"family": "sans", "weight": "regular", "italic": True, "width_ratio": 0.49},
+    "calibrili.ttf":  {"family": "sans", "weight": "light", "italic": True, "width_ratio": 0.48},
+    "georgia.ttf":    {"family": "serif", "weight": "regular", "italic": False, "width_ratio": 0.52},
+    "georgiab.ttf":   {"family": "serif", "weight": "bold", "italic": False, "width_ratio": 0.54},
+    "georgiai.ttf":   {"family": "serif", "weight": "regular", "italic": True, "width_ratio": 0.52},
+    "times.ttf":      {"family": "serif", "weight": "regular", "italic": False, "width_ratio": 0.47},
+    "timesi.ttf":     {"family": "serif", "weight": "regular", "italic": True, "width_ratio": 0.47},
+    "comic.ttf":      {"family": "comic", "weight": "regular", "italic": False, "width_ratio": 0.55},
+    "comici.ttf":     {"family": "comic", "weight": "regular", "italic": True, "width_ratio": 0.55},
+    "comicbd.ttf":    {"family": "comic", "weight": "bold", "italic": False, "width_ratio": 0.57},
+    "segoepr.ttf":    {"family": "handwritten", "weight": "regular", "italic": False, "width_ratio": 0.50},
+    "segoeprb.ttf":   {"family": "handwritten", "weight": "bold", "italic": False, "width_ratio": 0.52},
+    "impact.ttf":     {"family": "display", "weight": "bold", "italic": False, "width_ratio": 0.40},
+    "bahnschrift.ttf": {"family": "display", "weight": "regular", "italic": False, "width_ratio": 0.42},
+}
+
+# Documented FONT_MATCH_SCORE weights (sum = 1.0). Fit is applied separately by the
+# renderer as a hard constraint; these rank visual similarity before that check.
+FONT_MATCH_WEIGHTS = {
+    "glyph_family": 0.42, "weight": 0.22, "italic": 0.20, "width": 0.16,
+}
+_FAMILY_ALIASES = {
+    "sans": "sans", "serif": "serif", "comic": "comic", "handwritten": "handwritten",
+    "display": "display", "dramatic": "display", "mechanical": "sans", "condensed": "sans",
+}
+_WEIGHT_ORDER = {"thin": 0, "light": 1, "regular": 2, "medium": 3, "bold": 4, "extra_bold": 5}
+
+
+def _font_metadata(name: str) -> dict:
+    return FONT_METADATA.get(str(name or "").lower(),
+                             {"family": "sans", "weight": "regular", "italic": False, "width_ratio": 0.5})
+
+
+def font_match_score(font_name: str, glyph_style: dict) -> tuple[float, list[str]]:
+    """Score one font against a source glyph-style profile; higher is closer."""
+    meta = _font_metadata(font_name)
+    gs = glyph_style or {}
+    reasons = []
+    fam = _FAMILY_ALIASES.get(str(gs.get("family_class") or ""), "")
+    fam_score = 1.0 if fam and meta["family"] == fam else (0.5 if not fam else 0.0)
+    if fam and meta["family"] == fam:
+        reasons.append(f"family={fam}")
+    want_w = _WEIGHT_ORDER.get(str(gs.get("weight") or "regular"), 2)
+    have_w = _WEIGHT_ORDER.get(meta["weight"], 2)
+    weight_score = 1.0 - min(1.0, abs(want_w - have_w) / 5.0)
+    if abs(want_w - have_w) <= 1:
+        reasons.append(f"weight~{meta['weight']}")
+    want_it = str(gs.get("slant") or "normal") == "italic"
+    italic_score = 1.0 if want_it == meta["italic"] else 0.0
+    if want_it and meta["italic"]:
+        reasons.append("italic")
+    want_width = str(gs.get("width") or "normal")
+    if want_width == "condensed":
+        width_score = 1.0 if meta["width_ratio"] <= 0.45 else 0.4
+    elif want_width == "expanded":
+        width_score = 1.0 if meta["width_ratio"] >= 0.55 else 0.4
+    else:
+        width_score = 1.0 if 0.45 < meta["width_ratio"] < 0.56 else 0.6
+    w = FONT_MATCH_WEIGHTS
+    total = (w["glyph_family"] * fam_score + w["weight"] * weight_score
+             + w["italic"] * italic_score + w["width"] * width_score)
+    return round(float(total), 4), reasons
+
+
+def rank_fonts_by_glyph_style(glyph_style: dict, *, role: str = "", top_n: int = 3) -> list[dict]:
+    """Top-N local fonts for a glyph style, restricted to the role's candidate chain
+    when a role is given (keeps the existing fallback and fit pipeline intact)."""
+    names = ROLE_FONT_FILES.get(str(role or "").lower()) if role else None
+    if not names:
+        names = tuple(FONT_METADATA.keys())
+    scored = []
+    for name in names:
+        score, reasons = font_match_score(name, glyph_style)
+        scored.append({"font": name, "score": score, "reasons": reasons})
+    scored.sort(key=lambda item: item["score"], reverse=True)
+    return scored[:top_n]
 
 # A generic allow-list of local fonts the renderer may consider for human visual
 # previews.  It is intentionally not keyed by chapter/page/region/text.  Missing
