@@ -61,7 +61,7 @@ try:
 except ImportError:  # pragma: no cover - packaged builds include psutil
     psutil = None
 from update_bootstrap import DEFAULT_MANIFEST_URL
-from app_version import BUILD_VERSION
+from app_version import BUILD_VERSION, DISPLAY_VERSION
 from translator_nvidia import TranslatorNvidiaBatch
 from chapter_quality_revision import REVIEW_SCHEMA_VERSION
 from local_environment import load_local_environment_for_entrypoint
@@ -3601,6 +3601,7 @@ def index() -> None:
         "<script>"
         f"window.__tradutorRuntimeIdentity = {runtime_identity};"
         f"window.__tradutorBuildVersion = {dumps_json(BUILD_VERSION)};"
+        f"window.__tradutorDisplayVersion = {dumps_json(DISPLAY_VERSION)};"
         f"window.__yomuPassiveAdsProviderEnabled = {dumps_json(os.getenv('YOMU_PASSIVE_ADS_PROVIDER_ENABLED', '').strip().lower() not in {'0', 'false', 'no', 'off'})};"
         "window.__yomuPassiveAdsPreference = false;"
         f"window.__yomuAdsNativePoc = {dumps_json(os.getenv('YOMU_ADS_NATIVE_POC', '').strip().lower() in {'1', 'true', 'yes', 'on'})};"

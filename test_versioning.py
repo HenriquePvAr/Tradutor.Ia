@@ -5,8 +5,8 @@ import app_version
 
 def test_canonical_versions_are_current():
     assert app_version.PRODUCT_VERSION == "0.9.0"
-    assert app_version.BUILD_VERSION == "0.9.1-beta.16"
-    assert app_version.DISPLAY_VERSION == app_version.BUILD_VERSION
+    assert app_version.BUILD_VERSION == "0.9.1-beta.17"
+    assert app_version.DISPLAY_VERSION == "Yomu Sekai 0.9.1 Beta 17"
 
 
 def test_installer_uses_release_define_not_stale_beta20():

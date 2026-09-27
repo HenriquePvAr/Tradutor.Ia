@@ -8578,7 +8578,7 @@
     $('#settingRepair').textContent = settings.ocr_text_repair_mode || '—';
     $('#settingPython').textContent = settings.python_version || '—';
     $('#settingNicegui').textContent = settings.nicegui_version || '—';
-    const buildVersion = String(window.__tradutorBuildVersion || '').trim();
+    const buildVersion = String(window.__tradutorDisplayVersion || window.__tradutorBuildVersion || '').trim();
     $('#settingBuild').textContent = buildVersion || 'local';
     const installedVersion = $('#installedUpdateVersion');
     if (installedVersion) installedVersion.textContent = buildVersion || 'Versão atual';

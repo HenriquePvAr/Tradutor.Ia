@@ -9,7 +9,6 @@
 #ifndef ProductVersion
   #error ProductVersion must be supplied from app_version.BUILD_VERSION by the release tool
 #endif
-
 [Setup]
 AppId={{cff6c710-2b7d-4a09-8f25-e32ea363430f}
 AppName=Yomu Sekai

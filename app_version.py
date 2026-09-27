@@ -23,10 +23,10 @@ PRODUCT_VERSION = "0.9.0"
 
 # Build identity is intentionally separate from the semver payload used by update
 # comparisons; diagnostics and installers must identify the exact beta artifact.
-BUILD_VERSION = "0.9.1-beta.16"
+BUILD_VERSION = "0.9.1-beta.17"
 
-# Human-facing prerelease identifier derived from the canonical build value.
-DISPLAY_VERSION = BUILD_VERSION
+# Human-facing version matches the public beta artifact; updater comparisons use BUILD_VERSION.
+DISPLAY_VERSION = "Yomu Sekai 0.9.1 Beta 17"
 
 #: Identifier of the product itself; kept next to the version because both name the artifact.
 PRODUCT_NAME = "tradutor-ia"
