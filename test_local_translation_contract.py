@@ -50,6 +50,16 @@ class LocalTranslationContractTests(unittest.TestCase):
         self.assertEqual(config["translation_request_id"], "translation:local-test")
         self.assertEqual(config["provider_provenance"]["provider_requested"], "deepl")
 
+    def test_local_folder_psd_format_is_persisted_for_worker_validation(self):
+        normalized = self.bridge._normalize_local_payload(self.payload(output_format="psd"))
+        job = self.bridge._create_local_folder_staging_job(normalized, principal=None)
+        config = self.bridge.store.get_job(job["id"])["configuration"]
+        self.assertEqual(config["output_format"], "psd")
+
+    def test_local_folder_normalizes_unknown_format_to_pdf(self):
+        normalized = self.bridge._normalize_local_payload(self.payload(output_format="other"))
+        self.assertEqual(normalized["output_format"], "pdf")
+
     def test_local_folder_sealing_reuses_url_mechanism_without_plaintext_secret(self):
         normalized = self.bridge._normalize_local_payload(self.payload())
         config = self.bridge._translation_configuration_snapshot(self.payload(), normalized)

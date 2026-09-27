@@ -1,7 +1,5 @@
-// Releasing is the only reservation transition a signed-in client still owns.
-// Consuming a reservation writes ledger debits and therefore belongs to
-// finalize_translation_job, which runs service-side from translation-execute
-// after every provider batch of the chapter has completed.
+// Legacy endpoint for abandoning a reservation before provider work begins.
+// Post-provider/output settlement is handled only by wallet-settle-job.
 import { json } from "../_shared/http.ts";
 import { requireAuth } from "../_shared/auth.ts";
 import { callRpc } from "../_shared/rpc.ts";

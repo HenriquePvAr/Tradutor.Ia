@@ -42,6 +42,33 @@ def test_batch_mapping_duplicate_text_and_idempotency(tmp_path: Path):
     assert backend.provider_execution_count == 1
 
 
+def test_provider_records_only_reservation_metadata_before_translation(tmp_path: Path, monkeypatch):
+    import yk_reservation
+    output_dir = tmp_path / "job-output"
+    monkeypatch.setenv("TRADUTOR_JOB_OUTPUT_DIR", str(output_dir))
+    AuthEnvelopeStore(tmp_path).seal("job-1", tok())
+    backend = MockBackendClient()
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+    provider.translate_batch(request())
+    saved = yk_reservation.read_reservation(output_dir)
+    assert saved["job_id"] == "job-1"
+    assert saved["state"] == "held"
+    assert "reservation_id" in saved
+    raw = (output_dir / "yk_reservation.json").read_text(encoding="utf-8")
+    assert "finalize_items" not in raw and "Hello" not in raw
+    assert backend.net_yk(saved["reservation_id"]) == 0
+
+
+def test_missing_runner_output_dir_fails_before_reserving_yk(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("TRADUTOR_JOB_OUTPUT_DIR", raising=False)
+    monkeypatch.delenv("TRADUTOR_IA_HERMETIC_TEST_ENV", raising=False)
+    AuthEnvelopeStore(tmp_path).seal("job-1", tok())
+    backend = MockBackendClient()
+    with pytest.raises(BackendTranslationError, match="job_output_dir_missing"):
+        YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend).translate_batch(request())
+    assert backend.reserve_count == 0
+
+
 def test_concurrent_duplicate_is_one_operation(tmp_path: Path):
     AuthEnvelopeStore(tmp_path).seal("job-1", tok())
     backend = MockBackendClient()
@@ -92,7 +119,7 @@ def test_translate_many_splits_large_logical_batch_and_reuses_reservation(tmp_pa
     assert backend.reserve_count == 1
 
 
-def test_translate_many_marks_only_last_batch_for_job_finalization(tmp_path: Path, monkeypatch):
+def test_translate_many_consumes_after_all_batches_and_local_result_are_durable(tmp_path: Path, monkeypatch):
     class FinalizationCaptureBackend(MockBackendClient):
         def __init__(self):
             super().__init__()
@@ -116,9 +143,12 @@ def test_translate_many_marks_only_last_batch_for_job_finalization(tmp_path: Pat
     provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
     provider.translate_many(["x" * 4000] * 35)
     assert backend.reserve_count == 1
-    assert backend.finalize_flags == [False, True]
-    assert backend.debit_count == 1
-    assert backend.xp_count == 1
+    assert backend.finalize_flags == [False, False]
+    assert backend.debit_count == 0  # wallet RPC, not provider transport's legacy flag
+    rid = next(iter(backend._reservation_jobs))
+    assert backend.net_yk(rid) == 0  # still held until translation validation is done
+    provider.commit_translation_success()
+    assert backend.net_yk(rid) == 1
 
 
 def test_multi_batch_failure_never_consumes_chapter_reservation(tmp_path: Path, monkeypatch):
@@ -149,31 +179,120 @@ def test_multi_batch_failure_never_consumes_chapter_reservation(tmp_path: Path, 
     with pytest.raises(BackendTranslationError, match="provider_failed"):
         provider.translate_many(["x" * 4000] * 35)
     assert backend.reserve_count == 1
-    assert backend.finalize_flags == [False, True]
+    assert backend.finalize_flags == [False, False]
     assert backend.debit_count == 0
 
 
-def test_legacy_per_batch_consumption_reproduces_multi_batch_bug(tmp_path: Path, monkeypatch):
-    class LegacyConsumingBackend(MockBackendClient):
-        def __init__(self):
-            super().__init__()
-            self.consumed = False
-
-        def translate_batch(self, request, *, reservation_id, auth_token, finalize_job=True):
-            if self.consumed:
-                raise BackendTranslationError("reservation_invalid")
-            response = super().translate_batch(request, reservation_id=reservation_id,
-                                               auth_token=auth_token, finalize_job=finalize_job)
-            self.consumed = True  # models the pre-fix RPC consuming on every request
-            return response
-
+def test_multiple_provider_batches_consume_once_after_job_result_is_durable(tmp_path: Path, monkeypatch):
     job_id = "job-legacy-repro"
     AuthEnvelopeStore(tmp_path).seal(job_id, tok())
     monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
     monkeypatch.setenv("TRADUTOR_REQUEST_ID", "translation:legacy-repro")
-    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=LegacyConsumingBackend())
-    with pytest.raises(BackendTranslationError, match="reservation_invalid"):
-        provider.translate_many(["x" * 4000] * 35)
+    backend = MockBackendClient()
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+    assert len(provider.translate_many(["x" * 4000] * 35)) == 35
+    assert backend.reserve_count == 1
+    assert backend.net_yk(next(iter(backend._reservation_jobs))) == 0
+    provider.commit_translation_success()
+    assert backend.net_yk(next(iter(backend._reservation_jobs))) == 1
+
+
+def test_restart_and_ten_output_retries_reuse_local_translation_without_provider_or_yk(tmp_path: Path, monkeypatch):
+    import yk_reservation
+    job_id = "job-recovery"
+    output = tmp_path / "job-output"
+    monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
+    monkeypatch.setenv("TRADUTOR_JOB_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("TRADUTOR_REQUEST_ID", f"translation:{job_id}")
+    AuthEnvelopeStore(tmp_path).seal(job_id, tok())
+    backend = MockBackendClient()
+
+    first = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+    expected = first.translate_many(["first region", "second region"])
+    reservation = yk_reservation.read_reservation(output)
+    assert reservation["state"] == "held"
+    assert backend.net_yk(reservation["reservation_id"]) == 0
+    assert backend.provider_execution_count == 1
+    first.commit_translation_success()
+    assert backend.net_yk(reservation["reservation_id"]) == 1
+
+    # New provider object models app/worker restart; output retries replay durable
+    # job-local translated items and do not invoke the provider or settle again.
+    for _ in range(10):
+        restarted = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+        assert restarted.translate_many(["first region", "second region"]) == expected
+    assert backend.provider_execution_count == 1
+    assert backend.net_yk(reservation["reservation_id"]) == 1
+    assert yk_reservation.translation_ready(output, job_id=job_id)
+
+
+def test_distinct_translation_retry_is_same_job_one_yk_commit(tmp_path: Path, monkeypatch):
+    job_id = "job-strict-retry"
+    monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
+    monkeypatch.setenv("TRADUTOR_JOB_OUTPUT_DIR", str(tmp_path / "job-output"))
+    monkeypatch.setenv("TRADUTOR_REQUEST_ID", f"translation:{job_id}")
+    AuthEnvelopeStore(tmp_path).seal(job_id, tok())
+    backend = MockBackendClient()
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+    assert provider.translate_many(["first wording"])
+    assert provider.translate_many(["revised wording"])
+    assert backend.provider_execution_count == 2
+    assert backend.reserve_count == 1
+    provider.commit_translation_success()
+    provider.commit_translation_success()
+    reservation = next(iter(backend._reservation_jobs))
+    assert backend.net_yk(reservation) == 1
+
+
+def test_local_result_persist_failure_does_not_commit_yk(tmp_path: Path, monkeypatch):
+    job_id = "job-local-persist-fail"
+    output = tmp_path / "job-output"
+    monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
+    monkeypatch.setenv("TRADUTOR_JOB_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("TRADUTOR_REQUEST_ID", f"translation:{job_id}")
+    AuthEnvelopeStore(tmp_path).seal(job_id, tok())
+    backend = MockBackendClient()
+
+    def fail_persist(*_args, **_kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr("yomu_backend_provider.ResultStore.persist_for_job", fail_persist)
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+    with pytest.raises(OSError, match="disk unavailable"):
+        provider.translate_many(["source text"])
+    reservation = next(iter(backend._reservation_jobs))
+    assert backend.net_yk(reservation) == 0
+    assert not (output / "translation_ready.json").exists()
+
+
+def test_crash_after_remote_commit_retries_idempotently_without_provider_replay(tmp_path: Path, monkeypatch):
+    job_id = "job-crash-after-commit"
+    output = tmp_path / "job-output"
+    monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
+    monkeypatch.setenv("TRADUTOR_JOB_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("TRADUTOR_REQUEST_ID", f"translation:{job_id}")
+    AuthEnvelopeStore(tmp_path).seal(job_id, tok())
+    backend = MockBackendClient()
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+    expected = provider.translate_many(["same source"])
+    original = backend.settle_job
+    lost_response = {"value": True}
+
+    def commit_then_lose_response(**kwargs):
+        result = original(**kwargs)
+        if lost_response["value"]:
+            lost_response["value"] = False
+            raise BackendTranslationError("backend_transport_failed")
+        return result
+
+    monkeypatch.setattr(backend, "settle_job", commit_then_lose_response)
+    with pytest.raises(BackendTranslationError, match="wallet_settlement_pending"):
+        provider.commit_translation_success()
+    restarted = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+    assert restarted.translate_many(["same source"]) == expected
+    restarted.commit_translation_success()
+    assert backend.provider_execution_count == 1
+    assert backend.net_yk(next(iter(backend._reservation_jobs))) == 1
 
 
 def test_provider_uses_verified_license_device_row_uuid_for_reservation(tmp_path: Path, monkeypatch):
@@ -256,7 +375,7 @@ def test_http_translation_execute_payload_contains_device_and_reservation(monkey
     assert payload["reservation_id"] == reservation_id
     assert payload["request_id"] == "req-1"
     assert payload["job_id"] == "job-1"
-    assert payload["finalize_job"] is True
+    assert payload["finalize_job"] is False
     assert [item["item_id"] for item in payload["items"]] == ["a", "b"]
 
 

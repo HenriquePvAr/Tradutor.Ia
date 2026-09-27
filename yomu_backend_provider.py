@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import threading
 import uuid
+import hashlib
 import os
 import json
 import time
+import tempfile
+from pathlib import Path
 from enum import Enum
 from urllib.parse import urljoin
 from dataclasses import dataclass
@@ -175,7 +178,10 @@ class BatchResponse:
 class BackendClient(Protocol):
     def reserve(self, *, job_id: str, request_id: str, auth_token: str, device_id: str = "") -> dict[str, Any]: ...
     def translate_batch(self, request: BatchRequest, *, reservation_id: str, auth_token: str,
-                        finalize_job: bool = True) -> BatchResponse: ...
+                        finalize_job: bool = False) -> BatchResponse: ...
+    def release(self, *, reservation_id: str, auth_token: str) -> dict[str, Any]: ...
+    def settle_job(self, *, job_id: str, reservation_id: str, action: str,
+                   idempotency_key: str, auth_token: str) -> dict[str, Any]: ...
 
 
 class HttpBackendClient:
@@ -214,8 +220,27 @@ class HttpBackendClient:
             "device_id": str(device_id or ""),
         }, auth_token)
 
+    def release(self, *, reservation_id: str, auth_token: str) -> dict[str, Any]:
+        # Client-callable RELEASE of a still-held reservation (wallet-finalize ->
+        # release_yk_reservation). Idempotent server-side; a reservation that was
+        # never consumed leaves zero net YK.  Consume stays server-side.
+        return self._call("/functions/v1/wallet-finalize", {
+            "reservation_id": str(reservation_id or ""),
+        }, auth_token)
+
+    def settle_job(self, *, job_id: str, reservation_id: str, action: str,
+                   idempotency_key: str, auth_token: str) -> dict[str, Any]:
+        if action not in {"consume", "release"}:
+            raise BackendTranslationError("settlement_action_invalid")
+        return self._call("/functions/v1/wallet-settle-job", {
+            "job_id": str(job_id), "reservation_id": str(reservation_id),
+            "action": action, "idempotency_key": str(idempotency_key),
+        }, auth_token)
+
     def translate_batch(self, request: BatchRequest, *, reservation_id: str, auth_token: str,
-                        finalize_job: bool = True) -> BatchResponse:
+                        finalize_job: bool = False) -> BatchResponse:
+        if finalize_job:
+            raise BackendTranslationError("wallet_settlement_required")
         device_id = _validated_device_uuid()
         payload = {
             "request_id": request.request_id, "job_id": request.job_id,
@@ -305,15 +330,100 @@ class RequestsBackendTransport:
 
 
 class ResultStore:
-    """Small idempotent result store; production can replace this with SQLite/RPC."""
-    def __init__(self):
+    """Crash-safe, job-local translation cache; never stores auth material."""
+    def __init__(self, root: str | os.PathLike | None = None):
         self._lock = threading.RLock()
         self._records: dict[tuple[str, str], BatchResponse] = {}
         self._states: dict[tuple[str, str], str] = {}
+        self._input_hashes: dict[tuple[str, str], str] = {}
+        self._roots: dict[str, Path] = {}
+        self._default_root = Path(root).resolve() if root else None
 
-    def get(self, job_id: str, request_id: str) -> BatchResponse | None:
+    def configure_job_root(self, job_id: str, root: str | os.PathLike) -> None:
+        candidate = Path(root).resolve() / ".translation_results"
         with self._lock:
-            return self._records.get((job_id, request_id))
+            existing = self._roots.get(job_id)
+            if existing is not None and existing != candidate:
+                raise BackendTranslationError("translation_result_store_job_conflict")
+            self._roots[job_id] = candidate
+
+    def _path(self, job_id: str, request_id: str) -> Path | None:
+        root = self._roots.get(job_id, self._default_root)
+        if root is None:
+            return None
+        key = hashlib.sha256(f"{job_id}\0{request_id}".encode("utf-8")).hexdigest()
+        return root / f"{key}.json"
+
+    def durable_evidence(self, job_id: str, request_ids: list[str]) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        with self._lock:
+            for request_id in request_ids:
+                path = self._path(job_id, request_id)
+                if path is None or not path.is_file():
+                    raise BackendTranslationError("translation_result_not_persisted")
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    if (payload.get("schema_version") != 1 or payload.get("job_id") != job_id
+                            or payload.get("request_id") != request_id
+                            or not isinstance(payload.get("items"), list)
+                            or not payload["items"]):
+                        raise ValueError("invalid_result_cache")
+                    rows.append({
+                        "request_id": request_id,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "item_count": str(len(payload["items"])),
+                    })
+                except (OSError, ValueError, TypeError, AttributeError) as exc:
+                    raise BackendTranslationError("translation_result_not_persisted") from exc
+        return rows
+
+    @staticmethod
+    def _input_hash(request: BatchRequest) -> str:
+        value = {
+            "job_id": request.job_id, "request_id": request.request_id,
+            "source_lang": request.source_lang, "target_lang": request.target_lang,
+            "items": [{"item_id": item.item_id, "text": item.text} for item in request.items],
+        }
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def get(self, job_id: str, request_id: str,
+            expected_request: BatchRequest | None = None) -> BatchResponse | None:
+        with self._lock:
+            cached = self._records.get((job_id, request_id))
+            if cached is not None:
+                if (expected_request is not None
+                        and self._input_hashes.get((job_id, request_id)) != self._input_hash(expected_request)):
+                    return None
+                return cached
+            path = self._path(job_id, request_id)
+            if path is None:
+                return None
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if (payload.get("schema_version") != 1 or payload.get("job_id") != job_id
+                        or payload.get("request_id") != request_id
+                        or expected_request is not None
+                        and payload.get("input_sha256") != self._input_hash(expected_request)
+                        or not isinstance(payload.get("items"), list)):
+                    return None
+                response = BatchResponse(
+                    request_id=request_id,
+                    status="completed",
+                    reservation_id=str(payload.get("reservation_id") or ""),
+                    items=tuple(BatchItem(str(item["item_id"]), str(item["text"]))
+                                for item in payload["items"]
+                                if isinstance(item, dict) and item.get("item_id")
+                                and isinstance(item.get("text"), str)),
+                )
+                if not response.reservation_id or len(response.items) != len(payload["items"]):
+                    return None
+                self._records[(job_id, request_id)] = response
+                self._states[(job_id, request_id)] = "completed"
+                self._input_hashes[(job_id, request_id)] = str(payload.get("input_sha256") or "")
+                return response
+            except (OSError, ValueError, TypeError, KeyError):
+                return None
 
     def begin(self, job_id: str, request_id: str) -> str:
         with self._lock:
@@ -325,11 +435,36 @@ class ResultStore:
             self._states[key] = "provider_pending"
             return "created"
 
-    def persist_for_job(self, job_id: str, response: BatchResponse) -> None:
+    def persist_for_job(self, job_id: str, response: BatchResponse,
+                        request: BatchRequest | None = None) -> None:
         with self._lock:
+            path = self._path(job_id, response.request_id)
+            if path is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "schema_version": 1,
+                    "job_id": job_id,
+                    "request_id": response.request_id,
+                    "reservation_id": response.reservation_id,
+                    "input_sha256": self._input_hash(request) if request else "",
+                    "items": [{"item_id": item.item_id, "text": item.text}
+                              for item in response.items],
+                }
+                fd, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".result_", suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temporary, path)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
             key = (job_id, response.request_id)
             self._records[key] = response
             self._states[key] = "completed"
+            if request is not None:
+                self._input_hashes[key] = self._input_hash(request)
 
     def state(self, job_id: str, request_id: str) -> str:
         with self._lock:
@@ -346,6 +481,56 @@ class MockBackendClient:
         self._lock = threading.Lock()
         self._reservations: dict[tuple[str, str], str] = {}
         self._responses: dict[str, BatchResponse] = {}
+        self._wallet_state: dict[str, str] = {}
+        self._reservation_jobs: dict[str, str] = {}
+        self._reservation_owners: dict[str, str] = {}
+        self._provider_requests: dict[str, dict[str, str]] = {}
+        self._settlement_keys: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def net_yk(self, reservation_id: str) -> int:
+        return int(self._wallet_state.get(reservation_id) == "consumed")
+
+    def release(self, *, reservation_id: str, auth_token: str) -> dict[str, Any]:
+        raise BackendTranslationError("settlement_job_context_required")
+
+    def settle_job(self, *, job_id: str, reservation_id: str, action: str,
+                   idempotency_key: str, auth_token: str) -> dict[str, Any]:
+        if not auth_token:
+            raise BackendTranslationError("AUTH_REQUIRED")
+        if action not in {"consume", "release"} or not idempotency_key:
+            raise BackendTranslationError("settlement_request_invalid")
+        rid, jid, key = str(reservation_id), str(job_id), str(idempotency_key)
+        with self._lock:
+            if self._reservation_jobs.get(rid) != jid:
+                raise BackendTranslationError("reservation_job_mismatch")
+            if self._reservation_owners.get(rid) != auth_token:
+                raise BackendTranslationError("reservation_not_found")
+            prior = self._settlement_keys.get((rid, key))
+            if prior:
+                if prior[0] != action:
+                    raise BackendTranslationError("idempotency_conflict")
+                return {"job_id": jid, "reservation_id": rid,
+                        "status": prior[1], "idempotent": True}
+            state = self._wallet_state.get(rid, "held")
+            terminal = "consumed" if action == "consume" else "released"
+            if state != "held":
+                if state == terminal:
+                    self._settlement_keys[(rid, key)] = (action, state)
+                    return {"job_id": jid, "reservation_id": rid,
+                            "status": state, "idempotent": True}
+                raise BackendTranslationError("reservation_terminal_conflict")
+            requests = self._provider_requests.get(rid, {})
+            if action == "consume" and (not requests or any(status != "completed" for status in requests.values())):
+                raise BackendTranslationError("translation_job_not_complete")
+            if action == "release" and (
+                any(status == "processing" for status in requests.values())
+                or bool(requests) and all(status == "completed" for status in requests.values())
+            ):
+                raise BackendTranslationError("provider_success_cannot_be_released")
+            self._wallet_state[rid] = terminal
+            self._settlement_keys[(rid, key)] = (action, terminal)
+            return {"job_id": jid, "reservation_id": rid,
+                    "status": terminal, "idempotent": False}
 
     def reserve(self, *, job_id: str, request_id: str, auth_token: str, device_id: str = "") -> dict[str, Any]:
         if not auth_token:
@@ -358,15 +543,30 @@ class MockBackendClient:
             if reservation is None:
                 reservation = "res_" + uuid.uuid4().hex
                 self._reservations[key] = reservation
+                self._wallet_state[reservation] = "held"
+                self._reservation_jobs[reservation] = str(job_id)
+                self._reservation_owners[reservation] = str(auth_token)
                 self.reserve_count += 1
             return {"reservation_id": reservation, "required_yk": 1}
 
     def translate_batch(self, request: BatchRequest, *, reservation_id: str, auth_token: str,
-                        finalize_job: bool = True) -> BatchResponse:
-        if self.fail:
-            raise BackendTranslationError(self.fail)
+                        finalize_job: bool = False) -> BatchResponse:
         with self._lock:
+            if finalize_job:
+                raise BackendTranslationError("wallet_settlement_required")
+            if self._wallet_state.get(reservation_id) != "held":
+                raise BackendTranslationError("reservation_not_held")
+            if self._reservation_jobs.get(reservation_id) != request.job_id:
+                raise BackendTranslationError("reservation_job_mismatch")
+            if self._reservation_owners.get(reservation_id) != auth_token:
+                raise BackendTranslationError("reservation_not_found")
+            requests = self._provider_requests.setdefault(reservation_id, {})
+            requests[request.request_id] = "processing"
+            if self.fail:
+                requests[request.request_id] = "failed"
+                raise BackendTranslationError(self.fail)
             if request.request_id in self._responses:
+                requests[request.request_id] = "completed"
                 return self._responses[request.request_id]
             self.provider_execution_count += 1
             chunks = [request.items[i:i + self.chunk_size] for i in range(0, len(request.items), self.chunk_size)]
@@ -374,6 +574,7 @@ class MockBackendClient:
             response = BatchResponse(request.request_id, "completed", tuple(
                 BatchItem(item.item_id, f"[{request.target_lang}] {item.text}") for item in request.items), reservation_id)
             self._responses[request.request_id] = response
+            requests[request.request_id] = "completed"
             return response
 
 
@@ -392,11 +593,13 @@ class YomuBackendTranslationProvider:
             return self._locks.setdefault(key, threading.Lock())
 
     def translate_batch(self, request: BatchRequest) -> BatchResponse:
-        existing = self.results.get(request.job_id, request.request_id)
+        output_dir = self._reservation_output_dir(request.job_id)
+        self.results.configure_job_root(request.job_id, output_dir)
+        existing = self.results.get(request.job_id, request.request_id, request)
         if existing:
             return existing
         with self._lock_for((request.job_id, request.request_id)):
-            existing = self.results.get(request.job_id, request.request_id)
+            existing = self.results.get(request.job_id, request.request_id, request)
             if existing:
                 return existing
             try:
@@ -415,14 +618,15 @@ class YomuBackendTranslationProvider:
             reservation_id = str(reservation.get("reservation_id") or "")
             if not reservation_id:
                 raise BackendTranslationError("RESERVATION_FAILED")
+            self._record_reservation(request.job_id, reservation_id, request_id=request.request_id)
             response = self.backend.translate_batch(request, reservation_id=reservation_id,
                                                     auth_token=context.access_token,
-                                                    finalize_job=True)
+                                                    finalize_job=False)
             expected = {item.item_id for item in request.items}
             actual = [item.item_id for item in response.items]
             if response.request_id != request.request_id or set(actual) != expected or len(actual) != len(set(actual)):
                 raise BackendTranslationError("TRANSLATION_RESULT_MISMATCH")
-            self.results.persist_for_job(request.job_id, response)
+            self.results.persist_for_job(request.job_id, response, request)
             return response
 
     def translate_many(self, texts, *, force: bool = False):
@@ -435,10 +639,22 @@ class YomuBackendTranslationProvider:
         texts = list(texts or [])
         if not texts:
             return []
-        job_id = str(os.getenv("TRADUTOR_JOB_ID") or "").strip()
-        request_id = str(os.getenv("TRADUTOR_REQUEST_ID") or f"translation:{job_id}").strip()
-        if not job_id:
+        runtime_job_id = str(os.getenv("TRADUTOR_JOB_ID") or "").strip()
+        if not runtime_job_id:
             raise BackendTranslationError("job_id_required")
+        output_dir = self._reservation_output_dir(runtime_job_id)
+        try:
+            import yk_reservation
+            prior_reservation = yk_reservation.read_reservation(output_dir) or {}
+        except Exception:
+            prior_reservation = {}
+        job_id = str(prior_reservation.get("job_id") or runtime_job_id)
+        request_id = str(
+            prior_reservation.get("request_id")
+            or os.getenv("TRADUTOR_REQUEST_ID")
+            or f"translation:{job_id}"
+        ).strip()
+        self.results.configure_job_root(job_id, output_dir)
         items = tuple(BatchItem(f"translation:{index:05d}", str(text or ""))
                       for index, text in enumerate(texts))
         chunks: list[tuple[BatchItem, ...]] = []
@@ -476,51 +692,81 @@ class YomuBackendTranslationProvider:
             flush=True,
         )
 
-        # Keep the original request identity for the common single-batch case.
-        # For a split request, deterministic suffixes make each persisted result
-        # independently replayable while retaining one logical job/reservation.
-        if len(chunks) == 1:
-            response = self.translate_batch(BatchRequest(request_id, job_id, "EN", "PT-BR", chunks[0]))
-            responses = [response]
-        else:
-            try:
-                context = self.auth.acquire(job_id)
-            except AuthContextError as exc:
-                raise BackendTranslationError(str(exc)) from exc
-            device_id = _validated_device_uuid()
-            print(
-                "WALLET_RESERVE_REQUEST_SHAPE "
-                f"job_id={job_id} device_id_present=YES device_id_uuid_valid=YES",
-                flush=True,
-            )
-            reservation = self.backend.reserve(job_id=job_id, request_id=request_id,
-                                               auth_token=context.access_token,
-                                               device_id=device_id)
-            reservation_id = str(reservation.get("reservation_id") or "")
-            if not reservation_id:
-                raise BackendTranslationError("RESERVATION_FAILED")
-            device_id = _validated_device_uuid()
-            responses = []
-            for index, chunk in enumerate(chunks, start=1):
-                sub_request_id = f"{request_id}:batch:{index:04d}"
-                sub_request = BatchRequest(sub_request_id, job_id, "EN", "PT-BR", chunk)
-                responses.append(self._translate_batch_with_reservation(
-                    sub_request, reservation_id=reservation_id,
-                    auth_token=context.access_token,
-                    finalize_job=(index == len(chunks))))
+        try:
+            context = self.auth.acquire(job_id)
+        except AuthContextError as exc:
+            raise BackendTranslationError(str(exc)) from exc
+        device_id = _validated_device_uuid()
+        print(
+            "WALLET_RESERVE_REQUEST_SHAPE "
+            f"job_id={job_id} device_id_present=YES device_id_uuid_valid=YES",
+            flush=True,
+        )
+        reservation = self.backend.reserve(job_id=job_id, request_id=request_id,
+                                           auth_token=context.access_token,
+                                           device_id=device_id)
+        reservation_id = str(reservation.get("reservation_id") or "")
+        if not reservation_id:
+            raise BackendTranslationError("RESERVATION_FAILED")
+        self._record_reservation(job_id, reservation_id, request_id=request_id)
+        # Each distinct translation batch gets a content-derived stable request
+        # identity. That lets retries replay exact inputs while strict retries in
+        # the same logical job remain separate provider requests under one YK.
+        responses = []
+        request_ids = []
+        for index, chunk in enumerate(chunks, start=1):
+            request_hash = ResultStore._input_hash(
+                BatchRequest(request_id, job_id, "EN", "PT-BR", chunk))
+            suffix = f":result:{request_hash[:32]}"
+            if len(chunks) > 1:
+                suffix += f":batch:{index:04d}"
+            sub_request_id = f"{request_id[:220-len(suffix)]}{suffix}"
+            sub_request = BatchRequest(sub_request_id, job_id, "EN", "PT-BR", chunk)
+            request_ids.append(sub_request_id)
+            responses.append(self._translate_batch_with_reservation(
+                sub_request, reservation_id=reservation_id,
+                auth_token=context.access_token, finalize_job=False))
         self.stats.update({"request_id": request_id, "job_id": job_id,
                            "translation_results": len(items),
                            "translation_batches": len(responses)})
         by_id = {item.item_id: item.text for response in responses for item in response.items}
+        if set(by_id) == {item.item_id for item in items} and len(by_id) == len(items):
+            try:
+                import yk_reservation
+                yk_reservation.mark_translation_ready(
+                    output_dir, job_id=job_id, request_ids=request_ids,
+                    item_count=len(items), result_files=self.results.durable_evidence(job_id, request_ids),
+                )
+            except Exception as exc:  # noqa: BLE001 - never bill without durable local recovery data
+                raise BackendTranslationError("translation_result_persist_failed") from exc
         return [by_id[item.item_id] for item in items]
 
+    def commit_translation_success(self) -> dict[str, Any]:
+        """Consume once after all provider/retry results are durable, before rendering."""
+        runtime_job_id = str(os.getenv("TRADUTOR_JOB_ID") or "").strip()
+        if not runtime_job_id:
+            raise BackendTranslationError("job_id_required")
+        output_dir = self._reservation_output_dir(runtime_job_id)
+        try:
+            import yk_reservation
+            ctx = yk_reservation.read_reservation(output_dir)
+            if not ctx:
+                return {"state": "no_reservation", "net_yk": 0}
+            result = yk_reservation.settle(output_dir, output_valid=True, provider=self)
+        except Exception as exc:  # noqa: BLE001 - durable results allow safe idempotent recovery
+            raise BackendTranslationError("wallet_settlement_pending") from exc
+        if result.get("state") != "consumed":
+            raise BackendTranslationError("wallet_settlement_not_consumed")
+        return result
+
     def _translate_batch_with_reservation(self, request: BatchRequest, *, reservation_id: str,
-                                          auth_token: str, finalize_job: bool = True) -> BatchResponse:
-        existing = self.results.get(request.job_id, request.request_id)
+                                          auth_token: str, finalize_job: bool = False) -> BatchResponse:
+        self.results.configure_job_root(request.job_id, self._reservation_output_dir(request.job_id))
+        existing = self.results.get(request.job_id, request.request_id, request)
         if existing:
             return existing
         with self._lock_for((request.job_id, request.request_id)):
-            existing = self.results.get(request.job_id, request.request_id)
+            existing = self.results.get(request.job_id, request.request_id, request)
             if existing:
                 return existing
             response = self.backend.translate_batch(
@@ -531,8 +777,44 @@ class YomuBackendTranslationProvider:
             if (response.request_id != request.request_id or set(actual) != expected
                     or len(actual) != len(set(actual))):
                 raise BackendTranslationError("TRANSLATION_RESULT_MISMATCH")
-            self.results.persist_for_job(request.job_id, response)
+            self.results.persist_for_job(request.job_id, response, request)
             return response
+
+    def _record_reservation(self, job_id: str, reservation_id: str, *, request_id: str = "") -> None:
+        output_dir = self._reservation_output_dir(job_id)
+        try:
+            import yk_reservation
+            yk_reservation.record_reservation(
+                output_dir, job_id=job_id, reservation_id=reservation_id,
+                request_id=request_id)
+        except Exception as exc:
+            raise BackendTranslationError("reservation_handoff_failed") from exc
+
+    def _reservation_output_dir(self, job_id: str) -> Path:
+        output_dir = str(os.getenv("TRADUTOR_JOB_OUTPUT_DIR") or "").strip()
+        if output_dir:
+            return Path(output_dir)
+        if os.getenv("TRADUTOR_IA_HERMETIC_TEST_ENV") == "1":
+            job_key = hashlib.sha256(str(job_id).encode()).hexdigest()[:24]
+            return self.auth.root.parent / "output" / job_key
+        raise BackendTranslationError("job_output_dir_missing")
+
+    def settle_reservation(self, context: dict, *, action: str,
+                           idempotency_key: str) -> dict[str, Any]:
+        reservation_id = str(context.get("reservation_id") or "")
+        job_id = str(context.get("job_id") or "")
+        if not reservation_id or not job_id or action not in {"consume", "release"}:
+            raise BackendTranslationError("invalid_reservation_context")
+        auth = self.auth.acquire(job_id)
+        return self.backend.settle_job(job_id=job_id, reservation_id=reservation_id,
+                                       action=action, idempotency_key=idempotency_key,
+                                       auth_token=auth.access_token)
+
+    def release_reservation(self, context: dict) -> dict[str, Any]:
+        raise BackendTranslationError("settlement_action_required")
+
+    def finalize_reservation(self, context: dict) -> dict[str, Any]:
+        raise BackendTranslationError("settlement_action_required")
 
     def translate_strict(self, text, *, previous_translation="", validation_reason="", force=False):
         # Strict retries are independent logical requests, but use the same

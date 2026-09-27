@@ -100,6 +100,135 @@ def _safe_reason_code(value: object, fallback: str) -> str:
     return candidate if _REASON_CODE_RE.fullmatch(candidate) else fallback
 
 
+def _build_yk_settlement_provider(job: dict):
+    """Provider used only to finalize/release a held YK reservation after output is
+    known.  Returns None when the backend is not configured (tests, download-only,
+    non-YK providers) so settlement is simply skipped and the reservation stays
+    recoverable.  Isolated here so tests can inject a mock."""
+    try:
+        from yomu_backend_provider import HttpBackendClient, YomuBackendTranslationProvider
+        from runtime_paths import runtime_root
+        backend = HttpBackendClient.from_environment()
+        return YomuBackendTranslationProvider(runtime_root=runtime_root(), backend=backend)
+    except Exception:  # noqa: BLE001 - never let settlement setup break finalize
+        return None
+
+
+def _settle_yk_reservation(job: dict, output_dir, *, output_valid: bool) -> dict:
+    """Consume (valid output) or release (failure) the job's held reservation, once.
+
+    Fully guarded: any error leaves the persisted reservation state untouched and
+    recoverable; _finalize keeps the job recoverable rather than falsely terminal.
+    A job whose YK was never deferred (no reservation file) is a no-op."""
+    try:
+        import yk_reservation
+        reservation = yk_reservation.read_reservation(output_dir)
+        if not reservation:
+            return {"state": "no_reservation", "net_yk": 0}
+        state = str(reservation.get("state") or "")
+        if state == "consumed":
+            return {"state": "consumed", "net_yk": 1}
+        if state == "released":
+            return {"state": "released", "net_yk": 0}
+        provider = _build_yk_settlement_provider(job)
+        if provider is None:
+            return {"state": "settlement_deferred", "net_yk": 0}
+        return yk_reservation.settle(output_dir, output_valid=output_valid, provider=provider)
+    except Exception as exc:  # noqa: BLE001 - recoverable; reservation stays held
+        _append_pipeline_trace(job, "YK_SETTLE_ERROR", reason_code=type(exc).__name__)
+        return {"state": "settle_error", "net_yk": 0}
+
+
+def recover_yk_settlement(job: dict, *, cancelled: bool = False) -> dict:
+    """Settle a reservation after a runner/worker crash using durable output only.
+
+    The same requested-output contract and commit provenance gate used by normal
+    finalization decide whether recovery consumes or releases. No translation data
+    is loaded or replayed.
+    """
+    raw_output_dir = str(job.get("output_dir") or "").strip()
+    if not raw_output_dir:
+        return {"state": "no_reservation", "net_yk": 0}
+    output_dir = Path(raw_output_dir).resolve()
+    config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+    if not output_dir.is_dir():
+        return _settle_yk_reservation(job, output_dir, output_valid=False)
+    artifacts = find_output_artifacts(output_dir)
+    report = load_json(output_dir / "timing_report.json")
+    output_format = str(config.get("output_format") or "pdf")
+    output_valid, _ = _requested_output_contract(output_format, artifacts, report)
+    output_valid = bool(output_valid and not cancelled and not _pipeline_commit_mismatch(job, artifacts))
+    settlement = _settle_yk_reservation(job, output_dir, output_valid=output_valid)
+    try:
+        import yk_reservation
+        ready = yk_reservation.translation_ready(
+            output_dir, job_id=(yk_reservation.read_reservation(output_dir) or {}).get("job_id"))
+    except Exception:
+        ready = False
+    if ready and not output_valid and not cancelled and settlement.get("state") == "consumed":
+        settlement["output_recovery_available"] = True
+    return settlement
+
+
+def _requested_output_contract(output_format: str, artifacts: dict, report: dict) -> tuple[bool, str]:
+    """Require a real artifact for the format the owner requested.
+
+    The canonical PDF is also emitted for PNG/PSD jobs, so merely finding that PDF
+    must not let a missing or empty requested-format export become ``finished``.
+    """
+    output_format = str(output_format or "pdf").strip().casefold()
+    quality = report.get("quality_validation") or {}
+    def declared_count(*values: object) -> int | None:
+        for value in values:
+            if value is None or value == "":
+                continue
+            try:
+                count = int(value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if count >= 0:
+                return count
+        return None
+
+    if output_format == "pdf":
+        path = Path(str(artifacts.get("pdf_path") or ""))
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False, "export_zero_output"
+        expected = declared_count(
+            report.get("page_count"), report.get("processed_logical_pages"),
+            report.get("logical_page_count"), quality.get("expected_pdf_pages"),
+        )
+        actual = declared_count(quality.get("pdf_pages"))
+        if expected == 0:
+            return False, "no_processable_pages"
+        if expected is not None and expected > 0 and actual != expected:
+            return False, "export_output_count_mismatch"
+        return True, ""
+
+    key, suffix = ("png_path", ".png") if output_format == "png" else ("psd_path", ".psd")
+    if output_format not in {"png", "psd"}:
+        return False, "unsupported_output_format"
+    root = Path(str(artifacts.get(key) or ""))
+    if not root.is_dir():
+        return False, "export_zero_output"
+    try:
+        outputs = [path for path in root.rglob(f"*{suffix}")
+                   if path.is_file() and path.stat().st_size > 0]
+    except OSError:
+        return False, "export_zero_output"
+    if not outputs:
+        return False, "export_zero_output"
+    expected = declared_count(
+        report.get("page_count"), report.get("processed_logical_pages"),
+        report.get("logical_page_count"), quality.get("expected_pdf_pages"),
+    )
+    if expected == 0:
+        return False, "no_processable_pages"
+    if expected is not None and expected > 0 and len(outputs) != expected:
+        return False, "export_output_count_mismatch"
+    return True, ""
+
+
 def _safe_provenance_text(value: object) -> str:
     text = str(value or "").strip()
     return text if _PROVENANCE_TEXT_RE.fullmatch(text) else ""
@@ -454,6 +583,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         env["PYTHONUNBUFFERED"] = "1"
         env["TRADUTOR_JOB_ID"] = str(job.get("id") or "")
         env["TRADUTOR_JOB_RUN_ID"] = str(job.get("run_id") or "")
+        env["TRADUTOR_JOB_OUTPUT_DIR"] = str(output_dir.resolve())
         configuration = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
         # The runtime root owns auth/, jobs.sqlite3, logs/ and the secure auth
         # envelope.  It is the process's explicit TRADUTOR_RUNTIME_ROOT (or the DB
@@ -465,13 +595,17 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         env["TRADUTOR_RUNTIME_ROOT"] = str(runtime_root_for_job)
         env["TRADUTOR_TEST_RUNTIME_ROOT"] = str(runtime_root_for_job)
         env["TRADUTOR_CHECKPOINT_JOB_ID"] = str(
-            configuration.get("resume_checkpoint_job_id")
+            configuration.get("logical_job_id")
+            or configuration.get("resume_checkpoint_job_id")
             or configuration.get("auth_context_id")
             or job.get("id") or ""
         )
         env["TRADUTOR_RESUME_CHECKPOINT"] = "1" if configuration.get("resume_checkpoint_job_id") else "0"
         env["TRADUTOR_AUTH_CONTEXT_ID"] = str(
-            configuration.get("auth_context_id") or job.get("id") or ""
+            configuration.get("auth_context_id")
+            or configuration.get("logical_job_id")
+            or configuration.get("resume_checkpoint_job_id")
+            or job.get("id") or ""
         )
         # Stable logical translation request identity; credentials remain in the
         # encrypted job envelope and never cross this process boundary.
@@ -593,6 +727,15 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
     download_report = load_json(output_dir / "downloaded_images.json")
     download_only = bool((job.get("configuration") or {}).get("download_only"))
     quality = report.get("quality_validation") or {}
+    output_format = str(
+        (job.get("configuration") or {}).get("output_format")
+        or report.get("output_format")
+        or "pdf"
+    ).casefold()
+    output_contract_ok, output_contract_reason = (
+        (True, "") if download_only else _requested_output_contract(
+            output_format, artifacts, report)
+    )
     commit_mismatch = (
         {}
         if cancelled or interrupted
@@ -604,9 +747,7 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         and (
             (download_only and bool(download_gate.get("passed"))
              and output_dir.is_dir() and (output_dir / "input").is_dir())
-            or (not download_only and bool(
-                artifacts.get("pdf_path") or artifacts.get("png_path") or artifacts.get("psd_path")
-            ))
+            or (not download_only and output_contract_ok)
         )
         and not cancelled and not interrupted and not commit_mismatch
     )
@@ -628,6 +769,35 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
             "error": JobStatus.FAILED,
         }.get(status, JobStatus.FAILED)
 
+    # YK commit is tied to provider-complete results durably cached in the job
+    # output, not to local reconstruction/export. The backend RPC independently
+    # checks every provider request and is idempotent across crash recovery.
+    yk_output_valid = (
+        not cancelled and not interrupted and not commit_mismatch
+        and target in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED}
+        and (download_only or output_contract_ok)
+    )
+    yk_settlement = _settle_yk_reservation(job, output_dir, output_valid=yk_output_valid)
+    _append_pipeline_trace(job, "YK_SETTLEMENT", status=str(yk_settlement.get("state")))
+    try:
+        import yk_reservation
+        translation_is_recoverable = yk_reservation.translation_ready(
+            output_dir, job_id=(yk_reservation.read_reservation(output_dir) or {}).get("job_id"))
+    except Exception:
+        translation_is_recoverable = False
+    output_recovery_available = bool(
+        translation_is_recoverable and not download_only and not output_contract_ok
+        and not commit_mismatch
+    )
+    if output_recovery_available and not cancelled:
+        target = JobStatus.INTERRUPTED
+    settlement_pending = yk_settlement.get("state") in {"settlement_deferred", "settle_error"}
+    if settlement_pending and target in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED,
+                                        JobStatus.FAILED, JobStatus.CANCELLED}:
+        # Never persist a terminal job while its wallet reservation is unresolved.
+        # Recovery/retry can then repeat the same idempotent settlement operation.
+        target = JobStatus.INTERRUPTED
+
     failure = download_report.get("failure") if isinstance(download_report, dict) else {}
     source_reason = _safe_reason_code(
         failure.get("code") if isinstance(failure, dict) else "", "pipeline_failed")
@@ -636,7 +806,11 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         # covers the complete logical chapter.  Never publish a partial 97/105 run as
         # ``completed`` merely because the worker exited cleanly.
         source_reason = "incomplete_download"
-    if commit_mismatch:
+    if output_recovery_available:
+        reason_code = "output_failed_recoverable"
+    elif settlement_pending:
+        reason_code = "wallet_settlement_pending"
+    elif commit_mismatch:
         reason_code = "pipeline_commit_mismatch"
     elif cancelled:
         reason_code = "user_cancelled"
@@ -647,7 +821,11 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
     elif target == JobStatus.REVIEW_REQUIRED:
         reason_code = "quality_review_required"
     else:
-        reason_code = source_reason
+        reason_code = (
+            output_contract_reason
+            if return_code == 0 and output_contract_reason
+            else source_reason
+        )
 
     fields = {
         "exit_code": effective_return_code,
@@ -657,11 +835,6 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         "progress_path": str(output_dir / "progress.json"),
         "reason_code": reason_code,
     }
-    output_format = str(
-        (job.get("configuration") or {}).get("output_format")
-        or report.get("output_format")
-        or "pdf"
-    ).casefold()
     if download_only:
         # Download-only has no translated artifact; its output directory is authoritative.
         fields["pdf_path"] = ""
@@ -686,8 +859,13 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         )
         fields["error_message"] = reason_code
     if target == JobStatus.INTERRUPTED:
-        fields["interrupted_reason"] = "worker_stop"
+        fields["interrupted_reason"] = (
+            "output_recovery_available" if output_recovery_available
+            else "wallet_settlement_pending" if settlement_pending else "worker_stop"
+        )
         fields["recoverable"] = 1
+        if output_recovery_available:
+            fields["resume_from_stage"] = "rendering"
     try:
         job = store.transition(job_id, target, expected_worker=job.get("worker_id"), **fields)
     except TransitionError as exc:
@@ -698,6 +876,13 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         manifest_updates["runtime_commit_mismatch"] = {
             "expected_commit_hash": commit_mismatch["expected"],
             "actual_commit_hash": commit_mismatch["actual"],
+        }
+    if output_recovery_available:
+        manifest_updates["translation_recovery"] = {
+            "translation_ready": True,
+            "output_retry_available": True,
+            "additional_yk_cost": 0,
+            "provider_replay_required": False,
         }
     if download_only:
         result_type = "directory"

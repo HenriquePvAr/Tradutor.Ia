@@ -144,6 +144,7 @@ class Worker:
         "translation": "job_runner.py",
         "community_publish": "community_publish_runner.py",
         "review_rerun": "review_rerun_runner.py",
+        "review_reexport": "review_reexport_runner.py",
     }
 
     def _runner_fingerprint(self, job_id: str, job: dict | None = None) -> list[str]:
@@ -168,6 +169,7 @@ class Worker:
                 "job_runner.py": "job-runner",
                 "community_publish_runner.py": "community-publish-runner",
                 "review_rerun_runner.py": "review-rerun-runner",
+                "review_reexport_runner.py": "review-reexport-runner",
             }.get(runner, "job-runner")
             command = [sys.executable, "--internal-child", role]
         else:
@@ -757,6 +759,21 @@ class Worker:
             fresh = None
         if fresh and fresh["status"] in JobStatus.IN_FLIGHT:
             reason = "cancel_requested" if fresh.get("cancel_requested") else "worker_stop"
+            try:
+                from job_runner import recover_yk_settlement
+                settlement = recover_yk_settlement(fresh, cancelled=bool(fresh.get("cancel_requested")))
+            except Exception:  # noqa: BLE001 - leave job recoverable on settlement uncertainty
+                settlement = {"state": "settle_error"}
+            settlement_pending = settlement.get("state") in {"settlement_deferred", "settle_error"}
+            if settlement_pending:
+                try:
+                    self.store.transition(job_id, JobStatus.INTERRUPTED, expected_worker=self.worker_id,
+                                          interrupted_reason="wallet_settlement_pending",
+                                          reason_code="wallet_settlement_pending", recoverable=1)
+                except Exception:  # noqa: BLE001 - the runner may have finalized concurrently
+                    pass
+                return
+            output_recovery = bool(settlement.get("output_recovery_available")) and not fresh.get("cancel_requested")
             target = JobStatus.CANCELLING if fresh.get("cancel_requested") else JobStatus.INTERRUPTED
             try:
                 if target == JobStatus.CANCELLING:
@@ -765,7 +782,10 @@ class Worker:
                                           interrupted_reason=reason)
                 else:
                     self.store.transition(job_id, JobStatus.INTERRUPTED, expected_worker=self.worker_id,
-                                          interrupted_reason=reason, recoverable=1)
+                                          interrupted_reason=("output_recovery_available" if output_recovery else reason),
+                                          reason_code=("output_failed_recoverable" if output_recovery else fresh.get("reason_code") or ""),
+                                          resume_from_stage=("rendering" if output_recovery else fresh.get("resume_from_stage") or ""),
+                                          recoverable=1)
             except Exception:  # noqa: BLE001 - the runner may have finalized concurrently
                 pass
 
@@ -807,6 +827,20 @@ class Worker:
                 # PID belongs to some other process now: fail closed, do not terminate it.
                 reason = "ownership_mismatch"
             try:
+                from job_runner import recover_yk_settlement
+                settlement = recover_yk_settlement(job, cancelled=bool(job.get("cancel_requested")))
+            except Exception:  # noqa: BLE001 - leave job recoverable on settlement uncertainty
+                settlement = {"state": "settle_error"}
+            if settlement.get("state") in {"settlement_deferred", "settle_error"}:
+                try:
+                    self.store.transition(job_id, JobStatus.INTERRUPTED,
+                                          interrupted_reason="wallet_settlement_pending",
+                                          reason_code="wallet_settlement_pending", recoverable=1)
+                except Exception:  # noqa: BLE001 - another worker may have won reconciliation
+                    pass
+                continue
+            try:
+                output_recovery = bool(settlement.get("output_recovery_available")) and not job.get("cancel_requested")
                 if job.get("cancel_requested"):
                     current = self.store.get_job(job_id)
                     if current and current.get("status") in {
@@ -827,7 +861,10 @@ class Worker:
                     )
                 else:
                     self.store.transition(job_id, JobStatus.INTERRUPTED,
-                                          interrupted_reason=reason, recoverable=1)
+                                          interrupted_reason=("output_recovery_available" if output_recovery else reason),
+                                          reason_code=("output_failed_recoverable" if output_recovery else job.get("reason_code") or ""),
+                                          resume_from_stage=("rendering" if output_recovery else job.get("resume_from_stage") or ""),
+                                          recoverable=1)
             except Exception:  # noqa: BLE001 - another worker may have won the reconcile
                 pass
         return safe_to_continue

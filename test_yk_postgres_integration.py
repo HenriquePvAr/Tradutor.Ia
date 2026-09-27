@@ -59,6 +59,7 @@ MIGRATION_CHAIN = [
             "20260913005557_canonical_translation_commit_rpc_grants.sql",
             "20260915013128_chapter_level_translation_finalization.sql",
             "20260915140000_yk_ads_foundation.sql",
+            "20260926175232_yk_job_atomic_settlement.sql",
         )
     ],
 ]
@@ -194,9 +195,10 @@ class Harness:
         for index in range(batches):
             self.conn.execute(
                 "insert into public.translation_requests"
-                "(request_id,user_id,license_id,device_id,job_id,reservation_id,provider,status)"
-                " values(%s,%s,%s,%s,%s,%s,'deepl','completed')",
-                (f"{job_id}-r{index}", uid, license_id, device_id, job_id, rid))
+                "(request_id,user_id,license_id,device_id,job_id,reservation_id,provider,status,result)"
+                " values(%s,%s,%s,%s,%s,%s,'deepl','completed',%s::jsonb)",
+                (f"{job_id}-r{index}", uid, license_id, device_id, job_id, rid,
+                 '{"items":[{"item_id":"test","translated_text":"stored"}]}'))
         return reservation
 
     def age_one_day(self, uid):
@@ -529,6 +531,93 @@ def test_client_cannot_release_another_users_reservation(db):
     with pytest.raises(psycopg.errors.RaiseException, match="reservation_not_found"):
         db.as_user(intruder, "select public.release_yk_reservation(%s)",
                    (reservation["reservation_id"],))
+
+
+def test_settlement_rejects_release_after_provider_completed(db):
+    uid, license_id, device_id = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
+    db.as_user(uid, "select public.claim_daily_yk()")
+    job = f"settle-release-{uid}"
+    reservation = db.translate_chapter(uid, license_id, device_id, job, batches=1)
+    key = f"yk-settlement-v1:{uid}:release"
+    with pytest.raises(psycopg.errors.RaiseException, match="provider_success_cannot_be_released"):
+        db.as_user(uid, "select public.settle_translation_job(%s,%s,'release',%s)",
+                   (job, reservation["reservation_id"], key))
+    assert db.balances(uid)["daily"] == 5
+    assert int(db.conn.execute(
+        "select count(*) from public.yk_ledger where user_id=%s and amount<0", (uid,)
+    ).fetchone()[0]) == 0
+
+
+def test_settlement_consumes_completed_job_once_and_is_idempotent(db):
+    uid, license_id, device_id = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
+    db.as_user(uid, "select public.claim_daily_yk()")
+    job = f"settle-consume-{uid}"
+    reservation = db.translate_chapter(uid, license_id, device_id, job, batches=2)
+    key = f"yk-settlement-v1:{uid}:consume"
+    first = db.as_user(uid, "select public.settle_translation_job(%s,%s,'consume',%s)",
+                       (job, reservation["reservation_id"], key))
+    assert first["status"] == "consumed"
+    assert first["yk_debited"] == 1
+    assert first["xp_credited"] == 10
+    again = db.as_user(uid, "select public.settle_translation_job(%s,%s,'consume',%s)",
+                       (job, reservation["reservation_id"], key))
+    assert again["status"] == "consumed" and again["idempotent"] is True
+    assert db.balances(uid)["daily"] == 4
+    assert int(db.conn.execute(
+        "select count(*) from public.yk_ledger where user_id=%s and amount<0", (uid,)
+    ).fetchone()[0]) == 1
+
+
+def test_settlement_refuses_consume_when_translation_result_was_not_persisted(db):
+    uid, license_id, device_id = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
+    db.as_user(uid, "select public.claim_daily_yk()")
+    job = f"settle-no-result-{uid}"
+    reservation = db.as_user(uid, "select public.reserve_translation_yk(%s,%s)", (job, device_id))
+    db.conn.execute(
+        "insert into public.translation_requests"
+        "(request_id,user_id,license_id,device_id,job_id,reservation_id,provider,status,result)"
+        " values(%s,%s,%s,%s,%s,%s,'deepl','completed',null)",
+        (f"{job}-request", uid, license_id, device_id, job, reservation["reservation_id"]))
+    with pytest.raises(psycopg.errors.RaiseException, match="translation_result_not_persisted"):
+        db.as_user(uid, "select public.settle_translation_job(%s,%s,'consume',%s)",
+                   (job, reservation["reservation_id"], f"yk-settlement-v1:{uid}:consume"))
+    assert db.balances(uid)["daily"] == 5
+
+
+def test_settlement_denies_wrong_user_and_wrong_job(db):
+    owner, _, device_id = db.user("free")
+    intruder, _, _ = db.user("free")
+    db.as_user(owner, "select public.set_passive_ads_enabled(true)")
+    db.as_user(owner, "select public.claim_daily_yk()")
+    reservation = db.as_user(owner, "select public.reserve_translation_yk(%s,%s)",
+                             (f"settle-owner-{owner}", device_id))
+    with pytest.raises(psycopg.errors.RaiseException, match="reservation_not_found"):
+        db.as_user(intruder, "select public.settle_translation_job(%s,%s,'release',%s)",
+                   (f"settle-owner-{owner}", reservation["reservation_id"],
+                    f"yk-settlement-v1:{intruder}:release"))
+    with pytest.raises(psycopg.errors.RaiseException, match="reservation_not_found"):
+        db.as_user(owner, "select public.settle_translation_job(%s,%s,'release',%s)",
+                   ("another-job", reservation["reservation_id"],
+                    f"yk-settlement-v1:{owner}:release"))
+
+
+def test_settlement_rejects_processing_release_and_terminal_reversal(db):
+    uid, license_id, device_id = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
+    db.as_user(uid, "select public.claim_daily_yk()")
+    job = f"settle-processing-{uid}"
+    reservation = db.as_user(uid, "select public.reserve_translation_yk(%s,%s)", (job, device_id))
+    db.conn.execute(
+        "insert into public.translation_requests"
+        "(request_id,user_id,license_id,device_id,job_id,reservation_id,provider,status)"
+        " values(%s,%s,%s,%s,%s,%s,'deepl','processing')",
+        (f"{job}-request", uid, license_id, device_id, job, reservation["reservation_id"]))
+    with pytest.raises(psycopg.errors.RaiseException, match="translation_request_in_flight"):
+        db.as_user(uid, "select public.settle_translation_job(%s,%s,'release',%s)",
+                   (job, reservation["reservation_id"], f"yk-settlement-v1:{uid}:release"))
 
 
 # ---------------------------------------------------------------------------
