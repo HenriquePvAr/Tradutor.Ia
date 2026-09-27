@@ -1,6 +1,6 @@
 # Arquitetura
 
-> **Base verificada:** `a6a46e4` (branch `fix/main-e2e-findings`) · **Revisado em:** 2026-09-03
+> **Base verificada:** `943de4d` (branch `main`) · **Revisado em:** 2026-09-27
 
 Este documento descreve a arquitetura implementada no repositório. Ideias futuras aparecem somente quando identificadas como roadmap.
 
@@ -223,7 +223,10 @@ preservar exclusões e ordem manual na aba atual. O relatório guarda diagnósti
 URLs completas, cookies, queries ou pixels originais de canvas.
 
 Os transportes compartilham limites de redirects, tamanho, quantidade, bytes e duração
-por capítulo. A sessão com cookies do navegador é temporária e opcional; challenges,
+por capítulo. O limite de quantidade (`max_files`, teto rígido de 400) conta um slot por
+página efetivamente salva: uma página cujo canvas já está em memória consome o slot uma
+única vez pela reserva local e não é rebaixada pela rede, de modo que um capítulo legítimo
+de até 400 páginas cabe no orçamento. A sessão com cookies do navegador é temporária e opcional; challenges,
 autenticação e canvas inacessível não são contornados. No fallback universal, um `href`
 explícito pode ser seguido sem clique somente quando prova mesma origem/path e avanço de query
 numérica N+1; a sequência é limitada e qualquer ambiguidade, ciclo, timeout ou cobertura parcial

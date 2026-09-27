@@ -2499,7 +2499,7 @@ def _download_candidates(
             while next_slot < len(candidates) and len(pending) < parallel_workers:
                 if cancel_event is not None and cancel_event.is_set():
                     break
-                if not _candidate_skip_reason(candidates[next_slot]):
+                if not _candidate_skip_reason(candidates[next_slot]) and not _has_inline_canvas(candidates[next_slot]):
                     pending[pool.submit(fetch_slot, (next_slot, candidates[next_slot]))] = next_slot
                 next_slot += 1
             while pending:
@@ -2524,7 +2524,7 @@ def _download_candidates(
                         continue
                     while next_slot < len(candidates) and (cancel_event is None or not cancel_event.is_set()):
                         slot = next_slot; next_slot += 1
-                        if _candidate_skip_reason(candidates[slot]):
+                        if _candidate_skip_reason(candidates[slot]) or _has_inline_canvas(candidates[slot]):
                             continue
                         pending[pool.submit(fetch_slot, (slot, candidates[slot]))] = slot
                         break
@@ -2736,6 +2736,23 @@ def _existing_download_item(file_path, candidate, url):
         ),
         "render_kind": _safe_report_metadata(candidate.get("render_kind"), ""),
     }
+
+
+def _has_inline_canvas(candidate) -> bool:
+    """True when the candidate already carries its page bytes in memory.
+
+    Reader-materialized pages (stitched canvas / data-URL crops) need no network
+    fetch: the serial save loop reads ``canvas_data`` directly and charges the shared
+    chapter file budget exactly once via ``reserve_local_content``.  Letting the
+    parallel prefetch also fetch such a candidate's URL both wastes the request and
+    charges the SAME page against ``max_files`` a second time -- so a legitimate
+    ~205-page canvas chapter reached the 400-file ceiling around page 195 (once for
+    the discarded prefetch, once for the reserve).  Prefetch must skip these; the
+    serial loop must NOT (it still saves them), so this is intentionally separate
+    from ``_candidate_skip_reason``.
+    """
+    canvas_data = candidate.get("canvas_data")
+    return isinstance(canvas_data, (bytes, bytearray)) and bool(canvas_data)
 
 
 def _candidate_skip_reason(candidate):

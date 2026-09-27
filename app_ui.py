@@ -427,15 +427,36 @@ DIAGNOSTICS_ROOT.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("TRADUTOR_DIAGNOSTICS_ROOT", str(DIAGNOSTICS_ROOT))
 
 
+# The ``*_current.jsonl`` diagnostic streams (app/routes/profile) are append-only and,
+# before this bound, grew without limit -- one beta-17 session left app_current.jsonl at
+# ~297 MB, dominated by per-poll control-plane/auth/render telemetry.  Rotate like
+# runtime.log: one bounded current file plus one ``.previous`` copy.  A rotation failure
+# is swallowed (diagnostics carry no credentials and must never break the app).
+_DIAGNOSTIC_LOG_MAX_BYTES = 16 * 1024 * 1024
+_DIAGNOSTIC_LOG_LOCK = threading.Lock()
+
+
+def _rotate_diagnostic_log(path: Path) -> None:
+    try:
+        if path.exists() and path.stat().st_size > _DIAGNOSTIC_LOG_MAX_BYTES:
+            path.replace(path.with_name(f"{path.stem}.previous{path.suffix}"))
+    except OSError:
+        pass
+
+
 def _append_diagnostic_log(filename: str, event: str, **fields: Any) -> None:
     now = datetime.now(timezone.utc)
     safe = {"timestamp": now.isoformat().replace("+00:00", "Z"), "at": int(now.timestamp() * 1000), "event": event}
     for key, value in fields.items():
         if isinstance(value, (str, int, float, bool)) and key.lower() not in {"token", "password", "authorization", "secret", "body"}:
             safe[key] = value
+    line = json.dumps(safe, ensure_ascii=False, separators=(",", ":")) + "\n"
     try:
-        with (DIAGNOSTICS_ROOT / filename).open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(safe, ensure_ascii=False, separators=(",", ":")) + "\n")
+        path = DIAGNOSTICS_ROOT / filename
+        with _DIAGNOSTIC_LOG_LOCK:
+            _rotate_diagnostic_log(path)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
     except OSError:
         pass
 

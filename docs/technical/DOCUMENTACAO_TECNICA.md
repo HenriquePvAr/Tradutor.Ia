@@ -1,6 +1,6 @@
 # Tradutor IA — Documentação Técnica
 
-> **Base verificada:** `5c651ba` (branch `main`)
+> **Base verificada:** `943de4d` (branch `main`)
 > **Última revisão:** 2026-09-27
 > **Público:** desenvolvedores, mantenedores, suporte técnico e agentes automatizados.
 
@@ -2316,10 +2316,18 @@ relevantes tendem a vir daí, não da orquestração Python.
 | Saúde do worker/fila | `python start_tradutor.py status` |
 | Liveness da UI | `GET /api/health` |
 | Diagnóstico na UI | `GET /api/ui/diagnostics`, aba **Logs** |
+| Fluxos de diagnóstico da UI | `<runtime>/diagnostics/{app,routes,profile_media}_current.jsonl` |
 | Relatórios por execução | `output/<slug>/<run_id>/*_report.json|html` para novos jobs; `output/<slug>/*_report.json|html` em legados |
 
 Todo texto que chega à interface passa por `sanitize_diagnostic_text`. `request_observability.py`
 e `job_failure_diagnostic.py` normalizam diagnóstico de falha em códigos fechados.
+
+Os fluxos `*_current.jsonl` são append-only e agora têm rotação por tamanho
+(`_append_diagnostic_log` em `app_ui.py`): ao passar de 16 MiB o arquivo vira
+`<nome>.previous.jsonl` e um novo `current` continua a escrita — teto de 16 MiB por
+fluxo mais uma cópia anterior, espelhando a rotação de `runtime.log`. A falha de rotação
+é best-effort e nunca interrompe a gravação do diagnóstico (antes eram ilimitados: uma
+sessão chegou a ~297 MB em `app_current.jsonl`).
 
 ## 27. Ambiente de desenvolvimento e comandos
 

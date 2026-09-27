@@ -84,6 +84,36 @@ def build_child_command(role: str, *, frozen: bool | None = None) -> list[str]:
     return [background_python_executable(), "-u", str(script)]
 
 
+def _fail_terminal_child(exc: BaseException, stage: str):
+    """Guarantee a terminal child failure actually reaches the parent runner.
+
+    Printing ``CHILD_EXIT`` and re-raising is enough in a plain interpreter, but the
+    frozen build can stay alive after the exception -- a lingering non-daemon thread
+    or a spawned helper (dynamic resolver, Selenium teardown) keeps the process from
+    exiting.  The runner's ``proc.poll()`` then never observes the child's exit, so
+    the job is heartbeated as ``running`` forever instead of transitioning to
+    ``failed`` (the beta-17 ``max_files`` stall: CHILD_EXIT=1 was printed yet the job
+    stayed running).  A frozen child therefore flushes diagnostics and exits hard; a
+    source/test run re-raises so in-process callers and tracebacks behave normally.
+    """
+    print(
+        f"CHILD_STARTUP_EXCEPTION exception_class={type(exc).__name__} "
+        f"stage={stage} exit_code=1",
+        flush=True,
+    )
+    print("CHILD_EXIT exit_code=1", flush=True)
+    if getattr(sys, "frozen", False):
+        import traceback
+        traceback.print_exc()
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 - a hard exit must not depend on flushing
+            pass
+        os._exit(1)
+    raise exc
+
+
 def _run_internal_child(role: str, argv: list[str]) -> int:
     print(f"CHILD_BOOT role={role}", flush=True)
     if role in {"performance-validation", "worker", "ui", "pipeline", "local-folder"}:
@@ -119,13 +149,7 @@ def _run_internal_child(role: str, argv: list[str]) -> int:
             print(f"CHILD_EXIT exit_code={code}", flush=True)
             return code
         except BaseException as exc:  # noqa: BLE001 - preserve real child failure
-            print(
-                f"CHILD_STARTUP_EXCEPTION exception_class={type(exc).__name__} "
-                "stage=pipeline_startup exit_code=1",
-                flush=True,
-            )
-            print("CHILD_EXIT exit_code=1", flush=True)
-            raise
+            _fail_terminal_child(exc, "pipeline_startup")
     if role == "local-folder":
         print("CHILD_POST_BOOT_BEGIN role=local-folder", flush=True)
         try:
@@ -142,13 +166,7 @@ def _run_internal_child(role: str, argv: list[str]) -> int:
             print(f"CHILD_EXIT exit_code={code}", flush=True)
             return code
         except BaseException as exc:  # noqa: BLE001 - preserve real child failure
-            print(
-                f"CHILD_STARTUP_EXCEPTION exception_class={type(exc).__name__} "
-                "stage=local_folder_startup exit_code=1",
-                flush=True,
-            )
-            print("CHILD_EXIT exit_code=1", flush=True)
-            raise
+            _fail_terminal_child(exc, "local_folder_startup")
     if role == "performance-validation":
         # Private CLI-only harness.  It is deliberately not reachable from the
         # normal desktop/UI command surface and owns no production job state.
