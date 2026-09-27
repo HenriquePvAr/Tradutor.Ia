@@ -178,6 +178,9 @@ def command_with_source_selection(job: dict[str, Any], selection: dict[str, Any]
         # rebuild, so a psd/png job executed as the pdf default (config said psd, the
         # runner argv said pdf).  Carry it through like every other per-job argument.
         output_format=str(config.get("output_format") or "pdf"),
+        # Same reasoning for the PSD typesetting mode: the rebuild must not drop it,
+        # or a psd job requested with typesetting off would silently render on.
+        typesetting_mode=str(config.get("typesetting_mode") or "on"),
         python_executable=sys.executable,
     ), config), config)
 

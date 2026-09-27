@@ -60,10 +60,16 @@
     sourceReportDraft: null,
     sourceForm: {url: '', localFolder: '', chapterName: '', outputSlug: ''},
     qualityReview: null,
+    reviewReexportPollingJobId: '',
     qualityReviewFilter: 'pending',
     qualityReviewSelection: new Set(),
     qualityReviewUndo: [],
     qualityReviewBulkBusy: false,
+    reviewSelectedKey: '',
+    reviewVisibleKeys: [],
+    reviewPreviewBlobUrl: '',
+    reviewPreviewToken: 0,
+    reviewDraw: null,
     reviewRerunPlan: null,
     reviewRerunBusy: false,
     reviewRerunChildId: '',
@@ -131,7 +137,8 @@
     'YK_WALLET_POST_FINALIZE_REFRESH_ERROR',
     'IMAGE_PICKER_CALL_BEGIN', 'IMAGE_PICKER_CALL_RETURN', 'IMAGE_PICKER_NORMALIZATION_BEGIN',
     'IMAGE_PICKER_NORMALIZATION_END', 'IMAGE_PAGES_APPEND_BEGIN', 'IMAGE_PAGES_APPEND_END',
-    'IMAGE_PICKER_HANDLER_ERROR']);
+    'IMAGE_PICKER_HANDLER_ERROR', 'HISTORY_RENDER_COMMIT', 'HISTORY_REVISION_CHANGED',
+    'HISTORY_SCROLL_WATCH_RESULT', 'HISTORY_SCROLL_TO_TOP', 'HISTORY_FOCUS_CHANGED']);
   function syncAuthoritativeTranslationFlag() {
     const controlPlane = getGlobal('__yomuControlPlane');
     const flags = controlPlane?.state?.bootstrap?.feature_flags;
@@ -241,6 +248,9 @@
       'result', 'click_seen', 'mutation_count', 'current_start_button_node_id', 'current_button_is_connected',
       'target_tag', 'target_start_button_match', 'computed_pointer_events', 'computed_visibility', 'computed_display',
       'return_type', 'array_length', 'keys_present', 'item_keys', 'media_id_present', 'display_name_present', 'dimensions_present', 'boundary',
+      'scroll_owner', 'scroll_top', 'window_scroll_y', 'document_element_scroll_top',
+      'body_scroll_top', 'scrolling_element_scroll_top', 'history_revision', 'markup_changed',
+      'changed_nodes', 'record_count', 'zero_count', 'scroll_min', 'scroll_max', 'reason', 'focus_target',
     ]) {
       if (fields[key] !== undefined) safe[key] = fields[key];
     }
@@ -264,7 +274,10 @@
         'pointer_capture_used', 'top_element', 'client_x', 'client_y', 'result', 'click_seen', 'mutation_count',
         'current_start_button_node_id', 'current_button_is_connected', 'target_tag', 'target_start_button_match',
         'computed_pointer_events', 'computed_visibility', 'computed_display', 'return_type', 'array_length',
-        'keys_present', 'item_keys', 'media_id_present', 'display_name_present', 'dimensions_present', 'boundary']) {
+        'keys_present', 'item_keys', 'media_id_present', 'display_name_present', 'dimensions_present', 'boundary',
+        'scroll_owner', 'scroll_top', 'window_scroll_y', 'document_element_scroll_top',
+        'body_scroll_top', 'scrolling_element_scroll_top', 'history_revision', 'markup_changed',
+        'changed_nodes', 'record_count', 'zero_count', 'scroll_min', 'scroll_max', 'reason', 'focus_target']) {
         if (safe[key] !== undefined) body[key] = safe[key];
       }
       try {
@@ -798,11 +811,12 @@
       clearBootstrapSurfaceForFreshTranslation();
     }
     if (name === 'hist') {
-      renderHistory();
+      renderHistory('tab_activation');
       // Returning from the reader should land where the user left the library.
-      const main = document.querySelector('main');
+      const owner = getHistoryScrollOwner($('#histList'));
       const offset = Number(appState.historyScrollTop || 0);
-      if (main && offset > 0) window.requestAnimationFrame(() => { main.scrollTop = offset; });
+      if (owner && offset > 0) window.requestAnimationFrame(() => restoreHistoryScroll(owner, offset));
+      startHistoryScrollWatch();
     }
     if (name === 'inicio') renderDashboard();
     if (name === 'community') loadCommunityFeed();
@@ -1302,7 +1316,18 @@
   $('#localImageModalClose')?.addEventListener('click', closeLocalImageModal);
   $('#localImageModal')?.addEventListener('click', event => { if (event.target === $('#localImageModal')) closeLocalImageModal(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closeLocalImageModal(); });
-  $('#outputFormatSelect')?.addEventListener('change', event => { appState.outputFormat = ['pdf', 'png', 'psd'].includes(event.target.value) ? event.target.value : 'pdf'; syncSourceFormState(); });
+  $('#outputFormatSelect')?.addEventListener('change', event => { appState.outputFormat = ['pdf', 'png', 'psd'].includes(event.target.value) ? event.target.value : 'pdf'; syncTypesettingField(); syncSourceFormState(); });
+  // Typesetting ON/OFF is only meaningful for PSD (§11): show it only for that format.
+  function syncTypesettingField() {
+    const field = $('#typesettingModeField');
+    const isPsd = ($('#outputFormatSelect')?.value === 'psd');
+    if (field) field.hidden = !isPsd;
+    const hint = $('#typesettingModeHint');
+    if (hint) hint.textContent = ($('#typesettingModeSelect')?.value === 'off')
+      ? 'Página limpa para diagramação manual.'
+      : 'Texto traduzido incluído em camadas por região.';
+  }
+  $('#typesettingModeSelect')?.addEventListener('change', () => { syncTypesettingField(); syncSourceFormState(); });
   // Only the providers the runner accepts are representable in form state; anything else
   // (tampered <option>, stale stored value) collapses to '' and never reaches a job.
   // Canonical ids only — the "DeepL (Qualidade)" label never crosses into a payload.
@@ -1320,6 +1345,7 @@
       outputSlug: slugify($('#outputInput')?.value || ''),
       outputFormat: ['pdf', 'png', 'psd'].includes($('#outputFormatSelect')?.value)
         ? $('#outputFormatSelect').value : 'pdf',
+      typesettingMode: ($('#typesettingModeSelect')?.value === 'off') ? 'off' : 'on',
       translationProvider: normalizeTranslationProvider($('#providerSelect')?.value)
         || normalizeTranslationProvider(previous.translationProvider),
     };
@@ -1626,6 +1652,7 @@
     const payload = {
       source_type: appState.selectedSourceType,
       output_format: form.outputFormat || 'pdf',
+      typesetting_mode: form.typesettingMode || 'on',
       chapter_name: form.chapterName || guess.title,
       slug: form.outputSlug || slugify(guess.slug),
       mode: appState.selectedMode === 'download_only' ? 'fast' : appState.selectedMode,
@@ -1802,6 +1829,7 @@
     clearLoadingSurface();
     appState.qualityReview = null;
     appState.qualityReviewSelection = new Set();
+    resetReviewPreview();
     $('#qualityReviewPanel') && ($('#qualityReviewPanel').hidden = true);
     const reviewedPdf = $('#reviewedPdfAction');
     if (reviewedPdf) { reviewedPdf.hidden = true; reviewedPdf.innerHTML = ''; }
@@ -2043,10 +2071,34 @@
     });
   }
 
+  // Poll live analysis progress while the (long) analyze POST is in flight, so the UI
+  // shows real activity ("Localizando páginas — N encontradas") instead of a frozen
+  // "Analisando a fonte...". Best-effort: any poll error is ignored.
+  function startSourceAnalysisProgressPoll(traceId) {
+    let active = true;
+    let timer = null;
+    const tick = async () => {
+      if (!active) return;
+      try {
+        const snap = await api(`/api/ui/source/analyze/progress/${encodeURIComponent(traceId)}`);
+        if (active && snap && snap.message && appState.sourceValidation.status === 'validating') {
+          const secs = Math.round((snap.elapsed_ms || 0) / 1000);
+          const el = $('#balloonText');
+          if (el) el.textContent = secs > 1 ? `${snap.message} (${secs}s)` : String(snap.message);
+        }
+      } catch (_) { /* progress is best-effort */ }
+      if (active) timer = setTimeout(tick, 1000);
+    };
+    timer = setTimeout(tick, 800);
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }
+
   async function validateSource() {
     if (appState.selectedSourceType !== 'url' || !validateForm()) return;
     if (appState.sourceValidation.status === 'validating') return;
     const payload = formPayload();
+    const traceId = `sa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    payload.trace_id = traceId;
     const sourceUrl = String(payload.url || '');
     appState.sourceValidation = {
       status: 'validating', analysisResultId: '', sourceUrl, reasonCode: '', analysis: null,
@@ -2056,6 +2108,10 @@
     $('#balloonText') && ($('#balloonText').textContent = 'Analisando a fonte...');
     updateTranslationStartControls();
     uiTrace('source_validation_started', {request_id: correlationId(), stage: 'source_validation'});
+    appState.sourceAnalysisTraceId = traceId;
+    const cancelBtn = $('#cancelSourceAnalysisBtn');
+    if (cancelBtn) cancelBtn.hidden = false;
+    const stopProgressPoll = startSourceAnalysisProgressPoll(traceId);
     try {
       const result = await api('/api/ui/source/analyze', {
         method: 'POST', body: JSON.stringify(payload), timeoutMs: 190000,
@@ -2108,9 +2164,25 @@
         reason_code: appState.sourceValidation.reasonCode, stage: 'source_validation',
       });
     } finally {
+      stopProgressPoll();
+      appState.sourceAnalysisTraceId = '';
+      const btn = $('#cancelSourceAnalysisBtn');
+      if (btn) btn.hidden = true;
       updateTranslationStartControls();
     }
   }
+
+  $('#cancelSourceAnalysisBtn')?.addEventListener('click', async () => {
+    const traceId = String(appState.sourceAnalysisTraceId || '');
+    if (!traceId) return;
+    const btn = $('#cancelSourceAnalysisBtn');
+    if (btn) btn.disabled = true;
+    const el = $('#balloonText');
+    if (el) el.textContent = 'Cancelando análise…';
+    try { await api(`/api/ui/source/analyze/cancel/${encodeURIComponent(traceId)}`, {method: 'POST'}); }
+    catch (_) { /* the in-flight analyze will still settle */ }
+    finally { if (btn) btn.disabled = false; }
+  });
 
   // Single flight, same shape as refreshBootstrap below. Every start
   // entrypoint -- the button, Enter on the URL or name field, the retry
@@ -3060,6 +3132,11 @@
     if (isReportedRevision(runtime.history_revision)
         && isReportedRevision(appState.historyRevision)
         && runtime.history_revision !== appState.historyRevision) {
+      uiTrace('HISTORY_REVISION_CHANGED', {
+        history_revision: Number(runtime.history_revision),
+        reason: 'runtime_poll',
+        ...historyScrollMetrics(getHistoryScrollOwner()),
+      });
       refreshBootstrap();
     }
   }
@@ -3292,6 +3369,8 @@
     const list = $('#qualityReviewList');
     if (!panel || !list) return;
     appState.qualityReview = review;
+    const reexportFormat = $('#qualityReviewReexportFormat');
+    if (reexportFormat && !reexportFormat.dataset.userSelected) reexportFormat.value = ['png','pdf','psd'].includes(review.output_format) ? review.output_format : 'pdf';
     if (review.latest_rerun?.id) {
       appState.reviewRerunChildId = String(review.latest_rerun.id);
       renderReviewRerunActivity(review.latest_rerun);
@@ -3301,6 +3380,14 @@
     } else {
       appState.reviewRerunChildId = '';
       renderReviewRerunActivity(null);
+    }
+    if (review.latest_reexport?.job_id) {
+      const gen = review.latest_reexport;
+      if (['queued','claiming','starting','running'].includes(String(gen.status || ''))) {
+        void pollQualityReviewReexport(gen.job_id, review.job_id);
+      } else if (appState.reviewReexportPollingJobId === gen.job_id) {
+        appState.reviewReexportPollingJobId = '';
+      }
     }
     panel.hidden = false;
     updateQualityReviewDeveloperActions();
@@ -3349,6 +3436,7 @@
     }
     const visibleKeys = new Set(visible.map(item => String(item.key || '')));
     appState.qualityReviewSelection = new Set([...appState.qualityReviewSelection].filter(key => visibleKeys.has(key)));
+    const dirtySnapshot = snapshotDirtyReviewEditors();
     list.innerHTML = visible.length ? visible.map(item => {
       const actionClass = item.state === 'pending' ? ' show' : '';
       const checked = appState.qualityReviewSelection.has(String(item.key || '')) ? ' checked' : '';
@@ -3373,9 +3461,20 @@
       // mark/preserve actions, so they can never enter a bulk operation.
       const isReportOnly = visualState === 'report_only' || isSmartSplit;
       const selectBox = isReportOnly ? '' : `<input type="checkbox" class="quality-review-select" data-review-select="${escapeAttr(item.key)}"${checked}> `;
-      const reviewActions = isReportOnly ? '' : `<textarea class="quality-review-editor" data-review-translation data-review-version="${escapeAttr(item.version || 0)}" aria-label="Tradução revisada">${escapeHtml(item.translation || '')}</textarea><input class="quality-review-reason-input" data-review-reason placeholder="Motivo da decisão" aria-label="Motivo da revisão"><div class="cta-row"><button type="button" class="btn-ghost show" data-review-deep-action="edited">Salvar edição</button><button type="button" class="btn-ghost show" data-review-deep-action="reviewed">Aprovar</button><button type="button" class="btn-ghost show" data-review-deep-action="rejected">Rejeitar</button><button type="button" class="btn-ghost show" data-review-deep-action="preserved_original">Manter original</button><button type="button" class="btn-ghost show" data-review-deep-action="manual_review">Revisar novamente</button></div>`;
-      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-type="${escapeAttr(item.type || 'region')}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Página ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'aguardando sua decisão' : item.state === 'rejected' ? 'não aplicada' : item.state === 'preserved_original' ? 'resultado atual mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(humanReason)}</div>${splitMeta}${visualNote}<div class="quality-review-text"><div><small>Contexto original</small>${escapeHtml(item.original || '—')}</div><div><small>Resultado atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Alternativa</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da página ${escapeAttr(item.page)}" loading="lazy">` : ''}<details class="technical-details"><summary>Ver detalhes técnicos</summary><div>Identificação interna e evidências disponíveis neste item.</div></details><div class="quality-review-actions">${reviewActions}${compare}</div></article>`;
-    }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
+      const effectiveSource = item.source_text_effective != null ? item.source_text_effective : (item.original || '');
+      const effectiveTarget = item.target_text_effective != null ? item.target_text_effective : (item.translation || '');
+      const staleNote = item.translation_stale ? `<div class="review-edit-stale">Texto detectado foi editado — a tradução pode precisar de revisão.</div>` : '';
+      const reviewActions = isReportOnly ? '' : `<div class="review-edit-fields"><label class="review-edit-label">Texto detectado<textarea class="quality-review-editor" data-review-source data-effective="${escapeAttr(effectiveSource)}" aria-label="Texto detectado (OCR)">${escapeHtml(effectiveSource)}</textarea></label><label class="review-edit-label">Tradução<textarea class="quality-review-editor" data-review-translation data-review-version="${escapeAttr(item.revision_version || item.version || 0)}" data-effective="${escapeAttr(effectiveTarget)}" aria-label="Tradução revisada">${escapeHtml(effectiveTarget)}</textarea></label></div>${staleNote}<input class="quality-review-reason-input" data-review-reason placeholder="Motivo da decisão (opcional)" aria-label="Motivo da revisão"><div class="review-edit-savestate" data-review-savestate data-state="idle"></div><div class="cta-row"><button type="button" class="btn-ghost show" data-review-deep-action="edited">Salvar alterações</button><button type="button" class="btn-ghost show" data-review-cancel>Cancelar alterações</button><button type="button" class="btn-ghost show" data-review-deep-action="reviewed">Aprovar</button><button type="button" class="btn-ghost show" data-review-deep-action="rejected">Rejeitar</button><button type="button" class="btn-ghost show" data-review-deep-action="preserved_original">Manter original</button><button type="button" class="btn-ghost show" data-review-deep-action="manual_review">Revisar novamente</button></div>`;
+      const regionTypes = ['speech','dialogue','thought','narration','system_message','location','title','sfx','decorative','editorial','credit','watermark','url','proper_name','logo','branding','unknown'];
+      const selectedType = String(item.region_type_effective || item.classification || 'unknown');
+      const regionControls = isReportOnly ? '' : `<details class="review-region-controls" data-region-controls data-version="${escapeAttr(item.region_control_version || 0)}" data-effective-mode="${escapeAttr(item.translate_mode_effective || 'auto')}" data-effective-type="${escapeAttr(selectedType)}" data-effective-bbox="${escapeAttr(JSON.stringify(item.bounding_box_effective || item.bounding_box || null))}"><summary>Opções avançadas da região</summary><label>Comportamento<select data-region-mode><option value="auto"${(item.translate_mode_effective || 'auto') === 'auto' ? ' selected' : ''}>Automático</option><option value="translate"${item.translate_mode_effective === 'translate' ? ' selected' : ''}>Traduzir</option><option value="ignore"${item.translate_mode_effective === 'ignore' ? ' selected' : ''}>Ignorar</option></select></label><label>Tipo<select data-region-type>${regionTypes.map(type => `<option value="${type}"${selectedType === type ? ' selected' : ''}>${escapeHtml(type)}</option>`).join('')}</select></label><button type="button" class="btn-ghost" data-save-region-control>Salvar opções</button>${item.is_manual_region ? '<button type="button" class="btn-ghost danger" data-remove-manual-region>Remover região manual</button>' : ''}<span class="review-region-save-state" data-region-save-state role="status" aria-live="polite"></span></details>`;
+      return `<article class="quality-review-item" data-state="${escapeAttr(item.state)}" data-risk="${escapeAttr(risk)}" data-visual-state="${escapeAttr(visualState)}" data-review-type="${escapeAttr(item.type || 'region')}" data-review-key="${escapeAttr(item.key)}"><div class="quality-review-item-head"><label>${selectBox}<strong>Página ${escapeHtml(item.page)} · ${escapeHtml(item.label)}</strong></label><span class="quality-review-risk">${escapeHtml(risk)}</span><span class="quality-review-state">${escapeHtml(item.state === 'pending' ? 'aguardando sua decisão' : item.state === 'rejected' ? 'não aplicada' : item.state === 'preserved_original' ? 'resultado atual mantido' : 'revisado')}</span>${visualBadge}</div><div class="quality-review-reason">${escapeHtml(humanReason)}</div>${splitMeta}${visualNote}<div class="quality-review-text"><div><small>Contexto original</small>${escapeHtml(item.original || '—')}</div><div><small>Resultado atual</small>${escapeHtml(item.translation || '—')}</div>${item.proposed_translation ? `<div><small>Alternativa</small>${escapeHtml(item.proposed_translation)}</div>` : ''}</div>${item.page_url ? `<img class="quality-review-thumb" src="${escapeAttr(item.page_url)}" alt="Miniatura da página ${escapeAttr(item.page)}" loading="lazy">` : ''}<details class="technical-details"><summary>Ver detalhes técnicos</summary><div>Identificação interna e evidências disponíveis neste item.</div></details><div class="quality-review-actions">${reviewActions}${regionControls}${compare}</div></article>`;
+      }).join('') : '<div class="muted">Nenhum item neste filtro.</div>';
+    // Never discard in-progress edits when a poll refresh or a sibling save rebuilds
+    // the list: re-apply any editor still dirty after the rebuild.
+    restoreDirtyReviewEditors(dirtySnapshot);
+    appState.reviewVisibleKeys = visible.map(item => String(item.key || ''));
+    syncReviewPreviewSelection();
     const confirm = $('#confirmQualityReview');
     if (confirm) {
       confirm.hidden = Boolean(review.confirmed);
@@ -3384,6 +3483,489 @@
     }
     updateQualityReviewSelectionUi();
     pollQualityRevisionStatus(review.job_id, {once: true});
+  }
+
+  // --- R2: persistent source/translation editing state ---------------------------
+  const REVIEW_SAVE_LABELS = {
+    idle: '', dirty: 'Alterações não salvas', saving: 'Salvando…',
+    saved: 'Salvo', error: 'Não foi possível salvar', conflict: 'Conflito de versão — recarregado',
+  };
+  function setReviewSaveState(article, state) {
+    const chip = article?.querySelector?.('[data-review-savestate]');
+    if (!chip) return;
+    chip.dataset.state = state;
+    chip.textContent = REVIEW_SAVE_LABELS[state] ?? '';
+  }
+  function reviewEditorDirty(article) {
+    if (!article) return false;
+    const s = article.querySelector('[data-review-source]');
+    const t = article.querySelector('[data-review-translation]');
+    const controls = article.querySelector('[data-region-controls]');
+    const mode = controls?.querySelector('[data-region-mode]');
+    const type = controls?.querySelector('[data-region-type]');
+    return (s && s.value !== (s.dataset.effective || '')) || (t && t.value !== (t.dataset.effective || ''))
+      || (mode && mode.value !== (controls.dataset.effectiveMode || 'auto'))
+      || (type && type.value !== (controls.dataset.effectiveType || 'unknown'));
+  }
+  function reviewTextDirty(article) {
+    if (!article) return false;
+    const s = article.querySelector('[data-review-source]');
+    const t = article.querySelector('[data-review-translation]');
+    return Boolean((s && s.value !== (s.dataset.effective || '')) || (t && t.value !== (t.dataset.effective || '')));
+  }
+  function snapshotDirtyReviewEditors() {
+    const snap = {};
+    const list = $('#qualityReviewList');
+    if (!list) return snap;
+    $$('.quality-review-item[data-review-key]', list).forEach(article => {
+      if (!reviewEditorDirty(article)) return;
+      const s = article.querySelector('[data-review-source]');
+      const t = article.querySelector('[data-review-translation]');
+      const r = article.querySelector('[data-review-reason]');
+      const c = article.querySelector('[data-region-controls]');
+      snap[String(article.dataset.reviewKey || '')] = {
+        source: s ? s.value : null, target: t ? t.value : null, reason: r ? r.value : '',
+        mode: c?.querySelector('[data-region-mode]')?.value, type: c?.querySelector('[data-region-type]')?.value,
+      };
+    });
+    return snap;
+  }
+  function restoreDirtyReviewEditors(snap) {
+    if (!snap) return;
+    const list = $('#qualityReviewList');
+    if (!list) return;
+    for (const [key, values] of Object.entries(snap)) {
+      const article = $(`.quality-review-item[data-review-key="${key}"]`, list);
+      if (!article) continue;
+      const s = article.querySelector('[data-review-source]');
+      const t = article.querySelector('[data-review-translation]');
+      const r = article.querySelector('[data-review-reason]');
+      const c = article.querySelector('[data-region-controls]');
+      if (s && values.source != null) s.value = values.source;
+      if (t && values.target != null) t.value = values.target;
+      if (r && values.reason) r.value = values.reason;
+      if (c && values.mode) c.querySelector('[data-region-mode]').value = values.mode;
+      if (c && values.type) c.querySelector('[data-region-type]').value = values.type;
+      setReviewSaveState(article, 'dirty');
+    }
+  }
+  function selectedReviewArticleDirty() {
+    const list = $('#qualityReviewList');
+    if (!list || !appState.reviewSelectedKey) return false;
+    return reviewEditorDirty($(`.quality-review-item[data-review-key="${appState.reviewSelectedKey}"]`, list));
+  }
+  function guardUnsavedReviewEdits() {
+    if (appState.reviewDraw) {
+      showToast('Conclua ou cancele o desenho da região antes de trocar de item.', 'warn');
+      return false;
+    }
+    if (selectedReviewArticleDirty()) {
+      showToast('Salve ou cancele suas alterações antes de trocar de item.', 'warn');
+      return false;
+    }
+    return true;
+  }
+
+  // --- R1: full page preview + region overlay for the selected pending item ------
+  function resetReviewPreview() {
+    appState.reviewSelectedKey = '';
+    appState.reviewVisibleKeys = [];
+    appState.reviewPreviewToken++;
+    clearReviewPreviewBlob();
+    const panel = $('#reviewPagePreview');
+    if (panel) panel.hidden = true;
+    const img = $('#reviewPreviewImage');
+    if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
+    const overlay = $('#reviewBboxOverlay');
+    if (overlay) overlay.hidden = true;
+  }
+
+  function reviewItemByKey(key) {
+    const items = Array.isArray(appState.qualityReview?.items) ? appState.qualityReview.items : [];
+    return items.find(item => String(item.key || '') === String(key || '')) || null;
+  }
+
+  function syncReviewPreviewSelection() {
+    const keys = appState.reviewVisibleKeys || [];
+    let key = String(appState.reviewSelectedKey || '');
+    if (!key || !keys.includes(key)) key = keys[0] || '';
+    // Re-apply without scrolling: a poll refresh must never yank the view around.
+    applyReviewSelection(key, {scroll: false});
+  }
+
+  function applyReviewSelection(key, {scroll = false} = {}) {
+    appState.reviewSelectedKey = String(key || '');
+    const selectedItem = reviewItemByKey(appState.reviewSelectedKey);
+    const addButton = $('#reviewAddRegion');
+    const adjustButton = $('#reviewAdjustRegion');
+    if (addButton) addButton.disabled = !selectedItem?.page_url || selectedItem?.type === 'smart_split';
+    if (adjustButton) adjustButton.disabled = !selectedItem?.page_url || selectedItem?.type === 'smart_split';
+    const list = $('#qualityReviewList');
+    if (list) {
+      $$('.quality-review-item', list).forEach(article => {
+        const selected = String(article.dataset.reviewKey || '') === appState.reviewSelectedKey;
+        article.classList.toggle('is-selected', selected);
+        if (selected && scroll) article.scrollIntoView({block: 'nearest'});
+      });
+    }
+    renderReviewPreview();
+  }
+
+  function selectReviewItem(key, options = {}) {
+    if (!key) return;
+    if ((String(key) !== String(appState.reviewSelectedKey || '') || appState.reviewDraw) && !guardUnsavedReviewEdits()) return;
+    applyReviewSelection(key, options);
+  }
+
+  function setReviewPreviewState(state, message = '') {
+    const stage = $('#reviewPreviewStage');
+    const status = $('#reviewPreviewStatus');
+    const retry = $('#reviewPreviewRetry');
+    if (stage) stage.dataset.state = state;
+    if (status) status.textContent = message || '';
+    if (retry) retry.hidden = !(state === 'preview_error' || state === 'page_processing');
+  }
+
+  function clearReviewPreviewBlob() {
+    if (appState.reviewPreviewBlobUrl) {
+      try { URL.revokeObjectURL(appState.reviewPreviewBlobUrl); } catch (_) {}
+      appState.reviewPreviewBlobUrl = '';
+    }
+  }
+
+  // Pure geometry: map a bbox in original-image pixels to a rect inside the frame,
+  // accounting for object-fit: contain letterboxing (the rendered content rect is
+  // smaller than the element box, offset to center). Returns null when unmappable.
+  function computeReviewOverlayRect(natural, client, box) {
+    const nw = Number(natural?.width), nh = Number(natural?.height);
+    const cw = Number(client?.width), ch = Number(client?.height);
+    if (!Array.isArray(box) || box.length < 4) return null;
+    if (!(nw > 0) || !(nh > 0) || !(cw > 0) || !(ch > 0)) return null;
+    const scale = Math.min(cw / nw, ch / nh);
+    const offX = (cw - nw * scale) / 2, offY = (ch - nh * scale) / 2;
+    const [x, y, w, h] = box.map(Number);
+    return {left: offX + x * scale, top: offY + y * scale, width: w * scale, height: h * scale};
+  }
+
+  function positionReviewBbox() {
+    const img = $('#reviewPreviewImage');
+    const overlay = $('#reviewBboxOverlay');
+    if (!img || !overlay) return;
+    const item = reviewItemByKey(appState.reviewSelectedKey);
+    const box = item && item.bounding_box_valid ? item.bounding_box : null;
+    const rect = box ? computeReviewOverlayRect(
+      {width: img.naturalWidth, height: img.naturalHeight},
+      {width: img.clientWidth, height: img.clientHeight}, box) : null;
+    if (!rect) { overlay.hidden = true; return; }
+    overlay.style.left = `${rect.left}px`;
+    overlay.style.top = `${rect.top}px`;
+    overlay.style.width = `${rect.width}px`;
+    overlay.style.height = `${rect.height}px`;
+    overlay.hidden = false;
+  }
+  try {
+    window.__tradutorUiTestHooks = Object.assign(window.__tradutorUiTestHooks || {},
+      {computeReviewOverlayRect});
+  } catch (_) { /* diagnostic/test hook only */ }
+
+  async function renderReviewPreview() {
+    const panel = $('#reviewPagePreview');
+    const img = $('#reviewPreviewImage');
+    const overlay = $('#reviewBboxOverlay');
+    const title = $('#reviewPreviewTitle');
+    if (!panel || !img) return;
+    const item = reviewItemByKey(appState.reviewSelectedKey);
+    if (!item) { panel.hidden = true; return; }
+    panel.hidden = false;
+    updateReviewPreviewNav();
+    if (title) title.textContent = `Página ${item.page_index ?? item.page ?? '—'} · ${item.label || 'Região'}`;
+    if (overlay) overlay.hidden = true;
+    if (!item.page_url) {
+      clearReviewPreviewBlob();
+      img.removeAttribute('src');
+      setReviewPreviewState('preview_unavailable', 'A prévia desta página não está disponível.');
+      return;
+    }
+    const token = ++appState.reviewPreviewToken;
+    setReviewPreviewState('preview_loading', 'Carregando a página…');
+    let result;
+    try {
+      const resp = await fetch(item.page_url, {headers: {Accept: 'image/*'}, credentials: 'same-origin'});
+      if (resp.ok) {
+        const blob = await resp.blob();
+        result = {state: 'preview_ready', blobUrl: URL.createObjectURL(blob)};
+      } else {
+        let code = '';
+        try { code = String((await resp.json())?.detail?.code || ''); } catch (_) {}
+        if (resp.status === 409 || code === 'page_processing') result = {state: 'page_processing'};
+        else if (code === 'preview_unavailable' || resp.status === 404) result = {state: 'preview_unavailable'};
+        else result = {state: 'preview_error'};
+      }
+    } catch (_) {
+      result = {state: 'preview_error'};
+    }
+    if (token !== appState.reviewPreviewToken) {
+      if (result.blobUrl) { try { URL.revokeObjectURL(result.blobUrl); } catch (e) {} }
+      return;  // a newer selection superseded this load
+    }
+    if (result.state === 'preview_ready') {
+      clearReviewPreviewBlob();
+      appState.reviewPreviewBlobUrl = result.blobUrl;
+      img.onload = () => {
+        if (token !== appState.reviewPreviewToken) return;
+        const invalid = item.bounding_box && !item.bounding_box_valid;
+        if (!item.bounding_box || item.bounding_box_valid) {
+          positionReviewBbox();
+          setReviewPreviewState('preview_ready', '');
+        } else if (invalid) {
+          if (overlay) overlay.hidden = true;
+          setReviewPreviewState('invalid_region', 'Destaque da região indisponível.');
+        }
+      };
+      img.onerror = () => {
+        if (token !== appState.reviewPreviewToken) return;
+        setReviewPreviewState('preview_error', 'Não foi possível carregar a página.');
+      };
+      img.src = result.blobUrl;
+    } else if (result.state === 'page_processing') {
+      clearReviewPreviewBlob(); img.removeAttribute('src');
+      setReviewPreviewState('page_processing', 'A página ainda está sendo processada.');
+    } else if (result.state === 'preview_unavailable') {
+      clearReviewPreviewBlob(); img.removeAttribute('src');
+      setReviewPreviewState('preview_unavailable', 'A prévia desta página não está disponível.');
+    } else {
+      clearReviewPreviewBlob(); img.removeAttribute('src');
+      setReviewPreviewState('preview_error', 'Não foi possível carregar a página.');
+    }
+  }
+
+  function updateReviewPreviewNav() {
+    const keys = appState.reviewVisibleKeys || [];
+    const index = keys.indexOf(String(appState.reviewSelectedKey || ''));
+    const prev = $('#reviewPreviewPrev');
+    const next = $('#reviewPreviewNext');
+    if (prev) prev.disabled = index <= 0;
+    if (next) next.disabled = index < 0 || index >= keys.length - 1;
+  }
+
+  function stepReviewSelection(delta) {
+    const keys = appState.reviewVisibleKeys || [];
+    if (!keys.length) return;
+    const current = keys.indexOf(String(appState.reviewSelectedKey || ''));
+    const nextIndex = Math.min(keys.length - 1, Math.max(0, (current < 0 ? 0 : current) + delta));
+    selectReviewItem(keys[nextIndex], {scroll: true});
+  }
+
+  // --- R3: explicit human region controls; these endpoints only persist review data. ---
+  const REVIEW_REGION_TYPES = ['speech','dialogue','thought','narration','system_message','location','title','sfx','decorative','editorial','credit','watermark','url','proper_name','logo','branding','unknown'];
+  function fillReviewRegionTypeSelect(select, selected = 'speech') {
+    if (!select) return;
+    select.innerHTML = REVIEW_REGION_TYPES.map(value => `<option value="${value}">${escapeHtml(value)}</option>`).join('');
+    select.value = REVIEW_REGION_TYPES.includes(selected) ? selected : 'unknown';
+  }
+  function reviewDrawStatus(message = '') {
+    const node = $('#reviewDrawStatus');
+    if (node) node.textContent = message;
+  }
+  function cancelReviewDraw({keepForm = false} = {}) {
+    const frame = $('#reviewPreviewFrame');
+    const overlay = $('#reviewDrawOverlay');
+    appState.reviewDraw = keepForm ? appState.reviewDraw : null;
+    if (frame) { frame.dataset.drawing = '0'; frame.style.touchAction = ''; }
+    if (overlay) overlay.hidden = true;
+    $('#reviewCancelDraw') && ($('#reviewCancelDraw').hidden = true);
+    if (!keepForm) {
+      const form = $('#reviewManualRegionForm');
+      if (form) form.hidden = true;
+      reviewDrawStatus('');
+    }
+  }
+  function reviewPointerToImage(clientX, clientY, {clampOutside = false} = {}) {
+    const img = $('#reviewPreviewImage');
+    const frame = $('#reviewPreviewFrame');
+    if (!img || !frame || !(img.naturalWidth > 0) || !(img.naturalHeight > 0)) return null;
+    const rect = frame.getBoundingClientRect();
+    const scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+    if (!(scale > 0)) return null;
+    const offsetX = (rect.width - img.naturalWidth * scale) / 2;
+    const offsetY = (rect.height - img.naturalHeight * scale) / 2;
+    const px = clientX - rect.left - offsetX;
+    const py = clientY - rect.top - offsetY;
+    if (!clampOutside && (px < 0 || py < 0 || px > img.naturalWidth * scale || py > img.naturalHeight * scale)) return null;
+    return {x: Math.max(0, Math.min(img.naturalWidth, px / scale)),
+      y: Math.max(0, Math.min(img.naturalHeight, py / scale)), scale, offsetX, offsetY};
+  }
+  function reviewBoxFromDrag(start, end, width, height) {
+    if (!start || !end || !(width > 0) || !(height > 0)) return null;
+    const x = Math.max(0, Math.min(width, Math.floor(Math.min(start.x, end.x))));
+    const y = Math.max(0, Math.min(height, Math.floor(Math.min(start.y, end.y))));
+    const right = Math.max(x, Math.min(width, Math.ceil(Math.max(start.x, end.x))));
+    const bottom = Math.max(y, Math.min(height, Math.ceil(Math.max(start.y, end.y))));
+    if (right <= x || bottom <= y) return null;
+    return [x, y, right - x, bottom - y];
+  }
+  function updateReviewDrawRect(point) {
+    const draw = appState.reviewDraw;
+    const overlay = $('#reviewDrawOverlay');
+    const img = $('#reviewPreviewImage');
+    if (!draw || !draw.start || !point || !overlay || !img) return;
+    const frame = $('#reviewPreviewFrame');
+    const frameRect = frame.getBoundingClientRect();
+    const scale = Math.min(frameRect.width / img.naturalWidth, frameRect.height / img.naturalHeight);
+    const left = draw.offsetX + Math.min(draw.start.x, point.x) * scale;
+    const top = draw.offsetY + Math.min(draw.start.y, point.y) * scale;
+    overlay.style.left = `${left}px`; overlay.style.top = `${top}px`;
+    overlay.style.width = `${Math.abs(point.x - draw.start.x) * scale}px`;
+    overlay.style.height = `${Math.abs(point.y - draw.start.y) * scale}px`;
+    overlay.hidden = false;
+  }
+  function startReviewRegionDraw(mode) {
+    if (!guardUnsavedReviewEdits()) return;
+    const item = reviewItemByKey(appState.reviewSelectedKey);
+    const img = $('#reviewPreviewImage');
+    if (!item || !img?.naturalWidth || !img?.naturalHeight || $('#reviewPreviewStage')?.dataset.state !== 'preview_ready') {
+      showToast('Carregue a prévia da página antes de desenhar uma região.', 'warn'); return;
+    }
+    appState.reviewDraw = {mode, key: item.key, start: null, pageIndex: Number(item.page_index), confirmedBox: null};
+    const frame = $('#reviewPreviewFrame');
+    frame.dataset.drawing = '1'; frame.style.touchAction = 'none';
+    $('#reviewCancelDraw').hidden = false;
+    reviewDrawStatus(mode === 'add' ? 'Arraste sobre a página para marcar o texto.' : 'Redesenhe a área inteira da região.');
+  }
+  async function saveReviewRegionControl(article, boundingBoxOverride) {
+    const item = reviewItemByKey(article?.dataset.reviewKey);
+    const controls = article?.querySelector('[data-region-controls]');
+    if (!item || !controls || reviewTextDirty(article)) {
+      if (reviewTextDirty(article)) showToast('Salve ou cancele as alterações de texto deste item primeiro.', 'warn');
+      return false;
+    }
+    const mode = controls.querySelector('[data-region-mode]')?.value || 'auto';
+    const type = controls.querySelector('[data-region-type]')?.value || item.region_type_original || 'unknown';
+    const effectiveBox = boundingBoxOverride === undefined
+      ? (item.bounding_box_edited ? item.bounding_box_effective : null) : boundingBoxOverride;
+    const payload = {
+      job_id: appState.qualityReview.job_id, item_key: item.key,
+      expected_version: Number(controls.dataset.version || 0),
+      translate_override: mode === 'auto' ? null : mode,
+      region_type_override: type === item.region_type_original ? null : type,
+      bounding_box_override: effectiveBox,
+    };
+    const state = controls.querySelector('[data-region-save-state]');
+    if (state) state.textContent = 'Salvando…';
+    try {
+      const result = await api('/api/ui/quality-review/region-control', {method:'POST', body:JSON.stringify(payload)});
+      renderQualityReview(result.review);
+      showToast('Opções da região salvas. A saída publicada ainda não foi regenerada.', 'ok');
+      return true;
+    } catch (error) {
+      if (state) { state.textContent = error.status === 409 ? 'Conflito de versão — recarregue a Review.' : (error.message || 'Falha ao salvar.'); controls.dataset.error = '1'; }
+      return false;
+    }
+  }
+  function finishReviewDraw(event) {
+    const draw = appState.reviewDraw;
+    if (!draw || !draw.start) return;
+    const img = $('#reviewPreviewImage');
+    const end = reviewPointerToImage(event.clientX, event.clientY, {clampOutside:true});
+    const box = reviewBoxFromDrag(draw.start, end, img?.naturalWidth, img?.naturalHeight);
+    draw.start = null;
+    if (!box || box[2] < 6 || box[3] < 6) {
+      cancelReviewDraw(); reviewDrawStatus('Área inválida ou pequena demais.'); return;
+    }
+    draw.confirmedBox = box;
+    if (draw.mode === 'add') {
+      cancelReviewDraw({keepForm:true});
+      const form = $('#reviewManualRegionForm');
+      if (form) form.hidden = false;
+      fillReviewRegionTypeSelect($('#reviewManualType'), 'speech');
+      $('#reviewManualSource').value = ''; $('#reviewManualTarget').value = '';
+      $('#reviewManualMode').value = 'auto';
+      $('#reviewManualSource').focus();
+      reviewDrawStatus(`Área selecionada: ${box[2]} × ${box[3]} px. Preencha e salve.`);
+      return;
+    }
+    const article = $(`.quality-review-item[data-review-key="${CSS.escape(draw.key)}"]`);
+    void saveReviewRegionControl(article, box).then(saved => {
+      cancelReviewDraw();
+      if (saved) reviewDrawStatus('Área atualizada. Saída publicada ainda não foi regenerada.');
+    });
+  }
+  $('#reviewPreviewFrame')?.addEventListener('pointerdown', event => {
+    const draw = appState.reviewDraw;
+    if (!draw || $('#reviewManualRegionForm')?.hidden === false) return;
+    const point = reviewPointerToImage(event.clientX, event.clientY);
+    if (!point) return;
+    event.preventDefault();
+    draw.start = {x:point.x,y:point.y}; draw.offsetX = point.offsetX; draw.offsetY = point.offsetY;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    updateReviewDrawRect(point);
+  });
+  $('#reviewPreviewFrame')?.addEventListener('pointermove', event => {
+    if (!appState.reviewDraw?.start) return;
+    updateReviewDrawRect(reviewPointerToImage(event.clientX, event.clientY, {clampOutside:true}));
+  });
+  $('#reviewPreviewFrame')?.addEventListener('pointerup', finishReviewDraw);
+  $('#reviewPreviewFrame')?.addEventListener('pointercancel', () => { if (appState.reviewDraw?.start) cancelReviewDraw(); });
+  $('#reviewAddRegion')?.addEventListener('click', () => startReviewRegionDraw('add'));
+  $('#reviewAdjustRegion')?.addEventListener('click', () => startReviewRegionDraw('adjust'));
+  $('#reviewCancelDraw')?.addEventListener('click', () => cancelReviewDraw());
+  $('#reviewManualCancel')?.addEventListener('click', () => cancelReviewDraw());
+  $('#reviewManualSave')?.addEventListener('click', async () => {
+    const draw = appState.reviewDraw;
+    const source = String($('#reviewManualSource')?.value || '').trim();
+    if (!draw || !draw.confirmedBox || !source) { showToast('Informe o texto detectado antes de salvar.', 'warn'); return; }
+    const button = $('#reviewManualSave'); button.disabled = true;
+    try {
+      const result = await api('/api/ui/quality-review/manual-region', {method:'POST', body:JSON.stringify({
+        job_id:appState.qualityReview.job_id, page_index:draw.pageIndex, bbox:draw.confirmedBox,
+        source_text:source, target_text:String($('#reviewManualTarget')?.value || ''),
+        region_type:$('#reviewManualType')?.value || 'speech', translate_override:$('#reviewManualMode')?.value || 'auto',
+      })});
+      appState.reviewDraw = null; cancelReviewDraw(); renderQualityReview(result.review);
+      const manual = result.review.items.find(entry => entry.is_manual_region && entry.region_id === result.region.region_id);
+      if (manual) selectReviewItem(manual.key, {scroll:true});
+      showToast('Região adicionada à Review. Nenhum provider ou YK foi usado; gere novamente a saída em uma fase futura.', 'ok');
+    } catch (error) { showToast(error.message || 'Não foi possível adicionar a região.', 'error'); }
+    finally { button.disabled = false; }
+  });
+  $('#qualityReviewList')?.addEventListener('change', event => {
+    if (event.target.matches('[data-region-mode], [data-region-type]')) {
+      const controls = event.target.closest('[data-region-controls]');
+      const article = event.target.closest('[data-review-key]');
+      const dirty = reviewEditorDirty(article);
+      if (controls) controls.dataset.dirty = dirty ? '1' : '0';
+      const state = controls?.querySelector('[data-region-save-state]');
+      if (state) state.textContent = dirty ? 'Alterações não salvas' : '';
+    }
+  });
+  $('#qualityReviewList')?.addEventListener('click', async event => {
+    const save = event.target.closest('[data-save-region-control]');
+    if (save) { const article = save.closest('[data-review-key]'); if (article) await saveReviewRegionControl(article); return; }
+    const remove = event.target.closest('[data-remove-manual-region]');
+    if (!remove) return;
+    const article = remove.closest('[data-review-key]');
+    const item = reviewItemByKey(article?.dataset.reviewKey);
+    if (!item || !item.is_manual_region || !window.confirm('Desativar esta região manual? O histórico será preservado.')) return;
+    try {
+      const result = await api('/api/ui/quality-review/manual-region/remove', {method:'POST', body:JSON.stringify({
+        job_id:appState.qualityReview.job_id, region_id:item.region_id, expected_version:Number(item.region_control_version || 0),
+      })});
+      renderQualityReview(result.review); showToast('Região manual removida da Review.', 'ok');
+    } catch (error) { showToast(error.message || 'Não foi possível remover a região.', 'error'); }
+  });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && appState.reviewDraw) cancelReviewDraw(); });
+
+  $('#reviewPreviewPrev')?.addEventListener('click', () => stepReviewSelection(-1));
+  $('#reviewPreviewNext')?.addEventListener('click', () => stepReviewSelection(1));
+  $('#reviewPreviewRetry')?.addEventListener('click', () => renderReviewPreview());
+  window.addEventListener('resize', () => {
+    if ($('#reviewPreviewStage')?.dataset.state === 'preview_ready') positionReviewBbox();
+  });
+  if (typeof ResizeObserver !== 'undefined') {
+    const frame = $('#reviewPreviewFrame');
+    if (frame) new ResizeObserver(() => {
+      if ($('#reviewPreviewStage')?.dataset.state === 'preview_ready') positionReviewBbox();
+    }).observe(frame);
   }
 
   function visibleQualityReviewKeys({risk = ''} = {}) {
@@ -3896,16 +4478,38 @@
   }
 
   async function qualityReviewAction(event) {
+    // Clicking the card body (not an interactive control) selects the item and
+    // loads its page preview + region overlay, without scrolling the view.
+    const interactive = event.target.closest('button, input, textarea, select, a, summary, label, [contenteditable]');
+    if (!interactive) {
+      const article = event.target.closest('.quality-review-item[data-review-key]');
+      if (article) { selectReviewItem(String(article.dataset.reviewKey || ''), {scroll: false}); return; }
+    }
     const revise = event.target.closest('[data-revise-page]');
     if (revise) { openPageRevision(Number(revise.dataset.revisePage)); return; }
     const compare = event.target.closest('[data-review-compare]');
     if (compare) { openVisualComparison(compare.dataset.reviewCompare); return; }
+    const cancel = event.target.closest('[data-review-cancel]');
+    if (cancel) {
+      const item = cancel.closest('[data-review-key]');
+      if (!item) return;
+      // Restore the persisted (effective) values; already-saved revisions are untouched.
+      const s = item.querySelector('[data-review-source]');
+      const t = item.querySelector('[data-review-translation]');
+      const r = item.querySelector('[data-review-reason]');
+      if (s) s.value = s.dataset.effective || '';
+      if (t) t.value = t.dataset.effective || '';
+      if (r) r.value = '';
+      setReviewSaveState(item, 'idle');
+      return;
+    }
     const deep = event.target.closest('[data-review-deep-action]');
     if (deep) {
       if (deep.dataset.busy === '1') return;
       const item = deep.closest('[data-review-key]');
       if (!item || !appState.qualityReview?.job_id) return;
       const editor = item.querySelector('[data-review-translation]');
+      const sourceEditor = item.querySelector('[data-review-source]');
       const reasonInput = item.querySelector('[data-review-reason]');
       const action = String(deep.dataset.reviewDeepAction || '');
       const reason = String(reasonInput?.value || '').trim();
@@ -3915,22 +4519,37 @@
         return;
       }
       deep.dataset.busy = '1'; deep.disabled = true;
+      setReviewSaveState(item, 'saving');
       try {
+        const body = {
+          job_id: appState.qualityReview.job_id,
+          item_key: item.dataset.reviewKey,
+          expected_version: Number(editor?.dataset.reviewVersion || 0),
+          action,
+          translation: editor?.value || '',
+          reason,
+        };
+        // Human source (OCR) correction — persisted as an override, never re-translated.
+        if (sourceEditor) body.source_text = sourceEditor.value;
         const result = await api('/api/ui/quality-review/edit', {
-          method: 'POST',
-          body: JSON.stringify({
-            job_id: appState.qualityReview.job_id,
-            item_key: item.dataset.reviewKey,
-            expected_version: Number(editor?.dataset.reviewVersion || 0),
-            action,
-            translation: editor?.value || '',
-            reason,
-          }),
+          method: 'POST', body: JSON.stringify(body),
         });
         renderQualityReview(result.review);
         showToast(`Revisão salva · versão ${result.revision?.version || '?'}.`, 'ok');
       } catch (error) {
-        showToast(error.message || 'Não foi possível salvar a revisão.', 'error');
+        if (error.status === 409 || error.code === 'review_version_conflict') {
+          // Another writer advanced the version: reload the current values so the
+          // reviewer edits on top of the latest, never a silent last-write-wins.
+          setReviewSaveState(item, 'conflict');
+          showToast('Este item mudou em outro lugar. Recarregamos os valores atuais.', 'warn');
+          try {
+            const fresh = await api(`/api/ui/quality-review/${appState.qualityReview.job_id}`);
+            renderQualityReview(fresh, {force: true});
+          } catch (_) { /* keep current DOM; values remain editable */ }
+        } else {
+          setReviewSaveState(item, 'error');
+          showToast(error.message || 'Não foi possível salvar a revisão.', 'error');
+        }
         deep.disabled = false;
       } finally { delete deep.dataset.busy; }
       return;
@@ -3957,6 +4576,13 @@
   }
 
   $('#qualityReviewList')?.addEventListener('click', qualityReviewAction);
+  $('#qualityReviewList')?.addEventListener('input', event => {
+    const field = event.target.closest?.('[data-review-source], [data-review-translation]');
+    if (!field) return;
+    const article = field.closest('[data-review-key]');
+    if (!article) return;
+    setReviewSaveState(article, reviewEditorDirty(article) ? 'dirty' : 'idle');
+  });
   $('#reviewedPdfAction')?.addEventListener('click', event => {
     if (!event.target.closest('[data-open-reviewed-pdf]')) return;
     const jobId = appState.qualityReview?.job_id;
@@ -5358,6 +5984,88 @@
     if (appState.qualityReview) renderQualityReview(appState.qualityReview);
   }));
   $('#confirmQualityReview')?.addEventListener('click', confirmQualityReview);
+  function syncReexportTypesettingField() {
+    const isPsd = ($('#qualityReviewReexportFormat')?.value === 'psd');
+    const select = $('#qualityReviewReexportTypesetting');
+    const label = $('#qualityReviewReexportTypesettingLabel');
+    if (select) select.hidden = !isPsd;
+    if (label) label.hidden = !isPsd;
+  }
+  $('#qualityReviewReexportFormat')?.addEventListener('change', event => { event.currentTarget.dataset.userSelected = '1'; syncReexportTypesettingField(); });
+  $('#qualityReviewReexport')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    const status = $('#qualityReviewReexportStatus');
+    const review = appState.qualityReview;
+    if (!review?.job_id) return;
+    if (Object.keys(snapshotDirtyReviewEditors()).length || $$('.quality-review-item[data-review-key]').some(reviewEditorDirty) || appState.reviewDraw) {
+      if (status) status.textContent = 'Salve ou cancele as alterações pendentes antes de gerar novamente.';
+      return;
+    }
+    button.disabled = true;
+    if (status) status.textContent = 'Validando revisão…';
+    try {
+      const output_format = $('#qualityReviewReexportFormat')?.value || 'pdf';
+      const body = {job_id: review.job_id, output_format};
+      if (output_format === 'psd') body.typesetting_mode = ($('#qualityReviewReexportTypesetting')?.value === 'off') ? 'off' : 'on';
+      const result = await api('/api/ui/quality-review/reexport', {method:'POST', body:JSON.stringify(body)});
+      if (status) status.textContent = `Geração criada · ${result.output_format.toUpperCase()} · custo adicional: 0 YK`;
+      if (result.job_id) void pollQualityReviewReexport(result.job_id, review.job_id);
+    } catch (error) {
+      const detail = error?.detail || error?.data?.detail || {};
+      const blockers = Array.isArray(detail.review_blockers) ? detail.review_blockers : [];
+      if (status) status.textContent = blockers.length
+        ? `Bloqueado · ${blockers.length} região(ões): ${blockers.map(x => `p${x.page_index} ${x.region_id}: ${x.reason}`).join('; ')}`
+        : `Falha ao gerar novamente · ${detail.code || error.message || 'erro local'}`;
+    } finally { button.disabled = false; }
+  });
+  async function pollQualityReviewReexport(jobId, sourceJobId) {
+    const id = String(jobId || '');
+    if (!id || appState.reviewReexportPollingJobId === id) return;
+    appState.reviewReexportPollingJobId = id;
+    const statusNode = $('#qualityReviewReexportStatus');
+    try {
+      const current = await api('/api/ui/quality-review/reexport/status', {
+        method:'POST', body:JSON.stringify({job_id:id, source_job_id:sourceJobId})
+      });
+      if (statusNode) {
+        const stages = {queued:'Na fila…', claiming:'Preparando worker…', starting:'Iniciando…',
+          validating_review:'Validando revisão…', loading_artifacts:'Carregando artefatos…',
+          reconstructing:'Gerando páginas…', exporting:'Exportando…',
+          validating_output:'Validando saída…', finished:'Concluído', interrupted:'Interrompido', failed:'Falhou'};
+        const count = current.progress_total ? ` · ${current.progress_current}/${current.progress_total} páginas` : '';
+        statusNode.textContent = `${stages[current.stage] || stages[current.status] || current.stage} · ${current.output_format?.toUpperCase() || ''}${count} · custo adicional: 0 YK`;
+        statusNode.querySelector('[data-reexport-retry]')?.remove();
+        if (['interrupted','failed'].includes(current.status) && current.recoverable) {
+          const retry = document.createElement('button');
+          retry.type = 'button'; retry.dataset.reexportRetry = '1'; retry.className = 'btn-ghost';
+          retry.textContent = 'TENTAR NOVAMENTE';
+          retry.addEventListener('click', async () => {
+            retry.disabled = true;
+            try {
+              const next = await api('/api/ui/quality-review/reexport/retry', {
+                method:'POST', body:JSON.stringify({job_id:id, source_job_id:sourceJobId})
+              });
+              statusNode.textContent = 'Nova tentativa de re-export criada · custo adicional: 0 YK';
+              void pollQualityReviewReexport(next.job_id, sourceJobId);
+            } catch (error) {
+              statusNode.textContent = `Não foi possível retomar o re-export: ${error.message || 'erro local'}`;
+              retry.disabled = false;
+            }
+          });
+          statusNode.append(' ', retry);
+        }
+      }
+      if (['queued','claiming','starting','running'].includes(String(current.status || ''))) {
+        appState.reviewReexportPollingJobId = '';
+        window.setTimeout(() => void pollQualityReviewReexport(id, sourceJobId), 1200);
+      } else {
+        appState.reviewReexportPollingJobId = '';
+      }
+    } catch (error) {
+      appState.reviewReexportPollingJobId = '';
+      if (statusNode) statusNode.textContent = `Status do re-export indisponível: ${error.message || 'falha local'}`;
+    }
+  }
   $('#rerunPendingReview')?.addEventListener('click', openReviewRerunDialog);
   $('#reviewRerunApply')?.addEventListener('click', startReviewRerun);
   $('#reviewRerunCancel')?.addEventListener('click', closeReviewRerunDialog);
@@ -6156,7 +6864,7 @@
     const items = pendingPreviewItems();
     if (!items.length) {
       node.hidden = true;
-      node.innerHTML = '';
+      if (node.innerHTML) node.innerHTML = '';
       return;
     }
     const ready = items.filter(item => item.approval_enabled === true && item.blocked !== true);
@@ -6169,10 +6877,11 @@
         + `<small>${escapeHtml(pendingPreviewLabel(item))}</small></span>`
         + `<span class="pending-preview-status">${escapeHtml(status)}</span></button>`;
     }).join('');
-    node.hidden = false;
-    node.innerHTML = `<div class="pending-preview-head"><strong>Prévia humana pendente</strong>`
+    const html = `<div class="pending-preview-head"><strong>Prévia humana pendente</strong>`
       + `<span>${ready.length} pronta${ready.length === 1 ? '' : 's'} · ${blocked.length} bloqueada${blocked.length === 1 ? '' : 's'}</span></div>`
       + cards;
+    node.hidden = false;
+    if (node.innerHTML !== html) node.innerHTML = html;
   }
   function renderPendingPreviewSurfaces() {
     renderPendingPreviewSummary('#homePendingPreviews');
@@ -6456,31 +7165,153 @@
     const retryActionHtml = retryAction(record) || actionButton('Reprocessar', 'reprocess');
     const snapshotBadge = record.validation_snapshot === true
       ? '<span class="badge snapshot">Snapshot isolado de validação</span>' : '';
+    const generations = Array.isArray(record.review_generations) ? record.review_generations : [];
+    const generationsHtml = generations.length ? `<div class="review-generation-history"><strong>Saídas revisadas</strong>${generations.map(gen => {
+      const status = runStatusLabels[gen.status] || gen.status || 'desconhecido';
+      const progress = gen.status === 'finished' ? 'concluída' : status;
+      return `<div class="review-generation-row"><span>${escapeHtml(String(gen.output_format || '').toUpperCase())} · ${escapeHtml(progress)} · tentativa ${Number(gen.attempt || 1)}</span><small>${escapeHtml(gen.created_at || '')}</small>${gen.status === 'finished' ? `<button type="button" class="btn-ghost" data-action="review-generation-folder" data-generation-job-id="${escapeAttr(gen.job_id)}">Abrir saída revisada</button>` : ''}${gen.output_path ? `<small>${escapeHtml(gen.output_path)}</small>` : ''}</div>`;
+    }).join('')}</div>` : '';
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge format">${escapeHtml(historyTypeFormatLabel(record))}</span>${isDownloadOnly ? '<span class="badge download-only">Download-only</span>' : ''}${snapshotBadge}${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
-      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${outputFormat === 'PDF' ? actionButton('Abrir PDF', 'pdf', record.pdf_path) : ''}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>
+      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${outputFormat === 'PDF' ? actionButton('Abrir PDF', 'pdf', record.pdf_path) : ''}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>${generationsHtml}
     </div>`;
   }
-  // Replace the library markup only when it actually changed, and keep the
-  // scroll position across the swap.  Auto-refresh (refreshBootstrap on a new
-  // history_revision) used to rebuild every card on each poll while the reader
-  // was scrolling the library, snapping the page back to the top.
-  let renderedHistoryHtml = null;
-  function commitHistoryMarkup(list, html) {
-    if (renderedHistoryHtml === html && list.innerHTML) return;
-    const scroller = document.querySelector('main');
-    const preserve = scroller && list.offsetParent !== null;
-    const savedScroll = preserve ? scroller.scrollTop : 0;
-    list.innerHTML = html;
-    renderedHistoryHtml = html;
-    if (preserve && savedScroll > 0) {
-      scroller.scrollTop = savedScroll;
-      window.requestAnimationFrame(() => { scroller.scrollTop = savedScroll; });
+  function historyScrollOwnerName(owner) {
+    if (!owner) return 'none';
+    if (owner === document.scrollingElement) return 'document.scrollingElement';
+    if (owner.id) return `#${owner.id}`;
+    return String(owner.tagName || 'element').toLowerCase();
+  }
+  function getHistoryScrollOwner(list = $('#histList')) {
+    const root = document.scrollingElement || document.documentElement || document.body;
+    let firstOverflowAncestor = null;
+    for (let node = list; node && node.nodeType === 1; node = node.parentElement) {
+      const overflowY = window.getComputedStyle(node).overflowY;
+      if (!/(auto|scroll|overlay)/i.test(overflowY)) continue;
+      if (!firstOverflowAncestor) firstOverflowAncestor = node;
+      if (node.scrollHeight > node.clientHeight + 1) return node;
+    }
+    if (root && root.scrollHeight > root.clientHeight + 1) return root;
+    return firstOverflowAncestor || document.querySelector('main') || root;
+  }
+  function historyScrollMetrics(owner) {
+    const root = document.scrollingElement || document.documentElement || document.body;
+    return {
+      scroll_owner: historyScrollOwnerName(owner),
+      scroll_top: Math.round(Number(owner?.scrollTop || 0)),
+      window_scroll_y: Math.round(Number(window.scrollY || 0)),
+      document_element_scroll_top: Math.round(Number(document.documentElement?.scrollTop || 0)),
+      body_scroll_top: Math.round(Number(document.body?.scrollTop || 0)),
+      scrolling_element_scroll_top: Math.round(Number(root?.scrollTop || 0)),
+      history_revision: Number(appState.historyRevision || 0),
+    };
+  }
+  function restoreHistoryScroll(owner, offset) {
+    const target = owner?.isConnected ? owner : getHistoryScrollOwner();
+    if (!target || !Number.isFinite(Number(offset))) return;
+    if (target === document.scrollingElement || target === document.documentElement || target === document.body) {
+      window.scrollTo({top: Number(offset), behavior: 'instant'});
+    } else target.scrollTop = Number(offset);
+  }
+  function historyRenderKey(node) {
+    if (!node || node.nodeType !== 1) return '';
+    if (node.dataset?.folder) return `folder:${node.dataset.folder}`;
+    if (node.dataset?.id) return `chapter:${node.dataset.id}`;
+    if (node.dataset?.action) {
+      const identity = node.dataset.jobId || node.dataset.reviewJob || node.dataset.publicationId
+        || node.dataset.path || node.dataset.runId || '';
+      return `action:${node.dataset.action}:${identity}`;
+    }
+    if (node.id) return `id:${node.id}`;
+    return '';
+  }
+  function historyNodesCompatible(current, desired) {
+    return Boolean(current && desired && current.nodeType === desired.nodeType
+      && (current.nodeType !== 1 || current.tagName === desired.tagName));
+  }
+  function patchHistoryNode(current, desired, changes) {
+    if (!historyNodesCompatible(current, desired)) return desired.cloneNode(true);
+    if (current.nodeType === 3 || current.nodeType === 8) {
+      if (current.data !== desired.data) { current.data = desired.data; changes.count += 1; }
+      return current;
+    }
+    const desiredAttributes = new Map(Array.from(desired.attributes, attribute => [attribute.name, attribute.value]));
+    for (const attribute of Array.from(current.attributes)) {
+      if (!desiredAttributes.has(attribute.name)) { current.removeAttribute(attribute.name); changes.count += 1; }
+    }
+    for (const [name, value] of desiredAttributes) {
+      if (current.getAttribute(name) !== value) { current.setAttribute(name, value); changes.count += 1; }
+    }
+    syncHistoryChildren(current, desired, changes);
+    return current;
+  }
+  function syncHistoryChildren(parent, desiredParent, changes) {
+    const oldChildren = Array.from(parent.childNodes);
+    const used = new Set();
+    let cursor = parent.firstChild;
+    for (const desired of Array.from(desiredParent.childNodes)) {
+      const key = historyRenderKey(desired);
+      let match = key
+        ? oldChildren.find(node => !used.has(node) && historyRenderKey(node) === key) || null
+        : null;
+      if (!match && cursor && !used.has(cursor) && !historyRenderKey(cursor)
+          && historyNodesCompatible(cursor, desired)) match = cursor;
+      if (!match && !key) {
+        match = oldChildren.find(node => !used.has(node) && !historyRenderKey(node)
+          && historyNodesCompatible(node, desired)) || null;
+      }
+      if (match) {
+        used.add(match);
+        const patched = patchHistoryNode(match, desired, changes);
+        if (patched !== match) {
+          parent.insertBefore(patched, cursor);
+          match.remove();
+          changes.count += 1;
+          match = patched;
+        } else if (match !== cursor) {
+          parent.insertBefore(match, cursor);
+          changes.count += 1;
+        }
+      } else {
+        match = desired.cloneNode(true);
+        parent.insertBefore(match, cursor);
+        changes.count += 1;
+      }
+      cursor = match.nextSibling;
+    }
+    for (const old of oldChildren) {
+      if (!used.has(old) && old.parentNode === parent) { old.remove(); changes.count += 1; }
     }
   }
-  function renderHistory() {
+  // Patch keyed groups/cards in place. A changed field updates its card; the
+  // scroll container and unaffected focused/expanded nodes stay mounted.
+  let renderedHistoryHtml = null;
+  function commitHistoryMarkup(list, html, reason = 'unspecified') {
+    const view = $('#view-hist');
+    const preserve = Boolean(view?.classList.contains('active') && !view.hidden);
+    const owner = preserve ? getHistoryScrollOwner(list) : null;
+    const before = historyScrollMetrics(owner);
+    const changed = renderedHistoryHtml !== html;
+    if (!changed && list.childNodes.length) {
+      uiTrace('HISTORY_RENDER_COMMIT', {...before, reason, markup_changed: false,
+        changed_nodes: 0, record_count: appState.history.length});
+      return;
+    }
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const changes = {count: 0};
+    syncHistoryChildren(list, template.content, changes);
+    renderedHistoryHtml = html;
+    if (preserve && owner && before.scroll_top > 0) {
+      restoreHistoryScroll(owner, before.scroll_top);
+      window.requestAnimationFrame(() => restoreHistoryScroll(owner, before.scroll_top));
+    }
+    uiTrace('HISTORY_RENDER_COMMIT', {...before, reason, markup_changed: changed,
+      changed_nodes: changes.count, record_count: appState.history.length});
+  }
+  function renderHistory(reason = 'unspecified') {
     const list = $('#histList');
     if (!list) return;
     renderPendingPreviewSurfaces();
@@ -6488,7 +7319,7 @@
     const records = appState.history.filter(record => !query || `${record.chapter_name || ''} ${record.slug || ''}`.toLowerCase().includes(query));
     $('#histCount').textContent = query ? `${records.length} de ${appState.history.length}` : `${records.length} ${records.length === 1 ? 'capítulo' : 'capítulos'}`;
     if (!records.length) {
-      commitHistoryMarkup(list, `<div class="empty-real-state">${appState.history.length ? 'nenhum capítulo corresponde à busca' : 'nenhum capítulo disponível no histórico'}</div>`);
+      commitHistoryMarkup(list, `<div class="empty-real-state">${appState.history.length ? 'nenhum capítulo corresponde à busca' : 'nenhum capítulo disponível no histórico'}</div>`, reason);
       return;
     }
     const groups = new Map();
@@ -6504,8 +7335,49 @@
       const panelId = `series-panel-${slugify(key) || 'series'}`;
       return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><button type="button" class="cf-header" data-folder="${escapeAttr(key)}" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${escapeAttr(panelId)}" aria-label="${escapeAttr(`Expandir ${group.series}`)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></button><div class="cf-body" id="${escapeAttr(panelId)}" role="region" aria-hidden="${open ? 'false' : 'true'}">${group.records.map(renderHistoryCard).join('')}</div></div>`;
     }).join('');
-    commitHistoryMarkup(list, html);
+    commitHistoryMarkup(list, html, reason);
   }
+  let historyScrollWatchTimer = 0;
+  function startHistoryScrollWatch() {
+    if (historyScrollWatchTimer) window.clearInterval(historyScrollWatchTimer);
+    const startedAt = performance.now();
+    const initial = historyScrollMetrics(getHistoryScrollOwner());
+    const watch = {min: initial.scroll_top, max: initial.scroll_top,
+      previous: initial.scroll_top, zeroCount: 0};
+    historyScrollWatchTimer = window.setInterval(() => {
+      if (!$('#view-hist')?.classList.contains('active')) {
+        window.clearInterval(historyScrollWatchTimer); historyScrollWatchTimer = 0; return;
+      }
+      const current = historyScrollMetrics(getHistoryScrollOwner());
+      watch.min = Math.min(watch.min, current.scroll_top);
+      watch.max = Math.max(watch.max, current.scroll_top);
+      if (watch.previous > 80 && current.scroll_top <= 2) {
+        watch.zeroCount += 1;
+        uiTrace('HISTORY_SCROLL_TO_TOP', {...current, reason: 'observed_transition'});
+      }
+      watch.previous = current.scroll_top;
+      if (performance.now() - startedAt >= 20000) {
+        window.clearInterval(historyScrollWatchTimer); historyScrollWatchTimer = 0;
+        uiTrace('HISTORY_SCROLL_WATCH_RESULT', {...current,
+          elapsed_ms: Math.round(performance.now() - startedAt), scroll_min: watch.min,
+          scroll_max: watch.max, zero_count: watch.zeroCount, reason: '20s_window'});
+      }
+    }, 100);
+  }
+  document.addEventListener('scroll', event => {
+    if (!$('#view-hist')?.classList.contains('active')) return;
+    const owner = getHistoryScrollOwner();
+    if (event.target !== owner && event.target !== document) return;
+    appState.historyScrollTop = historyScrollMetrics(owner).scroll_top;
+  }, true);
+  document.addEventListener('focusin', event => {
+    if (!$('#view-hist')?.contains(event.target)) return;
+    uiTrace('HISTORY_FOCUS_CHANGED', {
+      ...historyScrollMetrics(getHistoryScrollOwner()),
+      focus_target: String(event.target?.dataset?.action || event.target?.className
+        || event.target?.tagName || '').slice(0, 40),
+    });
+  }, true);
   const statusLabels = {online: 'online', away: 'ausente', busy: 'ocupado', offline: 'offline'};
   function applyCanonicalAuthSurface(state) {
     const authenticated = String(state || '') === 'authenticated';
@@ -6527,12 +7399,12 @@
     const key = folder?.dataset?.folder;
     if (!key) return;
     appState.expandedFolders.has(key) ? appState.expandedFolders.delete(key) : appState.expandedFolders.add(key);
-    renderHistory();
+    renderHistory('folder_toggle');
     const list = $('#histList');
     const replacement = list?.querySelector(`.cf-header[data-folder="${CSS.escape(key)}"]`);
-      window.setTimeout(() => replacement?.focus(), 0);
+      window.setTimeout(() => replacement?.focus({preventScroll: true}), 0);
   }
-  $('#histSearch')?.addEventListener('input', renderHistory);
+  $('#histSearch')?.addEventListener('input', () => renderHistory('search_filter'));
   $('#homePendingPreviews')?.addEventListener('click', event => {
     const target = event.target.closest('[data-open-pending-preview]');
     if (!target) return;
@@ -6575,7 +7447,7 @@
     if (state !== 'authenticated') clearCommunityObjectUrls();
     applyCanonicalAuthSurface(state);
     syncAuthoritativeTranslationFlag();
-    renderHistory();
+    renderHistory('auth_transition');
     const authenticated = state === 'authenticated';
     uiTrace('UI_AUTH_EVENT_RECEIVED', {authenticated});
     const authTransition = authenticated && !appState.authenticated;
@@ -6648,6 +7520,14 @@
       String(item.id) === rowId ||
       (reviewJobId && String(item.job_id || '').toLowerCase() === reviewJobId));
     if (!record) return;
+    if (button.dataset.action === 'review-generation-folder') {
+      try {
+        await api('/api/ui/quality-review/reexport/open', {method:'POST', body:JSON.stringify({
+          source_job_id: record.job_id, job_id: button.dataset.generationJobId || ''
+        })});
+      } catch (error) { showToast(error.message || 'Não foi possível abrir a saída revisada.', 'error'); }
+      return;
+    }
     if (button.dataset.action === 'open-preview') {
       void openPendingPreview(firstReadyPreviewForRecord(record) || pendingPreviewsForRecord(record)[0]);
       return;
@@ -6827,7 +7707,7 @@
       uiTrace('claim_completed', {status: 200});
       closeClaimModal();
       showToast('Capítulo vinculado à sua conta. Agora você pode publicar.', 'ok');
-      renderHistory();
+      renderHistory('history_action');
     } catch (errorValue) {
       uiTrace('claim_failed', {code: errorValue.code || 'claim_failed', status: errorValue.status || 0});
       const error = $('#claimError');
@@ -7002,7 +7882,7 @@
       if (key) delete appState.publicationDrafts[key];
       closePublicationModal();
       showToast('Publicação enviada à fila. O worker fará o upload.', 'ok');
-      renderHistory();
+      renderHistory('history_action');
       const reconciliation = await reconcileCommunityPublication(record, record.publication_id);
       if (reconciliation.status === 'published') {
         showToast('Publicação concluída e disponível na Comunidade.', 'ok');
@@ -7016,7 +7896,7 @@
         showToast('A publicação continua em processamento. O histórico será atualizado automaticamente.', 'warn');
         uiTrace('publication_reconciliation_pending', {correlation_id: correlation});
       }
-      renderHistory();
+      renderHistory('history_action');
     } catch (errorValue) {
       const error = $('#publicationError');
       if (error) { error.textContent = errorValue.message || 'Não foi possível publicar.'; error.hidden = false; }
@@ -8341,7 +9221,7 @@
       } else {
         clearPendingHumanPreviews();
       }
-      renderHistory();
+      renderHistory('bootstrap_refresh');
       renderDashboard();
       if (!appState.reviewRestoreAttempted) {
         appState.reviewRestoreAttempted = true;

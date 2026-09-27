@@ -151,6 +151,11 @@ def mark_ocr_line_recovered(line, recovery_engine, *, initial_ocr_engine=None):
 
 
 class OCREngine:
+    # Bound the image passed to OCR independently from source validation. The
+    # source page remains one logical page; only the detector's input is tiled.
+    TALL_IMAGE_TILE_MAX_PIXELS = 6_000_000
+    TALL_IMAGE_TILE_MAX_HEIGHT = 4096
+    TALL_IMAGE_TILE_OVERLAP = 256
     _paddle_instances = {}
     _rapidocr_instances = {}
     _rapidocr_init_lock = threading.Lock()
@@ -175,6 +180,82 @@ class OCREngine:
         return ""
 
     def detect_lines(self, img_bgr, upscale=True, page=None, rapidocr_upscale=False):
+        if img_bgr is None or img_bgr.size == 0:
+            return self._detect_lines_single(
+                img_bgr, upscale=upscale, page=page,
+                rapidocr_upscale=rapidocr_upscale,
+            )
+        height, width = img_bgr.shape[:2]
+        tile_height = min(
+            self.TALL_IMAGE_TILE_MAX_HEIGHT,
+            max(1, self.TALL_IMAGE_TILE_MAX_PIXELS // max(1, width)),
+        )
+        if height <= tile_height:
+            return self._detect_lines_single(
+                img_bgr, upscale=upscale, page=page,
+                rapidocr_upscale=rapidocr_upscale,
+            )
+
+        overlap = min(self.TALL_IMAGE_TILE_OVERLAP, max(0, tile_height // 4))
+        step = max(1, tile_height - overlap)
+        all_lines = []
+        tile_records = []
+        start = 0
+        tile_index = 0
+        while start < height:
+            end = min(height, start + tile_height)
+            tile_index += 1
+            try:
+                lines = self._detect_lines_single(
+                    img_bgr[start:end, :], upscale=upscale, page=page,
+                    rapidocr_upscale=rapidocr_upscale,
+                )
+            except Exception as exc:
+                self.last_run_metadata = {
+                    "original_engine": self.engine,
+                    "final_engine": self.engine,
+                    "fallback_reason": "tall_image_tile_failed",
+                    "tile_failure": {
+                        "tile_index": tile_index,
+                        "global_y_start": start,
+                        "global_y_end": end,
+                        "stage": "ocr",
+                        "exception_type": type(exc).__name__,
+                    },
+                }
+                raise RuntimeError(
+                    f"Tall-image OCR failed at tile {tile_index} "
+                    f"(y={start}:{end})"
+                ) from exc
+            tile_records.append({"index": tile_index, "y_start": start,
+                                 "y_end": end, "line_count": len(lines or []),
+                                 "metadata": dict(self.last_run_metadata or {})})
+            all_lines.extend(_offset_ocr_lines(lines or [], start))
+            if end == height:
+                break
+            start += step
+
+        merged, duplicates = _deduplicate_tiled_ocr_lines(all_lines)
+        self.last_run_metadata = {
+            "original_engine": self.engine,
+            "final_engine": self.engine,
+            "tall_image_tiling": {
+                "logical_page_count": 1,
+                "tile_count": len(tile_records),
+                "tile_height": tile_height,
+                "overlap": overlap,
+                "tiles": tile_records,
+                "duplicate_lines_removed": duplicates,
+                "global_coordinates": True,
+                "engine_unavailable": any(
+                    bool(record["metadata"].get("engine_unavailable"))
+                    for record in tile_records
+                ),
+            },
+        }
+        return sorted(merged, key=lambda line: (line.box[1], line.box[0]))
+
+    def _detect_lines_single(self, img_bgr, upscale=True, page=None, rapidocr_upscale=False):
         if img_bgr is None or img_bgr.size == 0:
             self.last_run_metadata = self._run_metadata(
                 page,
@@ -1829,6 +1910,66 @@ def _box_from_poly(poly):
     x2 = int(xs.max())
     y2 = int(ys.max())
     return x1, y1, max(1, x2 - x1), max(1, y2 - y1)
+
+
+def _offset_ocr_lines(lines, y_offset):
+    """Return tile OCR lines rebased to full-page coordinates."""
+    shifted = []
+    for line in lines:
+        polygon = np.asarray(line.polygon).copy()
+        polygon[:, 1] += int(y_offset)
+        x, y, width, height = line.box
+        shifted.append(OCRLine(
+            text=line.text, confidence=line.confidence, polygon=polygon,
+            box=(x, y + int(y_offset), width, height), raw_text=line.raw_text,
+            engine=line.engine, page=line.page,
+            metadata=dict(line.metadata or {}), original_text=line.original_text,
+            repaired_text=line.repaired_text, repair_reason=line.repair_reason,
+        ))
+    return shifted
+
+
+def _deduplicate_tiled_ocr_lines(lines):
+    """Conservatively merge duplicate readings emitted in tile overlap bands.
+
+    Both lexical identity and substantial geometric overlap are required. Nearby
+    distinct balloons/lines are therefore retained even when their centers are close.
+    """
+    import unicodedata
+
+    kept = []
+    duplicates = 0
+    for line in sorted(lines, key=lambda item: (item.box[1], item.box[0])):
+        normalized = "".join(
+            char for char in unicodedata.normalize("NFKC", line.text).casefold()
+            if char.isalnum()
+        )
+        duplicate_index = None
+        if normalized:
+            x, y, width, height = line.box
+            for index, existing in enumerate(kept):
+                existing_text = "".join(
+                    char for char in unicodedata.normalize("NFKC", existing.text).casefold()
+                    if char.isalnum()
+                )
+                if existing_text != normalized:
+                    continue
+                ex, ey, ew, eh = existing.box
+                intersection = max(0, min(x + width, ex + ew) - max(x, ex)) * max(
+                    0, min(y + height, ey + eh) - max(y, ey)
+                )
+                area = max(1, width * height)
+                existing_area = max(1, ew * eh)
+                if intersection / min(area, existing_area) >= 0.5:
+                    duplicate_index = index
+                    break
+        if duplicate_index is None:
+            kept.append(line)
+        else:
+            duplicates += 1
+            if float(line.confidence or 0) > float(kept[duplicate_index].confidence or 0):
+                kept[duplicate_index] = line
+    return kept, duplicates
 
 
 def rapidocr_runtime_smoke() -> dict:

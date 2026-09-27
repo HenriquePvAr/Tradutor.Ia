@@ -132,7 +132,12 @@ class ReasonMessageTests(unittest.TestCase):
 
 class PollingTests(unittest.TestCase):
     def test_a_single_polling_timer_with_cleanup(self):
-        self.assertEqual(JS.count("setInterval("), 1)
+        start = JS.index("function ensurePolling()")
+        end = JS.index("refreshBootstrap();", start)
+        polling = JS[start:end]
+        self.assertEqual(polling.count("window.setInterval(pollState, 850)"), 1)
+        self.assertIn("if (getGlobal('__tradutorUiPollingTimer'))", polling)
+        self.assertIn("setGlobal('__tradutorUiPollingTimer', timer)", polling)
         self.assertIn("clearInterval(getGlobal('__tradutorUiPollingTimer'))", JS)
         self.assertIn("setGlobal('__tradutorUiPollingTimer'", JS)
 

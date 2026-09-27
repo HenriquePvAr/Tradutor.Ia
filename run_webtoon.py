@@ -65,6 +65,12 @@ def build_parser():
         default="pdf",
         help="Formato do resultado final (padrao: pdf).",
     )
+    parser.add_argument(
+        "--typesetting-mode",
+        choices=("on", "off"),
+        default="on",
+        help="PSD: 'on' inclui texto traduzido em camadas por regiao; 'off' entrega pagina limpa para diagramacao manual (padrao: on).",
+    )
     parser.add_argument("--no-context", action="store_true", help="Desativa o contexto do capitulo.")
     parser.add_argument(
         "--keep-context",

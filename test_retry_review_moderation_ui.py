@@ -272,16 +272,18 @@ def test_persisted_history_retry_uses_selected_job_identity_after_refresh():
     confirm_block = js[js.index("$('#retryConfirmApply')"):js.index(
         "function moderationRoles")]
     assert "latestJobId" not in confirm_block
-    history_block = js[js.index("function renderHistoryCard"):js.index(
-        "function renderHistory()")]
+    history_start = js.index("function renderHistoryCard")
+    history_end = js.index("function renderHistory(", history_start)
+    history_block = js[history_start:history_end]
     assert "retryAction(record)" in history_block
     assert "record?.recoverable === true" in js
 
 
 def test_history_retry_renders_only_with_concrete_job_and_run_identity():
     js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
-    history_block = js[js.index("function renderHistoryCard"):js.index(
-        "function renderHistory()")]
+    history_start = js.index("function renderHistoryCard")
+    history_end = js.index("function renderHistory(", history_start)
+    history_block = js[history_start:history_end]
     assert "retryAction(record)" in history_block
     assert "actionButton('Retry', 'retry')" not in history_block
     assert "data-job-id" in js

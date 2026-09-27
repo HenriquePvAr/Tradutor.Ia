@@ -218,6 +218,9 @@ def _run_internal_child(role: str, argv: list[str]) -> int:
     if role == "review-rerun-runner":
         import review_rerun_runner
         return int(review_rerun_runner.main(argv) or 0)
+    if role == "review-reexport-runner":
+        import review_reexport_runner
+        return int(review_reexport_runner.main(argv) or 0)
     print(f"unknown internal child role: {role}", file=sys.stderr)
     return 2
 

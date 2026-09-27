@@ -753,5 +753,111 @@ class BalloonDetectorRecallTests(unittest.TestCase):
             self.assertTrue(all(item["requires_review"] for item in audit["details"]))
 
 
+class PdfPhysicalPageContractTests(unittest.TestCase):
+    """Logical source pages vs physical PDF pages - the tall-strip page-count contract.
+
+    A tall logical page (one output PNG) is written as several physical PDF pages.
+    The quality gate must compare the physical PDF it produced against the expected
+    PHYSICAL count, never against the logical count, or every tall strip fails the
+    page-count check while being perfectly correct.
+    """
+
+    def _page(self, root, name, height, width=140):
+        # valid_image rejects a flat image (variance <= 5), so give it real contrast.
+        image = Image.new("RGB", (width, height), "white")
+        ImageDraw.Draw(image).rectangle((0, 0, width // 2, height), fill=(15, 15, 15))
+        path = root / name
+        image.save(path)
+        image.close()
+        return str(path)
+
+    def _states(self, *paths):
+        return [
+            {"index": index, "output_path": path, "debug_data": {"items": []}}
+            for index, path in enumerate(paths, start=1)
+        ]
+
+    def test_physical_pages_for_height_matches_export_segmentation(self):
+        self.assertEqual(pdf.physical_pdf_pages_for_height(5000), 1)
+        self.assertEqual(pdf.physical_pdf_pages_for_height(MAX_LOGICAL_PAGE_HEIGHT), 1)
+        self.assertEqual(pdf.physical_pdf_pages_for_height(15000), 2)
+        self.assertEqual(pdf.physical_pdf_pages_for_height(20000), 2)
+        self.assertEqual(pdf.physical_pdf_pages_for_height(30000), 3)
+        self.assertEqual(pdf.physical_pdf_pages_for_height(0), 0)
+
+    def test_manifest_matches_bytes_written_by_generate_pdf(self):
+        # The single source of truth: the count the manifest predicts equals the
+        # physical pages generate_pdf actually writes, for every height.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for height, expected in ((5000, 1), (15000, 2), (20000, 2), (30000, 3)):
+                path = self._page(root, f"src_{height}.png", height)
+                pdf_path = root / f"chapter_{height}.pdf"
+                pdf.generate_pdf([path], str(pdf_path))
+                self.assertEqual(pdf.physical_pdf_pages_for_height(height), expected)
+                self.assertEqual(
+                    benchmark_pipeline._count_pdf_pages(str(pdf_path)), expected
+                )
+
+    def test_gate_passes_for_a_normal_single_page_chapter(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out = self._page(root, "page_001.png", 5000)
+            pdf_path = root / "chapter.pdf"
+            pdf.generate_pdf([out], str(pdf_path))
+            quality = benchmark_pipeline._validate_quality(self._states(out), str(pdf_path))
+
+            self.assertEqual(quality["logical_page_count"], 1)
+            self.assertEqual(quality["pdf_physical_page_count"], 1)
+            self.assertEqual(quality["pdf_pages"], 1)
+            self.assertTrue(quality["passed"])
+
+    def test_gate_passes_when_physical_pdf_matches_the_tall_page(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out = self._page(root, "page_001.png", 30000)
+            pdf_path = root / "chapter.pdf"
+            pdf.generate_pdf([out], str(pdf_path))
+            quality = benchmark_pipeline._validate_quality(self._states(out), str(pdf_path))
+
+            self.assertEqual(quality["logical_page_count"], 1)
+            self.assertEqual(quality["pdf_physical_page_count"], 3)
+            self.assertEqual(quality["pdf_pages"], 3)
+            self.assertEqual(quality["pdf_pages_per_source"], [3])
+            self.assertTrue(quality["passed"])
+
+    def test_gate_passes_for_multi_page_tall_and_normal_mix(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tall = self._page(root, "page_001.png", 20000)   # 2 physical
+            normal = self._page(root, "page_002.png", 5000)  # 1 physical
+            pdf_path = root / "chapter.pdf"
+            pdf.generate_pdf([tall, normal], str(pdf_path))
+            quality = benchmark_pipeline._validate_quality(
+                self._states(tall, normal), str(pdf_path)
+            )
+
+            self.assertEqual(quality["logical_page_count"], 2)
+            self.assertEqual(quality["pdf_pages_per_source"], [2, 1])
+            self.assertEqual(quality["pdf_physical_page_count"], 3)
+            self.assertEqual(quality["pdf_pages"], 3)
+            self.assertTrue(quality["passed"])
+
+    def test_gate_still_fails_when_the_physical_pdf_page_count_is_wrong(self):
+        # Negative control: the gate is not weakened. The output page expects 3
+        # physical pages but the PDF on disk has only 2, so the gate must reject it.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out = self._page(root, "page_001.png", 30000)   # expects 3 physical
+            short = self._page(root, "short.png", 20000)     # writes 2 physical
+            pdf_path = root / "chapter.pdf"
+            pdf.generate_pdf([short], str(pdf_path))
+            quality = benchmark_pipeline._validate_quality(self._states(out), str(pdf_path))
+
+            self.assertEqual(quality["pdf_physical_page_count"], 3)
+            self.assertEqual(quality["pdf_pages"], 2)
+            self.assertFalse(quality["passed"])
+
+
 if __name__ == "__main__":
     unittest.main()

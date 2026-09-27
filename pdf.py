@@ -1,4 +1,5 @@
 from pathlib import Path
+import tempfile
 
 import cv2
 import numpy as np
@@ -69,29 +70,97 @@ def to_rgb(img):
     return img.convert("RGB")
 
 
+def _physical_page_offsets(height):
+    """Top offsets of each physical PDF page a logical page of ``height`` px becomes.
+
+    The single rule for segmenting a tall logical page: Pillow writes PDF at 72 dpi
+    (one pixel is one PDF point) and PDF caps a page at ``MAX_LOGICAL_PAGE_HEIGHT``
+    points, so a taller logical page is written as several physical pages. Both the
+    export loop below and ``physical_pdf_pages_for_height`` read this, so the number
+    of pages a page becomes is defined in exactly one place.
+    """
+    if height <= MAX_LOGICAL_PAGE_HEIGHT:
+        return [0]
+    return list(range(0, height, MAX_LOGICAL_PAGE_HEIGHT))
+
+
+def physical_pdf_pages_for_height(height):
+    """How many physical PDF pages one logical page of ``height`` px becomes."""
+    if height <= 0:
+        return 0
+    return len(_physical_page_offsets(height))
+
+
+def pdf_page_manifest(image_paths):
+    """The logical-vs-physical page contract for a list of logical source pages.
+
+    ``logical_source_pages`` is one per output image/PNG; ``pdf_physical_page_count``
+    is what those become inside the PDF once tall pages are segmented. The quality
+    gate compares the PDF it wrote against ``pdf_physical_page_count`` here, never
+    against the logical count. Images that cannot be opened are skipped exactly as
+    ``generate_pdf`` skips them, so the expected count matches what is written.
+    """
+    per_source = []
+    for path in image_paths:
+        try:
+            with Image.open(path) as img:
+                pages = physical_pdf_pages_for_height(img.height)
+        except Exception:
+            continue
+        if pages:
+            per_source.append(pages)
+    return {
+        "logical_source_pages": len(per_source),
+        "pdf_physical_page_count": sum(per_source),
+        "pdf_pages_per_source": per_source,
+    }
+
+
 def generate_pdf(image_paths, pdf_path):
     if not image_paths:
         raise ValueError("Nenhuma imagem fornecida para gerar PDF.")
 
     pil_imgs = []
-
-    for path in image_paths:
-        try:
-            with Image.open(path) as img:
-                pil_imgs.append(to_rgb(img))
-        except Exception as exc:
-            print(f"Erro ao abrir imagem para PDF, pulando {path}: {exc}")
-
-    if not pil_imgs:
-        raise ValueError("Nenhuma imagem valida foi carregada para gerar o PDF.")
-
-    first = pil_imgs[0]
-    rest = pil_imgs[1:]
-
     try:
-        first.save(pdf_path, "PDF", save_all=True, append_images=rest)
-        print(f"PDF gerado com sucesso: {pdf_path}")
+        with tempfile.TemporaryDirectory(prefix="yomu-pdf-pages-") as temporary:
+            physical_paths = []
+            for source_index, path in enumerate(image_paths):
+                try:
+                    with Image.open(path) as img:
+                        if img.width <= 0 or img.height <= 0:
+                            raise ValueError("invalid_image_dimensions")
+                        if img.height <= MAX_LOGICAL_PAGE_HEIGHT:
+                            physical_paths.append(path)
+                            continue
+                        # PDF 1.4 caps a page dimension at 14,400 points. Pillow
+                        # writes at 72 dpi (one source pixel per point), so segment
+                        # only the PDF representation; PNG/source remains one page.
+                        for tile_index, top in enumerate(
+                            _physical_page_offsets(img.height), start=1
+                        ):
+                            bottom = min(img.height, top + MAX_LOGICAL_PAGE_HEIGHT)
+                            tile_path = Path(temporary) / (
+                                f"source-{source_index:05d}-part-{tile_index:03d}.png"
+                            )
+                            img.crop((0, top, img.width, bottom)).save(tile_path, "PNG")
+                            physical_paths.append(tile_path)
+                except Exception as exc:
+                    print(f"Erro ao abrir imagem para PDF, pulando {path}: {exc}")
+
+            for path in physical_paths:
+                with Image.open(path) as img:
+                    pil_imgs.append(to_rgb(img))
+
+            if not pil_imgs:
+                raise ValueError("Nenhuma imagem valida foi carregada para gerar o PDF.")
+
+            first = pil_imgs[0]
+            rest = pil_imgs[1:]
+            first.save(pdf_path, "PDF", save_all=True, append_images=rest)
+            print(f"PDF gerado com sucesso: {pdf_path}")
     except Exception as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("Nenhuma imagem"):
+            raise
         raise RuntimeError(f"Erro ao gerar PDF: {exc}") from exc
     finally:
         for img in pil_imgs:

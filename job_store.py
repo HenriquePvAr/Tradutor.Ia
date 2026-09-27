@@ -15,12 +15,13 @@ import json
 import hashlib
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 14
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
@@ -199,6 +200,7 @@ class JobStore:
             str(self.db_path), timeout=5.0, isolation_level=None, check_same_thread=False
         )
         self._conn.row_factory = sqlite3.Row
+        self._review_region_lock = threading.RLock()
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA foreign_keys=ON")
@@ -267,6 +269,10 @@ class JobStore:
             self._migrate_v11()
         if version < 12:
             self._migrate_v12()
+        if version < 13:
+            self._migrate_v13()
+        if version < 14:
+            self._migrate_v14()
         self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
@@ -295,6 +301,53 @@ class JobStore:
         self._migrate_v10()
         self._migrate_v11()
         self._migrate_v12()
+        self._migrate_v13()
+        self._migrate_v14()
+
+    def _migrate_v14(self) -> None:
+        """Store durable, versioned human region overrides and manual regions."""
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS quality_review_region_overrides (
+                job_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                page_index INTEGER NOT NULL,
+                region_id TEXT NOT NULL,
+                is_manual INTEGER NOT NULL DEFAULT 0,
+                source_text_original TEXT NOT NULL DEFAULT '',
+                target_text_original TEXT NOT NULL DEFAULT '',
+                region_type_original TEXT NOT NULL DEFAULT 'unknown',
+                bbox_original_json TEXT,
+                source_text_override TEXT,
+                target_text_override TEXT,
+                translate_override TEXT,
+                region_type_override TEXT,
+                bbox_override_json TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                actor_id TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY(job_id,run_id,region_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_quality_region_overrides_job_page
+                ON quality_review_region_overrides(job_id,run_id,page_index,active);
+            """
+        )
+
+    def _migrate_v13(self) -> None:
+        """Persist a human source-text (OCR) override alongside the translation one.
+
+        R2 lets a reviewer correct the detected source text of a region (e.g. OCR "1"
+        -> "I") without a new provider call. The column is nullable: NULL means "no
+        source override for this revision, use the pipeline original", so legacy
+        target-only revisions keep falling back to the original source unchanged.
+        """
+        cols = {row["name"] for row in self._conn.execute(
+            "PRAGMA table_info(quality_review_item_revisions)")}
+        if cols and "source_text" not in cols:
+            self._conn.execute(
+                "ALTER TABLE quality_review_item_revisions ADD COLUMN source_text TEXT")
 
     def _migrate_v12(self) -> None:
         """Bind jobs and worker leases to the exact runtime contract."""
@@ -1211,7 +1264,7 @@ class JobStore:
     def record_review_item_revision(
         self, job_id: str, item_key: str, *, expected_version: int,
         action: str, translation: str, reason_code: str,
-        reason: str, actor_id: str,
+        reason: str, actor_id: str, source_text: str | None = None,
     ) -> dict[str, Any]:
         if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", str(item_key or "")):
             raise TransitionError("invalid_review_item")
@@ -1226,12 +1279,16 @@ class JobStore:
             if int(expected_version) != current:
                 raise TransitionError("review_version_conflict")
             normalized_reason = str(reason)[:500]
+            # NULL source_text means "no source override" (fall back to the pipeline
+            # original); a string (incl. empty) is an explicit human source override.
+            source_value = None if source_text is None else str(source_text)
             if latest and all((
                 str(latest.get("action") or "") == str(action),
                 str(latest.get("translation") or "") == str(translation),
                 str(latest.get("reason_code") or "") == str(reason_code),
                 str(latest.get("reason") or "") == normalized_reason,
                 str(latest.get("actor_id") or "") == str(actor_id),
+                (latest.get("source_text") if latest.get("source_text") is not None else None) == source_value,
             )):
                 return latest
             version = current + 1
@@ -1239,14 +1296,121 @@ class JobStore:
             self._conn.execute(
                 "INSERT INTO quality_review_item_revisions("
                 "revision_id,job_id,item_key,version,action,translation,"
-                "reason_code,reason,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "reason_code,reason,actor_id,created_at,source_text) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     revision_id, str(job_id), str(item_key), version, action,
                     str(translation), str(reason_code), normalized_reason,
-                    str(actor_id), time.time(),
+                    str(actor_id), time.time(), source_value,
                 ),
             )
         return self.review_item_latest(job_id, item_key) or {}
+
+    def review_region_overrides(self, job_id: str, run_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM quality_review_region_overrides WHERE job_id=? AND run_id=? AND active=1",
+            (str(job_id), str(run_id)),
+        ).fetchall()
+        return [{key: row[key] for key in row.keys()} for row in rows]
+
+    def save_review_region_override(
+        self, *, job_id: str, run_id: str, page_index: int, region_id: str,
+        expected_version: int, actor_id: str, source_text_original: str,
+        target_text_original: str, region_type_original: str,
+        bbox_original: list[int] | None, is_manual: bool = False,
+        source_text_override: str | None = None,
+        target_text_override: str | None = None,
+        translate_override: str | None = None,
+        region_type_override: str | None = None,
+        bbox_override: list[int] | None = None,
+    ) -> dict[str, Any]:
+        now = time.time()
+        with self._review_region_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM quality_review_region_overrides WHERE job_id=? AND run_id=? AND region_id=?",
+                    (str(job_id), str(run_id), str(region_id)),
+                ).fetchone()
+                current = int(row["version"]) if row else 0
+                if current != int(expected_version):
+                    raise TransitionError("review_version_conflict")
+                original_box = json.dumps(bbox_original, separators=(",", ":")) if bbox_original is not None else None
+                edited_box = json.dumps(bbox_override, separators=(",", ":")) if bbox_override is not None else None
+                values = (
+                    str(source_text_override) if source_text_override is not None else None,
+                    str(target_text_override) if target_text_override is not None else None,
+                    translate_override, region_type_override, edited_box,
+                )
+                if row:
+                    if bool(row["is_manual"]) != bool(is_manual):
+                        raise TransitionError("review_region_identity_conflict")
+                    if row["active"] == 0:
+                        raise TransitionError("review_region_inactive")
+                    columns = ("source_text_override", "target_text_override", "translate_override",
+                               "region_type_override", "bbox_override_json")
+                    if all(row[name] == value for name, value in zip(columns, values)):
+                        saved = {key: row[key] for key in row.keys()}
+                        self._conn.execute("COMMIT")
+                        return saved
+                    result = self._conn.execute(
+                        "UPDATE quality_review_region_overrides SET source_text_override=?,target_text_override=?,"
+                        "translate_override=?,region_type_override=?,bbox_override_json=?,version=?,actor_id=?,updated_at=? "
+                        "WHERE job_id=? AND run_id=? AND region_id=? AND version=? AND active=1",
+                        (*values, current + 1, str(actor_id), now, str(job_id), str(run_id), str(region_id), current),
+                    )
+                    if result.rowcount != 1:
+                        raise TransitionError("review_version_conflict")
+                else:
+                    self._conn.execute(
+                        "INSERT INTO quality_review_region_overrides(job_id,run_id,page_index,region_id,is_manual,"
+                        "source_text_original,target_text_original,region_type_original,bbox_original_json,"
+                        "source_text_override,target_text_override,translate_override,region_type_override,bbox_override_json,"
+                        "version,actor_id,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,1,?,?)",
+                        (str(job_id), str(run_id), int(page_index), str(region_id), int(bool(is_manual)),
+                         str(source_text_original), str(target_text_original), str(region_type_original), original_box,
+                         *values, str(actor_id), now, now),
+                    )
+                saved = self._conn.execute(
+                    "SELECT * FROM quality_review_region_overrides WHERE job_id=? AND run_id=? AND region_id=?",
+                    (str(job_id), str(run_id), str(region_id)),
+                ).fetchone()
+                self._conn.execute("COMMIT")
+                return {key: saved[key] for key in saved.keys()}
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+
+    def deactivate_manual_review_region(
+        self, *, job_id: str, run_id: str, region_id: str,
+        expected_version: int, actor_id: str,
+    ) -> dict[str, Any]:
+        with self._review_region_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM quality_review_region_overrides WHERE job_id=? AND run_id=? AND region_id=?",
+                    (str(job_id), str(run_id), str(region_id)),
+                ).fetchone()
+                if not row or not bool(row["is_manual"]):
+                    raise TransitionError("manual_region_not_found")
+                if int(row["version"]) != int(expected_version):
+                    raise TransitionError("review_version_conflict")
+                result = self._conn.execute(
+                    "UPDATE quality_review_region_overrides SET active=0,version=version+1,actor_id=?,updated_at=? "
+                    "WHERE job_id=? AND run_id=? AND region_id=? AND version=? AND active=1",
+                    (str(actor_id), time.time(), str(job_id), str(run_id), str(region_id), int(expected_version)),
+                )
+                if result.rowcount != 1:
+                    raise TransitionError("review_version_conflict")
+                self._conn.execute("COMMIT")
+                return {key: row[key] for key in row.keys()} | {
+                    "active": 0, "version": int(expected_version) + 1}
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
 
     def record_review_action(self, job_id: str, item_key: str, action: str) -> dict[str, str]:
         if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", str(item_key or "")):

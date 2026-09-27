@@ -243,6 +243,7 @@ def build_run_command(
     download_only: bool = False,
     translation_provider: str | None = None,
     output_format: str = "pdf",
+    typesetting_mode: str = "on",
     python_executable: str | None = None,
     output_path: Path | None = None,
 ) -> list[str]:
@@ -315,6 +316,11 @@ def build_run_command(
         raise ValueError("unsupported_output_format")
     if normalized_output_format in {"png", "psd"}:
         command.extend(["--output-format", normalized_output_format])
+    if normalized_output_format == "psd":
+        normalized_typesetting = str(typesetting_mode or "on").casefold()
+        if normalized_typesetting not in {"on", "off"}:
+            raise ValueError("invalid_typesetting_mode")
+        command.extend(["--typesetting-mode", normalized_typesetting])
     for candidate_id in source_candidate_ids or []:
         value = str(candidate_id or "").strip()
         if value:

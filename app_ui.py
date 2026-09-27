@@ -1313,8 +1313,10 @@ async def api_source_analyze(
 ) -> dict[str, Any]:
     """Validate a URL without creating a translation job or queue item."""
     from chapter_source import SourceError, supported_hosts
+    import source_analysis_progress
 
     trace_id = _source_trace_id(payload)
+    source_analysis_progress.start(trace_id)
     _append_diagnostic_log("routes_current.jsonl", "START_ROUTE_ENTER", trace_id=trace_id, route="/api/ui/source/analyze", method="POST")
     _append_diagnostic_log("app_current.jsonl", "SOURCE_ACTION_BEGIN", trace_id=trace_id, action="source_analyze")
     _append_diagnostic_log(
@@ -1334,9 +1336,17 @@ async def api_source_analyze(
             **_source_analysis_observability(payload))
         def _source_diagnostic(event: str, **fields: Any) -> None:
             _append_diagnostic_log("app_current.jsonl", event, trace_id=trace_id, **fields)
+            # Mirror coarse discovery events into the live progress registry so the UI
+            # can poll them while this request is still in flight (never blocks/alters).
+            try:
+                source_analysis_progress.record(trace_id, event, **fields)
+            except Exception:  # progress is best-effort observability only
+                pass
 
         result = await BRIDGE.analyze_source_candidate(
-            payload, principal=principal, diagnostic_callback=_source_diagnostic)
+            payload, principal=principal, diagnostic_callback=_source_diagnostic,
+            cancel_check=lambda: source_analysis_progress.is_cancelled(trace_id))
+        source_analysis_progress.finish(trace_id)
         _append_diagnostic_log(
             "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
             boundary="analysis_response_serialization", entered="YES", result="PASS")
@@ -1431,6 +1441,40 @@ async def api_source_analyze(
             "message": "Não foi possível analisar esta fonte agora. Tente novamente.",
             "action": "Verifique sua conexão e tente novamente.",
         }) from exc
+    finally:
+        source_analysis_progress.finish(trace_id)
+
+
+@app.get("/api/ui/source/analyze/progress/{trace_id}")
+def api_source_analyze_progress(request: Request, trace_id: str) -> dict[str, Any]:
+    """Live, best-effort progress for an in-flight source analysis (polled by the UI).
+
+    Read-only observability keyed by the caller's own trace id; returns a neutral
+    ``waiting`` snapshot when nothing is recorded yet. Requires a request principal
+    like the other UI routes, but exposes no source URL or path.
+    """
+    _ui_principal(request, mutate=False)
+    import source_analysis_progress
+
+    snap = source_analysis_progress.snapshot(trace_id)
+    if snap is None:
+        return {"stage": "waiting", "message": "Analisando a fonte…",
+                "candidates_found": None, "elapsed_ms": 0, "done": False}
+    return snap
+
+
+@app.post("/api/ui/source/analyze/cancel/{trace_id}")
+def api_source_analyze_cancel(request: Request, trace_id: str) -> dict[str, Any]:
+    """Cooperatively cancel an in-flight source analysis (Selenium discovery checks this).
+
+    The discovery honors the flag at its next cancel checkpoint; the analyze request then
+    fails closed with a cancelled SourceError rather than running to the 180s timeout.
+    """
+    _ui_principal(request, mutate=True)
+    import source_analysis_progress
+
+    known = source_analysis_progress.request_cancel(trace_id)
+    return {"ok": True, "cancel_requested": True, "known": bool(known)}
 
 
 @app.post("/api/ui/source/report")
@@ -2669,10 +2713,73 @@ def api_quality_review_page(
     request: Request, job_id: str, page_number: int, revision: str = ""
 ) -> FileResponse:
     _owned_ui_job(request, job_id)
-    path = BRIDGE.quality_review_page(job_id, page_number, revision=revision)
-    if path is None:
-        raise HTTPException(status_code=404, detail="Página de revisão não encontrada.")
-    return FileResponse(path)
+    resolution = BRIDGE.quality_review_page_resolution(job_id, page_number, revision=revision)
+    state = resolution.get("state")
+    if state == "ready" and resolution.get("path") is not None:
+        return FileResponse(resolution["path"])
+    # Distinct states so the UI can show the right message instead of a blank frame:
+    # a missing page, a page whose file is not yet available, one still processing,
+    # or a path that escaped the job's output dir (denied). Never a silent fallback.
+    status_by_state = {
+        "not_found": (404, "page_not_found", "Página de revisão não encontrada."),
+        "unavailable": (404, "preview_unavailable", "A prévia desta página não está disponível."),
+        "processing": (409, "page_processing", "A página ainda está sendo processada."),
+        "denied": (403, "preview_denied", "Acesso à página negado."),
+    }
+    status_code, code, message = status_by_state.get(
+        str(state), (404, "page_not_found", "Página de revisão não encontrada.")
+    )
+    raise HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+@app.post("/api/ui/quality-review/reexport")
+def api_quality_review_reexport(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
+    from review_reexport import ReviewReexportError
+    try:
+        return BRIDGE.quality_review_reexport_for_owner(
+            principal.owner_id, str(payload.get("job_id") or ""),
+            output_format=payload.get("output_format"),
+            typesetting_mode=payload.get("typesetting_mode"),
+        )
+    except ReviewReexportError as exc:
+        raise HTTPException(status_code=422 if exc.blockers else 409, detail={
+            "code": exc.code, "review_blockers": exc.blockers,
+            "message": "A revisão precisa de ajustes antes de gerar novamente." if exc.blockers else "Falha na reconstrução local.",
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if str(exc) == "job_not_found" else 409,
+                            detail={"code": str(exc)}) from exc
+
+
+@app.post("/api/ui/quality-review/reexport/status")
+def api_quality_review_reexport_status(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _owned_ui_job(request, str(payload.get("source_job_id") or ""), mutate=False)
+    try:
+        return BRIDGE.quality_review_reexport_status_for_owner(
+            principal.owner_id, str(payload.get("job_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"code": str(exc)}) from exc
+
+
+@app.post("/api/ui/quality-review/reexport/retry")
+def api_quality_review_reexport_retry(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _owned_ui_job(request, str(payload.get("source_job_id") or ""), mutate=True)
+    try:
+        return BRIDGE.quality_review_reexport_retry_for_owner(
+            principal.owner_id, str(payload.get("job_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
+
+
+@app.post("/api/ui/quality-review/reexport/open")
+def api_quality_review_reexport_open(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    principal = _owned_ui_job(request, str(payload.get("source_job_id") or ""), mutate=True)
+    try:
+        BRIDGE.open_review_generation_for_owner(principal.owner_id, str(payload.get("job_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
+    return {"ok": True}
 
 
 @app.post("/api/ui/quality-review/action")
@@ -2701,6 +2808,9 @@ def api_quality_review_edit(
     principal = _owned_ui_job(
         request, str(payload.get("job_id") or ""), mutate=True)
     try:
+        # ``source_text`` is optional: absent means "do not touch the source"; present
+        # means a human source (OCR) correction. It never triggers a provider call.
+        raw_source = payload.get("source_text")
         return BRIDGE.quality_review_edit(
             str(payload.get("job_id") or ""),
             str(payload.get("item_key") or ""),
@@ -2709,6 +2819,7 @@ def api_quality_review_edit(
             translation=str(payload.get("translation") or ""),
             reason=str(payload.get("reason") or ""),
             actor_id=principal.user_id,
+            source_text=None if raw_source is None else str(raw_source),
         )
     except ValueError as exc:
         status_code = 409 if str(exc) == "review_version_conflict" else 422
@@ -2716,6 +2827,66 @@ def api_quality_review_edit(
             "code": str(exc),
             "message": "Não foi possível salvar esta revisão.",
             "action": "Atualize os dados e tente novamente.",
+        }) from exc
+
+
+@app.post("/api/ui/quality-review/region-control")
+def api_quality_review_region_control(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
+    try:
+        return BRIDGE.save_quality_review_region_control(
+            str(payload.get("job_id") or ""), str(payload.get("item_key") or ""),
+            expected_version=int(payload.get("expected_version") or 0),
+            actor_id=principal.user_id,
+            translate_override=payload.get("translate_override"),
+            region_type_override=payload.get("region_type_override"),
+            bounding_box_override=payload.get("bounding_box_override"),
+        )
+    except ValueError as exc:
+        status_code = 409 if str(exc) == "review_version_conflict" else 422
+        raise HTTPException(status_code=status_code, detail={
+            "code": str(exc), "message": "Não foi possível salvar as opções desta região.",
+        }) from exc
+
+
+@app.post("/api/ui/quality-review/manual-region")
+def api_quality_review_manual_region(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
+    try:
+        return BRIDGE.add_quality_review_manual_region(
+            str(payload.get("job_id") or ""),
+            page_index=int(payload.get("page_index")), box=payload.get("bbox"),
+            source_text=str(payload.get("source_text") or ""),
+            target_text=str(payload.get("target_text") or ""),
+            region_type=str(payload.get("region_type") or "speech"),
+            translate_override=str(payload.get("translate_override") or "auto"),
+            actor_id=principal.user_id,
+        )
+    except (ValueError, TypeError) as exc:
+        status_code = 409 if str(exc) == "review_version_conflict" else 422
+        raise HTTPException(status_code=status_code, detail={
+            "code": str(exc), "message": "Não foi possível adicionar esta região.",
+        }) from exc
+
+
+@app.post("/api/ui/quality-review/manual-region/remove")
+def api_quality_review_manual_region_remove(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    principal = _owned_ui_job(request, str(payload.get("job_id") or ""), mutate=True)
+    try:
+        return BRIDGE.remove_quality_review_manual_region(
+            str(payload.get("job_id") or ""), str(payload.get("region_id") or ""),
+            expected_version=int(payload.get("expected_version") or 0), actor_id=principal.user_id,
+        )
+    except ValueError as exc:
+        status_code = 409 if str(exc) == "review_version_conflict" else 422
+        raise HTTPException(status_code=status_code, detail={
+            "code": str(exc), "message": "Não foi possível remover esta região manual.",
         }) from exc
 
 
@@ -3158,6 +3329,9 @@ async def api_control_plane_trace(request: Request) -> dict[str, bool]:
          "profile_state", "profile_present", "profile_error_present",
          "readiness_profile_required", "readiness_ready", "sequence", "elapsed_ms",
          "error_class", "message", "source", "line", "column", "phase", "ui_generation", "bridge_type",
+         "scroll_owner", "scroll_top", "window_scroll_y", "document_element_scroll_top",
+         "body_scroll_top", "scrolling_element_scroll_top", "history_revision", "markup_changed",
+         "changed_nodes", "record_count", "zero_count", "scroll_min", "scroll_max", "reason", "focus_target",
      }
     event = str(payload.get("event") or "CONTROL_PLANE_EVENT")[:80]
     safe: dict[str, Any] = {"event": event}

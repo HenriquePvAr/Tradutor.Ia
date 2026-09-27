@@ -469,6 +469,8 @@ class TextGroup:
     ignored: bool = False
     ignore_reason: str = ""
     sent_to_translation: bool = False
+    # Explicit human Review decision consumed only by render-time selection.
+    review_translate_override: str = "auto"
     redrawn: bool = False
     color_name: str = ""
     font_size: int = 0
@@ -2183,6 +2185,7 @@ def render_analyzed_image(
     image_path=None,
     stage_timings=None,
     forensic_capture_root=None,
+    capture=None,
 ):
     with ocr_line_provenance.page(page_index):
         return _render_analyzed_image(
@@ -2196,6 +2199,7 @@ def render_analyzed_image(
             image_path=image_path,
             stage_timings=stage_timings,
             forensic_capture_root=forensic_capture_root,
+            capture=capture,
         )
 
 
@@ -2210,6 +2214,7 @@ def _render_analyzed_image(
     image_path=None,
     stage_timings=None,
     forensic_capture_root=None,
+    capture=None,
 ):
     def timed_substage(name, fn, *args, **kwargs):
         started = time.perf_counter()
@@ -2663,6 +2668,12 @@ def _render_analyzed_image(
 
     debug_data = _debug_payload(image_path, raw_lines, candidates, groups)
     debug_data["visual_validation"] = page_visual_summary
+
+    if capture is not None:
+        # Canonical "Cleaned" buffer: the page after text removal/inpaint, BEFORE any
+        # translated glyphs. Consumed by the professional PSD exporter (P1). A copy so a
+        # later caller mutating it cannot corrupt the renderer's internal state.
+        capture["cleaned_bgr"] = inpainted.copy()
 
     if debug_folder:
         _write_debug_images(
@@ -4134,6 +4145,14 @@ def _apply_classification_policy(group):
 
 
 def _should_translate_group(group):
+    # R4 human review is an explicit render-time decision, not a classifier input.
+    # The persisted source item remains untouched; this flag exists only on the
+    # reconstructed group assembled from an immutable Review snapshot.
+    review_override = str(getattr(group, "review_translate_override", "auto") or "auto")
+    if review_override == "ignore":
+        return False
+    if review_override == "translate":
+        return bool(str(getattr(group, "translation", "") or "").strip())
     if group.ignored:
         return False
     if group.preserve_as_name:

@@ -46,6 +46,7 @@ def build_local_job_command(*, snapshot_ref: str, output: str, mode: str,
                             logical_pages: bool, use_cache: bool, force: bool,
                             use_context: bool, open_output: bool = False,
                             output_format: str = "pdf",
+                            typesetting_mode: str = "on",
                             python_executable: str | None = None,
                             translation_provider: str | None = None,
                             output_path: Path | None = None,
@@ -72,6 +73,8 @@ def build_local_job_command(*, snapshot_ref: str, output: str, mode: str,
         "--mode", str(mode),
         "--output-format", str(output_format),
     ])
+    if str(output_format).casefold() == "psd":
+        command.extend(["--typesetting-mode", str(typesetting_mode or "on").casefold()])
     if translation_provider:
         command.extend(["--translation-provider", str(translation_provider)])
     if logical_pages:

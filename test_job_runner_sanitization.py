@@ -132,6 +132,62 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         self.assertEqual(terminal["reason_code"], "completed")
         record.assert_not_called()
 
+    def test_requested_png_with_empty_directory_cannot_finish_on_auxiliary_pdf(self):
+        job, output = self._running_job(configuration_updates={"output_format": "png"})
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        png_dir = output / "png"
+        png_dir.mkdir()
+        (output / "timing_report.json").write_text(json.dumps({
+            "pdf_path": str(pdf), "png_path": str(png_dir), "output_format": "png",
+            "page_count": 2, "quality_validation": {"passed": True},
+        }), encoding="utf-8")
+        (output / "downloaded_images.json").write_text("{}", encoding="utf-8")
+
+        _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
+
+        terminal = self.store.get_job(job["id"])
+        self.assertEqual(terminal["status"], JobStatus.FAILED)
+        self.assertEqual(terminal["reason_code"], "export_zero_output")
+
+    def test_requested_psd_must_materialize_every_declared_page(self):
+        job, output = self._running_job(configuration_updates={"output_format": "psd"})
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        psd_dir = output / "psd"
+        psd_dir.mkdir()
+        (psd_dir / "001.psd").write_bytes(b"8BPS\x00")
+        (output / "timing_report.json").write_text(json.dumps({
+            "pdf_path": str(pdf), "psd_path": str(psd_dir), "output_format": "psd",
+            "page_count": 2, "quality_validation": {"passed": True},
+        }), encoding="utf-8")
+        (output / "downloaded_images.json").write_text("{}", encoding="utf-8")
+
+        _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
+
+        terminal = self.store.get_job(job["id"])
+        self.assertEqual(terminal["status"], JobStatus.FAILED)
+        self.assertEqual(terminal["reason_code"], "export_output_count_mismatch")
+
+    def test_zero_processable_pages_cannot_finish_even_with_nonempty_pdf(self):
+        job, output = self._running_job()
+        output.mkdir(parents=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        (output / "timing_report.json").write_text(json.dumps({
+            "pdf_path": str(pdf), "page_count": 0,
+            "quality_validation": {"passed": True, "expected_pdf_pages": 0},
+        }), encoding="utf-8")
+        (output / "downloaded_images.json").write_text("{}", encoding="utf-8")
+
+        _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
+
+        terminal = self.store.get_job(job["id"])
+        self.assertEqual(terminal["status"], JobStatus.FAILED)
+        self.assertEqual(terminal["reason_code"], "no_processable_pages")
+
     def test_pipeline_commit_mismatch_fails_closed_before_quality_status(self):
         job, output = self._running_job(commit_hash="new-ui-commit")
         self._write_success_artifacts(output, manifest_commit="old-runner-commit")

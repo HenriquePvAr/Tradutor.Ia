@@ -3677,6 +3677,7 @@ class ChapterQualityRevision:
             group.text = item_text(item)
             group.translation = item_translation(item)
             group.sent_to_translation = bool(item.get("sent_to_nvidia") or item.get("sent_to_translation"))
+            group.review_translate_override = str(item.get("review_translate_override") or "auto")
             group.classification = str(item.get("classification") or "unknown")
             group.region_id = str(item.get("region_id") or "")
             group.source_engine = str(item.get("source_engine") or item.get("engine") or "")

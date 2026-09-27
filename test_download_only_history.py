@@ -78,7 +78,7 @@ def test_history_safe_record_preserves_download_only_contract(tmp_path):
 
 def test_history_ui_has_download_only_specific_rendering_and_keeps_normal_path():
     source = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
-    block = source[source.index("function renderHistoryCard"):source.index("function renderHistory()")]
+    block = source[source.index("function renderHistoryCard"):source.index("function renderHistory(")]
     assert "isDownloadOnly" in block
     assert "páginas baixadas" in block
     assert "resultado de download indisponível" in block

@@ -379,6 +379,15 @@
             </select>
           </div>
 
+          <div class="field" id="typesettingModeField" hidden>
+            <label for="typesettingModeSelect">Diagramação (PSD)</label>
+            <select id="typesettingModeSelect">
+              <option value="on" selected>Ligada</option>
+              <option value="off">Desligada</option>
+            </select>
+            <small class="field-hint" id="typesettingModeHint">Texto traduzido incluído em camadas por região.</small>
+          </div>
+
           <div class="field">
             <label>Idioma original</label>
             <select id="langSelect" disabled>
@@ -488,6 +497,7 @@
             <div class="balloon-stage" id="balloonStage">
               <div class="scanline" id="scanline"></div>
               <div class="balloon"><div class="balloon-text" id="balloonText">aguardando início…</div></div>
+              <button type="button" class="btn-ghost" id="cancelSourceAnalysisBtn" hidden>Cancelar análise</button>
             </div>
           </div>
 
@@ -554,6 +564,36 @@
             <div class="quality-review" id="qualityReviewPanel" hidden>
               <div class="panel-label">Revisão de qualidade</div>
               <div class="quality-review-meta" id="qualityReviewMeta"></div>
+              <div class="review-page-preview" id="reviewPagePreview" hidden>
+                <div class="review-page-preview-head">
+                  <button type="button" class="btn-ghost" id="reviewPreviewPrev" aria-label="Pendência anterior">◀ Anterior</button>
+                  <span class="review-page-preview-title" id="reviewPreviewTitle"></span>
+                  <button type="button" class="btn-ghost" id="reviewPreviewNext" aria-label="Próxima pendência">Próxima ▶</button>
+                </div>
+                <div class="review-page-preview-stage" id="reviewPreviewStage" data-state="idle">
+                  <div class="review-page-preview-frame" id="reviewPreviewFrame">
+                    <img id="reviewPreviewImage" alt="Página em revisão">
+                    <div class="review-bbox-overlay" id="reviewBboxOverlay" hidden></div>
+                    <div class="review-bbox-overlay review-bbox-drawing" id="reviewDrawOverlay" hidden></div>
+                  </div>
+                  <div class="review-page-preview-status" id="reviewPreviewStatus" role="status" aria-live="polite"></div>
+                  <button type="button" class="btn-ghost" id="reviewPreviewRetry" hidden>Tentar novamente</button>
+                  <div class="review-region-tools">
+                    <button type="button" class="btn-ghost" id="reviewAddRegion">ADICIONAR REGIÃO</button>
+                    <button type="button" class="btn-ghost" id="reviewAdjustRegion" disabled>AJUSTAR ÁREA</button>
+                    <button type="button" class="btn-ghost" id="reviewCancelDraw" hidden>Cancelar desenho</button>
+                    <span id="reviewDrawStatus" role="status" aria-live="polite"></span>
+                  </div>
+                  <section class="review-manual-region-form" id="reviewManualRegionForm" hidden>
+                    <label>Texto detectado<input id="reviewManualSource" maxlength="800" autocomplete="off"></label>
+                    <label>Tradução opcional<input id="reviewManualTarget" maxlength="800" autocomplete="off"></label>
+                    <label>Tipo<select id="reviewManualType"></select></label>
+                    <label>Comportamento<select id="reviewManualMode"><option value="auto">Automático</option><option value="translate">Traduzir</option><option value="ignore">Ignorar</option></select></label>
+                    <button type="button" class="btn-primary" id="reviewManualSave">Salvar região</button>
+                    <button type="button" class="btn-ghost" id="reviewManualCancel">Cancelar</button>
+                  </section>
+                </div>
+              </div>
               <div class="review-preview-access" id="reviewPreviewAccess" hidden aria-live="polite"></div>
               <div class="quality-review-pdf" id="reviewedPdfAction" hidden></div>
               <div class="quality-review-filters" role="group" aria-label="Filtrar revisão">
@@ -602,6 +642,12 @@
                    rendered as actions. -->
               <div class="cta-row quality-review-actions">
                 <button class="btn-primary" type="button" id="confirmQualityReview">Confirmar revisão</button>
+                <label for="qualityReviewReexportFormat">Formato da nova saída</label>
+                <select id="qualityReviewReexportFormat"><option value="png">PNG</option><option value="pdf">PDF</option><option value="psd">PSD</option></select>
+                <label for="qualityReviewReexportTypesetting" id="qualityReviewReexportTypesettingLabel" hidden>Diagramação</label>
+                <select id="qualityReviewReexportTypesetting" hidden><option value="on">Ligada</option><option value="off">Desligada</option></select>
+                <button class="btn-ghost" type="button" id="qualityReviewReexport">GERAR NOVAMENTE</button>
+                <span id="qualityReviewReexportStatus" role="status" aria-live="polite"></span>
               </div>
               <div class="page-revision-launch">
                 <label for="pageRevisionPageInput">Revisar uma página</label>

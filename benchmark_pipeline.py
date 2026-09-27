@@ -65,6 +65,7 @@ from fast_ocr_policy import FastOCRBudget
 from pdf import (
     create_split_boundary_contact_sheet,
     generate_pdf,
+    pdf_page_manifest,
     prepare_smart_webtoon_pages,
     smart_split_audit,
 )
@@ -87,7 +88,6 @@ from pipeline_cache import (
 )
 from session_context import SessionContextStore
 from png_output import export_final_pages_png, PngExportError
-from psd_exporter import export_final_pages_psd, PsdExportError
 
 _RAPIDOCR_INFERENCE_LOCK = threading.BoundedSemaphore(1)
 _PERF_JOB_ORIGIN_NS = None
@@ -196,11 +196,13 @@ def process_post_translation_page(state, *, diagnostic_folder=None, targeted_reg
         if targeted_regression and diagnostic_folder is not None:
             debug_folder = str(Path(diagnostic_folder) / f"page_{int(local['index']):03}")
         layout_retry_attempt = 0
+        cleaned_capture: dict = {}
         while True:
             final, debug_data = render_analyzed_image(
                 local["original_bgr"], local.get("raw_lines", []), local["candidates"],
                 local["groups"], font_path=config.FONT_PATH, debug_folder=debug_folder,
                 page_index=local["index"], image_path=local["image_path"], stage_timings=timings,
+                capture=cleaned_capture,
             )
             overflow_groups = [
                 group for group in local["groups"]
@@ -236,6 +238,15 @@ def process_post_translation_page(state, *, diagnostic_folder=None, targeted_reg
         timings["image_save"] = time.perf_counter() - save_started
         if not valid_image(local["output_path"]):
             raise RuntimeError("imagem final invalida")
+        # Canonical Cleaned artifact (P1): page after text removal/inpaint, before
+        # translated glyphs. Persisted deterministically (not debug-gated) so the
+        # professional PSD exporter has a real base layer.
+        cleaned_bgr = cleaned_capture.get("cleaned_bgr")
+        if cleaned_bgr is not None:
+            cleaned_path = Path(local["output_path"]).with_name(
+                Path(local["output_path"]).stem + "_cleaned.png")
+            if cv2.imwrite(str(cleaned_path), cleaned_bgr):
+                local["cleaned_path"] = str(cleaned_path)
         local["timings"] = dict(timings)
         local["status"] = "completed"
         local["cache_source"] = "fresh"
@@ -1487,6 +1498,7 @@ def run_benchmark(args):
         force=bool(getattr(args, "force_download", False)),
         source_candidate_ids=list(getattr(args, "source_candidate_ids", []) or []),
         local_manifest_path=local_manifest_path,
+        resume_checkpoint=bool(getattr(args, "resume_checkpoint", False)),
     )
     download_wall_seconds = time.perf_counter() - download_started
     print(
@@ -2270,6 +2282,16 @@ def run_benchmark(args):
         session_context.record_translations(translation_targets)
     stage_seconds["translation"] += time.perf_counter() - retry_started
 
+    # The charged milestone is after every translation/retry response has been
+    # validated and a durable job-local recovery copy exists, but before any
+    # reconstruction or export work can fail. Providers without this explicit
+    # wallet contract are unaffected.
+    commit_translation = getattr(translator, "commit_translation_success", None)
+    if translation_enabled and translation_targets and callable(commit_translation):
+        settlement = commit_translation()
+        translator_stats["wallet_commit_state"] = str(settlement.get("state") or "unknown")
+        translator_stats["wallet_commit_net_yk"] = int(settlement.get("net_yk") or 0)
+
     resource_monitor.set_stage("rendering")
     # Page completion is reduced by the serial/job owner.  The page body only
     # records a local event; this keeps future out-of-order workers from
@@ -2305,6 +2327,7 @@ def run_benchmark(args):
                     diagnostic_folder / f"page_{state['index']:03}"
                 )
             layout_retry_attempt = 0
+            cleaned_capture: dict = {}
             while True:
                 final, debug_data = render_analyzed_image(
                     state["original_bgr"],
@@ -2316,6 +2339,7 @@ def run_benchmark(args):
                     page_index=state["index"],
                     image_path=state["image_path"],
                     stage_timings=render_timings,
+                    capture=cleaned_capture,
                 )
                 overflow_groups = [
                     group
@@ -2353,6 +2377,12 @@ def run_benchmark(args):
             Path(state["output_path"]).parent.mkdir(parents=True, exist_ok=True)
             if not cv2.imwrite(state["output_path"], final):
                 raise RuntimeError("cv2.imwrite retornou False")
+            cleaned_bgr = cleaned_capture.get("cleaned_bgr")
+            if cleaned_bgr is not None:
+                cleaned_path = Path(state["output_path"]).with_name(
+                    Path(state["output_path"]).stem + "_cleaned.png")
+                if cv2.imwrite(str(cleaned_path), cleaned_bgr):
+                    state["cleaned_path"] = str(cleaned_path)
             save_elapsed = time.perf_counter() - save_started
             state["timings"]["image_save"] = save_elapsed
             stage_seconds["image_save"] += save_elapsed
@@ -2481,8 +2511,27 @@ def run_benchmark(args):
     resource_monitor.set_stage("pdf")
     pdf_started = time.perf_counter()
     try:
-        generate_pdf([state["output_path"] for state in completed_states], str(pdf_temp_path))
-        artifact = _finalize_immutable_file(pdf_temp_path, pdf_path)
+        existing_pdf_valid = False
+        if bool(getattr(args, "resume_checkpoint", False)) and pdf_path.is_file():
+            try:
+                if pdf_path.stat().st_size > 5:
+                    with pdf_path.open("rb") as existing_pdf:
+                        existing_pdf_valid = existing_pdf.read(5) == b"%PDF-"
+            except OSError:
+                existing_pdf_valid = False
+        if (
+            bool(getattr(args, "resume_checkpoint", False))
+            and existing_pdf_valid
+        ):
+            # A prior attempt may have completed the immutable PDF and then
+            # failed while publishing an additional format (PNG/PSD). Reuse
+            # that valid canonical artifact rather than regenerate timestamp-
+            # dependent bytes and collide with the immutable path.
+            existing_hash, existing_size = _sha256_and_size(pdf_path)
+            artifact = {"status": "reused", "sha256": existing_hash, "size": existing_size}
+        else:
+            generate_pdf([state["output_path"] for state in completed_states], str(pdf_temp_path))
+            artifact = _finalize_immutable_file(pdf_temp_path, pdf_path)
     finally:
         try:
             if pdf_temp_path.exists():
@@ -2513,15 +2562,32 @@ def run_benchmark(args):
         except PngExportError:
             raise
     if output_format == "psd":
-        try:
-            psd_path = export_final_pages_psd(
-                [(state["image_path"], state["output_path"]) for state in completed_states],
-                output_folder,
-                output_folder.parent.name or output_folder.name,
-                cancel=cancel_event.is_set,
-            )
-        except PsdExportError:
-            raise
+        # Canonical PSD path for Quality: the professional layered exporter (Original,
+        # Cleaned, per-region translated rasters, Translated Preview) driven by the
+        # pipeline's own region data — no Review required. Pages stream one at a time.
+        from professional_psd import export_professional_psd
+        tmode = str(getattr(args, "typesetting_mode", "on") or "on").casefold()
+
+        def _professional_psd_pages():
+            for state in completed_states:
+                original = cv2.imread(str(state["image_path"]), cv2.IMREAD_COLOR)
+                cleaned_path = state.get("cleaned_path")
+                cleaned = cv2.imread(str(cleaned_path), cv2.IMREAD_COLOR) if cleaned_path else None
+                if cleaned is None:
+                    cleaned = original  # no inpaint captured -> cleaned == source
+                translated = cv2.imread(str(state["output_path"]), cv2.IMREAD_COLOR)
+                yield {
+                    "page_index": int(state.get("index") or 0),
+                    "original_bgr": original, "cleaned_bgr": cleaned,
+                    "translated_bgr": translated,
+                    "regions": _professional_psd_regions(state),
+                }
+
+        psd_path = export_professional_psd(
+            _professional_psd_pages(), output_folder,
+            output_folder.parent.name or output_folder.name,
+            cancel=cancel_event.is_set, typesetting_mode=tmode,
+        )
 
     resource_monitor.set_stage("reports")
     preview_started = time.perf_counter()
@@ -2535,7 +2601,6 @@ def run_benchmark(args):
     quality = _validate_quality(
         completed_states,
         pdf_path,
-        expected_page_count=len(completed_states),
         full=args.full,
     )
     split_audit = smart_split_audit(smart_split_report)
@@ -3153,7 +3218,7 @@ def _retry_layout_overflow_translations(
 
 
 def _download_with_cache(url, max_images, output_folder, force, source_candidate_ids=None,
-                         local_manifest_path=""):
+                         local_manifest_path="", resume_checkpoint=False):
     approved_ids = list(dict.fromkeys(str(value) for value in (source_candidate_ids or []) if value))
     input_folder = output_folder / "input"
     output_report_path = output_folder / "downloaded_images.json"
@@ -3167,7 +3232,10 @@ def _download_with_cache(url, max_images, output_folder, force, source_candidate
             local_manifest_path,
             input_folder,
             max_images=max_images,
-            clear_existing=bool(force),
+            # A resumed local-folder run re-materializes the same immutable,
+            # validated snapshot into its job-owned input directory.  The
+            # ownership marker and filename allowlist remain the deletion gate.
+            clear_existing=bool(force or resume_checkpoint),
         )
         atomic_write_json(output_report_path, manifest)
         print(f"Entrada local: {len(paths)} paginas logicas", flush=True)
@@ -4647,6 +4715,40 @@ def _build_quality_report(report, states, translation_retry_records):
     }
 
 
+def _professional_psd_regions(state):
+    """Region specs for the professional PSD exporter from a page's own render items.
+
+    ``translate_mode`` is derived from the render outcome: a region that was sent to
+    translation, produced a non-empty translation and was not preserved is ``translate``
+    (gets a layer in ON); preserved/SFX/empty regions are ``ignore`` (no layer).
+    """
+    regions = []
+    for item in (state.get("debug_data") or {}).get("items", []) or []:
+        if not isinstance(item, dict):
+            continue
+        box = item.get("draw_box") or item.get("bounding_box")
+        if not box:
+            continue
+        translation = str(item.get("translation") or "")
+        # A region carries translated glyphs when the renderer actually drew them
+        # (redrawn / translation_final_state == "translated"); preserved/SFX/empty
+        # regions are ignore -> no layer.
+        drawn = bool(item.get("redrawn") or item.get("translated")
+                     or item.get("translation_final_state") == "translated")
+        translate_mode = (
+            "translate" if (drawn and translation.strip()
+                            and not item.get("preserved_original")) else "ignore")
+        regions.append({
+            "region_id": str(item.get("region_id") or item.get("id") or ""),
+            "bbox": list(box),
+            "source_text": str(item.get("clean_text") or item.get("text") or ""),
+            "target": translation,
+            "region_type": str(item.get("classification") or ""),
+            "translate_mode": translate_mode, "manual": False, "active": True,
+        })
+    return regions
+
+
 def _quality_item_summary(item):
     return {
         "id": item.get("id"),
@@ -5772,12 +5874,19 @@ def _create_preview_compare_sheet(selected_states, target):
     canvas.save(target, "JPEG", quality=82, optimize=True, progressive=True)
 
 
-def _validate_quality(states, pdf_path, expected_page_count, full=False):
+def _validate_quality(states, pdf_path, expected_page_count=None, full=False):
     invalid_pages = []
     for state in states:
         if not valid_image(state["output_path"]):
             invalid_pages.append(state["index"])
 
+    # ``expected_page_count`` used to be the LOGICAL page count (one per output
+    # PNG), but ``_count_pdf_pages`` counts PHYSICAL PDF pages - a tall logical page
+    # is written as several. Comparing the two failed every tall strip. The expected
+    # physical count is derived from the same segmentation rule the exporter uses
+    # (``pdf.pdf_page_manifest``), so the gate compares physical against physical.
+    page_manifest = pdf_page_manifest([state["output_path"] for state in states])
+    expected_page_count = int(page_manifest["pdf_physical_page_count"])
     pdf_pages = _count_pdf_pages(pdf_path)
     high_translation_pages = sorted(
         states,
@@ -5837,6 +5946,9 @@ def _validate_quality(states, pdf_path, expected_page_count, full=False):
         ),
         "pdf_pages": pdf_pages,
         "expected_pdf_pages": expected_page_count,
+        "logical_page_count": int(page_manifest["logical_source_pages"]),
+        "pdf_physical_page_count": expected_page_count,
+        "pdf_pages_per_source": list(page_manifest["pdf_pages_per_source"]),
         "invalid_or_blank_pages": invalid_pages,
         "high_translation_pages_valid": high_translation_valid,
         "translate_sfx_disabled": config.TRANSLATE_SFX is False,

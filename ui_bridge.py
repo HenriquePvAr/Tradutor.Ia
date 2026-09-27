@@ -25,6 +25,7 @@ import time
 import tempfile
 import uuid
 import hashlib
+from PIL import Image
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,7 @@ from ui_helpers import (
 from ui_history import UIHistoryStore, utc_now
 from chapter_quality_revision import (REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision,
                                       read_json, write_json)
+from pipeline_cache import atomic_write_json
 from beta_license import (
     BetaAccessDecision,
     LicenseState,
@@ -996,6 +998,8 @@ class UiBridge:
             )
         if str(job.get("operation_kind") or "") == "review_rerun":
             record.update(self._review_rerun_public_state(job, config))
+        if self._is_translation_job(job):
+            record["review_generations"] = self._review_generations_for_history(str(job["id"]))
         output_dir = Path(str(job.get("output_dir") or ""))
         output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
         try:
@@ -1294,6 +1298,125 @@ class UiBridge:
             return "MEDIUM"
         return "LOW"
 
+    @staticmethod
+    def _page_identity(page: dict[str, Any]) -> tuple[int, int | None]:
+        """Canonical ``(page_index, sequence_index)`` for a report page.
+
+        ``index`` is the authoritative page identity; ``sequence_index`` is only a
+        fallback used when ``index`` is genuinely absent — the two are never treated
+        as synonyms. ``0`` is a valid index, so presence is tested by key/None, not
+        truthiness (the old ``index or sequence_index`` silently lost page 0).
+        """
+        seq = page.get("sequence_index")
+        try:
+            seq_int: int | None = int(seq) if seq is not None else None
+        except (TypeError, ValueError):
+            seq_int = None
+        raw_index = page.get("index")
+        if raw_index is not None:
+            try:
+                return int(raw_index), seq_int
+            except (TypeError, ValueError):
+                pass
+        if seq_int is not None:
+            return seq_int, seq_int
+        return 0, seq_int
+
+    @staticmethod
+    def _review_bounding_box(raw: dict[str, Any]) -> tuple[list[int] | None, bool]:
+        """Validated ``[x, y, w, h]`` in original-image pixels, plus a validity flag.
+
+        An absent or malformed box yields ``(None, False)`` so the Review still
+        renders (with a "região indisponível" state) instead of breaking.
+        """
+        box = raw.get("bounding_box")
+        if not isinstance(box, (list, tuple)) or len(box) < 4:
+            return None, False
+        try:
+            x, y, w, h = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+        except (TypeError, ValueError):
+            return None, False
+        if x < 0 or y < 0 or w <= 0 or h <= 0:
+            return None, False
+        return [x, y, w, h], True
+
+    @staticmethod
+    def _review_sort_key(item: dict[str, Any]) -> tuple[int, int, int, int, str]:
+        """Canonical physical reading order for a review item.
+
+        ``page_index`` first, then physical position within the page (``bbox.y`` then
+        ``bbox.x``), then ``region_id`` as a stable tiebreaker. There is no reliable
+        reading order *between* regions (only within one), so bbox position is the
+        ordering signal. Items without a box sort after boxed items on the same page,
+        by region_id — a stable fallback that still respects ``page_index``. Category
+        never participates, so items of different kinds interleave by position.
+        """
+        box = item.get("bounding_box")
+        has_box = isinstance(box, (list, tuple)) and len(box) >= 4
+        try:
+            y = int(box[1]) if has_box else 0
+            x = int(box[0]) if has_box else 0
+        except (TypeError, ValueError):
+            has_box, y, x = False, 0, 0
+        try:
+            page_index = int(item.get("page_index") or 0)
+        except (TypeError, ValueError):
+            page_index = 0
+        return (page_index, 0 if has_box else 1, y, x, str(item.get("region_id") or item.get("key") or ""))
+
+    @staticmethod
+    def _review_region_type(value: str) -> str:
+        allowed = {
+            "speech", "dialogue", "thought", "narration", "system_message", "location",
+            "title", "sfx", "decorative", "editorial", "credit", "watermark", "url",
+            "proper_name", "logo", "branding", "unknown",
+        }
+        normalized = str(value or "").strip().casefold()
+        if normalized not in allowed:
+            raise ValueError("invalid_region_type")
+        return normalized
+
+    @staticmethod
+    def _decode_region_box(raw: str | None) -> list[int] | None:
+        if not raw:
+            return None
+        try:
+            value = json.loads(raw)
+            return [int(part) for part in value[:4]] if isinstance(value, list) and len(value) == 4 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _review_page_dimensions(self, job: dict[str, Any], page_index: int) -> tuple[int, int]:
+        report = self._quality_report_data(job) or {}
+        output_dir = Path(str(job.get("output_dir") or "")).resolve()
+        for page in report.get("pages", []) or []:
+            if not isinstance(page, dict) or self._page_identity(page)[0] != int(page_index):
+                continue
+            for raw_path in (page.get("output_path"), page.get("image_path")):
+                if not raw_path:
+                    continue
+                path = Path(str(raw_path)).resolve()
+                if output_dir not in path.parents or not path.is_file():
+                    continue
+                try:
+                    with Image.open(path) as image:
+                        return int(image.width), int(image.height)
+                except Exception:
+                    continue
+        raise ValueError("review_page_image_unavailable")
+
+    @staticmethod
+    def _validate_review_bbox(box: Any, width: int, height: int) -> list[int]:
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            raise ValueError("invalid_bbox")
+        try:
+            x, y, w, h = (int(part) for part in box)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("invalid_bbox") from None
+        if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width or y + h > height:
+            raise ValueError("invalid_bbox")
+        return [x, y, w, h]
+
     def _smart_split_review_items(
         self,
         job: dict[str, Any],
@@ -1340,6 +1463,13 @@ class UiBridge:
                 "visual_reason_code": reason_code,
                 "reason_code": reason_code,
                 "page": page,
+                "page_index": page,
+                "sequence_index": None,
+                # A boundary is a horizontal seam, not a region box; without a real
+                # bbox it sorts after boxed items on the same page (stable fallback),
+                # but it is no longer forced to the end of the whole list.
+                "bounding_box": None,
+                "bounding_box_valid": False,
                 "boundary": boundary,
                 "previous_page": previous_page,
                 "next_page": next_page,
@@ -1409,10 +1539,14 @@ class UiBridge:
         actions = self.store.review_actions(job["id"])
         visual_states = self._region_visual_states(job)
         items: list[dict[str, Any]] = []
+        region_controls = {
+            str(row.get("region_id") or ""): row
+            for row in self.store.review_region_overrides(str(job["id"]), str(job.get("run_id") or ""))
+        }
         for page in report.get("pages", []) or []:
             if not isinstance(page, dict):
                 continue
-            page_number = int(page.get("index") or page.get("sequence_index") or 0)
+            page_number, sequence_index = self._page_identity(page)
             page_image = str(page.get("output_path") or page.get("image_path") or "")
             raw_items: list[dict[str, Any]] = []
             for collection_name in (
@@ -1437,12 +1571,20 @@ class UiBridge:
                 seen_keys.add(key)
                 revision = self.store.review_item_latest(job["id"], key) or {}
                 action = str(revision.get("action") or actions.get(key, "pending"))
-                current_translation = str(
-                    revision.get("translation")
-                    or raw.get("translation")
-                    or raw.get("translation_candidate")
-                    or ""
-                )
+                # R2 override layer: originals stay auditable; effective = override else
+                # original. The pipeline source/target are never mutated in place.
+                original_source = str(raw.get("text") or "")
+                original_target = str(
+                    raw.get("translation") or raw.get("translation_candidate") or "")
+                rev_source = revision.get("source_text")
+                effective_source = str(rev_source) if rev_source is not None else original_source
+                source_text_edited = rev_source is not None and str(rev_source) != original_source
+                rev_target = revision.get("translation")
+                current_translation = str(rev_target if rev_target else (original_target))
+                target_text_edited = bool(revision) and current_translation != original_target
+                # A source correction does not re-translate; flag that the existing
+                # translation may no longer match the corrected source.
+                translation_stale = bool(source_text_edited and not target_text_edited)
                 # The visual gate keys regions by region_id (REGION_001), while a
                 # review item's id is the balloon label (BALAO_1); join on the
                 # region_id so per-item states are not silently dropped.
@@ -1461,6 +1603,7 @@ class UiBridge:
                 else:
                     visual_state = ""
                     revision_linked = False
+                bounding_box, bounding_box_valid = self._review_bounding_box(raw)
                 items.append({
                     "type": "region",
                     "key": key,
@@ -1472,10 +1615,22 @@ class UiBridge:
                     "applied_translation": str(visual.get("applied_translation") or ""),
                     "confidence": visual.get("confidence"),
                     "page": page_number,
+                    "page_index": page_number,
+                    "sequence_index": sequence_index,
+                    "bounding_box": bounding_box,
+                    "bounding_box_valid": bounding_box_valid,
                     "label": f"Balão {item_id}" if item_id else "Texto da página",
                     "classification": str(raw.get("classification") or "speech"),
-                    "original": str(raw.get("text") or ""),
+                    "original": original_source,
                     "translation": current_translation,
+                    "source_text_original": original_source,
+                    "source_text_effective": effective_source,
+                    "source_text_edited": source_text_edited,
+                    "target_text_original": original_target,
+                    "target_text_effective": current_translation,
+                    "target_text_edited": target_text_edited,
+                    "translation_stale": translation_stale,
+                    "revision_version": int(revision.get("version") or 0),
                     "version": int(revision.get("version") or 0),
                     "review_reason_code": str(revision.get("reason_code") or ""),
                     "review_reason": str(revision.get("reason") or ""),
@@ -1485,7 +1640,53 @@ class UiBridge:
                     "preserved_original": bool(raw.get("preserved_original")),
                     "page_url": f"/api/ui/quality-review/{job['id']}/page/{page_number}",
                 })
+                items[-1].update(self._review_region_control_fields(items[-1], region_controls.get(items[-1]["region_id"])))
+        # Manual regions share the same public Review item contract and sort key as
+        # detected regions. Their stable IDs are persisted, never array-position based.
+        for region_id, record in region_controls.items():
+            if not bool(record.get("is_manual")) or not bool(record.get("active", 1)):
+                continue
+            page_number = int(record.get("page_index") or 0)
+            key = f"p{page_number}:i{region_id}"
+            revision = self.store.review_item_latest(str(job["id"]), key) or {}
+            source_original = str(record.get("source_text_original") or "")
+            target_original = str(record.get("target_text_original") or "")
+            source_revision = revision.get("source_text")
+            target_revision = revision.get("translation")
+            source_effective = str(source_revision) if source_revision is not None else source_original
+            target_effective = str(target_revision) if target_revision else target_original
+            box = self._decode_region_box(record.get("bbox_override_json")) or self._decode_region_box(record.get("bbox_original_json"))
+            manual_item = {
+                "type": "region", "key": key, "region_id": region_id,
+                "visual_state": "", "revision_linked": False, "visual_reason_code": "",
+                "proposed_translation": "", "applied_translation": "", "confidence": None,
+                "page": page_number, "page_index": page_number, "sequence_index": None,
+                "bounding_box": box, "bounding_box_valid": box is not None,
+                "label": f"Região manual {region_id.rsplit(':', 1)[-1][:8]}",
+                "classification": str(record.get("region_type_override") or record.get("region_type_original") or "unknown"),
+                "original": source_original, "translation": target_effective,
+                "source_text_original": source_original, "source_text_effective": source_effective,
+                "source_text_edited": source_revision is not None and str(source_revision) != source_original,
+                "target_text_original": target_original, "target_text_effective": target_effective,
+                "target_text_edited": target_revision is not None and str(target_revision) != target_original,
+                "translation_stale": bool(source_revision is not None and str(source_revision) != source_original
+                                           and (target_revision is None or str(target_revision) == target_original)),
+                "revision_version": int(revision.get("version") or 0), "version": int(revision.get("version") or 0),
+                "reason": "Região adicionada manualmente.", "risk": "MEDIUM",
+                "state": str(revision.get("action") or "pending"), "preserved_original": False,
+                "page_url": f"/api/ui/quality-review/{job['id']}/page/{page_number}",
+                "is_manual_region": True, "manual_active": True,
+                "region_control_version": int(record.get("version") or 0),
+            }
+            manual_item.update(self._review_region_control_fields(manual_item, record))
+            items.append(manual_item)
         items.extend(self._smart_split_review_items(job, report, actions))
+        # Canonical physical ordering: page_index, then bbox position, then region_id.
+        # Category no longer controls order (collections were concatenated per-kind
+        # and Smart Split was always last), so items of every kind interleave by
+        # where they physically sit on the page. Stable sort keeps input order for
+        # exact-tie items.
+        items.sort(key=self._review_sort_key)
         report_only = sum(1 for item in items if item["visual_state"] == "report_only")
         visual_summary = ChapterQualityRevision._visual_state_summary(visual_states)
         chapter_counts = {
@@ -1502,6 +1703,9 @@ class UiBridge:
         )
         pending_decisions = sum(1 for item in items if item["state"] == "pending")
         latest_rerun = self.store.latest_review_rerun(str(job["id"]))
+        reexport_children = self.store.artifact_reconstructions_for_parent(str(job["id"]))
+        latest_reexport = next((child for child in reexport_children
+                                if (child.get("configuration") or {}).get("job_type") == "review_reexport"), None)
         return {
             "job_id": job["id"],
             "items": items,
@@ -1519,9 +1723,327 @@ class UiBridge:
                 "completed": len(items) - pending_decisions,
             },
             "report_only_count": report_only,
+            "output_format": str((job.get("configuration") or {}).get("output_format") or "pdf"),
             "reviewed_pdf": self._latest_reviewed_pdf(job),
             "latest_rerun": self._job_record(latest_rerun) if latest_rerun else None,
+            "latest_reexport": self._review_generation_public(latest_reexport) if latest_reexport else None,
         }
+
+    def quality_review_reexport_for_owner(self, owner_id: str, job_id: str, *, output_format: str | None = None, typesetting_mode: str | None = None) -> dict[str, Any]:
+        """Persist and enqueue an output generation from the saved Review state."""
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_found")
+        review = self.quality_review(str(job["id"]))
+        report = self._quality_report_data(job)
+        if not review or not report:
+            raise ValueError("quality_review_not_available")
+        from review_reexport import build_review_snapshot, validate_review_snapshot
+        snapshot = build_review_snapshot(job=job, report=report, review=review)
+        # Verify the source values once more before rendering; concurrent human
+        # edits make this attempt fail closed instead of mixing versions.
+        latest_job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        latest_review = self.quality_review(str(job_id))
+        latest_report = self._quality_report_data(latest_job) if latest_job else None
+        if not latest_job or not latest_review or not latest_report:
+            raise ValueError("quality_review_not_available")
+        verification = build_review_snapshot(job=latest_job, report=latest_report, review=latest_review)
+        if (snapshot["job_id"] != verification["job_id"]
+                or snapshot["run_id"] != verification["run_id"]
+                or snapshot["regions"] != verification["regions"]
+                or [(p["page_index"], p["source_path"]) for p in snapshot["pages"]]
+                   != [(p["page_index"], p["source_path"]) for p in verification["pages"]]):
+            raise ValueError("review_changed_during_snapshot")
+        snapshot = verification
+        blockers = validate_review_snapshot(snapshot)
+        if blockers:
+            from review_reexport import ReviewReexportError
+            raise ReviewReexportError("review_blocked", blockers)
+        config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        fmt = str(output_format or config.get("output_format") or "pdf").casefold()
+        if fmt not in {"png", "pdf", "psd"}:
+            raise ValueError("review_output_format_unsupported")
+        # Typesetting mode only applies to PSD; ON is the default so a translated PSD
+        # is produced without extra steps. It participates in the generation id so ON
+        # and OFF are distinct, independently cached generations.
+        tmode = str(typesetting_mode or config.get("typesetting_mode") or "on").casefold()
+        if tmode not in {"on", "off"}:
+            raise ValueError("invalid_typesetting_mode")
+        source_job_id, source_run_id = str(job["id"]), str(job.get("run_id") or "")
+        gen_seed = f"{source_job_id}:{source_run_id}:{snapshot['snapshot_id']}:{fmt}"
+        if fmt == "psd":
+            gen_seed += f":ts={tmode}"
+        generation_id = hashlib.sha256(gen_seed.encode("utf-8")).hexdigest()[:32]
+        existing = [row for row in self.store.artifact_reconstructions_for_parent(source_job_id)
+                    if str((row.get("configuration") or {}).get("job_type") or "") == "review_reexport"
+                    and str((row.get("configuration") or {}).get("review_generation_id") or "") == generation_id]
+        if existing and existing[0].get("status") in JobStatus.IN_FLIGHT | JobStatus.TERMINAL:
+            return self._review_generation_public(existing[0])
+        generation_root = (Path(str(job["output_dir"])).resolve() / "review_generations" / generation_id)
+        generation_root.mkdir(parents=True, exist_ok=True)
+        snapshot_path = generation_root / "review_snapshot.json"
+        if not snapshot_path.exists():
+            atomic_write_json(snapshot_path, snapshot)
+        return self._queue_review_generation(
+            owner_id=str(owner_id), parent=job, generation_id=generation_id,
+            snapshot_id=str(snapshot["snapshot_id"]), snapshot_path=snapshot_path,
+            generation_root=generation_root, fmt=fmt, chapter_config=config, attempt=1,
+            typesetting_mode=tmode,
+        )
+
+    def _queue_review_generation(
+        self, *, owner_id: str, parent: dict[str, Any], generation_id: str,
+        snapshot_id: str, snapshot_path: Path, generation_root: Path,
+        fmt: str, chapter_config: dict[str, Any], attempt: int,
+        previous_job_id: str = "", typesetting_mode: str = "on",
+    ) -> dict[str, Any]:
+        job_id = hashlib.sha256(f"review-reexport:{generation_id}:{attempt}".encode()).hexdigest()[:32]
+        final_dir = generation_root / "final"
+        config = {
+            "job_type": "review_reexport", "community_owner_id": str(owner_id),
+            "review_generation_id": generation_id, "review_snapshot_id": snapshot_id,
+            "snapshot_path": str(snapshot_path), "generation_root": str(generation_root),
+            "source_job_id": str(parent["id"]), "source_run_id": str(parent.get("run_id") or ""),
+            "output_format": fmt, "chapter_name": str(chapter_config.get("chapter_name") or parent.get("series_title") or "chapter"),
+            "typesetting_mode": str(typesetting_mode or "on").casefold(),
+            "attempt": int(attempt), "additional_yk_required": 0,
+            "provider_calls_added": 0, "ocr_calls_added": 0,
+        }
+        try:
+            self.store.create_job(
+                job_id=job_id, source_url="", output_dir=str(final_dir), command=[],
+                run_id=hashlib.sha256(f"{job_id}:run".encode()).hexdigest()[:32],
+                configuration=config, series_title=str(parent.get("series_title") or ""),
+                series_slug=str(parent.get("series_slug") or ""), episode_number=str(parent.get("episode_number") or ""),
+                attempt=attempt, previous_job_id=previous_job_id,
+                operation_kind="artifact_reconstruction", parent_job_id=str(parent["id"]),
+            )
+        except Exception:
+            # Deterministic id makes repeat clicks/retries idempotent under a race.
+            existing = self.store.get_job(job_id)
+            if not existing:
+                raise
+        worker = self.ensure_worker()
+        self.history_revision += 1
+        row = self.store.get_job(job_id) or {}
+        result = self._review_generation_public(row)
+        result["worker_online"] = bool(worker.get("online"))
+        return result
+
+    def _review_generation_public(self, job: dict[str, Any]) -> dict[str, Any]:
+        config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        return {
+            "job_id": str(job.get("id") or ""),
+            "generation_id": str(config.get("review_generation_id") or ""),
+            "source_job_id": str(config.get("source_job_id") or job.get("parent_job_id") or ""),
+            "source_run_id": str(config.get("source_run_id") or ""),
+            "review_snapshot_id": str(config.get("review_snapshot_id") or ""),
+            "output_format": str(config.get("output_format") or ""),
+            "attempt": int(config.get("attempt") or job.get("attempt") or 1),
+            "status": str(job.get("status") or "unknown"),
+            "stage": str(job.get("stage") or "created"),
+            "progress_current": int(job.get("progress_current") or 0),
+            "progress_total": int(job.get("progress_total") or 0),
+            "progress_message": sanitize_diagnostic_text(job.get("progress_message") or "")[:240],
+            "recoverable": bool(job.get("recoverable")),
+            "reason_code": str(job.get("reason_code") or ""),
+            "error_message": sanitize_diagnostic_text(job.get("error_message") or "")[:300],
+            "output_path": str(job.get("output_dir") or "") if job.get("status") == JobStatus.FINISHED else "",
+            "created_at": _epoch_to_iso(job.get("created_at")),
+            "finished_at": _epoch_to_iso(job.get("finished_at")),
+            "additional_yk_required": 0, "provider_calls_added": 0, "ocr_calls_added": 0,
+        }
+
+    def _review_generations_for_history(self, parent_job_id: str) -> list[dict[str, Any]]:
+        try:
+            children = self.store.artifact_reconstructions_for_parent(parent_job_id)
+        except Exception:
+            return []
+        return [self._review_generation_public(child) for child in children
+                if str((child.get("configuration") or {}).get("job_type") or "") == "review_reexport"]
+
+    def quality_review_reexport_status_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not job or (job.get("configuration") or {}).get("job_type") != "review_reexport":
+            raise ValueError("review_generation_not_found")
+        return self._review_generation_public(job)
+
+    def quality_review_reexport_retry_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        prior = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not prior or (prior.get("configuration") or {}).get("job_type") != "review_reexport":
+            raise ValueError("review_generation_not_found")
+        if prior.get("status") not in {JobStatus.INTERRUPTED, JobStatus.FAILED} or not prior.get("recoverable"):
+            raise ValueError("review_generation_not_recoverable")
+        pid = prior.get("runner_pid")
+        created = prior.get("runner_create_time")
+        if pid and created is not None:
+            import process_tree
+            if process_tree.matches(int(pid), create_time=float(created)):
+                raise ValueError("review_generation_runner_still_alive")
+        config = prior.get("configuration") or {}
+        parent = self.store.get_job_for_owner(str(owner_id or ""), str(prior.get("parent_job_id") or ""))
+        if not parent:
+            raise ValueError("job_not_found")
+        root = Path(str(config.get("generation_root") or "")).resolve()
+        expected_root = Path(str(parent["output_dir"])).resolve() / "review_generations" / str(config.get("review_generation_id") or "")
+        if root != expected_root:
+            raise ValueError("review_generation_path_invalid")
+        snapshot_path = Path(str(config.get("snapshot_path") or "")).resolve()
+        if snapshot_path != root / "review_snapshot.json" or not snapshot_path.is_file():
+            raise ValueError("review_snapshot_unavailable")
+        return self._queue_review_generation(
+            owner_id=str(owner_id), parent=parent, generation_id=str(config["review_generation_id"]),
+            snapshot_id=str(config["review_snapshot_id"]), snapshot_path=snapshot_path,
+            generation_root=root, fmt=str(config["output_format"]),
+            chapter_config={"chapter_name": config.get("chapter_name")},
+            attempt=int(config.get("attempt") or 1) + 1, previous_job_id=str(prior["id"]),
+            typesetting_mode=str(config.get("typesetting_mode") or "on").casefold(),
+        )
+
+    def open_review_generation_for_owner(self, owner_id: str, job_id: str) -> None:
+        generation = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not generation or (generation.get("configuration") or {}).get("job_type") != "review_reexport":
+            raise ValueError("review_generation_not_found")
+        if generation.get("status") != JobStatus.FINISHED:
+            raise ValueError("review_generation_not_finished")
+        parent = self.store.get_job_for_owner(str(owner_id or ""), str(generation.get("parent_job_id") or ""))
+        if not parent:
+            raise ValueError("job_not_found")
+        config = generation.get("configuration") or {}
+        path = Path(str(generation.get("output_dir") or "")).resolve()
+        expected = Path(str(parent.get("output_dir") or "")).resolve() / "review_generations" / str(config.get("review_generation_id") or "") / "final"
+        if path != expected or not path.is_dir():
+            raise ValueError("review_generation_output_unavailable")
+        self._open_artifact_path(str(path))
+
+    @staticmethod
+    def _review_region_control_fields(item: dict[str, Any], record: dict[str, Any] | None) -> dict[str, Any]:
+        record = record or {}
+        source = str(record.get("source_text_original") if record.get("is_manual") else item.get("source_text_original") or "")
+        target = str(record.get("target_text_original") if record.get("is_manual") else item.get("target_text_original") or "")
+        region_type = str(record.get("region_type_original") if record.get("is_manual") else item.get("classification") or "unknown")
+        original_box = (UiBridge._decode_region_box(record.get("bbox_original_json"))
+                        if record.get("is_manual") else item.get("bounding_box"))
+        effective_box = UiBridge._decode_region_box(record.get("bbox_override_json")) or original_box
+        mode = record.get("translate_override")
+        policy = region_taxonomy.resolve_region_policy(original_classification=region_type, source_text=source)
+        pipeline_preserved = bool(item.get("preserved_original")
+                                  or item.get("translation_final_state") == "preserved_original")
+        original_translate = policy.get("translatable") is True and not pipeline_preserved
+        effective_mode = str(mode or "auto")
+        effective_translate = (original_translate if mode in (None, "auto")
+                               else mode == "translate")
+        type_effective = str(record.get("region_type_override") or region_type)
+        return {
+            "is_manual_region": bool(record.get("is_manual")),
+            "manual_region_id": str(item.get("region_id") or "") if record.get("is_manual") else None,
+            "translate_original": "translate" if original_translate else "ignore",
+            "translate_effective": "translate" if effective_translate else "ignore",
+            "translate_edited": bool(mode),
+            "translate_mode_original": "auto",
+            "translate_mode_effective": effective_mode,
+            "region_type_original": region_type,
+            "region_type_effective": type_effective,
+            "region_type_edited": bool(record.get("region_type_override")),
+            "bounding_box_original": original_box,
+            "bounding_box_effective": effective_box,
+            "bounding_box_edited": bool(record.get("bbox_override_json")),
+            "bounding_box": effective_box,
+            "bounding_box_valid": effective_box is not None,
+            "region_control_version": int(record.get("version") or 0),
+            "translate_override": mode,
+            "is_inactive": not bool(record.get("active", 1)),
+        }
+
+    def save_quality_review_region_control(
+        self, job_id: str, item_key: str, *, expected_version: int, actor_id: str,
+        translate_override: str | None, region_type_override: str | None,
+        bounding_box_override: Any,
+    ) -> dict[str, Any]:
+        review = self.quality_review(job_id)
+        item = next((entry for entry in (review or {}).get("items", []) if entry.get("key") == item_key), None)
+        if not item or item.get("type") == "smart_split":
+            raise ValueError("review_region_not_found")
+        if (review or {}).get("confirmed"):
+            raise ValueError("quality_review_already_completed")
+        mode = None if translate_override in (None, "", "auto") else str(translate_override)
+        if mode not in (None, "translate", "ignore"):
+            raise ValueError("invalid_translate_override")
+        type_override = None if region_type_override in (None, "") else self._review_region_type(region_type_override)
+        box_override = None
+        if bounding_box_override is not None:
+            job = self.store.get_job(str(job_id))
+            if not job:
+                raise ValueError("job_not_found")
+            width, height = self._review_page_dimensions(job, int(item["page_index"]))
+            box_override = self._validate_review_bbox(bounding_box_override, width, height)
+        try:
+            saved = self.store.save_review_region_override(
+                job_id=str(job_id), run_id=str(self.store.get_job(job_id).get("run_id") or ""),
+                page_index=int(item["page_index"]), region_id=str(item["region_id"]),
+                expected_version=int(expected_version), actor_id=str(actor_id),
+                source_text_original=str(item.get("source_text_original") or ""),
+                target_text_original=str(item.get("target_text_original") or ""),
+                region_type_original=str(item.get("region_type_original") or item.get("classification") or "unknown"),
+                bbox_original=item.get("bounding_box_original"), is_manual=bool(item.get("is_manual_region")),
+                translate_override=mode, region_type_override=type_override,
+                bbox_override=box_override,
+            )
+        except Exception as exc:
+            if str(exc) == "review_version_conflict":
+                raise ValueError("review_version_conflict") from None
+            raise
+        self.history_revision += 1
+        return {"revision": saved, "review": self.quality_review(job_id)}
+
+    def add_quality_review_manual_region(
+        self, job_id: str, *, page_index: int, box: Any, source_text: str,
+        target_text: str = "", region_type: str = "speech", translate_override: str = "auto",
+        actor_id: str,
+    ) -> dict[str, Any]:
+        job = self.store.get_job(str(job_id))
+        review = self.quality_review(job_id)
+        if not job or not review:
+            raise ValueError("quality_review_not_available")
+        if review.get("confirmed"):
+            raise ValueError("quality_review_already_completed")
+        source = str(source_text or "").strip()
+        if not source:
+            raise ValueError("manual_region_source_required")
+        region_type = self._review_region_type(region_type)
+        width, height = self._review_page_dimensions(job, int(page_index))
+        bbox = self._validate_review_bbox(box, width, height)
+        mode = None if translate_override in (None, "", "auto") else str(translate_override)
+        if mode not in (None, "translate", "ignore"):
+            raise ValueError("invalid_translate_override")
+        region_id = f"manual:{uuid.uuid4().hex}"
+        saved = self.store.save_review_region_override(
+            job_id=str(job_id), run_id=str(job.get("run_id") or ""), page_index=int(page_index),
+            region_id=region_id, expected_version=0, actor_id=str(actor_id),
+            source_text_original=source, target_text_original=str(target_text or ""),
+            region_type_original=region_type, bbox_original=bbox, is_manual=True,
+            translate_override=mode,
+        )
+        self.history_revision += 1
+        return {"region": saved, "review": self.quality_review(job_id)}
+
+    def remove_quality_review_manual_region(
+        self, job_id: str, region_id: str, *, expected_version: int, actor_id: str,
+    ) -> dict[str, Any]:
+        job = self.store.get_job(str(job_id))
+        if not job:
+            raise ValueError("job_not_found")
+        try:
+            self.store.deactivate_manual_review_region(
+                job_id=str(job_id), run_id=str(job.get("run_id") or ""), region_id=str(region_id),
+                expected_version=int(expected_version), actor_id=str(actor_id),
+            )
+        except Exception as exc:
+            if str(exc) in {"review_version_conflict", "manual_region_not_found"}:
+                raise ValueError(str(exc)) from None
+            raise
+        self.history_revision += 1
+        return {"review": self.quality_review(job_id)}
 
     def _latest_reviewed_pdf(self, job: dict[str, Any]) -> dict[str, Any] | None:
         """Canonical reviewed PDF from the revision manifest (never a glob)."""
@@ -1581,6 +2103,7 @@ class UiBridge:
     def quality_review_edit(
         self, job_id: str, item_key: str, *, expected_version: int,
         action: str, translation: str, reason: str, actor_id: str,
+        source_text: str | None = None,
     ) -> dict[str, Any]:
         payload = self.quality_review(job_id)
         item = next(
@@ -1595,7 +2118,20 @@ class UiBridge:
         action = str(action or "").strip()
         translation = str(translation or "").strip()
         reason = str(reason or "").strip()
-        if action in {"edited", "reviewed"} and not translation:
+        # R2: a human source (OCR) correction is persisted as an override layer. It is
+        # NOT sent to the provider and generates no new translation. ``source_text`` is
+        # None when the caller does not touch the source; otherwise it is compared to
+        # the pipeline original so an unchanged value stores no override (None).
+        original_source = str(item.get("source_text_original") or item.get("original") or "")
+        source_override: str | None = None
+        if source_text is not None:
+            submitted_source = str(source_text).strip()
+            source_override = submitted_source if submitted_source != original_source else None
+            if len(submitted_source) > 2000:
+                raise ValueError("quality_review_source_overflow")
+        if (action == "reviewed" and not translation) or (
+            action == "edited" and not translation and source_text is None
+        ):
             raise ValueError("quality_review_translation_empty")
         if action == "rejected" and not reason:
             raise ValueError("quality_review_reason_required")
@@ -1623,6 +2159,7 @@ class UiBridge:
                 reason_code=reason_codes[action],
                 reason=reason,
                 actor_id=str(actor_id or ""),
+                source_text=source_override,
             )
         except Exception as exc:
             if str(exc) == "review_version_conflict":
@@ -3812,31 +4349,60 @@ class UiBridge:
             "phase_label": "Testando contrato NVIDIA",
         }
 
-    def quality_review_page(self, job_id: str, page_number: int, revision: str = "") -> Path | None:
+    def quality_review_page_resolution(
+        self, job_id: str, page_number: int, revision: str = ""
+    ) -> dict[str, Any]:
+        """Resolve a preview page to an explicit state, never a silent fallback.
+
+        States: ``ready`` (file present, inside the output dir), ``not_found`` (no
+        page carries that index — the request never silently resolves to a different
+        page), ``unavailable`` (the page exists in the report but its file is missing),
+        ``processing`` (file missing while the job is still running/queued), and
+        ``denied`` (the resolved path escapes the job's output dir).
+        """
+        try:
+            requested = int(page_number)
+        except (TypeError, ValueError):
+            return {"state": "not_found", "path": None}
         job = self.store.get_job(str(job_id or ""))
         if not job:
-            return None
+            return {"state": "not_found", "path": None}
+        output_dir = Path(str(job.get("output_dir") or "")).resolve()
+        active = str(job.get("status") or "") in (
+            JobStatus.IN_FLIGHT | {JobStatus.QUEUED, JobStatus.STAGING}
+        )
         if revision:
             # The page the revision produced, for the side-by-side comparison.
-            # Absent (page unchanged or gate refused it) the caller gets a 404
+            # Absent (page unchanged or gate refused it) the caller gets not_found
             # rather than the published page dressed up as a revised one.
-            output_dir = Path(str(job.get("output_dir") or "")).resolve()
-            revised = output_dir / "quality_revision_pages" / f"page_{int(page_number):03d}.png"
-            return revised if revised.is_file() else None
+            revised = output_dir / "quality_revision_pages" / f"page_{requested:03d}.png"
+            return {"state": "ready", "path": revised} if revised.is_file() else {"state": "not_found", "path": None}
         report = self._quality_report_data(job)
         if not report:
-            return None
+            return {"state": "processing" if active else "unavailable", "path": None}
         for page in report.get("pages", []) or []:
-            if int(page.get("index") or page.get("sequence_index") or 0) != int(page_number):
+            if not isinstance(page, dict):
                 continue
-            output_dir = Path(str(job.get("output_dir") or "")).resolve()
+            if self._page_identity(page)[0] != requested:
+                continue
+            escaped = False
             for candidate in (page.get("output_path"), page.get("image_path")):
                 if not candidate:
                     continue
                 path = Path(str(candidate)).resolve()
-                if output_dir in path.parents and path.is_file():
-                    return path
-        return None
+                if output_dir not in path.parents:
+                    escaped = True
+                    continue
+                if path.is_file():
+                    return {"state": "ready", "path": path}
+            if escaped:
+                return {"state": "denied", "path": None}
+            return {"state": "processing" if active else "unavailable", "path": None}
+        return {"state": "not_found", "path": None}
+
+    def quality_review_page(self, job_id: str, page_number: int, revision: str = "") -> Path | None:
+        resolution = self.quality_review_page_resolution(job_id, page_number, revision=revision)
+        return resolution["path"] if resolution["state"] == "ready" else None
 
     @staticmethod
     def _public_job_source_provenance(job: dict[str, Any]) -> dict[str, Any]:
@@ -3952,7 +4518,7 @@ class UiBridge:
         if not job:
             return False
         job_type = str((job.get("configuration") or {}).get("job_type") or "translation")
-        return job_type in {"translation", "review_rerun"}
+        return job_type in {"translation", "review_rerun", "review_reexport"}
 
     def _displayed_source_review(self) -> dict[str, Any] | None:
         """The one pending review currently shown by the single-review UI surface."""
@@ -4508,6 +5074,7 @@ class UiBridge:
         *,
         principal: RequestPrincipal | None = None,
         diagnostic_callback=None,
+        cancel_check=None,
     ) -> dict[str, Any]:
         """Inspect one URL without creating a pipeline job or queue entry."""
         if self._requested_source_type(payload) != "url":
@@ -4515,11 +5082,12 @@ class UiBridge:
         normalized = self._normalize_payload(payload, require_environment=False)
         if normalized["full"]:
             analysis = await self._run_source_analysis(
-                normalized["url"], diagnostic_callback=diagnostic_callback)
+                normalized["url"], diagnostic_callback=diagnostic_callback,
+                cancel_check=cancel_check)
         else:
             analysis = await self._run_source_analysis(
                 normalized["url"], diagnostic_callback=diagnostic_callback,
-                max_pages=normalized["max_images"])
+                cancel_check=cancel_check, max_pages=normalized["max_images"])
 
         from chapter_source import (
             REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
@@ -5076,7 +5644,8 @@ class UiBridge:
             force=normalized["force"],
             use_context=normalized["use_context"],
             open_output=normalized["open_output"],
-            output_format=str(payload.get("output_format") or "pdf"),
+            output_format=normalized["output_format"],
+            typesetting_mode=normalized.get("typesetting_mode", "on"),
             python_executable=sys.executable,
             translation_provider=normalized["translation_provider"],
         )
@@ -5091,6 +5660,10 @@ class UiBridge:
         configuration.update({
             "local_source_summary": summary,
             "source_selection": selection,
+            # Keep the selected format alongside the argv. The worker validates
+            # both representations before starting the expensive local pipeline.
+            "output_format": normalized["output_format"],
+            "typesetting_mode": normalized.get("typesetting_mode", "on"),
         })
         configuration.update(self._translation_configuration_snapshot(payload, normalized))
         configuration = self._seal_translation_context(
@@ -5230,6 +5803,7 @@ class UiBridge:
             "source_type": SOURCE_TYPE_LOCAL_FOLDER,
             "ownership_schema_version": 1,
             "mode": normalized["mode"],
+            "output_format": normalized["output_format"],
             "download_only": normalized["download_only"],
             "full": True,
             "max_images": None,
@@ -5342,6 +5916,8 @@ class UiBridge:
             "open_output": bool(payload.get("open_output", False)),
             "output_format": str(payload.get("output_format") or "pdf").casefold()
             if str(payload.get("output_format") or "pdf").casefold() in {"pdf", "png", "psd"} else "pdf",
+            "typesetting_mode": str(payload.get("typesetting_mode") or "on").casefold()
+            if str(payload.get("typesetting_mode") or "on").casefold() in {"on", "off"} else "on",
             "create_source_profile": False,
             "translation_provider": translation_provider,
             "translation_enabled": translation_enabled,
@@ -5651,6 +6227,7 @@ class UiBridge:
             download_only=normalized["download_only"],
             translation_provider=normalized["translation_provider"],
             output_format=normalized.get("output_format", "pdf"),
+            typesetting_mode=normalized.get("typesetting_mode", "on"),
             python_executable=sys.executable,
         )
         details = suggest_chapter_details(normalized["url"])
@@ -5671,6 +6248,7 @@ class UiBridge:
             "chapter_name": normalized["chapter_name"],
             "open_output": normalized["open_output"],
             "output_format": normalized.get("output_format", "pdf"),
+            "typesetting_mode": normalized.get("typesetting_mode", "on"),
             "create_source_profile": normalized["create_source_profile"],
             "source_analysis": source_analysis or {},
             "source_selection": source_selection or {},
@@ -6171,6 +6749,12 @@ class UiBridge:
             raise ValueError(self._RESUME_REFUSALS.get(reason, reason))
         beta_decision = self._require_beta_access(
             principal=principal, operation="resume_translation", access_token=license_access_token)
+        configuration = dict(job.get("configuration") or {})
+        logical_job_id = str(
+            configuration.get("logical_job_id")
+            or configuration.get("resume_checkpoint_job_id")
+            or job_id
+        )
         if job["status"] == JobStatus.INTERRUPTED:
             self.store.mark_resumable(job_id, resume_from_stage=job.get("resume_from_stage") or "")
         # A resume is a fresh attempt that reuses the same output dir and command; the
@@ -6180,9 +6764,10 @@ class UiBridge:
             output_dir=job["output_dir"],
             command=job.get("command") or [],
             configuration={
-                **(job.get("configuration") or {}),
+                **configuration,
                 "beta_license_authorization": beta_decision.to_safe_job_metadata(),
-                "resume_checkpoint_job_id": str(job_id),
+                "logical_job_id": logical_job_id,
+                "resume_checkpoint_job_id": logical_job_id,
             },
             series_title=job.get("series_title") or "",
             series_slug=job.get("series_slug") or "",

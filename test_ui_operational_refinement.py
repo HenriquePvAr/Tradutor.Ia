@@ -448,7 +448,7 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
             self.js,
         )
         self.assertIn(
-            "window.setTimeout(() => replacement?.focus(), 0)",
+            "window.setTimeout(() => replacement?.focus({preventScroll: true}), 0)",
             self.js,
         )
 
@@ -507,8 +507,15 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         css = (Path(__file__).resolve().parent / "static" / "tradutor_ui.css").read_text(
             encoding="utf-8"
         )
-        self.assertIn('<div class="quality-review-actions">${reviewActions}${compare}</div>', self.js)
-        self.assertNotIn('<div class="cta-row">${reviewActions}${compare}</div>', self.js)
+        review_actions_start = self.js.index("const reviewActions = isReportOnly ?")
+        review_actions_end = self.js.index("const regionTypes =", review_actions_start)
+        review_actions = self.js[review_actions_start:review_actions_end]
+        editor_fields = review_actions.index('<div class="review-edit-fields">')
+        button_row = review_actions.index('<div class="cta-row">')
+        self.assertLess(editor_fields, button_row)
+        self.assertIn('<div class="quality-review-actions">${reviewActions}${regionControls}${compare}</div>', self.js)
+        self.assertIn(".review-edit-fields{display:grid;", css)
+        self.assertIn(".review-edit-label{display:flex; flex-direction:column;", css)
         self.assertIn(".quality-review-actions{min-width:0;width:100%;}", css)
 
     def test_developer_mode_toggle_is_a_real_ui_option(self):

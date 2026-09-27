@@ -414,7 +414,12 @@ class FrontendTimerTests(unittest.TestCase):
             encoding="utf-8")
 
     def test_single_polling_interval_with_cleanup(self):
-        self.assertEqual(self.src.count("setInterval("), 1)
+        start = self.src.index("function ensurePolling()")
+        end = self.src.index("refreshBootstrap();", start)
+        polling = self.src[start:end]
+        self.assertEqual(polling.count("window.setInterval(pollState, 850)"), 1)
+        self.assertIn("if (getGlobal('__tradutorUiPollingTimer'))", polling)
+        self.assertIn("setGlobal('__tradutorUiPollingTimer', timer)", polling)
         self.assertIn("clearInterval(getGlobal('__tradutorUiPollingTimer'))", self.src)
         self.assertIn("setGlobal('__tradutorUiPollingTimer'", self.src)
 

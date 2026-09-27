@@ -30,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output", required=True, help="Pasta dentro de output/.")
     parser.add_argument("--output-format", choices=("pdf", "png", "psd"), default="pdf")
+    parser.add_argument("--typesetting-mode", choices=("on", "off"), default="on")
     parser.add_argument("--mode", choices=("fast", "quality"), default="fast")
     cache_group = parser.add_mutually_exclusive_group()
     cache_group.add_argument("--cache", action="store_true")
@@ -104,6 +105,8 @@ def main(argv=None) -> int:
         "--mode", str(args.mode),
         "--output-format", str(args.output_format),
     ]
+    if str(args.output_format).casefold() == "psd":
+        delegated.extend(["--typesetting-mode", str(args.typesetting_mode or "on").casefold()])
     if args.force:
         delegated.append("--force")
     elif args.cache:
