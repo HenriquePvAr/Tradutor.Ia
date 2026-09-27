@@ -123,7 +123,11 @@ async function loadCommunityModule({ source, apiStub, authStub, bootstrapProvide
       { context, identifier: specifier },
     );
   };
-  const module = new vm.SourceTextModule(source, { context, identifier: 'social_community.js' });
+  // The real feature flag is off; these unit contracts exercise the otherwise
+  // dormant authenticated implementation without changing production UI state.
+  const enabledSource = source.replace('const COMMUNITY_ENABLED = false;', 'const COMMUNITY_ENABLED = true;');
+  assert.notEqual(enabledSource, source, 'community feature gate should remain explicit in source');
+  const module = new vm.SourceTextModule(enabledSource, { context, identifier: 'social_community.js' });
   await module.link((specifier) => synthetic(specifier));
   await module.evaluate();
   return { module, host, win, requests, namespace: module.namespace };

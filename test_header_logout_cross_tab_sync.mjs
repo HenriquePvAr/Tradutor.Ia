@@ -72,14 +72,21 @@ function makeElement(tag, id = '') {
     _text: '', get textContent() { return this._text; }, set textContent(v) { this._text = String(v); },
     value: '',
     setAttribute(k, v) { this.attributes[k] = String(v); }, removeAttribute(k) { delete this.attributes[k]; },
+    toggleAttribute(k, force) {
+      const enabled = force === undefined ? !(k in this.attributes) : Boolean(force);
+      if (enabled) this.setAttribute(k, ''); else this.removeAttribute(k);
+      return enabled;
+    },
     getAttribute(k) { return this.attributes[k] ?? null; },
     addEventListener: events.addEventListener, removeEventListener: events.removeEventListener,
     dispatchEvent: events.dispatchEvent,
     click() { this.dispatchEvent({ type: 'click', target: this, preventDefault() {} }); },
+    checkValidity() { return true; },
     appendChild(c) { this.children.push(c); return c; }, append(...k) { this.children.push(...k); },
     prepend(...k) { this.children.unshift(...k); },
     replaceChildren(...k) { this.children = k.filter(Boolean); }, remove() {}, focus() {},
-    querySelector() { return null; }, querySelectorAll() { return []; }, closest() { return null; },
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    closest(selector) { return selector === '#authForm' && this.id === 'authForm' ? this : null; },
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     form: null,
   };
@@ -99,6 +106,7 @@ function makeDocument() {
   form.setAttribute = () => {};
   const documentElement = { dataset: {} };
   const body = makeElement('body');
+  const documentEvents = makeEventTarget();
   const doc = {
     documentElement, body,
     readyState: 'complete', activeElement: null,
@@ -110,7 +118,9 @@ function makeDocument() {
       return m ? (byId.get(m[1]) || null) : null;
     },
     querySelectorAll: () => [],
-    addEventListener() {}, removeEventListener() {},
+    addEventListener: documentEvents.addEventListener,
+    removeEventListener: documentEvents.removeEventListener,
+    dispatchEvent: documentEvents.dispatchEvent,
   };
   return { doc, byId };
 }
@@ -143,6 +153,7 @@ function makeFakeSupabaseAuth({ nativeEvents = [], sessionForGetSession = null }
   let cb = null;
   return {
     _fire(event, session) { cb?.(event, session); },
+    _setSession(session) { sessionForGetSession = session; },
     onAuthStateChange(fn) {
       cb = fn;
       (async () => {
@@ -186,7 +197,7 @@ async function loadAuthUi({ authUiSource, nativeEvents, sessionForGetSession, se
   const fakeClient = { auth: makeFakeSupabaseAuth({ nativeEvents, sessionForGetSession }) };
 
   const stubs = new Map([
-    ['https://esm.sh/@supabase/supabase-js@2.58.0', { createClient: () => fakeClient }],
+    ['/static/vendor/supabase-js.ef0ba14c445fdc3b.js', { default: { createClient: () => fakeClient } }],
   ]);
   const synthetic = (specifier) => {
     const exportsObject = stubs.get(specifier);
@@ -211,10 +222,12 @@ async function loadAuthUi({ authUiSource, nativeEvents, sessionForGetSession, se
 
   const authProviderModule = new vm.SourceTextModule(
     fs.readFileSync(path.join(ROOT, 'static', 'auth_provider.js'), 'utf8'),
-    { context, identifier: '/static/auth_provider.js', importModuleDynamically });
+    { context, identifier: '/static/auth_provider.js', importModuleDynamically,
+      initializeImportMeta(meta) { meta.url = 'http://127.0.0.1:8080/static/auth_provider.js'; } });
   const supabaseAuthModule = new vm.SourceTextModule(
     fs.readFileSync(path.join(ROOT, 'static', 'supabase_auth.js'), 'utf8'),
-    { context, identifier: '/static/supabase_auth.js', importModuleDynamically });
+    { context, identifier: '/static/supabase_auth.js', importModuleDynamically,
+      initializeImportMeta(meta) { meta.url = 'http://127.0.0.1:8080/static/supabase_auth.js'; } });
   const authUiModule = new vm.SourceTextModule(
     authUiSource, { context, identifier: '/static/auth_ui.js', importModuleDynamically, initializeImportMeta(meta) { meta.url = 'http://127.0.0.1:8080/static/auth_ui.js'; } });
 
@@ -321,10 +334,12 @@ await test('a late SIGNED_OUT during this tab\'s own in-flight login attempt is 
   fakeClient.auth.signInWithPassword = async ({ email }) => {
     // The spurious late SIGNED_OUT fires from "inside" the SDK call, before it resolves -
     // exactly the race the original fix (commit 7fd0588) targeted.
+    const session = { ...SESSION, user: { id: 'cross-tab-user' }, access_token: 'tok-login-inflight' };
     fakeClient.auth._fire('SIGNED_OUT', null);
-    return { data: { session: { ...SESSION, user: { id: 'cross-tab-user' }, access_token: 'tok-login-inflight' } }, error: null };
+    fakeClient.auth._setSession(session);
+    return { data: { session }, error: null };
   };
-  win.document.getElementById('authForm').dispatchEvent({ type: 'submit', preventDefault() {} });
+  win.document.dispatchEvent({ type: 'submit', target: win.document.getElementById('authForm'), preventDefault() {} });
   for (let i = 0; i < 40; i++) await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 20));
   for (let i = 0; i < 40; i++) await Promise.resolve();
@@ -345,7 +360,7 @@ await test('a late SIGNED_OUT during this tab\'s own in-flight login attempt is 
 // known post-fix text back to its known pre-fix text keeps the control both
 // self-contained and byte-accurate to the real regression, and fails loudly (instead
 // of silently) if static/auth_ui.js's guard is ever refactored out from under it. ---
-const POST_FIX_GUARD = "if (!session && authEvent === 'SIGNED_OUT' && window.__tradutorAccessToken && ownLoginAttemptId) {";
+const POST_FIX_GUARD = "if (!session && authEvent === 'SIGNED_OUT' && ownLoginAttemptId) {";
 const PRE_FIX_GUARD = "if (!session && authEvent === 'SIGNED_OUT' && window.__tradutorAccessToken) {";
 assert.ok(CURRENT.includes(POST_FIX_GUARD),
   'auth_ui.js renderSession() guard text changed - update POST_FIX_GUARD/PRE_FIX_GUARD to match before trusting the negative control');

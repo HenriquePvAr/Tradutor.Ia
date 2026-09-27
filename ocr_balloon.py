@@ -13788,7 +13788,12 @@ def extract_original_lettering_profile(img_bgr, group, box):
                 outline_k = 0 if frac0 >= 0.5 else 1
                 fill_k = 1 - outline_k
                 std_outline = float(np.mean(np.std(glyph_px[labels == outline_k], axis=0)))
-                if std_outline <= 55:
+                outline_band = (full == outline_k).astype(np.uint8)
+                band_depth = float(cv2.distanceTransform(outline_band, cv2.DIST_L2, 5).max())
+                # A solid outline has measurable interior thickness. The
+                # antialiased fringe around plain text is only a one-pixel
+                # boundary cluster even when its colour is uniform.
+                if std_outline <= 55 and band_depth >= 2.0:
                     stroke_present = True
                     stroke_color = tuple(int(v) for v in centers[outline_k].tolist())
                     dominant_bgr = centers[fill_k]
@@ -13878,11 +13883,17 @@ def extract_drop_shadow_profile(img_bgr, box):
     if int(text_mask.sum()) < 100 or int(mid_mask.sum()) < 60:
         return empty
     best = None
-    for dy in (2, 3, 4, 5):
-        for dx in (-5, -4, -3, -2, 0, 2, 3, 4, 5):
+    # Anti-aliased edges form a mid-tone fringe immediately adjacent to the
+    # high-contrast glyph. Exclude that narrow fringe before correlating
+    # translated masks; a genuine offset shadow remains separated from the
+    # glyph and can be found at its actual displacement.
+    aa_fringe = cv2.dilate(text_mask.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    mid_mask &= ~aa_fringe
+    for dy in range(2, 9):
+        for dx in range(-8, 9):
             if dx == 0 and dy == 0:
                 continue
-            zone = _shift_mask(text_mask, dx, dy) & mid_mask & ~text_mask
+            zone = _shift_mask(text_mask, dx, dy) & mid_mask
             zone_n = int(zone.sum())
             if zone_n < max(50, int(text_mask.sum() * 0.10)):
                 continue

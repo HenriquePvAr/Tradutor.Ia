@@ -18,7 +18,10 @@ from ocr_engine import OCRLine
 
 
 def _fixture():
-    image = np.zeros((180, 320, 3), dtype=np.uint8)
+    # Keep the synthetic text comfortably below the source-scoped cleanup
+    # area cap. This suite tests forensic capture/pixel neutrality, not the
+    # separate oversized-region rejection contract.
+    image = np.zeros((240, 320, 3), dtype=np.uint8)
     image[:] = (120, 145, 170)
     cv2.line(image, (0, 20), (319, 160), (75, 95, 120), 2)
     cv2.putText(image, "ART TEXT", (35, 105), cv2.FONT_HERSHEY_SIMPLEX, 1.4,

@@ -1001,7 +1001,7 @@ function renderSession(session, authEvent = '') {
     renderAuthShell('unauthenticated');
     return;
   }
-  if (!session && authEvent === 'SIGNED_OUT' && window.__tradutorAccessToken && ownLoginAttemptId) {
+  if (!session && authEvent === 'SIGNED_OUT' && ownLoginAttemptId) {
     // A late SDK event can report sign-out when setSession persistence timed out
     // during OUR OWN in-flight signIn() call; retain the verified in-memory bearer
     // until the canonical session rejects it. Scoped to an active login attempt so
@@ -1009,7 +1009,9 @@ function renderSession(session, authEvent = '') {
     // tab sits idle authenticated - falls through to the immediate clear below
     // instead of being deferred behind a stale bearer re-check.
     authTrace('sdk_signout_deferred', {authenticated: true, source: 'memory_session'});
-    void syncBackendSession(window.__tradutorAccessToken, {caller: 'auth-ui-sdk-signout-recovery'});
+    if (window.__tradutorAccessToken) {
+      void syncBackendSession(window.__tradutorAccessToken, {caller: 'auth-ui-sdk-signout-recovery'});
+    }
     return;
   }
   window.__tradutorAccessToken = session?.access_token || '';

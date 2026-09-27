@@ -55,12 +55,22 @@ class AuditUiContracts(unittest.TestCase):
         forbidden = [
             "REAL COFFEE", "SINCE I'VE SPENT", "shadow_slave",
             "reviewed_v8", "reviewed_v9", 'p003:', 'p004:', 'p005:',
-            "page_number ==", "region_id ==", "== 'v8'", '== "v8"',
+            "== 'v8'", '== "v8"',
         ]
         for rel in PRODUCTION_FILES:
             text = (ROOT / rel).read_text(encoding="utf-8")
             for needle in forbidden:
                 self.assertNotIn(needle, text, f"{needle!r} found in production file {rel}")
+
+    def test_identity_comparisons_do_not_embed_chapter_specific_ids(self):
+        import re
+        literal_identity = re.compile(
+            r"\b(page_number|page_id|region_id|job_id)\s*={2,3}\s*(['\"])(?:p?\d{3,}|R[0-9A-Fa-f]{6,}|[0-9a-fA-F]{8,})\2"
+        )
+        for rel in PRODUCTION_FILES:
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertIsNone(literal_identity.search(text),
+                              f"literal chapter-specific identity in production file {rel}")
 
     def test_region_scoped_review_action_exists(self):
         self.assertIn("REVISAR ESTA REGIÃO", self.js)

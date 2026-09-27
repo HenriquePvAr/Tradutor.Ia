@@ -51,12 +51,12 @@ def _page(width=400, height=300, *, dark=False):
 def _draw_text(page, box, text, *, dark_text=True):
     x, y, w, h = box
     colour = (20, 20, 20) if dark_text else (245, 245, 245)
-    # 0.79 under OpenCV 5 spans the width OpenCV 4 drew at 0.6: OpenCV 5's
-    # Hershey glyphs and tracking are ~18% tighter for the same fontScale, and
-    # the residual-expansion gates below measure where the lettering reaches.
-    # See test_support/cv_text.py.
+    # Keep the synthetic lettering extent stable across the different Hershey
+    # metrics in OpenCV 4 and 5; these tests exercise the residual gate, not
+    # renderer-specific font sizing.
+    scale = 0.6 if int(cv2.__version__.split('.')[0]) < 5 else 0.79
     cv_text.putText(page, text, (x + 6, y + h - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.79, colour, 2, cv2.LINE_AA)
+                    scale, colour, 2, cv2.LINE_AA)
     return page
 
 

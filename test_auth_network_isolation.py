@@ -189,11 +189,16 @@ class BootstrapRefreshLifecycleTest(unittest.TestCase):
 
     def test_history_revision_absence_is_not_treated_as_change(self):
         code = strip_comments(self.source)
-        trigger = re.search(
-            r"if \([^\n]*history_revision[\s\S]{0,220}?refreshBootstrap\(\)", code)
-        self.assertIsNotNone(trigger, "the revision trigger was not found")
-        self.assertIn("isReportedRevision", trigger.group(0),
-                      "only compare revisions both sides actually reported")
+        # Keep this contract structural, not formatting-sensitive: the guard is
+        # intentionally split across lines and emits telemetry before refreshing.
+        guard = re.search(
+            r"if\s*\(\s*isReportedRevision\(runtime\.history_revision\)\s*"
+            r"&&\s*isReportedRevision\(appState\.historyRevision\)\s*"
+            r"&&\s*runtime\.history_revision\s*!==\s*appState\.historyRevision\s*\)",
+            code,
+        )
+        self.assertIsNotNone(guard, "the history revision change guard was not found")
+        self.assertIn("refreshBootstrap()", code[guard.end():guard.end() + 500])
 
     def test_reported_zero_revision_is_stored(self):
         """`x || fallback` silently discards a reported 0 and keeps a stale value."""

@@ -59,6 +59,7 @@ class FakeElement {
     this.ownerDocument = ownerDocument;
     this.parentElement = null;
     this.children = [];
+    this.content = String(tagName).toLowerCase() === 'template' ? new FakeElement('#fragment', ownerDocument) : null;
     this.attributes = {};
     this.dataset = {};
     this.style = { setProperty(name, value) { this[name] = String(value); } };
@@ -80,6 +81,14 @@ class FakeElement {
       ? this.children.map((child) => child.textContent || '').join('')
       : this._text;
   }
+  get childNodes() { return this.children; }
+  get parentNode() { return this.parentElement; }
+  get firstChild() { return this.children[0] || null; }
+  get nextSibling() {
+    if (!this.parentElement) return null;
+    const siblings = this.parentElement.children;
+    return siblings[siblings.indexOf(this) + 1] || null;
+  }
   set textContent(value) {
     this._text = String(value ?? '');
     this.children = [];
@@ -93,6 +102,7 @@ class FakeElement {
     this._text = this._innerHTML.replace(/<[^>]+>/g, '');
     this.children = [];
     if (this.id === 'histList') parseHistoryList(this, this._innerHTML);
+    if (this.tagName === 'TEMPLATE') parseHistoryList(this.content, this._innerHTML);
   }
 
   appendChild(child) {
@@ -100,6 +110,27 @@ class FakeElement {
     this.children.push(child);
     if (child.id) this.ownerDocument._ids.set(child.id, child);
     return child;
+  }
+  insertBefore(child, reference) {
+    if (!reference) return this.appendChild(child);
+    const index = this.children.indexOf(reference);
+    child.parentElement = this;
+    this.children.splice(index < 0 ? this.children.length : index, 0, child);
+    if (child.id) this.ownerDocument._ids.set(child.id, child);
+    return child;
+  }
+  cloneNode(deep = false) {
+    const clone = new FakeElement(this.tagName, this.ownerDocument);
+    clone.className = this.className;
+    clone.id = this.id;
+    clone._text = this._text;
+    clone._innerHTML = this._innerHTML;
+    clone.attributes = { ...this.attributes };
+    clone.dataset = { ...this.dataset };
+    clone.disabled = this.disabled;
+    clone.checked = this.checked;
+    if (deep) this.children.forEach((child) => clone.appendChild(child.cloneNode(true)));
+    return clone;
   }
   contains(candidate) {
     let node = candidate;
@@ -417,6 +448,7 @@ async function loadTradutorUi(history, options = {}) {
     .replace('  refreshBootstrap();', '  // refreshBootstrap disabled by publication modal event-path harness')
     .replace(/\}\)\(\);\s*$/, `
   if (window.__publicationModalEventHarness) {
+    window.__publicationModalEventHarness.getRenderedHistoryHtml = () => renderedHistoryHtml;
     window.__publicationModalEventHarness.loadHistory = (history, options = {}) => {
       appState.bootstrap = {community: {authenticated: true, user_id: 'owner'}};
       appState.history = Array.isArray(history) ? history : [];
@@ -609,8 +641,9 @@ await test('history search opens matching folder so publish action is physically
     chapter_name: 'reconstruction-search-open-1',
     series_name: 'Searchable Series',
   });
-  const { document } = await loadTradutorUi([child], { expandFolders: false });
-  assert.match(document.getElementById('histList').innerHTML, /community-folder\s+"/);
+  const { document, window } = await loadTradutorUi([child], { expandFolders: false });
+  const rendered = () => window.__publicationModalEventHarness.getRenderedHistoryHtml();
+  assert.match(rendered(), /community-folder\s+"/);
   const search = document.getElementById('histSearch');
   search.value = 'reconstruction-search-open-1';
   search.dispatchEvent({
@@ -620,7 +653,8 @@ await test('history search opens matching folder so publish action is physically
     preventDefault() { this.defaultPrevented = true; },
     stopPropagation() {},
   });
-  assert.match(document.getElementById('histList').innerHTML, /community-folder open/);
+  assert.match(rendered(), /community-folder open/,
+               'search should expose the matching publication action by opening its folder');
 });
 
 await test('normal translation publication button still opens modal', async () => {

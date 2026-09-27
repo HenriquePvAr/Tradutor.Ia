@@ -169,6 +169,21 @@ reservation and a second call on `consumed` is idempotent.
   was unavailable, so this is a direct version-set comparison, not an actual
   CLI dry run.
 
+### Settlement security advisor disposition
+
+After the YK deployment, Supabase reported
+`authenticated_security_definer_function_executable` for
+`public.settle_translation_job(text,uuid,text,text)`. This is
+**REVIEWED_EXPECTED / ACCEPTED**, not an instruction to broaden or redesign the
+settlement contract: the caller-JWT path invokes the RPC with the caller's
+Bearer token so `auth.uid()` remains the actual user. The function uses an
+empty `search_path`, requires `auth.uid()`, matches the reservation owner and
+job, constrains the action and idempotency key, and derives the amount from
+server-side reservation state. `anon` has no execute privilege. No security
+change is required; do not revoke `authenticated`, switch to
+`SECURITY INVOKER`, or route this RPC through a service-role caller as part of
+this disposition.
+
 ## Validation and safety
 
 The PostgreSQL integration chain applies every active migration file in
