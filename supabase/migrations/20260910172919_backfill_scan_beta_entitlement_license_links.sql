@@ -42,4 +42,4 @@ update public.beta_tester_entitlements e
   from inserted i
  where e.user_id=i.user_id
    and e.beta_channel='scan-beta'
-   and e.source_license_id is null;;
+   and e.source_license_id is null;

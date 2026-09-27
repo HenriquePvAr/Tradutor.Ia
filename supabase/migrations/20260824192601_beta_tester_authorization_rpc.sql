@@ -248,4 +248,3 @@ revoke all on public.beta_tester_license_events from anon;
 grant select on public.beta_tester_entitlements to authenticated;
 grant select on public.beta_tester_devices to authenticated;
 grant select on public.beta_tester_license_events to authenticated;
-;

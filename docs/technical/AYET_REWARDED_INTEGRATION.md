@@ -20,9 +20,11 @@ parameters. `transaction_id` is the idempotency key.
 - Public web property and `ads.txt` are required before sandbox/live ads
 - Feature flag `rewarded_ads_enabled` remains off; no remote migration/deploy
 
-The migration `20260915153000_ayet_rewarded_sessions.sql` is source-only in
-this branch. It must be reviewed and applied remotely before enabling the
-provider. The callback always returns HTTP 200 for malformed/invalid events to
+The migration source is preserved at
+`docs/archive/migrations/20260915153000_ayet_rewarded_sessions.sql`, outside the
+active Supabase migration chain. The remote schema currently lacks its session
+table and RPCs. It must be reviewed and deliberately restored to the active
+chain/applied before enabling the provider. The callback always returns HTTP 200 for malformed/invalid events to
 avoid provider retry storms, while crediting only after HMAC, session, expiry,
 plan/flag, and unique transaction checks succeed.
 

@@ -64,4 +64,3 @@ on public.beta_tester_license_events
 for select
 to authenticated
 using ((select auth.uid()) = user_id);
-;

@@ -24,7 +24,7 @@ install_offline_network_guard()
 from commercial_foundation import PLANS, Plan, YKWallet
 
 ROOT = Path(__file__).resolve().parent
-MIGRATION = ROOT / "supabase/migrations/20260915140000_yk_ads_foundation.sql"
+MIGRATION = ROOT / "supabase/migrations/20260916041829_yk_ads_foundation.sql"
 SQL = MIGRATION.read_text(encoding="utf-8")
 
 FREE = PLANS["free"]
@@ -476,7 +476,7 @@ class MigrationContractTests(unittest.TestCase):
         self.assertNotIn("update public.yk_ledger", summary.lower())
 
     def test_local_cross_cycle_fix_requires_expiring_daily_rows(self):
-        sql = (ROOT / "supabase/migrations/20260917021000_daily_cross_cycle_accounting.sql").read_text(encoding="utf-8")
+        sql = (ROOT / "supabase/migrations/20260917023046_daily_cross_cycle_accounting.sql").read_text(encoding="utf-8")
         self.assertGreaterEqual(sql.count("bucket='daily' and expires_at>now()"), 2)
         self.assertIn("daily_expires_at", sql)
         self.assertIn("-- LOCAL ONLY", sql)
@@ -484,7 +484,7 @@ class MigrationContractTests(unittest.TestCase):
         self.assertNotIn("update public.yk_ledger", sql.lower())
 
     def test_local_cross_cycle_fix_keeps_legacy_active_reservations_conservative(self):
-        sql = (ROOT / "supabase/migrations/20260917021000_daily_cross_cycle_accounting.sql").read_text(encoding="utf-8")
+        sql = (ROOT / "supabase/migrations/20260917023046_daily_cross_cycle_accounting.sql").read_text(encoding="utf-8")
         self.assertIn("status='reserved'", sql)
         self.assertIn("into rd,rs,rp", sql)
         self.assertIn("d:=greatest(0,d-rd)", sql)

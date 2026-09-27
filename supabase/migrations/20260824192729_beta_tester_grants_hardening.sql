@@ -15,4 +15,3 @@ grant select on public.beta_tester_license_events to authenticated;
 revoke all on function public.authorize_beta_tester_device(text, text) from public;
 revoke all on function public.authorize_beta_tester_device(text, text) from anon;
 grant execute on function public.authorize_beta_tester_device(text, text) to authenticated;
-;

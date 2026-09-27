@@ -5,7 +5,7 @@ decides entitlement from client input and ships no billing/ad credentials.
 Remote adapters are intentionally disabled until configured server-side.
 
 The wallet here is the executable model of the SQL in
-``supabase/migrations/20260915140000_yk_ads_foundation.sql``.  Both must agree
+``supabase/migrations/20260916041829_yk_ads_foundation.sql``.  Both must agree
 on the same five rules:
 
 * daily YK is a *top-up to the plan target*, never ``permanent + target``;

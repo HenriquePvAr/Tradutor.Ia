@@ -282,4 +282,4 @@ begin
 exception when others then
     return jsonb_build_object('allowed',false,'state','license_unavailable','reason_code','license_service_unavailable','checked_at',v_checked_at,'retryable',true);
 end
-$function$;;
+$function$;

@@ -81,5 +81,3 @@ end $$;
 
 revoke all on function public.reserve_translation_yk(text,uuid), public.reserve_translation_yk(text,uuid,integer) from public,anon;
 grant execute on function public.reserve_translation_yk(text,uuid), public.reserve_translation_yk(text,uuid,integer) to authenticated;
-
-;

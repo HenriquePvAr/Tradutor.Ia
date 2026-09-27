@@ -38,38 +38,23 @@ POSTGRES_IMAGE = "postgres:15-alpine"
 
 # Bootstrap first, then the real migrations that build the schema this feature
 # lives in, in applied order, ending with the one under test.
+MIGRATIONS_DIR = ROOT / "supabase/migrations"
+PRESERVE_MIGRATION = "20260924060000_preserve_translation_requests_on_license_delete.sql"
+YK_SETTLEMENT_MIGRATION = "20260926175232_yk_job_atomic_settlement.sql"
 MIGRATION_CHAIN = [
     ROOT / "tests/sql/supabase_bootstrap.sql",
     *[
-        ROOT / "supabase/migrations" / name
-        for name in (
-            "20260908195000_commercial_beta_foundation.sql",
-            "20260909090000_beta_control_plane_config.sql",
-            "20260909100000_control_plane_persistence_foundation.sql",
-            "20260909150000_wallet_progression_rpc.sql",
-            "20260909160000_translation_lifecycle_rpc.sql",
-            "20260909170000_control_plane_security_hardening.sql",
-            "20260909180000_translation_rpc_grants_cleanup.sql",
-            "20260909200000_deepl_server_provider_atomic_commit.sql",
-            "20260911045108_server_authoritative_translation_pricing.sql",
-            "20260911120000_resolve_reserve_rpc_overload.sql",
-            "20260911130000_translation_replay_authority.sql",
-            "20260911140000_translation_operation_claim_recovery.sql",
-            "20260913005346_canonical_translation_commit_rpc.sql",
-            "20260913005557_canonical_translation_commit_rpc_grants.sql",
-            "20260915013128_chapter_level_translation_finalization.sql",
-            "20260915140000_yk_ads_foundation.sql",
-            "20260915153000_ayet_rewarded_sessions.sql",
-            "20260916100000_yk_ads_product_contract.sql",
-            "20260917012623_wallet_summary_plan_diagnostic.sql",
-            "20260917015949_wallet_summary_auth_reconciliation.sql",
-            "20260917021000_daily_cross_cycle_accounting.sql",
-            "20260923150000_admin_enable_license_device_operations.sql",
-            "20260924060000_preserve_translation_requests_on_license_delete.sql",
-            "20260926175232_yk_job_atomic_settlement.sql",
-        )
+        path for path in sorted(MIGRATIONS_DIR.glob("*.sql"))
+        if path.name not in {PRESERVE_MIGRATION, YK_SETTLEMENT_MIGRATION}
     ],
+    # The live DB has this overload, but no recorded migration statement does.
+    # Keep the snapshot in a test-only overlay instead of falsifying migration history.
+    ROOT / "tests/sql/remote_schema_drift/finalize_translation_job_job_overload.sql",
+    MIGRATIONS_DIR / PRESERVE_MIGRATION,
+    MIGRATIONS_DIR / YK_SETTLEMENT_MIGRATION,
 ]
+REMOTE_BASELINE_VERSION = "20260917023046"
+REMOTE_SCHEMA_DRIFT_FIXTURES = ROOT / "tests/sql/remote_schema_drift"
 
 
 def _docker_available() -> bool:
@@ -120,6 +105,74 @@ def _postgres_container():
         yield dsn
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True)
+
+
+def test_remote_baseline_replays_with_explicit_out_of_history_overlays():
+    """Reproduce recorded remote history, then apply only observed live drift."""
+    baseline_paths = [
+        path for path in sorted(MIGRATIONS_DIR.glob("*.sql"))
+        if path.name[:14] <= REMOTE_BASELINE_VERSION
+    ]
+    assert baseline_paths[-1].name.startswith(REMOTE_BASELINE_VERSION)
+    with _postgres_container() as dsn:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for path in [
+                ROOT / "tests/sql/supabase_bootstrap.sql",
+                *baseline_paths,
+                REMOTE_SCHEMA_DRIFT_FIXTURES / "finalize_translation_job_job_overload.sql",
+                REMOTE_SCHEMA_DRIFT_FIXTURES / "translation_request_license_set_null.sql",
+            ]:
+                conn.execute(path.read_text(encoding="utf-8"))
+
+            columns = dict(conn.execute(
+                "select column_name, is_nullable from information_schema.columns "
+                "where table_schema='public' and table_name='translation_requests' "
+                "and column_name in ('user_id','license_id','device_id')"
+            ).fetchall())
+            assert columns == {"user_id": "YES", "license_id": "YES", "device_id": "NO"}
+
+            fk_actions = dict(conn.execute(
+                "select conname, confdeltype from pg_constraint "
+                "where conrelid='public.translation_requests'::regclass "
+                "and conname in ('translation_requests_license_id_fkey', "
+                "'translation_requests_device_id_fkey')"
+            ).fetchall())
+            assert fk_actions == {
+                "translation_requests_license_id_fkey": "n",  # SET NULL
+                "translation_requests_device_id_fkey": "a",  # NO ACTION
+            }
+            assert conn.execute(
+                "select count(*) from pg_constraint "
+                "where conrelid='public.translation_requests'::regclass "
+                "and conname='translation_requests_active_requires_license_device'"
+            ).fetchone()[0] == 0
+
+            functions = {
+                "commit_translation_batch_success(text,integer,text,text,jsonb)",
+                "commit_translation_success(text,integer,text,text,jsonb)",
+                "finalize_translation_job(text)",
+                "finalize_translation_job(text,uuid)",
+                "wallet_summary()",
+                "claim_daily_yk()",
+                "reserve_translation_yk(text,uuid)",
+                "reserve_translation_yk(text,uuid,integer)",
+                "finalize_yk_reservation(uuid,boolean)",
+                "admin_extend_beta_license(uuid,timestamp with time zone,text)",
+                "admin_revoke_device(uuid,text)",
+            }
+            present = {
+                row[0] for row in conn.execute(
+                    "select p.oid::regprocedure::text from pg_proc p "
+                    "join pg_namespace n on n.oid=p.pronamespace where n.nspname='public'"
+                ).fetchall()
+            }
+            assert functions <= present
+            assert conn.execute(
+                "select to_regprocedure('public.settle_translation_job(text,uuid,text,text)')"
+            ).fetchone()[0] is None
+            assert conn.execute(
+                "select to_regclass('public.rewarded_ad_sessions')"
+            ).fetchone()[0] is None
 
 
 @pytest.fixture(scope="session")
@@ -245,6 +298,74 @@ def test_migration_chain_applies_from_scratch(db):
     assert db.conn.execute(
         "select 1 from information_schema.tables where table_name='user_ad_preferences'"
     ).fetchone()
+
+
+def test_preservation_migration_accepts_observed_remote_partial_schema():
+    """Replay the known pre-deploy FK drift, then apply preservation + YK."""
+    migration_dir = ROOT / "supabase/migrations"
+    preserve_path = migration_dir / PRESERVE_MIGRATION
+    yk_path = migration_dir / YK_SETTLEMENT_MIGRATION
+    with _postgres_container() as dsn:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for path in MIGRATION_CHAIN:
+                if path == preserve_path:
+                    break
+                conn.execute(path.read_text(encoding="utf-8"))
+            # This is the relevant production drift: license_id is already
+            # nullable/SET NULL, while device_id remains NOT NULL/NO ACTION.
+            conn.execute("alter table public.translation_requests alter column license_id drop not null")
+            conn.execute("alter table public.translation_requests drop constraint translation_requests_license_id_fkey")
+            conn.execute(
+                "alter table public.translation_requests add constraint "
+                "translation_requests_license_id_fkey foreign key (license_id) "
+                "references public.licenses(id) on delete set null")
+            conn.execute(preserve_path.read_text(encoding="utf-8"))
+            conn.execute(yk_path.read_text(encoding="utf-8"))
+
+            assert conn.execute(
+                "select is_nullable from information_schema.columns where table_schema='public' "
+                "and table_name='translation_requests' and column_name='license_id'"
+            ).fetchone()[0] == "YES"
+            assert conn.execute(
+                "select is_nullable from information_schema.columns where table_schema='public' "
+                "and table_name='translation_requests' and column_name='device_id'"
+            ).fetchone()[0] == "YES"
+            assert conn.execute(
+                "select count(*) from pg_constraint where conrelid='public.translation_requests'::regclass "
+                "and conname='translation_requests_active_requires_license_device'"
+            ).fetchone()[0] == 1
+            assert conn.execute(
+                "select to_regprocedure('public.settle_translation_job(text,uuid,text,text)') is not null"
+            ).fetchone()[0] is True
+
+            db = Harness(conn)
+            uid, license_id, device_id = db.user("free")
+            request_id = f"remote-partial-{uuid.uuid4()}"
+            conn.execute(
+                "insert into public.translation_requests"
+                "(request_id,user_id,license_id,device_id,provider,status,result) "
+                "values(%s,%s,%s,%s,'deepl','completed','{}'::jsonb)",
+                (request_id, uid, license_id, device_id))
+            conn.execute("delete from public.licenses where id=%s", (license_id,))
+            assert conn.execute(
+                "select status,license_id,device_id,result from public.translation_requests "
+                "where request_id=%s", (request_id,)
+            ).fetchone() == ("completed", None, None, {})
+
+            active_request = f"remote-partial-active-{uuid.uuid4()}"
+            uid2, license2, device2 = db.user("free")
+            conn.execute(
+                "insert into public.translation_requests"
+                "(request_id,user_id,license_id,device_id,provider,status) "
+                "values(%s,%s,%s,%s,'deepl','processing')",
+                (active_request, uid2, license2, device2))
+            with pytest.raises(psycopg.errors.CheckViolation,
+                               match="translation_requests_active_requires_license_device"):
+                conn.execute("delete from public.licenses where id=%s", (license2,))
+            assert conn.execute(
+                "select license_id,device_id from public.translation_requests where request_id=%s",
+                (active_request,)
+            ).fetchone() == (license2, device2)
 
 
 def test_admin_license_device_operations_remain_developer_only(db):
@@ -680,6 +801,38 @@ def test_settlement_consumes_completed_job_once_and_is_idempotent(db):
     assert db.balances(uid)["daily"] == 4
     assert int(db.conn.execute(
         "select count(*) from public.yk_ledger where user_id=%s and amount<0", (uid,)
+    ).fetchone()[0]) == 1
+
+
+@pytest.mark.parametrize("legacy_first", [True, False])
+def test_legacy_finalizer_and_new_settlement_share_one_debit(db, legacy_first):
+    """The live two-argument overload and new RPC must share terminal state."""
+    uid, license_id, device_id = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
+    db.as_user(uid, "select public.claim_daily_yk()")
+    job = f"legacy-settle-{legacy_first}-{uid}"
+    reservation = db.translate_chapter(uid, license_id, device_id, job, batches=1)
+    rid = reservation["reservation_id"]
+    key = f"yk-settlement-v1:{uid}:cross-path"
+
+    def legacy_finalize():
+        return db.as_service("select public.finalize_translation_job(%s,%s)", (job, rid))
+
+    def settle():
+        return db.as_user(uid,
+            "select public.settle_translation_job(%s,%s,'consume',%s)", (job, rid, key))
+
+    if legacy_first:
+        first, second = legacy_finalize(), settle()
+    else:
+        first, second = settle(), legacy_finalize()
+    assert first["status"] == "consumed"
+    assert second["status"] == "consumed"
+    assert second.get("idempotent") is True
+    assert db.balances(uid)["daily"] == 4
+    assert int(db.conn.execute(
+        "select count(*) from public.yk_ledger where user_id=%s and event_type='translation_debit' "
+        "and reference_id=%s", (uid, job)
     ).fetchone()[0]) == 1
 
 
