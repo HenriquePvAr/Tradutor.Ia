@@ -1,0 +1,29 @@
+{
+  "case_id": "sfx_slurp_p006",
+  "evidence_kind": "CONFIRMED_REAL",
+  "missing_expected_text": [],
+  "page_index": 6,
+  "regions": [
+    {
+      "bbox": [
+        397,
+        323,
+        402,
+        394
+      ],
+      "classification": "sfx",
+      "confidence": 0.732346522808075,
+      "failure_boundary": "SFX_PRESERVED",
+      "group_id": "BALAO_1",
+      "ignored_reason": "sfx_translation_disabled",
+      "normalized_text": "SLURP",
+      "page_index": 6,
+      "raw_text": "SLURP",
+      "region_id": "BALAO_1",
+      "sfx_preserved": true,
+      "translation_eligible": false,
+      "translation_result": ""
+    }
+  ],
+  "schema_version": 1
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "case_id": "sfx_slurp_p006",
+  "evidence_kind": "CONFIRMED_REAL",
+  "page_index": 6,
+  "regions": [
+    {
+      "page_index": 6,
+      "region_id": "BALAO_1",
+      "group_id": "BALAO_1",
+      "raw_text": "SLURP",
+      "normalized_text": "SLURP",
+      "confidence": 0.732346522808075,
+      "bbox": [397, 323, 402, 394],
+      "classification": "sfx",
+      "sfx_preserved": true,
+      "translation_eligible": false,
+      "translation_result": "",
+      "ignored_reason": "sfx_translation_disabled"
+    }
+  ]
+}

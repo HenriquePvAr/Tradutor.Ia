@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "POST_OCR_SYNTHETIC_FIXTURE",
+  "case_id": "missed_balloon_boundaries",
+  "cases": [
+    {"case": "A", "name": "no_region_or_line", "input": {"raw_line_present": false}, "expected": "DETECTION_OR_OCR_MISS"},
+    {"case": "B", "name": "region_but_empty_ocr", "input": {"ocr_empty": true}, "expected": "OCR_EMPTY"},
+    {"case": "C", "name": "line_filtered", "input": {"filtered_pre_group": true, "low_confidence": true}, "expected": "OCR_LOW_CONFIDENCE_FILTER"},
+    {"case": "D", "name": "classifier_rejects", "input": {"classifier_ignored": true}, "expected": "CLASSIFIER_IGNORED"},
+    {"case": "E", "name": "translation_ineligible", "input": {"translation_eligible": false}, "expected": "NOT_TRANSLATION_ELIGIBLE"},
+    {"case": "F", "name": "renderer_excludes", "input": {"render_excluded": true}, "expected": "RENDER_EXCLUDED"}
+  ]
+}

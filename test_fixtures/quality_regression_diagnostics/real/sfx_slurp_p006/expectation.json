@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "case_id": "sfx_slurp_p006",
+  "source_page": "output/shadow_slave_chapter_1/smart_input_pages/page_006.png",
+  "bbox": [397, 323, 402, 394],
+  "expected_text": "SLURP",
+  "expected_boundary": "SFX_PRESERVED",
+  "expected_translate": false,
+  "expected_classification": "sfx",
+  "negative_control": true,
+  "evidence_level": "CONFIRMED_REAL"
+}

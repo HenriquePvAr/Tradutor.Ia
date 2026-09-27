@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "POST_OCR_SYNTHETIC_FIXTURE",
+  "case_id": "i_1_ambiguity_context_matrix",
+  "note": "These strings are synthetic post-OCR inputs. They do not test or prove OCR engine recognition.",
+  "positive_contexts": ["I AM HERE", "I DON'T KNOW", "I'M FINE", "I CAN SEE IT"],
+  "negative_numeric_contexts": ["1 AM", "1 DAY", "LEVEL 1", "1ST FLOOR", "ROOM 101", "$1"],
+  "fields_to_capture_from_real_ocr_image_fixture": ["raw_text", "normalized_text", "confidence", "bbox", "engine", "neighboring_words", "line_structure", "image_fixture_id"],
+  "autocorrection": "NOT_IMPLEMENTED"
+}

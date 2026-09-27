@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "POST_OCR_SYNTHETIC_FIXTURE",
+  "case_id": "outside_balloon_story_and_sfx_matrix",
+  "note": "Classifier-level synthetic expectations only; no image detector or OCR behavior is implied.",
+  "positive_story_cases": [
+    {"text": "THREE DAYS LATER", "context": "isolated_narrative"},
+    {"text": "MEANWHILE...", "context": "caption"},
+    {"text": "PERFECTLY FINE.", "context": "near_accepted_region"},
+    {"text": "PERFECTLY FINE.", "context": "far_from_any_region"}
+  ],
+  "negative_sfx_controls": ["THUMP", "BAM", "WHOOSH", "SCRRCH", "CRACK", "TAP TAP!", "BAM BAM!", "BOOM BOOM."],
+  "expected_behavior_note": "The current weak-unknown promotion requires a nearby accepted story anchor; isolated cases intentionally diagnose that limitation."
+}
