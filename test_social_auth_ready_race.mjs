@@ -205,7 +205,9 @@ await test('the pending request executes exactly once as soon as the canonical s
   announceCanonical(ctx.win, 'authenticated', { user_id: 'synthetic-user' });
   await flush();
   assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
-  assert.equal(ctx.counters.feed, 1, `feed requests: ${ctx.counters.feed}`);
+  // Feed is lazy-loaded only when its section is opened; auth confirmation should
+  // trigger the profile bootstrap, not eagerly fetch a hidden feed.
+  assert.equal(ctx.counters.feed, 0, `hidden feed must remain lazy: ${ctx.counters.feed}`);
 });
 
 await test('a stray auth event without authenticated:true does not release the pending load', async () => {
@@ -222,7 +224,7 @@ await test('F5 with an already-authenticated canonical state loads exactly once,
   ctx.win.__tradutorAuthState = 'authenticated'; // bootstrap already confirmed before the SDK event arrives
   await emit(ctx.authStub, [[SESSION, 'INITIAL_SESSION']]);
   assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
-  assert.equal(ctx.counters.feed, 1, `feed requests: ${ctx.counters.feed}`);
+  assert.equal(ctx.counters.feed, 0, `hidden feed must remain lazy: ${ctx.counters.feed}`);
 });
 
 await test('logout while a load is pending cancels it: no request ever fires for that generation', async () => {
@@ -249,7 +251,7 @@ await test('a new sign-in after logout still loads exactly once for the new gene
   announceCanonical(ctx.win, 'authenticated', { user_id: 'other-user' });
   await flush();
   assert.equal(ctx.counters.profile, 2, `profile/me requests across both generations: ${ctx.counters.profile}`);
-  assert.equal(ctx.counters.feed, 2, `feed requests across both generations: ${ctx.counters.feed}`);
+  assert.equal(ctx.counters.feed, 0, `hidden feed must remain lazy across both generations: ${ctx.counters.feed}`);
 });
 
 await test('profile/me failing (422, migration pending) after auth-ready is not retried automatically', async () => {

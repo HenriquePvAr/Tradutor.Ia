@@ -220,6 +220,19 @@ function authTrace(event, fields = {}) {
     if (safe.status !== undefined) document.documentElement.dataset.tradutorAuthLastStatus = String(safe.status);
   } catch (_) { /* diagnostics never affect auth */ }
   if (window.__tradutorAuthTrace.length > 40) window.__tradutorAuthTrace.shift();
+  // Keep a small local-only breadcrumb trail across callback redirects/reloads.
+  // Persist only this explicit allowlist; bearer material and session fingerprints
+  // are intentionally excluded even though the in-memory trace has richer fields.
+  try {
+    const key = 'tradutor_auth_event_trace_v1';
+    const persisted = JSON.parse(localStorage.getItem(key) || '[]');
+    const entry = {event: safe.event, at: safe.at, seq: safe.seq};
+    for (const field of ['status', 'code', 'name', 'authenticated', 'source', 'elapsed_ms', 'reason', 'destination', 'auth_event', 'caller', 'request_trace_id']) {
+      if (safe[field] !== undefined) entry[field] = safe[field];
+    }
+    const next = (Array.isArray(persisted) ? persisted : []).concat(entry).slice(-40);
+    localStorage.setItem(key, JSON.stringify(next));
+  } catch (_) { /* storage is optional; never block authentication */ }
   if (window.__tradutorAuthDiagnosticsEnabled === true) {
     void fetch('/api/internal/auth-diagnostics', {
       method: 'POST', cache: 'no-store', headers: {'content-type': 'application/json'},
@@ -472,6 +485,11 @@ function withTimeout(promise, timeoutMs = AUTH_BOOTSTRAP_TIMEOUT_MS) {
 }
 
 async function syncBackendSession(accessToken = '', {signal, caller = 'unknown'} = {}) {
+  const hadAuthenticatedSession = Boolean(
+    window.__tradutorCommunityAuthenticated
+    || window.__tradutorAuthState === 'authenticated'
+    || accessToken
+  );
   const headers = {};
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   try {
@@ -527,8 +545,20 @@ async function syncBackendSession(accessToken = '', {signal, caller = 'unknown'}
       return payload;
     }
     if (accessToken) authTrace('local_session_exchange_finished', {status: response.status, authenticated: false, source: 'bearer'});
-    if (response.status === 401) setAuthState('session_expired');
-    else if (response.status === 403) setAuthState('auth_error');
+    if (response.status === 401) {
+      setAuthState('session_expired');
+    } else if (hadAuthenticatedSession) {
+      // A secondary API failure is not proof that the Supabase session is gone.
+      // Retain the authenticated shell unless canonical validation explicitly
+      // rejects the bearer with 401; record the degraded check for diagnosis.
+      setAuthState('authenticated', window.__tradutorCommunityUserId || '');
+      renderAuthShell('authenticated');
+      authTrace('canonical_session_check_degraded', {
+        status: response.status, authenticated: true, caller: String(caller || 'unknown').slice(0, 60),
+        reason: response.status === 403 ? 'authorization_check_failed' : 'transient_backend_failure',
+      });
+      return payload;
+    } else if (response.status === 403) setAuthState('auth_error');
     else setAuthState('unauthenticated');
     window.__tradutorCommunityAuthenticated = false;
     renderAuthShell(window.__tradutorAuthState, payload.message || '');
@@ -538,6 +568,15 @@ async function syncBackendSession(accessToken = '', {signal, caller = 'unknown'}
     }));
     return payload;
   } catch (_) {
+    if (hadAuthenticatedSession) {
+      setAuthState('authenticated', window.__tradutorCommunityUserId || '');
+      renderAuthShell('authenticated');
+      authTrace('canonical_session_check_degraded', {
+        authenticated: true, caller: String(caller || 'unknown').slice(0, 60),
+        reason: 'network_or_timeout',
+      });
+      return null;
+    }
     setAuthState('auth_error');
     window.__tradutorCommunityAuthenticated = false;
     renderAuthShell('auth_error', 'Não foi possível verificar sua sessão.');
@@ -860,6 +899,12 @@ function clearAuthCredentialFields() {
 }
 
 function renderSession(session, authEvent = '') {
+  authTrace('sdk_auth_event_received', {
+    auth_event: authEvent || 'NONE',
+    session_present: Boolean(session),
+    authenticated: Boolean(session?.access_token),
+    source: 'supabase_on_auth_state_change',
+  });
   if (authEvent === 'INITIAL_SESSION') {
     authTrace('SDK_INITIAL_SESSION_RECEIVED', {
       session_present: Boolean(session),
@@ -968,7 +1013,10 @@ function renderSession(session, authEvent = '') {
     return;
   }
   window.__tradutorAccessToken = session?.access_token || '';
-  authTrace('sdk_session_changed', {authenticated: Boolean(session)});
+  authTrace('sdk_session_changed', {
+    authenticated: Boolean(session), auth_event: authEvent || 'NONE',
+    source: 'supabase_on_auth_state_change',
+  });
   startAuthHeartbeat();
   setAuthState('auth_loading');
   const displayName = String(window.__tradutorDisplayName || '').trim();

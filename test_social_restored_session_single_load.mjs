@@ -28,7 +28,7 @@
 // This harness links the REAL static/auth_provider.js and static/supabase_auth.js modules
 // (not the simplified auth_provider stub the sibling harnesses use) so the exact restore
 // race that produced the bug is exercised end to end. The only synthetic piece is the
-// Supabase SDK's `createClient` (network CDN import), stubbed to a fake `client.auth`
+// Supabase SDK's `createClient` (vendored static import), stubbed to a fake `client.auth`
 // whose event timing is scripted per scenario.
 //
 // No credentials of any kind: every session/token below is synthetic.
@@ -150,7 +150,7 @@ async function loadRealModules({ communitySource, nativeEvents, sessionForGetSes
 
   const stubs = new Map([
     ['/static/social_api.js', makeApiStub(counters)],
-    ['https://esm.sh/@supabase/supabase-js@2.58.0', { createClient: () => fakeClient }],
+    ['/static/vendor/supabase-js.ef0ba14c445fdc3b.js', { default: { createClient: () => fakeClient } }],
   ]);
   const synthetic = (specifier) => {
     const exportsObject = stubs.get(specifier);
@@ -174,10 +174,12 @@ async function loadRealModules({ communitySource, nativeEvents, sessionForGetSes
 
   const authProviderModule = new vm.SourceTextModule(
     fs.readFileSync(path.join(ROOT, 'static', 'auth_provider.js'), 'utf8'),
-    { context, identifier: '/static/auth_provider.js', importModuleDynamically });
+    { context, identifier: '/static/auth_provider.js', importModuleDynamically,
+      initializeImportMeta(meta) { meta.url = 'http://127.0.0.1:8080/static/auth_provider.js'; } });
   const supabaseAuthModule = new vm.SourceTextModule(
     fs.readFileSync(path.join(ROOT, 'static', 'supabase_auth.js'), 'utf8'),
-    { context, identifier: '/static/supabase_auth.js', importModuleDynamically });
+    { context, identifier: '/static/supabase_auth.js', importModuleDynamically,
+      initializeImportMeta(meta) { meta.url = 'http://127.0.0.1:8080/static/supabase_auth.js'; } });
   const communityModule = new vm.SourceTextModule(
     communitySource, { context, identifier: 'social_community.js', importModuleDynamically });
 
@@ -205,9 +207,9 @@ const SESSION = { access_token: 'tok-restored', user: { id: 'synthetic-restored-
 // ---------------------------------------------------------------------------
 const NEW_TAB_EVENTS = [[null, 'INITIAL_SESSION'], [SESSION, 'SIGNED_IN']];
 
-await test('new tab with a restored session loads the feed exactly once', async () => {
+await test('new tab with a restored session does not eagerly load the hidden feed', async () => {
   const { counters } = await loadRealModules({ communitySource: CURRENT, nativeEvents: NEW_TAB_EVENTS, sessionForGetSession: SESSION });
-  assert.equal(counters.feed, 1, `feed requests: ${counters.feed}`);
+  assert.equal(counters.feed, 0, `hidden feed remains lazy: ${counters.feed}`);
 });
 
 await test('new tab with a restored session loads profile/me exactly once', async () => {
@@ -219,18 +221,18 @@ await test('new tab with a restored session loads profile/me exactly once', asyn
 for (let i = 1; i <= 3; i += 1) {
   await test(`new tab restored session is deterministic across independent runs (run ${i}/3)`, async () => {
     const { counters } = await loadRealModules({ communitySource: CURRENT, nativeEvents: NEW_TAB_EVENTS, sessionForGetSession: SESSION });
-    assert.equal(counters.feed, 1, `feed requests: ${counters.feed}`);
+    assert.equal(counters.feed, 0, `hidden feed remains lazy: ${counters.feed}`);
     assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
   });
 }
 
-await test('F5 (native fires a single already-resolved INITIAL_SESSION) still loads exactly once', async () => {
+await test('F5 with a restored session does not eagerly load the hidden feed', async () => {
   const { counters } = await loadRealModules({
     communitySource: CURRENT,
     nativeEvents: [[SESSION, 'INITIAL_SESSION']],
     sessionForGetSession: SESSION,
   });
-  assert.equal(counters.feed, 1, `feed requests: ${counters.feed}`);
+  assert.equal(counters.feed, 0, `hidden feed remains lazy: ${counters.feed}`);
   assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
 });
 
@@ -257,7 +259,7 @@ await test('a SIGNED_OUT followed by a SIGNED_IN for the SAME account reuses the
   // account - doubling the feed + profile/me load for a single login. The account (session.
   // user.id) is what actually decides whether the cache is still valid, not the event name;
   // see accountId()/sameAccount in applySession() in static/social_community.js.
-  assert.equal(counters.feed, 1, `feed requests: ${counters.feed}`);
+  assert.equal(counters.feed, 0, `hidden feed remains lazy: ${counters.feed}`);
   assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
 });
 
@@ -267,7 +269,7 @@ await test('a SIGNED_OUT-only tail (real sign-out, no further sign-in) issues no
     nativeEvents: [[SESSION, 'INITIAL_SESSION'], [null, 'SIGNED_OUT']],
     sessionForGetSession: SESSION,
   });
-  assert.equal(counters.feed, 1, `feed requests: ${counters.feed}`);
+  assert.equal(counters.feed, 0, `hidden feed remains lazy: ${counters.feed}`);
   assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
 });
 

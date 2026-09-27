@@ -16,16 +16,70 @@
 </head>
 <body>
   <div class="card">
-    <div class="spinner"></div>
-    <p id="msg">Concluindo autenticação…</p>
+    <div id="authCallbackSpinner" class="spinner"></div>
+    <p id="msg" role="status" aria-live="polite">Concluindo autenticação…</p>
   </div>
-  <script type="module">
+  <script>
+    // This classic script runs before the module graph is fetched/evaluated.
+    // It owns only module boot; once the module starts, its phase timeouts own
+    // the rest of the callback flow.
+    (() => {
+      const moduleScript = document.getElementById('authCallbackModule');
+      const spinner = document.getElementById('authCallbackSpinner');
+      const message = document.getElementById('msg');
+      let terminal = false;
+      let timer = 0;
+      const cleanupUrl = () => {
+        try { history.replaceState(null, '', '/auth/callback'); } catch (_) { /* best effort */ }
+      };
+      const showBootFailure = () => {
+        if (terminal || window.__yomuAuthCallbackStarted) return;
+        terminal = true;
+        window.__yomuAuthCallbackBootFailed = true;
+        window.clearTimeout(timer);
+        window.removeEventListener('error', onModuleError, true);
+        cleanupUrl();
+        if (spinner) spinner.hidden = true;
+        if (message) {
+          message.textContent = 'Não foi possível iniciar a autenticação. Tente abrir o link novamente.';
+          message.dataset.state = 'error';
+        }
+      };
+      const onModuleError = (event) => {
+        // Do not intercept errors from the rest of the application/page.
+        if (event.target === moduleScript) showBootFailure();
+      };
+      window.addEventListener('error', onModuleError, true);
+      timer = window.setTimeout(showBootFailure, 12000);
+      window.__yomuAuthCallbackBootTimer = timer;
+    })();
+  </script>
+  <script id="authCallbackModule" type="module">
     // The Supabase JS SDK parses the access_token/refresh_token from the URL hash into
     // its own storage. We then strip the hash and return to the fixed local root — the
     // destination is a constant, never taken from any URL parameter (no open redirect).
     import { getSupabaseClient } from '/static/supabase_auth.js';
+    // Hand off immediately after static imports have loaded. A failed module/import
+    // never reaches this line and remains covered by the pre-module watchdog.
+    if (window.__yomuAuthCallbackBootFailed) throw new Error('callback_boot_timeout');
+    window.__yomuAuthCallbackStarted = true;
+    window.clearTimeout(window.__yomuAuthCallbackBootTimer);
     const msg = document.getElementById('msg');
     const callbackDiagnosticKey = 'tradutor_auth_callback_last_error';
+    const CALLBACK_TIMEOUT_MS = 15000;
+    const callbackTraceId = (window.crypto?.randomUUID?.() || `callback-${Date.now()}`)
+      .replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 80);
+    let callbackPhase = 'initializing';
+    const withCallbackTimeout = (promise, phase, timeoutMs = CALLBACK_TIMEOUT_MS) => {
+      let timer;
+      callbackPhase = phase;
+      return Promise.race([
+        Promise.resolve(promise),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error(`${phase}_timeout`), {code: 'callback_timeout'})), timeoutMs);
+        }),
+      ]).finally(() => clearTimeout(timer));
+    };
     const sanitize = (value) => String(value ?? '')
       .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
       .replace(/https?:\/\/[^\s]+/gi, '[url]')
@@ -35,13 +89,18 @@
         localStorage.setItem(callbackDiagnosticKey, JSON.stringify({
           timestamp: new Date().toISOString(),
           operation: 'password_recovery_callback',
+          trace_id: callbackTraceId,
+          phase: callbackPhase,
+          elapsed_ms: Date.now() - callbackStartedAt,
           name: error?.name ?? 'AuthError',
           status: error?.status ?? null,
           code: error?.code ?? null,
           message: sanitize(error?.message || 'callback_failed'),
         }));
-      } catch (_) {}
+    } catch (_) {}
     };
+    const callbackStartedAt = Date.now();
+    void (async () => {
     let recoveryHandoffPending = false;
     try {
       const params = new URLSearchParams(location.search);
@@ -56,10 +115,10 @@
       const recoveryPending = recoveryHint || Boolean(pendingAt && Date.now() - pendingAt < 10 * 60 * 1000);
       recoveryHandoffPending = recoveryPending;
       if (desktopHandoff && handoffId && code) {
-        const response = await fetch(`/api/auth/desktop/handoff/${encodeURIComponent(handoffId)}/callback`, {
+        const response = await withCallbackTimeout(fetch(`/api/auth/desktop/handoff/${encodeURIComponent(handoffId)}/callback`, {
           method: 'POST', headers: {'content-type': 'application/json'},
           cache: 'no-store', body: JSON.stringify({code}),
-        });
+        }), 'desktop_handoff');
         if (!response.ok) throw new Error('desktop_handoff_rejected');
         history.replaceState(null, '', '/auth/callback');
         msg.textContent = 'Solicitação recebida. Você pode voltar ao Yomu Sekai para continuar.';
@@ -73,7 +132,9 @@
       }
       // The callback performs the PKCE exchange explicitly. Disable the SDK's
       // automatic URL detection here so the one-use code is not exchanged twice.
-      const client = await getSupabaseClient({detectSessionInUrl: false});
+      const client = await withCallbackTimeout(
+        getSupabaseClient({detectSessionInUrl: false}), 'client_initialization');
+      if (code && !client) throw new Error('supabase_client_unavailable');
       if (client) {
         // The callback page is intentionally tiny and does not mount auth_ui.js.
         // Persist the recovery intent before returning to the shell so an
@@ -87,10 +148,11 @@
           }
         });
         if (code) {
-          const exchanged = await client.auth.exchangeCodeForSession(code);
+          const exchanged = await withCallbackTimeout(
+            client.auth.exchangeCodeForSession(code), 'code_exchange');
           if (exchanged?.error) throw exchanged.error;
         }
-        const current = await client.auth.getSession();
+        const current = await withCallbackTimeout(client.auth.getSession(), 'session_confirmation', 8000);
         if (code && recoveryPending && !current?.data?.session) throw new Error('recovery_session_not_established');
         if (recoveryPending) {
           sessionStorage.removeItem('yomu_recovery_pending_at');
@@ -107,6 +169,9 @@
       // recovery uses the equally fixed shell route with an explicit mode marker.
       setTimeout(() => { window.location.replace(recoveryHandoffPending ? '/?auth_mode=recovery_password' : '/'); }, 600);
     } catch (err) {
+      // Do not leave a one-use authorization code visible after a terminal error.
+      // The user can reopen the original email link if another attempt is needed.
+      try { history.replaceState(null, '', '/auth/callback'); } catch (_) { /* best effort */ }
       persistCallbackError(err);
       try {
         sessionStorage.removeItem('yomu_recovery_intent');
@@ -115,12 +180,16 @@
         localStorage.removeItem('yomu_recovery_pending_at_durable');
         sessionStorage.setItem('yomu_recovery_invalid', '1');
       } catch (_) {}
+      const spinner = document.getElementById('authCallbackSpinner');
+      if (spinner) spinner.hidden = true;
       msg.textContent = 'Não foi possível concluir a autenticação. ';
+      msg.dataset.state = 'error';
       const back = document.createElement('a');
       back.href = '/';
       back.textContent = recoveryHandoffPending ? 'Voltar para entrar' : 'Voltar ao painel';
       msg.appendChild(back);
     }
+    })();
   </script>
 </body>
 </html>

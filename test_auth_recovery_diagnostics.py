@@ -97,6 +97,39 @@ def test_callback_disables_auto_url_detection_for_single_pkce_exchange():
     assert "options.detectSessionInUrl !== false" in auth
 
 
+def test_callback_auth_steps_have_bounded_waits_and_sanitized_phase_diagnostics():
+    callback = (Path(__file__).parent / "ui" / "auth_callback.html").read_text(encoding="utf-8")
+    assert "void (async () => {" in callback
+    assert "CALLBACK_TIMEOUT_MS = 15000" in callback
+    for phase in ("desktop_handoff", "client_initialization", "code_exchange", "session_confirmation"):
+        assert f"'{phase}'" in callback
+    for field in ("trace_id:", "phase:", "elapsed_ms:"):
+        assert field in callback
+    for forbidden in ("access_token:", "refresh_token:", "Authorization:", "email:"):
+        assert forbidden not in callback
+
+
+def test_transient_backend_session_failures_do_not_clear_authenticated_shell():
+    source = AUTH_UI.read_text(encoding="utf-8")
+    sync = source[source.index("async function syncBackendSession"):source.index("async function establishCanonicalSession")]
+    assert "hadAuthenticatedSession" in sync
+    assert "response.status === 401" in sync
+    assert "canonical_session_check_degraded" in sync
+    assert "if (hadAuthenticatedSession)" in sync
+    assert "window.dispatchEvent(new CustomEvent('tradutor-auth-changed'" in sync
+
+
+def test_auth_event_trace_is_bounded_and_persists_only_safe_allowlist():
+    source = AUTH_UI.read_text(encoding="utf-8")
+    trace = source[source.index("function authTrace"):source.index("authTrace('AUTH_UI_BUILD_LOADED'")]
+    persisted = trace[trace.index("const key = 'tradutor_auth_event_trace_v1'"):trace.index("if (window.__tradutorAuthDiagnosticsEnabled")]
+    assert "tradutor_auth_event_trace_v1" in trace
+    assert ".slice(-40)" in trace
+    assert "auth_event" in trace and "source" in trace and "status" in trace
+    assert "session_fingerprint" not in persisted
+    assert "access_token" not in persisted and "refresh_token" not in persisted
+
+
 def test_recovery_success_finalizes_session_before_normal_login():
     source = AUTH_UI.read_text(encoding="utf-8")
     assert "RECOVERY_SIGNOUT_STARTED" in source
