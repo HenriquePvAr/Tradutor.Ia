@@ -535,3 +535,15 @@ O pipeline separa sucesso técnico de aprovação de qualidade. Um PDF pode exis
 
 O congelamento atual de comportamento de produção está registrado em
 [Quality Freeze](QUALITY_FREEZE.md).
+
+## Retenção do histórico de traduções
+
+`translation_requests` preserva requests terminais mesmo quando sua licença ou
+dispositivo é excluído: as referências `license_id` e `device_id` tornam-se nulas
+por FK `ON DELETE SET NULL`; o request, seu identificador, estado, provider e
+resultado persistido permanecem. Requests `pending` ou `processing` exigem ambas as referências; a
+restrição do banco rejeita a exclusão enquanto houver trabalho ativo, evitando
+desanexar silenciosamente uma execução recuperável. A revogação normal de um
+dispositivo é lógica (`status='revoked'`) e mantém sua referência histórica.
+Isso descreve o contrato da migration local; aplicação remota continua pendente
+de validação e autorização próprias.

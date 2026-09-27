@@ -59,6 +59,13 @@ MIGRATION_CHAIN = [
             "20260913005557_canonical_translation_commit_rpc_grants.sql",
             "20260915013128_chapter_level_translation_finalization.sql",
             "20260915140000_yk_ads_foundation.sql",
+            "20260915153000_ayet_rewarded_sessions.sql",
+            "20260916100000_yk_ads_product_contract.sql",
+            "20260917012623_wallet_summary_plan_diagnostic.sql",
+            "20260917015949_wallet_summary_auth_reconciliation.sql",
+            "20260917021000_daily_cross_cycle_accounting.sql",
+            "20260923150000_admin_enable_license_device_operations.sql",
+            "20260924060000_preserve_translation_requests_on_license_delete.sql",
             "20260926175232_yk_job_atomic_settlement.sql",
         )
     ],
@@ -240,6 +247,108 @@ def test_migration_chain_applies_from_scratch(db):
     ).fetchone()
 
 
+def test_admin_license_device_operations_remain_developer_only(db):
+    uid, _, _ = db.user("free")
+    for role in ("anon",):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.as_role(role, None,
+                       "select public.admin_revoke_device(gen_random_uuid(),'test')")
+    with pytest.raises(psycopg.errors.RaiseException, match="forbidden"):
+        db.as_user(uid,
+                   "select public.admin_revoke_device(gen_random_uuid(),'test')")
+
+
+def test_license_delete_detaches_settled_history_without_financial_changes(db):
+    uid, license_id, device_id = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
+    db.as_user(uid, "select public.claim_daily_yk()")
+    job = f"license-delete-{uid}"
+    reservation = db.translate_chapter(uid, license_id, device_id, job, batches=1)
+    settled = db.as_user(
+        uid, "select public.settle_translation_job(%s,%s,'consume',%s)",
+        (job, reservation["reservation_id"], f"yk-settlement:{uid}:license-delete"))
+    assert settled["yk_debited"] == 1
+    before = db.conn.execute(
+        "select count(*), coalesce(sum(amount),0) from public.yk_ledger where user_id=%s",
+        (uid,)).fetchone()
+
+    db.conn.execute("delete from public.licenses where id=%s", (license_id,))
+
+    rows = db.conn.execute(
+        "select status, license_id, device_id, result from public.translation_requests "
+        "where job_id=%s", (job,)).fetchall()
+    assert len(rows) == 1
+    status, saved_license, saved_device, result = rows[0]
+    assert status == "completed" and saved_license is None and saved_device is None
+    assert result == {"items": [{"item_id": "test", "translated_text": "stored"}]}
+    after = db.conn.execute(
+        "select count(*), coalesce(sum(amount),0) from public.yk_ledger where user_id=%s",
+        (uid,)).fetchone()
+    assert after == before
+    assert db.conn.execute(
+        "select count(*) from public.translation_requests q "
+        "left join public.licenses l on l.id=q.license_id "
+        "left join public.license_devices d on d.id=q.device_id "
+        "where q.job_id=%s and ((q.license_id is not null and l.id is null) "
+        "or (q.device_id is not null and d.id is null))", (job,)
+    ).fetchone()[0] == 0
+    replay = db.as_user(
+        uid, "select public.settle_translation_job(%s,%s,'consume',%s)",
+        (job, reservation["reservation_id"], f"yk-settlement:{uid}:license-delete"))
+    assert replay["idempotent"] is True and replay["yk_debited"] == 0
+
+
+def test_terminal_history_survives_direct_device_delete_and_revocation(db):
+    uid, license_id, device_id = db.user("free")
+    job = f"device-delete-{uid}"
+    request_id = f"{job}-request"
+    db.conn.execute(
+        "insert into public.translation_requests"
+        "(request_id,user_id,license_id,device_id,job_id,provider,status,result) "
+        "values(%s,%s,%s,%s,%s,'deepl','failed','{}'::jsonb)",
+        (request_id, uid, license_id, device_id, job))
+    staff = uuid.uuid4()
+    db.conn.execute("insert into auth.users(id,email) values(%s,%s)",
+                    (staff, f"{staff}@test.local"))
+    db.conn.execute("insert into public.staff_members(user_id,role) values(%s,'dev')",
+                    (staff,))
+    revoked = db.as_user(
+        staff, "select public.admin_revoke_device(%s,'test revocation')", (device_id,))
+    assert revoked["status"] == "revoked"
+    assert db.conn.execute(
+        "select device_id from public.translation_requests where request_id=%s",
+        (request_id,)).fetchone()[0] == device_id
+
+    db.conn.execute("delete from public.license_devices where id=%s", (device_id,))
+    row = db.conn.execute(
+        "select status, license_id, device_id from public.translation_requests "
+        "where request_id=%s", (request_id,)).fetchone()
+    assert row == ("failed", license_id, None)
+
+
+@pytest.mark.parametrize("status", ["pending", "processing"])
+def test_license_or_device_delete_is_blocked_for_active_translation_request(db, status):
+    uid, license_id, device_id = db.user("free")
+    request_id = f"active-{status}-{uuid.uuid4()}"
+    db.conn.execute(
+        "insert into public.translation_requests"
+        "(request_id,user_id,license_id,device_id,provider,status) "
+        "values(%s,%s,%s,%s,'deepl',%s)",
+        (request_id, uid, license_id, device_id, status))
+    with pytest.raises(psycopg.errors.CheckViolation,
+                       match="translation_requests_active_requires_license_device"):
+        db.conn.execute("delete from public.licenses where id=%s", (license_id,))
+    assert db.conn.execute(
+        "select license_id,device_id,status from public.translation_requests "
+        "where request_id=%s", (request_id,)).fetchone() == (license_id, device_id, status)
+    with pytest.raises(psycopg.errors.CheckViolation,
+                       match="translation_requests_active_requires_license_device"):
+        db.conn.execute("delete from public.license_devices where id=%s", (device_id,))
+    assert db.conn.execute(
+        "select license_id,device_id,status from public.translation_requests "
+        "where request_id=%s", (request_id,)).fetchone() == (license_id, device_id, status)
+
+
 # ---------------------------------------------------------------------------
 # Plan target
 # ---------------------------------------------------------------------------
@@ -247,6 +356,7 @@ def test_migration_chain_applies_from_scratch(db):
                                                 (5, 0), (12, 0)])
 def test_daily_topup_reaches_plan_target(db, permanent, expected):
     uid, _, _ = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
     if permanent:
         db.credit(uid, permanent, "permanent")
     result = db.as_user(uid, "select public.claim_daily_yk()")
@@ -258,6 +368,7 @@ def test_daily_topup_reaches_plan_target(db, permanent, expected):
 
 def test_plan_with_zero_target_grants_nothing(db):
     uid, _, _ = db.user("pro_monthly")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
     assert db.as_user(uid, "select public.claim_daily_yk()")["amount"] == 0
     assert db.balances(uid).get("daily", 0) == 0
 
@@ -265,6 +376,7 @@ def test_plan_with_zero_target_grants_nothing(db):
 def test_user_without_active_license_mints_nothing(db):
     uid = uuid.uuid4()
     db.conn.execute("insert into auth.users(id,email) values(%s,%s)", (uid, f"{uid}@t.local"))
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
     assert db.as_user(uid, "select public.claim_daily_yk()")["amount"] == 0
 
 
@@ -337,6 +449,7 @@ def test_next_cycle_starts_clean_instead_of_negative(db):
 
 def test_permanent_never_expires_and_may_exceed_target(db):
     uid, license_id, device_id = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
     db.credit(uid, 12, "permanent")
     db.age_one_day(uid)
     assert db.balances(uid)["permanent"] == 12
@@ -756,6 +869,7 @@ def test_reward_denied_for_a_plan_without_rewarded_ads(db, rewarded_enabled):
 # ---------------------------------------------------------------------------
 def test_simultaneous_claims_from_two_devices_grant_once(db, migrated_dsn):
     uid, _, _ = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
     results: list = []
     errors: list = []
 
@@ -839,3 +953,43 @@ def test_same_job_retried_concurrently_keeps_one_reservation(db, migrated_dsn):
     assert int(db.conn.execute(
         "select count(*) from public.yk_reservations where user_id=%s", (uid,)
     ).fetchone()[0]) == 1
+
+
+def test_concurrent_settlement_debits_same_job_once(db, migrated_dsn):
+    uid, license_id, device_id = db.user("free")
+    db.as_user(uid, "select public.set_passive_ads_enabled(true)")
+    db.as_user(uid, "select public.claim_daily_yk()")
+    job = f"settle-concurrent-{uid}"
+    reservation = db.translate_chapter(uid, license_id, device_id, job, batches=1)
+    key = f"yk-settlement:{uid}:concurrent"
+    results: list = []
+    errors: list = []
+
+    def settle():
+        try:
+            with psycopg.connect(migrated_dsn, autocommit=True) as conn:
+                with conn.transaction():
+                    conn.execute("select set_config('request.jwt.claim.sub',%s,true)",
+                                 (str(uid),))
+                    conn.execute("set local role authenticated")
+                    result = conn.execute(
+                        "select public.settle_translation_job(%s,%s,'consume',%s)",
+                        (job, reservation["reservation_id"], key)).fetchone()[0]
+                results.append(result)
+        except Exception as exc:
+            errors.append(str(exc))
+
+    threads = [threading.Thread(target=settle) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors, errors
+    assert len(results) == 8
+    assert sum(result["yk_debited"] for result in results) == 1
+    assert int(db.conn.execute(
+        "select count(*) from public.yk_ledger where user_id=%s "
+        "and event_type='translation_debit' and reference_id=%s", (uid, job)
+    ).fetchone()[0]) == 1
+    assert db.balances(uid)["daily"] == 4
