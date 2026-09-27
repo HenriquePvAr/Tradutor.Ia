@@ -60,7 +60,7 @@ Os manifests são a fonte de verdade das dependências. Não replique a lista aq
 
 | Manifest | Conteúdo |
 | --- | --- |
-| `requirements-beta.txt` | **perfil de runtime da Beta 1**; compõe `requirements.txt` + `requirements-rapidocr.txt` sem repetir pins |
+| `requirements-beta.txt` | **perfil de runtime da Beta**; compõe os requisitos base/OCR e declara Scrapling (Comix) + psd-tools, usados pelo spec de packaging |
 | `requirements.txt` | stack principal, incluindo os pins de imagem/CV (`numpy`, `Pillow`, `opencv-python`) e `nicegui`. **Não** contém PaddleOCR |
 | `requirements-rapidocr.txt` | RapidOCR + onnxruntime (engine de OCR primário, obrigatório) |
 | `requirements-paddle.txt` | **opcional, fora da Beta** — PaddleOCR/PaddlePaddle. Instalar isto quebra o contrato de OpenCV (ver abaixo) |

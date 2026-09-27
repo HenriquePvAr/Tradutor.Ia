@@ -1,7 +1,7 @@
 # Tradutor IA — Documentação Técnica
 
 > **Base verificada:** `5c651ba` (branch `main`)
-> **Última revisão:** 2026-09-25
+> **Última revisão:** 2026-09-27
 > **Público:** desenvolvedores, mantenedores, suporte técnico e agentes automatizados.
 
 Documentos irmãos: [Guia do Usuário](../user/GUIA_DO_USUARIO.md) ·
@@ -1484,8 +1484,74 @@ Contrato completo em [`docs/QUALITY_AND_VALIDATION.md`](../QUALITY_AND_VALIDATIO
 
 ## 18. PDF e histórico
 
-`pdf.py` reúne as páginas finais válidas; a contagem do PDF é comparada com a esperada pelo
-quality gate.
+`pdf.py` reúne as páginas finais válidas e escreve o PDF, que permanece o **artefato de
+qualidade canônico** do run: PNG e PSD, quando solicitados, são derivados das mesmas páginas
+finais já renderizadas, então o quality gate valida o PDF mesmo quando o formato de saída é
+PNG ou PSD.
+
+### Página lógica vs página física de PDF (tiras longas)
+
+Uma **logical source page** é uma página de conteúdo — um PNG de saída, uma página do
+capítulo. Uma **physical PDF page** é uma página dentro do arquivo PDF. Em tiras longas as
+duas deixam de ser a mesma unidade.
+
+Pillow grava PDF a 72 dpi (um pixel de origem é um ponto de PDF) e o formato limita cada
+página a `MAX_LOGICAL_PAGE_HEIGHT = 14400` pontos. Uma página **mais alta que 14.400 px
+continua sendo uma única logical page** — o PNG/origem não é cortado —, mas o PDF a
+**representa em múltiplas physical pages**, fatiando apenas a representação PDF.
+
+`pdf._physical_page_offsets(height)` é a **fonte canônica** dessa segmentação: retorna os
+offsets de topo de cada physical page (`[0]` até 14.400 px; `range(0, height, 14400)` acima
+disso). O loop de crop de `generate_pdf` e a contagem esperada leem a **mesma** função, logo
+a regra vive em um único lugar — não há `ceil(altura / 14400)` duplicado em outro módulo, nem
+contagem por altura hardcodada.
+
+`pdf.pdf_page_manifest(image_paths)` expõe o contrato:
+
+| Campo | Significado |
+| --- | --- |
+| `logical_source_pages` | uma por página de saída/PNG |
+| `pdf_physical_page_count` | total de physical pages no PDF depois de segmentar as tiras altas |
+| `pdf_pages_per_source` | quantas physical pages cada logical page vira, em ordem |
+
+**O quality gate compara physical esperado vs physical real:** o esperado vem de
+`pdf_physical_page_count` (a regra canônica aplicada às páginas lógicas) e o real de
+`_count_pdf_pages` (parse do PDF gravado); o gate passa somente na igualdade exata. O
+`quality_validation` publica `logical_page_count`, `pdf_physical_page_count` e
+`pdf_pages_per_source`, além de `pdf_pages`/`expected_pdf_pages` (ambos agora **físicos**).
+Antes, o gate comparava a contagem física real contra a contagem **lógica**
+(`len(completed_states)`): uma página de 30.000 px produzia 3 physical pages mas o esperado
+era 1, e toda tira longa correta caía em `review_required` sem defeito real. A correção é um
+ajuste de **unidade** apenas — não relaxa o gate nem faz bypass: uma contagem física errada
+continua reprovando.
+
+Exemplos (uma logical page):
+
+| Altura da logical page | logical | physical PDF |
+| --- | --- | --- |
+| 15000 px | 1 | 2 |
+| 20000 px | 1 | 2 |
+| 30000 px | 1 | 3 |
+
+Multi-page (20.000 px + 5.000 px): `logical_source_pages = 2`,
+`pdf_pages_per_source = [2, 1]`, `pdf_physical_page_count = 3`.
+
+**O tiling de OCR não muda a identidade da página.** O OCR de tiras altas processa a página
+em tiles internos (`TALL_IMAGE_TILE_MAX_HEIGHT = 4096` px, `TALL_IMAGE_TILE_OVERLAP = 256`
+px, com a altura efetiva adaptada à largura por um orçamento de pixels) e remapeia as
+coordenadas de volta ao sistema global antes de deduplicar sobreposições. Esse tiling é uma
+estratégia interna do detector e **não altera a identidade da logical page**: ela continua
+sendo uma só. O fatiamento em physical pages é **exclusivamente preocupação do exporter**
+(`pdf.py`), independente do tiling de OCR e da contagem lógica.
+
+> **PSD profissional de tiras longas (resolvido — Professional PSD P4).** O export PSD passou
+> a usar o exporter profissional em camadas (`professional_psd.py`), e o pico de memória do
+> export de uma página de 30.000 px caiu de ~3,7 GB de delta (~4 GB absoluto) para **~502 MB de
+> delta (~920 MB absoluto)** no probe — redução de ~87%. A causa era o `PSDImage.save()` do
+> psd-tools compondo (`composite(force=True)`) todas as camadas full-page para o preview
+> mesclado; como o exporter já possui a página achatada, ele define o `image_data` mesclado
+> direto e pula a recomposição (com fallback seguro). `PSD_RUNTIME_MEMORY_RISK=LOW`. Detalhes
+> em [§18 (Professional PSD)](#18-pdf-e-histórico) abaixo e no bloco de Professional PSD.
 
 `pdf_naming.py` é a **única** fonte do nome:
 
@@ -2372,6 +2438,86 @@ npm run typecheck; npm test; npm run build
 
 Guia mais amplo: [`docs/TROUBLESHOOTING.md`](../TROUBLESHOOTING.md).
 
+## 28.1 Estado das frentes (consolidação Beta — 2026-09-27)
+
+Resumo verificado do trabalho consolidado para a próxima Beta. Detalhes por subsistema
+nas seções correspondentes; portões físicos (executável novo) marcados explicitamente.
+
+### Quality Review (R1–R4) — IMPLEMENTADO
+
+- **R1**: DTO da Review com identidade de página (`index` sobre `sequence_index`), `bounding_box`
+  no item, ordenação física canônica (`page_index → bbox.y → bbox.x → region_id`) e preview de
+  página com estados explícitos. `ui_bridge.py`, `app_ui.py`, `static/tradutor_ui.js`.
+- **R2**: edição persistente de source (OCR) e target (tradução) como camada de override,
+  versionada (conflito otimista), originais preservados. Coluna `source_text` em
+  `quality_review_item_revisions` (schema v13). Sem provider.
+- **R3**: controles de região — `translate/ignore/auto`, tipo de região, bbox override e
+  regiões manuais (missed balloon / outside balloon), persistidos em
+  `quality_review_region_overrides`.
+- **R4**: geração assíncrona a partir de um **snapshot congelado** da Review, via worker
+  subprocess, com recovery e lineage. **Zero OCR/provider/YK adicionais** no re-export
+  (`review_reexport.py`, `review_reexport_runner.py`). `PHYSICAL_REVIEW_UI` = gate do executável.
+
+### Professional PSD (P1–P4) — IMPLEMENTADO, canônico
+
+- Tanto **Quality direto** quanto **Review R4** usam o exporter profissional (`professional_psd.py`);
+  o exporter legado de 2 camadas (`psd_exporter.py`) **não é mais alcançável no produto** (só em
+  seu próprio teste unitário).
+- Camadas por página: `Original` (oculto) · `Cleaned` (visível) · `Text/Region NNN` (raster por
+  região, visível no ON) · `Translated Preview` (oculto, referência).
+- **Typesetting ON**: Cleaned + region layers reconstroem o resultado traduzido. **OFF**: só
+  `Cleaned` + `Original`, sem preview e sem region layers, com metadata completa das regiões no
+  manifest. `PSD_TEXT_MODE=RASTER_PER_REGION`, `EDITABLE_TEXT_SUPPORTED=NO` (não é PSD de texto editável).
+- **P4 memória**: causa do pico era `PSDImage.save()` recompondo (`composite(force=True)`) as
+  camadas full-page para o preview mesclado. Como já temos a página achatada, o exporter define
+  o `image_data` mesclado direto e pula a recomposição (com fallback seguro, pin `psd-tools==1.10.9`).
+  Probe 30k ON: ~502 MB de delta (~920 MB absoluto), redução ~87%. `PSD_RUNTIME_MEMORY_RISK=LOW`.
+  Os números do probe **não** são garantia universal de RAM em toda máquina.
+
+### Webtoon — progresso/cancel (source analysis)
+
+- Registry de progresso vivo + endpoint de poll durante `/api/ui/source/analyze`, com estágios
+  reais e contador de tempo (`source_analysis_progress.py`), e **cancelamento cooperativo** da
+  análise (o `discover_chapter_source` já honra `cancel_check`). A **performance real** de
+  descoberta/download **não** foi acelerada: o transporte de navegador permanece serial por
+  design (não é thread-safe) e a segunda descoberta permanece por freshness/privacidade
+  (o snapshot é um gate de IDs opacos, sem URLs). Webtoon **live** = gate do executável/RC.
+
+### Comix — validado ao vivo
+
+- Descoberta atual: HTTP preflight → `source_access_denied` → resolver dinâmico (navegador via
+  scrapling/patchright) → PASS. Sem 522/CAPTCHA/challenge/`no_reader_images`. Download-only real
+  3/3 com `downloaded_images.json` consistente; a classe "finished mas sem output" **não**
+  reproduz. **Requisito**: `scrapling[fetchers]==0.4.15` (declarado em requirements-beta e
+  empacotado). Sem essa dependência, falha fechado com `capability_unavailable` (correto). Não
+  fixar contagens de página (105/51) como regra permanente — são observações do smoke.
+
+### Auth
+
+- Watchdog de ~12 s **antes** do boot do módulo (`PRE_MODULE_SPINNER_GAP` fechado); depois do
+  boot, os timeouts internos de callback continuam sendo a autoridade. Código: 353/353 testes
+  PASS. Teste físico de magic-link fresco (`FRESH_MAGIC_LINK_PHYSICAL_TEST`) = gate do executável.
+
+### YK — local PASS, Postgres PENDENTE
+
+- Comportamento local (reserva → consumo no sucesso do provider com recovery → settlement)
+  passa em 70/70 unit/mock; auditoria estática forte. Mas **`POSTGRES_RUNTIME_VALIDATION=PENDING`**
+  (Docker indisponível) e **`REMOTE_DEPLOY=PENDING`** — **não** declarar production-ready. Migration
+  e functions existem localmente e **não** foram aplicadas remotamente.
+
+### Quality diagnostics
+
+- Harness de regressão de diagnóstico com fixtures **sintéticas** versionadas e um caso real
+  negativo (SFX `SLURP` preservado; a imagem/crop real **não** é versionada). Casos I→1, missed
+  balloon e outside-balloon **não** têm correção automática implementada — dependem de reprodução
+  real segura futura.
+
+### Portões deliberadamente adiados para o executável novo (RC)
+
+`PHYSICAL_REVIEW_UI` · `PHYSICAL_AUTH_MAGIC_LINK` · `PHYSICAL_SCROLL_BUG` (permanece **OPEN**;
+não declarar corrigido) · `WEBTOON_LIVE_RC` · `COMIX_FULL_QUALITY_WORKER_RC` · instalação
+limpa/updater · `YK_POSTGRES_VALIDATION`.
+
 ## 29. Dívida técnica conhecida
 
 Auditada contra o commit base. Itens já fechados foram removidos desta lista.
@@ -2392,6 +2538,8 @@ Auditada contra o commit base. Itens já fechados foram removidos desta lista.
 | `PASSIVE-ADS-UI-PLACEHOLDER` | Média | `#passiveAdsSettings` é um placeholder "Em breve"; o backend já tem `set_passive_ads_enabled`, mas nenhuma tela liga/desliga a preferência. | `ui/ui_shell.html`, §31 | TDD de UI após a migration ser aplicada |
 | `ADS-INVENTORY-BLOCKER` | Alta (bloqueia monetização por anúncios) | Pesquisa concluída: nenhum provider entrega anúncio passivo verificável neste runtime (Win32 + WebView local, sem domínio). AdSense/Ad Manager proíbem desktop apps por política; Microsoft e AdDuplex estão mortos; Pubfinity/PubMatic são UWP; AdsJumbo é .NET sem rewarded nem SSV. Único viável: offerwall web com postback HMAC — produto diferente de "assistir anúncio". | `docs/technical/ADS_PROVIDER_RESEARCH.md`, §31 | Decisão comercial do owner: offerwall, beta sem anúncios passivos, ou monetização fora do escopo da beta |
 | `CI-JS-SUITES-NOT-RUN` | Média | A CI roda apenas `node --check` sobre `static/*.js`; as 14 suítes `.mjs` (que exigem `--experimental-vm-modules`) não são executadas em nenhum job. Regressão de frontend só é detectada localmente. | `.github/workflows/tests.yml`, `docs/DEVELOPMENT.md#ci` | Adicionar um step que itere `test_*.mjs` com a flag; barato e sem impacto no comportamento de produção |
+| `YK-POSTGRES-RUNTIME-VALIDATION` | Alta (bloqueia deploy YK) | O comportamento local de YK (reserva/settlement/recovery) passa em 70/70 unit/mock e a auditoria estática é forte (transação, advisory lock, row locks, estado terminal, idempotency key parcial única, chave de settlement determinística), mas **não houve prova em PostgreSQL real** (Docker indisponível). Sem validação de concorrência/atomicidade no runtime Postgres. | `yk_reservation.py`, `yomu_backend_provider.py`, `supabase/functions/wallet-settle-job/`, migration `20260926175232` | Validar em Postgres quando Docker estiver disponível; **não** deployar migration/functions remotas antes disso e sem autorização explícita |
+| `COMIX-DYNAMIC-DEP-PROVISIONING` | Média | A descoberta dinâmica do Comix exige `scrapling[fetchers]==0.4.15` (declarado em `requirements-beta.txt` e empacotado pelo spec). Um venv/ambiente que **não** instale as requirements-beta faz o Comix falhar fechado com `capability_unavailable` (fail-closed correto, sem output falso). | `scrapling_reader_resolver.py`, `requirements-beta.txt`, `packaging/tradutor_ia.spec` | Garantir que qualquer ambiente/venv de execução instale `requirements-beta.txt`; coberto por `test_beta_packaging_requirements.py` |
 
 ### Limitações conhecidas do produto
 

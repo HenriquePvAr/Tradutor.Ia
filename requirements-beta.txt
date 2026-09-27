@@ -22,3 +22,7 @@
 # `-r requirements-dev.txt` to run the suite; that is not shipped.
 -r requirements.txt
 -r requirements-rapidocr.txt
+# Runtime capabilities explicitly bundled by packaging/tradutor_ia.spec:
+# selected Comix dynamic reader and the current PSD exporter.
+scrapling[fetchers]==0.4.15
+psd-tools==1.10.9

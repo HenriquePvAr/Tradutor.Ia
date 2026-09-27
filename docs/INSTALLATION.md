@@ -47,7 +47,8 @@ Nos comandos seguintes, substitua `python` por `.\.venv\Scripts\python.exe` e `p
 
 ## 3. Instalar as dependências
 
-`requirements-beta.txt` é o perfil de runtime da Beta 1. Ele compõe os manifests existentes,
+`requirements-beta.txt` é o perfil de runtime da Beta. Ele compõe os manifests existentes
+e declara também os recursos Comix (Scrapling) e PSD incluídos pelo spec de packaging,
 então instalar por ele é o caminho suportado:
 
 ```powershell
@@ -59,7 +60,7 @@ python -s scripts/check_runtime_profile.py
 
 Os arquivos têm responsabilidades diferentes:
 
-- `requirements-beta.txt`: perfil de runtime da Beta 1 (`requirements.txt` + `requirements-rapidocr.txt`);
+- `requirements-beta.txt`: perfil de runtime da Beta (`requirements.txt` + `requirements-rapidocr.txt` + Scrapling/PSD usados no pacote);
 - `requirements.txt`: processamento de imagem, Selenium, tradução e monitoramento;
 - `requirements-rapidocr.txt`: RapidOCR e ONNX Runtime usados como OCR primário do fluxo Beta
   nos modos `fast` e `quality`;

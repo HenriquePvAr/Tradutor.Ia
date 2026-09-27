@@ -85,3 +85,9 @@ snapshots/
 .local-audit/
 diagnostics/
 out/
+
+# Consolidation (2026-09-27): local E2E runtime dirs and real third-party content crops
+# are never versioned (synthetic diagnostic fixtures are).
+e2e_test_runtime/
+large_strip_e2e_runtime/
+test_fixtures/quality_regression_diagnostics/real/**/source_crop.png
