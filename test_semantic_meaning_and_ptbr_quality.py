@@ -213,6 +213,20 @@ class NaturalPortugueseTests(unittest.TestCase):
         self.assertEqual(finding.status, semantic_fidelity.REVIEW)
         self.assertEqual(finding.primary_reason, semantic_fidelity.GRAMMAR_MALFORMED)
 
+    def test_object_clitic_before_infinitive_is_valid_ptbr(self):
+        # "nos/me/te/se + infinitive" is valid proclisis and must not be flagged as
+        # malformed -- reverting these to English is the p182/p188 residual bug.
+        for source, candidate in (
+            ("WHAT IF PEOPLE CAN SEE US?", "E SE AS PESSOAS PODEM NOS VER?"),
+            ("NO ONE WILL SEE US.", "NINGUEM VAI NOS VER."),
+            ("COME SEE ME.", "VENHA ME VER."),
+            ("I WANT TO SEE YOU.", "QUERO TE VER."),
+            ("IT TAKES TIME TO ADAPT.", "LEVA TEMPO PARA SE ADAPTAR."),
+        ):
+            with self.subTest(candidate=candidate):
+                self.assertTrue(_evaluate(source, candidate).faithful,
+                                f"clitic+infinitive wrongly flagged: {candidate}")
+
     def test_duplicated_function_word_is_reviewed(self):
         finding = _evaluate("THE DOOR OF THE HOUSE.", "A PORTA DA DA CASA.")
         self.assertEqual(finding.status, semantic_fidelity.REVIEW)

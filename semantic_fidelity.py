@@ -721,8 +721,15 @@ def repair_suspicious_source(source, suspicious_tokens, vocabulary, *, protected
 # --- Portuguese a reader would not accept ------------------------------------
 # Two shapes only, both unambiguous. Anything subtler is a judgement call and
 # belongs to the adjudicator, not to a regex.
+# Subject pronoun + bare infinitive is malformed ("voce fazer", "ele ver").
+# ``nos`` is deliberately excluded: it is also the object clitic "us", so
+# "nos ver" is valid proclisis (e.g. "as pessoas podem nos ver", "ninguem vai
+# nos ver"). Folding strips the accent from the subject "nos", making the two
+# indistinguishable here, and reverting a valid clitic translation to English is
+# worse than missing the rare "nos + infinitive" subject error. me/te/se/vos are
+# already absent for the same reason.
 _BARE_INFINITIVE = re.compile(
-    r"\b(?:voce|voces|eu|ele|ela|eles|elas|nos)\s+"
+    r"\b(?:voce|voces|eu|ele|ela|eles|elas)\s+"
     r"(?:fazer|ser|ter|ir|estar|dizer|ver|saber|poder|querer|dar|vir|ficar|falar)\b"
 )
 _DUPLICATED_FUNCTION_WORD = re.compile(
