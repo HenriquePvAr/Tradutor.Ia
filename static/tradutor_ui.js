@@ -634,6 +634,7 @@
   const tabTheme = {
     inicio: {hex: '#c5372c', rgb: '197,55,44'},
     nova: {hex: '#c5372c', rgb: '197,55,44'},
+    fontes: {hex: '#2f8f5f', rgb: '47,143,95'},
     queue: {hex: '#4a7fb5', rgb: '74,127,181'},
     hist: {hex: '#c9a227', rgb: '201,162,39'},
     leitor: {hex: '#c9a227', rgb: '201,162,39'},
@@ -723,7 +724,7 @@
 
   /* ---------- tabs and motion ---------- */
   const views = {
-    inicio: 'view-inicio', nova: 'view-nova', queue: 'view-queue', hist: 'view-hist',
+    inicio: 'view-inicio', nova: 'view-nova', fontes: 'view-fontes', queue: 'view-queue', hist: 'view-hist',
     leitor: 'view-leitor',
     scans: 'view-scans', rewards: 'view-rewards', community: 'view-community', updates: 'view-updates', cfg: 'view-cfg', logs: 'view-logs',
   };
@@ -807,6 +808,13 @@
   }));
   window.addEventListener('tradutor-navigate-tab', event => activateTab(event.detail?.tab || 'rewards'));
   $$('[data-goto]').forEach(button => button.addEventListener('click', () => activateTab(button.dataset.goto)));
+  // "Fontes" cards: open the allow-listed supported site in the system default browser
+  // via the desktop bridge (constant server-side URL; the page only sends an opaque key).
+  $$('.source-open').forEach(button => button.addEventListener('click', () => {
+    const key = button.dataset.source;
+    if (!key) return;
+    try { window.pywebview?.api?.open_supported_source?.(key); } catch (_) { /* bridge optional */ }
+  }));
   window.setTimeout(() => moveIndicator($('.rail-tab.active')), 60);
 
   /* ---------- visual feedback ---------- */

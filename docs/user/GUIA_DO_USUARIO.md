@@ -1,6 +1,6 @@
 # Tradutor IA — Guia do Usuário
 
-> **Versão do guia verificada em:** commit `c81c798` · **Revisado em:** 2026-08-19
+> **Versão do guia verificada em:** commit `fa22d41` · **Revisado em:** 2026-09-28
 > **Para quem é:** Scans, tradutores, editores e testadores da Beta. Nenhum conhecimento
 > técnico é necessário.
 
@@ -150,6 +150,7 @@ Na lateral existe um menu com as áreas do programa:
 | --- | --- |
 | **Início** | Resumo: séries em andamento, atividade recente e atalhos rápidos |
 | **Nova tradução** | Onde você começa a tradução de um capítulo |
+| **Fontes** | Atalhos para os sites suportados (Webtoon, Comix, Vortex Scans): abre o site no navegador para você achar o capítulo e copiar a URL |
 | **Fila** | Vários capítulos enfileirados para processar em sequência |
 | **Capítulos traduzidos** | Sua biblioteca local: ler, abrir pasta e ver relatórios |
 | **Leitor** | Lê o capítulo escolhido dentro do próprio programa |
@@ -159,6 +160,14 @@ Na lateral existe um menu com as áreas do programa:
 
 > 💡 Atalhos: as teclas **1 a 9** trocam de aba, e **Enter** inicia a análise da URL na
 > tela de nova tradução.
+
+A aba **Fontes** é só um atalho: ela mostra os sites suportados hoje — **Webtoon**
+(https://www.webtoons.com/en/), **Comix** (https://comix.to/browse?genres_in=101137) e
+**Vortex Scans** (https://vortexscans.org/). Ao clicar em "Abrir …", o site abre no seu
+**navegador padrão** (o Yomu continua aberto). Lá você encontra o capítulo, **copia a URL**
+e volta ao Yomu para colar na aba **Nova tradução** — o processamento continua no fluxo
+normal. A aba Fontes não baixa nem processa nada por conta própria e não consulta os sites
+ao ser aberta.
 
 ## 8. Traduzindo um capítulo, passo a passo
 

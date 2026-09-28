@@ -123,6 +123,10 @@
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4v16m8-8H4"/></svg>
         Nova tradução
       </button></li>
+      <li><button type="button" class="rail-tab" data-tab="fontes">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/></svg>
+        Fontes
+      </button></li>
       <li><button type="button" class="rail-tab" data-tab="queue">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
         Fila
@@ -727,6 +731,37 @@
     </section>
 
     <!-- FILA -->
+    <section class="panel-view" id="view-fontes">
+      <div class="page-head">
+        <span class="ph-kanji">源</span>
+        <span class="ph-burst"></span>
+        <div>
+          <div class="page-title" data-text="Fontes">Fon<span class="accent">tes</span></div>
+          <div class="page-desc">Acesse uma das fontes suportadas, encontre o capítulo que deseja traduzir e copie a URL.</div>
+        </div>
+        <div class="page-headright">
+          <div class="page-tag">sites suportados</div>
+        </div>
+      </div>
+      <p class="sources-help">Abra uma fonte, escolha o capítulo desejado, copie a URL e volte ao Yomu para iniciar a tradução.</p>
+      <div class="sources-grid">
+        <article class="panel source-card">
+          <div class="source-card-head"><h2>Webtoon</h2><span class="source-badge">Suportado</span></div>
+          <p>Encontre um episódio no Webtoon e copie a URL do capítulo.</p>
+          <button type="button" class="btn-primary source-open" data-source="webtoon" aria-label="Abrir Webtoon no navegador">Abrir Webtoon</button>
+        </article>
+        <article class="panel source-card">
+          <div class="source-card-head"><h2>Comix</h2><span class="source-badge">Suportado</span></div>
+          <p>Encontre um capítulo no Comix e copie a URL do capítulo.</p>
+          <button type="button" class="btn-primary source-open" data-source="comix" aria-label="Abrir Comix no navegador">Abrir Comix</button>
+        </article>
+        <article class="panel source-card">
+          <div class="source-card-head"><h2>Vortex Scans</h2><span class="source-badge">Suportado</span></div>
+          <p>Encontre um capítulo no Vortex Scans e copie a URL do capítulo.</p>
+          <button type="button" class="btn-primary source-open" data-source="vortex" aria-label="Abrir Vortex Scans no navegador">Abrir Vortex Scans</button>
+        </article>
+      </div>
+    </section>
     <section class="panel-view" id="view-queue">
       <div class="page-head">
         <span class="ph-kanji">列</span>

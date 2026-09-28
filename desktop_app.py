@@ -234,6 +234,16 @@ def _load_external_provider_config(env: dict[str, str]) -> None:
         break
 
 
+# The "Fontes" tab is a shortcut hub to the supported content sites. Only these three
+# constant, allow-listed URLs may be opened, and only in the system default browser (never
+# inside the privileged WebView). No arbitrary URL from the page is ever accepted here.
+SUPPORTED_SOURCE_URLS = {
+    "webtoon": "https://www.webtoons.com/en/",
+    "comix": "https://comix.to/browse?genres_in=101137",
+    "vortex": "https://vortexscans.org/",
+}
+
+
 class DesktopApi:
     """Minimal WebView bridge for the local install identity.
 
@@ -389,6 +399,20 @@ class DesktopApi:
             raise RuntimeError("desktop_shutdown_unavailable")
         callback("update")
         return {"requested": True}
+
+    def open_supported_source(self, key: str) -> dict[str, object]:
+        """Open one allow-listed supported-source site in the system default browser.
+
+        The page passes only an opaque key ("webtoon"/"comix"/"vortex"); the URL is a
+        server-side constant, so a compromised page cannot open an arbitrary destination.
+        webbrowser.open launches the OS default browser, leaving the Yomu window open.
+        """
+        url = SUPPORTED_SOURCE_URLS.get(str(key or "").strip().lower())
+        if not url:
+            raise ValueError("unknown_source")
+        import webbrowser
+        opened = bool(webbrowser.open(url))
+        return {"opened": opened, "key": str(key).strip().lower()}
 
     def native_ad_set_bounds(self, x: float, y: float, width: float, height: float, visible: bool = True) -> dict[str, bool]:
         surface = globals().get("_NATIVE_AD_SURFACE")

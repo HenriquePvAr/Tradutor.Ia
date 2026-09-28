@@ -3524,3 +3524,15 @@ html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login
 #translationProviderField,#ocrEngineField{display:none!important}
 .rewards-hero-copy{margin:10px 0 14px}.rewards-daily-hero{width:auto;max-width:none;display:inline-flex}
 .updates-layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(280px,.8fr);gap:20px;max-width:980px;margin:28px auto}.updates-hero,.updates-meta{padding:30px}.updates-status-mark{width:48px;height:48px;display:grid;place-items:center;border:1px solid rgba(230,61,50,.45);border-radius:14px;color:var(--vermillion);margin-bottom:18px}.updates-status-mark svg{width:24px;height:24px}.updates-hero h2{margin:10px 0 8px;font:600 clamp(24px,3vw,34px) 'Space Grotesk',sans-serif}.updates-hero p{color:var(--muted);line-height:1.6;max-width:470px}.updates-check-btn{width:auto;margin-top:18px}.updates-meta .updates-note{margin-top:18px;line-height:1.5}@media (max-width:760px){.updates-layout{grid-template-columns:1fr}.updates-hero,.updates-meta{padding:24px}}
+
+/* Fontes (supported sources hub) — external shortcut cards */
+.sources-help { margin: 0 0 18px; opacity: .8; font-size: 14px; line-height: 1.5; }
+.sources-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.source-card { display: flex; flex-direction: column; gap: 10px; }
+.source-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.source-card-head h2 { margin: 0; font-size: 18px; line-height: 1.2; }
+.source-card p { margin: 0; flex: 1 1 auto; opacity: .82; font-size: 13px; line-height: 1.5; }
+.source-badge { flex: none; font-size: 11px; letter-spacing: .02em; padding: 3px 9px; border-radius: 999px;
+  color: var(--tab-accent, #2f8f5f); background: rgba(var(--tab-rgb, 47,143,95), .12); }
+.source-open { align-self: flex-start; }
+@media (max-width: 560px) { .sources-grid { grid-template-columns: 1fr; } }
