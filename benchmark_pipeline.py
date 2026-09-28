@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import config
+import artifact_contract as ac
 import region_taxonomy
 from classification_profiler import (
     ClassificationProfiler,
@@ -218,6 +219,122 @@ def _reconstructed_page_is_valid(output_path, source_path: str = "") -> bool:
                 and _page_gray_variance(out) <= _RECON_BLANK_VARIANCE_FLOOR):
             return False
     return True
+
+
+def _resolve_output_profile(args=None) -> str:
+    """Select the output profile programmatically (no UI). Order: explicit ``args`` attribute,
+    then ``YOMU_OUTPUT_PROFILE`` env, else AUTOMATIC. An unknown value falls back to AUTOMATIC
+    rather than aborting a real run."""
+    raw = None
+    if args is not None:
+        raw = getattr(args, "output_profile", None)
+    raw = raw or os.environ.get("YOMU_OUTPUT_PROFILE")
+    raw = (str(raw).strip().lower() if raw else "") or ac.OutputProfile.AUTOMATIC
+    return raw if raw in ac.PROFILE_ARTIFACTS else ac.OutputProfile.AUTOMATIC
+
+
+def _copy_canonical_artifact(src, dst) -> int | None:
+    """Atomically copy one already-rendered page image to its canonical Artifact-Contract v2
+    slot. Returns bytes written, or None when the source is missing/unreadable/degenerate
+    (§21: exists + decodable + dims>0; no absolute size or variance floor). Never leaves a
+    partial file at ``dst`` -- ``atomic_copy`` writes a temp then ``os.replace``."""
+    if not src or not os.path.exists(src):
+        return None
+    try:
+        atomic_copy(src, dst)
+    except OSError:
+        return None
+    # Validate the PRODUCED artifact (§21): decodable + non-degenerate dims. One decode of the
+    # written file is enough -- it is a byte copy of the source, so this also proves the source
+    # was a real image; a non-image source is copied then rejected here and the file removed.
+    img = cv2.imread(str(dst), cv2.IMREAD_UNCHANGED)
+    if img is None or getattr(img, "size", 0) == 0 or img.shape[0] <= 0 or img.shape[1] <= 0:
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
+        return None
+    return os.path.getsize(dst)
+
+
+def _persist_canonical_artifacts(output_root, completed_states, total_pages, profile):
+    """Persist CLEAN and TRANSLATED as canonical per-page artifacts (Artifact Contract v2).
+
+    Additive: the legacy ``pages/page_NNN.png`` (translated) and ``*_cleaned.png`` are left in
+    place; this only *copies* the same buffers into ``images/translated/NNN.png`` and (when the
+    profile requests it) ``images/clean/NNN.png`` via the single contract resolver.
+
+    * TRANSLATED source is ``state["output_path"]`` -- the exact buffer the PDF is built from
+      (§8, no re-render).
+    * CLEAN source is ``state["cleaned_path"]`` (art after source-text removal) when cleanup ran,
+      else ``state["image_path"]`` -- the accepted source page, which for a no-text/blank page IS
+      the clean art (§3 cases B/C). This is what closes the old 203/208 clean gap: no-text pages
+      no longer skip a clean artifact.
+
+    Identity is the logical page index, never a directory listing (§12). Returns a coverage +
+    I/O report; it never fabricates a page it could not actually write (§21/§23).
+    """
+    want_clean = ac.ArtifactType.CLEAN_IMAGE in ac.profile_artifacts(profile)
+    requested = sorted(int(s["index"]) for s in completed_states)
+    translated_ok, clean_ok = {}, {}
+    translated_failed, clean_failed = [], []
+    translated_bytes = clean_bytes = 0
+    provenance = {}
+    started = time.perf_counter()
+    for state in completed_states:
+        idx = int(state["index"])
+        dst = ac.artifact_path(output_root, ac.ArtifactType.TRANSLATED_IMAGE,
+                               page=idx, total_pages=total_pages)
+        n = _copy_canonical_artifact(state.get("output_path"), dst)
+        if n is None:
+            translated_failed.append(idx)
+        else:
+            translated_ok[idx] = str(dst)
+            translated_bytes += n
+        # SOURCE -> CLEAN -> TRANSLATED chain for this logical page (§22).
+        chain = {"source": state.get("image_path"), "translated": translated_ok.get(idx)}
+        if want_clean:
+            cdst = ac.artifact_path(output_root, ac.ArtifactType.CLEAN_IMAGE,
+                                    page=idx, total_pages=total_pages)
+            # Prefer the captured cleaned buffer (art after text removal, before glyphs).
+            # When it is absent -- a no_text_precheck / passthrough / cache-restored page never
+            # ran render_analyzed_image, so no *_cleaned.png exists -- the accepted source IS the
+            # clean art (§3 case B: nothing to remove). This closes the old 203/208 gap.
+            clean_from = "cleaned_buffer"
+            cn = _copy_canonical_artifact(state.get("cleaned_path"), cdst)
+            if cn is None:
+                clean_from = "source_fallback"
+                cn = _copy_canonical_artifact(state.get("image_path"), cdst)
+            if cn is None:
+                clean_failed.append(idx)
+                chain["clean"] = None
+                chain["clean_from"] = "failed"
+            else:
+                clean_ok[idx] = str(cdst)
+                clean_bytes += cn
+                chain["clean"] = str(cdst)
+                chain["clean_from"] = clean_from
+        provenance[idx] = chain
+    io_seconds = time.perf_counter() - started
+    all_pages = set(range(1, int(total_pages) + 1))
+    produced_translated = set(translated_ok)
+    produced_clean = set(clean_ok)
+    return {
+        "profile": profile,
+        "logical_page_count": int(total_pages),
+        "requested_pages": requested,
+        "translated_produced": sorted(produced_translated),
+        "translated_failed": sorted(translated_failed),
+        "translated_missing": sorted(all_pages - produced_translated - set(translated_failed)),
+        "translated_total_bytes": int(translated_bytes),
+        "clean_requested": want_clean,
+        "clean_produced": sorted(produced_clean),
+        "clean_failed": sorted(clean_failed),
+        "clean_missing": sorted(all_pages - produced_clean - set(clean_failed)) if want_clean else [],
+        "clean_total_bytes": int(clean_bytes),
+        "io_seconds": round(io_seconds, 4),
+        "provenance": provenance,
+    }
 
 
 def process_post_translation_page(state, *, diagnostic_folder=None, targeted_regression=False,
@@ -2533,6 +2650,11 @@ def run_benchmark(args):
     if not completed_states:
         raise RuntimeError("Nenhuma pagina valida foi produzida.")
 
+    output_profile = _resolve_output_profile(args)
+    artifact_export = _persist_canonical_artifacts(
+        output_folder, completed_states, len(image_paths), output_profile,
+    )
+
     pdf_filename = (
         "regression.pdf"
         if targeted_regression
@@ -3072,6 +3194,51 @@ def run_benchmark(args):
         run_manifest_path,
         _output_run_manifest(output_folder, report, translator),
     )
+    _lpc = artifact_export["logical_page_count"]
+    _translated_complete = (
+        len(artifact_export["translated_produced"]) == _lpc
+        and not artifact_export["translated_failed"]
+    )
+    _clean_complete = (
+        artifact_export["clean_requested"]
+        and len(artifact_export["clean_produced"]) == _lpc
+        and not artifact_export["clean_failed"]
+    )
+    artifact_manifest = ac.build_artifact_manifest(
+        output_profile=artifact_export["profile"],
+        output_root=output_folder,
+        logical_page_count=_lpc,
+        produced={
+            ac.ArtifactType.FINAL_PDF: pdf_path.is_file(),
+            ac.ArtifactType.TRANSLATED_IMAGE: _translated_complete,
+            ac.ArtifactType.CLEAN_IMAGE: _clean_complete,
+        },
+        run_id=str(run_signature),
+        status=final_status,
+    )
+    artifact_manifest["coverage"] = {
+        ac.ArtifactType.TRANSLATED_IMAGE: {
+            "produced": artifact_export["translated_produced"],
+            "missing": artifact_export["translated_missing"],
+            "failed": artifact_export["translated_failed"],
+        },
+        ac.ArtifactType.CLEAN_IMAGE: {
+            "requested": artifact_export["clean_requested"],
+            "produced": artifact_export["clean_produced"],
+            "missing": artifact_export["clean_missing"],
+            "failed": artifact_export["clean_failed"],
+        },
+    }
+    artifact_manifest["byte_totals"] = {
+        ac.ArtifactType.TRANSLATED_IMAGE: artifact_export["translated_total_bytes"],
+        ac.ArtifactType.CLEAN_IMAGE: artifact_export["clean_total_bytes"],
+    }
+    artifact_manifest["io_seconds"] = artifact_export["io_seconds"]
+    artifact_manifest["provenance"] = artifact_export["provenance"]
+    artifact_manifest_path = output_folder / "artifact_manifest.json"
+    report["artifact_manifest_path"] = str(artifact_manifest_path)
+    report["artifact_export"] = artifact_export
+    atomic_write_json(artifact_manifest_path, artifact_manifest)
     quality_report = _build_quality_report(
         report,
         completed_states,
@@ -4955,6 +5122,9 @@ def _reuse_completed_page(state, previous, force):
                 "cache_source": "resume",
                 "debug_data": previous.get("debug_data", {}),
                 "timings": previous.get("timings", {}),
+                # carry the prior cleaned buffer so a resumed text page keeps a correct-seam
+                # clean artifact; if the file is gone, canonical export falls back to source.
+                "cleaned_path": previous.get("cleaned_path"),
             }
         )
         return True

@@ -1,6 +1,6 @@
 # Tradutor IA — Documentação Técnica
 
-> **Base verificada:** `26d5eb3` (branch `main`)
+> **Base verificada:** `0ae4bac` (branch `main`)
 > **Última revisão:** 2026-09-28
 > **Público:** desenvolvedores, mantenedores, suporte técnico e agentes automatizados.
 
@@ -2370,7 +2370,7 @@ Yomu não substitui Photoshop/Photopea.
 | --- | --- | --- |
 | `final_pdf` | SUPPORTED | PDF final atual |
 | `translated_image` | SUPPORTED | páginas renderizadas com texto traduzido |
-| `clean_image` | SUPPORTED | hoje persistido como `*_cleaned.png` por página; relocação para `images/clean/` é da Missão 4 |
+| `clean_image` | SUPPORTED | materializado em `images/clean/NNN.png` na Missão 4 (perfil `PROFESSIONAL_QC`); o `*_cleaned.png` legado por página segue existindo |
 | `editable_psd` | **PLANNED / NÃO IMPLEMENTADO** | PSD com Type Layers reais; **não** confundir com o raster atual |
 | `legacy_raster_psd` | SUPPORTED | export raster existente, tipo distinto de `editable_psd` |
 | `quality_report` | SUPPORTED | `quality_report.json` |
@@ -2394,6 +2394,60 @@ resolvido nunca escapa do `output_root`).
 `output_profile`, `requested/produced/unavailable_artifacts`, status por artefato,
 capacidades e `logical_page_count`. Runs antigos sem `contract_version` são lidos como
 **V1 (legado)** sem erro — nada histórico é migrado, invalidado ou apagado nesta missão.
+
+## 26.2 Persistência canônica de CLEAN / TRANSLATED por página (Missão 4)
+
+`benchmark_pipeline.run_benchmark` integra o resolver do contrato ao pipeline real: depois
+que `completed_states` é fechado (mesmas páginas lógicas que alimentam o PDF), uma passada
+aditiva — `_persist_canonical_artifacts(output_folder, completed_states, len(image_paths),
+profile)` — copia os buffers **já renderizados** para os caminhos canônicos via
+`artifact_path(...)` (nenhum segundo resolver, nenhuma string de caminho espalhada):
+
+- **`TRANSLATED_IMAGE` → `images/translated/NNN.png`**: cópia do `state["output_path"]`, o
+  **mesmo** buffer usado para montar o PDF (sem re-render). Persistido em `AUTOMATIC` e
+  `PROFESSIONAL_QC`.
+- **`CLEAN_IMAGE` → `images/clean/NNN.png`** (somente `PROFESSIONAL_QC`): usa
+  `state["cleaned_path"]` (arte após remoção do texto de origem, **antes** dos glifos
+  traduzidos — captura em `render_analyzed_image`); quando ausente, cai para
+  `state["image_path"]` (a página de origem aceita **é** a arte limpa de uma página sem
+  texto — §3 caso B).
+
+**Por que o CLEAN antes era 203/208.** Páginas aceitas por `no_text_precheck`
+(`config.SKIP_NO_TEXT_IMAGES`) são copiadas origem→saída sem passar por
+`render_analyzed_image`, então `cleaned_capture` nunca é populado e nenhum `*_cleaned.png`
+é escrito; o mesmo vale para páginas restauradas de cache. A contagem de `*_cleaned.png`
+era, portanto, `total − páginas_sem_render`. O fallback para a origem fecha a lacuna: toda
+página lógica concluída passa a ter CLEAN em `PROFESSIONAL_QC` (208/208 no capítulo Comix,
+incluindo as calhas em branco 118/143/207).
+
+**Perfil de saída.** `_resolve_output_profile(args)` seleciona programaticamente (sem UI):
+atributo `args.output_profile` → env `YOMU_OUTPUT_PROFILE` → `AUTOMATIC` (default); valor
+desconhecido cai para `AUTOMATIC`.
+
+**Escrita atômica e validação (§20/§21).** Cada cópia usa `atomic_copy` (temp →
+`os.replace`); o artefato **produzido** é então validado (decodificável, dims > 0) — sem
+piso absoluto de altura ou variância, para não descartar páginas curtas/em branco legítimas.
+Falha real de origem (ilegível/ausente) é registrada como `failed`, nunca mascarada com
+placeholder.
+
+**Identidade lógica (§12).** O nome do arquivo vem do índice lógico da página
+(`state["index"]`), nunca de `os.listdir`/`glob`/mtime.
+
+**Gate de cobertura + manifest (§13/§14).** `output_folder/artifact_manifest.json`
+(`contract_version = 2`) registra `output_profile`, `logical_page_count`,
+`produced/unavailable_artifacts`, e um bloco `coverage` com as listas de páginas lógicas
+`produced` / `missing` / `failed` por tipo, além de `byte_totals`
+(`translated`/`clean`) e `io_seconds`. `editable_psd` permanece `requested + unavailable`
+em `PROFESSIONAL_QC` — nunca declarado produzido.
+
+**Compatibilidade legada (estratégia A — aditiva).** Os artefatos legados
+(`pages/page_NNN.png` traduzido e `*_cleaned.png`) permanecem intactos; os canônicos são
+cópias adicionais. Histórico, retry, re-export, PDF, PSD raster legado, fixtures e
+"abrir pasta" não mudam. PDF e saída visual não se alteram nesta missão.
+
+**Overhead de I/O (medido, 208 páginas sintéticas).** `AUTOMATIC` ≈ 2,4 s (208 cópias +
+1 decode de validação cada); `PROFESSIONAL_QC` ≈ 4,7 s (416 cópias) — pequeno frente a
+OCR + tradução + render (minutos).
 
 ## 27. Ambiente de desenvolvimento e comandos
 

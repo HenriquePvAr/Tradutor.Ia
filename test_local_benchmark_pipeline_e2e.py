@@ -9,6 +9,7 @@ browser, downloader, cache, or real OCR engine is available to this test.
 
 import _test_bootstrap  # noqa: F401
 
+import contextlib
 import hashlib
 import json
 import shutil
@@ -247,13 +248,11 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
             local_manifest_path=str(self.snapshot.manifest_path),
         )
 
-    def test_local_snapshot_runs_through_validation_render_and_pdf_offline(self):
-        """The real pipeline consumes only the owned manifest and returns a verified PDF."""
-
-        translator = _OfflineTranslator()
-        reference = local_folder_input.local_source_reference(
-            self.snapshot.analysis.source_fingerprint,
-        )
+    @contextlib.contextmanager
+    def _pipeline_mocks(self, translator, extra_env=None):
+        env = {"TRANSLATION_ENABLED": "true", "YOMU_ENV": "test", "YOMU_TEST_BACKEND": "mock"}
+        if extra_env:
+            env.update(extra_env)
         with (
             mock.patch.object(local_folder_input, "LOCAL_SNAPSHOT_ROOT", self.snapshots),
             mock.patch.object(local_folder_input, "REPO_ROOT", self.root),
@@ -283,8 +282,18 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
                 TRANSLATION_RETRY_ON_MIXED_LANGUAGE=True,
                 TRANSLATE_SFX=False,
             ),
-            mock.patch.dict("os.environ", {"TRANSLATION_ENABLED": "true", "YOMU_ENV": "test", "YOMU_TEST_BACKEND": "mock"}, clear=False),
+            mock.patch.dict("os.environ", env, clear=False),
         ):
+            yield
+
+    def test_local_snapshot_runs_through_validation_render_and_pdf_offline(self):
+        """The real pipeline consumes only the owned manifest and returns a verified PDF."""
+
+        translator = _OfflineTranslator()
+        reference = local_folder_input.local_source_reference(
+            self.snapshot.analysis.source_fingerprint,
+        )
+        with self._pipeline_mocks(translator):
             report = benchmark_pipeline.run_benchmark(self._args(reference))
 
         # Local intake and logical-page handling are production code, not a fake downloader.
@@ -353,6 +362,57 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
             hashlib.sha256(self.original.read_bytes()).hexdigest(),
             self.original_digest,
         )
+
+        # AUTOMATIC (default) persists the canonical translated artifact + a v2 manifest.
+        import artifact_contract as ac
+        canonical_translated = self.output / "images" / "translated" / "001.png"
+        self.assertTrue(canonical_translated.is_file())
+        # same buffer as the PDF page, not a re-render
+        self.assertEqual(page.read_bytes(), canonical_translated.read_bytes())
+        self.assertFalse((self.output / "images" / "clean").exists())  # clean is PROFESSIONAL_QC only
+        manifest = json.loads((self.output / "artifact_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["contract_version"], 2)
+        self.assertEqual(manifest["output_profile"], ac.OutputProfile.AUTOMATIC)
+        self.assertEqual(manifest["logical_page_count"], 1)
+        self.assertEqual(manifest["coverage"][ac.ArtifactType.TRANSLATED_IMAGE]["produced"], [1])
+        self.assertEqual(manifest["coverage"][ac.ArtifactType.TRANSLATED_IMAGE]["missing"], [])
+
+    def test_professional_qc_persists_clean_and_translated_and_manifest(self):
+        """A real PROFESSIONAL_QC run persists CLEAN and TRANSLATED per logical page from the
+        renderer's own buffers, and the v2 manifest reports complete coverage."""
+        import artifact_contract as ac
+        translator = _OfflineTranslator()
+        reference = local_folder_input.local_source_reference(
+            self.snapshot.analysis.source_fingerprint,
+        )
+        with self._pipeline_mocks(translator, extra_env={"YOMU_OUTPUT_PROFILE": "professional_qc"}):
+            report = benchmark_pipeline.run_benchmark(self._args(reference))
+        self.assertEqual(report["status"], "finished")
+
+        translated = self.output / "images" / "translated" / "001.png"
+        clean = self.output / "images" / "clean" / "001.png"
+        self.assertTrue(translated.is_file())
+        self.assertTrue(clean.is_file())
+        # translated == the rendered page; clean is the pre-glyph cleaned buffer (a distinct image)
+        self.assertEqual((self.output / "pages" / "page_001.png").read_bytes(), translated.read_bytes())
+        self.assertNotEqual(clean.read_bytes(), translated.read_bytes())
+
+        manifest = json.loads((self.output / "artifact_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["output_profile"], ac.OutputProfile.PROFESSIONAL_QC)
+        cov = manifest["coverage"]
+        self.assertEqual(cov[ac.ArtifactType.TRANSLATED_IMAGE]["produced"], [1])
+        self.assertEqual(cov[ac.ArtifactType.CLEAN_IMAGE]["produced"], [1])
+        self.assertEqual(cov[ac.ArtifactType.CLEAN_IMAGE]["missing"], [])
+        self.assertEqual(cov[ac.ArtifactType.CLEAN_IMAGE]["failed"], [])
+        self.assertTrue(manifest["byte_totals"][ac.ArtifactType.CLEAN_IMAGE] > 0)
+        # editable PSD stays truthfully unavailable, never faked as produced (§7/§14)
+        self.assertIn(ac.ArtifactType.EDITABLE_PSD, manifest["unavailable_artifacts"])
+        self.assertNotIn(ac.ArtifactType.EDITABLE_PSD, manifest["produced_artifacts"])
+        # SOURCE -> CLEAN -> TRANSLATED provenance per page (§22); this page had text so its
+        # clean comes from the rendered cleaned buffer, not the source fallback.
+        chain = manifest["provenance"]["1"]  # JSON keys are strings
+        self.assertTrue(chain["source"] and chain["clean"] and chain["translated"])
+        self.assertEqual(chain["clean_from"], "cleaned_buffer")
 
 
 if __name__ == "__main__":
