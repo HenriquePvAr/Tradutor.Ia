@@ -904,6 +904,17 @@ chapado é bloco sintético. Um balão branco genuíno passa porque o anel dele 
 plano — a comparação é sempre contra o contexto local, nunca contra uma regra absoluta de
 “branco é suspeito”.
 
+A validade da **página final reconstruída** é relativa à fonte aceita, não a um piso
+absoluto. O downloader já validou a página de origem, então `_reconstructed_page_is_valid`
+(em `benchmark_pipeline.py`, usado nos guards de render e no filtro de inclusão no PDF) não
+descarta uma página por ser curta (algumas páginas do reader são tiras de 800x32) nem por
+ser fielmente em branco (algumas páginas de origem são realmente vazias). Só reprova uma
+falha real de render: saída ilegível/corrompida, dimensão zero, ou uma página cuja origem
+tinha conteúdo mas cujo render saiu em branco (conteúdo perdido) — sem mascarar com
+placeholder. Assim nenhuma página lógica aceita pelo download desaparece silenciosamente do
+PDF (cobertura lógica 208/208 no capítulo de referência), substituindo o piso antigo de
+`valid_image` (≥100×100 e variância>5) que eliminava tiras curtas e páginas vazias.
+
 ### Detector de costura (ART-SEAM-DETECTOR-001)
 
 O detector de patch plano responde “o interior virou bloco sintético?”.

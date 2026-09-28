@@ -181,6 +181,45 @@ def process_pre_translation_pages(
     return sorted(results, key=lambda result: result.page_index)
 
 
+_RECON_BLANK_VARIANCE_FLOOR = 5.0
+
+
+def _page_gray_variance(image) -> float:
+    try:
+        if image is None or getattr(image, "size", 0) == 0:
+            return 0.0
+        gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return float(gray.var())
+    except Exception:  # noqa: BLE001 - a variance probe must never break the pipeline
+        return 0.0
+
+
+def _reconstructed_page_is_valid(output_path, source_path: str = "") -> bool:
+    """Validate a rendered page RELATIVE to its accepted source page.
+
+    The downloader already validated the source, so reconstruction must not drop a page
+    merely for being short (some reader pages are 800x32 strips) or for being faithfully
+    blank (some source pages are genuinely blank). Unlike the absolute ``valid_image``
+    floor (>=100x100 and variance>5), this only rejects a genuine render failure: an
+    unreadable/corrupt output, a zero-dimension render, or a page whose source had visual
+    content but whose render came out blank (content destroyed).  No page that the
+    downloader accepted disappears silently, and nothing is masked with a fake/blank
+    placeholder for a page that really had content.
+    """
+    if not output_path:
+        return False
+    out = cv2.imread(str(output_path))
+    if out is None or out.size == 0 or out.shape[0] <= 0 or out.shape[1] <= 0:
+        return False
+    if source_path:
+        src = cv2.imread(str(source_path))
+        if (src is not None and src.size
+                and _page_gray_variance(src) > _RECON_BLANK_VARIANCE_FLOOR
+                and _page_gray_variance(out) <= _RECON_BLANK_VARIANCE_FLOOR):
+            return False
+    return True
+
+
 def process_post_translation_page(state, *, diagnostic_folder=None, targeted_regression=False,
                                   translator=None, translation_retry_records=None,
                                   force=False, retry_lock=None):
@@ -236,7 +275,7 @@ def process_post_translation_page(state, *, diagnostic_folder=None, targeted_reg
         if not cv2.imwrite(local["output_path"], final):
             raise RuntimeError("cv2.imwrite retornou False")
         timings["image_save"] = time.perf_counter() - save_started
-        if not valid_image(local["output_path"]):
+        if not _reconstructed_page_is_valid(local["output_path"], local.get("image_path", "")):
             raise RuntimeError("imagem final invalida")
         # Canonical Cleaned artifact (P1): page after text removal/inpaint, before
         # translated glyphs. Persisted deterministically (not debug-gated) so the
@@ -2387,7 +2426,7 @@ def run_benchmark(args):
             state["timings"]["image_save"] = save_elapsed
             stage_seconds["image_save"] += save_elapsed
 
-            if not valid_image(state["output_path"]):
+            if not _reconstructed_page_is_valid(state["output_path"], state.get("image_path", "")):
                 raise RuntimeError("imagem final invalida")
 
             state["status"] = "completed"
@@ -2489,7 +2528,7 @@ def run_benchmark(args):
         state
         for state in sorted(page_states, key=lambda item: item["index"])
         if state.get("status") in {"completed", "completed_with_error"}
-        and valid_image(state.get("output_path"))
+        and _reconstructed_page_is_valid(state.get("output_path"), state.get("image_path", ""))
     ]
     if not completed_states:
         raise RuntimeError("Nenhuma pagina valida foi produzida.")
@@ -5877,7 +5916,7 @@ def _create_preview_compare_sheet(selected_states, target):
 def _validate_quality(states, pdf_path, expected_page_count=None, full=False):
     invalid_pages = []
     for state in states:
-        if not valid_image(state["output_path"]):
+        if not _reconstructed_page_is_valid(state.get("output_path"), state.get("image_path", "")):
             invalid_pages.append(state["index"])
 
     # ``expected_page_count`` used to be the LOGICAL page count (one per output
