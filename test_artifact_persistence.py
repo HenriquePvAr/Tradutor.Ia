@@ -40,8 +40,13 @@ class ArtifactPersistenceTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _state(self, idx, *, cleaned=True, source_value=127, out_value=90,
-               short=False, bad_source=False):
-        """Build one completed page state with on-disk translated + optional cleaned + source."""
+               short=False, bad_source=False, cache_source=None):
+        """Build one completed page state with on-disk translated + optional cleaned + source.
+
+        cache_source models the pipeline reality: a page that rendered is "fresh" (and normally
+        has a cleaned buffer); a page without text is copied via "no_text_precheck" (no cleanup).
+        Default: cleaned pages are "fresh", uncleaned pages are "no_text_precheck".
+        """
         h = 32 if short else 200
         out = _png(self.pages / f"page_{idx:03}.png", h=h, value=out_value)
         image_path = self.src / f"src_{idx:03}.png"
@@ -50,6 +55,7 @@ class ArtifactPersistenceTests(unittest.TestCase):
         else:
             _png(image_path, h=h, value=source_value)
         state = {"index": idx, "output_path": out, "image_path": str(image_path)}
+        state["cache_source"] = cache_source or ("fresh" if cleaned else "no_text_precheck")
         if cleaned:
             state["cleaned_path"] = _png(
                 self.pages / f"page_{idx:03}_cleaned.png", h=h, value=200)
@@ -117,6 +123,24 @@ class ArtifactPersistenceTests(unittest.TestCase):
         self.assertEqual(rep["clean_produced"], [1])
         self.assertEqual(rep["clean_failed"], [2])
         self.assertFalse((self.root / "images" / "clean" / "002.png").exists())
+
+    # --- F2) §8: a RENDERED page whose cleanup FAILED must be FAILED, never source-masked --
+    def test_rendered_page_failed_cleanup_is_not_source_masked(self):
+        # "fresh" page (went through render) but its cleaned buffer is missing -> real failure.
+        broken = self._state(1, cleaned=False, cache_source="fresh")
+        rep = bp._persist_canonical_artifacts(self.root, [broken], 1,
+                                              ac.OutputProfile.PROFESSIONAL_QC)
+        self.assertEqual(rep["clean_produced"], [])
+        self.assertEqual(rep["clean_failed"], [1])
+        self.assertEqual(rep["provenance"][1]["clean_from"], "failed")
+        # crucially: the source was NOT silently written as the clean artifact
+        self.assertFalse((self.root / "images" / "clean" / "001.png").exists())
+        # a non-rendered no-text page, by contrast, legitimately falls back to source
+        ok = self._state(2, cleaned=False, cache_source="no_text_precheck")
+        rep2 = bp._persist_canonical_artifacts(self.root, [ok], 2,
+                                               ac.OutputProfile.PROFESSIONAL_QC)
+        self.assertEqual(rep2["clean_produced"], [2])
+        self.assertEqual(rep2["provenance"][2]["clean_from"], "source_fallback")
 
     # --- G) coverage: missing page (never completed) is reported missing ------------------
     def test_missing_logical_page_reported(self):

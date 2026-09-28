@@ -297,14 +297,21 @@ def _persist_canonical_artifacts(output_root, completed_states, total_pages, pro
             cdst = ac.artifact_path(output_root, ac.ArtifactType.CLEAN_IMAGE,
                                     page=idx, total_pages=total_pages)
             # Prefer the captured cleaned buffer (art after text removal, before glyphs).
-            # When it is absent -- a no_text_precheck / passthrough / cache-restored page never
-            # ran render_analyzed_image, so no *_cleaned.png exists -- the accepted source IS the
-            # clean art (§3 case B: nothing to remove). This closes the old 203/208 gap.
-            clean_from = "cleaned_buffer"
             cn = _copy_canonical_artifact(state.get("cleaned_path"), cdst)
-            if cn is None:
-                clean_from = "source_fallback"
+            if cn is not None:
+                clean_from = "cleaned_buffer"
+            elif state.get("cache_source") == "fresh":
+                # The page WENT THROUGH render this run ("fresh"), so render_analyzed_image
+                # always captures a cleaned buffer -- its absence means cleanup/write really
+                # failed. That is a genuine failure, NOT a page without text: never mask it with
+                # a source fallback (§8). Report it FAILED and write nothing.
+                clean_from = "failed"
+            else:
+                # The page did NOT go through render this run (no_text_precheck copy, passthrough,
+                # or cache/resume restore) -- no cleanup was attempted, so the accepted source IS
+                # the clean art (§3 case B). This is what closes the old 203/208 gap.
                 cn = _copy_canonical_artifact(state.get("image_path"), cdst)
+                clean_from = "source_fallback" if cn is not None else "failed"
             if cn is None:
                 clean_failed.append(idx)
                 chain["clean"] = None
