@@ -17,7 +17,6 @@ const TABS = [
   { id: 'favorites', label: 'Favoritos' },
   { id: 'reading', label: 'Continuar lendo' },
   { id: 'mine', label: 'Minhas obras' },
-  { id: 'profile', label: 'Meu perfil' },
   { id: 'notifications', label: 'Notificações' },
 ];
 
@@ -27,7 +26,6 @@ const COMMUNITY_ENABLED = false;
 
 const state = {
   session: null,
-  profile: null,
   tab: 'explore',
   openWorkId: null,
   loading: false,
@@ -64,7 +62,6 @@ function fail(err) {
 
 function handleExpired() {
   if (state.abort) state.abort.abort();
-  state.profile = null;
   state.openWorkId = null;
   toast('Sua sessão expirou. Entre novamente.', 'err');
   render();
@@ -83,7 +80,8 @@ function statusLabel(s) {
 }
 
 function isOwner(row) {
-  return state.profile && row && row.owner_id && row.owner_id === state.profile.id;
+  const userId = String(state.session?.user?.id || window.__tradutorCommunityUserId || '');
+  return Boolean(userId && row && row.owner_id && row.owner_id === userId);
 }
 
 // ---- shell ----
@@ -132,7 +130,7 @@ function openAuth(mode) {
 }
 
 function header() {
-  const displayName = String(window.__tradutorDisplayName || state.profile?.display_name || 'Carregando perfil…').trim() || 'Carregando perfil…';
+  const displayName = String(window.__tradutorDisplayName || 'Conta').trim() || 'Conta';
   const nav = el('nav', { class: 'sc-nav', attrs: { 'aria-label': 'Comunidade' } });
   for (const t of TABS) {
     nav.appendChild(el('button', {
@@ -211,7 +209,6 @@ function renderTab(body) {
     case 'favorites': return renderFavorites(body);
     case 'reading': return renderHistory(body);
     case 'mine': return renderMine(body);
-    case 'profile': return renderProfile(body);
     case 'notifications': return renderNotifications(body);
   }
 }
@@ -520,93 +517,6 @@ function renderHistory(body) {
     'Você ainda não tem leituras registradas.', 'history');
 }
 
-// ---- profile ----
-async function renderProfile(body) {
-  const wrap = el('div', { class: 'sc-profile', attrs: { 'aria-busy': 'true' } });
-  wrap.appendChild(skeleton(2));
-  body.appendChild(wrap);
-  try {
-    // Reuses the load the mount already performed for this session; only an explicit
-    // retry re-requests. Opening this tab therefore adds no second profile/me GET.
-    const p = await loadMyProfile();
-    wrap.replaceChildren();
-    wrap.removeAttribute('aria-busy');
-    // An authenticated account with no social profile yet is a valid, configurable
-    // state — not an error. The backend answers it with an empty profile document.
-    const needsOnboarding = !p.username || !p.display_name;
-    if (needsOnboarding) wrap.appendChild(el('div', { class: 'sc-onboard', text: 'Complete seu perfil para participar melhor da comunidade.' }));
-    wrap.appendChild(profileForm(p));
-  } catch (err) {
-    wrap.replaceChildren(errorBox(() => { loadMyProfile({ refresh: true }).catch(() => {}); render(); }));
-    if (err.status === 401) handleExpired();
-  }
-}
-
-function field(label, input, hint) {
-  return el('label', { class: 'sc-field' }, [
-    el('span', { class: 'sc-field-label', text: label }),
-    input,
-    hint ? el('span', { class: 'sc-field-hint', text: hint }) : null,
-  ]);
-}
-
-function profileForm(p) {
-  const username = el('input', { attrs: { type: 'text', maxlength: '32', value: p.username || '', 'aria-label': 'Nome de usuário' } });
-  const display = el('input', { attrs: { type: 'text', maxlength: '60', value: p.display_name || '', 'aria-label': 'Nome de exibição' } });
-  const bio = el('textarea', { attrs: { maxlength: '500', rows: '3', 'aria-label': 'Bio' } });
-  bio.value = p.bio || '';
-  const color = el('input', { attrs: { type: 'color', value: /^#[0-9a-fA-F]{6}$/.test(p.theme_color || '') ? p.theme_color : '#b8557a', 'aria-label': 'Cor do tema' } });
-  const avatar = el('span', { class: 'sc-avatar', text: (p.display_name || p.username || '?').slice(0, 1).toUpperCase() });
-  const setAvatarColor = () => { avatar.style.background = color.value; };
-  setAvatarColor(); color.addEventListener('input', setAvatarColor);
-  const showFav = checkbox('Mostrar favoritos no perfil', p.show_favorites);
-  const showHist = checkbox('Mostrar histórico no perfil', p.show_history);
-  const allowComments = checkbox('Permitir comentários no perfil', p.allow_profile_comments);
-  const count = el('span', { class: 'sc-field-hint', text: `${(p.bio || '').length}/500` });
-  bio.addEventListener('input', () => { count.textContent = `${bio.value.length}/500`; });
-  const save = el('button', { class: 'btn-primary', text: 'Salvar perfil' });
-  const form = el('form', { class: 'sc-profile-form', on: { submit: async (e) => {
-    e.preventDefault();
-    // The disabled button already blocks a second physical click, but that guard is
-    // native-DOM-only: it does nothing against a second 'submit' reaching this same
-    // handler by another path (Enter-key implicit submission racing the click, a
-    // programmatic requestSubmit()). Checking the in-flight flag here, inside the one
-    // handler every write goes through, is the actual guard — not a debounce, not a
-    // counter, just "a save is already running, ignore this one".
-    if (save.disabled) return;
-    save.disabled = true; save.textContent = 'Salvando…';
-    try {
-      const fields = {
-        username: username.value.trim() || null,
-        display_name: display.value.trim() || null,
-        bio: bio.value.trim() || null,
-        theme_color: color.value,
-        show_favorites: showFav.querySelector('input').checked,
-        show_history: showHist.querySelector('input').checked,
-        allow_profile_comments: allowComments.querySelector('input').checked,
-      };
-      const updated = await api.updateMyProfile(fields);
-      state.profile = updated;
-      if (mount) mount.profileRequest = Promise.resolve(updated); // keep the cache truthful
-      toast('Perfil salvo.', 'ok');
-    } catch (err) { fail(err); }
-    finally { save.disabled = false; save.textContent = 'Salvar perfil'; }
-  } } }, [
-    el('div', { class: 'sc-profile-head' }, [avatar, el('div', {}, [field('Nome de usuário', username, 'letras minúsculas, números e _ (3–32)'), field('Nome de exibição', display)])]),
-    field('Bio', bio), count,
-    field('Cor do tema', color),
-    showFav, showHist, allowComments,
-    save,
-  ]);
-  return form;
-}
-
-function checkbox(label, checked) {
-  const input = el('input', { attrs: { type: 'checkbox' } });
-  input.checked = !!checked;
-  return el('label', { class: 'sc-check' }, [input, el('span', { text: label })]);
-}
-
 // ---- notifications ----
 function renderNotifications(body) {
   paginated(body, 'Notificações',
@@ -744,7 +654,7 @@ function commentsModal(chapter) {
 }
 
 function commentRow(c, chapter, reload, depth = 0) {
-  const mine = state.profile && c.author_id === state.profile.id;
+  const mine = String(c.author_id || '') === String(state.session?.user?.id || window.__tradutorCommunityUserId || '');
   const row = el('div', { class: `sc-comment${depth ? ' sc-comment-reply' : ''}` });
   const textNode = c.is_deleted
     ? el('em', { class: 'sc-comment-removed', text: 'Comentário removido' })
@@ -937,13 +847,8 @@ function communityUnavailablePanel(onRetry) {
 // sanitized error instead of letting the legacy markup show as if it were the real thing.
 // ---- mount lifecycle ------------------------------------------------------
 // Exactly one mount per browser context, holding exactly one auth subscription.
-//
-// The auth layer calls its handler several times for a single sign-in: the SDK emits
-// INITIAL_SESSION on subscribe, onAuthChange replays an explicit INITIAL_SESSION once the
-// bounded session restore settles, a slow restore replays INITIAL_SESSION_RESTORED in the
-// background, and SIGNED_IN/TOKEN_REFRESHED follow. Every one of those used to re-enter
-// render() (one feed request each) and re-request the profile (because a failed profile
-// left state.profile null), which is what produced the burst of identical GETs.
+// The auth layer may report several SDK events for one session; the lifecycle below
+// reduces them to one authenticated edge without fetching social profile metadata.
 //
 // A first sign-in replays that burst through TWO independent onAuthChange subscriptions
 // (this module's own, and auth_ui.js's), each running its own bounded session-restore race
@@ -963,23 +868,6 @@ let mountRequest = null;
 function sessionKey(session) {
   if (!session) return 'anonymous';
   return String(session.user?.id || session.access_token || session.provider || 'session');
-}
-
-// Single-flight per session: concurrent equivalent callers share one request. A failure
-// stays cached (the rejected promise) so merely reopening the profile tab reuses the known
-// error instead of refetching — only an explicit refresh (the retry button) clears it.
-function loadMyProfile({ refresh = false } = {}) {
-  const active = mount;
-  if (!active) return api.getMyProfile();
-  if (refresh || !active.profileRequest) {
-    const key = active.sessionKey;
-    active.profileRequest = api.getMyProfile().then((profile) => {
-      // A late answer must never overwrite the state of a newer session.
-      if (mount === active && active.sessionKey === key) state.profile = profile;
-      return profile;
-    });
-  }
-  return active.profileRequest;
 }
 
 // ---- per-section lifecycle (favorites/history/mine/notifications/feed) ----
@@ -1049,7 +937,7 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   });
 }
 
-// The account this mount's cached feed/profile actually belong to (session.user.id),
+// The account this mount's cached feed actually belongs to (session.user.id),
 // independent of the noisier sessionKey() (token/provider) used only for staleness checks
 // below. Kept across a SIGNED_OUT so a same-account replay can be recognized as one.
 function accountId(session) {
@@ -1066,7 +954,7 @@ async function applySession(session, active, event) {
   // explicit SIGNED_OUT for the very same account moments before the SIGNED_IN that actually
   // reflects the finished restore - a real cross-tab/cross-device sign-out is reported the
   // same way, so the event alone cannot be trusted to tell the two apart. Wiping the
-  // profile/feed cache on every SIGNED_OUT and rebuilding it on the SIGNED_IN that follows is
+  // feed cache on every SIGNED_OUT and rebuilding it on the SIGNED_IN that follows is
   // what turned that artifact into a doubled feed + profile/me load for the same login. The
   // account id survives that flip (it is not reset here), so a SIGNED_IN whose account matches
   // the one this mount already has cached can reuse it instead of reloading - a genuine
@@ -1091,9 +979,7 @@ async function applySession(session, active, event) {
   if (authenticated) {
     active.accountId = accountId(session);
     if (!sameAccount) {
-      active.profileRequest = null;
       active.sections = {};
-      state.profile = null;
     }
   }
   state.openWorkId = null;
@@ -1119,7 +1005,6 @@ async function applySession(session, active, event) {
   if (mount !== active || active.sessionKey !== key || active.authenticated !== true) return;
   state.pendingAuth = false;
   state.session = session;
-  try { await loadMyProfile(); } catch (_) { /* the profile tab surfaces it */ }
   if (mount !== active || active.sessionKey !== key) return;
   render();
 }
@@ -1132,7 +1017,6 @@ export function unmountCommunity() {
   mount = null;
   mountRequest = null;
   state.session = null;
-  state.profile = null;
   state.openWorkId = null;
   state.pendingAuth = false;
   if (state.abort) { state.abort.abort(); state.abort = null; }
@@ -1167,7 +1051,7 @@ async function mountSupabaseCommunity() {
   // In local-session auth mode there is no Supabase client; leave the legacy UI be.
   const client = await getSupabaseClient();
   if (!client) { mountRequest = null; return; }
-  const active = { unsubscribe: null, sessionKey: null, accountId: null, profileRequest: null, authenticated: undefined, sections: {} };
+  const active = { unsubscribe: null, sessionKey: null, accountId: null, authenticated: undefined, sections: {} };
   mount = active;
   window.__socialCommunityMounted = true;
   const unsubscribe = await onAuthChange((session, event) => { void applySession(session, active, event); });

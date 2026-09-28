@@ -226,82 +226,11 @@ function clickTab(host, tab) {
 
 const CURRENT = fs.readFileSync(path.join(ROOT, 'static', 'social_community.js'), 'utf8');
 
-// ---------------------------------------------------------------------------
-// The confirmed bug: reopening "Meu perfil" after a failed load must NOT
-// refire profile/me. Only an explicit retry may.
-// ---------------------------------------------------------------------------
-await test('a profile/me error is reused when the tab is reopened, not refetched', async () => {
-  const ctx = await bootWith(CURRENT, { profileFailsAlways: true });
-  await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
-  const afterMount = ctx.counters.profile;
-  assert.equal(afterMount, 1, `mount should load profile once, got ${afterMount}`);
-
-  // Leave the profile tab and come back — this alone must not refetch.
-  clickTab(ctx.host, 'explore'); await flush();
-  clickTab(ctx.host, 'profile'); await flush();
-  assert.equal(ctx.counters.profile, afterMount, `reopening the tab refetched profile/me: ${ctx.counters.profile}`);
-
-  // Reopen again for good measure.
-  clickTab(ctx.host, 'explore'); await flush();
-  clickTab(ctx.host, 'profile'); await flush();
-  assert.equal(ctx.counters.profile, afterMount, `a second reopen refetched profile/me: ${ctx.counters.profile}`);
-});
-
-await test('a single explicit retry click fires exactly one new profile/me call', async () => {
-  const ctx = await bootWith(CURRENT, { profileFailsAlways: true });
-  await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
-  clickTab(ctx.host, 'profile'); await flush();
-  const before = ctx.counters.profile;
-  const [retry] = findRetryButtons(ctx.host);
-  assert.ok(retry, 'retry button not found in the profile error state');
-  retry.click();
-  await flush();
-  assert.equal(ctx.counters.profile, before + 1, `one retry click should add exactly one call, got +${ctx.counters.profile - before}`);
-});
-
-await test('two separate retry clicks fire exactly one call each', async () => {
-  const ctx = await bootWith(CURRENT, { profileFailsAlways: true });
-  await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
-  clickTab(ctx.host, 'profile'); await flush();
-  const start = ctx.counters.profile;
-  findRetryButtons(ctx.host)[0].click(); await flush();
-  assert.equal(ctx.counters.profile, start + 1);
-  findRetryButtons(ctx.host)[0].click(); await flush();
-  assert.equal(ctx.counters.profile, start + 2);
-});
-
-await test('a successful profile load is reused across tab revisits (no refetch)', async () => {
+await test('social profile tab is absent and auth never invokes profile reads', async () => {
   const ctx = await bootWith(CURRENT, {});
   await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
-  const afterMount = ctx.counters.profile;
-  clickTab(ctx.host, 'profile'); await flush();
-  clickTab(ctx.host, 'explore'); await flush();
-  clickTab(ctx.host, 'profile'); await flush();
-  assert.equal(ctx.counters.profile, afterMount, `a loaded profile must not refetch on revisit, got ${ctx.counters.profile}`);
-});
-
-// ---------------------------------------------------------------------------
-// Isolation: opening "Meu perfil" must not touch unrelated sections.
-// ---------------------------------------------------------------------------
-await test('opening Meu perfil loads no favorites/history/my-works/notifications', async () => {
-  const ctx = await bootWith(CURRENT, { profileFailsAlways: true });
-  await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
-  clickTab(ctx.host, 'profile'); await flush();
-  const [retry] = findRetryButtons(ctx.host);
-  if (retry) { retry.click(); await flush(); }
-  assert.equal(ctx.counters.favorites, 0, `favorites requests: ${ctx.counters.favorites}`);
-  assert.equal(ctx.counters.history, 0, `history requests: ${ctx.counters.history}`);
-  assert.equal(ctx.counters.myworks, 0, `my-works requests: ${ctx.counters.myworks}`);
-  assert.equal(ctx.counters.notifications, 0, `notifications requests: ${ctx.counters.notifications}`);
-});
-
-await test('opening Meu perfil does not reload the feed', async () => {
-  const ctx = await bootWith(CURRENT, {});
-  await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
-  clickTab(ctx.host, 'explore'); await flush();
-  const afterExplore = ctx.counters.feed;
-  clickTab(ctx.host, 'profile'); await flush();
-  assert.equal(ctx.counters.feed, afterExplore, `feed requests after opening profile: ${ctx.counters.feed}`);
+  assert.equal(findByDataTab(ctx.host, 'profile'), null, 'no profile tab may be mounted');
+  assert.equal(ctx.counters.profile, 0, 'auth lifecycle must not request profile data');
 });
 
 // ---------------------------------------------------------------------------
@@ -352,64 +281,12 @@ await test('logout then a new login re-fetches (caches do not survive unmount)',
   assert.equal(ctx.counters.favorites, 2, `new lifecycle should fetch favorites again, got ${ctx.counters.favorites}`);
 });
 
-await test('a stale response from a previous session does not overwrite a newer one', async () => {
-  const counters = freshCounters();
-  const authStub = makeAuthStub(counters, {});
-  let resolveFirst;
-  const base = makeApiStub(counters, {});
-  let profileGate = null;
-  const apiStub = new Proxy(base, {
-    get(target, prop) {
-      if (prop === 'getMyProfile') {
-        return async () => {
-          counters.profile += 1;
-          if (counters.profile === 1) {
-            // First call (first session) hangs until we release it deliberately, after
-            // the session has already moved on.
-            await new Promise((resolve) => { resolveFirst = resolve; });
-            return { id: 'first-user', username: 'first', display_name: 'First', profile_configured: true };
-          }
-          return { id: 'second-user', username: 'second', display_name: 'Second', profile_configured: true };
-        };
-      }
-      return target[prop];
-    },
-  });
-  const loaded = await loadCommunityModule({ source: CURRENT, apiStub, authStub, bootstrapProvider: SUPABASE_AVAILABLE });
-  await flush();
-  // First sign-in starts a profile load that will hang.
-  for (const handler of [...authStub.listeners]) handler(SESSION, 'SIGNED_IN');
-  await flush();
-  // Sign out, then sign in as a different user — this must not await the first profile.
-  for (const handler of [...authStub.listeners]) handler(null, 'SIGNED_OUT');
-  await flush();
-  for (const handler of [...authStub.listeners]) handler(OTHER_SESSION, 'SIGNED_IN');
-  await flush();
-  // Now release the stale first profile call.
-  resolveFirst();
-  await flush();
-  clickTab(loaded.host, 'profile');
-  await flush();
-  // The stale answer must not have been what got reused; a fresh session with no prior
-  // successful load for it must still be able to load its own profile independently.
-  assert.ok(counters.profile >= 2, `expected at least 2 profile calls across the two sessions, got ${counters.profile}`);
+await test('normal authentication does not call profile APIs across account changes', async () => {
+  const ctx = await bootWith(CURRENT, {});
+  await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
+  await emit(ctx.authStub, [[null, 'SIGNED_OUT'], [OTHER_SESSION, 'SIGNED_IN']]);
+  assert.equal(ctx.counters.profile, 0);
 });
-
-// --- negative control: the code before the fix must auto-refetch profile/me ------------
-const PREVIOUS = process.env.SOCIAL_COMMUNITY_PREVIOUS
-  ? fs.readFileSync(process.env.SOCIAL_COMMUNITY_PREVIOUS, 'utf8')
-  : '';
-
-if (PREVIOUS) {
-  await test('NEGATIVE CONTROL: the pre-fix module refetches profile/me merely by reopening the tab', async () => {
-    const ctx = await bootWith(PREVIOUS, { profileFailsAlways: true });
-    await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
-    const afterMount = ctx.counters.profile;
-    clickTab(ctx.host, 'explore'); await flush();
-    clickTab(ctx.host, 'profile'); await flush();
-    assert.ok(ctx.counters.profile > afterMount, `pre-fix code should auto-refetch on reopen, stayed at ${ctx.counters.profile}`);
-  });
-}
 
 // ---------------------------------------------------------------------------
 console.log(JSON.stringify({ passed, failed: failures.length, failures }, null, 2));

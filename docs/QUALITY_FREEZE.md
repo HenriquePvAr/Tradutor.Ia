@@ -147,14 +147,14 @@ Até lá, qualquer mudança de comportamento de produção precisa carregar seu 
   1..N). O PDF canônico interno de um job PNG/PSD **não** altera formato, label, history,
   botão principal nem `output_format`.
 
-### Perfil / OAuth
+### Perfil social legado / OAuth
 
-- Avatar/banner via Google Drive pela Edge Function `profile-media`; app OAuth em Production,
-  refresh token renovável, login interativo apenas para setup/reparo.
-- Backoff local de upstream com **exponencial limitado (30s → 60s → 120s)** e limpeza
-  imediata no sucesso; falha remota opcional deixa breadcrumb sanitizado e mantém
-  `PROFILE_READY` (fail-open). Um 5xx intermitente do upstream remoto permanece fora do
-  escopo do código local.
+- A experiência de perfil social (edição de dados, avatar e banner) foi removida do cliente.
+  O bootstrap não consulta nem sincroniza perfil público, e a comunidade usa a identidade
+  autenticada da sessão, sem hidratação de mídia de perfil.
+- Endpoints/backend e armazenamento antigos permanecem por compatibilidade e não foram
+  removidos nem alterados nesta mudança. Esta seção não implica validação de um fluxo de
+  perfil no produto atual.
 
 ### UI
 

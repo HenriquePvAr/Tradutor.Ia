@@ -4561,7 +4561,6 @@ class UiBridge:
         return {
             **self.runtime_state_for_owner(owner_id, cursor),
             "history": self._history_payload_for_owner(owner_id),
-            "profile": self.profile_for_user(owner_id),
             "settings": self.settings(owner_id=owner_id),
             "community": {"available": False, "posts": 0},
             "standalone_source_ready": source_ready,

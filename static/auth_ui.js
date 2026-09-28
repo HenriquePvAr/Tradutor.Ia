@@ -1023,9 +1023,8 @@ function renderSession(session, authEvent = '') {
   setAuthState('auth_loading');
   const displayName = String(window.__tradutorDisplayName || '').trim();
   if (session) {
-    // The public shell never falls back to the account email.  The local profile
-    // bootstrap replaces the neutral label with the persisted display name.
-    status.textContent = displayName || 'Usuário';
+    // Account identity comes from the authenticated session, not a social profile.
+    status.textContent = displayName || session.user?.email || 'Conta';
     openBtn.hidden = true;
     logoutBtn.hidden = false;
     if (explicitLoginSubmissionInProgress) {

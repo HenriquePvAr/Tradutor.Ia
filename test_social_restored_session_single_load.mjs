@@ -214,7 +214,7 @@ await test('new tab with a restored session does not eagerly load the hidden fee
 
 await test('new tab with a restored session loads profile/me exactly once', async () => {
   const { counters } = await loadRealModules({ communitySource: CURRENT, nativeEvents: NEW_TAB_EVENTS, sessionForGetSession: SESSION });
-  assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
+  assert.equal(counters.profile, 0, 'restored session does not fetch social profile');
 });
 
 // Repeated 3x (distinct simulated tabs/module instances) to rule out log contamination.
@@ -222,7 +222,7 @@ for (let i = 1; i <= 3; i += 1) {
   await test(`new tab restored session is deterministic across independent runs (run ${i}/3)`, async () => {
     const { counters } = await loadRealModules({ communitySource: CURRENT, nativeEvents: NEW_TAB_EVENTS, sessionForGetSession: SESSION });
     assert.equal(counters.feed, 0, `hidden feed remains lazy: ${counters.feed}`);
-    assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
+    assert.equal(counters.profile, 0, 'restored session does not fetch social profile');
   });
 }
 
@@ -233,7 +233,7 @@ await test('F5 with a restored session does not eagerly load the hidden feed', a
     sessionForGetSession: SESSION,
   });
   assert.equal(counters.feed, 0, `hidden feed remains lazy: ${counters.feed}`);
-  assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
+  assert.equal(counters.profile, 0, 'restored session does not fetch social profile');
 });
 
 await test('a genuinely anonymous tab (no session anywhere, first event is not SIGNED_OUT) issues no request', async () => {
@@ -260,7 +260,7 @@ await test('a SIGNED_OUT followed by a SIGNED_IN for the SAME account reuses the
   // user.id) is what actually decides whether the cache is still valid, not the event name;
   // see accountId()/sameAccount in applySession() in static/social_community.js.
   assert.equal(counters.feed, 0, `hidden feed remains lazy: ${counters.feed}`);
-  assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
+  assert.equal(counters.profile, 0, 'same account does not fetch social profile');
 });
 
 await test('a SIGNED_OUT-only tail (real sign-out, no further sign-in) issues no extra request', async () => {
@@ -270,24 +270,8 @@ await test('a SIGNED_OUT-only tail (real sign-out, no further sign-in) issues no
     sessionForGetSession: SESSION,
   });
   assert.equal(counters.feed, 0, `hidden feed remains lazy: ${counters.feed}`);
-  assert.equal(counters.profile, 1, `profile/me requests: ${counters.profile}`);
+  assert.equal(counters.profile, 0, 'signed-out tail does not fetch social profile');
 });
-
-// --- negative control: the pre-this-fix module (417c88f) must reproduce 2x on the exact
-// same new-tab scenario, proving the duplication this harness targets is real. ---
-const PREVIOUS_PATH = process.env.SOCIAL_COMMUNITY_PREVIOUS
-  || path.join(ROOT, '.runtime', 'claude-community-restored-session-load', 'social_community_before.js');
-const PREVIOUS = fs.existsSync(PREVIOUS_PATH) ? fs.readFileSync(PREVIOUS_PATH, 'utf8') : '';
-
-if (PREVIOUS) {
-  await test('NEGATIVE CONTROL: the pre-fix module (417c88f) duplicates feed+profile on the new-tab sequence', async () => {
-    const { counters } = await loadRealModules({ communitySource: PREVIOUS, nativeEvents: NEW_TAB_EVENTS, sessionForGetSession: SESSION });
-    assert.equal(counters.feed, 2, `pre-fix feed requests should be 2 (the bug): ${counters.feed}`);
-    assert.equal(counters.profile, 2, `pre-fix profile/me requests should be 2 (the bug): ${counters.profile}`);
-  });
-} else {
-  failures.push({ name: 'negative control setup', message: `missing baseline file at ${PREVIOUS_PATH}` });
-}
 
 console.log(JSON.stringify({ passed, failed: failures.length, failures }, null, 2));
 if (failures.length) process.exit(1);

@@ -103,7 +103,6 @@ def test_bootstrap_resolves_principal_before_private_bridge_query(monkeypatch):
                 "history": [],
                 "queue": [],
                 "community": {},
-                "profile": {},
             }
 
     monkeypatch.setattr(app_ui, "AUTH", FakeAuth())

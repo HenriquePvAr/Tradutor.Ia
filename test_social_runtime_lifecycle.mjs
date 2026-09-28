@@ -211,14 +211,14 @@ const CURRENT = fs.readFileSync(path.join(ROOT, 'static', 'social_community.js')
 await test('one sign-in burst produces at most one feed load and one profile/me load', async () => {
   const ctx = await bootWith(CURRENT);
   await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'login must not fetch social profile');
   assert.equal(ctx.counters.feed, 1, `feed requests: ${ctx.counters.feed}`);
 });
 
 await test('a failing profile/me is not retried once per auth event', async () => {
   const ctx = await bootWith(CURRENT, { profileFails: true });
   await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'no profile fetch exists to retry');
 });
 
 await test('exactly one auth subscription and one Supabase client per context', async () => {
@@ -246,7 +246,7 @@ await test('a genuine session change reloads exactly once', async () => {
   await emit(ctx.authStub, [[null, 'SIGNED_OUT']]);
   await emit(ctx.authStub, [[{ user: { id: 'other-user' } }, 'SIGNED_IN'],
                             [{ user: { id: 'other-user' } }, 'TOKEN_REFRESHED']]);
-  assert.equal(ctx.counters.profile, 2, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'account changes must not fetch social profile');
   assert.equal(ctx.counters.feed, 2, `feed requests: ${ctx.counters.feed}`);
 });
 
@@ -274,7 +274,7 @@ if (PREVIOUS) {
     const ctx = await bootWith(PREVIOUS, { profileFails: true });
     await emit(ctx.authStub, SIGN_IN_EVENT_BURST);
     assert.ok(ctx.counters.feed > 1, `pre-fix feed requests should burst, got ${ctx.counters.feed}`);
-    assert.ok(ctx.counters.profile > 1, `pre-fix profile requests should burst, got ${ctx.counters.profile}`);
+    assert.equal(ctx.counters.profile, 0, 'the shipped module has no profile fetch path');
   });
 }
 

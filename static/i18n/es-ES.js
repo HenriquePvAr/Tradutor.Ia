@@ -96,7 +96,7 @@
     'loading.stage.local': 'conectando al servicio local',
     'loading.stage.auth': 'iniciando autenticación',
     'loading.stage.session': 'restaurando sesión',
-    'loading.stage.profile': 'cargando perfil',
+    'loading.stage.account': 'validando tu cuenta',
     'loading.stage.settings': 'cargando configuración',
     'loading.stage.community': 'preparando comunidad',
     'loading.stage.ready': 'listo',

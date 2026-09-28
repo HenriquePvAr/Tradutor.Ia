@@ -162,10 +162,12 @@ class UiIntegrationTests(unittest.TestCase):
             self.assertIn(marker, source, marker)
         self.assertNotIn('target="_blank"', source[source.index("function renderCommunityCard"):source.index("function loadRecordIntoForm")])
 
-    def test_auth_surface_gates_profile_and_community_without_stale_local_identity(self):
+    def test_auth_surface_preserves_account_gate_without_profile_view(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
-        for marker in ("applyCanonicalAuthSurface", "#view-community", "#view-profile", "clearCommunityObjectUrls"):
+        for marker in ("applyCanonicalAuthSurface", "#view-community"):
             self.assertIn(marker, source, marker)
+        self.assertNotIn("#view-profile", source)
+        self.assertNotIn("id=\"view-profile\"", (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8"))
 
     def test_pdf_reader_checks_private_inline_pdf_signature(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
@@ -364,57 +366,13 @@ class UiIntegrationTests(unittest.TestCase):
                 self.assertEqual(reloaded["banner_media_url"], "")
 
     def test_profile_form_save_after_banner_upload_keeps_the_custom_banner(self):
-        """Regression: static/tradutor_ui.js's #profileBannerRow only renders
-        swatches for the preset banners (see ui/ui_shell.html), never one for
-        "custom". So once a user uploads a custom banner image, no swatch
-        carries the `.selected` CSS class, and `profileFromForm()` used to
-        fall straight to a hardcoded 'ink' default when reading the banner
-        for the "Salvar perfil" click. That silently overwrote the
-        just-uploaded custom banner on the very next profile save, even
-        though the save itself reported success -- matching the reported bug
-        (banner "disappears" after reload despite no visible error).
-
-        The fix falls back to the last known `appState.profile.banner`
-        (which correctly holds 'custom') before defaulting to 'ink'.
-        """
+        """The former profile form/upload flow is deliberately absent from the client."""
         js_source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
-        self.assertIn(
-            "dataset.banner || appState.profile.banner || 'ink'",
-            js_source,
-            "profileFromForm() must preserve a custom banner selection "
-            "(no DOM swatch represents 'custom') instead of defaulting to "
-            "'ink' whenever no preset swatch is selected.",
-        )
-
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            bridge = UiBridge.__new__(UiBridge)
-            bridge.profile = _profile_default()
-            with (
-                patch("ui_bridge.PROFILE_PATH", root / "ui_profile.json"),
-                patch("ui_bridge.PROFILE_MEDIA_DIR", root / "ui_profile"),
-            ):
-                uploaded = bridge.save_profile_media(
-                    "banner", filename="banner.png", content_type="image/png",
-                    content=b"\x89PNG\r\n\x1a\nbanner-pixels", user_id="user-banner",
-                )
-                self.assertEqual(uploaded["banner"], "custom")
-                self.assertTrue(uploaded["banner_media_url"])
-
-                # profileFromForm(), fixed, resolves `banner` to the last
-                # known profile value ("custom") when no swatch is selected --
-                # this is exactly what the "Salvar perfil" click now submits.
-                saved = bridge.save_profile(
-                    {"display_name": "Alice", "banner": uploaded["banner"]},
-                    user_id="user-banner",
-                )
-                reloaded = bridge.profile_for_user("user-banner")
-
-                self.assertEqual(saved["banner"], "custom")
-                self.assertEqual(reloaded["banner"], "custom")
-                self.assertTrue(reloaded["banner_media_url"])
-                media_path = bridge.profile_media_path("banner", user_id="user-banner")
-                self.assertTrue(media_path and media_path.is_file())
+        shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+        for removed in ("profileFromForm", "uploadProfileMedia", "removeProfileMedia", "profileSave"):
+            self.assertNotIn(removed, js_source)
+        for removed in ('id="view-profile"', 'id="bannerImageInput"', 'id="avatarImageInput"'):
+            self.assertNotIn(removed, shell)
 
     def test_profile_media_rejects_video_and_bad_signature(self):
         bridge = UiBridge.__new__(UiBridge)
@@ -751,32 +709,19 @@ class UiIntegrationTests(unittest.TestCase):
 
     def test_profile_media_actions_use_canonical_api_transport(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
-        media_block = source[
-            source.index("async function uploadProfileMedia")
-            :source.index("function bindDropzone")
-        ]
-        for marker in (
-            "await api(`/api/ui/profile/media/${kind}",
-            "headers: {'Content-Type': file.type}",
-            "method:'DELETE'",
-            "AbortController",
-            "stale_response_discarded",
-            "mergeProfileMediaPayload",
-        ):
-            self.assertIn(marker, media_block, marker)
-        self.assertNotIn("image/gif", media_block)
-        self.assertNotIn("WEBP ou GIF", media_block)
-        self.assertNotIn("await fetch(`/api/ui/profile/media/${kind}", media_block)
-        handler_block = source[
-            source.index("function bindDropzone")
-            :source.index("bindDropzone('avatar')")
-        ]
-        self.assertIn("humanCommunityError(error", handler_block)
+        self.assertNotIn("/api/ui/profile/media", source)
+        self.assertNotIn("uploadProfileMedia", source)
+        self.assertNotIn("removeProfileMedia", source)
+        # Backend handlers remain legacy-compatible for this client-only mission.
+        backend = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        self.assertIn("def api_profile_media_upload", backend)
+        self.assertIn("def api_profile_media_remove", backend)
 
     def test_profile_media_copy_no_longer_promises_gif_or_video(self):
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-        self.assertIn('data-media-kind="avatar"', shell)
-        self.assertIn('data-media-kind="banner"', shell)
+        self.assertNotIn('data-media-kind="avatar"', shell)
+        self.assertNotIn('data-media-kind="banner"', shell)
+        self.assertNotIn('id="profileSave"', shell)
         self.assertNotIn(".gif", shell)
         self.assertNotIn("GIF ou vídeo", shell)
         self.assertNotIn("vídeo para o banner", shell)
@@ -791,31 +736,14 @@ class UiIntegrationTests(unittest.TestCase):
 
     def test_private_profile_media_uses_authenticated_blob_flow(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
-        media_block = source[
-            source.index("function setMedia")
-            :source.index("async function uploadProfileMedia")
-        ]
-        for marker in (
-            "String(source).startsWith('/api/')",
-            "loadAuthenticatedMediaElement",
-            "rawResponse: true",
-            "response.blob()",
-            "URL.createObjectURL",
-            "URL.revokeObjectURL",
-            "revokeElementMedia",
-            "dataset.objectUrl",
-            "profile_media_load_failed",
-        ):
-            self.assertIn(marker, media_block, marker)
+        self.assertNotIn("loadAuthenticatedMediaElement", source)
+        self.assertNotIn("/api/ui/profile/media", source)
+        self.assertNotIn("profile_media_load_failed", source)
 
     def test_profile_media_remove_requires_confirmation(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
-        remove_block = source[
-            source.index("async function removeProfileMedia")
-            :source.index("function bindDropzone")
-        ]
-        self.assertIn("window.confirm", remove_block)
-        self.assertIn("method:'DELETE'", remove_block)
+        self.assertNotIn("async function removeProfileMedia", source)
+        self.assertNotIn("/api/ui/profile/media", source)
 
     def test_community_feed_errors_are_human_not_raw_reason_codes(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
@@ -838,10 +766,11 @@ class UiIntegrationTests(unittest.TestCase):
             source.index("function renderCommunityCard")
             :source.index("function loadRecordIntoForm")
         ]
-        self.assertIn("data-community-author-avatar-url", card_block)
-        self.assertIn("hydrateCommunityAuthorMedia", card_block)
-        self.assertIn("loadAuthenticatedMediaElement", card_block)
-        self.assertNotIn("<img class=\"community-author-avatar\" src=", card_block)
+        self.assertIn("community-author-letter", card_block)
+        self.assertIn("author.display_name", card_block)
+        self.assertNotIn("data-community-author-avatar-url", card_block)
+        self.assertNotIn("hydrateCommunityAuthorMedia", card_block)
+        self.assertNotIn("loadAuthenticatedMediaElement", card_block)
 
     def test_community_card_visuals_avoid_motion_heavy_hover(self):
         css = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
@@ -920,14 +849,14 @@ class UiIntegrationTests(unittest.TestCase):
 
     def test_community_card_uses_public_author_and_no_private_identity(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
-        for marker in ("post.author", "author.display_name", "author.avatar_url", "community-author-avatar"):
+        for marker in ("post.author", "author.display_name", "community-author-avatar"):
             self.assertIn(marker, source, marker)
         self.assertNotIn("author.email", source)
         auth_source = (ROOT / "static" / "auth_ui.js").read_text(encoding="utf-8")
         community_source = (ROOT / "static" / "social_community.js").read_text(encoding="utf-8")
         self.assertIn("__tradutorDisplayName", auth_source)
         self.assertIn("__tradutorDisplayName", community_source)
-        self.assertNotIn("session.user.email", auth_source)
+        self.assertIn("session.user?.email", auth_source)
         self.assertNotIn("session.user.email", community_source)
 
     def test_enter_and_real_progress_surfaces_remain_structural(self):
@@ -945,7 +874,8 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn('class="cf-header"', source)
         self.assertIn("width:100%; border:0", css)
         self.assertNotIn("groups.size === 1", source)
-        self.assertLess(source.index("const statusLabels"), source.index("applyCanonicalAuthSurface(getGlobal('__tradutorAuthState')"))
+        self.assertNotIn("const statusLabels", source)  # legacy profile status presentation
+        self.assertLess(source.index("function applyCanonicalAuthSurface"), source.index("applyCanonicalAuthSurface(getGlobal('__tradutorAuthState')"))
 
     def test_existing_publication_is_joined_to_history_by_run_and_sha(self):
         app_source = (ROOT / "app_ui.py").read_text(encoding="utf-8")

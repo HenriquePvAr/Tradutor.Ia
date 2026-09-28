@@ -2340,14 +2340,16 @@ fluxo mais uma cópia anterior, espelhando a rotação de `runtime.log`. A falha
 é best-effort e nunca interrompe a gravação do diagnóstico (antes eram ilimitados: uma
 sessão chegou a ~297 MB em `app_current.jsonl`).
 
-A rota `GET /api/ui/profile/media/{kind}` mantém um cache local em disco em
-`<runtime>/cache/profile_media/` para o avatar/banner do Drive. A chave é o hash de
+Legado descontinuado no cliente: a rota `GET /api/ui/profile/media/{kind}` e o cache local
+em `<runtime>/cache/profile_media/` permanecem no backend, mas a UI normal não os chama,
+não hidrata avatar/banner e não lê nem baixa essas mídias. A chave é o hash de
 `(user_id, kind, object_key=drive:<id>)`; quando o `object_key` não muda, a rota serve os
 bytes do disco sem chamar a Edge Function `profile-media` (nem a metadata remota, no caminho
 rápido), inclusive com o backend indisponível. Escrita atômica, validação por magic-bytes de
 imagem, invalidação por mudança de `object_key` e isolamento por usuário. Antes desse cache,
 cada render/poll rebaixava ~1,7–1,9 MB por asset (`Cache-Control: no-store`), o que sozinho
-respondia por ~97% do egress do Supabase.
+respondia por ~97% do egress do Supabase. Não há limpeza automática dos caches existentes;
+remoção definitiva dos handlers/armazenamento fica para a missão de legado.
 
 ## 27. Ambiente de desenvolvimento e comandos
 

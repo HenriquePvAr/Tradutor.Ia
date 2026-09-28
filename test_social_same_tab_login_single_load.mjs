@@ -176,19 +176,19 @@ await test('same-tab login with a spurious SIGNED_OUT loads the feed exactly onc
 await test('same-tab login with a spurious SIGNED_OUT loads profile/me exactly once', async () => {
   const ctx = await bootWith(CURRENT);
   await emit(ctx.authStub, SAME_TAB_LOGIN_WITH_SPURIOUS_SIGNOUT);
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'same-tab login must not fetch social profile');
 });
 
 await test('the loaded feed/profile survive the spurious SIGNED_OUT (no 401, no stale error)', async () => {
   const ctx = await bootWith(CURRENT);
   await emit(ctx.authStub, SAME_TAB_LOGIN_WITH_SPURIOUS_SIGNOUT);
   assert.equal(ctx.counters.feed, 1);
-  assert.equal(ctx.counters.profile, 1);
+  assert.equal(ctx.counters.profile, 0);
   // A further identical-shape replay (a stray TOKEN_REFRESHED, common right after) must not
   // add a third call.
   await emit(ctx.authStub, [[SESSION_B, 'TOKEN_REFRESHED']]);
   assert.equal(ctx.counters.feed, 1);
-  assert.equal(ctx.counters.profile, 1);
+  assert.equal(ctx.counters.profile, 0);
 });
 
 await test('a genuine account change after the spurious signout still reloads once for the new account', async () => {
@@ -198,13 +198,13 @@ await test('a genuine account change after the spurious signout still reloads on
   const OTHER_ACCOUNT = { access_token: 'tok-other', user: { id: 'a-different-user' }, expires_at: 9999999999 };
   await emit(ctx.authStub, [[OTHER_ACCOUNT, 'SIGNED_IN']]);
   assert.equal(ctx.counters.feed, 2, `feed requests: ${ctx.counters.feed}`);
-  assert.equal(ctx.counters.profile, 2, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'account changes must not fetch social profile');
 });
 
 await test('a failing profile/me during the spurious-signout burst is not retried automatically', async () => {
   const ctx = await bootWith(CURRENT, { profileFails: true });
   await emit(ctx.authStub, SAME_TAB_LOGIN_WITH_SPURIOUS_SIGNOUT);
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'profile failure path is removed');
 });
 
 // --- negative control: the pre-fix module must double-load on this exact burst --
@@ -217,7 +217,7 @@ if (PREVIOUS) {
     const ctx = await bootWith(PREVIOUS);
     await emit(ctx.authStub, SAME_TAB_LOGIN_WITH_SPURIOUS_SIGNOUT);
     assert.ok(ctx.counters.feed > 1, `pre-fix feed requests should double, got ${ctx.counters.feed}`);
-    assert.ok(ctx.counters.profile > 1, `pre-fix profile requests should double, got ${ctx.counters.profile}`);
+    assert.equal(ctx.counters.profile, 0, 'the shipped module has no profile fetch path');
   });
 }
 

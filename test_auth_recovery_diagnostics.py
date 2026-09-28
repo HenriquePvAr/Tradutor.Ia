@@ -206,8 +206,9 @@ def test_auth_preview_is_multi_area_carousel():
     shell = (Path(__file__).parent / "ui" / "ui_shell.html").read_text(encoding="utf-8")
     css = (Path(__file__).parent / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
     assert 'id="authProductCarousel"' in shell
-    for label in ("Início", "Nova tradução", "Fila", "Capítulos traduzidos", "Leitor", "Comunidade", "Perfil"):
+    for label in ("Início", "Nova tradução", "Fila", "Capítulos traduzidos", "Leitor", "Comunidade"):
         assert label in shell
+    assert 'data-tab="profile"' not in shell
     assert "authProductSlide" in css
     assert "animation:authProductSlide" in css
 

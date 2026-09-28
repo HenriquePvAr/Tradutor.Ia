@@ -96,7 +96,7 @@
     'loading.stage.local': 'ローカルサービスに接続中',
     'loading.stage.auth': '認証を開始中',
     'loading.stage.session': 'セッションを復元中',
-    'loading.stage.profile': 'プロフィールを読み込み中',
+    'loading.stage.account': 'アカウントを確認中',
     'loading.stage.settings': '設定を読み込み中',
     'loading.stage.community': 'コミュニティを準備中',
     'loading.stage.ready': '準備完了',

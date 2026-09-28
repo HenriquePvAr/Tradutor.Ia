@@ -38,7 +38,7 @@ Frontend (social_community.js + social_api.js)
 ## Navegação
 
 Abas: **Explorar** (feed), **Favoritos**, **Continuar lendo** (histórico), **Minhas
-obras**, **Meu perfil**, **Notificações**. Cabeçalho com título, e-mail do usuário e
+obras** e **Notificações**. Não existe tela social de perfil no cliente. Cabeçalho com título, e-mail do usuário e
 **Sair**. Responsivo (grid que colapsa em 1 coluna no mobile, nav rolável, modais
 adaptados).
 
@@ -67,10 +67,9 @@ loop de refresh. Logout limpa o estado social.
 - **Favoritos** — favoritar/desfavoritar (idempotente) + tela de favoritos.
 - **Histórico / Continuar lendo** — `GET /history` (progresso, última leitura, concluído).
   A atualização automática de progresso virá com a ligação do leitor ao PDF (fase futura).
-- **Perfil** — editar username/display_name/bio/theme_color/show_favorites/show_history/
-  allow_profile_comments; avatar por iniciais + cor do tema; contador de bio; **onboarding**
-  quando username/display_name faltam; conflito de username → 409 tratado. Perfis públicos
-  por `GET /profiles/{username}`.
+- **Conta** — login, e-mail e sessão vêm do fluxo de autenticação; não dependem de perfil
+  social nem de avatar/banner. Endpoints sociais de perfil e armazenamento de mídia são
+  legado backend e não são chamados pela UI normal.
 - **Denúncias** — modal para obra/capítulo/comentário (reason/details); reporter/status
   nunca enviados.
 - **Notificações** — `GET /notifications`, destacar não lidas, marcar como lida

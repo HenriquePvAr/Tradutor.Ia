@@ -31,10 +31,6 @@
   const appState = {
     bootstrap: null,
     history: [],
-    profile: {},
-    profileState: 'PROFILE_LOADING',
-    profileBootstrapSequence: 0,
-    profileErrorNotified: false,
     settings: {},
     queue: [],
     status: 'ready',
@@ -94,11 +90,6 @@
     communityCache: {explore: [], favorites: [], reading: [], mine: [], notifications: []},
     localDeleteRecord: null,
     localDeleteBusy: false,
-    profileMedia: {
-      avatar: {requestId: '', controller: null, objectUrl: ''},
-      banner: {requestId: '', controller: null, objectUrl: ''},
-    },
-    profileMediaRequests: new Map(),
     currentRequestId: '',
     currentJobId: '',
     currentRunId: '',
@@ -111,7 +102,7 @@
     authUserId: '',
     authenticated: false,
     authGeneration: 0,
-    profileBootstrapAuthGeneration: 0,
+    bootstrapAuthGeneration: 0,
     translationEnabled: false,
   };
   // These state cells are read by the initial form hydration before the
@@ -124,14 +115,9 @@
     'UI_POLICY_LISTENER_REGISTRATION_ATTEMPT', 'UI_POLICY_LISTENER_REGISTERED',
     'UI_CONTROL_PLANE_EVENT_CALLBACK_ENTERED', 'UI_CONTROL_PLANE_EVENT_RECEIVED',
     'UI_TRANSLATION_POLICY_APPLIED', 'UI_POLICY_SYNC_SKIPPED',
-    'PROFILE_AUTH_GENERATION_STARTED', 'PROFILE_BOOTSTRAP_AUTH_TRANSITION_REQUESTED',
     'UI_AUTH_EVENT_RECEIVED', 'UI_BOOTSTRAP_SCHEDULED',
     'UI_BRIDGE_REGISTERED', 'UI_BRIDGE_READY_RECEIVED',
     'CONTROL_PLANE_PENDING_AUTH_REPLAY_START', 'CONTROL_PLANE_PENDING_AUTH_REPLAY_RESULT',
-    'PROFILE_BOOTSTRAP_RETRY_AFTER_CONTROL_PLANE_AUTH',
-    'PROFILE_BOOTSTRAP_REQUEST_STARTED', 'PROFILE_BOOTSTRAP_RECEIVED',
-    'PROFILE_BOOTSTRAP_PROFILE_PRESENT', 'PROFILE_BOOTSTRAP_PROFILE_ERROR',
-    'PROFILE_STATE_COMMIT', 'PROFILE_RENDER_STATE', 'PROFILE_ERROR_STATE',
     'READINESS_RECOMPUTE',
     'YK_WALLET_POST_FINALIZE_REFRESH_START', 'YK_WALLET_POST_FINALIZE_REFRESH_RESULT',
     'YK_WALLET_POST_FINALIZE_REFRESH_ERROR',
@@ -158,8 +144,7 @@
         updateTranslationStartControls();
         const status = String(appState.status || '').toLowerCase();
         const activeStatuses = ['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review'];
-        if (isCanonicalCommunityAuthenticated() && appState.profileState === 'PROFILE_READY'
-            && !activeStatuses.includes(status)) {
+        if (isCanonicalCommunityAuthenticated() && !activeStatuses.includes(status)) {
           setTranslationFormLocked(false);
         }
       } catch (_) { /* readiness recovery must never break the UI */ }
@@ -173,13 +158,12 @@
     syncAuthoritativeTranslationFlag();
     // Auth can settle in the control-plane before the auth UI event reaches this
     // document (notably after restoring a persisted desktop session).  Re-run the
-    // local UI bootstrap once the event loop has installed the data lifecycle so
-    // profile state cannot remain on the initial unauthenticated loading shell.
+    // local UI bootstrap once the event loop has installed the data lifecycle.
     window.setTimeout(() => {
       try {
         const refresh = getGlobal('__tradutorRefreshBootstrap');
         if (typeof refresh === 'function') {
-          uiTrace('PROFILE_BOOTSTRAP_RETRY_AFTER_CONTROL_PLANE_AUTH', {reason: 'auth_event_ordering'});
+          uiTrace('UI_BOOTSTRAP_RETRY_AFTER_CONTROL_PLANE_AUTH', {reason: 'auth_event_ordering'});
           void refresh();
         }
       } catch (_) { /* diagnostics/recovery must never affect the UI */ }
@@ -237,9 +221,8 @@
       'job_id', 'run_id', 'stage',
       'translation_enabled', 'source', 'resolved_at', 'policy_source',
       'policy_resolved_at',
-      'profile_state', 'profile_present', 'profile_error_present', 'ui_generation', 'bridge_type',
       'error_class', 'message', 'source', 'line', 'column', 'phase',
-      'readiness_profile_required', 'readiness_ready', 'sequence', 'elapsed_ms',
+      'readiness_account_required', 'readiness_ready', 'sequence', 'elapsed_ms',
       'node_instance_id', 'target_node_id', 'closest_start_button_node_id', 'is_connected',
       'disabled', 'aria_disabled', 'event_phase', 'default_prevented', 'pointer_id', 'trusted',
       'active_element_node_id', 'document_has_focus', 'render_generation', 'same_node_down_up',
@@ -264,9 +247,8 @@
         'policy_resolved_at', 'event_name', 'target', 'document_ready_state', 'pathname',
         'is_top_window', 'window_realm_id', 'has_detail', 'detail_translation_enabled',
         'job_id', 'status', 'usable_now', 'daily_stored', 'code',
-        'detail_source', 'detail_resolved_at', 'probe', 'profile_state', 'profile_present',
-        'profile_error_present', 'ui_generation', 'bridge_type', 'error_class', 'message', 'source', 'line', 'column', 'phase',
-        'readiness_profile_required', 'readiness_ready', 'sequence', 'elapsed_ms',
+        'detail_source', 'detail_resolved_at', 'probe', 'ui_generation', 'bridge_type', 'error_class', 'message', 'source', 'line', 'column', 'phase',
+        'readiness_account_required', 'readiness_ready', 'sequence', 'elapsed_ms',
         'node_instance_id', 'target_node_id', 'closest_start_button_node_id', 'is_connected',
         'disabled', 'aria_disabled', 'event_phase', 'default_prevented', 'pointer_id', 'trusted',
         'active_element_node_id', 'document_has_focus', 'render_generation', 'same_node_down_up',
@@ -316,12 +298,6 @@
   });
   uiTrace('UI_SCRIPT_EXECUTED', {document_ready_state: document.readyState, pathname: window.location?.pathname || '/', is_top_window: window.top === window, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
   uiTrace('UI_TRACE_CHANNEL_PROBE', {probe: 'tradutor_ui', document_ready_state: document.readyState, window_realm_id: window.__YOMU_WINDOW_REALM_ID__ || ''});
-  function profileMediaTrace(step, fields = {}) {
-    const payload = {trace_id: getGlobal('__profileMediaTraceId') || correlationId(), step, ...fields};
-    setGlobal('__profileMediaTraceId', payload.trace_id);
-    uiTrace('profile_media_trace', payload);
-    try { void fetch('/api/ui/profile/media-trace', {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify(payload), keepalive:true}); } catch (_) { /* diagnostics must never affect UX */ }
-  }
   function correlationId() {
     try { return crypto.randomUUID(); } catch (_) { return `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
   }
@@ -352,7 +328,7 @@
     const backendAuthenticated = community.authenticated === true;
     const backendUnauthenticated = community.authenticated === false;
     if (backendAuthenticated) {
-      const userId = String(community.user_id || data?.profile?.user_id || getGlobal('__tradutorCommunityUserId') || '');
+      const userId = String(community.user_id || getGlobal('__tradutorCommunityUserId') || '');
       setGlobal('__tradutorAuthState', 'authenticated');
       setGlobal('__tradutorCommunityAuthenticated', true);
       if (userId) setGlobal('__tradutorCommunityUserId', userId);
@@ -491,7 +467,7 @@
   let bootHasClosed = false;
   const bootStages = [
     'loading.stage.init', 'loading.stage.local', 'loading.stage.auth', 'loading.stage.session',
-    'loading.stage.profile', 'loading.stage.settings', 'loading.stage.community', 'loading.stage.ready',
+    'loading.stage.account', 'loading.stage.settings', 'loading.stage.community', 'loading.stage.ready',
   ];
   const bootStageMeta = [
     {sub: 'preparando seu espaço', icon: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.4"/><path d="M21 15l-5-5-4 4-3-3-6 6"/>'},
@@ -665,7 +641,6 @@
     rewards: {hex: '#c9a227', rgb: '201,162,39'},
     cfg: {hex: '#2f7a6b', rgb: '47,122,107'},
     logs: {hex: '#8a8377', rgb: '138,131,119'},
-    profile: {hex: '#8a5fa3', rgb: '138,95,163'},
   };
   function ambientSweep() {
     const sweep = document.createElement('div');
@@ -750,7 +725,7 @@
   const views = {
     inicio: 'view-inicio', nova: 'view-nova', queue: 'view-queue', hist: 'view-hist',
     leitor: 'view-leitor',
-    scans: 'view-scans', rewards: 'view-rewards', community: 'view-community', updates: 'view-updates', cfg: 'view-cfg', logs: 'view-logs', profile: 'view-profile',
+    scans: 'view-scans', rewards: 'view-rewards', community: 'view-community', updates: 'view-updates', cfg: 'view-cfg', logs: 'view-logs',
   };
   const logsTab = $('.rail-tab[data-tab="logs"]'); if (logsTab) logsTab.closest('li')?.setAttribute('hidden', '');
   const railIndicator = $('#railIndicator');
@@ -774,7 +749,10 @@
   function activateTab(name) {
     const tab = $(`.rail-tab[data-tab="${name}"]`);
     const target = $(`#${views[name] || ''}`);
-    if (!tab || !target) return;
+    if (!tab || !target) {
+      if (name === 'profile') activateTab('inicio');
+      return;
+    }
     const previous = $('.panel-view.active');
     if (previous && previous !== target) {
       previous.classList.remove('active');
@@ -829,7 +807,6 @@
   }));
   window.addEventListener('tradutor-navigate-tab', event => activateTab(event.detail?.tab || 'rewards'));
   $$('[data-goto]').forEach(button => button.addEventListener('click', () => activateTab(button.dataset.goto)));
-  $('#railProfile')?.addEventListener('click', () => activateTab('profile'));
   window.setTimeout(() => moveIndicator($('.rail-tab.active')), 60);
 
   /* ---------- visual feedback ---------- */
@@ -7378,22 +7355,15 @@
         || event.target?.tagName || '').slice(0, 40),
     });
   }, true);
-  const statusLabels = {online: 'online', away: 'ausente', busy: 'ocupado', offline: 'offline'};
   function applyCanonicalAuthSurface(state) {
     const authenticated = String(state || '') === 'authenticated';
     document.documentElement.dataset.shellState = authenticated ? 'authenticated' : 'unauthenticated';
-    const protectedSelectors = ['#railProfile', '.rail-tab[data-tab="community"]', '.rail-tab[data-tab="profile"]', '#view-community', '#view-profile'];
+    const protectedSelectors = ['.rail-tab[data-tab="community"]', '#view-community'];
     protectedSelectors.forEach(selector => $$(selector).forEach(element => {
       element.hidden = !authenticated;
       element.setAttribute('aria-hidden', authenticated ? 'false' : 'true');
     }));
-    const profileControls = $$('#view-profile input, #view-profile textarea, #view-profile select, #view-profile button');
-    profileControls.forEach(control => { control.disabled = !authenticated; });
-    if (!authenticated) {
-      appState.profile = {};
-      renderProfile({});
-      if ($('#view-community')?.classList.contains('active') || $('#view-profile')?.classList.contains('active')) activateTab('inicio');
-    }
+    if (!authenticated && $('#view-community')?.classList.contains('active')) activateTab('inicio');
   }
   function toggleHistoryFolder(folder) {
     const key = folder?.dataset?.folder;
@@ -7454,19 +7424,16 @@
     appState.authenticated = authenticated;
     if (!authenticated) {
       appState.authGeneration += 1;
-      appState.profileBootstrapAuthGeneration = 0;
+      appState.bootstrapAuthGeneration = 0;
       return;
     }
     if (authTransition) {
       appState.authGeneration += 1;
-      appState.profileBootstrapAuthGeneration = 0;
-      appState.profileState = 'PROFILE_LOADING';
-      uiTrace('PROFILE_AUTH_GENERATION_STARTED', {generation: appState.authGeneration});
+      appState.bootstrapAuthGeneration = 0;
     }
-    if (appState.profileBootstrapAuthGeneration !== appState.authGeneration) {
-      appState.profileBootstrapAuthGeneration = appState.authGeneration;
+    if (appState.bootstrapAuthGeneration !== appState.authGeneration) {
+      appState.bootstrapAuthGeneration = appState.authGeneration;
       uiTrace('UI_BOOTSTRAP_SCHEDULED', {generation: appState.authGeneration});
-      uiTrace('PROFILE_BOOTSTRAP_AUTH_TRANSITION_REQUESTED', {generation: appState.authGeneration});
       const refresh = getGlobal('__tradutorRefreshBootstrap');
       if (typeof refresh === 'function') void refresh();
     }
@@ -8082,7 +8049,6 @@
         return;
       }
       container.innerHTML = posts.map(post => renderCommunityCard(post, {tab})).join('');
-      hydrateCommunityAuthorMedia(container);
     } catch (error) {
       const message = error?.code === 'community_schema_invalid'
         ? 'A Comunidade ainda não está disponível neste ambiente.'
@@ -8105,7 +8071,6 @@
     const authorName = escapeHtml(author.display_name || 'Usuário');
     const authorRole = author.public_role ? ` · ${escapeHtml(author.public_role)}` : '';
     const initial = escapeHtml((author.display_name || 'U').slice(0, 1).toUpperCase());
-    const avatarAttrs = author.avatar_url ? ` data-community-author-avatar-url="${escapeAttr(author.avatar_url)}"` : '';
     const pages = Number(post.page_count || post.pages || 0);
     const quality = post.quality || post.quality_status || post.review_status || '';
     const postId = escapeAttr(post.publication_id || post.post_id || '');
@@ -8120,7 +8085,7 @@
       : '';
     return `<article class="hist-item community-publication-card" data-publication-id="${postId}" tabindex="0">
       <div class="hist-cover community-publication-cover" style="background:#b8557a">${escapeHtml(title.slice(0,1).toUpperCase())}</div>
-      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}${pages ? ` · ${pages} páginas` : ''}${progress}</div><div class="hm-sub community-author"><span class="community-author-avatar community-author-letter"${avatarAttrs}>${initial}</span><span>${authorName}${authorRole}</span></div>${quality ? `<div class="community-quality-chip">${escapeHtml(String(quality))}</div>` : ''}${tags}<div class="community-card-stats">${Number(post.favorite_count || 0)} favoritos · ${Number(post.comment_count || 0)} comentários</div><div class="community-comments-panel" data-comments-for="${postId}" hidden></div></div>
+      <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${sub}${pages ? ` · ${pages} páginas` : ''}${progress}</div><div class="hm-sub community-author"><span class="community-author-avatar community-author-letter">${initial}</span><span>${authorName}${authorRole}</span></div>${quality ? `<div class="community-quality-chip">${escapeHtml(String(quality))}</div>` : ''}${tags}<div class="community-card-stats">${Number(post.favorite_count || 0)} favoritos · ${Number(post.comment_count || 0)} comentários</div><div class="community-comments-panel" data-comments-for="${postId}" hidden></div></div>
       <div class="hm-actions"><button class="btn-ghost" type="button" data-community-favorite-id="${postId}" aria-pressed="${post.favorited ? 'true' : 'false'}" aria-label="${escapeAttr(favoriteLabel)}" title="${escapeAttr(favoriteLabel)}">${escapeHtml(favoriteLabel)}</button><button class="btn-ghost" type="button" data-community-comments-id="${postId}" aria-label="Abrir comentários" title="Comentários">Comentários</button><button class="btn-ghost" type="button" data-community-pdf-id="${postId}" aria-label="Abrir PDF da publicação" title="Abrir PDF">Abrir PDF</button>${ownerActions}</div></article>`;
   }
   function renderNotificationCard(item) {
@@ -8250,14 +8215,6 @@
     }
   }
 
-  function hydrateCommunityAuthorMedia(container) {
-    $$('[data-community-author-avatar-url]', container).forEach(element => {
-      const source = element.dataset.communityAuthorAvatarUrl || '';
-      if (!source) return;
-      revokeElementMedia(element);
-      void loadAuthenticatedMediaElement(element, source, 'image/*', element.textContent || 'U');
-    });
-  }
   function loadRecordIntoForm(record) {
     const local = ['local_folder', 'local_images'].includes(record.source_type);
     setSourceType(local ? record.source_type : 'url');
@@ -8325,6 +8282,7 @@
   window.addEventListener('tradutor-goto-tab', event => {
     const tab = String(event?.detail?.tab || '');
     if (views[tab]) activateTab(tab);
+    else if (tab === 'profile') activateTab('inicio');
   });
   window.addEventListener('tradutor-open-artifact', event => {
     const detail = event?.detail || {};
@@ -8788,340 +8746,7 @@
     }
   });
 
-  /* ---------- local profile ---------- */
-  function applyProfileToForm(profile) {
-    setGlobal('__tradutorDisplayName', String(profile.display_name || '').trim());
-    if (currentCanonicalAuthState() === 'authenticated' && $('#authStatus')) {
-      $('#authStatus').textContent = getGlobal('__tradutorDisplayName') || 'Usuário';
-    }
-    $('#profileName').value = profile.display_name || '';
-    $('#profileTitle').value = profile.title || '';
-    $('#profilePronouns').value = profile.pronouns || '';
-    $('#profileStatusText').value = profile.status_text || '';
-    $('#profileBio').value = profile.bio || '';
-    $('#profileBioCount').textContent = `${($('#profileBio').value || '').length}/190`;
-    $$('#profileStatusChips .chip').forEach(chip => chip.classList.toggle('selected', chip.dataset.status === (profile.status || 'online')));
-    $$('#profileAvatarMode .chip').forEach(chip => chip.classList.toggle('selected', chip.dataset.mode === (profile.avatar_mode || 'letter')));
-    $$('#profileColorRow .color-swatch').forEach(swatch => swatch.classList.toggle('selected', swatch.dataset.color === (profile.avatar_color || '#c5372c')));
-    $$('#profileBannerRow .banner-swatch').forEach(swatch => swatch.classList.toggle('selected', swatch.dataset.banner === (profile.banner || 'ink')));
-    $('#avatarImagePicker')?.classList.toggle('show', (profile.avatar_mode || 'letter') === 'image');
-    renderMediaCard('avatar', profile);
-    renderMediaCard('banner', profile);
-    renderProfile(profile);
-  }
-  function profileFromForm() {
-    return {
-      ...appState.profile,
-      display_name: $('#profileName').value.trim() || 'você',
-      title: $('#profileTitle').value,
-      pronouns: $('#profilePronouns').value.trim(),
-      status: $('#profileStatusChips .chip.selected')?.dataset.status || 'online',
-      status_text: $('#profileStatusText').value.trim(),
-      bio: $('#profileBio').value.trim(),
-      avatar_mode: $('#profileAvatarMode .chip.selected')?.dataset.mode || 'letter',
-      avatar_color: $('#profileColorRow .color-swatch.selected')?.dataset.color || '#c5372c',
-      // #profileBannerRow only renders swatches for the preset banners (see
-      // ui/ui_shell.html); there is no swatch for "custom", so once a custom
-      // banner image is uploaded no swatch carries .selected and this used to
-      // fall straight to 'ink', silently discarding the uploaded banner the
-      // next time "Salvar perfil" was clicked. Fall back to the last known
-      // profile banner (which correctly holds 'custom') before defaulting.
-      banner: $('#profileBannerRow .banner-swatch.selected')?.dataset.banner || appState.profile.banner || 'ink',
-    };
-  }
-  function setMedia(element, source, mediaType, fallback) {
-    // The bootstrap/state poll re-applies the profile to the form on every
-    // cycle (as often as every 850ms) even when nothing changed. Without this
-    // guard, an unchanged /api/ source was refetched and re-blobbed each time,
-    // spamming the network and piling up blob: URLs (each only revoked 300s
-    // after load). `source` already carries `?v=<updated_at>` as a real
-    // cache-buster, so an identical source with a still-live blob on screen
-    // means nothing changed and the reload is skipped.
-    // The objectUrl must still be registered in appState.communityObjectUrls
-    // (not just present in the element's dataset): logout revokes every
-    // tracked URL in bulk (clearCommunityObjectUrls) without walking each
-    // element, so a stale dataset.objectUrl would otherwise pass this guard
-    // and leave a broken image after logging back in with the same avatar.
-    if (source && String(mediaType).startsWith('image/') && String(source).startsWith('/api/')
-        && element.dataset.loadedSource === source
-        && element.dataset.objectUrl && appState.communityObjectUrls.has(element.dataset.objectUrl)
-        && element.querySelector('img')) {
-      return;
-    }
-    revokeElementMedia(element);
-    element.innerHTML = '';
-    element.style.backgroundImage = '';
-    if (source && String(mediaType).startsWith('image/')) {
-      if (String(source).startsWith('/api/')) {
-        element.textContent = fallback || '';
-        void loadAuthenticatedMediaElement(element, source, mediaType, fallback);
-      } else {
-        const image = document.createElement('img');
-        image.src = source; image.alt = '';
-        element.appendChild(image);
-      }
-    } else element.textContent = fallback;
-  }
-  async function loadAuthenticatedMediaElement(element, source, mediaType, fallback) {
-    const requestKey = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    element.dataset.mediaRequest = requestKey;
-    const kind = element?.id?.toLowerCase().includes('banner') ? 'banner' : 'avatar';
-    const dedupeKey = `${kind}:${String(source)}`;
-    const activeRequest = appState.profileMediaRequests.get(dedupeKey);
-    if (activeRequest) return activeRequest;
-    let releaseRequest;
-    const requestGate = new Promise(resolve => { releaseRequest = resolve; });
-    appState.profileMediaRequests.set(dedupeKey, requestGate);
-    profileMediaTrace('PROFILE_MEDIA_REQUEST_STARTED', {kind, route: String(source).split('?')[0], auth_present: Boolean(getGlobal('__tradutorAuthState'))});
-    try {
-      const response = await api(source, {rawResponse: true, timeoutMs: 12000});
-      const blob = await response.blob();
-      profileMediaTrace('PROFILE_MEDIA_RESPONSE', {kind, status: Number(response.status || 200), mime: String(blob.type || mediaType || ''), size: Number(blob.size || 0)});
-      if (!String(blob.type || mediaType || '').startsWith('image/')) throw new Error('invalid_media_type');
-      if (element.dataset.mediaRequest !== requestKey) return;
-      const objectUrl = URL.createObjectURL(blob);
-      appState.communityObjectUrls.add(objectUrl);
-      element.dataset.objectUrl = objectUrl;
-      const image = document.createElement('img');
-      image.src = objectUrl; image.alt = '';
-      image.addEventListener('load', () => {
-        profileMediaTrace('PROFILE_MEDIA_LOAD_EVENT', {kind, success: true});
-        window.setTimeout(() => {
-          try { URL.revokeObjectURL(objectUrl); } catch (_) { /* best effort */ }
-          appState.communityObjectUrls.delete(objectUrl);
-          if (element.dataset.objectUrl === objectUrl) delete element.dataset.objectUrl;
-        }, 300000);
-      }, {once: true});
-      element.innerHTML = '';
-      element.appendChild(image);
-      element.dataset.loadedSource = source;
-      profileMediaTrace('PROFILE_MEDIA_DOM_SRC_SET', {kind, success: true});
-      uiTrace('profile_media_loaded', {status: 200});
-    } catch (errorValue) {
-      profileMediaTrace('PROFILE_MEDIA_LOAD_FAILURE', {kind, status: Number(errorValue?.status || 0), reason: String(errorValue?.code || errorValue?.message || 'media_load_failed').slice(0,80), success: false});
-      if (element.dataset.mediaRequest === requestKey) { element.textContent = fallback || ''; delete element.dataset.loadedSource; }
-      uiTrace('profile_media_load_failed', {
-        status: errorValue?.status || 0,
-        code: errorValue?.code || errorValue?.message || 'media_load_failed',
-      });
-    } finally {
-      if (appState.profileMediaRequests.get(dedupeKey) === requestGate) appState.profileMediaRequests.delete(dedupeKey);
-      releaseRequest?.();
-    }
-  }
-  function revokeElementMedia(element) {
-    const current = element?.dataset?.objectUrl || '';
-    if (!current) return;
-    try { URL.revokeObjectURL(current); } catch (_) { /* best effort */ }
-    appState.communityObjectUrls.delete(current);
-    delete element.dataset.objectUrl;
-  }
-  function renderProfile(profile = profileFromForm()) {
-    profileMediaTrace('PROFILE_HYDRATION_STARTED', {
-      avatar_ref_present: Boolean(profile.avatar_media_url),
-      banner_ref_present: Boolean(profile.banner_media_url),
-    });
-    const authenticated = String(getGlobal('__tradutorAuthState') || '') === 'authenticated';
-    const profileState = appState.profileState || 'PROFILE_LOADING';
-    const name = !authenticated ? 'Visitante'
-      : profileState === 'PROFILE_ERROR' ? 'Perfil indisponível'
-      : profileState === 'PROFILE_LOADING' ? 'Carregando perfil…'
-      : (profile.display_name || 'Usuário');
-    uiTrace('PROFILE_RENDER_STATE', {profile_state: profileState, profile_present: Boolean(profile.display_name || profile.user_id), profile_error_present: profileState === 'PROFILE_ERROR'});
-    const avatar = name.slice(0, 1).toUpperCase();
-    const avatarData = profile.avatar_mode === 'image' ? profile.avatar_media_url : '';
-    [$('#pcAvatar'), $('#rpAvatar')].forEach(element => {
-      element.style.backgroundColor = profile.avatar_color || '#c5372c';
-      setMedia(element, avatarData, profile.avatar_media_type, avatar);
-    });
-    const banner = $('#pcBanner');
-    banner.className = `pc-banner banner-${profile.banner || 'ink'}`;
-    if (profile.banner === 'custom') setMedia(banner, profile.banner_media_url, profile.banner_media_type, '');
-    else { banner.innerHTML = ''; banner.style.backgroundImage = ''; }
-    $('#pcName').textContent = name;
-    $('#rpName').textContent = name;
-    $('#pcTitleRole').textContent = profile.title || '';
-    $('#pcPronouns').textContent = profile.pronouns || '';
-    $('#pcStatusLine').textContent = [statusLabels[profile.status] || 'online', profile.status_text].filter(Boolean).join(' · ');
-    $('#pcBio').textContent = profile.bio || 'Seu perfil ainda não tem bio.';
-    $('#pcBadges').innerHTML = '';
-    const since = profile.created_at ? new Date(profile.created_at).toLocaleDateString('pt-BR') : 'hoje';
-    $('#pcSince').textContent = `Membro desde ${since}`;
-    [$('#pcStatusDot'), $('#rpStatusDot')].forEach(dot => { dot.className = `${dot.id === 'pcStatusDot' ? 'pc-status-dot' : 'rp-dot'} ${profile.status || 'online'}`; });
-    $('#rpStatusLabel').textContent = statusLabels[profile.status] || 'online';
-  }
-  function bindChoiceGroup(selector, dataKey) {
-    $(selector)?.addEventListener('click', event => {
-      const item = event.target.closest(`[data-${dataKey}]`);
-      if (!item) return;
-      $$(`[data-${dataKey}]`, $(selector)).forEach(candidate => candidate.classList.remove('selected'));
-      item.classList.add('selected');
-      if (selector === '#profileAvatarMode') $('#avatarImagePicker')?.classList.toggle('show', item.dataset.mode === 'image');
-      renderProfile();
-    });
-  }
-  bindChoiceGroup('#profileStatusChips', 'status');
-  bindChoiceGroup('#profileAvatarMode', 'mode');
-  bindChoiceGroup('#profileColorRow', 'color');
-  bindChoiceGroup('#profileBannerRow', 'banner');
-  ['profileName', 'profileTitle', 'profilePronouns', 'profileStatusText', 'profileBio'].forEach(id => $(`#${id}`)?.addEventListener('input', () => {
-    $('#profileBioCount').textContent = `${($('#profileBio').value || '').length}/190`;
-    renderProfile();
-  }));
-  function formatBytes(value) {
-    const bytes = Number(value || 0);
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  function renderMediaCard(kind, profile) {
-    const card = $(`#${kind}MediaCard`);
-    const state = appState.profileMedia?.[kind] || {};
-    const source = state.objectUrl || profile[`${kind}_media_url`];
-    if (!card) return;
-    card.hidden = !source;
-    if (!source) return;
-    // A remote Drive-backed profile intentionally does not expose a local
-    // filename/size.  Do not misclassify that state as a local zero-byte file:
-    // the authenticated /api/... source is the source of truth after reload.
-    const remoteSource = Boolean(profile.remote_source)
-      && String(profile[`${kind}_media_url`] || '').startsWith('/api/');
-    const mediaName = profile[`${kind}_media_name`];
-    const mediaSize = Number(profile[`${kind}_media_size`] || 0);
-    const mediaType = profile[`${kind}_media_type`] || 'arquivo';
-    $(`#${kind}MediaName`).textContent = remoteSource && !mediaName ? 'Mídia remota' : (mediaName || 'mídia local');
-    $(`#${kind}MediaMeta`).textContent = remoteSource && !mediaName && !mediaSize
-      ? mediaType
-      : `${formatBytes(mediaSize)} · ${mediaType}`;
-    setMedia($(`#${kind}MediaPreview`), source, profile[`${kind}_media_type`], '');
-  }
-  function revokeProfileMediaPreview(kind) {
-    const state = appState.profileMedia?.[kind];
-    if (!state?.objectUrl) return;
-    try { URL.revokeObjectURL(state.objectUrl); } catch (_) { /* best effort */ }
-    state.objectUrl = '';
-  }
-  function mergeProfileMediaPayload(kind, profile = {}) {
-    appState.profile = {...appState.profile};
-    for (const key of ['path', 'type', 'name', 'size', 'updated_at', 'url']) {
-      const fullKey = `${kind}_media_${key}`;
-      if (Object.prototype.hasOwnProperty.call(profile, fullKey)) appState.profile[fullKey] = profile[fullKey];
-    }
-    if (kind === 'avatar' && Object.prototype.hasOwnProperty.call(profile, 'avatar_mode')) {
-      appState.profile.avatar_mode = profile.avatar_mode;
-    }
-    if (kind === 'banner' && Object.prototype.hasOwnProperty.call(profile, 'banner')) {
-      appState.profile.banner = profile.banner;
-    }
-  }
-  async function uploadProfileMedia(kind, file) {
-    profileMediaTrace('FILE_INPUT_CHANGE', {kind, file_present: Boolean(file), size: Number(file?.size || 0), mime: String(file?.type || '')});
-    if (!file) return;
-    if (!['avatar', 'banner'].includes(kind)) return;
-    const allowed = new Set(['image/png','image/jpeg','image/webp']);
-    const maxBytes = kind === 'avatar' ? 5 * 1024 * 1024 : 12 * 1024 * 1024;
-    if (!allowed.has(file.type) || file.size > maxBytes) {
-      showToast(kind === 'avatar'
-        ? 'Use PNG, JPG ou WEBP de até 5 MB para o avatar.'
-        : 'Use PNG, JPG ou WEBP de até 12 MB para o banner.', 'error');
-      return;
-    }
-    const state = appState.profileMedia[kind];
-    if (state.controller) state.controller.abort();
-    state.controller = new AbortController();
-    state.requestId = correlationId();
-    const requestId = state.requestId;
-    revokeProfileMediaPreview(kind);
-    if (typeof URL?.createObjectURL === 'function') {
-      state.objectUrl = URL.createObjectURL(file);
-      renderMediaCard(kind, {
-        ...appState.profile,
-        [`${kind}_media_url`]: state.objectUrl,
-        [`${kind}_media_name`]: file.name,
-        [`${kind}_media_size`]: file.size,
-        [`${kind}_media_type`]: file.type,
-      });
-    }
-    uiTrace('profile_media_upload_started', {kind, request_id: requestId});
-    profileMediaTrace('REMOTE_UPLOAD_FUNCTION_ENTER', {kind, file_present:true, size:Number(file.size||0), mime:String(file.type||'')});
-    const timeout = window.setTimeout(() => state.controller?.abort(), 20000);
-    try {
-      const payload = await api(`/api/ui/profile/media/${kind}?filename=${encodeURIComponent(file.name)}&content_type=${encodeURIComponent(file.type)}`, {
-        method: 'POST', headers: {'Content-Type': file.type}, body: file, signal: state.controller.signal,
-      });
-      if (state.requestId !== requestId) {
-        uiTrace('stale_response_discarded', {kind, request_id: requestId});
-        return;
-      }
-      revokeProfileMediaPreview(kind);
-      mergeProfileMediaPayload(kind, payload.profile || {});
-      applyProfileToForm(appState.profile);
-      profileMediaTrace('REMOTE_UPLOAD_SUCCESS', {kind, success:true, status:200});
-      showToast(kind === 'avatar' ? 'Avatar atualizado.' : 'Banner atualizado.', 'ok');
-    } catch (errorValue) {
-      profileMediaTrace('REMOTE_UPLOAD_FAILURE', {kind, success:false, status:Number(errorValue?.status || 0), reason:String(errorValue?.code || errorValue?.message || 'upload_failed').slice(0,80)});
-      throw errorValue;
-    } finally {
-      window.clearTimeout(timeout);
-      if (state.requestId === requestId) state.controller = null;
-    }
-  }
-  async function removeProfileMedia(kind) {
-    if (!['avatar', 'banner'].includes(kind)) return;
-    if (!window.confirm('Remover esta imagem do perfil?')) return;
-    const state = appState.profileMedia[kind];
-    if (state.controller) state.controller.abort();
-    state.controller = new AbortController();
-    state.requestId = correlationId();
-    const requestId = state.requestId;
-    uiTrace('profile_media_remove_started', {kind, request_id: requestId});
-    try {
-      const payload = await api(`/api/ui/profile/media/${kind}`, {method:'DELETE', timeoutMs: 12000});
-      if (state.requestId !== requestId) {
-        uiTrace('stale_response_discarded', {kind, request_id: requestId});
-        return;
-      }
-      revokeProfileMediaPreview(kind);
-      mergeProfileMediaPayload(kind, payload.profile || {});
-      applyProfileToForm(appState.profile);
-      showToast('Mídia removida.', 'ok');
-    } finally {
-      if (state.requestId === requestId) state.controller = null;
-    }
-  }
-  function bindDropzone(kind) {
-    const dropzone = $(`#${kind}ImagePicker`);
-    const input = $(`#${kind}ImageInput`);
-    if (!dropzone || !input) return;
-    input.addEventListener('change', async () => {
-      try { await uploadProfileMedia(kind, input.files?.[0]); } catch (error) { showToast(humanCommunityError(error, 'Não foi possível salvar a mídia.'), 'error'); }
-      input.value = '';
-    });
-    ['dragenter','dragover'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.add('dragging'); }));
-    ['dragleave','drop'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.remove('dragging'); }));
-    dropzone.addEventListener('drop', async event => {
-      try { await uploadProfileMedia(kind, event.dataTransfer?.files?.[0]); } catch (error) { showToast(humanCommunityError(error, 'Não foi possível salvar a mídia.'), 'error'); }
-    });
-    dropzone.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); input.click(); } });
-    $(`#${kind}MediaReplace`)?.addEventListener('click', () => input.click());
-    $(`#${kind}MediaRemove`)?.addEventListener('click', async () => { try { await removeProfileMedia(kind); } catch (error) { showToast(humanCommunityError(error, 'Não foi possível remover a mídia.'), 'error'); } });
-  }
-  bindDropzone('avatar');
-  bindDropzone('banner');
-  $('#bannerMediaTrigger')?.addEventListener('click', () => $('#bannerImageInput')?.click());
-  $('#profileSave')?.addEventListener('click', async () => {
-    profileMediaTrace('SAVE_BUTTON_CLICK', {kind:'profile'});
-    try {
-      const result = await api('/api/ui/profile', {method: 'POST', body: JSON.stringify(profileFromForm())});
-      appState.profile = result.profile;
-      applyProfileToForm(appState.profile);
-      showToast('Perfil salvo.', 'ok');
-    } catch (error) { showToast(error.message, 'error'); }
-  });
-
-  /* ---------- modal and copy ---------- */
-  $('#visitorModalClose')?.addEventListener('click', () => $('#visitorModalOverlay').classList.remove('open'));
-  $('#visitorModalOverlay')?.addEventListener('click', event => { if (event.target.id === 'visitorModalOverlay') event.currentTarget.classList.remove('open'); });
+  /* ---------- copy ---------- */
   $('#copyRepo')?.addEventListener('click', async event => {
     try { await navigator.clipboard.writeText(event.currentTarget.dataset.copy || ''); showToast('Copiado.', 'ok'); }
     catch (_) { showToast('Não foi possível copiar.', 'error'); }
@@ -9168,10 +8793,7 @@
     });
   }
   async function runBootstrapRefresh() {
-    const profileSequence = ++appState.profileBootstrapSequence;
-    const profileStartedAt = performance.now();
-    appState.profileState = 'PROFILE_LOADING';
-    uiTrace('PROFILE_BOOTSTRAP_REQUEST_STARTED', {sequence: profileSequence, profile_state: appState.profileState});
+    const bootstrapGeneration = appState.authGeneration;
     try {
       setBootStage(1);
       const data = await api(`/api/ui/bootstrap?cursor=${appState.cursor}`);
@@ -9181,25 +8803,9 @@
       const authState = syncCanonicalAuthFromBootstrap(data);
       setBootStage(3);
       const authenticated = authState === 'authenticated';
-      const profileError = authenticated && (data.profile_state === 'error' || data.profile?.profile_error === true);
-      uiTrace('PROFILE_BOOTSTRAP_RECEIVED', {
-        sequence: profileSequence,
-        elapsed_ms: Math.round(performance.now() - profileStartedAt),
-        profile_present: Boolean(authenticated && data.profile && !profileError),
-        profile_error_present: Boolean(profileError),
-        profile_state: profileError ? 'PROFILE_ERROR' : (authenticated ? 'PROFILE_READY' : 'PROFILE_ERROR'),
-      });
-      if (profileSequence !== appState.profileBootstrapSequence) return;
-      appState.profileState = profileError ? 'PROFILE_ERROR' : (authenticated ? 'PROFILE_READY' : 'PROFILE_ERROR');
-      appState.profile = authenticated && !profileError ? (data.profile || {}) : {};
-      uiTrace(profileError ? 'PROFILE_BOOTSTRAP_PROFILE_ERROR' : 'PROFILE_BOOTSTRAP_PROFILE_PRESENT', {
-        sequence: profileSequence, profile_state: appState.profileState,
-        profile_present: Boolean(appState.profile && Object.keys(appState.profile).length),
-        profile_error_present: profileError,
-      });
-      uiTrace('PROFILE_STATE_COMMIT', {sequence: profileSequence, profile_state: appState.profileState});
+      if (bootstrapGeneration !== appState.authGeneration) return;
       setBootStage(4);
-      setGlobal('__tradutorDisplayName', authenticated ? String(appState.profile.display_name || '').trim() : '');
+      setGlobal('__tradutorDisplayName', '');
       appState.settings = data.settings || {};
       applyStandaloneSourceReady(data);
       setBootStage(5);
@@ -9211,11 +8817,6 @@
       renderSettings(appState.settings);
       applyCanonicalAuthSurface(authState);
       if (authenticated) {
-        applyProfileToForm(appState.profile);
-        if (appState.profileState === 'PROFILE_ERROR' && !appState.profileErrorNotified) {
-          appState.profileErrorNotified = true;
-          showToast('Não foi possível carregar o perfil. A tradução continua disponível.', 'warn');
-        }
         void loadProductSettings();
         await loadPendingHumanPreviews();
       } else {
@@ -9229,16 +8830,12 @@
       }
       setBootStage(6);
       renderRuntime(data);
-      uiTrace('READINESS_RECOMPUTE', {sequence: profileSequence, readiness_profile_required: false, readiness_ready: Boolean(updateTranslationStartControls()?.canStart), reason: appState.profileState === 'PROFILE_ERROR' ? 'profile_degraded' : 'profile_ready'});
+      uiTrace('READINESS_RECOMPUTE', {sequence: bootstrapGeneration, readiness_account_required: false, readiness_ready: Boolean(updateTranslationStartControls()?.canStart), reason: 'account_ready'});
       rememberRuntimeTerminalState(data);
       setBootStage(7);
       window.clearTimeout(bootTimer);
       window.setTimeout(closeBoot, 250);
     } catch (error) {
-      if (profileSequence === appState.profileBootstrapSequence) {
-        appState.profileState = 'PROFILE_ERROR';
-        uiTrace('PROFILE_ERROR_STATE', {sequence: profileSequence, profile_state: appState.profileState, profile_error_present: true, reason: error?.code || 'bootstrap_request_failed'});
-      }
       window.clearTimeout(bootTimer);
       setBootFailed('Não foi possível carregar a interface.');
       showToast(`Interface local: ${error.message}`, 'error');

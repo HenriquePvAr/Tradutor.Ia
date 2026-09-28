@@ -51,7 +51,7 @@ class SocialApiClientTests(unittest.TestCase):
         self.assertNotIn("console.log", self.src)
 
     def test_all_documented_functions_exist(self):
-        for fn in ("getMyProfile", "updateMyProfile", "getProfileByUsername", "getFeed",
+        for fn in ("getFeed",
                    "getMyWorks", "getWork", "createWork", "updateWork", "deleteWork",
                    "getWorkChapters", "getChapter", "createChapter", "updateChapter",
                    "deleteChapter", "getComments", "createComment", "updateComment",
@@ -117,8 +117,9 @@ class SocialCommunityUiTests(unittest.TestCase):
 
     def test_navigation_tabs_present(self):
         for label in ("Explorar", "Favoritos", "Continuar lendo", "Minhas obras",
-                      "Meu perfil", "Notificações"):
+                      "Notificações"):
             self.assertIn(label, self.src, label)
+        self.assertNotIn("{ id: 'profile'", self.src)
 
     def test_auth_gate_and_expiry_handling(self):
         self.assertIn("loginGate", self.src)

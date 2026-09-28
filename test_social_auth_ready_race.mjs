@@ -204,7 +204,7 @@ await test('the pending request executes exactly once as soon as the canonical s
   assert.equal(ctx.counters.profile, 0);
   announceCanonical(ctx.win, 'authenticated', { user_id: 'synthetic-user' });
   await flush();
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'removed social profile must never be fetched');
   // Feed is lazy-loaded only when its section is opened; auth confirmation should
   // trigger the profile bootstrap, not eagerly fetch a hidden feed.
   assert.equal(ctx.counters.feed, 0, `hidden feed must remain lazy: ${ctx.counters.feed}`);
@@ -223,7 +223,7 @@ await test('F5 with an already-authenticated canonical state loads exactly once,
   const ctx = await bootWith(CURRENT);
   ctx.win.__tradutorAuthState = 'authenticated'; // bootstrap already confirmed before the SDK event arrives
   await emit(ctx.authStub, [[SESSION, 'INITIAL_SESSION']]);
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'restored sessions do not fetch social profile');
   assert.equal(ctx.counters.feed, 0, `hidden feed must remain lazy: ${ctx.counters.feed}`);
 });
 
@@ -243,14 +243,14 @@ await test('a new sign-in after logout still loads exactly once for the new gene
   const ctx = await bootWith(CURRENT);
   ctx.win.__tradutorAuthState = 'authenticated';
   await emit(ctx.authStub, [[SESSION, 'SIGNED_IN']]);
-  assert.equal(ctx.counters.profile, 1);
+  assert.equal(ctx.counters.profile, 0);
   await emit(ctx.authStub, [[null, 'SIGNED_OUT']]);
   ctx.win.__tradutorAuthState = 'auth_loading';
   await emit(ctx.authStub, [[{ access_token: 'tok-2', user: { id: 'other-user' }, expires_at: 9999999999 }, 'SIGNED_IN']]);
-  assert.equal(ctx.counters.profile, 1, 'still pending: canonical has not confirmed the new generation yet');
+  assert.equal(ctx.counters.profile, 0, 'auth never fetches social profile');
   announceCanonical(ctx.win, 'authenticated', { user_id: 'other-user' });
   await flush();
-  assert.equal(ctx.counters.profile, 2, `profile/me requests across both generations: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'neither authenticated generation fetches social profile');
   assert.equal(ctx.counters.feed, 0, `hidden feed must remain lazy across both generations: ${ctx.counters.feed}`);
 });
 
@@ -258,7 +258,7 @@ await test('profile/me failing (422, migration pending) after auth-ready is not 
   const ctx = await bootWith(CURRENT, { profileFails: true });
   ctx.win.__tradutorAuthState = 'authenticated';
   await emit(ctx.authStub, [[SESSION, 'INITIAL_SESSION']]);
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'auth errors do not trigger social profile requests');
 });
 
 // --- negative control: the pre-this-fix module (842532c) must fire the private request
@@ -273,7 +273,7 @@ if (PREVIOUS) {
     ctx.win.__tradutorAuthState = 'auth_loading';
     await emit(ctx.authStub, [[SESSION, 'SIGNED_IN']]);
     assert.ok(
-      ctx.counters.profile > 0 || ctx.counters.feed > 0,
+      ctx.counters.feed > 0,
       'pre-fix module should have fired profile/feed before the canonical state confirmed',
     );
   });

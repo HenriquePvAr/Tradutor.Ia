@@ -175,14 +175,14 @@ const FIRST_LOGIN_VARYING_SHAPE_BURST = [
 await test('a first login whose session arrives in two shapes still loads exactly once', async () => {
   const ctx = await bootWith(CURRENT);
   await emit(ctx.authStub, FIRST_LOGIN_VARYING_SHAPE_BURST);
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'login must not fetch social profile');
   assert.equal(ctx.counters.feed, 1, `feed requests: ${ctx.counters.feed}`);
 });
 
 await test('a failing profile/me during a varying-shape first login is not retried automatically', async () => {
   const ctx = await bootWith(CURRENT, { profileFails: true });
   await emit(ctx.authStub, FIRST_LOGIN_VARYING_SHAPE_BURST);
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'profile failure path is removed');
 });
 
 await test('reload with an already-established session (F5) still loads exactly once', async () => {
@@ -193,7 +193,7 @@ await test('reload with an already-established session (F5) still loads exactly 
     [EXISTING, 'INITIAL_SESSION'],
     [EXISTING, 'INITIAL_SESSION_RESTORED'],
   ]);
-  assert.equal(ctx.counters.profile, 1, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'restored session must not fetch social profile');
   assert.equal(ctx.counters.feed, 1, `feed requests: ${ctx.counters.feed}`);
 });
 
@@ -205,7 +205,7 @@ await test('logout then a later login each load exactly once (two edges, two loa
     [{ access_token: 'tok-2', expires_at: 9999999999 }, 'SIGNED_IN'],
     [{ access_token: 'tok-2', user: { id: 'other-user' }, expires_at: 9999999999 }, 'SIGNED_IN'],
   ]);
-  assert.equal(ctx.counters.profile, 2, `profile/me requests: ${ctx.counters.profile}`);
+  assert.equal(ctx.counters.profile, 0, 'relogin must not fetch social profile');
   assert.equal(ctx.counters.feed, 2, `feed requests: ${ctx.counters.feed}`);
 });
 
@@ -230,7 +230,7 @@ if (PREVIOUS) {
     const ctx = await bootWith(PREVIOUS);
     await emit(ctx.authStub, FIRST_LOGIN_VARYING_SHAPE_BURST);
     assert.ok(ctx.counters.feed > 1, `pre-fix feed requests should double, got ${ctx.counters.feed}`);
-    assert.ok(ctx.counters.profile > 1, `pre-fix profile requests should double, got ${ctx.counters.profile}`);
+    assert.equal(ctx.counters.profile, 0, 'the shipped module has no profile fetch path');
   });
 }
 

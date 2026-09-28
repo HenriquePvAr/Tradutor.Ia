@@ -1300,7 +1300,6 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
         "quality_review": None,
         "logs": [],
         "log_cursor": 0,
-        "profile": {},
         "settings": {},
         "standalone_source_ready": None,
         "community": {
@@ -1318,9 +1317,7 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
         principal = AUTH.authenticate_request(request)
         _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_AUTH_READY", sequence=bootstrap_sequence, authenticated=bool(principal.authenticated), elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
         if not principal.authenticated:
-            payload["profile_state"] = "error"
-            payload["profile_error_code"] = "unauthenticated"
-            _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_RESPONSE", sequence=bootstrap_sequence, success=True, http_status=200, profile_present=False, profile_error=True, wallet_present=bool(payload.get("wallet")), source="unauthenticated", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
+            _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_RESPONSE", sequence=bootstrap_sequence, success=True, http_status=200, wallet_present=bool(payload.get("wallet")), source="unauthenticated", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
             return payload
         payload = BRIDGE.bootstrap(cursor, principal=principal)
         _enrich_history_publications(payload.get("history") or [])
@@ -1335,30 +1332,6 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
                 COMMUNITY.requires_canonical_publication_identity()
             ),
         }
-        if _SOCIAL_STATUS.get("provider") == "supabase" and _SOCIAL_STATUS.get("available"):
-            _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_START", sequence=bootstrap_sequence, source="supabase")
-            try:
-                payload["profile"] = _remote_profile_for_principal(principal, request)
-                payload["profile_state"] = "ready"
-                _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_RESULT", sequence=bootstrap_sequence, success=True, profile_present=bool(payload["profile"]), source="supabase", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
-            except Exception as exc:
-                payload["profile"] = {"profile_error": True, "remote_source": True}
-                payload["profile_state"] = "error"
-                payload["profile_error_code"] = "profile_remote_unavailable"
-                payload["community"]["profile_load_failed"] = True
-                _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_ERROR", sequence=bootstrap_sequence, success=False, profile_present=False, error_class=type(exc).__name__, source="supabase", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
-        else:
-            payload["profile"] = _profile_for_principal(principal)
-            payload["profile_state"] = "ready"
-            _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_RESULT", sequence=bootstrap_sequence, success=True, profile_present=bool(payload["profile"]), source="local", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
-        try:
-            if _SOCIAL_STATUS.get("provider") != "supabase":
-                _sync_public_profile(principal)
-        except Exception:
-            # Profile projection is optional presentation data. A duplicate display
-            # name or unavailable community store must not invalidate a verified
-            # authentication session.
-            payload["community"]["profile_sync_failed"] = True
     except Exception:
         # Bootstrap is read-only; an expired or malformed credential must not prevent
         # the local library from loading. Publication itself remains fail-closed in
@@ -1374,11 +1347,8 @@ def api_bootstrap(request: Request, cursor: int = Query(0, ge=0)) -> dict[str, A
                 COMMUNITY.requires_canonical_publication_identity()
             ),
         }
-        payload["profile"] = {}
-        payload["profile_state"] = "error"
-        payload["profile_error_code"] = "bootstrap_error"
-        _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_PROFILE_ERROR", sequence=bootstrap_sequence, success=False, profile_present=False, error_class="bootstrap_error", source="bootstrap", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
-    _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_RESPONSE", sequence=bootstrap_sequence, success=True, http_status=200, profile_present=bool(payload.get("profile")), profile_error=bool(payload.get("profile_error_code") or (payload.get("profile") or {}).get("profile_error")), wallet_present=bool(payload.get("wallet")), source=str(payload.get("profile_state") or "unknown"), elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
+        _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_AUTH_ERROR", sequence=bootstrap_sequence, success=False, error_class="bootstrap_error", source="bootstrap", elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
+    _append_diagnostic_log("app_current.jsonl", "UI_BOOTSTRAP_RESPONSE", sequence=bootstrap_sequence, success=True, http_status=200, wallet_present=bool(payload.get("wallet")), source=str((payload.get("community") or {}).get("auth_state") or "unknown"), elapsed_ms=int((time.perf_counter() - bootstrap_started) * 1000))
     return payload
 
 

@@ -283,5 +283,7 @@ def test_local_test_ui_adapter_is_explicit_and_has_no_identity_shortcut():
     assert "clearAuthCredentialFields" in auth_js
     assert "Entrar como moderador" not in provider_js + auth_js
     assert "X-User-Id" not in provider_js + auth_js
-    assert "_profile_for_principal" in app_source
-    assert "profile_sync_failed" in app_source
+    bootstrap = app_source[app_source.index("def api_bootstrap("):app_source.index("\n@app.", app_source.index("def api_bootstrap("))]
+    assert "_profile_for_principal" not in bootstrap
+    assert "_sync_public_profile" not in bootstrap
+    assert "profile_sync_failed" not in bootstrap

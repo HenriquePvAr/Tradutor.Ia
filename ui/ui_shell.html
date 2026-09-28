@@ -11,13 +11,6 @@
 <div id="vignette"></div>
 <div class="toast-stack" id="toastStack"></div>
 <div id="socialLive" class="sr-only" aria-live="polite" aria-atomic="true"></div>
-<div class="modal-overlay" id="visitorModalOverlay">
-  <div class="modal-card">
-    <button type="button" class="modal-close" id="visitorModalClose" aria-label="fechar">✕</button>
-    <div id="visitorModalContent"></div>
-  </div>
-</div>
-
 <div id="boot" class="app-loading-page" aria-live="polite" data-shell-surface="loading">
   <div class="app-loading-speedlines"></div>
   <div class="app-loading-grid"></div>
@@ -160,20 +153,9 @@
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4h16v16H4z"/><path d="M8 9l3 3-3 3M13 15h4"/></svg>
         Registros
       </button></li>
-      <li><button type="button" class="rail-tab" data-tab="profile">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.5-7 8-7s8 3 8 7"/></svg>
-        Perfil
-      </button></li>
     </ul>
     <div class="rail-foot">
       <div id="railApiStatus"><span class="dot"></span>verificando ambiente…</div>
-    </div>
-    <div class="rail-profile" id="railProfile" tabindex="0" role="button" aria-label="Abrir seu perfil">
-      <span class="rp-avatar" id="rpAvatar">?</span>
-      <div class="rp-info">
-        <span class="rp-name" id="rpName">Carregando perfil…</span>
-        <span class="rp-status"><span class="rp-dot online" id="rpStatusDot"></span><span id="rpStatusLabel">online</span></span>
-      </div>
     </div>
   </aside>
 
@@ -260,10 +242,6 @@
           <button type="button" class="dash-action-btn" data-goto="community">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
             <span>Postar no mural</span>
-          </button>
-          <button type="button" class="dash-action-btn" data-goto="profile">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.5-7 8-7s8 3 8 7"/></svg>
-            <span>Editar perfil</span>
           </button>
         </div>
       </div>
@@ -1202,139 +1180,6 @@
       </div>
     </section>
 
-    <!-- PERFIL -->
-    <section class="panel-view" id="view-profile">
-      <div class="page-head">
-        <span class="ph-kanji">私</span>
-        <span class="ph-burst"></span>
-        <div>
-          <div class="page-title" data-text="Seu perfil">Seu <span class="accent">perfil</span></div>
-          <div class="page-desc">Nome, avatar, status, bio e privacidade — personalize como você aparece para a comunidade.</div>
-        </div>
-        <div class="page-headright">
-          <span class="page-ep">話 <b>08</b></span>
-          <div class="page-tag">conta</div>
-        </div>
-      </div>
-
-      <div class="nt-grid">
-        <div class="panel">
-          <div class="panel-label">Editar perfil</div>
-
-          <div class="field">
-            <label>Nome de exibição</label>
-            <input type="text" id="profileName" placeholder="seu nome ou apelido" maxlength="40" />
-          </div>
-
-          <div class="field profile-rank-readonly"><label>Rank</label><div class="profile-rank-value" id="profileRankValue">Leitor Iniciante <span id="profileRankXp">0 XP</span></div><div class="rewards-progress"><span id="profileRankProgress"></span></div><input type="hidden" id="profileTitle" value="" /></div>
-
-          <div class="field">
-            <label>Pronomes <span class="hint">— opcional</span></label>
-            <input type="text" id="profilePronouns" placeholder="ex: ele/dele" maxlength="30" />
-          </div>
-
-          <div class="field">
-            <label>Status</label>
-            <div class="chip-row" id="profileStatusChips">
-              <div class="chip selected" data-status="online"><span class="status-choice-dot online"></span>online</div>
-              <div class="chip" data-status="away"><span class="status-choice-dot away"></span>ausente</div>
-              <div class="chip" data-status="busy"><span class="status-choice-dot busy"></span>ocupado</div>
-              <div class="chip" data-status="offline"><span class="status-choice-dot offline"></span>offline</div>
-            </div>
-          </div>
-
-          <div class="field profile-privacy-controls">
-            <label data-i18n="profile.privacy">Privacidade do perfil</label>
-            <label class="checkline"><input type="checkbox" name="public_profile"> <span data-i18n="profile.public_profile">perfil público</span></label>
-            <label class="checkline"><input type="checkbox" name="show_online_status"> <span data-i18n="profile.online_status">mostrar status online</span></label>
-          </div>
-
-          <div class="field">
-            <label>Mensagem de status <span class="hint">— opcional</span></label>
-            <input type="text" id="profileStatusText" placeholder="ex: traduzindo um capítulo agora..." maxlength="60" />
-          </div>
-
-          <div class="field">
-            <label>Bio <span class="hint">— opcional</span></label>
-            <textarea id="profileBio" maxlength="190" rows="3" placeholder="conta um pouco sobre você, seus projetos, o que você traduz..."></textarea>
-            <div class="char-count" id="profileBioCount">0/190</div>
-          </div>
-
-          <div class="field">
-            <label>Avatar</label>
-            <div class="chip-row" id="profileAvatarMode">
-              <div class="chip selected" data-mode="letter">inicial + cor</div>
-              <div class="chip" data-mode="image">enviar imagem</div>
-            </div>
-            <div class="media-dropzone" id="avatarImagePicker" data-media-kind="avatar" tabindex="0">
-              <input type="file" id="avatarImageInput" data-media-kind="avatar" accept=".png,.jpg,.jpeg,.webp" />
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
-              <strong>Enviar imagem de avatar</strong>
-              <span>Recomendado: 512 × 512 px · PNG, JPEG ou WEBP · até 5 MB</span>
-              <div class="field-error" id="avatarImageError">esse arquivo é grande demais — tenta um menor ou mais comprimido</div>
-            </div>
-            <div class="media-file-card" id="avatarMediaCard" hidden><div class="media-thumb" id="avatarMediaPreview"></div><div><strong id="avatarMediaName"></strong><span id="avatarMediaMeta"></span></div><button type="button" class="media-action" id="avatarMediaReplace">substituir</button><button type="button" class="media-action danger" id="avatarMediaRemove">remover</button></div>
-          </div>
-
-          <div class="field">
-            <label>Cor de destaque</label>
-            <div class="color-swatch-row" id="profileColorRow">
-              <button type="button" class="color-swatch selected" data-color="#c5372c" style="background:#c5372c;" aria-label="cor vermelha"></button>
-              <button type="button" class="color-swatch" data-color="#2f7a6b" style="background:#2f7a6b;" aria-label="cor verde"></button>
-              <button type="button" class="color-swatch" data-color="#c9a227" style="background:#c9a227;" aria-label="cor dourada"></button>
-              <button type="button" class="color-swatch" data-color="#b8557a" style="background:#b8557a;" aria-label="cor rosa"></button>
-              <button type="button" class="color-swatch" data-color="#8a5fa3" style="background:#8a5fa3;" aria-label="cor roxa"></button>
-              <button type="button" class="color-swatch" data-color="#4a7fb5" style="background:#4a7fb5;" aria-label="cor azul"></button>
-            </div>
-          </div>
-
-          <div class="field">
-            <label>Banner</label>
-            <div class="banner-preset-row" id="profileBannerRow">
-              <button type="button" class="banner-swatch banner-ink selected" data-banner="ink" aria-label="banner tinta" title="tinta"></button>
-              <button type="button" class="banner-swatch banner-scan" data-banner="scan" aria-label="banner scan" title="scan"></button>
-              <button type="button" class="banner-swatch banner-gold" data-banner="gold" aria-label="banner ouro" title="ouro"></button>
-              <button type="button" class="banner-swatch banner-rose" data-banner="rose" aria-label="banner rosa" title="rosa"></button>
-              <button type="button" class="banner-swatch banner-mono" data-banner="mono" aria-label="banner mono" title="mono"></button>
-            </div>
-            <button type="button" class="btn-ghost media-trigger" id="bannerMediaTrigger">Enviar imagem personalizada</button>
-            <div class="media-dropzone" id="bannerImagePicker" data-media-kind="banner" tabindex="0">
-              <input type="file" id="bannerImageInput" data-media-kind="banner" accept=".png,.jpg,.jpeg,.webp" />
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h16v14H4z"/><path d="m4 16 4.5-4.5 3 3L15 11l5 5"/><circle cx="9" cy="9" r="1.5"/></svg>
-              <strong>Imagem para o banner</strong>
-              <span>Recomendado: 1600 × 400 px · PNG, JPEG ou WEBP · até 12 MB</span>
-              <div class="field-error" id="bannerImageError">esse arquivo é grande demais — tenta um menor ou mais comprimido</div>
-            </div>
-            <div class="media-file-card" id="bannerMediaCard" hidden><div class="media-thumb wide" id="bannerMediaPreview"></div><div><strong id="bannerMediaName"></strong><span id="bannerMediaMeta"></span></div><button type="button" class="media-action" id="bannerMediaReplace">substituir</button><button type="button" class="media-action danger" id="bannerMediaRemove">remover</button></div>
-          </div>
-
-          <button class="btn-primary" id="profileSave">Salvar perfil</button>
-        </div>
-
-        <div class="panel profile-preview-panel">
-          <div class="panel-label">Pré-visualização</div>
-          <div class="profile-card">
-            <div class="pc-banner banner-ink" id="pcBanner"></div>
-            <div class="pc-body">
-              <div class="pc-avatar-wrap">
-                <span class="pc-avatar" id="pcAvatar">?</span>
-                <span class="pc-status-dot online" id="pcStatusDot"></span>
-              </div>
-              <div class="pc-title-role" id="pcTitleRole"></div>
-              <div class="pc-name" id="pcName">Carregando perfil…</div>
-              <div class="pc-pronouns" id="pcPronouns"></div>
-              <div class="pc-status-line" id="pcStatusLine">online</div>
-              <div class="pc-divider"></div>
-              <div class="pc-bio-label">sobre mim</div>
-              <div class="pc-bio" id="pcBio">conta um pouco sobre você…</div>
-              <div class="pc-badges" id="pcBadges"></div>
-              <div class="pc-since" id="pcSince">membro desde hoje</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
   </main>
   </div>
 </div>
@@ -1492,7 +1337,7 @@
           </div>
           <article class="auth-comic-page auth-comic-translated">
             <!-- alt="Página traduzida para português" src="/static/assets/auth/comic-translated.png" (legacy contract) -->
-            <div class="auth-comic-frame auth-product-carousel" id="authProductCarousel" aria-label="Áreas reais do Yomu Sekai" data-preview-sources="view-inicio,view-nova,view-queue,view-hist,view-leitor,view-community,view-profile">
+            <div class="auth-comic-frame auth-product-carousel" id="authProductCarousel" aria-label="Áreas reais do Yomu Sekai" data-preview-sources="view-inicio,view-nova,view-queue,view-hist,view-leitor,view-community">
               <div class="auth-product-real-slides" aria-live="polite"></div>
               <div class="auth-product-dots" aria-hidden="true"></div>
             </div>

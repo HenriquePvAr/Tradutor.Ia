@@ -96,7 +96,7 @@
     'loading.stage.local': '로컬 서비스 연결 중',
     'loading.stage.auth': '인증 시작 중',
     'loading.stage.session': '세션 복원 중',
-    'loading.stage.profile': '프로필 로딩 중',
+    'loading.stage.account': '계정 확인 중',
     'loading.stage.settings': '설정 로딩 중',
     'loading.stage.community': '커뮤니티 준비 중',
     'loading.stage.ready': '준비됨',

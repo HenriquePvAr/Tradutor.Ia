@@ -93,11 +93,6 @@ function qs(params) {
 
 const enc = encodeURIComponent;
 
-// ---- profiles ----
-export const getMyProfile = (o) => request('GET', '/profile/me', o);
-export const updateMyProfile = (fields, o) => request('PATCH', '/profile/me', { ...o, body: fields });
-export const getProfileByUsername = (username, o) => request('GET', `/profiles/${enc(username)}`, o);
-
 // ---- works ----
 export const getFeed = ({ cursor, limit } = {}, o) => request('GET', `/feed${qs({ cursor, limit })}`, o);
 export const getMyWorks = ({ cursor, limit } = {}, o) => request('GET', `/my-works${qs({ cursor, limit })}`, o);

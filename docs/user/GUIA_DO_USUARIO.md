@@ -156,7 +156,6 @@ Na lateral existe um menu com as áreas do programa:
 | **Comunidade** | Descobrir traduções e publicar as suas |
 | **Configurações** | Preferências do programa |
 | **Logs** | Registro técnico do que aconteceu |
-| **Perfil** | Seus dados e privacidade |
 
 > 💡 Atalhos: as teclas **1 a 9** trocam de aba, e **Enter** inicia a análise da URL na
 > tela de nova tradução.
@@ -489,7 +488,6 @@ Principais preferências disponíveis:
   manual de temporários;
 - **Acessibilidade e privacidade** — reduzir animações, aumentar contraste, escala da
   interface, tooltips, atalhos de teclado, limpar sessão, limpar dados locais;
-- **Perfil** — perfil público, mostrar status online;
 - **Comunidade** — notificações de comentários, respostas, moderação e atualizações.
 
 ## 20. Mensagens de erro e o que fazer

@@ -42,7 +42,7 @@ class FakeAnonymousAuth:
 
 class FakeBridge:
     def bootstrap(self, cursor, *, principal):
-        return {"history": [], "queue": [], "community": {}, "profile": {}}
+        return {"history": [], "queue": [], "community": {}}
 
 
 PRINCIPAL = RequestPrincipal(
@@ -82,6 +82,17 @@ class BootstrapSocialStatusTests(unittest.TestCase):
         app_ui._SOCIAL_STATUS = {"provider": "supabase", "available": True, "reason_code": None}
         payload = self._bootstrap(FakeAuthenticated(PRINCIPAL))
         self.assertEqual(payload["community"]["social"], {"provider": "supabase", "available": True, "reason_code": None})
+
+    def test_authenticated_bootstrap_does_not_load_profile_metadata(self):
+        calls = []
+        app_ui._SOCIAL_STATUS = {"provider": "supabase", "available": True, "reason_code": None}
+        payload = self._bootstrap(
+            FakeAuthenticated(PRINCIPAL),
+            sync=lambda principal: calls.append("sync"),
+            profile=lambda principal: calls.append("profile"),
+        )
+        self.assertNotIn("profile", payload)
+        self.assertEqual(calls, [])
 
     def test_authenticated_bootstrap_exposes_local_provider_state(self):
         app_ui._SOCIAL_STATUS = {"provider": "local", "available": True, "reason_code": None}

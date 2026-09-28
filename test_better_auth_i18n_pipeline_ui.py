@@ -44,7 +44,8 @@ class SettingsReorganizationTests(unittest.TestCase):
         self.assertIn('id="publicationVisibility"', self.shell)
         self.assertIn('id="publicationAllowComments"', self.shell)
         self.assertIn('community-notification-preferences', self.shell)
-        self.assertIn('profile-privacy-controls', self.shell)
+        self.assertNotIn('profile-privacy-controls', self.shell)
+        self.assertNotIn('id="view-profile"', self.shell)
 
 
 class I18nTests(unittest.TestCase):
@@ -532,7 +533,7 @@ class AuthLoadingVisualContractTests(unittest.TestCase):
         self.assertIn('alt="Página original em inglês"', illustration)
         self.assertIn('id="authProductCarousel"', illustration)
         self.assertIn('aria-label="Áreas reais do Yomu Sekai"', illustration)
-        self.assertIn('data-preview-sources="view-inicio,view-nova,view-queue,view-hist,view-leitor,view-community,view-profile"', illustration)
+        self.assertIn('data-preview-sources="view-inicio,view-nova,view-queue,view-hist,view-leitor,view-community"', illustration)
         self.assertEqual(illustration.count("<img"), 1)
         self.assertNotIn('src="http://', illustration)
         self.assertNotIn('src="https://', illustration)
