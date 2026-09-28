@@ -156,6 +156,67 @@ def _profile_media_backoff_arm(key: tuple[str, str], now_mono: float) -> float:
     return delay
 
 
+# Drive-backed avatar/banner bytes are immutable for a given object_key (``drive:<id>``),
+# so once fetched they are cached on disk and reused until the key changes.  Before this
+# cache the desktop re-downloaded ~1.7-1.9 MB per avatar/banner on every UI render/poll,
+# which alone produced ~97% of the Supabase egress that exhausted the Free tier.
+def _profile_media_cache_path(user_id: str, kind: str, object_key: str) -> Path:
+    import hashlib
+    digest = hashlib.sha256(
+        f"{user_id}\x00{kind}\x00{object_key}".encode("utf-8")).hexdigest()
+    # Server never controls the on-disk name: it is a hash of (user, kind, object_key),
+    # so a poisoned ref cannot escape the cache dir or collide across users.
+    return BRIDGE.runtime_root / "cache" / "profile_media" / digest[:2] / digest
+
+
+def _looks_like_image(data: bytes) -> bool:
+    if len(data) < 12:
+        return False
+    return (
+        data[:8] == b"\x89PNG\r\n\x1a\n"           # PNG
+        or data[:3] == b"\xff\xd8\xff"              # JPEG
+        or data[:6] in (b"GIF87a", b"GIF89a")       # GIF
+        or (data[:4] == b"RIFF" and data[8:12] == b"WEBP")  # WEBP
+        or data[4:12] in (b"ftypavif", b"ftypavis", b"ftypmif1", b"ftypheic")  # AVIF/HEIF
+    )
+
+
+def _profile_media_cache_read(user_id: str, kind: str, object_key: str):
+    """Return ``(bytes, media_type)`` from the local cache, or None on miss/corruption."""
+    path = _profile_media_cache_path(user_id, kind, object_key)
+    try:
+        if path.is_file() and path.stat().st_size > 0:
+            data = path.read_bytes()
+            # A corrupt/truncated cache entry is treated as a miss so it refetches
+            # once rather than serving broken bytes forever.
+            if not _looks_like_image(data):
+                return None
+            type_path = path.with_suffix(".type")
+            media_type = (type_path.read_text(encoding="utf-8").strip()
+                          if type_path.is_file() else "application/octet-stream")
+            return data, (media_type or "application/octet-stream")
+    except OSError:
+        return None
+    return None
+
+
+def _profile_media_cache_write(user_id: str, kind: str, object_key: str,
+                               data: bytes, media_type: str) -> None:
+    """Persist media atomically under its object_key; best effort, never fatal."""
+    if not _looks_like_image(data):
+        return
+    path = _profile_media_cache_path(user_id, kind, object_key)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+        path.with_suffix(".type").write_text(
+            media_type or "application/octet-stream", encoding="utf-8")
+    except OSError:
+        pass
+
+
 STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
 AUTH_UI_ASSET = ROOT / "static" / "auth_ui.js"
@@ -3380,6 +3441,17 @@ def api_profile_media(request: Request, kind: str) -> Response:
     # desktop process forwards only the user's bearer token; Drive credentials
     # never enter the client or the packaged application.
     profile = BRIDGE.profile_for_user(principal.user_id)
+    # Fast path: a Drive asset already cached under its object_key is served straight
+    # from local disk with NO remote call -- no metadata fetch and no media download --
+    # so repeated UI renders/polls cost zero egress and it keeps working while the
+    # backend is unreachable. A local upload rotates the ref, so a stale key cannot pin.
+    local_ref = str(profile.get(f"{kind}_media_path") or profile.get(f"{kind}_object_key") or "")
+    if local_ref.startswith("drive:"):
+        cached = _profile_media_cache_read(principal.user_id, kind, local_ref)
+        if cached is not None:
+            data, media_type = cached
+            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=200, duration_ms=int((time.perf_counter() - route_started) * 1000), cache="hit")
+            return Response(content=data, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
     # Remote profile rows are authoritative for Drive-backed media.  The local
     # bridge profile may intentionally contain only presentation metadata after a
     # restart, which previously made this route return a misleading local 404.
@@ -3408,6 +3480,15 @@ def api_profile_media(request: Request, kind: str) -> Response:
     if stored_ref.startswith("drive:") and bearer and remote_base:
         backoff_key = (str(principal.user_id or ""), kind)
         now_mono = time.monotonic()
+        # The authoritative object_key may differ from the local ref (changed on another
+        # device): serve from cache when we already hold these exact bytes, before any
+        # backoff or network, so an unchanged asset never re-downloads.
+        cached = _profile_media_cache_read(principal.user_id, kind, stored_ref)
+        if cached is not None:
+            data, media_type = cached
+            _PROFILE_MEDIA_UPSTREAM_BACKOFF.pop(backoff_key, None)
+            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=200, duration_ms=int((time.perf_counter() - route_started) * 1000), cache="hit")
+            return Response(content=data, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
         backoff_entry = _PROFILE_MEDIA_UPSTREAM_BACKOFF.get(backoff_key)
         if backoff_entry is not None and backoff_entry[0] > now_mono:
             # A recent upstream failure is still in its backoff window: surface the same
@@ -3426,7 +3507,10 @@ def api_profile_media(request: Request, kind: str) -> Response:
                     raise HTTPException(status_code=502, detail="media_too_large")
                 media_type = raw.headers.get_content_type() or profile.get(f"{kind}_media_type") or "application/octet-stream"
                 _PROFILE_MEDIA_UPSTREAM_BACKOFF.pop(backoff_key, None)  # healthy again
-                _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=200, duration_ms=int((time.perf_counter() - route_started) * 1000), edge_http_status=200)
+                # Cache the bytes under their object_key so later renders/polls reuse them
+                # locally instead of re-downloading -- the whole point of this hotfix.
+                _profile_media_cache_write(principal.user_id, kind, stored_ref, content, media_type)
+                _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=200, duration_ms=int((time.perf_counter() - route_started) * 1000), edge_http_status=200, cache="miss")
                 return Response(content=content, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
         except urllib_error.HTTPError as exc:
             _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=exc.code, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="profile_media_upstream_http")
