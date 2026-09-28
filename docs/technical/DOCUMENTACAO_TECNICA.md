@@ -1,7 +1,7 @@
 # Tradutor IA — Documentação Técnica
 
-> **Base verificada:** `943de4d` (branch `main`)
-> **Última revisão:** 2026-09-27
+> **Base verificada:** `26d5eb3` (branch `main`)
+> **Última revisão:** 2026-09-28
 > **Público:** desenvolvedores, mantenedores, suporte técnico e agentes automatizados.
 
 Documentos irmãos: [Guia do Usuário](../user/GUIA_DO_USUARIO.md) ·
@@ -2350,6 +2350,50 @@ imagem, invalidação por mudança de `object_key` e isolamento por usuário. An
 cada render/poll rebaixava ~1,7–1,9 MB por asset (`Cache-Control: no-store`), o que sozinho
 respondia por ~97% do egress do Supabase. Não há limpeza automática dos caches existentes;
 remoção definitiva dos handlers/armazenamento fica para a missão de legado.
+
+## 26.1 Artifact Contract V2 (fundação)
+
+`artifact_contract.py` (`ARTIFACT_CONTRACT_VERSION = 2`) define — **apenas como fundação,
+sem migrar nenhum writer nesta fase** — quais artefatos um job pode produzir, onde cada um
+pertence, como é identificado, o perfil que o pediu e o que esta build realmente consegue
+produzir. Nenhum caminho de produção muda por causa deste módulo ainda; a migração física
+dos writers ocorre em missões posteriores.
+
+**Perfis de saída.** `AUTOMATIC` = `final_pdf` + `translated_image` (resultado pronto para
+consumo). `PROFESSIONAL_QC` = `final_pdf` + `translated_image` + `clean_image` +
+`editable_psd` + `quality_report` + `review_manifest` (preparado para revisão humana). O
+Yomu não substitui Photoshop/Photopea.
+
+**Capacidades (estado REAL, verificado em 2026-09-28), não aspiração:**
+
+| Tipo | Capacidade | Observação |
+| --- | --- | --- |
+| `final_pdf` | SUPPORTED | PDF final atual |
+| `translated_image` | SUPPORTED | páginas renderizadas com texto traduzido |
+| `clean_image` | SUPPORTED | hoje persistido como `*_cleaned.png` por página; relocação para `images/clean/` é da Missão 4 |
+| `editable_psd` | **PLANNED / NÃO IMPLEMENTADO** | PSD com Type Layers reais; **não** confundir com o raster atual |
+| `legacy_raster_psd` | SUPPORTED | export raster existente, tipo distinto de `editable_psd` |
+| `quality_report` | SUPPORTED | `quality_report.json` |
+| `review_manifest` | PLANNED | Missão 10 |
+
+Um job `PROFESSIONAL_QC` executado antes da Missão 6 reporta `editable_psd` como
+**requested + unavailable**, nunca como produzido — o PSD raster legado jamais é declarado
+`editable_psd`.
+
+**Estrutura canônica alvo** (contrato, ainda não materializada por padrão): `final/`,
+`images/translated/`, `images/clean/`, `psd/`, `qc/`, `diagnostics/`.
+
+**Resolver e nomeação.** `artifact_relative_path(...)`/`artifact_path(output_root, ...)`
+resolvem caminhos determinísticos (retry/re-export sobrescreve no mesmo lugar, sem lixo
+incremental), com nome lógico por página de largura dinâmica (`001`…`208`…`1000`) e guardas
+de segurança (slug de capítulo sanitizado — Unicode preservado, sem `..`/separadores, nomes
+reservados do Windows neutralizados, comprimento limitado; e verificação de que o caminho
+resolvido nunca escapa do `output_root`).
+
+**Manifest e compatibilidade.** `build_artifact_manifest(...)` grava `contract_version`,
+`output_profile`, `requested/produced/unavailable_artifacts`, status por artefato,
+capacidades e `logical_page_count`. Runs antigos sem `contract_version` são lidos como
+**V1 (legado)** sem erro — nada histórico é migrado, invalidado ou apagado nesta missão.
 
 ## 27. Ambiente de desenvolvimento e comandos
 
