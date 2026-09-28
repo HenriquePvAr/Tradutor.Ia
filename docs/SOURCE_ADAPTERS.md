@@ -137,6 +137,14 @@ parcial. O fallback continua sem acionar `load more`,
 botões sem `href`, anúncios, carrosséis ou sliders. Esses padrões precisam de adapter específico
 com controles de identidade de capítulo, ciclo, quantidade e ordem.
 
+A heurística genérica de imagem pequena (`small_dimensions`, < 120 px) descarta material de
+interface, mas um recurso explicitamente ligado a um controle de página do reader
+(`button[aria-label="Go to page N"]`, sinalizado por `logical_index > 0`) é uma página
+declarada do capítulo e **não** é rejeitado só por ser curto — algumas páginas legítimas são
+tiras curtas (ex.: 800x32/83/56). Todas as demais proteções continuam valendo, inclusive o piso
+de tracking pixel (≤4×4), tokens de interface/anúncio, decode/MIME inválido e placeholder; o
+portão de cobertura permanece exigindo `1..N` sem redução.
+
 ## Evidência e privacidade
 
 O coletor DOM considera `img`, `currentSrc`, `srcset`, `picture/source`, lazy attributes,

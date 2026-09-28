@@ -430,7 +430,13 @@ def _negative_reason(candidate: ImageCandidate) -> str:
     if candidate.effective_width and candidate.effective_height:
         if candidate.effective_width <= 4 and candidate.effective_height <= 4:
             return "tracking_pixel"
-        if candidate.effective_width < 120 or candidate.effective_height < 120:
+        # A resource explicitly bound to a reader page control (``Go to page N`` →
+        # logical_index > 0) is a declared page of the chapter, so the generic
+        # small-image heuristic must not drop it on size alone: some legitimate pages
+        # are short strips (e.g. 800x32/83/56). Every other protection above and the
+        # tracking-pixel floor still apply; only ``small_dimensions`` is waived here.
+        reader_indexed = candidate.logical_index > 0
+        if (candidate.effective_width < 120 or candidate.effective_height < 120) and not reader_indexed:
             return "small_dimensions"
     return ""
 
