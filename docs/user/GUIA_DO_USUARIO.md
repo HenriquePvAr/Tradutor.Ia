@@ -1,6 +1,6 @@
 # Tradutor IA — Guia do Usuário
 
-> **Versão do guia verificada em:** commit `fa22d41` · **Revisado em:** 2026-09-28
+> **Versão do guia verificada em:** commit `a28abd2` · **Revisado em:** 2026-09-29
 > **Para quem é:** Scans, tradutores, editores e testadores da Beta. Nenhum conhecimento
 > técnico é necessário.
 
@@ -376,6 +376,18 @@ Motivos comuns:
 Na tela de **Revisão de qualidade** você pode filtrar por **Pendentes**, **Todos**,
 **Concluídos**, **Rejeitados**, **Revisão manual** e outros; aceitar itens de baixo risco,
 aceitar todos, desfazer a última ação em massa ou **Reprocessar pendências**.
+
+**A Revisão é um controle de qualidade linguístico.** Para cada pendência ela mostra o
+**texto original** detectado, a **tradução** atual e um **aviso em português** explicando por
+que o trecho merece atenção (por exemplo: *OCR com baixa confiança*, *Possível texto em
+inglês*, *Tradução requer revisão*, *Texto original mantido*). Você pode **editar a tradução**
+ali mesmo (com acentos e várias linhas), **aprovar** quando estiver boa e passar para a
+próxima. Aprovar significa que a **tradução** está adequada — não é uma promessa de tipografia
+perfeita.
+
+> 🎨 Ajustes **visuais/tipográficos** avançados (fonte, tamanho fino, posição, efeitos) não são
+> feitos na Revisão: eles pertencem ao **PSD editável** (perfil profissional), que você abre no
+> Photoshop/Photopea. A Revisão cuida do texto; o PSD cuida do visual.
 
 > 💡 Um capítulo em **revisão necessária** já tem PDF. Você pode abri-lo e usá-lo enquanto
 > decide o que revisar.

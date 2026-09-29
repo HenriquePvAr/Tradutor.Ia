@@ -551,6 +551,19 @@ consegue garantir sob concorrência:
 Tabelas: `jobs`, `workers`, `meta`, `quality_review_item_revisions` e tabelas auxiliares
 de revisão. Timestamps são epoch em segundos (`REAL`); `NULL` significa "ainda não".
 
+**Review = QC linguístico (Missão 8).** A Revisão é uma ferramenta de QC **linguístico**: localizar
+pendências, comparar fonte × tradução, editar a tradução e aprovar/resolver. O QC **visual/
+tipográfico** avançado pertence ao PSD editável, não à Revisão. A edição de tradução persiste por
+`POST /api/ui/quality-review/edit` → `UiBridge.quality_review_edit` →
+`JobStore.record_review_item_revision` (tabela `quality_review_item_revisions`, com checagem
+otimista de versão) — **fonte de verdade** das correções; o re-export (`review_reexport`) consome
+esses valores efetivos, sem chamar provider. O módulo `review_item.py` normaliza um item do payload
+`quality_review` num `ReviewItem` pequeno (page, region_id, semantic_type, source/translated,
+warnings, confidence, status) e traduz os códigos de aviso para rótulos PT-BR (`WARNING_LABELS`),
+desacoplando a UI do `quality_report` grande e preparando a Missão 10. O status de QC do item
+(`pending`/`approved`/`resolved`) é **separado** do status terminal do job — a integração disso é a
+Missão 9, não alterada aqui. `review_manifest` continua PLANNED.
+
 A linha de job (~70 colunas explícitas em `_JOB_COLUMNS`) agrupa:
 
 - **identidade**: `id`, `owner_id`, `run_id`, `operation_kind`, `parent_job_id`, `attempt`,

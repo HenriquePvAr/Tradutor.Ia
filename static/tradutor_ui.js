@@ -3320,6 +3320,35 @@
     return VISUAL_REASON_LABELS[key] || 'O resultado precisa de uma verificação adicional.';
   }
 
+  // Linguistic-QC warning codes -> plain pt-BR (Mission 8). Codes stay English internally;
+  // mirrors review_item.WARNING_LABELS. Unknown ALL_CAPS codes fall back to a generic message
+  // so a new code is never shown raw, but human text (with spaces/lowercase) passes through.
+  const REVIEW_WARNING_LABELS = {
+    OCR_LOW_CONFIDENCE: 'OCR com baixa confiança',
+    OCR_MISSED: 'Possível texto não detectado',
+    OCR_INCORRECT: 'OCR possivelmente incorreto',
+    ENGLISH_RESIDUAL: 'Possível texto em inglês',
+    SEMANTIC_VALIDATION: 'Tradução requer revisão',
+    TERMINOLOGY_WARNING: 'Terminologia a verificar',
+    TRANSLATION_SKIPPED: 'Tradução não aplicada',
+    SOURCE_FALLBACK: 'Texto original mantido',
+    CROSS_PAGE: 'Continuidade entre páginas',
+    FOOTNOTE: 'Nota de rodapé',
+    TITLE: 'Título',
+    VISUAL_REVIEW: 'Revisão visual recomendada no PSD',
+    OTHER: 'Este trecho precisa de atenção',
+  };
+  const REVIEW_WARNING_GENERIC = 'Este trecho precisa de atenção antes de confirmar o resultado.';
+
+  function reviewWarningLabel(value) {
+    const key = String(value || '').trim();
+    if (!key) return REVIEW_WARNING_GENERIC;
+    if (REVIEW_WARNING_LABELS[key]) return REVIEW_WARNING_LABELS[key];
+    // already human text (has a space or a lowercase letter) -> show as-is
+    if (/\s/.test(key) || /[a-zà-ÿ]/.test(key)) return key;
+    return REVIEW_WARNING_GENERIC;
+  }
+
   function updateQualityReviewFilterControls(items, activeFilter) {
     const counts = {
       all: items.length,
@@ -3440,8 +3469,12 @@
       const splitMeta = isSmartSplit
         ? `<details class="technical-details"><summary>Ver detalhes técnicos</summary><div class="quality-review-visual-reason">Tipo interno: smart_split · limite: ${escapeHtml(item.boundary || '—')} · motivo: ${escapeHtml(item.reason_code || item.visual_reason_code || 'requires_review')}</div></details>`
         : '';
+      // Prefer human reason text; otherwise map a known warning code to a specific pt-BR label
+      // (Mission 8 §14) instead of collapsing every code to one generic sentence.
+      const reasonCode = item.review_reason_code || item.reason_code
+        || (item.reason && /^[A-Z0-9_]+$/.test(String(item.reason).trim()) ? item.reason : '');
       const humanReason = item.reason && !/^[A-Z0-9_]+$/.test(String(item.reason).trim())
-        ? item.reason : 'Este trecho precisa de atenção antes de confirmar o resultado.';
+        ? item.reason : reviewWarningLabel(reasonCode);
       // Report-only items are not part of the revision: no checkbox, no
       // mark/preserve actions, so they can never enter a bulk operation.
       const isReportOnly = visualState === 'report_only' || isSmartSplit;
