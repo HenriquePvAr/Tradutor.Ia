@@ -2361,14 +2361,16 @@ fluxo mais uma cópia anterior, espelhando a rotação de `runtime.log`. A falha
 sessão chegou a ~297 MB em `app_current.jsonl`).
 
 O legado local de mídia social foi removido: não há rota/backend handler, método de bridge,
-cache local, upload nem fetcher de avatar/banner. O fluxo normal da aplicação faz zero
-chamadas à Edge Function `profile-media`; referências remotas e a evidência histórica do
-incidente de egress são mantidas. Caches/arquivos já existentes no computador não são
-apagados automaticamente. Login, identidade da conta, licença, entitlement, YK, dispositivo
-e logout permanecem independentes dessa mídia.
+cache local, upload nem fetcher de avatar/banner. No Supabase ativo `ybxwjiycujminbwbdtlb`,
+`profile-media` está ausente, as 25 Edge Functions ativas auditadas não a referenciam e a
+consulta read-only de logs não encontrou chamadas nas últimas 24h. O source órfão foi
+removido do repositório. Os campos de avatar/banner e migrations históricas permanecem como
+schema legado inerte; perfis textuais da Comunidade e identidade da conta continuam
+preservados. Caches/arquivos locais antigos não são apagados automaticamente.
 
-`REMOTE_PROFILE_MEDIA_DECOMMISSION: PENDING_MISSION_14` — a Edge Function, secrets, colunas
-e mídia remotas não foram removidas nem alteradas nesta missão.
+`REMOTE_PROFILE_MEDIA_DECOMMISSION: COMPLETE_FOR_ACTIVE_BACKEND`. O Supabase legado
+`mimrsxnhqbqkffsekxuw` e sua Edge Function/secrets permanecem intactos como rollback
+temporário; aposentadoria destrutiva do rollback requer missão e autorização separadas.
 
 ## 26.1 Artifact Contract V2 (fundação)
 

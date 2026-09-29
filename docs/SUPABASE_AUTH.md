@@ -5,11 +5,13 @@
 O runtime local do Yomu Sekai usa o projeto **Yomu Sekai** (`ybxwjiycujminbwbdtlb`)
 em `https://ybxwjiycujminbwbdtlb.supabase.co`, com publishable key pública. O projeto
 **Tradutor IA Community** (`mimrsxnhqbqkffsekxuw`) permanece intacto como rollback
-temporário até a validação física do novo backend; não é o destino de novas sessões.
+temporário até sua aposentadoria formal; não é o destino de novas sessões. Signup,
+confirmação de e-mail, login, logout e recuperação/alteração de senha foram validados
+fisicamente no projeto novo.
 
 O novo projeto não possui a Edge Function `profile-media`. Profile Media também foi
-removida do runtime local. O primeiro login físico contra o projeto novo ainda está
-pendente; este cutover local, por si só, não declara o backend validado em produção.
+removida do runtime local e seu source órfão não permanece neste repositório. O backend
+legado continua preservado como rollback; nenhuma remoção foi feita nele.
 
 Os provedores de autenticação são selecionados por `COMMUNITY_AUTH_PROVIDER`
 (resolvido em `community_auth.build_auth_provider`):
