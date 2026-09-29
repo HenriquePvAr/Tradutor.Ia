@@ -160,6 +160,37 @@ class JobRunnerSettlement(unittest.TestCase):
         finally:
             store.close()
 
+    def test_review_recommended_output_consumes_provider_result_once(self):
+        output = self.out / "integrated-review-output"
+        store, job = self._running_store_job(output)
+        rid = self.backend.reserve(job_id=job["id"], request_id="req-review", auth_token=AUTH)["reservation_id"]
+        ykr.record_reservation(output, job_id=job["id"], reservation_id=rid)
+        response = self.backend.translate_batch(BatchRequest(
+            "req-review", job["id"], "EN", "PT-BR", (BatchItem("i", "source"),)),
+            reservation_id=rid, auth_token=AUTH, finalize_job=False)
+        self._mark_ready(job["id"], "req-review", response, output)
+        output.mkdir(parents=True, exist_ok=True)
+        pdf = output / "chapter.pdf"
+        pdf.write_bytes(b"%PDF-1.4\nphysical-result")
+        (output / "timing_report.json").write_text(json.dumps({
+            "pdf_path": str(pdf),
+            "quality_validation": {
+                "passed": False, "classification_version": 1,
+                "manual_review_required_groups": 1,
+            },
+        }), encoding="utf-8")
+        (output / "downloaded_images.json").write_text("{}", encoding="utf-8")
+        try:
+            rc = job_runner._finalize(
+                store, job["id"], job, output, 0, False, str(self.out / "runner.log"))
+            self.assertEqual(rc, 0)
+            self.assertEqual(store.get_job(job["id"])["status"], JobStatus.REVIEW_REQUIRED)
+            self.assertEqual(store.get_job(job["id"])["exit_code"], 0)
+            self.assertEqual(self.backend.net_yk(rid), 1)
+            self.assertEqual(self.backend.provider_execution_count, 1)
+        finally:
+            store.close()
+
     def test_full_provider_to_finalize_missing_output_is_recoverable_after_provider_success(self):
         output = self.out / "integrated-failure"
         store, job = self._running_store_job(output)

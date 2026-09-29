@@ -619,4 +619,6 @@ def _open_folder(path):
 
 
 if __name__ == "__main__":
-    main()
+    result = main()
+    from ui_helpers import pipeline_report_exit_code
+    raise SystemExit(pipeline_report_exit_code(result))

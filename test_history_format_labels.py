@@ -39,7 +39,7 @@ def test_open_pdf_action_is_gated_on_pdf_format():
 
 
 def test_terminal_and_progress_messages_are_format_aware():
-    assert "${outputFormatLabel(record)} gerado, mas requer revisão" in JS
+    assert "${outputFormatLabel(record)} concluído — revisão recomendada." in JS
     assert "${outputFormatLabel(record)} finalizado e registrado" in JS
     assert "${outputFormatLabel(record)} pronto" in JS
     # the transient stage label no longer hardcodes PDF

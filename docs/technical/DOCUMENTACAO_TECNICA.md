@@ -400,11 +400,16 @@ vão para o diretório do banco, nunca para o cache de produção).
 | `resumable` | recuperação | Interrompido e elegível para novo attempt |
 | `cancelled` | **terminal** | Cancelamento explícito |
 | `failed` | **terminal** | Falha técnica ou artefato essencial ausente |
-| `finished` | **terminal** | Execução concluída e quality gate aprovado |
-| `review_required` | **terminal** | Concluído, PDF existe, há revisão de qualidade pendente |
+| `finished` | **terminal** | Execução estruturalmente concluída, sem QC pendente conhecido |
+| `review_required` | **terminal** | Sucesso estrutural com revisão humana recomendada; artifacts preservados |
 
 `TERMINAL = {cancelled, failed, finished, review_required}`.
 `IN_FLIGHT = {claiming, starting, running, cancelling}` — apenas estes exigem heartbeat.
+
+`review_required` mantém o enum persistido por compatibilidade, mas seu significado é
+**sucesso estrutural com revisão recomendada**. O child termina com código `0`; erro
+estrutural/artefato obrigatório inválido termina como `failed` com código não-zero. O runner
+normaliza também o `exit_code` persistido para não perpetuar um retorno enganoso do child.
 
 ```mermaid
 stateDiagram-v2
@@ -453,7 +458,9 @@ stateDiagram-v2
 
 > **Distinção importante.** `awaiting_source_review` é uma revisão **de seleção de
 > páginas, antes do OCR**. `review_required` é **terminal**, após uma execução que já
-> gerou artefatos. Nunca confundir os dois em mensagens ao usuário.
+> gerou artifacts estruturalmente válidos. Ele recomenda QC, não indica falha: o processo
+> sai com código `0`, enquanto falhas estruturais continuam em `failed`/`error` e usam
+> código não-zero. Nunca confundir os dois em mensagens ao usuário.
 
 ## 9. Crash, reconciliação e recuperação
 

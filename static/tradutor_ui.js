@@ -180,7 +180,7 @@
   // The legacy queued label remains in this compatibility note while the
   // visible copy adds the clearer waiting state.
   // queued: 'na fila'
-  const runStatusLabels = {ready: 'pronto', staging: 'preparando', queued: 'na fila · aguardando', running: 'processando', awaiting_source_review: 'confirme as páginas', source_analysis_ready: 'fonte analisada', finished: 'concluído', review_required: 'precisa de revisão', review_completed: 'revisão concluída', failed: 'não foi possível concluir', legacy_unverified: 'resultado antigo não verificado', error: 'não foi possível concluir', cancelled: 'cancelado'};
+  const runStatusLabels = {ready: 'pronto', staging: 'preparando', queued: 'na fila · aguardando', running: 'processando', awaiting_source_review: 'confirme as páginas', source_analysis_ready: 'fonte analisada', finished: 'concluído', review_required: 'concluído — revisão recomendada', review_completed: 'revisão concluída', failed: 'falhou', legacy_unverified: 'resultado antigo não verificado', error: 'falhou', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed', 'failed', 'cancelled']);
   const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
   // Queued work remains visible in the queue, but is not currently owned by a runner.
@@ -849,7 +849,7 @@
     // never reached the download stage.
     worker_unavailable: 'Servico de processamento indisponivel.',
     user_cancelled: 'O processamento foi cancelado.',
-    review_required: 'O resultado foi preparado, mas alguns trechos precisam da sua revisão.',
+    review_required: 'Tradução concluída. Há pontos que recomendamos revisar.',
     timeout: 'O site demorou demais para responder.',
     connection_error: 'Nao foi possivel conectar ao site.',
     transport_error: 'Ocorreu um problema ao baixar as imagens.',
@@ -910,7 +910,7 @@
     quality_review: 'Verificando o resultado...',
     review_rerun: 'Reprocessando pendências...',
     quality_gate: 'Revisando a tradução...',
-    review_required: 'Revisão necessária',
+    review_required: 'Concluído — revisão recomendada',
     finished: 'Capítulo concluído',
     review_completed: 'Capítulo concluído',
     failed: 'Não foi possível concluir',
@@ -2839,11 +2839,11 @@
   function terminalNotificationMessage(record) {
     const status = String(record?.status || '').toLowerCase();
     if (record?.operation_kind === 'review_rerun') {
-      if (status === 'review_required') return {message: 'Rerun concluído com propostas que ainda exigem revisão.', type: 'warn'};
+      if (status === 'review_required') return {message: 'Rerun concluído — revisão recomendada.', type: 'warn'};
       if (status === 'finished') return {message: 'Rerun seletivo concluído.', type: 'ok'};
     }
     if (status === 'review_required') {
-      return {message: `${outputFormatLabel(record)} gerado, mas requer revisão de qualidade.`, type: 'warn'};
+      return {message: `${outputFormatLabel(record)} concluído — revisão recomendada.`, type: 'warn'};
     }
     if (['finished', 'review_completed'].includes(status) && (record?.pdf_path || record?.quality_report_path || record?.output_folder)) {
       return {message: `${outputFormatLabel(record)} finalizado e registrado no histórico.`, type: 'ok'};
@@ -3148,7 +3148,7 @@
     $('#runStatusHuman').textContent = failed ? 'Não foi possível iniciar o processamento' : (stageMessages[pipelineState.stage] || stageMessages[pipelineState.visualStage] || runStatusLabels[status] || 'Processamento');
     const count = progress.total ? `${progress.current || 0} de ${progress.total}` : 'progresso sendo calculado';
     const terminalCount = pipelineState.pendingReview ? `${pipelineState.pendingReview} itens aguardando revisão` : (pipelineState.totalPages ? `${pipelineState.totalPages} páginas` : '');
-    $('#runProgressHuman').textContent = active ? count : (status === 'finished' ? (terminalCount || `${outputFormatLabel(record)} pronto`) : status === 'review_required' ? (terminalCount || 'Alguns itens precisam de revisão') : failed ? (reasonText(record?.reason_code) || record?.error_message || 'O processamento não foi concluído.') : runStatusLabels[status] || '');
+    $('#runProgressHuman').textContent = active ? count : (status === 'finished' ? (terminalCount || `${outputFormatLabel(record)} pronto`) : status === 'review_required' ? `${runStatusLabels.review_required}${terminalCount ? ` · ${terminalCount}` : ''}` : failed ? (reasonText(record?.reason_code) || record?.error_message || 'O processamento não foi concluído.') : runStatusLabels[status] || '');
     $('#runEtaHuman').textContent = active ? (progress.eta_label || 'Tempo variavel nesta etapa') : '';
     const updated = progress.updated_at ? new Date(Number(progress.updated_at) * 1000) : null;
     $('#runUpdatedHuman').textContent = updated && !Number.isNaN(updated.getTime()) ? `Atualizado ha ${Math.max(0, Math.floor((Date.now() - updated.getTime()) / 1000))}s` : '';
@@ -4080,7 +4080,7 @@
     queued: 'Aguardando worker', claimed: 'Worker iniciou o reprocessamento',
     running: 'Reprocessamento em andamento', cancel_requested: 'Cancelamento solicitado',
     cancelling: 'Aguardando o worker interromper a região atual',
-    cancelled: 'Rerun cancelado', review_required: 'Rerun concluído com revisão necessária',
+    cancelled: 'Rerun cancelado', review_required: 'Rerun concluído — revisão recomendada',
     completed: 'Rerun concluído', failed: 'Rerun falhou',
   };
   const REVIEW_RERUN_STEP_LABELS = {
@@ -4148,11 +4148,11 @@
       renderReviewRerunActivity(record);
       if (REVIEW_RERUN_TERMINAL.has(String(record.status || ''))) {
         const message = record.status === 'review_required'
-          ? 'Rerun concluído; a revisão humana continua necessária.'
+          ? 'Rerun concluído — revisão humana recomendada.'
           : record.status === 'finished' ? 'Rerun concluído.'
           : record.status === 'cancelled' ? 'Rerun cancelado.'
           : `Rerun encerrado: ${String(record.status || 'erro')}.`;
-        setQualityReviewBulkMessage(message, record.status === 'finished' ? 'ok' : 'warn');
+        setQualityReviewBulkMessage(message, ['finished', 'review_required'].includes(record.status) ? 'ok' : 'warn');
         return;
       }
       appState.reviewRerunPoll = setTimeout(() => pollReviewRerunStatus(jobId), 750);
@@ -7782,7 +7782,7 @@
       ['Qualidade', review
         ? (eligibility.reviewCompleted
           ? 'gate técnico reprovado · revisão humana concluída'
-          : 'gate técnico reprovado · revisão necessária')
+          : 'gate técnico reprovado · revisão recomendada')
         : 'gate técnico aprovado'],
     ].map(([label, value]) => `<div class="pub-meta"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('');
     pending.hidden = !review;
@@ -8449,7 +8449,7 @@
     const activity = $('#dashActivityList');
     activity.className = 'activity-list';
     activity.innerHTML = appState.history.length ? appState.history.slice(0, 7).map(record => {
-      const status = record.status === 'error' ? 'erro no processamento' : (record.review_status === 'completed' || record.review_confirmed === true) ? 'revisão concluída' : record.status === 'review_required' || boolish(record.quality_gate) === false ? 'revisão necessária' : record.pdf_path ? 'PDF gerado' : 'tradução concluída';
+      const status = ['error', 'failed'].includes(record.status) ? 'falhou' : (record.review_status === 'completed' || record.review_confirmed === true) ? 'revisão concluída' : record.status === 'review_required' || boolish(record.quality_gate) === false ? 'concluído — revisão recomendada' : record.pdf_path ? 'PDF gerado' : 'tradução concluída';
       const date = record.finished_at || record.started_at;
       const when = date ? new Date(date).toLocaleDateString('pt-BR', {day:'2-digit', month:'short'}) : 'local';
       return `<div class="activity-item"><span class="activity-mark"></span><span class="activity-copy"><strong>${escapeHtml(record.chapter_name || record.slug || 'Capítulo')}</strong><span>${escapeHtml(status)}</span></span><span class="activity-time">${escapeHtml(when)}</span></div>`;

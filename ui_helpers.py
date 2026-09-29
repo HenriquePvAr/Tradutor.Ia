@@ -453,17 +453,140 @@ def quality_requires_review(
     *,
     manual_review_count: int | None = None,
 ) -> bool:
-    """Return whether a technically completed run needs quality review."""
+    """Return whether a structurally usable run has human-review recommendations."""
+    return classify_quality_validation(
+        quality_validation, manual_review_count=manual_review_count,
+    )["severity"] == "REVIEW"
 
+
+def classify_quality_validation(
+    quality_validation: dict[str, Any] | None = None,
+    *,
+    manual_review_count: int | None = None,
+) -> dict[str, Any]:
+    """Separate reviewable QC findings from structural output failures.
+
+    The pipeline's ``passed`` flag intentionally remains an honest quality verdict.
+    It is not itself a failure signal: terminal classification uses the structural
+    evidence already carried by current reports.  Reports predating this classifier
+    remain readable; an unexplained legacy false gate is conservatively shown as a
+    review recommendation, while versioned reports with unexplained failure fail closed.
+    """
     quality = quality_validation if isinstance(quality_validation, dict) else {}
+    translation = quality.get("translation_accounting")
+    translation = translation if isinstance(translation, dict) else {}
+    physical = quality.get("physical_quality")
+    physical = physical if isinstance(physical, dict) else {}
+    source_pages = quality.get("source_page_accounting")
+    source_pages = source_pages if isinstance(source_pages, dict) else {}
+    structural: list[str] = []
+    reviewable: list[str] = []
+
+    def count(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    if quality.get("invalid_or_blank_pages"):
+        structural.append("invalid_or_blank_pages")
+    expected_pdf = count(quality.get("expected_pdf_pages"))
+    actual_pdf = count(quality.get("pdf_pages"))
+    if expected_pdf and actual_pdf != expected_pdf:
+        structural.append("pdf_page_count_mismatch")
+    if quality.get("high_translation_pages_valid") is False:
+        structural.append("invalid_translated_page")
+    if quality.get("smart_split_safe") is False:
+        structural.append("unsafe_page_structure")
+    if quality.get("source_page_gate_passed") is False:
+        structural.append("source_page_coverage_incomplete")
+    if count(quality.get("source_pages_unverified")):
+        structural.append("source_page_coverage_incomplete")
+    if source_pages and (
+        source_pages.get("page_gate_passed") is False
+        or count(source_pages.get("source_pages_unverified"))
+        or count(source_pages.get("source_pages_missing"))
+    ):
+        structural.append("source_page_coverage_incomplete")
+    if quality.get("translation_batches_succeeded") is False:
+        structural.append("provider_batch_failed")
+    if quality.get("zero_processing_errors") is False or count(quality.get("pages_with_error")):
+        structural.append("page_processing_error")
+    if quality.get("sfx_policy_valid") is False or quality.get("translate_sfx_disabled") is False:
+        structural.append("translation_policy_violation")
+    if translation and (
+        translation.get("accounting_closed") is False
+        or count(translation.get("missing_terminal_state"))
+    ):
+        structural.append("translation_accounting_incomplete")
+    if physical and isinstance(physical.get("physical_population"), dict):
+        population = physical["physical_population"]
+        if (
+            count(population.get("pages_upstream_failed"))
+            or count(population.get("pages_unresolved"))
+            or physical.get("physical_population_status") == "incomplete"
+        ):
+            structural.append("physical_page_population_incomplete")
+    if quality.get("severity") == "ERROR":
+        structural.extend(str(v) for v in quality.get("structural_failure_reasons", []) if v)
+
+    if structural:
+        reasons = sorted(set(structural))
+        return {"severity": "ERROR", "outcome": "failed", "reason_codes": reasons}
+
+    passed = _coerce_optional_bool(quality.get("passed"))
     if manual_review_count is None:
         manual_review_count = quality.get("manual_review_required_groups", 0)
-    try:
-        manual_count = int(manual_review_count or 0)
-    except (TypeError, ValueError):
-        manual_count = 0
-    passed = _coerce_optional_bool(quality.get("passed"))
-    return manual_count > 0 or passed is False
+    if count(manual_review_count):
+        reviewable.append("manual_review_items")
+    for key, reason in (
+        ("visual_validation_failures", "visual_validation_warning"),
+        ("text_overflow_groups", "text_overflow_warning"),
+        ("manual_review_required_groups", "manual_review_items"),
+        ("source_language_residual_groups", "source_language_residual"),
+        ("physical_source_residual_count", "physical_source_residual"),
+        ("ordinary_story_physical_residual_count", "physical_source_residual"),
+    ):
+        if count(quality.get(key)):
+            reviewable.append(reason)
+    if translation and count(translation.get("incomplete_region_coverage")):
+        # Region-to-region OCR/render correspondence is a human QC finding when
+        # every source page and every detected region has a terminal accounting
+        # state. It is distinct from missing pages or missing terminal states.
+        reviewable.append("translation_region_coverage_warning")
+    if translation:
+        if translation.get("requires_review") is True:
+            reviewable.append("translation_qc_warning")
+        for key in (
+            "manual_review", "rejected", "translation_failed", "translation_unresolved",
+            "trusted_translation_missing", "missing_candidate", "candidate_equals_source",
+            "source_language_residual", "source_fallback_prevented", "invalid_candidate", "semantic_review",
+            "semantic_rejected",
+        ):
+            if count(translation.get(key)):
+                reviewable.append(f"translation_{key}")
+    if physical and (
+        physical.get("physical_gate_passed") is False
+        or physical.get("physical_decision") == "review"
+        or count(physical.get("physical_source_residual_count"))
+    ):
+        reviewable.append("physical_qc_warning")
+
+    if passed is False and not reviewable:
+        if count(quality.get("classification_version")):
+            return {
+                "severity": "ERROR", "outcome": "failed",
+                "reason_codes": ["unclassified_quality_failure"],
+            }
+        # Compatibility for older manifests/reports which only recorded passed=false.
+        reviewable.append("legacy_quality_gate_false")
+
+    if reviewable:
+        return {
+            "severity": "REVIEW", "outcome": "success_review_recommended",
+            "reason_codes": sorted(set(reviewable)),
+        }
+    return {"severity": "INFO", "outcome": "success", "reason_codes": []}
 
 
 def _coerce_optional_bool(value: Any) -> bool | None:
@@ -489,23 +612,43 @@ def derive_final_run_status(
     quality_validation: dict[str, Any] | None = None,
     manual_review_count: int | None = None,
 ) -> str:
-    """Map technical completion and quality gate into a terminal status.
+    """Map structural completion and QC severity into a compatible terminal status.
 
-    A PDF may still be generated for inspection, but a failed quality gate or
-    explicit manual-review items must not be represented as a clean success.
-    Missing quality data remains compatible with older history records.
+    ``review_required`` is the persisted legacy-compatible representation of a
+    successful output with human QC recommended. Structural failures remain errors.
     """
 
     if cancelled:
         return "cancelled"
     if not technical_success:
         return "error"
-    if quality_requires_review(
+    classification = classify_quality_validation(
         quality_validation,
         manual_review_count=manual_review_count,
-    ):
+    )
+    if classification["severity"] == "ERROR":
+        return "error"
+    if classification["severity"] == "REVIEW":
         return "review_required"
     return "finished"
+
+
+def pipeline_report_exit_code(report: object) -> int:
+    """Return process success for completed output, including review recommendations."""
+    if not isinstance(report, dict):
+        try:
+            return int(report or 0)
+        except (TypeError, ValueError):
+            return 1
+    output_present = any(
+        str(report.get(key) or "").strip()
+        for key in ("pdf_path", "png_path", "psd_path")
+    )
+    status = derive_final_run_status(
+        technical_success=output_present,
+        quality_validation=report.get("quality_validation") or {},
+    )
+    return 1 if status == "error" else 0
 
 
 @dataclass

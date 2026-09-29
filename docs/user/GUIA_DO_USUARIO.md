@@ -359,10 +359,15 @@ continuar de um ponto salvo.
 
 ## 14. "Revisão necessária": o que significa
 
-Quando um capítulo termina como **revisão necessária**, isso **não quer dizer que a
-tradução falhou**. Quer dizer:
+Há três resultados distintos: **Concluído** (saída estruturalmente válida sem pendência
+conhecida), **Concluído — revisão recomendada** (saída válida com pontos de QC humano) e
+**Falhou** (não foi possível produzir uma saída estruturalmente confiável).
 
-> O PDF foi criado e está pronto para uso, mas alguns pontos não puderam ser provados como
+Quando um capítulo termina como **Concluído — revisão recomendada**, isso **não quer dizer
+que a tradução falhou**. O pipeline terminou e os arquivos foram produzidos; há pontos que
+merecem conferência humana:
+
+> O resultado foi criado e está pronto para uso, mas alguns pontos não puderam ser provados como
 > corretos automaticamente, e o programa prefere te mostrar a fingir que estava tudo certo.
 
 Motivos comuns:
@@ -389,7 +394,7 @@ perfeita.
 > feitos na Revisão: eles pertencem ao **PSD editável** (perfil profissional), que você abre no
 > Photoshop/Photopea. A Revisão cuida do texto; o PSD cuida do visual.
 
-> 💡 Um capítulo em **revisão necessária** já tem PDF. Você pode abri-lo e usá-lo enquanto
+> 💡 Um capítulo **Concluído — revisão recomendada** já tem seus arquivos de saída. Você pode abri-los e usá-los enquanto
 > decide o que revisar.
 
 ## 15. Onde ficam o PDF e os arquivos

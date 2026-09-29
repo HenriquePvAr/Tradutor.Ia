@@ -87,7 +87,7 @@ class UiIntegrationTests(unittest.TestCase):
     def test_frontend_labels_review_required_status(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn("review_required", source)
-        self.assertIn("revisão necessária", source)
+        self.assertIn("concluído — revisão recomendada", source)
 
     def test_history_publication_is_explicit_and_metadata_driven(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")

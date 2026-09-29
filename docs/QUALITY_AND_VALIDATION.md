@@ -486,12 +486,12 @@ contagens de bloqueio. Cada grupo carrega `semantic_review_reason` no `quality_r
 
 | Estado | Condição | PDF pode existir? |
 | --- | --- | --- |
-| `finished` | Sucesso técnico e quality gate aprovado | Sim |
-| `review_required` | Sucesso técnico, mas gate reprovado ou revisão manual presente | Sim |
-| `error` | Falha técnica ou artefato essencial ausente | Pode não existir |
+| `finished` | Pipeline estruturalmente completo, sem pendência de QC conhecida | Sim |
+| `review_required` | Pipeline estruturalmente completo; QC humano recomendado | Sim |
+| `error` | Falha estrutural ou artefato essencial ausente/inválido | Pode não existir |
 | `cancelled` | Cancelamento explícito | Pode haver artefatos parciais |
 
-`review_required` não é sinônimo de crash. Também não deve ser convertido em exit code não zero apenas por causa da qualidade. É válido que o processo termine com exit code `0` e o status seja `review_required`.
+`review_required` é a representação persistida compatível de **sucesso com revisão recomendada**. Avisos revisáveis — como OCR incerto, residual, alerta semântico/visual ou tipografia aproximada — não bloqueiam artifacts nem devem produzir exit code não zero. Falhas estruturais continuam em `error` e exigem exit code diferente de zero. A classificação usa evidências explícitas de cobertura, processamento e integridade; um relatório versionado com falha não classificada fecha como erro.
 
 ## Launcher e códigos técnicos
 

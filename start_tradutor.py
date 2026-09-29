@@ -142,10 +142,10 @@ def _run_internal_child(role: str, argv: list[str]) -> int:
                 f"PIPELINE_MAIN_CALL_RETURN result_type={type(result).__name__}",
                 flush=True,
             )
-            # run_webtoon returns its structured report on successful completion;
-            # only numeric returns represent an explicit process exit code.  The
-            # frozen child must not crash while converting the report dict to int.
-            code = 0 if isinstance(result, dict) else int(result or 0)
+            # Review warnings are successful completion, but a structured report can
+            # also describe structural failure. Share the quality classifier contract.
+            from ui_helpers import pipeline_report_exit_code
+            code = pipeline_report_exit_code(result)
             print(f"CHILD_EXIT exit_code={code}", flush=True)
             return code
         except BaseException as exc:  # noqa: BLE001 - preserve real child failure

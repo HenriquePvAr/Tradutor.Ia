@@ -203,7 +203,7 @@ def _requested_output_contract(output_format: str, artifacts: dict, report: dict
             return False, "no_processable_pages"
         if expected is not None and expected > 0 and actual != expected:
             return False, "export_output_count_mismatch"
-        return True, ""
+        return _artifact_manifest_contract(report, artifacts)
 
     key, suffix = ("png_path", ".png") if output_format == "png" else ("psd_path", ".psd")
     if output_format not in {"png", "psd"}:
@@ -226,6 +226,75 @@ def _requested_output_contract(output_format: str, artifacts: dict, report: dict
         return False, "no_processable_pages"
     if expected is not None and expected > 0 and len(outputs) != expected:
         return False, "export_output_count_mismatch"
+    return _artifact_manifest_contract(report, artifacts)
+
+
+def _artifact_manifest_contract(report: dict, artifacts: dict) -> tuple[bool, str]:
+    """Validate supported V2 profile artifacts without changing legacy run behavior."""
+    try:
+        from artifact_contract import (
+            ArtifactStatus, ArtifactType, Capability, capability_of, profile_artifacts,
+        )
+    except ImportError:
+        return True, ""
+    raw_path = str(report.get("artifact_manifest_path") or "").strip()
+    path = Path(raw_path) if raw_path else Path(str(artifacts.get("pdf_path") or "")).parent / "artifact_manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # A report that explicitly points at a missing V2 manifest is incomplete;
+        # only old reports with no manifest pointer use the legacy compatibility path.
+        return (False, "required_artifact_missing") if raw_path else (True, "")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return (False, "artifact_manifest_invalid") if raw_path else (True, "")
+    if not isinstance(manifest, dict) or int(manifest.get("contract_version") or 0) < 2:
+        return True, ""
+    profile = str(manifest.get("output_profile") or "")
+    try:
+        requested = profile_artifacts(profile)
+    except ValueError:
+        return False, "artifact_manifest_invalid"
+    statuses = manifest.get("artifact_status")
+    if not isinstance(statuses, dict):
+        return False, "artifact_manifest_invalid"
+    supported = [kind for kind in requested if capability_of(kind) == Capability.SUPPORTED]
+    for kind in supported:
+        if statuses.get(kind) != ArtifactStatus.PRODUCED:
+            return False, "required_artifact_missing"
+    try:
+        logical_count = int(manifest.get("logical_page_count") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False, "artifact_manifest_invalid"
+    if logical_count <= 0:
+        return False, "artifact_manifest_invalid"
+    coverage = manifest.get("coverage")
+    coverage = coverage if isinstance(coverage, dict) else {}
+    for kind in (
+        ArtifactType.TRANSLATED_IMAGE, ArtifactType.CLEAN_IMAGE,
+        ArtifactType.EDITABLE_PSD,
+    ):
+        if kind not in supported:
+            continue
+        record = coverage.get(kind)
+        if not isinstance(record, dict):
+            return False, "artifact_coverage_incomplete"
+        produced = record.get("produced")
+        if not isinstance(produced, list):
+            return False, "artifact_coverage_incomplete"
+        try:
+            produced_pages = {int(value) for value in produced}
+        except (TypeError, ValueError, OverflowError):
+            return False, "artifact_coverage_incomplete"
+        if (
+            produced_pages != set(range(1, logical_count + 1))
+            or record.get("missing")
+            or record.get("failed")
+        ):
+            return False, "artifact_coverage_incomplete"
+    if ArtifactType.QUALITY_REPORT in supported:
+        report_path = Path(str(report.get("quality_report_json") or ""))
+        if not report_path.is_file() or report_path.stat().st_size <= 0:
+            return False, "required_artifact_missing"
     return True, ""
 
 
@@ -769,6 +838,14 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
             "error": JobStatus.FAILED,
         }.get(status, JobStatus.FAILED)
 
+    # Persist the normalized terminal result, not a misleading zero from an older
+    # child: review recommendation is successful; structural failure is non-zero.
+    if not cancelled:
+        if target in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED}:
+            effective_return_code = 0
+        elif target == JobStatus.FAILED and effective_return_code == 0:
+            effective_return_code = 1
+
     # YK commit is tied to provider-complete results durably cached in the job
     # output, not to local reconstruction/export. The backend RPC independently
     # checks every provider request and is idempotent across crash recovery.
@@ -872,6 +949,14 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         print(f"finalize transition failed: {exc}", file=sys.stderr)
         return 1
     manifest_updates = {}
+    manifest_updates["outcome"] = (
+        "success" if target == JobStatus.FINISHED
+        else "success_review_recommended" if target == JobStatus.REVIEW_REQUIRED
+        else "failed" if target == JobStatus.FAILED
+        else "cancelled" if target == JobStatus.CANCELLED
+        else "interrupted"
+    )
+    manifest_updates["review_required"] = target == JobStatus.REVIEW_REQUIRED
     if commit_mismatch:
         manifest_updates["runtime_commit_mismatch"] = {
             "expected_commit_hash": commit_mismatch["expected"],

@@ -93,6 +93,28 @@ class LauncherTests(unittest.TestCase):
             )
         runner.assert_called_once_with(["--snapshot-ref", "snap-123", "--force"])
 
+    def test_pipeline_child_maps_review_report_to_zero_and_structural_report_to_failure(self):
+        review_report = {
+            "pdf_path": "chapter.pdf",
+            "quality_validation": {
+                "passed": False, "classification_version": 1,
+                "manual_review_required_groups": 1,
+            },
+        }
+        failed_report = {
+            "pdf_path": "chapter.pdf",
+            "quality_validation": {
+                "passed": False, "classification_version": 1,
+                "invalid_or_blank_pages": [2],
+            },
+        }
+        with patch("build_profile.is_production", return_value=False), \
+                patch("run_webtoon.main", return_value=review_report):
+            self.assertEqual(start_tradutor._run_internal_child("pipeline", []), 0)
+        with patch("build_profile.is_production", return_value=False), \
+                patch("run_webtoon.main", return_value=failed_report):
+            self.assertEqual(start_tradutor._run_internal_child("pipeline", []), 1)
+
     def test_internal_child_dispatches_exactly_one_entrypoint(self):
         with patch.object(start_tradutor, "load_local_environment_for_entrypoint") as load, \
                 patch("worker_service.main", return_value=7) as worker:

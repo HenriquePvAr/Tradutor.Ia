@@ -15,11 +15,13 @@ from ui_helpers import (
     ProgressSnapshot,
     build_run_command,
     build_run_output_slug,
+    classify_quality_validation,
     derive_final_run_status,
     find_output_artifacts,
     infer_series_details,
     mask_secrets,
     parse_progress_line,
+    pipeline_report_exit_code,
     quality_requires_review,
     sanitize_output_name,
     sanitize_diagnostic_text,
@@ -39,6 +41,68 @@ JUNGLE_URL = (
 
 
 class UIHelpersTests(unittest.TestCase):
+    def test_pipeline_exit_code_treats_review_as_success_and_structural_failure_as_error(self):
+        self.assertEqual(pipeline_report_exit_code({
+            "pdf_path": "result.pdf",
+            "quality_validation": {
+                "passed": False,
+                "classification_version": 1,
+                "manual_review_required_groups": 2,
+            },
+        }), 0)
+        self.assertEqual(pipeline_report_exit_code({
+            "pdf_path": "result.pdf",
+            "quality_validation": {
+                "passed": False,
+                "classification_version": 1,
+                "invalid_or_blank_pages": [3],
+            },
+        }), 1)
+        self.assertEqual(pipeline_report_exit_code({"quality_validation": {}}), 1)
+        self.assertEqual(pipeline_report_exit_code(7), 7)
+
+    def test_real_208_page_review_run_is_success_with_review_recommended(self):
+        # Sanitized facts from the retained local run: full page/PDF coverage,
+        # completed provider batches, 15 physical residuals, and two region-level
+        # OCR/render correspondence findings. No URL, token, or translated text.
+        quality = {
+            "passed": False,
+            "classification_version": 1,
+            "expected_pdf_pages": 208,
+            "pdf_pages": 208,
+            "invalid_or_blank_pages": [],
+            "high_translation_pages_valid": True,
+            "smart_split_safe": True,
+            "source_page_gate_passed": True,
+            "source_pages_unverified": 0,
+            "translation_batches_succeeded": True,
+            "zero_processing_errors": True,
+            "sfx_policy_valid": True,
+            "physical_source_residual_count": 15,
+            "physical_quality": {
+                "physical_population_status": "complete",
+                "physical_population": {
+                    "pages_upstream_failed": 0, "pages_unresolved": 0,
+                },
+                "physical_gate_passed": False,
+            },
+            "translation_accounting": {
+                "accounting_closed": True,
+                "missing_terminal_state": 0,
+                "incomplete_region_coverage": 2,
+                "translation_failed": 0,
+                "requires_review": True,
+            },
+        }
+        self.assertEqual(
+            derive_final_run_status(technical_success=True, quality_validation=quality),
+            "review_required",
+        )
+        self.assertEqual(pipeline_report_exit_code({
+            "pdf_path": "existing-local-artifact.pdf",
+            "quality_validation": quality,
+        }), 0)
+
     def test_url_suggestion_is_human_and_safe(self):
         details = suggest_chapter_details(LOOKISM_URL)
         self.assertEqual(details["title"], "Lookism - EP 50")
@@ -250,6 +314,58 @@ class UIHelpersTests(unittest.TestCase):
             derive_final_run_status(technical_success=True, quality_validation={}),
             "finished",
         )
+
+    def test_terminal_classification_keeps_qc_warnings_successful_but_structural_errors_fatal(self):
+        review_cases = [
+            {"passed": False, "manual_review_required_groups": 1},
+            {"passed": False, "source_language_residual_groups": 2},
+            {"passed": False, "visual_validation_failures": 1},
+            {"passed": False, "text_overflow_groups": 1},
+            {"passed": False, "translation_accounting": {
+                "accounting_closed": True, "requires_review": True,
+                "semantic_review": 1, "source_fallback_prevented": 1,
+            }},
+            {"passed": False, "physical_quality": {
+                "physical_gate_passed": False,
+                "physical_decision": "review",
+                "physical_population_status": "complete",
+                "physical_population": {"pages_upstream_failed": 0, "pages_unresolved": 0},
+                "physical_source_residual_count": 1,
+            }},
+        ]
+        for quality in review_cases:
+            with self.subTest(quality=quality):
+                classification = classify_quality_validation(quality)
+                self.assertEqual(classification["severity"], "REVIEW")
+                self.assertEqual(classification["outcome"], "success_review_recommended")
+                self.assertEqual(
+                    derive_final_run_status(technical_success=True, quality_validation=quality),
+                    "review_required",
+                )
+
+        structural_cases = [
+            {"passed": False, "classification_version": 1,
+             "invalid_or_blank_pages": [3]},
+            {"passed": False, "classification_version": 1,
+             "expected_pdf_pages": 10, "pdf_pages": 9},
+            {"passed": False, "classification_version": 1,
+             "translation_batches_succeeded": False},
+            {"passed": False, "classification_version": 1,
+             "source_page_gate_passed": False, "source_pages_unverified": 1},
+            {"passed": False, "classification_version": 1,
+             "translation_accounting": {"accounting_closed": False,
+                                        "missing_terminal_state": 1}},
+            {"passed": False, "classification_version": 1},
+        ]
+        for quality in structural_cases:
+            with self.subTest(quality=quality):
+                classification = classify_quality_validation(quality)
+                self.assertEqual(classification["severity"], "ERROR")
+                self.assertEqual(classification["outcome"], "failed")
+                self.assertEqual(
+                    derive_final_run_status(technical_success=True, quality_validation=quality),
+                    "error",
+                )
 
     def test_quality_review_bool_coercion_is_conservative(self):
         clean_values = [True, 1, "true", "True", "1", "yes"]

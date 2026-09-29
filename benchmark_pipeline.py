@@ -698,7 +698,11 @@ def _resolve_translation_runtime(requested_provider: str, *, translation_enabled
     return get_translator("3", translation_provider=injected_provider)
 from translator_nvidia import PROMPT_VERSION
 from resource_monitor import ResourceMonitor, detect_gpu_basic
-from ui_helpers import derive_final_run_status, sanitize_diagnostic_text
+from ui_helpers import (
+    classify_quality_validation,
+    derive_final_run_status,
+    sanitize_diagnostic_text,
+)
 
 
 def _hidden_subprocess_options():
@@ -3013,7 +3017,20 @@ def run_benchmark(args):
         and counters["pages_with_error"] == 0
     )
     quality["zero_processing_errors"] = counters["pages_with_error"] == 0
-    quality["status"] = "passed" if quality["passed"] else "review_required"
+    quality["classification_version"] = 1
+    quality_classification = classify_quality_validation(quality)
+    quality["severity"] = quality_classification["severity"]
+    quality["outcome"] = quality_classification["outcome"]
+    quality["reason_codes"] = quality_classification["reason_codes"]
+    quality["structural_failure_reasons"] = (
+        quality_classification["reason_codes"]
+        if quality_classification["severity"] == "ERROR" else []
+    )
+    quality["status"] = (
+        "passed" if quality_classification["severity"] == "INFO"
+        else "review_required" if quality_classification["severity"] == "REVIEW"
+        else "failed"
+    )
     new_images = len(completed_states) - counters["images_skipped_by_cache"]
     cache_average = (
         stage_seconds["cache_load"] / counters["images_skipped_by_cache"]
@@ -3410,10 +3427,11 @@ def run_benchmark(args):
         artifact_manifest["editable_psd_text_mode"] = editable_psd_export["text_mode"]
     artifact_manifest["io_seconds"] = artifact_export["io_seconds"]
     artifact_manifest["provenance"] = artifact_export["provenance"]
+    artifact_manifest["outcome"] = quality_classification["outcome"]
+    artifact_manifest["review_required"] = quality_classification["severity"] == "REVIEW"
     artifact_manifest_path = output_folder / "artifact_manifest.json"
     report["artifact_manifest_path"] = str(artifact_manifest_path)
     report["artifact_export"] = artifact_export
-    atomic_write_json(artifact_manifest_path, artifact_manifest)
     quality_report = _build_quality_report(
         report,
         completed_states,
@@ -3424,6 +3442,10 @@ def run_benchmark(args):
         _quality_report_html(quality_report),
         encoding="utf-8",
     )
+    if quality_json_path.is_file() and quality_json_path.stat().st_size > 0:
+        artifact_manifest["artifact_status"][ac.ArtifactType.QUALITY_REPORT] = ac.ArtifactStatus.PRODUCED
+        artifact_manifest["produced_artifacts"].append(ac.ArtifactType.QUALITY_REPORT)
+    atomic_write_json(artifact_manifest_path, artifact_manifest)
     _write_requested_artifact_aliases(
         output_folder,
         pdf_path,

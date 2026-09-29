@@ -9,7 +9,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from job_runner import _OutputPump, _finalize, _write_manifest
+from artifact_contract import ArtifactType, OutputProfile, build_artifact_manifest
+from job_runner import (
+    _OutputPump, _artifact_manifest_contract, _finalize, _write_manifest,
+)
 from job_store import JobStatus, JobStore
 
 
@@ -187,6 +190,117 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         terminal = self.store.get_job(job["id"])
         self.assertEqual(terminal["status"], JobStatus.FAILED)
         self.assertEqual(terminal["reason_code"], "no_processable_pages")
+
+    def test_review_recommendation_is_terminal_success_with_artifacts_and_no_retry(self):
+        job, output = self._running_job()
+        pdf = self._write_success_artifacts(output)
+        (output / "timing_report.json").write_text(json.dumps({
+            "pdf_path": str(pdf),
+            "quality_validation": {
+                "passed": False, "manual_review_required_groups": 1,
+                "classification_version": 1,
+            },
+        }), encoding="utf-8")
+
+        rc = _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
+
+        terminal = self.store.get_job(job["id"])
+        manifest = json.loads((output / "job_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(terminal["status"], JobStatus.REVIEW_REQUIRED)
+        self.assertEqual(terminal["exit_code"], 0)
+        self.assertTrue(pdf.is_file())
+        self.assertIsNone(terminal["error_type"])
+        self.assertEqual(manifest["outcome"], "success_review_recommended")
+        self.assertIs(manifest["review_required"], True)
+
+    def test_structural_quality_failure_remains_failed(self):
+        job, output = self._running_job()
+        pdf = self._write_success_artifacts(output)
+        (output / "timing_report.json").write_text(json.dumps({
+            "pdf_path": str(pdf),
+            "quality_validation": {
+                "passed": False, "classification_version": 1,
+                "invalid_or_blank_pages": [2],
+            },
+        }), encoding="utf-8")
+
+        _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
+
+        terminal = self.store.get_job(job["id"])
+        manifest = json.loads((output / "job_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(terminal["status"], JobStatus.FAILED)
+        self.assertNotEqual(terminal["exit_code"], 0)
+        self.assertEqual(manifest["outcome"], "failed")
+
+    def test_region_level_coverage_findings_do_not_block_complete_review_output(self):
+        job, output = self._running_job()
+        pdf = self._write_success_artifacts(output)
+        (output / "timing_report.json").write_text(json.dumps({
+            "pdf_path": str(pdf),
+            "quality_validation": {
+                "passed": False, "classification_version": 1,
+                "expected_pdf_pages": 2, "pdf_pages": 2,
+                "source_page_gate_passed": True,
+                "translation_batches_succeeded": True,
+                "zero_processing_errors": True,
+                "translation_accounting": {
+                    "accounting_closed": True,
+                    "missing_terminal_state": 0,
+                    "incomplete_region_coverage": 2,
+                },
+                "physical_quality": {
+                    "physical_population_status": "complete",
+                    "physical_population": {"pages_upstream_failed": 0, "pages_unresolved": 0},
+                    "physical_gate_passed": False,
+                },
+                "physical_source_residual_count": 2,
+            },
+        }), encoding="utf-8")
+
+        _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
+
+        terminal = self.store.get_job(job["id"])
+        self.assertEqual(terminal["status"], JobStatus.REVIEW_REQUIRED)
+        self.assertEqual(terminal["exit_code"], 0)
+        self.assertTrue(pdf.is_file())
+
+    def test_v2_automatic_manifest_requires_complete_translated_page_coverage(self):
+        root = self.tmp / "contract-output"
+        root.mkdir()
+        manifest = build_artifact_manifest(
+            output_profile=OutputProfile.AUTOMATIC, output_root=root,
+            logical_page_count=2,
+            produced={ArtifactType.FINAL_PDF: True, ArtifactType.TRANSLATED_IMAGE: True},
+        )
+        manifest["coverage"] = {ArtifactType.TRANSLATED_IMAGE: {
+            "produced": [1], "missing": [2], "failed": [],
+        }}
+        manifest_path = root / "artifact_manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        ok, reason = _artifact_manifest_contract(
+            {"artifact_manifest_path": str(manifest_path)},
+            {"pdf_path": str(root / "final.pdf")},
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "artifact_coverage_incomplete")
+
+    def test_v2_professional_manifest_requires_supported_qc_artifacts(self):
+        root = self.tmp / "professional-output"
+        root.mkdir()
+        manifest = build_artifact_manifest(
+            output_profile=OutputProfile.PROFESSIONAL_QC, output_root=root,
+            logical_page_count=1,
+            produced={ArtifactType.FINAL_PDF: True, ArtifactType.TRANSLATED_IMAGE: True},
+        )
+        manifest_path = root / "artifact_manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        ok, reason = _artifact_manifest_contract(
+            {"artifact_manifest_path": str(manifest_path)},
+            {"pdf_path": str(root / "final.pdf")},
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "required_artifact_missing")
 
     def test_pipeline_commit_mismatch_fails_closed_before_quality_status(self):
         job, output = self._running_job(commit_hash="new-ui-commit")
