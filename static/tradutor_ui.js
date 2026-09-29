@@ -42,6 +42,7 @@
     localImages: [],
     localMediaSelectionIds: [],
     outputFormat: 'pdf',
+    outputProfile: 'automatic',
     nameDirty: false,
     outputDirty: false,
     providerDirty: false,
@@ -1302,6 +1303,49 @@
   $('#localImageModal')?.addEventListener('click', event => { if (event.target === $('#localImageModal')) closeLocalImageModal(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closeLocalImageModal(); });
   $('#outputFormatSelect')?.addEventListener('change', event => { appState.outputFormat = ['pdf', 'png', 'psd'].includes(event.target.value) ? event.target.value : 'pdf'; syncTypesettingField(); syncSourceFormState(); });
+  const OUTPUT_PROFILE_STORAGE_KEY = 'yomu.outputProfile';
+  function normalizeOutputProfile(value) {
+    const profile = String(value == null ? '' : value).trim().toLowerCase();
+    return ['automatic', 'professional_qc'].includes(profile) ? profile : 'automatic';
+  }
+  function applyOutputProfile(value, {persist = false} = {}) {
+    const profile = normalizeOutputProfile(value);
+    appState.outputProfile = profile;
+    $$('input[name="output_profile"]').forEach(input => { input.checked = input.value === profile; });
+    $$('[data-output-profile-card]').forEach(card => {
+      const selected = card.dataset.outputProfileCard === profile;
+      card.classList.toggle('selected', selected);
+      card.setAttribute('aria-checked', selected ? 'true' : 'false');
+    });
+    if (persist) {
+      try { localStorage.setItem(OUTPUT_PROFILE_STORAGE_KEY, profile); } catch (_) { /* default remains safe */ }
+    }
+    syncOutputProfileField();
+    return profile;
+  }
+  function syncOutputProfileField() {
+    const downloadOnly = appState.selectedMode === 'download_only';
+    const options = $('#outputProfileOptions');
+    const hint = $('#outputProfileDownloadOnlyHint');
+    if (options) options.setAttribute('aria-disabled', downloadOnly ? 'true' : 'false');
+    $$('input[name="output_profile"]').forEach(input => { input.disabled = downloadOnly; });
+    if (hint) hint.hidden = !downloadOnly;
+    const psdOption = $('#outputFormatSelect option[value="psd"]');
+    if (psdOption) {
+      psdOption.disabled = appState.outputProfile !== 'professional_qc' || downloadOnly;
+      if (psdOption.disabled && $('#outputFormatSelect').value === 'psd') {
+        $('#outputFormatSelect').value = 'pdf';
+        appState.outputFormat = 'pdf';
+      }
+    }
+  }
+  $$('input[name="output_profile"]').forEach(input => input.addEventListener('change', event => {
+    applyOutputProfile(event.currentTarget.value, {persist: true});
+    syncSourceFormState();
+    refreshStoredSourceExecutionDraft();
+  }));
+  try { applyOutputProfile(localStorage.getItem(OUTPUT_PROFILE_STORAGE_KEY) || 'automatic'); }
+  catch (_) { applyOutputProfile('automatic'); }
   // Typesetting ON/OFF is only meaningful for PSD (§11): show it only for that format.
   function syncTypesettingField() {
     const field = $('#typesettingModeField');
@@ -1331,6 +1375,7 @@
       outputFormat: ['pdf', 'png', 'psd'].includes($('#outputFormatSelect')?.value)
         ? $('#outputFormatSelect').value : 'pdf',
       typesettingMode: ($('#typesettingModeSelect')?.value === 'off') ? 'off' : 'on',
+      outputProfile: appState.outputProfile === 'professional_qc' ? 'professional_qc' : 'automatic',
       translationProvider: normalizeTranslationProvider($('#providerSelect')?.value)
         || normalizeTranslationProvider(previous.translationProvider),
     };
@@ -1341,7 +1386,8 @@
         || previous.localFolder !== next.localFolder
         || previous.chapterName !== next.chapterName
         || previous.outputSlug !== next.outputSlug
-        || previous.outputFormat !== next.outputFormat,
+        || previous.outputFormat !== next.outputFormat
+        || previous.outputProfile !== next.outputProfile,
       sourceChanged: previous.url !== next.url || previous.localFolder !== next.localFolder,
     };
   }
@@ -1420,6 +1466,7 @@
       use_context: Boolean($('#ctxToggle')?.checked),
       open_output: Boolean($('#openToggle')?.checked),
       create_source_profile: Boolean($('#sourceProfileToggle')?.checked),
+      output_profile: appState.outputProfile === 'professional_qc' ? 'professional_qc' : 'automatic',
     };
   }
   function readSourceValidationDraft() {
@@ -1478,6 +1525,7 @@
     const value = Object.prototype.hasOwnProperty.call(hints, String(mode))
       ? String(mode) : 'quality';
     appState.selectedMode = value;
+    if (typeof syncOutputProfileField === 'function') syncOutputProfileField();
     const select = $('#modeSelect');
     if (select) select.value = value;
     const hint = $('#modeHint');
@@ -1501,6 +1549,7 @@
     if ($('#sourceProfileToggle') && typeof execution.create_source_profile === 'boolean') {
       $('#sourceProfileToggle').checked = execution.create_source_profile;
     }
+    if (execution.output_profile != null) applyOutputProfile(execution.output_profile);
     appState.programmingFields = false;
     applyProcessingMode(execution.selected_mode);
     const scope = String(execution.selected_scope || 'full');
@@ -1637,6 +1686,7 @@
     const payload = {
       source_type: appState.selectedSourceType,
       output_format: form.outputFormat || 'pdf',
+      output_profile: appState.selectedMode === 'download_only' ? 'automatic' : (form.outputProfile === 'professional_qc' ? 'professional_qc' : 'automatic'),
       typesetting_mode: form.typesettingMode || 'on',
       chapter_name: form.chapterName || guess.title,
       slug: form.outputSlug || slugify(guess.slug),
@@ -7193,7 +7243,7 @@
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge format">${escapeHtml(historyTypeFormatLabel(record))}</span>${isDownloadOnly ? '<span class="badge download-only">Download-only</span>' : ''}${snapshotBadge}${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
-      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${outputFormat === 'PDF' ? actionButton('Abrir PDF', 'pdf', record.pdf_path) : ''}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Relatório', 'report', record.quality_report_path)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>${generationsHtml}
+      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${outputFormat === 'PDF' ? actionButton('Abrir PDF', 'pdf', record.pdf_path) : ''}${actionButton('Abrir pasta', 'folder', record.output_folder)}${record.output_profile === 'professional_qc' ? actionButton('Relatório', 'report', record.quality_report_path) : ''}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>${generationsHtml}
     </div>`;
   }
   function historyScrollOwnerName(owner) {
@@ -8296,7 +8346,7 @@
       ? [['Abrir PDF', 'pdf', record.pdf_path]] : [];
     container.innerHTML = [
       ...pdfArtifact, ['Pasta', 'folder', record.output_folder],
-      ['Qualidade', 'report', record.quality_report_path],
+      ...(record.output_profile === 'professional_qc' ? [['Qualidade', 'report', record.quality_report_path]] : []),
       ['Compare', 'compare', record.compare_sheet_path],
       ['Contexto', 'context', record.session_context_path],
     ].filter(([, , path]) => path).map(([label, artifact]) => `<button class="btn-ghost" data-job-id="${escapeAttr(record.job_id || '')}" data-artifact="${artifact}">${label}</button>`).join('');

@@ -353,6 +353,30 @@
           </div>
 
           <div class="field">
+            <fieldset class="output-profile-field" id="outputProfileField">
+              <legend>Perfil de saída</legend>
+              <div class="output-profile-grid" id="outputProfileOptions" role="radiogroup" aria-label="Perfil de saída">
+                <label class="output-profile-card selected" data-output-profile-card="automatic">
+                  <input type="radio" name="output_profile" value="automatic" checked aria-describedby="outputProfileAutomaticDescription">
+                  <span class="output-profile-card-title">Automático</span>
+                  <span class="output-profile-card-subtitle">Resultado pronto</span>
+                  <span class="output-profile-card-description" id="outputProfileAutomaticDescription">PDF e imagens traduzidas, prontos para leitura ou publicação.</span>
+                  <span class="output-profile-artifacts">✓ PDF traduzido<br>✓ Imagens traduzidas</span>
+                </label>
+                <label class="output-profile-card" data-output-profile-card="professional_qc">
+                  <input type="radio" name="output_profile" value="professional_qc" aria-describedby="outputProfileProfessionalDescription">
+                  <span class="output-profile-card-title">QC Profissional</span>
+                  <span class="output-profile-card-subtitle">Material para revisão e finalização</span>
+                  <span class="output-profile-card-description" id="outputProfileProfessionalDescription">Além do resultado automático, inclui imagens limpas, PSD editável e dados de revisão.</span>
+                  <span class="output-profile-artifacts">✓ PDF e imagens traduzidas<br>✓ Imagens limpas<br>✓ PSD com textos editáveis<br>✓ Relatório QC</span>
+                  <span class="output-profile-storage-note">Gera arquivos adicionais e pode usar mais espaço em disco.</span>
+                </label>
+              </div>
+              <small class="field-hint" id="outputProfileDownloadOnlyHint" hidden>Download-only salva apenas o conteúdo original.</small>
+            </fieldset>
+          </div>
+
+          <div class="field">
             <label for="outputFormatSelect">Formato de saída</label>
             <select id="outputFormatSelect">
               <option value="pdf" selected>PDF</option>

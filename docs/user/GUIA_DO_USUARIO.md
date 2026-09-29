@@ -211,7 +211,12 @@ sugeridos sozinhos; você pode ajustá-los.
 **5. Escolha o motor de tradução.** O padrão é **DeepL (Qualidade)**. Também existem
 **Riva — mais rápido** e **Nemotron — alternativo**. A escolha vale só para este capítulo.
 
-**6. Clique em "Iniciar tradução".** O programa analisa a fonte automaticamente antes de
+**6. Escolha o perfil de saída.** **Automático** entrega PDF e imagens traduzidas, prontos
+para leitura ou publicação. **QC Profissional** inclui também imagens limpas, PSD com textos
+editáveis para Photoshop/Photopea e relatório QC; esse modo gera arquivos adicionais e pode
+usar mais espaço em disco. O padrão é **Automático**. A escolha fica lembrada neste computador.
+
+**7. Clique em "Iniciar tradução".** O programa analisa a fonte automaticamente antes de
 criar o processamento. Se o link for inválido, a página não existir, a fonte estiver
 temporariamente indisponível ou o site ainda não for compatível, nenhum processamento é
 criado e a mensagem explica o motivo.
@@ -236,6 +241,9 @@ selecionado.
 | **Qualidade** (padrão) | Páginas e fontes difíceis. Processamento mais conservador, mais lento. |
 | **Rápido** | Uso geral. Processa com otimizações automáticas e validação de qualidade. |
 | **Download-only** | Só coleta e valida as páginas. Não lê texto, não traduz e não gera PDF. Útil para conferir se um capítulo está completo. |
+
+No modo **Download-only**, os perfis de saída ficam desativados: somente o conteúdo original
+é coletado. A opção de perfil não altera o motor de tradução nem adiciona custo de YK.
 
 ### Escopo
 

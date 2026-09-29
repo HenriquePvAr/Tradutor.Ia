@@ -878,6 +878,13 @@ class JobStore:
                 (parent.get("configuration") or {}).get("chapter_name")
                 or parent.get("series_title") or ""
             )[:160],
+            "output_profile": str(
+                (parent.get("configuration") or {}).get("output_profile")
+                or ("professional_qc" if (
+                    str((parent.get("configuration") or {}).get("output_format") or "").casefold() == "psd"
+                    and not (parent.get("configuration") or {}).get("download_only")
+                ) else "automatic")
+            ),
             "full": False,
             "use_cache": True,
         }

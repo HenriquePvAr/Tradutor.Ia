@@ -32,6 +32,7 @@ from typing import Any
 from urllib.parse import quote
 
 from community_auth import RequestPrincipal, bind_is_loopback, peer_is_loopback
+from artifact_contract import OutputProfile
 from config import effective_ocr_engine
 from job_store import JobStatus, JobStore
 from output_manifest import MANIFEST_FILENAME, load_verified_run_manifest, sanitize_source_url
@@ -942,6 +943,7 @@ class UiBridge:
                 if source_type in {"local_folder", "local_images"} else ""
             ),
             "mode": config.get("mode") or "fast",
+            "output_profile": self._output_profile_from_config(config),
             "scope": "full" if config.get("full", True) else "partial",
             "cache_mode": "force" if config.get("force") else "cache",
             "status": display_status,
@@ -1724,6 +1726,7 @@ class UiBridge:
             },
             "report_only_count": report_only,
             "output_format": str((job.get("configuration") or {}).get("output_format") or "pdf"),
+            "output_profile": self._output_profile_from_config(job.get("configuration")),
             "reviewed_pdf": self._latest_reviewed_pdf(job),
             "latest_rerun": self._job_record(latest_rerun) if latest_rerun else None,
             "latest_reexport": self._review_generation_public(latest_reexport) if latest_reexport else None,
@@ -1805,6 +1808,7 @@ class UiBridge:
             "snapshot_path": str(snapshot_path), "generation_root": str(generation_root),
             "source_job_id": str(parent["id"]), "source_run_id": str(parent.get("run_id") or ""),
             "output_format": fmt, "chapter_name": str(chapter_config.get("chapter_name") or parent.get("series_title") or "chapter"),
+            "output_profile": self._output_profile_from_config(chapter_config),
             "typesetting_mode": str(typesetting_mode or "on").casefold(),
             "attempt": int(attempt), "additional_yk_required": 0,
             "provider_calls_added": 0, "ocr_calls_added": 0,
@@ -5340,6 +5344,21 @@ class UiBridge:
             )[:220],
         }
 
+    @staticmethod
+    def _normalize_output_profile(value: object) -> str:
+        profile = str(value or "").strip().lower()
+        allowed = {OutputProfile.AUTOMATIC, OutputProfile.PROFESSIONAL_QC}
+        return profile if profile in allowed else OutputProfile.AUTOMATIC
+
+    @classmethod
+    def _output_profile_from_config(cls, configuration: object) -> str:
+        config = configuration if isinstance(configuration, dict) else {}
+        if "output_profile" not in config:
+            if (str(config.get("output_format") or "").casefold() == "psd"
+                    and not config.get("download_only")):
+                return OutputProfile.PROFESSIONAL_QC
+        return cls._normalize_output_profile(config.get("output_profile"))
+
     def _seal_translation_context(
         self,
         job: dict[str, Any],
@@ -5662,6 +5681,7 @@ class UiBridge:
             # Keep the selected format alongside the argv. The worker validates
             # both representations before starting the expensive local pipeline.
             "output_format": normalized["output_format"],
+            "output_profile": normalized["output_profile"],
             "typesetting_mode": normalized.get("typesetting_mode", "on"),
         })
         configuration.update(self._translation_configuration_snapshot(payload, normalized))
@@ -5803,6 +5823,7 @@ class UiBridge:
             "ownership_schema_version": 1,
             "mode": normalized["mode"],
             "output_format": normalized["output_format"],
+            "output_profile": normalized["output_profile"],
             "download_only": normalized["download_only"],
             "full": True,
             "max_images": None,
@@ -5882,6 +5903,18 @@ class UiBridge:
         force = bool(payload.get("force", False))
         use_cache = bool(payload.get("use_cache", not force))
         download_only = bool(payload.get("download_only", False))
+        requested_format = str(payload.get("output_format") or "pdf").casefold()
+        raw_profile = payload.get("output_profile")
+        output_profile = (
+            OutputProfile.PROFESSIONAL_QC
+            if raw_profile is None and requested_format == "psd" and not download_only
+            else self._normalize_output_profile(raw_profile)
+        )
+        if download_only:
+            output_profile = OutputProfile.AUTOMATIC
+        output_format = requested_format if requested_format in {"pdf", "png", "psd"} else "pdf"
+        if output_profile != OutputProfile.PROFESSIONAL_QC and output_format == "psd":
+            output_format = "pdf"
         translation_provider = self._normalize_translation_provider(payload)
         translation_enabled = (not download_only) and payload.get("translation_enabled") is True
         # Translation is a server/control-plane decision. Absence is fail-closed
@@ -5913,8 +5946,8 @@ class UiBridge:
             "force": force,
             "use_context": bool(payload.get("use_context", True)),
             "open_output": bool(payload.get("open_output", False)),
-            "output_format": str(payload.get("output_format") or "pdf").casefold()
-            if str(payload.get("output_format") or "pdf").casefold() in {"pdf", "png", "psd"} else "pdf",
+            "output_format": output_format,
+            "output_profile": output_profile,
             "typesetting_mode": str(payload.get("typesetting_mode") or "on").casefold()
             if str(payload.get("typesetting_mode") or "on").casefold() in {"on", "off"} else "on",
             "create_source_profile": False,
@@ -6247,6 +6280,7 @@ class UiBridge:
             "chapter_name": normalized["chapter_name"],
             "open_output": normalized["open_output"],
             "output_format": normalized.get("output_format", "pdf"),
+            "output_profile": normalized.get("output_profile", OutputProfile.AUTOMATIC),
             "typesetting_mode": normalized.get("typesetting_mode", "on"),
             "create_source_profile": normalized["create_source_profile"],
             "source_analysis": source_analysis or {},
@@ -7447,6 +7481,18 @@ class UiBridge:
         details = suggest_chapter_details(url)
         mode = str(payload.get("mode") or "fast")
         download_only = bool(payload.get("download_only", False))
+        requested_format = str(payload.get("output_format") or "pdf").casefold()
+        raw_profile = payload.get("output_profile")
+        output_profile = (
+            OutputProfile.PROFESSIONAL_QC
+            if raw_profile is None and requested_format == "psd" and not download_only
+            else self._normalize_output_profile(raw_profile)
+        )
+        if download_only:
+            output_profile = OutputProfile.AUTOMATIC
+        output_format = requested_format if requested_format in {"pdf", "png", "psd"} else "pdf"
+        if output_profile != OutputProfile.PROFESSIONAL_QC and output_format == "psd":
+            output_format = "pdf"
         full = bool(payload.get("full", True))
         max_images = None if full else int(payload.get("max_images") or 0)
         force = bool(payload.get("force", False))
@@ -7466,7 +7512,7 @@ class UiBridge:
             use_context=bool(payload.get("use_context", True)),
             download_only=download_only,
             translation_provider=self._normalize_translation_provider(payload),
-            output_format=str(payload.get("output_format") or "pdf").casefold(),
+            output_format=output_format,
         )
         return {
             "id": str(payload.get("id") or uuid.uuid4()),
@@ -7484,8 +7530,8 @@ class UiBridge:
             "create_source_profile": payload.get("create_source_profile") is True,
             "translation_provider": self._normalize_translation_provider(payload),
             "translation_enabled": translation_enabled,
-            "output_format": str(payload.get("output_format") or "pdf").casefold()
-            if str(payload.get("output_format") or "pdf").casefold() in {"pdf", "png", "psd"} else "pdf",
+            "output_format": output_format,
+            "output_profile": output_profile,
         }
 
     @staticmethod

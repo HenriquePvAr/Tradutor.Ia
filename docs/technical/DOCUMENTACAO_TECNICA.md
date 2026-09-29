@@ -2515,9 +2515,22 @@ era, portanto, `total − páginas_sem_render`. O fallback para a origem fecha a
 página lógica concluída passa a ter CLEAN em `PROFESSIONAL_QC` (208/208 no capítulo Comix,
 incluindo as calhas em branco 118/143/207).
 
-**Perfil de saída.** `_resolve_output_profile(args)` seleciona programaticamente (sem UI):
-atributo `args.output_profile` → env `YOMU_OUTPUT_PROFILE` → `AUTOMATIC` (default); valor
-desconhecido cai para `AUTOMATIC`.
+**Perfil de saída (Missão 11).** O grupo de radios acessível da Nova tradução envia o enum
+canônico `automatic` ou `professional_qc`; `UiBridge` valida e persiste `output_profile` na
+configuração do job. O `job_runner` passa o valor validado ao processo do pipeline por
+`YOMU_OUTPUT_PROFILE`, e `_resolve_output_profile(args)` conserva a precedência programática
+`args.output_profile` → env → `AUTOMATIC`. Request legado sem perfil usa `AUTOMATIC`; uma
+seleção PSD explícita de cliente legado sem o novo campo é mapeada a `PROFESSIONAL_QC`.
+`download_only` força `AUTOMATIC` e não executa artifacts de tradução/QC. Reexecução herda o
+perfil conhecido e usa `AUTOMATIC` quando o registro histórico não o possui. Re-export não
+reescreve o perfil do job de origem.
+
+O preset `AUTOMATIC` solicita ao Artifact Contract V2 somente `FINAL_PDF` e
+`TRANSLATED_IMAGE`. `PROFESSIONAL_QC` solicita esses dois mais `CLEAN_IMAGE`, `EDITABLE_PSD`,
+`QUALITY_REPORT` e `REVIEW_MANIFEST`. O quality report de diagnóstico continua sendo escrito
+internamente pelo pipeline para validação e diagnóstico interno, mesmo quando não é um artifact
+solicitado/exposto pelo preset Automático; isso não habilita PSD, clean ou manifest nesse
+perfil. A troca de preset é configuração local, sem provider/DeepL ou consumo YK adicional.
 
 **Escrita atômica e validação (§20/§21).** Cada cópia usa `atomic_copy` (temp →
 `os.replace`); o artefato **produzido** é então validado (decodificável, dims > 0) — sem

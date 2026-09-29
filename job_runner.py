@@ -53,6 +53,19 @@ _PROVENANCE_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 _STOP_REQUESTED = False
 
 
+def _set_output_profile_environment(env: dict[str, str], configuration: object) -> None:
+    """Pass the persisted output profile to the pipeline child, defaulting legacy jobs safely."""
+    from artifact_contract import PROFILE_ARTIFACTS, OutputProfile
+
+    config = configuration if isinstance(configuration, dict) else {}
+    profile = str(config.get("output_profile") or "").strip().lower()
+    if not profile and str(config.get("output_format") or "").casefold() == "psd" and not config.get("download_only"):
+        profile = OutputProfile.PROFESSIONAL_QC
+    env["YOMU_OUTPUT_PROFILE"] = (
+        profile if profile in PROFILE_ARTIFACTS else OutputProfile.AUTOMATIC
+    )
+
+
 def _append_pipeline_trace(job: dict, event: str, **fields: object) -> None:
     """Write bounded, secret-free runner lifecycle evidence for diagnostics export."""
     try:
@@ -479,7 +492,7 @@ def _safe_manifest_configuration(configuration: object) -> dict:
         "job_type", "mode", "full", "max_images", "use_cache", "force",
         "use_context", "chapter_name", "open_output", "create_source_profile",
         "translation_provider", "translation_request_id", "download_only",
-        "output_format",
+        "output_format", "output_profile",
     }
     safe = {key: configuration[key] for key in allowed if key in configuration}
     if "create_source_profile" in safe:
@@ -675,6 +688,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         env["TRADUTOR_JOB_RUN_ID"] = str(job.get("run_id") or "")
         env["TRADUTOR_JOB_OUTPUT_DIR"] = str(output_dir.resolve())
         configuration = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        _set_output_profile_environment(env, configuration)
         # The runtime root owns auth/, jobs.sqlite3, logs/ and the secure auth
         # envelope.  It is the process's explicit TRADUTOR_RUNTIME_ROOT (or the DB
         # parent), NEVER derived from output_dir -- an output directory on a

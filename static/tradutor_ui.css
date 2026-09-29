@@ -775,6 +775,23 @@
     max-height:0; overflow:hidden; opacity:0;
     transition:max-height .3s ease, opacity .3s ease, margin-top .3s ease;
   }
+
+  .output-profile-field{border:0; padding:0; margin:0; min-width:0;}
+  .output-profile-field legend{padding:0; margin-bottom:8px; color:var(--paper); font-size:12px; font-weight:600;}
+  .output-profile-grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px;}
+  .output-profile-card{position:relative; display:flex; flex-direction:column; gap:5px; min-width:0; padding:12px; border:1px solid var(--line); border-radius:5px; background:rgba(239,231,216,.02); cursor:pointer; transition:border-color .15s,background .15s,box-shadow .15s;}
+  .output-profile-card:hover{border-color:rgba(239,231,216,.38);}
+  .output-profile-card:focus-within{outline:2px solid var(--gold); outline-offset:2px;}
+  .output-profile-card.selected{border-color:var(--vermillion); background:rgba(197,55,44,.09); box-shadow:0 0 0 1px var(--vermillion) inset;}
+  .output-profile-card input{position:absolute; top:11px; right:11px; width:16px; height:16px; accent-color:var(--vermillion);}
+  .output-profile-card-title{padding-right:22px; color:var(--paper); font:600 13px/1.25 'Space Grotesk',sans-serif;}
+  .output-profile-card.selected .output-profile-card-title{color:var(--vermillion);}
+  .output-profile-card-subtitle{color:var(--gold); font-size:10.5px; font-weight:600;}
+  .output-profile-card-description,.output-profile-artifacts,.output-profile-storage-note{color:var(--muted); font-size:10px; line-height:1.45;}
+  .output-profile-artifacts{margin-top:3px; color:var(--paper);}
+  .output-profile-storage-note{margin-top:3px; font-style:italic;}
+  #outputProfileOptions[aria-disabled="true"] .output-profile-card{cursor:not-allowed; opacity:.55;}
+  @media (max-width:520px){.output-profile-grid{grid-template-columns:1fr;}}
   .scope-custom.open{max-height:50px; opacity:1; margin-top:11px;}
   .scope-custom input{width:110px;}
   .scope-custom span{font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted);}
