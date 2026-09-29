@@ -160,6 +160,10 @@ def export_diagnostics(destination: str) -> Path:
                 # never leave the machine in a diagnostics archive.
                 if "runtime" in source.parts and "auth" in source.parts:
                     continue
+                # Old local profile-media traces may still exist on disk; stop exporting
+                # them without deleting user diagnostics as part of this feature removal.
+                if source.name.casefold().startswith("profile_media") or "PROFILE_MEDIA_TRACE" in source.name:
+                    continue
                 if not source.is_file() or source in seen or source.suffix.lower() not in {".log", ".json", ".jsonl", ".txt"}:
                     continue
                 seen.add(source)
@@ -174,7 +178,6 @@ def export_diagnostics(destination: str) -> Path:
         index = {
             "app_log_present": any("app_current" in name for name in included),
             "route_log_present": any("routes_current" in name for name in included),
-            "profile_log_present": any("profile_media_current" in name or "PROFILE_MEDIA_TRACE" in name for name in included),
             "source_traces_count": sum("source_" in name for name in included),
             "job_traces_count": sum("job_" in name for name in included),
             "pipeline_traces_count": sum("pipeline_" in name for name in included),
@@ -196,9 +199,7 @@ def _load_external_provider_config(env: dict[str, str]) -> None:
     """Load optional provider configuration from the user's data directory.
 
     Frozen installs intentionally do not carry the development ``.env`` (or any
-    OAuth material).  This used to make Drive-backed profile media silently fall
-    back to initials/banner presets in the EXE even though the same account worked
-    in the source checkout.  An installer may therefore use a user-created, external
+    OAuth material). An installer may therefore use a user-created, external
     config file; values stay in the child process and are never bundled or logged.
     """
     candidates: list[Path] = []

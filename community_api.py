@@ -297,7 +297,6 @@ class CommunityApi:
                  output_root: Path = OUTPUT_ROOT,
                  storage_root: Path | None = None,
                  read_provider_factory: Callable[[], Any] | None = None,
-                 profile_sync: Callable[[RequestPrincipal], Any] | None = None,
                  publication_metadata_config: dict[str, Any] | None = None,
                  canonical_identity_materializer: Any | None = None):
         # Resolved on call, not bound as a default at import: a default argument froze the
@@ -333,7 +332,6 @@ class CommunityApi:
             (lambda: FilesystemStorageProvider(storage_root))
             if storage_provider_name() == "filesystem" else build_read_provider
         )
-        self._profile_sync = profile_sync
         # The community DB and jobs DB cannot share one transaction.  The local API
         # serializes the short draft+enqueue boundary so duplicate clicks observe the
         # first fully linked job instead of a half-created cross-database attempt.
@@ -987,11 +985,11 @@ class CommunityApi:
         # The community feed is authenticated-only; it never lists posts to anonymous
         # callers even though every card is metadata-only.
         self._require_authenticated_principal(principal)
-        if self._profile_sync is not None:
-            # A stale local profile must not make an otherwise readable feed fail;
-            # profile editing surfaces report a conflict explicitly as 409.
+        identity_sync = getattr(self, "_account_identity_sync", None)
+        if callable(identity_sync):
+            # Account identity remains separate from the removed social-media feature.
             try:
-                self._profile_sync(principal)
+                identity_sync(principal)
             except ValueError:
                 pass
         with self._community_lock:

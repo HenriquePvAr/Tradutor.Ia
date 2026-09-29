@@ -61,21 +61,17 @@ class BootstrapSocialStatusTests(unittest.TestCase):
     def tearDown(self):
         app_ui._SOCIAL_STATUS = self._orig_status
 
-    def _bootstrap(self, auth, bridge=None, sync=lambda p: {}, profile=lambda p: {}):
+    def _bootstrap(self, auth, bridge=None):
         import app_ui as mod
         orig_auth, orig_bridge = mod.AUTH, mod.BRIDGE
-        orig_sync, orig_profile = mod._sync_public_profile, mod._profile_for_principal
         orig_enrich = mod._enrich_history_publications
         mod.AUTH = auth
         mod.BRIDGE = bridge or FakeBridge()
-        mod._sync_public_profile = sync
-        mod._profile_for_principal = profile
         mod._enrich_history_publications = lambda history: None
         try:
             return mod.api_bootstrap(SimpleNamespace(), cursor=0)
         finally:
             mod.AUTH, mod.BRIDGE = orig_auth, orig_bridge
-            mod._sync_public_profile, mod._profile_for_principal = orig_sync, orig_profile
             mod._enrich_history_publications = orig_enrich
 
     def test_authenticated_bootstrap_exposes_supabase_available_state(self):
@@ -84,15 +80,9 @@ class BootstrapSocialStatusTests(unittest.TestCase):
         self.assertEqual(payload["community"]["social"], {"provider": "supabase", "available": True, "reason_code": None})
 
     def test_authenticated_bootstrap_does_not_load_profile_metadata(self):
-        calls = []
         app_ui._SOCIAL_STATUS = {"provider": "supabase", "available": True, "reason_code": None}
-        payload = self._bootstrap(
-            FakeAuthenticated(PRINCIPAL),
-            sync=lambda principal: calls.append("sync"),
-            profile=lambda principal: calls.append("profile"),
-        )
+        payload = self._bootstrap(FakeAuthenticated(PRINCIPAL))
         self.assertNotIn("profile", payload)
-        self.assertEqual(calls, [])
 
     def test_authenticated_bootstrap_exposes_local_provider_state(self):
         app_ui._SOCIAL_STATUS = {"provider": "local", "available": True, "reason_code": None}

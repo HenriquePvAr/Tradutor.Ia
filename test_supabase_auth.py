@@ -239,7 +239,9 @@ class SupabaseTokenTests(unittest.TestCase):
 
     def test_nbf_beyond_clock_skew_is_rejected(self):
         with self.assertRaises(AuthenticationRequired):
-            self._auth(_token(self.private, "kid-1", nbf_delta=31))
+            # nbf is integer seconds, so 31s can truncate into the 30s leeway
+            # depending on where within the current second the test starts.
+            self._auth(_token(self.private, "kid-1", nbf_delta=35))
 
     def test_missing_sub_rejected(self):
         with self.assertRaises(AuthenticationRequired):

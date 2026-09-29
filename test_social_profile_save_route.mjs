@@ -1,5 +1,4 @@
-// Contract guard: the client profile experience and its API calls are removed. Backend
-// legacy routes intentionally remain outside this client-only mission.
+// Contract guard: local profile-media UI, routes, bridge, and transport are removed.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,6 +33,11 @@ await test('normal client code has no profile reads, writes, or avatar/banner me
   }
   assert.doesNotMatch(api, /\b(?:getMyProfile|updateMyProfile|getProfileByUsername)\b/);
   assert.doesNotMatch(community, /\b(?:getMyProfile|updateMyProfile|renderProfile)\b/);
+});
+
+await test('local backend and bridge expose no profile-media surface', async () => {
+  assert.doesNotMatch(backend, /profile_media|profile-media|avatar_object_key|banner_object_key|api_profile_media/);
+  assert.doesNotMatch(bridge, /profile_media|profile-media|avatar_object_key|banner_object_key|save_profile_media/);
 });
 
 await test('bootstrap does not query or synchronize social profile metadata', async () => {

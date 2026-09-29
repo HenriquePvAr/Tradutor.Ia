@@ -107,8 +107,6 @@ def test_bootstrap_resolves_principal_before_private_bridge_query(monkeypatch):
 
     monkeypatch.setattr(app_ui, "AUTH", FakeAuth())
     monkeypatch.setattr(app_ui, "BRIDGE", FakeBridge())
-    monkeypatch.setattr(app_ui, "_sync_public_profile", lambda principal: {})
-    monkeypatch.setattr(app_ui, "_profile_for_principal", lambda principal: {})
     monkeypatch.setattr(app_ui, "_enrich_history_publications", lambda history: None)
 
     payload = app_ui.api_bootstrap(SimpleNamespace(), cursor=0)
@@ -157,19 +155,14 @@ def test_open_artifact_resolves_opaque_job_and_kind_for_owner(monkeypatch):
     assert calls == [("owner-a", "job-a", "pdf", False)]
 
 
-def test_profiles_are_persisted_per_authenticated_owner(tmp_path):
+def test_local_bridge_has_no_social_profile_or_media_store():
     bridge = UiBridge.__new__(UiBridge)
-    bridge.profile_root = tmp_path / "profiles"
-    bridge.profile_media_root = tmp_path / "media"
-    bridge.legacy_profile_path = tmp_path / "legacy.json"
-    bridge.profile = {}
-
-    bridge.save_profile({"display_name": "Alice"}, user_id="owner-a")
-    bridge.save_profile({"display_name": "Bruno"}, user_id="owner-b")
-
-    assert bridge.profile_for_user("owner-a")["display_name"] == "Alice"
-    assert bridge.profile_for_user("owner-b")["display_name"] == "Bruno"
-    assert len(list((tmp_path / "profiles").glob("*.json"))) == 2
+    forbidden = (
+        "profile", "profile_root", "profile_media_root", "legacy_profile_path",
+        "save_profile", "profile_for_user", "save_profile_media",
+        "profile_media_path", "profile_media_stream", "remove_profile_media",
+    )
+    assert all(not hasattr(bridge, name) for name in forbidden)
 
 
 def test_runtime_paths_can_only_be_overridden_in_guarded_test_mode(
@@ -317,13 +310,10 @@ def test_sequential_bootstraps_are_keyed_by_current_principal(monkeypatch):
                 "history": [{"owner": principal.owner_id}],
                 "queue": [],
                 "community": {},
-                "profile": {},
             }
 
     monkeypatch.setattr(app_ui, "AUTH", FakeAuth())
     monkeypatch.setattr(app_ui, "BRIDGE", FakeBridge())
-    monkeypatch.setattr(app_ui, "_sync_public_profile", lambda principal: {})
-    monkeypatch.setattr(app_ui, "_profile_for_principal", lambda principal: {})
     monkeypatch.setattr(app_ui, "_enrich_history_publications", lambda history: None)
     first = app_ui.api_bootstrap(SimpleNamespace(), cursor=0)
     second = app_ui.api_bootstrap(SimpleNamespace(), cursor=0)

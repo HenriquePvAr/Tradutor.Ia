@@ -137,8 +137,6 @@ class CommunityStore:
                 user_id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
                 display_name_normalized TEXT NOT NULL,
-                avatar_object_key TEXT NOT NULL DEFAULT '',
-                banner_object_key TEXT NOT NULL DEFAULT '',
                 public_role TEXT NOT NULL DEFAULT '',
                 pronouns TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'online',
@@ -302,8 +300,6 @@ class CommunityStore:
         now = time.time()
         values = (
             user_id, display_name, normalized,
-            str(fields.get("avatar_object_key") or ""),
-            str(fields.get("banner_object_key") or ""),
             str(fields.get("public_role") or "")[:80],
             str(fields.get("pronouns") or "")[:30],
             str(fields.get("status") or "online")[:16],
@@ -315,14 +311,12 @@ class CommunityStore:
         try:
             self._conn.execute(
                 """INSERT INTO community_profiles(
-                    user_id,display_name,display_name_normalized,avatar_object_key,banner_object_key,
+                    user_id,display_name,display_name_normalized,
                     public_role,pronouns,status,status_message,bio,accent_color,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(user_id) DO UPDATE SET
                     display_name=excluded.display_name,
                     display_name_normalized=excluded.display_name_normalized,
-                    avatar_object_key=excluded.avatar_object_key,
-                    banner_object_key=excluded.banner_object_key,
                     public_role=excluded.public_role,
                     pronouns=excluded.pronouns,
                     status=excluded.status,
@@ -338,10 +332,10 @@ class CommunityStore:
 
     def profile_public(self, user_id: str) -> dict[str, Any]:
         row = self._conn.execute(
-            "SELECT user_id,display_name,avatar_object_key,banner_object_key,public_role,pronouns,status,status_message,bio,accent_color "
+            "SELECT user_id,display_name,public_role,pronouns,status,status_message,bio,accent_color "
             "FROM community_profiles WHERE user_id=?", (str(user_id),)).fetchone()
         if row is None:
-            return {"user_id": str(user_id), "display_name": "Usuário", "avatar_object_key": "", "banner_object_key": "", "public_role": ""}
+            return {"user_id": str(user_id), "display_name": "Usuário", "public_role": ""}
         return self._row(row) or {}
 
     def profile_public_for_users(self, user_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
@@ -350,11 +344,11 @@ class CommunityStore:
             return {}
         placeholders = ",".join("?" for _ in ids)
         rows = self._rows(self._conn.execute(
-            f"SELECT user_id,display_name,avatar_object_key,banner_object_key,public_role,pronouns,status,status_message,bio,accent_color "
+            f"SELECT user_id,display_name,public_role,pronouns,status,status_message,bio,accent_color "
             f"FROM community_profiles WHERE user_id IN ({placeholders})", ids))
         result = {str(row["user_id"]): row for row in rows}
         for user_id in ids:
-            result.setdefault(user_id, {"user_id": user_id, "display_name": "Usuário", "avatar_object_key": "", "banner_object_key": "", "public_role": ""})
+            result.setdefault(user_id, {"user_id": user_id, "display_name": "Usuário", "public_role": ""})
         return result
 
     # ---- posts --------------------------------------------------------------
@@ -517,7 +511,7 @@ class CommunityStore:
         params += [int(limit), int(offset)]
         cur = self._conn.execute(
             f"SELECT community_posts.*, cp.display_name AS author_display_name, "
-            "cp.avatar_object_key AS author_avatar_object_key, cp.public_role AS author_public_role "
+            "cp.public_role AS author_public_role "
             "FROM community_posts LEFT JOIN community_profiles cp ON cp.user_id=community_posts.user_id "
             f"WHERE {' AND '.join(where)} "
             "ORDER BY published_at DESC LIMIT ? OFFSET ?", params)
@@ -642,7 +636,7 @@ class CommunityStore:
     def list_favorite_posts(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
         cur = self._conn.execute(
             "SELECT p.*, f.created_at AS favorited_at, cp.display_name AS author_display_name, "
-            "cp.avatar_object_key AS author_avatar_object_key, cp.public_role AS author_public_role "
+            "cp.public_role AS author_public_role "
             "FROM community_favorites f JOIN community_posts p ON p.id=f.publication_id "
             "LEFT JOIN community_profiles cp ON cp.user_id=p.user_id "
             "WHERE f.user_id=? AND p.status=? AND p.deleted_at IS NULL "
@@ -703,7 +697,7 @@ class CommunityStore:
     def list_reading_progress(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
         cur = self._conn.execute(
             "SELECT p.*, r.current_page, r.total_pages, r.progress_percent, r.last_read_at, r.completed_at, "
-            "cp.display_name AS author_display_name, cp.avatar_object_key AS author_avatar_object_key, cp.public_role AS author_public_role "
+            "cp.display_name AS author_display_name, cp.public_role AS author_public_role "
             "FROM community_reading_progress r JOIN community_posts p ON p.id=r.publication_id "
             "LEFT JOIN community_profiles cp ON cp.user_id=p.user_id "
             "WHERE r.user_id=? AND p.status=? AND p.deleted_at IS NULL "
@@ -746,7 +740,7 @@ class CommunityStore:
 
     def get_comment(self, comment_id: str) -> dict[str, Any] | None:
         row = self._row(self._conn.execute(
-            "SELECT c.*, cp.display_name AS author_display_name, cp.avatar_object_key AS author_avatar_object_key, "
+            "SELECT c.*, cp.display_name AS author_display_name, "
             "cp.public_role AS author_public_role FROM community_comments c "
             "LEFT JOIN community_profiles cp ON cp.user_id=c.user_id WHERE c.comment_id=?",
             (str(comment_id),),
@@ -755,7 +749,7 @@ class CommunityStore:
 
     def list_comments(self, post_id: str, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         cur = self._conn.execute(
-            "SELECT c.*, cp.display_name AS author_display_name, cp.avatar_object_key AS author_avatar_object_key, "
+            "SELECT c.*, cp.display_name AS author_display_name, "
             "cp.public_role AS author_public_role FROM community_comments c "
             "LEFT JOIN community_profiles cp ON cp.user_id=c.user_id "
             "WHERE c.publication_id=? ORDER BY c.created_at ASC LIMIT ? OFFSET ?",
@@ -907,7 +901,6 @@ class CommunityStore:
             "is_deleted": deleted,
             "author": {
                 "display_name": str(row.get("author_display_name") or "Usu?rio"),
-                "avatar_object_key": str(row.get("author_avatar_object_key") or ""),
                 "public_role": str(row.get("author_public_role") or ""),
             },
         }

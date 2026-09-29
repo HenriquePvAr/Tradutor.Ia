@@ -48,7 +48,8 @@ def test_diagnostic_payload_excludes_credentials_and_crypto_material():
     assert "Authorization" not in CLIENT[CLIENT.find("const payload"):CLIENT.find("const payload") + 1200]
     assert "signature: signed.signature" in CLIENT  # remains only in the API request
     assert "nonce: challenge.nonce" in CLIENT  # remains only in the API request
-    endpoint = APP[APP.find('async def api_control_plane_trace'):APP.find('async def api_profile_media', APP.find('async def api_control_plane_trace'))]
+    start = APP.find('async def api_control_plane_trace')
+    endpoint = APP[start:APP.find('\n@app.', start + 1)]
     for forbidden in ("access_token", "refresh_token", "service_role", "private_key", "signature", "nonce"):
         assert forbidden not in endpoint
 
@@ -93,15 +94,18 @@ def test_bootstrap_does_not_load_or_sync_profile_and_is_read_only():
         assert forbidden not in bootstrap
     assert "UI_BOOTSTRAP_AUTH_READY" in app
     assert "UI_BOOTSTRAP_RESPONSE" in app
-    endpoint = app[app.find("async def api_control_plane_trace"):app.find("async def api_profile_media", app.find("async def api_control_plane_trace"))]
+    start = app.find("async def api_control_plane_trace")
+    endpoint = app[start:app.find("\n@app.", start + 1)]
     for forbidden in ("access_token", "refresh_token", "service_role", "private_key", "signature"):
         assert forbidden not in endpoint
 
 
 def test_server_records_ui_trace_request_before_sanitizer():
-    assert "UI_TRACE_HTTP_REQUEST_RECEIVED" in APP
     start = APP.find("async def api_control_plane_trace")
-    assert "top_level_keys" in APP[start:start + 5000]
+    endpoint = APP[start:APP.find("\n@app.", start + 1)]
+    assert 'payload.get("event") or "CONTROL_PLANE_EVENT"' in endpoint
+    assert '"top_level_keys"' in endpoint
+    assert '_append_diagnostic_log("app_current.jsonl", event' in endpoint
 
 
 def test_wallet_numeric_fields_survive_final_jsonl_and_auth_diagnostics_endpoint(tmp_path, monkeypatch):

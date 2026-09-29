@@ -242,7 +242,7 @@ class SupabaseDataClient:
 # DTO field whitelists — never select storage_file_id / checksum / private data.
 # ---------------------------------------------------------------------------
 PROFILE_FIELDS = ("id,username,display_name,display_name_normalized,bio,theme_color,"
-                  "avatar_object_key,banner_object_key,public_role,pronouns,status,"
+                  "public_role,pronouns,status,"
                   "status_message,accent_color,show_favorites,show_history,"
                   "allow_profile_comments,created_at,updated_at")
 PROFILE_PUBLIC_FIELDS = ("id,username,display_name,bio,public_role,pronouns,status,"

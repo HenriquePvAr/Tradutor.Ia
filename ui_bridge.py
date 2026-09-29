@@ -93,8 +93,6 @@ from audit_decisions import AuditDecisionStore
 
 
 DEFAULT_RUNTIME_ROOT = runtime_root()
-PROFILE_PATH = DEFAULT_RUNTIME_ROOT / "ui_profile.json"
-PROFILE_MEDIA_DIR = DEFAULT_RUNTIME_ROOT / "ui_profile"
 JOBS_DB_PATH = DEFAULT_RUNTIME_ROOT / "jobs.sqlite3"
 WORKER_ENV_COMPATIBILITY_KEYS = ("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "CHROMEDRIVER_PATH")
 JOB_LOG_DIR = DEFAULT_RUNTIME_ROOT / "logs"
@@ -229,22 +227,6 @@ def _build_ui_beta_access_authorizer(
             install_id, machine_hint),
         transport=transport,
     )
-MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
-PROFILE_MEDIA_MAX_BYTES = {"avatar": 5 * 1024 * 1024, "banner": 12 * 1024 * 1024}
-PROFILE_MEDIA_TYPES = {
-    ".jpeg": "image/jpeg",
-    ".jpg": "image/jpeg",
-    ".png": "image/png",
-    ".webp": "image/webp",
-}
-PROFILE_MEDIA_SIGNATURES = {
-    "image/png": lambda value: value.startswith(b"\x89PNG\r\n\x1a\n"),
-    "image/jpeg": lambda value: value.startswith(b"\xff\xd8\xff"),
-    "image/webp": lambda value: len(value) >= 12 and value[:4] == b"RIFF" and value[8:12] == b"WEBP",
-}
-PROFILE_RESERVED_NAMES = frozenset({"admin", "administrator", "moderator", "support", "system", "root", "official"})
-
-
 UNAVAILABLE_DURATION = "Tempo indisponível"
 
 
@@ -451,29 +433,6 @@ def _package_version(name: str) -> str:
         return "não instalado"
 
 
-def _profile_default() -> dict[str, Any]:
-    return {
-        "display_name": "você",
-        "title": "",
-        "pronouns": "",
-        "status": "online",
-        "status_text": "",
-        "bio": "",
-        "avatar_mode": "letter",
-        "avatar_color": "#c5372c",
-        "banner": "ink",
-        "avatar_media_path": "",
-        "avatar_media_type": "",
-        "avatar_media_name": "",
-        "avatar_media_size": 0,
-        "banner_media_path": "",
-        "banner_media_type": "",
-        "banner_media_name": "",
-        "banner_media_size": 0,
-        "created_at": utc_now(),
-    }
-
-
 class UiBridge:
     """Own the single local worker, queue and persistent UI state."""
 
@@ -501,19 +460,6 @@ class UiBridge:
             (self.runtime_root / "output").resolve()
             if requested_root else OUTPUT_ROOT.resolve()
         )
-        self.profile_root = (
-            self.runtime_root / "profiles"
-            if requested_root else REPO_ROOT / ".cache" / "ui_profiles"
-        )
-        self.profile_media_root = (
-            self.runtime_root / "profile_media"
-            if requested_root else PROFILE_MEDIA_DIR
-        )
-        # The application wires the existing Community StorageProvider after startup.
-        # Keeping the factory optional preserves hermetic/local tests without creating a
-        # second Drive credential or OAuth path.
-        self.profile_media_provider_factory = None
-        self.legacy_profile_path = PROFILE_PATH
         db_path = self.runtime_root / "jobs.sqlite3" if requested_root else JOBS_DB_PATH
         self.history_store = (
             UIHistoryStore(
@@ -521,7 +467,6 @@ class UiBridge:
             if requested_root else UIHistoryStore()
         )
         self.history = self.history_store.discover_outputs()
-        self.profile = self._load_profile()
         self.store = JobStore(db_path)
         # A clean production install must be usable immediately.  The source-policy
         # engine is safety infrastructure (supported sources remain allowlisted and
@@ -4606,17 +4551,6 @@ class UiBridge:
         finally:
             readiness.close()
 
-    def profile_for_user(self, user_id: str) -> dict[str, Any]:
-        """Expose only the profile bound to the authenticated principal."""
-        normalized = str(user_id or "").strip()
-        if not normalized:
-            profile = _profile_default()
-            profile["avatar_media_url"] = ""
-            profile["banner_media_url"] = ""
-            return profile
-        return self._profile_payload(
-            self._load_profile_for_user(normalized), user_id=normalized)
-
     def _history_payload(self) -> list[dict[str, Any]]:
         # Terminal jobs from the store, plus legacy output discovery for old runs.
         self.history = self.history_store.discover_outputs()
@@ -6984,194 +6918,6 @@ class UiBridge:
             raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
         return {"ok": True}
 
-    def save_profile(self, payload: dict[str, Any], *, user_id: str = "") -> dict[str, Any]:
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id:
-            raise ValueError("authentication_required")
-        allowed_status = {"online", "away", "busy", "offline"}
-        profile = self._load_profile_for_user(normalized_user_id)
-        display_name = " ".join(str(payload.get("display_name") or "você").split())[:40]
-        if display_name.casefold() in PROFILE_RESERVED_NAMES:
-            raise ValueError("display_name_reserved")
-        profile.update(
-            {
-                "user_id": normalized_user_id,
-                "display_name": str(payload.get("display_name") or "você")[:40],
-                "title": str(payload.get("title") or "")[:40],
-                "pronouns": str(payload.get("pronouns") or "")[:30],
-                "status": str(payload.get("status") or "online")
-                if str(payload.get("status") or "online") in allowed_status
-                else "online",
-                "status_text": str(payload.get("status_text") or "")[:60],
-                "bio": str(payload.get("bio") or "")[:190],
-                "avatar_mode": "image"
-                if str(payload.get("avatar_mode") or "letter") == "image"
-                else "letter",
-                "avatar_color": str(payload.get("avatar_color") or "#c5372c")[:16],
-                "banner": str(payload.get("banner") or "ink")[:20],
-            }
-        )
-        profile["display_name"] = display_name
-        self._write_profile(profile, user_id=normalized_user_id)
-        return self._profile_payload(profile, user_id=normalized_user_id)
-
-    def save_profile_media(
-        self,
-        kind: str,
-        *,
-        filename: str,
-        content_type: str,
-        content: bytes,
-        user_id: str = "",
-    ) -> dict[str, Any]:
-        if kind not in {"avatar", "banner"}:
-            raise ValueError("invalid_profile_media_kind")
-        suffix = Path(filename or "").suffix.casefold()
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id:
-            raise ValueError("authentication_required")
-        profile = self._load_profile_for_user(normalized_user_id)
-        expected_type = PROFILE_MEDIA_TYPES.get(suffix)
-        if not expected_type or content_type.casefold().split(";", 1)[0] != expected_type:
-            raise ValueError("Use PNG, JPG, JPEG ou WEBP.")
-        signature = PROFILE_MEDIA_SIGNATURES.get(expected_type)
-        if signature is None or not signature(content[:32]):
-            raise ValueError("invalid_image_signature")
-        max_bytes = PROFILE_MEDIA_MAX_BYTES[kind]
-        if not content or len(content) > max_bytes:
-            raise ValueError(f"A imagem do {kind} pode ter até {max_bytes // (1024 * 1024)} MB.")
-
-        provider_factory = getattr(self, "profile_media_provider_factory", None)
-        try:
-            provider = provider_factory() if callable(provider_factory) else None
-        except Exception as exc:
-            raise ValueError("profile_media_storage_unavailable") from exc
-        if provider is not None and getattr(provider, "name", "") == "google_drive":
-            from community_storage import StorageError
-            import hashlib as _hashlib
-            try:
-                root = provider.ensure_folder("profile-media", "root")
-                owner = provider.ensure_folder(_hashlib.sha256(normalized_user_id.encode("utf-8")).hexdigest()[:24], root)
-                folder = provider.ensure_folder(kind, owner)
-                session = provider.create_resumable_session(
-                    filename=f"{kind}{suffix}", mime_type=expected_type,
-                    size=len(content), parent_id=folder, sha256=_hashlib.sha256(content).hexdigest())
-                result = provider.upload_chunk(session, 0, content)
-                if not result.completed or not result.file_id:
-                    raise StorageError("profile_media_upload_incomplete")
-            except Exception as exc:
-                raise ValueError("profile_media_storage_unavailable") from exc
-            previous = str(profile.get(f"{kind}_media_path") or "")
-            profile[f"{kind}_media_path"] = f"drive:{result.file_id}"
-            profile[f"{kind}_media_type"] = expected_type
-            profile[f"{kind}_media_name"] = Path(filename).name[:120]
-            profile[f"{kind}_media_size"] = len(content)
-            profile[f"{kind}_media_updated_at"] = utc_now()
-            if kind == "avatar": profile["avatar_mode"] = "image"
-            else: profile["banner"] = "custom"
-            self._write_profile(profile, user_id=normalized_user_id)
-            if previous.startswith("drive:"):
-                try: provider.move_to_trash(previous[6:])
-                except Exception: pass
-            return self._profile_payload(profile, user_id=normalized_user_id)
-
-        media_root = getattr(self, "profile_media_root", PROFILE_MEDIA_DIR)
-        media_root.mkdir(parents=True, exist_ok=True)
-        user_dir = media_root / hashlib.sha256(normalized_user_id.encode("utf-8")).hexdigest()[:24]
-        user_dir.mkdir(parents=True, exist_ok=True)
-        target = (user_dir / f"{kind}{suffix}").resolve()
-        if media_root.resolve() not in target.parents:
-            raise ValueError("Nome de mídia inválido.")
-        temporary = target.with_suffix(target.suffix + ".tmp")
-        temporary.write_bytes(content)
-        temporary.replace(target)
-        for candidate in user_dir.glob(f"{kind}.*"):
-            if candidate.resolve() != target and candidate.suffix != ".tmp":
-                candidate.unlink(missing_ok=True)
-
-        profile[f"{kind}_media_path"] = str(target)
-        profile[f"{kind}_media_type"] = expected_type
-        profile[f"{kind}_media_name"] = Path(filename).name[:120]
-        profile[f"{kind}_media_size"] = len(content)
-        profile[f"{kind}_media_updated_at"] = utc_now()
-        if kind == "avatar":
-            profile["avatar_mode"] = "image"
-        else:
-            profile["banner"] = "custom"
-        self._write_profile(profile, user_id=normalized_user_id)
-        return self._profile_payload(profile, user_id=normalized_user_id)
-
-    def remove_profile_media(self, kind: str, *, user_id: str = "") -> dict[str, Any]:
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id:
-            raise ValueError("authentication_required")
-        profile_path = self._profile_path(normalized_user_id)
-        legacy = getattr(self, "profile", {})
-        if (
-            not profile_path.is_file()
-            and str(legacy.get("user_id") or "") != normalized_user_id
-        ):
-            raise ValueError("authentication_required")
-        if kind not in {"avatar", "banner"}:
-            raise ValueError("Tipo de mídia de perfil inválido.")
-        profile = self._load_profile_for_user(normalized_user_id)
-        path = self.profile_media_path(kind, user_id=normalized_user_id)
-        provider_factory = getattr(self, "profile_media_provider_factory", None)
-        try:
-            provider = provider_factory() if callable(provider_factory) else None
-        except Exception:
-            provider = None
-        stored_ref = str(profile.get(f"{kind}_media_path") or "")
-        if provider is not None and getattr(provider, "name", "") == "google_drive" and stored_ref.startswith("drive:"):
-            try: provider.move_to_trash(stored_ref[6:])
-            except Exception: pass
-        elif path:
-            path.unlink(missing_ok=True)
-        for key in ("path", "type", "name", "size", "updated_at"):
-            profile.pop(f"{kind}_media_{key}", None)
-        profile[f"{kind}_media_path"] = ""
-        profile[f"{kind}_media_type"] = ""
-        profile[f"{kind}_media_name"] = ""
-        profile[f"{kind}_media_size"] = 0
-        if kind == "avatar":
-            profile["avatar_mode"] = "letter"
-        else:
-            profile["banner"] = "ink"
-        self._write_profile(profile, user_id=normalized_user_id)
-        return self._profile_payload(profile, user_id=normalized_user_id)
-
-    def profile_media_path(self, kind: str, *, user_id: str = "") -> Path | None:
-        if kind not in {"avatar", "banner"}:
-            return None
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id:
-            return None
-        profile = self._load_profile_for_user(normalized_user_id)
-        raw_path = str(profile.get(f"{kind}_media_path") or "")
-        if not raw_path or raw_path.startswith("drive:"):
-            return None
-        path = Path(raw_path).resolve()
-        media_root = getattr(self, "profile_media_root", PROFILE_MEDIA_DIR).resolve()
-        if media_root not in path.parents or not path.is_file():
-            return None
-        return path
-
-    def profile_media_stream(self, kind: str, *, user_id: str = ""):
-        if kind not in {"avatar", "banner"} or not user_id:
-            return None
-        profile = self._load_profile_for_user(user_id)
-        ref = str(profile.get(f"{kind}_media_path") or "")
-        if not ref.startswith("drive:"):
-            return None
-        factory = getattr(self, "profile_media_provider_factory", None)
-        provider = factory() if callable(factory) else None
-        if provider is None or getattr(provider, "name", "") != "google_drive":
-            return None
-        try:
-            return provider.open_stream(ref[6:])
-        except Exception:
-            return None
-
     def _open_artifact_path(self, path_value: str, *, select: bool = False) -> None:
         path = Path(str(path_value or "")).expanduser().resolve()
         output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
@@ -7576,68 +7322,3 @@ class UiBridge:
     def _refresh_history(self) -> None:
         self.history = self.history_store.discover_outputs()
         self.history_revision += 1
-
-    def _load_profile(self) -> dict[str, Any]:
-        """Load the legacy singleton only for a safe, lazy per-owner migration."""
-        profile = _profile_default()
-        try:
-            stored = json.loads(
-                getattr(self, "legacy_profile_path", PROFILE_PATH).read_text(
-                    encoding="utf-8"))
-            if isinstance(stored, dict):
-                profile.update(stored)
-        except (OSError, ValueError, TypeError):
-            pass
-        profile.pop("avatar_emoji", None)
-        profile.pop("avatar_media", None)
-        profile.pop("banner_media", None)
-        if profile.get("avatar_mode") not in {"letter", "image"}:
-            profile["avatar_mode"] = "letter"
-        return profile
-
-    def _profile_path(self, user_id: str) -> Path:
-        digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
-        root = getattr(self, "profile_root", PROFILE_PATH.parent / "ui_profiles")
-        return (root / f"{digest}.json").resolve()
-
-    def _load_profile_for_user(self, user_id: str) -> dict[str, Any]:
-        normalized = str(user_id or "").strip()
-        if not normalized:
-            raise ValueError("authentication_required")
-        path = self._profile_path(normalized)
-        profile = _profile_default()
-        try:
-            stored = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(stored, dict) and str(stored.get("user_id") or "") == normalized:
-                profile.update(stored)
-        except (OSError, ValueError, TypeError):
-            legacy = getattr(self, "profile", {})
-            if str(legacy.get("user_id") or "") == normalized:
-                profile.update(legacy)
-        profile["user_id"] = normalized
-        return profile
-
-    def _write_profile(self, profile: dict[str, Any], *, user_id: str) -> None:
-        path = self._profile_path(user_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(profile, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(path)
-
-    def _profile_payload(
-        self, profile: dict[str, Any], *, user_id: str
-    ) -> dict[str, Any]:
-        payload = dict(profile)
-        for kind in ("avatar", "banner"):
-            path = self.profile_media_path(kind, user_id=user_id)
-            has_remote = str(payload.get(f"{kind}_media_path") or "").startswith("drive:")
-            updated = str(payload.get(f"{kind}_media_updated_at") or "")
-            payload[f"{kind}_media_url"] = (
-                f"/api/ui/profile/media/{kind}?v={updated}"
-                if path or has_remote
-                else ""
-            )
-        return payload

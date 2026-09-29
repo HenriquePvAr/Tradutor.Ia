@@ -2347,7 +2347,7 @@ relevantes tendem a vir daí, não da orquestração Python.
 | Saúde do worker/fila | `python start_tradutor.py status` |
 | Liveness da UI | `GET /api/health` |
 | Diagnóstico na UI | `GET /api/ui/diagnostics`, aba **Logs** |
-| Fluxos de diagnóstico da UI | `<runtime>/diagnostics/{app,routes,profile_media}_current.jsonl` |
+| Fluxos de diagnóstico da UI | `<runtime>/diagnostics/{app,routes}_current.jsonl` |
 | Relatórios por execução | `output/<slug>/<run_id>/*_report.json|html` para novos jobs; `output/<slug>/*_report.json|html` em legados |
 
 Todo texto que chega à interface passa por `sanitize_diagnostic_text`. `request_observability.py`
@@ -2360,16 +2360,15 @@ fluxo mais uma cópia anterior, espelhando a rotação de `runtime.log`. A falha
 é best-effort e nunca interrompe a gravação do diagnóstico (antes eram ilimitados: uma
 sessão chegou a ~297 MB em `app_current.jsonl`).
 
-Legado descontinuado no cliente: a rota `GET /api/ui/profile/media/{kind}` e o cache local
-em `<runtime>/cache/profile_media/` permanecem no backend, mas a UI normal não os chama,
-não hidrata avatar/banner e não lê nem baixa essas mídias. A chave é o hash de
-`(user_id, kind, object_key=drive:<id>)`; quando o `object_key` não muda, a rota serve os
-bytes do disco sem chamar a Edge Function `profile-media` (nem a metadata remota, no caminho
-rápido), inclusive com o backend indisponível. Escrita atômica, validação por magic-bytes de
-imagem, invalidação por mudança de `object_key` e isolamento por usuário. Antes desse cache,
-cada render/poll rebaixava ~1,7–1,9 MB por asset (`Cache-Control: no-store`), o que sozinho
-respondia por ~97% do egress do Supabase. Não há limpeza automática dos caches existentes;
-remoção definitiva dos handlers/armazenamento fica para a missão de legado.
+O legado local de mídia social foi removido: não há rota/backend handler, método de bridge,
+cache local, upload nem fetcher de avatar/banner. O fluxo normal da aplicação faz zero
+chamadas à Edge Function `profile-media`; referências remotas e a evidência histórica do
+incidente de egress são mantidas. Caches/arquivos já existentes no computador não são
+apagados automaticamente. Login, identidade da conta, licença, entitlement, YK, dispositivo
+e logout permanecem independentes dessa mídia.
+
+`REMOTE_PROFILE_MEDIA_DECOMMISSION: PENDING_MISSION_14` — a Edge Function, secrets, colunas
+e mídia remotas não foram removidas nem alteradas nesta missão.
 
 ## 26.1 Artifact Contract V2 (fundação)
 

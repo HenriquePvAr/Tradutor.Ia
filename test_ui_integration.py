@@ -11,7 +11,7 @@ from unittest.mock import patch
 from ui_helpers import build_run_command, suggest_chapter_details
 from job_store import JobStore
 from ui_history import UIHistoryStore
-from ui_bridge import UiBridge, _profile_default
+from ui_bridge import UiBridge
 
 
 ROOT = Path(__file__).resolve().parent
@@ -285,112 +285,23 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertNotRegex(sources, r"nvapi-[A-Za-z0-9_-]{12,}")
         self.assertNotRegex(sources, r"sk-[A-Za-z0-9_-]{12,}")
 
-    def test_profile_media_is_stored_as_local_file(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            bridge = UiBridge.__new__(UiBridge)
-            bridge.profile = _profile_default()
-            with (
-                patch("ui_bridge.PROFILE_PATH", root / "ui_profile.json"),
-                patch("ui_bridge.PROFILE_MEDIA_DIR", root / "ui_profile"),
-            ):
-                bridge.profile["user_id"] = "user-test"
-                payload = bridge.save_profile_media(
-                    "avatar",
-                    filename="avatar.png",
-                    content_type="image/png",
-                    content=b"\x89PNG\r\n\x1a\nlocal-test-image",
-                    user_id="user-test",
-                )
-                self.assertTrue(Path(payload["avatar_media_path"]).is_file())
-                self.assertEqual(payload["avatar_mode"], "image")
-                self.assertTrue(payload["avatar_media_url"].startswith("/api/ui/profile/media/avatar"))
-                self.assertNotIn("local-test-image", str(payload))
-
-    def test_profile_media_multipart_avatar_banner_replace_remove_and_ownership(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            bridge = UiBridge.__new__(UiBridge)
-            bridge.profile = _profile_default()
-            with (
-                patch("ui_bridge.PROFILE_PATH", root / "ui_profile.json"),
-                patch("ui_bridge.PROFILE_MEDIA_DIR", root / "ui_profile"),
-            ):
-                first = bridge.save_profile_media(
-                    "avatar",
-                    filename="avatar.png",
-                    content_type="image/png",
-                    content=b"\x89PNG\r\n\x1a\nfirst-avatar",
-                    user_id="user-media",
-                )
-                avatar_path = Path(first["avatar_media_path"])
-                self.assertTrue(avatar_path.is_file())
-                second = bridge.save_profile_media(
-                    "avatar",
-                    filename="avatar.jpg",
-                    content_type="image/jpeg",
-                    content=b"\xff\xd8\xffsecond-avatar",
-                    user_id="user-media",
-                )
-                self.assertFalse(avatar_path.exists())
-                self.assertEqual(second["avatar_media_type"], "image/jpeg")
-                banner = bridge.save_profile_media(
-                    "banner",
-                    filename="banner.jpeg",
-                    content_type="image/jpeg",
-                    content=b"\xff\xd8\xffbanner",
-                    user_id="user-media",
-                )
-                self.assertEqual(banner["banner"], "custom")
-                self.assertEqual(bridge.profile_media_path("banner", user_id="user-media").read_bytes()[:3], b"\xff\xd8\xff")
-                self.assertIsNone(bridge.profile_media_path("banner", user_id="other-user"))
-                removed = bridge.remove_profile_media("avatar", user_id="user-media")
-                self.assertEqual(removed["avatar_mode"], "letter")
-                self.assertIsNone(bridge.profile_media_path("avatar", user_id="user-media"))
-                with self.assertRaises(ValueError):
-                    bridge.remove_profile_media("banner", user_id="other-user")
-
-    def test_saving_preset_banner_persists_and_reloads(self):
-        """Choosing a preset banner and saving must survive a reload."""
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            bridge = UiBridge.__new__(UiBridge)
-            bridge.profile = _profile_default()
-            with (
-                patch("ui_bridge.PROFILE_PATH", root / "ui_profile.json"),
-                patch("ui_bridge.PROFILE_MEDIA_DIR", root / "ui_profile"),
-            ):
-                bridge.save_profile({"display_name": "Alice", "banner": "gold"}, user_id="user-preset")
-                reloaded = bridge.profile_for_user("user-preset")
-                self.assertEqual(reloaded["banner"], "gold")
-                self.assertEqual(reloaded["banner_media_url"], "")
-
-    def test_profile_form_save_after_banner_upload_keeps_the_custom_banner(self):
-        """The former profile form/upload flow is deliberately absent from the client."""
+    def test_profile_social_media_surfaces_and_transport_are_absent(self):
+        """Local product runtime has no profile-media UI, bridge, or HTTP transport."""
         js_source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        css_source = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-        for removed in ("profileFromForm", "uploadProfileMedia", "removeProfileMedia", "profileSave"):
+        backend = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        bridge = (ROOT / "ui_bridge.py").read_text(encoding="utf-8")
+        for removed in ("profileFromForm", "uploadProfileMedia", "removeProfileMedia", "profileSave",
+                        "/api/ui/profile/media", "/api/community/profiles/", "/functions/v1/profile-media"):
             self.assertNotIn(removed, js_source)
-        for removed in ('id="view-profile"', 'id="bannerImageInput"', 'id="avatarImageInput"'):
+        for removed in ('id="view-profile"', 'id="bannerImageInput"', 'id="avatarImageInput"',
+                        'data-media-kind="avatar"', 'data-media-kind="banner"'):
             self.assertNotIn(removed, shell)
-
-    def test_profile_media_rejects_video_and_bad_signature(self):
-        bridge = UiBridge.__new__(UiBridge)
-        bridge.profile = _profile_default()
-        bridge.profile["user_id"] = "user-test"
-        with self.assertRaises(ValueError):
-            bridge.save_profile_media("avatar", filename="clip.mp4", content_type="video/mp4",
-                                      content=b"ftyp", user_id="user-test")
-        with self.assertRaises(ValueError):
-            bridge.save_profile_media("avatar", filename="avatar.gif", content_type="image/gif",
-                                      content=b"GIF89a", user_id="user-test")
-        with self.assertRaises(ValueError):
-            bridge.save_profile_media("avatar", filename="avatar.png", content_type="image/png",
-                                      content=b"not-an-image", user_id="user-test")
-        with self.assertRaises(ValueError):
-            bridge.save_profile_media("avatar", filename="avatar.png", content_type="image/png",
-                                      content=b"\x89PNG\r\n\x1a\n" + (b"x" * (12 * 1024 * 1024 + 1)),
-                                      user_id="user-test")
+        for removed in ("profile_media", "profile-media", "avatar_object_key", "banner_object_key"):
+            self.assertNotIn(removed, backend)
+            self.assertNotIn(removed, bridge)
+        self.assertNotIn("PROFILE_MEDIA", css_source)
 
     def test_safe_local_artifact_delete_uses_server_record_and_fixture(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -686,36 +597,21 @@ class UiIntegrationTests(unittest.TestCase):
                 self.assertEqual(history.discover_outputs(), [])
                 self.assertTrue(fixture.exists())
 
-    def test_profile_payload_is_not_shared_between_authenticated_users(self):
-        bridge = UiBridge.__new__(UiBridge)
-        bridge.profile = {**_profile_default(), "user_id": "user-a", "display_name": "Alice"}
-        self.assertEqual(bridge.profile_for_user("user-a")["display_name"], "Alice")
-        self.assertNotEqual(bridge.profile_for_user("user-b")["display_name"], "Alice")
-
-    def test_profile_display_name_is_normalized_and_reserved_names_rejected(self):
-        with tempfile.TemporaryDirectory() as folder:
-            bridge = UiBridge.__new__(UiBridge)
-            bridge.profile = _profile_default()
-            with patch("ui_bridge.PROFILE_PATH", Path(folder) / "ui_profile.json"):
-                saved = bridge.save_profile({"display_name": "  Alice   Example  "}, user_id="user-test")
-                self.assertEqual(saved["display_name"], "Alice Example")
-                with self.assertRaisesRegex(ValueError, "display_name_reserved"):
-                    bridge.save_profile({"display_name": "ADMIN"}, user_id="user-test")
-
     def test_profile_routes_require_canonical_authentication(self):
         source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
-        for marker in ("def _ui_principal", "AUTH.require_authenticated", "api_profile_media", "profile_for_user"):
+        for marker in ("def _ui_principal", "AUTH.require_authenticated"):
             self.assertIn(marker, source, marker)
+        for removed in ("api_profile_media", "profile_for_user", "/api/ui/profile/media", "/api/community/profiles/"):
+            self.assertNotIn(removed, source, removed)
 
     def test_profile_media_actions_use_canonical_api_transport(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertNotIn("/api/ui/profile/media", source)
         self.assertNotIn("uploadProfileMedia", source)
         self.assertNotIn("removeProfileMedia", source)
-        # Backend handlers remain legacy-compatible for this client-only mission.
         backend = (ROOT / "app_ui.py").read_text(encoding="utf-8")
-        self.assertIn("def api_profile_media_upload", backend)
-        self.assertIn("def api_profile_media_remove", backend)
+        self.assertNotIn("api_profile_media", backend)
+        self.assertNotIn("profile_media_provider_factory", backend)
 
     def test_profile_media_copy_no_longer_promises_gif_or_video(self):
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
@@ -760,7 +656,7 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn("retry-community", feed_block)
         self.assertNotIn("escapeHtml(error.message)", feed_block)
 
-    def test_community_author_avatar_does_not_use_protected_url_directly(self):
+    def test_community_author_initial_mark_uses_public_identity_only(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         card_block = source[
             source.index("function renderCommunityCard")
@@ -768,7 +664,8 @@ class UiIntegrationTests(unittest.TestCase):
         ]
         self.assertIn("community-author-letter", card_block)
         self.assertIn("author.display_name", card_block)
-        self.assertNotIn("data-community-author-avatar-url", card_block)
+        self.assertIn("community-author-mark", card_block)
+        self.assertNotIn("avatar_url", card_block)
         self.assertNotIn("hydrateCommunityAuthorMedia", card_block)
         self.assertNotIn("loadAuthenticatedMediaElement", card_block)
 
@@ -833,8 +730,10 @@ class UiIntegrationTests(unittest.TestCase):
     def test_community_profile_join_is_public_metadata_only(self):
         source = (ROOT / "community_service.py").read_text(encoding="utf-8")
         store = (ROOT / "community_store.py").read_text(encoding="utf-8")
-        for marker in ("author_display_name", "author_avatar_object_key", "author_public_role", "avatar_url"):
+        for marker in ("author_display_name", "author_public_role"):
             self.assertIn(marker, source + store, marker)
+        for marker in ("author_avatar_object_key", "avatar_url", "avatar_object_key", "banner_object_key"):
+            self.assertNotIn(marker, source + store)
         self.assertNotIn('"email"', source)
         self.assertIn("uq_community_profiles_display_name", store)
 
@@ -849,7 +748,7 @@ class UiIntegrationTests(unittest.TestCase):
 
     def test_community_card_uses_public_author_and_no_private_identity(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
-        for marker in ("post.author", "author.display_name", "community-author-avatar"):
+        for marker in ("post.author", "author.display_name", "community-author-mark"):
             self.assertIn(marker, source, marker)
         self.assertNotIn("author.email", source)
         auth_source = (ROOT / "static" / "auth_ui.js").read_text(encoding="utf-8")

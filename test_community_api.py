@@ -210,12 +210,11 @@ class CommunityApiTests(unittest.TestCase):
                                        moderation_status=Moderation.APPROVED)
         self.api.store.upsert_profile(OWNER.user_id, {
             "display_name": "Kayden", "public_role": "Translator",
-            "avatar_object_key": "local:avatar",
         })
         card = self.api.feed(principal=MEMBER)["posts"][0]
         self.assertEqual(card["author"]["display_name"], "Kayden")
         self.assertEqual(card["author"]["public_role"], "Translator")
-        self.assertTrue(card["author"]["avatar_url"].endswith(f"/{OWNER.user_id}/avatar"))
+        self.assertNotIn("avatar_url", card["author"])
         self.assertNotIn("email", str(card).lower())
         self.assertNotIn("object_key", card["author"])
 

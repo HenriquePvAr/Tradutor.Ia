@@ -593,8 +593,7 @@
   .hist-meta .hm-title{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:14px;}
   .hist-meta .hm-sub{font-size:10.5px; color:var(--muted); margin-top:4px; font-family:'JetBrains Mono',monospace;}
   .community-author{display:flex; align-items:center; gap:6px; font-family:'Inter',sans-serif;}
-  .community-author-avatar{width:18px; height:18px; border-radius:50%; object-fit:cover; display:inline-flex; align-items:center; justify-content:center; background:var(--ink); color:var(--paper); font-size:10px; font-weight:700;}
-  .community-author-avatar img{width:100%; height:100%; object-fit:cover; border-radius:inherit; display:block;}
+  .community-author-mark{width:18px; height:18px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; background:var(--ink); color:var(--paper); font-size:10px; font-weight:700;}
   .hm-badges{display:flex; gap:6px; margin-top:8px;}
   .badge{font-size:9.5px; padding:3px 8px; border-radius:10px; font-family:'JetBrains Mono',monospace; letter-spacing:.04em;}
   .badge.ep{background:rgba(239,231,216,0.07); color:var(--paper); border:1px solid var(--line); font-family:'Black Han Sans',sans-serif; letter-spacing:.02em;}
@@ -825,26 +824,6 @@
   .hist-count{font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--muted); white-space:nowrap;}
 
   /* ---------- comunidade ---------- */
-  .identity-chip{
-    display:none; align-items:center; gap:10px;
-    border:1px solid var(--line); border-radius:3px; padding:9px 12px;
-    background:rgba(239,231,216,0.03);
-  }
-  .identity-chip.show{display:flex;}
-  .identity-chip.show + #communityName{display:none;}
-  .ic-avatar{
-    width:28px; height:28px; border-radius:50%; flex:none; position:relative; overflow:hidden;
-    display:flex; align-items:center; justify-content:center;
-    font-family:'Black Han Sans',sans-serif; font-size:13px; color:var(--paper);
-    background:var(--vermillion); background-size:cover; background-position:center;
-  }
-  .ic-avatar video{position:absolute; inset:0; width:100%; height:100%; object-fit:cover;}
-  .ic-name{font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:12.5px; flex:1;}
-  .ic-edit-link{
-    background:none; border:none; color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:10px;
-    text-decoration:underline; cursor:pointer; padding:0;
-  }
-  .ic-edit-link:hover{color:var(--paper);}
   .community-notice{
     margin-top:12px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:var(--muted);
     letter-spacing:.03em; line-height:1.7;
@@ -963,20 +942,6 @@
     0%{box-shadow:0 0 0 0 rgba(184,85,122,0.5); border-color:var(--rose);}
     100%{box-shadow:0 0 0 16px rgba(184,85,122,0); border-color:var(--line);}
   }
-  .cp-head{display:flex; align-items:center; gap:11px; margin-bottom:11px;}
-  .cp-identity{display:flex; align-items:center; gap:11px; cursor:pointer; flex:1; min-width:0; border-radius:4px; padding:3px; margin:-3px; transition:background .15s;}
-  .cp-identity:hover{background:rgba(239,231,216,0.05);}
-  .cp-identity:hover .cp-name{color:var(--rose);}
-  .cp-avatar{
-    width:34px; height:34px; border-radius:50%; flex:none; position:relative; overflow:hidden;
-    background:var(--rose); color:var(--paper);
-    display:flex; align-items:center; justify-content:center;
-    font-family:'Black Han Sans',sans-serif; font-size:15px;
-    background-size:cover; background-position:center;
-  }
-  .cp-who{display:flex; flex-direction:column; flex:1; min-width:0;}
-  .cp-name{font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:13.5px; transition:color .15s;}
-  .cp-time{font-family:'JetBrains Mono',monospace; font-size:9.5px; color:var(--muted);}
   .cp-title{font-family:'Black Han Sans',sans-serif; font-size:16.5px; margin-bottom:6px; letter-spacing:.01em;}
   .cp-note{font-size:12.5px; color:var(--muted); line-height:1.6; margin-bottom:13px; font-family:'Space Grotesk',sans-serif;}
   .cp-actions{display:flex; align-items:center; gap:9px; flex-wrap:wrap;}

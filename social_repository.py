@@ -120,8 +120,6 @@ def empty_profile(user_id: str) -> dict[str, Any]:
         "display_name_normalized": None,
         "bio": None,
         "theme_color": None,
-        "avatar_object_key": "",
-        "banner_object_key": "",
         "public_role": "",
         "pronouns": "",
         "status": "online",

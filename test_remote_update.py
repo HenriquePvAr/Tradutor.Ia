@@ -231,6 +231,7 @@ class ProductVersionTests(unittest.TestCase):
         duplicates = [
             name for name in tracked
             if name != "app_version.py"
+            and (REPO_ROOT / name).is_file()
             and any(pattern.match(line) for line in (REPO_ROOT / name).read_text(
                 encoding="utf-8", errors="ignore").splitlines())
         ]

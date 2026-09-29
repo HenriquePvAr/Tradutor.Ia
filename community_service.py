@@ -373,7 +373,6 @@ class CommunityService:
             "author": {
                 "user_id": author_id,
                 "display_name": str(post.get("author_display_name") or "Usuário"),
-                "avatar_url": f"/api/community/profiles/{author_id}/avatar" if post.get("author_avatar_object_key") else "",
                 "public_role": str(post.get("author_public_role") or ""),
             },
             "views": post["views"],

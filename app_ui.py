@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - packaged builds include certifi
     certifi = None
 
 from fastapi import Body, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from nicegui import app, ui
 
 from community_auth import (
@@ -131,92 +131,6 @@ _AUTH_DIAGNOSTIC_EVENTS: deque[dict[str, Any]] = deque(maxlen=200)
 _SERVER_STARTED_AT = __import__("datetime").datetime.now(
     __import__("datetime").timezone.utc).isoformat()
 _RUNTIME_INSTANCE_ID = secrets.token_urlsafe(16)
-_MAX_PROFILE_MEDIA_BYTES = 12 * 1024 * 1024
-_PROFILE_MEDIA_MAX_BYTES = {"avatar": 5 * 1024 * 1024, "banner": 12 * 1024 * 1024}
-# Short, self-healing backoff for a drive-backed media ref whose upstream Edge Function
-# fails transiently (e.g. an intermittent 500).  Without it the ~60s avatar/banner poll
-# re-hits the failing upstream on every tick; with a long window it would instead hide an
-# upstream recovery for minutes.  Bounded exponential (30s -> 60s -> 120s cap) balances both:
-# the failure is still surfaced to the client (502), never masked as an empty 200, and a
-# single success clears it immediately.  Keyed by (user_id, kind) -> (monotonic_until, streak).
-# ponytail: process-local dict, fine for a single desktop UI process; a shared store would
-# only matter with multiple UI replicas.
-_PROFILE_MEDIA_UPSTREAM_BACKOFF: dict[tuple[str, str], tuple[float, int]] = {}
-_PROFILE_MEDIA_BACKOFF_BASE_SECONDS = 30.0
-_PROFILE_MEDIA_BACKOFF_MAX_SECONDS = 120.0
-
-
-def _profile_media_backoff_arm(key: tuple[str, str], now_mono: float) -> float:
-    """Arm/extend the bounded exponential backoff (30s, 60s, 120s cap) for a failing key."""
-    previous = _PROFILE_MEDIA_UPSTREAM_BACKOFF.get(key)
-    streak = (previous[1] if previous else 0) + 1
-    delay = min(_PROFILE_MEDIA_BACKOFF_BASE_SECONDS * (2 ** (streak - 1)),
-                _PROFILE_MEDIA_BACKOFF_MAX_SECONDS)
-    _PROFILE_MEDIA_UPSTREAM_BACKOFF[key] = (now_mono + delay, streak)
-    return delay
-
-
-# Drive-backed avatar/banner bytes are immutable for a given object_key (``drive:<id>``),
-# so once fetched they are cached on disk and reused until the key changes.  Before this
-# cache the desktop re-downloaded ~1.7-1.9 MB per avatar/banner on every UI render/poll,
-# which alone produced ~97% of the Supabase egress that exhausted the Free tier.
-def _profile_media_cache_path(user_id: str, kind: str, object_key: str) -> Path:
-    import hashlib
-    digest = hashlib.sha256(
-        f"{user_id}\x00{kind}\x00{object_key}".encode("utf-8")).hexdigest()
-    # Server never controls the on-disk name: it is a hash of (user, kind, object_key),
-    # so a poisoned ref cannot escape the cache dir or collide across users.
-    return BRIDGE.runtime_root / "cache" / "profile_media" / digest[:2] / digest
-
-
-def _looks_like_image(data: bytes) -> bool:
-    if len(data) < 12:
-        return False
-    return (
-        data[:8] == b"\x89PNG\r\n\x1a\n"           # PNG
-        or data[:3] == b"\xff\xd8\xff"              # JPEG
-        or data[:6] in (b"GIF87a", b"GIF89a")       # GIF
-        or (data[:4] == b"RIFF" and data[8:12] == b"WEBP")  # WEBP
-        or data[4:12] in (b"ftypavif", b"ftypavis", b"ftypmif1", b"ftypheic")  # AVIF/HEIF
-    )
-
-
-def _profile_media_cache_read(user_id: str, kind: str, object_key: str):
-    """Return ``(bytes, media_type)`` from the local cache, or None on miss/corruption."""
-    path = _profile_media_cache_path(user_id, kind, object_key)
-    try:
-        if path.is_file() and path.stat().st_size > 0:
-            data = path.read_bytes()
-            # A corrupt/truncated cache entry is treated as a miss so it refetches
-            # once rather than serving broken bytes forever.
-            if not _looks_like_image(data):
-                return None
-            type_path = path.with_suffix(".type")
-            media_type = (type_path.read_text(encoding="utf-8").strip()
-                          if type_path.is_file() else "application/octet-stream")
-            return data, (media_type or "application/octet-stream")
-    except OSError:
-        return None
-    return None
-
-
-def _profile_media_cache_write(user_id: str, kind: str, object_key: str,
-                               data: bytes, media_type: str) -> None:
-    """Persist media atomically under its object_key; best effort, never fatal."""
-    if not _looks_like_image(data):
-        return
-    path = _profile_media_cache_path(user_id, kind, object_key)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(path)
-        path.with_suffix(".type").write_text(
-            media_type or "application/octet-stream", encoding="utf-8")
-    except OSError:
-        pass
-
-
 STATIC_DIR = ROOT / "static"
 SHELL_PATH = ROOT / "ui" / "ui_shell.html"
 AUTH_UI_ASSET = ROOT / "static" / "auth_ui.js"
@@ -307,7 +221,6 @@ class MutationRateLimitMiddleware:
     _LIMITS = {
         "/api/auth/desktop/handoff/start": (10, 600.0),
         "/api/auth/desktop/handoff/": (120, 60.0),
-        "/api/ui/profile": (60, 60.0),
         "/api/community": (120, 60.0),
         "/api/ui/": (240, 60.0),
     }
@@ -569,9 +482,22 @@ COMMUNITY = CommunityApi(
     output_root=BRIDGE.output_root,
     storage_root=BRIDGE.runtime_root / "community_storage",
 )
-# Profile media deliberately reuses the Community provider factory.  The desktop only
-# invokes authenticated backend routes; Drive credentials remain server-side.
-BRIDGE.profile_media_provider_factory = COMMUNITY._read_provider_factory
+
+
+def _sync_community_account_identity(principal: RequestPrincipal) -> dict[str, Any]:
+    """Keep public Community names sourced from authenticated account identity only."""
+    identity_reader = getattr(AUTH, "public_identity", None)
+    identity = identity_reader(principal.user_id) if callable(identity_reader) else {}
+    display_name = str(identity.get("display_name") or "").strip() if isinstance(identity, dict) else ""
+    if not display_name:
+        return {}
+    return COMMUNITY.store.upsert_profile(
+        principal.user_id, {"display_name": display_name})
+
+
+COMMUNITY._account_identity_sync = _sync_community_account_identity
+
+
 class _LazyAuthProvider:
     """Stands in for the real auth provider between import and application startup.
 
@@ -639,96 +565,6 @@ def _proxied_auth_response(target: str, request: Request, body: bytes) -> Respon
     for cookie in response_headers.get_all("Set-Cookie", []):
         response.headers.append("Set-Cookie", cookie)
     return response
-
-
-def _sync_public_profile(principal: RequestPrincipal) -> dict[str, Any]:
-    """Project the authenticated local profile into the community read model.
-
-    The principal is the only identity accepted here; browser payloads never select
-    the profile row.  Media keys are opaque local markers, not filesystem paths.
-    """
-    profile = _profile_for_principal(principal)
-    avatar_ref = str(profile.get("avatar_media_path") or "")
-    banner_ref = str(profile.get("banner_media_path") or "")
-    return COMMUNITY.store.upsert_profile(principal.user_id, {
-        "display_name": profile.get("display_name") or "Usuário",
-        "avatar_object_key": avatar_ref if avatar_ref.startswith("drive:") else ("local:avatar" if BRIDGE.profile_media_path("avatar", user_id=principal.user_id) else ""),
-        "banner_object_key": banner_ref if banner_ref.startswith("drive:") else ("local:banner" if BRIDGE.profile_media_path("banner", user_id=principal.user_id) else ""),
-        "public_role": profile.get("title") or "",
-        "pronouns": profile.get("pronouns") or "",
-        "status": profile.get("status") or "online",
-        "status_message": profile.get("status_text") or "",
-        "bio": profile.get("bio") or "",
-        "accent_color": profile.get("avatar_color") or "#c5372c",
-    })
-
-
-COMMUNITY._profile_sync = _sync_public_profile
-
-
-def _profile_for_principal(principal: RequestPrincipal) -> dict[str, Any]:
-    """Resolve profile presentation without weakening the authenticated principal."""
-    profile = dict(BRIDGE.profile_for_user(principal.user_id))
-    public_identity = getattr(AUTH, "public_identity", None)
-    if callable(public_identity):
-        identity = public_identity(principal.user_id)
-        if isinstance(identity, dict) and identity.get("display_name"):
-            profile["display_name"] = str(identity["display_name"])
-    profile["user_id"] = principal.user_id
-    return profile
-
-
-def _remote_profile_for_principal(principal: RequestPrincipal, request: Request) -> dict[str, Any]:
-    """Adapt the shared Supabase social DTO to the main Profile form."""
-    repo = globals().get("_SOCIAL_REPO")
-    if repo is None or _SOCIAL_STATUS.get("provider") != "supabase" or not _SOCIAL_STATUS.get("available"):
-        raise RuntimeError("remote_profile_unavailable")
-    token = _license_bearer_token(request)
-    if not token:
-        raise AuthenticationRequired()
-    remote = repo.get_my_profile(token, principal.user_id)
-    local = BRIDGE.profile_for_user(principal.user_id)
-    avatar_ref = str(local.get("avatar_media_path") or "")
-    banner_ref = str(local.get("banner_media_path") or "")
-    # Profile media is owned by the existing Drive-backed bridge even when the
-    # social/profile DTO comes from Supabase. Keep the opaque local reference in
-    # the presentation payload so a remote profile refresh cannot erase it.
-    avatar_media_present = bool(remote.get("avatar_object_key") or avatar_ref)
-    banner_media_present = bool(remote.get("banner_object_key") or banner_ref)
-    return {
-        "user_id": principal.user_id,
-        "display_name": remote.get("display_name") or "",
-        "title": remote.get("public_role") or "",
-        "pronouns": remote.get("pronouns") or "",
-        "status": remote.get("status") or "online",
-        "status_text": remote.get("status_message") or "",
-        "bio": remote.get("bio") or "",
-        "avatar_mode": "image" if avatar_media_present else "letter",
-        "avatar_color": remote.get("accent_color") or "#c5372c",
-        "banner": "custom" if banner_media_present else "ink",
-        # Remote Drive refs do not always carry MIME metadata in the social DTO.  A
-        # non-empty ref is nevertheless an image by this endpoint's contract; defaulting
-        # to an image MIME lets the client fetch the authenticated bytes and validate the
-        # actual response type instead of falling back to initials.
-        "avatar_media_url": "/api/ui/profile/media/avatar?v=remote" if avatar_media_present else "",
-        "banner_media_url": "/api/ui/profile/media/banner?v=remote" if banner_media_present else "",
-        "avatar_media_type": local.get("avatar_media_type") or remote.get("avatar_media_type") or "image/jpeg",
-        "banner_media_type": local.get("banner_media_type") or remote.get("banner_media_type") or "image/jpeg",
-        "profile_configured": bool(remote.get("profile_configured")),
-        "remote_source": True,
-    }
-
-
-def _remote_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "display_name": payload.get("display_name"),
-        "public_role": payload.get("title"),
-        "pronouns": payload.get("pronouns"),
-        "status": payload.get("status"),
-        "status_message": payload.get("status_text"),
-        "bio": payload.get("bio"),
-        "accent_color": payload.get("avatar_color"),
-    }
 
 
 def _enrich_history_publications(history: list[dict[str, Any]]) -> None:
@@ -3200,129 +3036,6 @@ def api_resume_dismiss(
         raise HTTPException(status_code=409, detail="job_not_dismissible") from exc
 
 
-@app.post("/api/ui/profile")
-def api_profile(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
-    try:
-        if _SOCIAL_STATUS.get("provider") == "supabase" and _SOCIAL_STATUS.get("available"):
-            repo = globals().get("_SOCIAL_REPO")
-            if repo is None:
-                raise RuntimeError("remote_profile_unavailable")
-            token = _license_bearer_token(request)
-            if not token:
-                raise AuthenticationRequired()
-            repo.update_my_profile(token, principal.user_id, _remote_profile_payload(payload))
-            profile = _remote_profile_for_principal(principal, request)
-        else:
-            profile = BRIDGE.save_profile(payload, user_id=principal.user_id)
-            _sync_public_profile(principal)
-    except ValueError as exc:
-        if str(exc) == "display_name_taken":
-            raise HTTPException(status_code=409, detail={"code": "display_name_taken", "message": "Este nome de exibição já está em uso."}) from exc
-        code = str(exc) if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,79}", str(exc)) else "profile_update_failed"
-        raise HTTPException(status_code=400, detail=code) from exc
-    except AuthenticationRequired as exc:
-        raise HTTPException(status_code=401, detail="authentication_required") from exc
-    except Exception as exc:
-        social_status = int(getattr(exc, "status", 0) or 0)
-        social_code = str(getattr(exc, "code", "") or "")
-        if 400 <= social_status < 500:
-            raise HTTPException(status_code=social_status, detail=social_code or "profile_update_failed") from exc
-        raise HTTPException(status_code=503, detail="profile_remote_unavailable") from exc
-    return {"ok": True, "profile": profile}
-
-
-@app.post("/api/ui/profile/media/{kind}")
-async def api_profile_media_upload(
-    kind: str,
-    request: Request,
-    filename: str = Query(..., min_length=1, max_length=180),
-    content_type: str = Query(..., min_length=3, max_length=80),
-) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
-    if kind not in _PROFILE_MEDIA_MAX_BYTES:
-        raise HTTPException(status_code=422, detail="invalid_profile_media_kind")
-    max_bytes = _PROFILE_MEDIA_MAX_BYTES[kind]
-    content_length = request.headers.get("content-length")
-    try:
-        if content_length is not None and int(content_length) > max_bytes:
-            raise HTTPException(status_code=413, detail="profile_media_too_large")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="invalid_content_length") from exc
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in request.stream():
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(status_code=413, detail="profile_media_too_large")
-        chunks.append(chunk)
-    content = b"".join(chunks)
-    bearer = _license_bearer_token(request)
-    remote_base = str(os.getenv("SUPABASE_URL", "") or "").rstrip("/")
-    if bearer and remote_base:
-        endpoint = f"{remote_base}/functions/v1/profile-media?kind={urllib_parse.quote(kind)}"
-        upstream = urllib_request.Request(endpoint, data=content, method="POST", headers={"Authorization": f"Bearer {bearer}", "Content-Type": content_type})
-        try:
-            with urllib_request.urlopen(upstream, timeout=20, context=_https_context()) as raw:  # noqa: S310 - configured Supabase origin
-                payload = json.loads(raw.read(64 * 1024).decode("utf-8"))
-                _sync_public_profile(principal)
-                return {"ok": True, "profile": {**BRIDGE.profile_for_user(principal.user_id), **payload}}
-        except urllib_error.HTTPError as exc:
-            try:
-                remote_error = json.loads(exc.read(16 * 1024).decode("utf-8"))
-                remote_detail = str(remote_error.get("error") or "profile_media_upload_unavailable")
-                remote_stage = str(remote_error.get("stage") or "")
-                if remote_stage: remote_detail = f"{remote_detail}:{remote_stage}"
-            except Exception:
-                remote_detail = "profile_media_upload_unavailable"
-            if exc.code in {400, 413}: raise HTTPException(status_code=exc.code, detail="invalid_profile_media") from exc
-            if exc.code in {401, 403}: raise HTTPException(status_code=401, detail="authentication_required") from exc
-            raise HTTPException(status_code=502, detail=remote_detail) from exc
-        except (urllib_error.URLError, TimeoutError, ValueError) as exc:
-            raise HTTPException(status_code=502, detail="profile_media_upload_unavailable") from exc
-    profile = _api_call(
-        BRIDGE.save_profile_media,
-        kind,
-        filename=filename,
-        content_type=content_type,
-        content=content,
-        user_id=principal.user_id,
-    )
-    _sync_public_profile(principal)
-    return {
-        "ok": True,
-        "profile": profile,
-    }
-
-
-@app.post("/api/ui/profile/media-trace")
-async def api_profile_media_trace(request: Request) -> dict[str, bool]:
-    """Store a bounded, sanitized diagnostic trace for the current UI session."""
-    payload = await request.json()
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="invalid_trace")
-    _append_diagnostic_log(
-        "app_current.jsonl", "UI_TRACE_HTTP_REQUEST_RECEIVED",
-        event_name=str(payload.get("event") or "")[:80],
-        method=str(getattr(request, "method", "POST")),
-        content_type=str(getattr(request, "headers", {}).get("content-type", "application/json") if getattr(request, "headers", None) is not None else "application/json")[:80],
-        has_json_body=True,
-        top_level_keys=','.join(sorted(str(key)[:40] for key in payload.keys())[:30]),
-    )
-    allowed = {"trace_id", "step", "kind", "status", "route", "reason", "mime", "size", "auth_present", "file_present", "success", "avatar_ref_present", "banner_ref_present"}
-    safe = {k: payload[k] for k in allowed if k in payload and isinstance(payload[k], (str, int, bool, float))}
-    safe["at"] = int(time.time() * 1000)
-    # Trace output is mutable runtime state.  In a frozen install ROOT/_internal is
-    # read-only and must contain assets only; keep diagnostics under the per-user
-    # runtime root instead.
-    trace_dir = DIAGNOSTICS_ROOT
-    trace_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = trace_dir / "profile_media_current.jsonl"
-    with trace_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(safe, ensure_ascii=False, separators=(",", ":")) + "\n")
-    return {"ok": True}
-
-
 @app.post("/api/ui/source-trace")
 async def api_source_trace(request: Request) -> dict[str, bool]:
     """Persist a sanitized source-action trace, starting at the click."""
@@ -3378,8 +3091,7 @@ async def api_control_plane_trace(request: Request) -> dict[str, bool]:
         "daily_debit_total_for_auth_user", "active_daily_reserved_total_for_auth_user",
         "daily_net_stored_recomputed_for_auth_user", "wallet_daily_stored_returned",
         "daily_reconciliation_match",
-         "profile_state", "profile_present", "profile_error_present",
-         "readiness_profile_required", "readiness_ready", "sequence", "elapsed_ms",
+         "readiness_ready", "sequence", "elapsed_ms",
          "error_class", "message", "source", "line", "column", "phase", "ui_generation", "bridge_type",
          "scroll_owner", "scroll_top", "window_scroll_y", "document_element_scroll_top",
          "body_scroll_top", "scrolling_element_scroll_top", "history_revision", "markup_changed",
@@ -3399,145 +3111,6 @@ async def api_control_plane_trace(request: Request) -> dict[str, bool]:
     elif event == "UI_BRIDGE_READY_SENT":
         _append_diagnostic_log("app_current.jsonl", "UI_BRIDGE_READY_HOST_RECEIVED", **{k: v for k, v in safe.items() if k != "event"})
     return {"ok": True}
-
-
-@app.get("/api/ui/profile/media/{kind}")
-def api_profile_media(request: Request, kind: str) -> Response:
-    route_started = time.perf_counter()
-    principal = _ui_principal(request)
-    if kind not in {"avatar", "banner"}:
-        raise HTTPException(status_code=404, detail="Mídia não encontrada.")
-    # Drive-backed media is served by the authenticated Edge Function.  The
-    # desktop process forwards only the user's bearer token; Drive credentials
-    # never enter the client or the packaged application.
-    profile = BRIDGE.profile_for_user(principal.user_id)
-    # Fast path: a Drive asset already cached under its object_key is served straight
-    # from local disk with NO remote call -- no metadata fetch and no media download --
-    # so repeated UI renders/polls cost zero egress and it keeps working while the
-    # backend is unreachable. A local upload rotates the ref, so a stale key cannot pin.
-    local_ref = str(profile.get(f"{kind}_media_path") or profile.get(f"{kind}_object_key") or "")
-    if local_ref.startswith("drive:"):
-        cached = _profile_media_cache_read(principal.user_id, kind, local_ref)
-        if cached is not None:
-            data, media_type = cached
-            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=200, duration_ms=int((time.perf_counter() - route_started) * 1000), cache="hit")
-            return Response(content=data, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
-    # Remote profile rows are authoritative for Drive-backed media.  The local
-    # bridge profile may intentionally contain only presentation metadata after a
-    # restart, which previously made this route return a misleading local 404.
-    remote_profile: dict[str, Any] = {}
-    social_repo = globals().get("_SOCIAL_REPO")
-    if (_SOCIAL_STATUS.get("provider") == "supabase"
-            and _SOCIAL_STATUS.get("available") and social_repo is not None):
-        token = _license_bearer_token(request)
-        if token:
-            try:
-                remote_profile = social_repo.get_my_profile(token, principal.user_id) or {}
-            except Exception as exc:  # noqa: BLE001 - optional remote enrichment; local profile is authoritative
-                # Fail-open to the local profile (never breaks PROFILE_READY), but leave a
-                # sanitized breadcrumb so a new remote failure is not fully silent.  Only the
-                # exception category crosses this boundary -- no token, header, ref or trace.
-                remote_profile = {}
-                _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_REMOTE_ENRICH_FALLBACK", route=f"/api/ui/profile/media/{kind}", stage="remote_profile_fetch", safe_error_code="profile_remote_enrich_unavailable", exception_class=type(exc).__name__, exception_module=type(exc).__module__)
-    stored_ref = str(
-        remote_profile.get(f"{kind}_object_key")
-        or profile.get(f"{kind}_media_path")
-        or profile.get(f"{kind}_object_key")
-        or ""
-    )
-    bearer = _license_bearer_token(request)
-    remote_base = str(os.getenv("SUPABASE_URL", "") or "").rstrip("/")
-    if stored_ref.startswith("drive:") and bearer and remote_base:
-        backoff_key = (str(principal.user_id or ""), kind)
-        now_mono = time.monotonic()
-        # The authoritative object_key may differ from the local ref (changed on another
-        # device): serve from cache when we already hold these exact bytes, before any
-        # backoff or network, so an unchanged asset never re-downloads.
-        cached = _profile_media_cache_read(principal.user_id, kind, stored_ref)
-        if cached is not None:
-            data, media_type = cached
-            _PROFILE_MEDIA_UPSTREAM_BACKOFF.pop(backoff_key, None)
-            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=200, duration_ms=int((time.perf_counter() - route_started) * 1000), cache="hit")
-            return Response(content=data, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
-        backoff_entry = _PROFILE_MEDIA_UPSTREAM_BACKOFF.get(backoff_key)
-        if backoff_entry is not None and backoff_entry[0] > now_mono:
-            # A recent upstream failure is still in its backoff window: surface the same
-            # semantic error (502) without re-hitting the failing Edge Function every poll.
-            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=502, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="profile_media_backoff")
-            raise HTTPException(status_code=502, detail="profile_media_unavailable")
-        endpoint = f"{remote_base}/functions/v1/profile-media?kind={urllib_parse.quote(kind)}"
-        upstream = urllib_request.Request(endpoint, headers={"Authorization": f"Bearer {bearer}"})
-        try:
-            host = urllib_parse.urlparse(remote_base).hostname or ""
-            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_NETWORK", route=f"/api/ui/profile/media/{kind}", remote_scheme="https", remote_host=host, remote_port=443, dns_resolution="started")
-            socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-            with urllib_request.urlopen(upstream, timeout=15, context=_https_context()) as raw:  # noqa: S310 - configured Supabase origin
-                content = raw.read(12 * 1024 * 1024 + 1)
-                if len(content) > 12 * 1024 * 1024:
-                    raise HTTPException(status_code=502, detail="media_too_large")
-                media_type = raw.headers.get_content_type() or profile.get(f"{kind}_media_type") or "application/octet-stream"
-                _PROFILE_MEDIA_UPSTREAM_BACKOFF.pop(backoff_key, None)  # healthy again
-                # Cache the bytes under their object_key so later renders/polls reuse them
-                # locally instead of re-downloading -- the whole point of this hotfix.
-                _profile_media_cache_write(principal.user_id, kind, stored_ref, content, media_type)
-                _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=200, duration_ms=int((time.perf_counter() - route_started) * 1000), edge_http_status=200, cache="miss")
-                return Response(content=content, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
-        except urllib_error.HTTPError as exc:
-            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=exc.code, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="profile_media_upstream_http")
-            if exc.code in {401, 403}:
-                # Auth may recover on the next token refresh; do not back off on it.
-                _PROFILE_MEDIA_UPSTREAM_BACKOFF.pop(backoff_key, None)
-                raise HTTPException(status_code=401, detail="authentication_required") from exc
-            if exc.code == 404:
-                _PROFILE_MEDIA_UPSTREAM_BACKOFF.pop(backoff_key, None)
-                raise HTTPException(status_code=404, detail="Mídia não encontrada.") from exc
-            # A server-side upstream failure (5xx) is what keeps recurring: back off so the
-            # poll stops hammering it, while still returning the real error to the client.
-            _profile_media_backoff_arm(backoff_key, now_mono)
-            raise HTTPException(status_code=502, detail="profile_media_unavailable") from exc
-        except (urllib_error.URLError, TimeoutError) as exc:
-            reason = getattr(exc, "reason", exc)
-            _profile_media_backoff_arm(backoff_key, now_mono)
-            _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=502, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="profile_media_network", exception_class=type(exc).__name__, exception_module=type(exc).__module__, safe_message=type(reason).__name__, timeout=isinstance(exc, TimeoutError), dns_error=isinstance(reason, socket.gaierror), connection_error=isinstance(reason, OSError))
-            raise HTTPException(status_code=502, detail="profile_media_unavailable") from exc
-    path = BRIDGE.profile_media_path(kind, user_id=principal.user_id)
-    if not path:
-        stream = BRIDGE.profile_media_stream(kind, user_id=principal.user_id)
-        if stream:
-            return StreamingResponse(stream.iter_chunks(), media_type=profile.get(f"{kind}_media_type") or "application/octet-stream", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
-        _append_diagnostic_log("routes_current.jsonl", "PROFILE_MEDIA_ROUTE", route=f"/api/ui/profile/media/{kind}", method="GET", status=404, duration_ms=int((time.perf_counter() - route_started) * 1000), safe_error_code="media_ref_missing")
-        raise HTTPException(status_code=404, detail="Mídia não encontrada.")
-    return FileResponse(path, media_type=profile.get(f"{kind}_media_type") or None)
-
-
-@app.delete("/api/ui/profile/media/{kind}")
-def api_profile_media_remove(request: Request, kind: str) -> dict[str, Any]:
-    principal = _ui_principal(request, mutate=True)
-    profile = _api_call(BRIDGE.remove_profile_media, kind, user_id=principal.user_id)
-    _sync_public_profile(principal)
-    return {"ok": True, "profile": profile}
-
-
-@app.get("/api/community/profiles/{user_id}/{kind}")
-def api_community_profile_media(user_id: str, kind: str, request: Request) -> FileResponse:
-    """Serve only an authenticated author's local avatar/banner media."""
-    _ui_principal(request)
-    if kind not in {"avatar", "banner"} or len(user_id) > 128:
-        raise HTTPException(status_code=404, detail="media_not_found")
-    public = COMMUNITY.store.profile_public(user_id)
-    if not public.get(f"{kind}_object_key"):
-        raise HTTPException(status_code=404, detail="media_not_found")
-    path = BRIDGE.profile_media_path(kind, user_id=user_id)
-    if not path:
-        stream = BRIDGE.profile_media_stream(kind, user_id=user_id)
-        if stream:
-            profile = BRIDGE.profile_for_user(user_id)
-            return StreamingResponse(stream.iter_chunks(), media_type=profile.get(f"{kind}_media_type") or "application/octet-stream", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
-        raise HTTPException(status_code=404, detail="media_not_found")
-    profile = BRIDGE.profile_for_user(user_id)
-    return FileResponse(path, media_type=profile.get(f"{kind}_media_type") or None,
-                        headers={"Cache-Control": "private, no-store",
-                                 "X-Content-Type-Options": "nosniff"})
 
 
 # ---- in-app chapter reader ---------------------------------------------------

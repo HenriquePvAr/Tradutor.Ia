@@ -339,7 +339,6 @@ class IsolatedRuntimeVisibilityTests(unittest.TestCase):
         bridge = app_ui.BRIDGE
         for path in (
             bridge.runtime_root, bridge.output_root,
-            bridge.profile_root, bridge.profile_media_root,
         ):
             self.assertFalse(is_real_runtime_path(path), path)
         self.assertEqual(Path(bridge.store.db_path).parent, bridge.runtime_root)
