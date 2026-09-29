@@ -91,11 +91,41 @@ export async function currentAccessToken() {
 }
 
 export async function exchangeCodeForSession(code) {
+  const authCode = String(code || '').trim();
+  if (!authCode) {
+    const error = new Error('auth_code_missing');
+    error.code = 'auth_code_missing';
+    throw error;
+  }
+  if (!(await hasPkceCodeVerifier())) {
+    const error = new Error('pkce_code_verifier_missing');
+    error.code = 'pkce_code_verifier_missing';
+    throw error;
+  }
   const client = await getSupabaseClient({detectSessionInUrl: false});
   if (!client) return null;
-  const {data, error} = await client.auth.exchangeCodeForSession(String(code || ''));
+  const {data, error} = await client.auth.exchangeCodeForSession(authCode);
   if (error) throw error;
   return data;
+}
+
+// Supabase JS v2 stores the PKCE verifier under this project-scoped localStorage
+// key. Expose only its presence so callback code can fail locally instead of
+// sending an exchange request with an empty verifier. The verifier itself never
+// leaves storage and is never returned or logged.
+export async function hasPkceCodeVerifier() {
+  const cfg = await publicConfig();
+  if (cfg.provider !== 'supabase' || !cfg.supabase_url) return false;
+  try {
+    const raw = window.localStorage.getItem(`${stableStorageKey(cfg.supabase_url)}-code-verifier`);
+    if (!raw) return false;
+    let value = raw;
+    try { value = JSON.parse(raw); } catch (_) { /* older SDK storage may be raw text */ }
+    const verifier = typeof value === 'string' ? value.split('/')[0] : '';
+    return /^[A-Za-z0-9._~-]{43,128}$/.test(verifier);
+  } catch (_) {
+    return false;
+  }
 }
 
 // Canonical asynchronous source used by all community requests.
@@ -122,7 +152,11 @@ export async function currentUserEmail() {
 export async function signUp(email, password) {
   const client = await getSupabaseClient();
   if (!client) throw new Error('supabase not configured');
-  const redirectTo = `${window.location.origin}/auth/callback`;
+  // Signup confirmation verifies the address; product UX intentionally asks the
+  // user to return and sign in with their password. The confirmation link may be
+  // opened in a different browser profile that cannot possess this tab's PKCE
+  // verifier, so it must not be treated as a session callback.
+  const redirectTo = `${window.location.origin}/auth/callback?email_confirmation=signup`;
   const { data, error } = await client.auth.signUp({
     email, password, options: { emailRedirectTo: redirectTo },
   });

@@ -55,10 +55,9 @@
     })();
   </script>
   <script id="authCallbackModule" type="module">
-    // The Supabase JS SDK parses the access_token/refresh_token from the URL hash into
-    // its own storage. We then strip the hash and return to the fixed local root — the
-    // destination is a constant, never taken from any URL parameter (no open redirect).
-    import { getSupabaseClient } from '/static/supabase_auth.js';
+    // PKCE codes are exchanged explicitly below. The callback URL is then scrubbed
+    // and returns only to a fixed local destination (never an open redirect).
+    import { getSupabaseClient, hasPkceCodeVerifier } from '/static/supabase_auth.js';
     // Hand off immediately after static imports have loaded. A failed module/import
     // never reaches this line and remains covered by the pre-module watchdog.
     if (window.__yomuAuthCallbackBootFailed) throw new Error('callback_boot_timeout');
@@ -105,15 +104,32 @@
     try {
       const params = new URLSearchParams(location.search);
       const code = params.get('code');
+      const confirmationOnly = params.get('email_confirmation') === 'signup';
+      const callbackError = params.get('error') || params.get('error_code') || params.get('error_description');
       const desktopHandoff = params.get('desktop') === '1';
       const handoffId = params.get('handoff') || '';
       const recoveryHint = params.get('recovery') === '1';
-      // The email may open this callback in a new tab.  sessionStorage is
-      // tab-scoped, so also consult the short-lived localStorage handoff marker.
       const pendingAt = Number(sessionStorage.getItem('yomu_recovery_pending_at')
         || localStorage.getItem('yomu_recovery_pending_at_durable') || 0);
       const recoveryPending = recoveryHint || Boolean(pendingAt && Date.now() - pendingAt < 10 * 60 * 1000);
       recoveryHandoffPending = recoveryPending;
+      if (callbackError) {
+        const codeHint = String(params.get('error_code') || '').toLowerCase();
+        const err = new Error(codeHint === 'otp_expired' ? 'auth_link_expired' : 'auth_callback_rejected');
+        err.code = codeHint === 'otp_expired' ? 'auth_link_expired' : 'auth_callback_rejected';
+        throw err;
+      }
+      if (confirmationOnly) {
+        history.replaceState(null, '', '/auth/callback');
+        try { localStorage.removeItem(callbackDiagnosticKey); } catch (_) {}
+        const spinner = document.getElementById('authCallbackSpinner');
+        if (spinner) spinner.hidden = true;
+        msg.textContent = 'E-mail confirmado com sucesso. Volte ao Yomu Sekai e entre normalmente com sua senha.';
+        msg.dataset.state = 'confirmation_success';
+        return;
+      }
+      // The email may open this callback in a new tab.  sessionStorage is
+      // tab-scoped, so also consult the short-lived localStorage handoff marker.
       if (desktopHandoff && handoffId && code) {
         const response = await withCallbackTimeout(fetch(`/api/auth/desktop/handoff/${encodeURIComponent(handoffId)}/callback`, {
           method: 'POST', headers: {'content-type': 'application/json'},
@@ -130,12 +146,25 @@
         sessionStorage.setItem('yomu_recovery_intent', '1');
         localStorage.setItem('yomu_recovery_intent', '1');
       }
+      if (!code) {
+        const err = new Error(recoveryPending ? 'recovery_code_missing' : 'auth_code_missing');
+        err.code = recoveryPending ? 'recovery_code_missing' : 'auth_code_missing';
+        throw err;
+      }
       // The callback performs the PKCE exchange explicitly. Disable the SDK's
       // automatic URL detection here so the one-use code is not exchanged twice.
       const client = await withCallbackTimeout(
         getSupabaseClient({detectSessionInUrl: false}), 'client_initialization');
       if (code && !client) throw new Error('supabase_client_unavailable');
       if (client) {
+        if (code) {
+          const hasVerifier = await withCallbackTimeout(hasPkceCodeVerifier(), 'code_verifier_check', 5000);
+          if (!hasVerifier) {
+            const err = new Error('pkce_code_verifier_missing');
+            err.code = 'pkce_code_verifier_missing';
+            throw err;
+          }
+        }
         // The callback page is intentionally tiny and does not mount auth_ui.js.
         // Persist the recovery intent before returning to the shell so an
         // INITIAL_SESSION/SIGNED_IN event cannot be mistaken for normal login.
@@ -153,7 +182,11 @@
           if (exchanged?.error) throw exchanged.error;
         }
         const current = await withCallbackTimeout(client.auth.getSession(), 'session_confirmation', 8000);
-        if (code && recoveryPending && !current?.data?.session) throw new Error('recovery_session_not_established');
+        if (code && !current?.data?.session) {
+          const err = new Error(recoveryPending ? 'recovery_session_not_established' : 'callback_session_not_established');
+          err.code = recoveryPending ? 'recovery_session_not_established' : 'callback_session_not_established';
+          throw err;
+        }
         if (recoveryPending) {
           sessionStorage.removeItem('yomu_recovery_pending_at');
           // Keep the intent until the password screen consumes it; only the
@@ -182,7 +215,11 @@
       } catch (_) {}
       const spinner = document.getElementById('authCallbackSpinner');
       if (spinner) spinner.hidden = true;
-      msg.textContent = 'Não foi possível concluir a autenticação. ';
+      msg.textContent = err?.code === 'auth_link_expired'
+        ? 'Este link expirou ou já foi usado. Solicite uma nova confirmação.'
+        : err?.code === 'pkce_code_verifier_missing'
+        ? 'Este link foi aberto em outro contexto. Volte ao Yomu Sekai e entre com sua senha.'
+        : 'Não foi possível concluir a autenticação. ';
       msg.dataset.state = 'error';
       const back = document.createElement('a');
       back.href = '/';

@@ -80,8 +80,15 @@ de JWKS **falha fechado**: a requisição fica não autenticada, nunca aceita.
 2. login/cadastro/logout pela UI mínima no cabeçalho;
 3. o SDK guarda e renova a sessão; o token corrente é anexado como `Bearer` nas chamadas
    ao backend (nunca persistido manualmente, nunca logado);
-4. `/auth/callback` é uma página estática que deixa o SDK trocar o token do hash e
-   redireciona para o root fixo — sem open redirect.
+4. Cadastro usa confirmação de endereço como etapa separada: o redirect de signup marca
+   `email_confirmation=signup`; após o Supabase concluir `/verify`, a página informa a
+   confirmação e orienta o usuário a voltar ao Yomu e entrar com a senha. Esse caminho não
+   cria sessão nem tenta trocar um código PKCE, pois o link pode abrir em outro perfil de
+   navegador sem o verifier local.
+5. Outros callbacks PKCE, como recuperação, só trocam um `code` não vazio quando o
+   verifier local do projeto está presente. A sessão só é tratada como concluída depois
+   de o SDK confirmar a sessão persistida. Destinos de retorno continuam fixos — sem open
+   redirect.
 
 ## Bind de rede
 

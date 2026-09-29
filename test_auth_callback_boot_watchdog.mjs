@@ -94,22 +94,24 @@ test('inner callback failures and exchange timeouts remain owned by the module s
   assert.match(moduleSource, /withCallbackTimeout\(\s*getSupabaseClient\([\s\S]*?'client_initialization'/);
   assert.match(moduleSource, /withCallbackTimeout\(\s*client\.auth\.exchangeCodeForSession\(code\)[\s\S]*?'code_exchange'/);
   assert.match(moduleSource, /session_confirmation', 8000/);
-  assert.match(moduleSource, /catch \(err\)[\s\S]*?msg\.textContent = 'Não foi possível concluir a autenticação/);
+  assert.match(moduleSource, /catch \(err\)[\s\S]*?msg\.textContent = err\?\.code === 'auth_link_expired'/);
   assert.match(moduleSource, /CALLBACK_TIMEOUT_MS = 15000/);
 });
 
-async function runInnerCallback(exchange) {
+async function runInnerCallback(exchange, {search = '?code=synthetic-auth-code', verifier = true} = {}) {
   const h = harness();
+  let clientCalls = 0;
   const storage = new Map();
   const client = {auth: {
     onAuthStateChange() { return {data: {subscription: {unsubscribe() {}}}}; },
     exchangeCodeForSession: exchange,
     async getSession() { return {data: {session: {user: {id: 'synthetic'}}}}; },
   }};
-  const location = {search: '?code=synthetic-auth-code'};
+  const location = {search, replace: () => {}};
   Object.assign(h.context, {
     URLSearchParams, location,
-    getSupabaseClient: async () => client,
+    getSupabaseClient: async () => { clientCalls++; return client; },
+    hasPkceCodeVerifier: async () => verifier,
     document: {...h.context.document, createElement: () => ({href: '', textContent: ''})},
     sessionStorage: {getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key)},
     localStorage: {getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key)},
@@ -120,6 +122,7 @@ async function runInnerCallback(exchange) {
   const executableModule = moduleSource.replace(/^\s*import\s+\{[^}]+\}\s+from\s+'[^']+';\s*/m, '');
   vm.runInNewContext(executableModule, h.context, {timeout: 1000});
   for (let i = 0; i < 20; i++) await Promise.resolve();
+  h.clientCalls = clientCalls;
   return h;
 }
 
@@ -143,5 +146,56 @@ test('callback exchange timeout reaches the inner terminal error state, not the 
   assert.match(h.message.textContent, /Não foi possível concluir a autenticação/);
   assert.equal(h.message.dataset.state, 'error');
   assert.notEqual(h.message.textContent, 'Concluindo autenticação…');
+  assert.deepEqual(h.historyCalls, [[null, '', '/auth/callback']]);
+});
+
+test('signup confirmation without PKCE code succeeds as confirmation-only and creates no session', async () => {
+  for (const search of ['?email_confirmation=signup', '?email_confirmation=signup&code=unused-one-time-code']) {
+    const h = await runInnerCallback(() => assert.fail('confirmation must never exchange a code'), {search});
+    assert.equal(h.clientCalls, 0, 'confirmation does not initialize a session client');
+    assert.equal(h.spinner.hidden, true);
+    assert.match(h.message.textContent, /E-mail confirmado com sucesso/);
+    assert.equal(h.message.dataset.state, 'confirmation_success');
+    assert.deepEqual(h.historyCalls, [[null, '', '/auth/callback']]);
+  }
+});
+
+test('missing auth code does not initialize client or attempt an empty exchange', async () => {
+  let exchanges = 0;
+  const h = await runInnerCallback(() => { exchanges++; }, {search: ''});
+  assert.equal(exchanges, 0);
+  assert.equal(h.clientCalls, 0);
+  assert.equal(h.spinner.hidden, true);
+  assert.equal(h.message.dataset.state, 'error');
+  assert.match(h.message.textContent, /Não foi possível concluir a autenticação/);
+});
+
+test('PKCE code with verifier performs exactly one exchange', async () => {
+  let exchanges = 0;
+  const h = await runInnerCallback(async (code) => {
+    exchanges++;
+    assert.equal(code, 'synthetic-auth-code');
+    return {data: {session: {user: {id: 'synthetic'}}}, error: null};
+  });
+  assert.equal(exchanges, 1);
+  assert.equal(h.window.__yomuAuthCallbackStarted, true);
+});
+
+test('PKCE code without verifier fails locally without an exchange request', async () => {
+  let exchanges = 0;
+  const h = await runInnerCallback(() => { exchanges++; }, {verifier: false});
+  assert.equal(exchanges, 0);
+  assert.equal(h.spinner.hidden, true);
+  assert.equal(h.message.dataset.state, 'error');
+  assert.match(h.message.textContent, /aberto em outro contexto/);
+});
+
+test('Supabase callback error and expired link are not echoed into UI or diagnostics', async () => {
+  const secretLike = 'private-code-value-must-not-appear';
+  const h = await runInnerCallback(() => assert.fail('error callback must not exchange'), {
+    search: `?error_code=otp_expired&error_description=${secretLike}`,
+  });
+  assert.match(h.message.textContent, /link expirou ou já foi usado/);
+  assert.doesNotMatch(h.message.textContent, new RegExp(secretLike));
   assert.deepEqual(h.historyCalls, [[null, '', '/auth/callback']]);
 });

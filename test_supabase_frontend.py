@@ -63,6 +63,18 @@ class SupabaseFrontendTests(unittest.TestCase):
         for token in ("signUp", "signIn", "signOut", "onAuthChange"):
             self.assertIn(token, source)
 
+    def test_signup_confirmation_is_separate_from_pkce_session_callback(self):
+        source = _read("static/supabase_auth.js")
+        self.assertIn("email_confirmation=signup", source)
+        self.assertIn("export async function hasPkceCodeVerifier()", source)
+        self.assertIn("if (!authCode)", source)
+        self.assertIn("if (!(await hasPkceCodeVerifier()))", source)
+        self.assertIn("client.auth.signInWithPassword({email, password})", source)
+        callback = _read("ui/auth_callback.html")
+        self.assertIn("params.get('email_confirmation') === 'signup'", callback)
+        self.assertIn("E-mail confirmado com sucesso. Volte ao Yomu Sekai", callback)
+        self.assertIn("pkce_code_verifier_missing", callback)
+
     def test_auth_ui_resolves_backend_session_before_visitor_state(self):
         source = _read("static/auth_ui.js")
         self.assertIn("/api/community/auth/session", source)
