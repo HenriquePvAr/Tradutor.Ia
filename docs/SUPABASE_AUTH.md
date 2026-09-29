@@ -1,5 +1,16 @@
 # Autenticação Supabase (community)
 
+## Backend ativo após o cutover local (2026-09-29)
+
+O runtime local do Yomu Sekai usa o projeto **Yomu Sekai** (`ybxwjiycujminbwbdtlb`)
+em `https://ybxwjiycujminbwbdtlb.supabase.co`, com publishable key pública. O projeto
+**Tradutor IA Community** (`mimrsxnhqbqkffsekxuw`) permanece intacto como rollback
+temporário até a validação física do novo backend; não é o destino de novas sessões.
+
+O novo projeto não possui a Edge Function `profile-media`. Profile Media também foi
+removida do runtime local. O primeiro login físico contra o projeto novo ainda está
+pendente; este cutover local, por si só, não declara o backend validado em produção.
+
 Os provedores de autenticação são selecionados por `COMMUNITY_AUTH_PROVIDER`
 (resolvido em `community_auth.build_auth_provider`):
 
