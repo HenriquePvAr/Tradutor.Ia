@@ -543,6 +543,7 @@ class TextGroup:
     source_fallback_prevented: bool = False
     text_overflow_ratio: float = 0.0
     draw_box: tuple | None = None
+    rendered_lines: list = field(default_factory=list)  # final wrapped lines the renderer drew
     safe_area: tuple | None = None
     translation_box: tuple | None = None
     allowed_modification_box: tuple | None = None
@@ -12499,6 +12500,7 @@ def _draw_group_translation(img_bgr, group, font_path, strategy="primary", sourc
     group.font_size = font_size
     group.text_overflow_ratio = float(overflow_ratio)
     group.draw_box = tuple(draw_box)
+    group.rendered_lines = list(lines)  # renderer's final wrapping (source of truth for PSD)
     text_block = "\n".join(lines)
     text_w = text_bbox[2] - text_bbox[0]
     text_h = text_bbox[3] - text_bbox[1]
@@ -15114,6 +15116,7 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "preserved_original": bool(group.preserved_original),
                 "text_overflow_ratio": round(group.text_overflow_ratio, 6),
                 "draw_box": list(group.draw_box) if group.draw_box else None,
+                "rendered_lines": list(group.rendered_lines) if group.rendered_lines else None,
                 "safe_area": list(group.safe_area) if group.safe_area else None,
                 "translation_box": (
                     list(group.translation_box) if group.translation_box else None

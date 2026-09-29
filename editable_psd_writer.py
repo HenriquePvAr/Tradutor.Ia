@@ -79,6 +79,8 @@ class EditableTextRegion:
     italic: bool = False
     rotation: float = 0.0
     review_required: bool = False
+    # provenance: which fields came from the renderer vs a fallback (Mission 7 §19)
+    sources: dict = field(default_factory=dict)
 
 
 # ======================================================================================
@@ -395,7 +397,9 @@ def write_editable_psd(output_path, original_image, clean_image, text_regions,
                                "translation_status": region.translation_status,
                                "text": region.text, "bbox": list(region.bbox),
                                "font_family": region.font_family, "font_size": region.font_size,
-                               "color": list(region.color), "alignment": region.alignment})
+                               "color": list(region.color), "alignment": region.alignment,
+                               "bold": region.bold, "italic": region.italic,
+                               "typography_sources": dict(region.sources)})
 
     dest = Path(output_path)
     dest.parent.mkdir(parents=True, exist_ok=True)

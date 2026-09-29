@@ -345,19 +345,35 @@ def _persist_canonical_artifacts(output_root, completed_states, total_pages, pro
     }
 
 
-def _editable_psd_regions(state):
-    """Build the writer's decoupled region model from a page's own render items (Mission 6 §42).
+_COLOR_NAME_RGB = {
+    "black": (17, 17, 17), "white": (245, 245, 245), "red": (200, 30, 30),
+    "blue": (20, 30, 120), "gray": (90, 90, 90), "grey": (90, 90, 90),
+}
+_DIALOGUE_CLASSES = {"speech", "speech_balloon", "balloon", "dialogue"}
 
-    Every DETECTED text region with content becomes a Type Layer: a drawn translation becomes a
-    translated layer; a region that has source text but no drawn translation (preserved / SFX /
-    untranslated) is kept as a ``source_fallback`` layer so QC still finds the text (§14). A
-    region with no text at all is skipped -- we never invent a layer.
+
+def _editable_psd_regions(state):
+    """Build the writer's decoupled region model from a page's own render items (Mission 6 §42,
+    Mission 7 typography propagation).
+
+    The RENDERER is the source of truth for automatic typography: when a render item exposes the
+    real font_size, final wrapped lines, refined position and colour, the PSD reuses those exact
+    values -- it never runs a second layout/font-fitting pass (§6/§7/§8). Each region records a
+    ``sources`` map (RENDERER vs *_FALLBACK) for provenance. Safe fallbacks apply per property
+    when a value is absent, so legacy runs without typography metadata still export (§20/§32).
+
+    Every DETECTED text region with content becomes a Type Layer: a drawn translation is a
+    translated layer; a region with source text but no drawn translation is kept as a
+    ``source_fallback`` layer so QC still finds the text (§14). A region with no text is skipped.
     """
     regions = []
     for item in (state.get("debug_data") or {}).get("items", []) or []:
         if not isinstance(item, dict):
             continue
-        box = item.get("draw_box") or item.get("translation_box") or item.get("bounding_box")
+        # position: renderer's refined box (translation_box / draw_box) wins over the raw bbox.
+        refined = item.get("translation_box") or item.get("draw_box")
+        raw_box = item.get("bounding_box")
+        box = refined or raw_box
         if not box:
             continue
         try:
@@ -366,29 +382,61 @@ def _editable_psd_regions(state):
             continue
         if w <= 0 or h <= 0:
             continue
+        position_source = "RENDERER" if refined else "BBOX_FALLBACK"
+
         translation = str(item.get("translation") or "").strip()
         source = str(item.get("clean_text") or item.get("text") or "").strip()
         drawn = bool(item.get("redrawn") or item.get("translated")
                      or item.get("translation_final_state") == "translated")
         if drawn and translation and not item.get("preserved_original"):
-            text, status = translation, "translated"
+            base_text, status = translation, "translated"
         elif source:
-            text, status = source, "source_fallback"
+            base_text, status = source, "source_fallback"
         else:
             continue
+
+        # wrapping: reuse the renderer's final wrapped lines when present (§8), else raw text.
+        rendered_lines = item.get("rendered_lines") if status == "translated" else None
+        if rendered_lines:
+            text = "\n".join(str(s) for s in rendered_lines)
+            wrap_source = "RENDERER"
+        else:
+            text = base_text
+            wrap_source = "RAW_TEXT_FALLBACK"
+
         stype = str(item.get("classification") or "")
-        nlines = max(1, text.count("\n") + 1)
+        # font size: renderer value wins; bbox-derived only as fallback (§6).
         raw_size = int(item.get("font_size") or 0)
-        font_size = raw_size if raw_size > 0 else int(h / (nlines * 1.3)) or config.MIN_FONT_SIZE
+        if raw_size > 0:
+            font_size, size_source = raw_size, "RENDERER"
+        else:
+            nlines = max(1, text.count("\n") + 1)
+            font_size = int(h / (nlines * 1.3)) or int(config.MIN_FONT_SIZE)
+            size_source = "BBOX_FALLBACK"
         font_size = max(int(config.MIN_FONT_SIZE), min(font_size, 200))
-        align = "center" if stype.strip().lower() in {
-            "speech", "speech_balloon", "balloon", "dialogue"} else "left"
+
+        # colour: map the renderer's colour name; black default otherwise (§11/§24).
+        cname = str(item.get("text_color") or "").strip().lower()
+        if cname in _COLOR_NAME_RGB:
+            color, color_source = _COLOR_NAME_RGB[cname], "RENDERER"
+        else:
+            color, color_source = (0, 0, 0), "BLACK_DEFAULT"
+
+        # alignment: the renderer exposes no discrete left/center/right, only a score, so this is
+        # a semantic default -- reported honestly, not claimed as RENDERER.
+        align = "center" if stype.strip().lower() in _DIALOGUE_CLASSES else "left"
+
         regions.append(editable_psd_writer.EditableTextRegion(
             region_id=str(item.get("region_id") or item.get("id") or ""),
             semantic_type=stype, text=text, source_text=source,
             translation_status=status, bbox=(x, y, w, h),
-            font_size=font_size, color=(0, 0, 0), alignment=align,
+            font_size=font_size, color=color, alignment=align,
             review_required=bool(item.get("manual_review_required")) or status != "translated",
+            sources={
+                "font_size_source": size_source, "position_source": position_source,
+                "wrap_source": wrap_source, "color_source": color_source,
+                "alignment_source": "SEMANTIC_DEFAULT",
+            },
         ))
     return regions
 

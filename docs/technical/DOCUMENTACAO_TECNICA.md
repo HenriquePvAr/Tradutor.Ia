@@ -2401,10 +2401,18 @@ determinísticos por classificação: `BALAO_NNN`, `NARRACAO_NNN`, `CAPTION_NNN`
 
 **Modo de texto:** POINT text (o modo comprovadamente editável no Photoshop). **Fonte:** família
 referenciada (`ArialMT`/fallback); a fonte não é distribuída e é substituível se ausente, sem
-rasterizar. **Cor:** preto padrão. **Perfil de cor:** sRGB IEC61966-2.1 embutido (evita o aviso
-"Perfil Ausente" do protótipo). **Limitações cosméticas** (editabilidade > fidelidade):
-outline/stroke, rotação e bold/italic sintéticos não são aplicados; a Type Layer permanece
-editável.
+rasterizar. **Perfil de cor:** sRGB IEC61966-2.1 embutido (evita o aviso "Perfil Ausente" do
+protótipo). **Limitações cosméticas** (editabilidade > fidelidade): outline/stroke, rotação e
+bold/italic sintéticos não são aplicados; a Type Layer permanece editável.
+
+**Tipografia: o renderer é a fonte de verdade (Missão 7).** O writer **não** roda um segundo
+passo de layout/ajuste de fonte. Quando o item de render expõe os valores reais, a Type Layer os
+reutiliza exatamente: `font_size` (real do renderer), linhas finais quebradas
+(`rendered_lines`), posição refinada (`translation_box`/`draw_box`) e cor (`text_color`). Cada
+região registra em `typography_sources` a origem de cada propriedade — `RENDERER` ou o fallback
+correspondente (`BBOX_FALLBACK` p/ tamanho/posição, `RAW_TEXT_FALLBACK` p/ quebra,
+`BLACK_DEFAULT` p/ cor, `SEMANTIC_DEFAULT` p/ alinhamento). Os fallbacks mantêm runs legados sem
+metadados de tipografia exportáveis, sem falhar o PSD por propriedade cosmética ausente.
 
 **Páginas sem texto / brancas / curtas** geram PSD válido com `TEXT` vazio, no tamanho real do
 canvas (sem piso de altura) — inclui as calhas 118/143/207 e as páginas curtas 48/208.
